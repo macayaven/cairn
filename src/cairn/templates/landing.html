@@ -86,8 +86,11 @@
     <div>
       <h3>On your own machine</h3>
       <p>One container: the same software on your disk and your network, with no plans and no plan caps.</p>
-      <pre>docker run -d --name cairn --restart unless-stopped -p 127.0.0.1:8765:8765 -v cairn-data:/data ghcr.io/macayaven/cairn:main</pre>
-      <p class="aside">Then make a key and sign in. <a href="/docs/run">Run it yourself</a> has every step, and backups and upgrades.</p>
+      <pre>git clone https://github.com/macayaven/cairn
+cd cairn/deploy
+echo 'COMPOSE_FILE=compose.local.yaml' &gt; .env
+docker compose up -d --build</pre>
+      <p class="aside">Then make a key and sign in. The repository's README has each step, and <a href="/docs/run">Run it yourself</a> has backups and upgrades.</p>
     </div>
   </div>
 </section>

@@ -76,7 +76,7 @@ def test_the_landing_page_shows_this_servers_address_and_its_own_providers(tmp_p
     assert "/pricing" not in home and "$" not in home  # nothing is on sale here
     assert 'href="/docs/connect"' in home
     own = home.split("<h3>On your own machine</h3>", 1)[1].split("</div>", 1)[0]
-    assert 'href="/docs/run"' in own and "docker run" in own
+    assert 'href="/docs/run"' in own and "docker compose up -d --build" in own
 
 
 def test_the_run_guide_takes_a_self_hoster_from_docker_run_to_an_upgrade(env):
@@ -144,7 +144,10 @@ def test_the_guides_say_what_a_repeat_and_a_refusal_record_and_no_more():
     assert "The answer names the rule and the line; the audit log names the rule" in security
 
 
-def test_no_page_anyone_can_read_links_to_the_source_repository(tmp_path, env):
+def test_only_the_landing_page_names_the_source_repository_and_only_to_clone_it(tmp_path, env):
+    """The guides and the sign-in page serve under a brand too, where the software is not
+    named, so they hold no address of the repository. The landing page is never shown under
+    a brand; it names the repository once, in the command that clones it."""
     client, _ = env
     for path in ("/docs", *(f"/docs/{name}" for name in GUIDES), "/login"):
         assert "github.com/" not in client.get(path).text, path
@@ -152,7 +155,9 @@ def test_no_page_anyone_can_read_links_to_the_source_repository(tmp_path, env):
     offline = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
     sign_in = SignIn(providers=(GitHub("id", "secret"),), http=offline)
     with TestClient(create_app(store, public_url=BASE, sign_in=sign_in), base_url=BASE) as c:
-        assert "github.com/" not in c.get("/").text
+        landing = c.get("/").text
+        assert landing.count("github.com/") == 1
+        assert "git clone https://github.com/macayaven/cairn\n" in landing
     store.close()
 
 

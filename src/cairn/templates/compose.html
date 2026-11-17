@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}New note{% if project %} in {{ project.name }}{% endif %}{% endblock %}
+{% block main %}
+{% if project %}
+<p class="crumbs"><a href="/">Projects</a> / <a href="/b/{{ project.name|seg }}">{{ project.name }}</a> /</p>
+<h1>New note</h1>
+<p class="lede">Saved in {{ project.name }} and compiled into a page, with every claim citing the lines you wrote.</p>
+{% else %}
+<h1>New note</h1>
+{% endif %}
+{% if projects is not none and not projects %}
+<p class="lede">A note goes in a project, and you have none yet. Create one, then write the note.</p>
+{% include "new_project.html" %}
+{% else %}
+{% if signed_out %}
+<div class="alert" role="alert">
+  <p>Your sign-in has ended, so this note was not saved. <a href="/login" target="_blank" rel="noopener">Open the sign-in page in a new tab</a>. Sign in there, then send this form again.</p>
+</div>
+{% elif near and not error and not as_written %}
+<div class="alert" role="alert">
+  <p>The source is close to <code>{{ near }}:</code>, the start that keeps a note from every model: begin it with <code>{{ near }}:</code> to keep this note from them, or tick Save it as written to store the source as it is.</p>
+</div>
+{% elif error %}
+<div class="alert" role="alert">
+  <p>Refused. {{ error }}</p>
+  {% if violations %}
+  <ul>
+  {% for violation in violations %}
+    <li class="mono">{{ violation }}</li>
+  {% endfor %}
+  </ul>
+  {% endif %}
+  {% if findings %}
+  <ul>
+  {% for finding in findings %}
+    <li><span data-rule="{{ finding.rule }}">{{ finding.said }}</span> on {{ finding.where }}</li>
+  {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
+<form method="post" action="{{ action }}" class="stack writing composer">
+  {% if projects is not none %}
+  <label for="project">Project</label>
+  <select id="project" name="project" required>
+    {% for choice in projects %}
+    <option value="{{ choice.name }}"{% if choice.name == values.project %} selected{% endif %}>{{ choice.name }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
+  <label for="title">Title <span class="hint">optional</span></label>
+  <input id="title" name="title" type="text" value="{{ values.title }}" autocomplete="off">
+  <label for="text">Note</label>
+  <textarea id="text" name="text" rows="8" required{% if projects is none or values.text %} autofocus{% endif %}>
+{{ values.text }}</textarea>
+  <p class="hint">Markdown. Headings become the page's sections; each paragraph and bullet becomes a claim.</p>
+  <details class="more"{% if values.topic or values.source_ref %} open{% endif %}>
+    <summary>Filing options</summary>
+    <div class="stack">
+      <label for="topic">Add to page <span class="hint">optional</span></label>
+      <input id="topic" name="topic" type="text" value="{{ values.topic }}" autocomplete="off">
+      <p class="hint">The title of an existing page to add this note to. Without it, the note's title names the page.</p>
+      <label for="source_ref">Source <span class="hint">optional</span></label>
+      <input id="source_ref" name="source_ref" type="text" value="{{ values.source_ref }}" autocomplete="off" spellcheck="false">
+      <p class="hint">Where the note came from, such as a meeting or a link. The same text from the same source is stored once.</p>
+      <p class="hint">A note whose source begins with {% for form in ref_forms %}<code>{{ form }}:</code>{% if loop.revindex == 2 %} or {% elif not loop.last %}, {% endif %}{% endfor %} is sent to no model.</p>
+      {% if near %}
+      <label class="option" for="as_written"><input type="checkbox" id="as_written" name="as_written" value="1"{% if as_written %} checked{% endif %}> Save it as written</label>
+      {% endif %}
+    </div>
+  </details>
+  <button type="submit">Save note</button>
+</form>
+{% endif %}
+{% endblock %}

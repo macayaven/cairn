@@ -1,0 +1,58 @@
+# Copy to terraform.tfvars (ignored by git) and fill in. Nothing here is secret; the env file
+# for cairn goes into Secret Manager, never into OpenTofu (README, "Bootstrap").
+
+project_id = "my-project-id"
+domain     = "cairn.example.net"
+
+# Receives the uptime alert, and by default is also the certificate authority contact.
+alert_email = "ops@example.net"
+# acme_email = "certs@example.net"
+
+# The one repository whose pushes to main may deploy, by name and by numeric ID
+# (gh api repos/owner/cairn --jq .id). Both are checked.
+github_repository    = "owner/cairn"
+github_repository_id = "123456789"
+
+# Defaults, shown for reference.
+# region            = "europe-west1"
+# zone              = "europe-west1-b"
+# name              = "cairn"
+# machine_type      = "e2-small"
+# boot_disk_size_gb = 10
+# data_disk_size_gb = 20
+# caddy_image       = "caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0"
+# litestream_image  = "litestream/litestream:0.5.18@sha256:513bff62a88fc0c86c73d27333c41c54c89fe890a7c32a551600adff9309b11b"
+
+# Only jobs of this workflow file that run in this GitHub environment get a deploy token.
+# Give the environment required reviewers.
+# github_workflow_path = ".github/workflows/ci-cd.yml"
+# github_environment   = "production"
+
+# The registry tag the VM follows: <registry>/cairn:production.
+# deploy_tag = "production"
+
+# Days the bucket keeps deleted replica files restorable (7 to 90).
+# replica_soft_delete_days = 30
+
+# Extra arguments for `python -m cairn.server serve`, split on spaces.
+# cairn_extra_args = "--allowed-host mcp.example.net"
+
+# A plans file on this machine, relative to infra/gcp: the VM installs it and starts cairn
+# with --plans (README, "Changing the configuration"). Not secret: a workspace's Usage page
+# shows its plan's limits. Leave --plans out of cairn_extra_args.
+# cairn_plans_file = "../../deploy/plans.yaml"
+
+# Your own name in place of cairn's, with an SVG or PNG logo of at most 60 KiB and its alt
+# text, relative to infra/gcp (README, "Changing the configuration"). Needs --sign-in in
+# cairn_extra_args. Not secret: the sign-in page shows them.
+# Leave --brand-name, --brand-logo and --brand-logo-alt out of cairn_extra_args.
+# cairn_brand_name      = "Knowledge Base"
+# cairn_brand_logo_file = "../../deploy/brand-logo.svg"
+# cairn_brand_logo_alt  = "Juniper Field"
+
+# Bucket names are global; override if the default PROJECT_ID-NAME-replica is taken.
+# replica_bucket_name = "my-cairn-replica"
+
+# Where in the bucket Litestream writes. Change it only to start a new replica lineage
+# (README, "Restore to a point in time").
+# replica_path = "cairn"

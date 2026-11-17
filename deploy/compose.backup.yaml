@@ -1,0 +1,78 @@
+# Litestream for deploy/compose.yaml: continuous replication, and a restore step that cairn
+# must wait for. Merged over compose.yaml, never used alone. See deploy/README.md.
+#
+#   docker compose -f compose.yaml -f compose.backup.yaml up -d
+#
+# or, better, once in deploy/.env, after which every plain `docker compose` command uses both:
+#
+#   COMPOSE_FILE=compose.yaml:compose.backup.yaml
+#
+# Why a second file and not a profile: with this file, cairn's dependency on the restore step
+# is a required one. If the restore fails, `docker compose up` stops with an error and cairn
+# is not started, so an empty database can never be replicated over a good replica.
+#
+# Needs deploy/litestream.env (LITESTREAM_REPLICA_URL and the storage credentials). Without it
+# `docker compose` refuses to start anything.
+
+# Anchors do not cross files, so the two shared blocks are repeated from compose.yaml.
+x-cairn-image: &cairn-image
+  image: ${CAIRN_IMAGE:-cairn:local}
+  build:
+    context: ..
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  cairn:
+    depends_on:
+      litestream-restore:
+        condition: service_completed_successfully
+        required: true # the default, spelled out: this line is the point of the file
+
+  # Mounts the data volume from the cairn image first, so the volume takes that image's
+  # ownership (uid 10001, mode 0700) before Litestream, which has no /data of its own, sees it.
+  data-init:
+    <<: *cairn-image
+    restart: "no"
+    entrypoint: ["python", "-c", "pass"]
+    volumes:
+      - cairn-data:/data
+    logging: *logging
+
+  # Before cairn starts: restore the database if it is missing and a replica exists. Exit 0
+  # means the database is there, was restored, or there is no replica yet. Anything else
+  # keeps cairn down.
+  litestream-restore:
+    image: litestream/litestream:0.5.18@sha256:513bff62a88fc0c86c73d27333c41c54c89fe890a7c32a551600adff9309b11b
+    restart: "no"
+    user: "10001:10001"
+    command: ["restore", "-if-db-not-exists", "-if-replica-exists", "/data/cairn.db"]
+    environment: &litestream-environment
+      HOME: /tmp
+    env_file: &litestream-env-file
+      - path: litestream.env
+        required: true
+    volumes: &litestream-volumes
+      - cairn-data:/data
+      - ./litestream.yml:/etc/litestream.yml:ro
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    logging: *logging
+
+  litestream:
+    image: litestream/litestream:0.5.18@sha256:513bff62a88fc0c86c73d27333c41c54c89fe890a7c32a551600adff9309b11b
+    restart: unless-stopped
+    user: "10001:10001"
+    command: ["replicate"]
+    environment: *litestream-environment
+    env_file: *litestream-env-file
+    volumes: *litestream-volumes
+    depends_on:
+      cairn:
+        condition: service_healthy
+    logging: *logging

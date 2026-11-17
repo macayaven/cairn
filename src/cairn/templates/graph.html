@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ project }} graph{% endblock %}
+{% block main %}
+<p class="crumbs"><a href="/b/{{ project|seg }}">{{ project }}</a> /</p>
+<h1>{{ project }} graph</h1>
+<p>Pages and the passages their claims cite. Diagram labels may be shortened; full text is in the list below.</p>
+{% if truncated %}<p>Some content is omitted because this graph reached a limit.</p>{% endif %}
+<div class="graph-diagram" role="region" aria-label="Graph diagram" tabindex="0">
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="{{ height }}" aria-hidden="true">
+  {% for edge in edges %}
+  <line data-graph-area="svg" data-graph-edge="{{ edge.number }}" x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="currentColor" />
+  {% endfor %}
+  {% for node in nodes %}
+  <g data-graph-area="svg" data-graph-node="{{ node.id }}">
+    <circle cx="{{ node.x }}" cy="{{ node.y }}" r="5" fill="currentColor" />
+    <svg x="{{ node.x + 8 }}" y="{{ node.y + 4 }}" width="210" height="24" overflow="hidden"><text x="0" y="15" font-family="monospace" font-size="12" fill="currentColor"{% if node.display|length > 16 %} textLength="200" lengthAdjust="spacingAndGlyphs"{% endif %}>{{ node.display }}</text></svg>
+  </g>
+  {% endfor %}
+</svg>
+</div>
+<h2>Graph content</h2>
+<ul>
+{% for node in nodes %}
+<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ node.label }}</a>{% else %}{{ node.label }}{% endif %}{% if node.kind == 'note' %}; source_ref: {{ node.source_ref or '' }}; via: {{ node.via or '' }}{% endif %}</li>
+{% endfor %}
+</ul>
+<h2>Relationships</h2>
+<ul>
+{% for edge in edges %}
+<li data-graph-area="list" data-graph-edge="{{ edge.number }}"><a href="#{{ edge.source.anchor }}">{{ edge.source.kind }}: {{ edge.source.label }}</a> {{ edge.kind }} <a href="#{{ edge.target.anchor }}">{{ edge.target.kind }}: {{ edge.target.label }}</a></li>
+{% endfor %}
+</ul>
+{% endblock %}

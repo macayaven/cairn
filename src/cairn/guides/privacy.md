@@ -1,0 +1,82 @@
+# Privacy
+
+This guide says what {{name}} stores, where, for how long, what it never stores, and how export and deletion work. It describes the software. The last section is for the operator of this install, who decides where it runs and who looks after it.
+
+## What {{name}} stores
+
+- **Notes**, exactly as they were written, with their title and the fields the agent or the person sent with them: topic, label, a reference back to where the note came from, and how it came in (the MCP server, the API, the web form or a source). Each note and each page also keeps the topic it is filed by, written as {{name}} compares topics: its topic, else its title, in lower case, without accents on Latin or Greek letters and without punctuation at the edges of words. Until a note is on its page, {{name}} also keeps that it is waiting and how many times filing it was tried.
+- **Pages** compiled from the notes, with the claims and the lines each claim cites: every version of each page, or fewer when the workspace's plan bounds them (below). A page holds at most 2,000 claims and 400,000 characters of claims.
+- **A search index** of the pages, one per workspace.
+- **People**: an email address, a name, and for each way they sign in, the provider, the provider's issuer and the provider's account number. Then the workspaces they belong to and their role in each. An invitation holds the invited address and the role offered, until it is used, revoked or removed after it expires.
+- **Connected agents**: the name and the redirect addresses each agent registered with, who approved it, and what it reaches.
+- **Project sets and workspace settings**: each set's name and projects, the note guard's policy, and which projects are at **Models** never.
+- **Sources**, when the operator adds one: its name and settings, never its keys, and the report of its last run.
+  - For each item a source wrote, a digest of the item's id and when it was written, never the id itself, until the source is removed: it is how a source writes an item once.
+- **Google accounts connected in the browser**, only when the operator switches it on: for each, its person, the Google address, Google's own id of the account, the service, the permissions Google granted and when it was connected, in clear, and the refresh token, sealed with the operator's key, which only the running server holds. A copy of the database, or the replica in the operator's bucket, which holds the same rows, shows who connected which address but opens no token. An owner of a workspace sees, on its Sources page, the Google address of each account its members connected there. Disconnecting on the Sources page deletes the row and ends Google's permission when no other row on the server holds the same Google account, known by Google's id of it, whatever its address; removing the person or deleting the workspace deletes their rows the same way; until Google has answered the revocation, and while another connection on the server holds the same account, Google's id of it, its address and each dropped connection's sealed token wait in a table of their own, with no workspace or person, and the server sends it again a minute later and at its next start; an export leaves them out. To take every access away at once, the operator deletes the OAuth client in the Cloud console. See the [security guide](security.md#google-accounts-connected-in-the-browser).
+- **Credentials** as SHA-256 digests only: keys, browser sessions, agents' tokens and invitation links. See the [security guide](security.md#stored-as-digests-only). A browser session also keeps the email address the sign-in provider gave when the person signed in, so that the operator can end it by that address.
+- **The audit log**: who wrote what and when, and every change to keys, agents, people and settings. An entry names a project, a page, a key's label or an invited address. It never holds a note's text. It also records each web session opened, with the sign-in provider's name or the key it was opened with, and each agent approved, with the address the agent is sent back to.
+- **Usage**: how many notes a workspace wrote this month, how many bytes of notes it keeps, how many passages (paragraphs, list items and other blocks) those notes hold, how many bytes its pages' versions take, and how many projects it has; and, when a model arranges pages, the tokens it used and what they cost. Only the workspace's owners, and the keys and connections that act for an owner or for no person, can read these totals: they count every project, and an admin or a member may not reach every project.
+
+## What {{name}} never stores
+
+- Passwords. People sign in with an account they already have.
+- A usable key, session or token. Only digests are kept, so the database cannot be used to sign in.
+- The tokens a sign-in provider hands back during sign-in.
+- A note the note guard refused. Nothing of it is stored or logged, only that a note was refused and under which rule. When the note came from a source the server reads, the source's last report also keeps the link to the item that was refused.
+- In the database, a record of what anyone read or the words they searched for. Reading writes nothing there. The server's log gets one line per read, without the query: see below.
+- A source's credentials, such as a Langfuse key. They are environment variables of the server. A Google account connected in the browser is the one exception, and its token is stored only sealed (above).
+
+## Where it is
+
+Everything is in one SQLite database file on the machine where {{name}} runs. All workspaces share the file, and each workspace's data is kept apart inside it.
+
+- **Logs.** The server writes one line to its own output for each call an agent or a script makes, and for each page of the web view that shows what a workspace holds: who called, what, which project and the status. What a person writes in the web view is in the workspace's audit log instead. Where that output goes, and for how long it is kept, is the operator's choice.
+- **Backups**, when the operator turns them on, go to a storage bucket the operator owns. The shipped configuration copies changes every 10 seconds and keeps a daily snapshot for eight days; the shipped Google Cloud configuration also snapshots the machine's data disk daily and keeps each snapshot 14 days.
+- **Models.** {{name}} calls no model unless the operator connects one. A connected model receives a page's title, its claims as stored and the heading each claim's lines sit under, and answers with an order of claim numbers. A page that holds a note read from Google Meet, Google Calendar, Gmail or Google Drive, or from a connector of your own, is not sent unless the operator allows it; {{name}} tidies that page itself instead. Neither is a page that holds a note a person or an agent wrote whose `source_ref` says it came from a meeting, a mail thread, a calendar, a document or a to-do list: `meeting:`, `mail:`, `calendar:`, `doc:` or `todo:`, the forms the sources guide gives, or `gmail:`, `meet:` or `drive:`, the way the server's own Gmail, Google Meet and Google Drive sources start theirs. The operator's one setting, `<PREFIX>_SOURCE_NOTES=send`, sends both, except in a project its people keep from every model. The people of a project can also keep all its pages from every model. The person who made the project, an owner, or anyone the project lets decide who reaches it sets **Models** to never on the project's page, or over the API with a key of their own that is not limited to some projects or to reading; a key made on the server's command line can too, and an agent cannot. Then no page of that project is sent, whatever its notes say and whatever the operator set: {{name}} tidies its pages itself, and a page a model put in order before stays as it is. A call to a model already under way when **Models** is set to never can still finish at the model's provider, but what it answers is not saved. A project of Personal notes starts at never when it is made. Every other page can be sent when a model is connected, the claims of all its notes with it, and that includes anything an agent copied from somewhere into a note without such a `source_ref`: {{name}} goes by what the note says, and cannot know where an agent's text came from. It is called at the address the operator configured, under the terms of whoever runs that model.
+
+## How long it is kept
+
+| What | How long |
+|---|---|
+| Notes and pages | Until the note is forgotten, or its project or the workspace is deleted. Every version of a page stays, unless the workspace's plan bounds them: a plan may keep only the last versions of each page, and a plan with a storage cap keeps its pages' versions within four times that cap. Past either, the oldest versions are deleted when a newer one is saved; each page's latest always stays. |
+| A browser session | 12 hours, or as many days as the operator set with `serve --session-days`, counted again from a use more than a day after it was made or last renewed |
+| An agent's access token | 1 hour |
+| An agent's replaced refresh token (its digest) | 30 days, so that presenting it again is noticed |
+| An agent's connection | 30 days after it was last used, or until someone ends it |
+| An invitation | 7 days, or until it is used or revoked |
+| An agent that registered and was never approved | 7 days |
+| An agent that was approved | Its name and redirect addresses stay after its connections end, so that it can connect again without registering |
+| The audit log | The newest 100,000 events of each workspace |
+| Backups, with the shipped configuration | Eight days in the bucket; on Google Cloud, the bucket keeps what is removed from it restorable for 30 more days, and disk snapshots are kept 14 days |
+
+Each of these stops working at its time. Its record is removed by a sweep the server runs every ten minutes, unless the operator chose another interval or turned it off (`serve --sweep-every`).
+
+## Export
+
+An owner downloads the workspace's notes and pages as one zip file, under Workspace, then Data and deletion. It is a content export: it holds every note exactly as written, every page with every version it keeps, and a description of each project. Each note says who wrote it: a person by name, a key by its label, an agent by its name; a note a source brought in names no source. It does not hold keys, sessions, agents' connections, sets, other settings, sources or the audit log; of the settings it holds one, each project's **Models** choice. Exporting writes nothing to the database.
+
+Another {{name}} can import the file. The notes keep their ids, so every claim still cites the same lines. A move to another install needs more than the file: set up keys, agents' connections, sets, settings and sources again there. The audit log stays behind. An import brings each project's **Models** choice: a project the file says is at never arrives at never, and a project of Personal notes arrives at never whatever the file says. A file exported before {{name}} carried that choice does not say it, and the import says so: each of its projects starts at **Models** as a new one of its kind does, so a project of Personal notes is at never and the others at allowed.
+
+## Deletion
+
+- **A workspace.** An owner deletes it under Workspace, then Data and deletion, by typing its name. (The default workspace of a self-hosted install cannot be deleted.) Its notes, pages, search index, people's places in it, keys, agents, audit log and usage go at once. The text of its notes, its pages and its index is overwritten in the database file at once, not only marked as free.
+- **A project.** The person who made it, or an owner, deletes it from the project's page by typing its name. Its notes, pages, every version of them and its search index go at once, and the project leaves every set, key and agent that named it. The audit log keeps that it was deleted, its name and how many notes and pages it held.
+- **One note.** The person who made its project, or an owner, forgets it from a page that cites it. The note and its text go; a page that cited it keeps one new version without the claims that cited only it, and every earlier version of that page goes, since they held the note's text; a page that nothing else holds up goes. A page that stays takes its title from the oldest note left on it, since the title it had may be the forgotten note's heading. {{name}} keeps a digest of the note's text, never the text, so the same text is not stored in that project again, whoever sends it. The digest is kept until the project is deleted, and goes with it. A digest cannot be read back into the text, but someone who holds the database file and guesses the text exactly can confirm the guess. Someone who can write to the project and already has the note's exact text can learn that it was forgotten there, because writing it again is refused and the refusal says why. Digests are not counted against a plan; a project holds at most one for each note it ever held. The audit log keeps that the note was forgotten and how many pages changed. A key or an agent limited to some projects, or to reading, cannot delete a project or forget a note.
+- **What the audit log keeps of them.** Every event stays: what was done, by whom, when, and its counts. Nothing made from a note stays: the short name of each page that goes, made from a note's title, is taken out of every event that named it, and a page that stays keeps its own. The events of a deleted project, the deletion included, are filed under the project's id instead of its name, so a project made later with the same name starts with none of them, and only owners and the workspace's own credentials see them.
+- In both cases the text is overwritten in the database file at once, as for a workspace.
+- **The write-ahead log.** After any of these deletions, {{name}} copies the database's write-ahead log into the file and empties it. When another connection to the database keeps it from doing so, the deletion stands, but the text can stay in that log until the next checkpoint that succeeds; the server logs a warning when this happens.
+- **What can stay for a while.** Short values the database keeps in shared index pages, such as a page's short name or a project's name, can stay until the next compaction, which rewrites the file. After a deletion, {{name}} compacts in the background once 24 hours have passed since the last compaction, unless the operator chose another interval or runs it by hand.
+- **Backups** made before the deletion keep what was deleted until they expire. With the shipped configuration that is eight days for the copies in the storage bucket. The shipped Google Cloud configuration adds two more: its bucket keeps what it removes restorable for 30 more days, and it takes a daily snapshot of the machine's data disk, kept 14 days. An operator may configure any of these differently.
+- **A person.** When a person is removed from a workspace, what they wrote stays in it, and their sessions, agents and keys there end. A person who belongs to no workspace any more is deleted with their sign-in identities. To keep them from rejoining by signing in again, {{name}} keeps a digest of the workspace and their address, never the address itself, until they accept a new invitation or the workspace is deleted.
+
+## For the operator to fill in
+
+This section is the operator's, not {{name}}'s. {{name}} cannot know these answers. Until the operator gives {{name}} their answers (`serve --operator-notes FILE`, which puts them here in place of this section's text), they are unknown.
+
+- **Who runs this install:** _the operator's name and how to reach them._
+- **Where it runs:** _the country and the provider of the machine, and of the backup bucket._
+- **Disk encryption:** _whether the machine's disk and the backup bucket are encrypted._
+- **Who can log in to the machine:** _the people with access to the server and its database file._
+- **Logs:** _where the server's output is kept, and for how long._
+- **Model:** _whether a model is connected, who runs it, and what its terms say about the text it receives._
+- **How to ask for a copy or a deletion:** _the address to write to, for someone who cannot sign in any more._

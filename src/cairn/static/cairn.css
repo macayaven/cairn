@@ -1,0 +1,790 @@
+/* cairn: the design system of 2026-11-13. Evidence lives in the margin: a narrow numbered
+   column runs down the left of anything that is read (a page's claims, a source's lines),
+   and the text sits beside it at a reading measure. Yellow is only ever behind exact words.
+   No framework, no script, and no other host: the two typefaces lead the stacks, and their
+   files ship beside this stylesheet (fonts/, SIL Open Font License 1.1). Each is a variable
+   font with a weight axis of 200 to 800 and no italic. */
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  src: url("fonts/atkinson-hyperlegible-next.ttf") format("truetype");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  src: url("fonts/atkinson-hyperlegible-mono.ttf") format("truetype");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+  --paper: #f5f6f3;
+  --sheet: #ffffff;
+  --well: #e9ece7;
+  --ink: #14181b;
+  --ink-soft: #4f575c;
+  --rule: #d6dad4;
+  --rule-strong: #7d8682;
+  --lichen: #2f5d50;
+  --lichen-soft: #e0ebe6;
+  --on-lichen: #ffffff;
+  --marker: #ffe45e;
+  --mark: #ffe45e;
+  --on-mark: #1b1700;
+  --mark-edge: #a88200;
+  --stop: #a5301d;
+  --stop-soft: #f7e4df;
+  --on-stop: #ffffff;
+  --focus: var(--ink);
+  --lift: 0 8px 24px rgba(20, 24, 27, 0.14);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --margin: 56px;
+  --margin-narrow: 36px;
+  --measure: 40rem;
+  --radius-0: 0;
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --font-sans: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Atkinson Hyperlegible Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --page: 60rem; /* the widest a list or a table gets; reading stays at the measure */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #101316;
+    --sheet: #171b1f;
+    --well: #1d2227;
+    --ink: #eceee9;
+    --ink-soft: #a8b0b3;
+    --rule: #2a3035;
+    --rule-strong: #717a7f;
+    --lichen: #8cc3ae;
+    --lichen-soft: #1c2b27;
+    --on-lichen: #0e1a16;
+    --marker: #ffd53d;
+    --mark: #4a3f0a;
+    --on-mark: #fff1a8;
+    --mark-edge: #ffd53d;
+    --stop: #ff9c88;
+    --stop-soft: #331813;
+    --on-stop: #2a0d07;
+    --lift: 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* The ground */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 17px/27px var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: var(--lichen); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+p { margin: 0 0 var(--space-3); }
+ul, ol { margin: 0 0 var(--space-3); }
+
+/* Type: a page's name is the title, its sections headings, groups inside them subheadings. */
+h1, h2, h3 { margin: 0; text-wrap: balance; overflow-wrap: anywhere; }
+h1 { font-size: 34px; line-height: 40px; font-weight: 800; letter-spacing: -0.015em; margin-bottom: var(--space-4); }
+h1.is-long { max-width: var(--measure); font-size: 22px; line-height: 30px; font-weight: 700; letter-spacing: 0; }
+h2 { font-size: 22px; line-height: 28px; font-weight: 700; margin: var(--space-8) 0 var(--space-3); }
+h3 { font-size: 17px; line-height: 24px; font-weight: 700; margin: var(--space-6) 0 var(--space-2); }
+
+code, kbd {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--well);
+  padding: 0.05em 0.3em;
+  border-radius: var(--radius-sm);
+}
+
+/* Command: exactly as it is typed, on well, scrolling inside its own box. */
+pre {
+  max-width: 100%;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  font: 400 14px/22px var(--font-mono);
+  background: var(--well);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  white-space: pre;
+}
+pre code { padding: 0; background: none; font-size: inherit; }
+
+/* mark means exact words: the words a search matched. Nothing else uses it. */
+mark { background: var(--mark); color: var(--on-mark); padding: 0 0.1em; }
+
+.mono, .id { font-family: var(--font-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+time { font-variant-numeric: tabular-nums; }
+.lede { max-width: var(--measure); }
+main > p, main > section > p { max-width: var(--measure); }
+.meta, .crumbs { font-size: 15px; line-height: 22px; color: var(--ink-soft); margin: 0 0 var(--space-3); }
+.meta a, .crumbs a { color: var(--ink-soft); }
+.hint, .count { font-size: 13px; line-height: 18px; font-weight: 400; color: var(--ink-soft); }
+.aside { font-size: 15px; line-height: 22px; color: var(--ink-soft); max-width: var(--measure); }
+.sharing { color: var(--ink); font-weight: 600; }
+.row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+
+/* Masthead: the mark at 24px beside the name, then at most six places. */
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-6);
+  padding: var(--space-2) max(16px, calc((100% - var(--page)) / 2));
+  border-bottom: 1px solid var(--rule);
+}
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+.wordmark img { width: 24px; height: 24px; }
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-4);
+  margin-left: auto;
+  font-size: 15px;
+  line-height: 22px;
+}
+.nav a, .nav button.link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 2px;
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+.nav a:hover, .nav button.link:hover { border-bottom-color: var(--rule-strong); }
+.nav a[aria-current="page"] { border-bottom-color: var(--ink); font-weight: 600; }
+.nav form { margin: 0; }
+/* Who is signed in, and the way out: after the four places on a wide screen, beside the
+   wordmark on a phone (below), so the places keep a line of their own. */
+.who { display: inline-flex; align-items: center; gap: 0 var(--space-4); }
+.nav .person { font-weight: 600; }
+
+main { max-width: calc(var(--page) + 32px); margin: 0 auto; padding: var(--space-8) 16px var(--space-12); }
+
+.colophon {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-6);
+  max-width: calc(var(--page) + 32px);
+  margin: 0 auto;
+  padding: var(--space-4) 16px var(--space-8);
+  color: var(--ink-soft);
+  font-size: 15px;
+  line-height: 22px;
+  border-top: 1px solid var(--rule);
+}
+.colophon a { color: var(--ink-soft); display: inline-flex; align-items: center; min-height: 44px; }
+.colophon span { display: inline-flex; align-items: center; min-height: 44px; }
+
+/* Buttons: one main button (ink on paper) a screen; the rest quiet or a link. */
+
+input, button, select, textarea { font: inherit; }
+
+button, .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px var(--space-4);
+  font: 600 15px/22px var(--font-sans);
+  color: var(--paper);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+a.button { color: var(--paper); }
+button:hover, .button:hover { background: var(--ink-soft); border-color: var(--ink-soft); }
+button.quiet, .button.is-quiet { color: var(--ink); background: transparent; border-color: var(--rule-strong); }
+button.quiet:hover, .button.is-quiet:hover { background: var(--well); border-color: var(--ink); }
+/* What cannot be undone: deleting a workspace or a project, forgetting a note. */
+button.danger, .button.is-stop { color: var(--on-stop); background: var(--stop); border-color: var(--stop); }
+button.danger:hover, .button.is-stop:hover { background: var(--stop); border-color: var(--ink); filter: brightness(0.92); }
+/* A button that reads as a link: an action inside a row or the masthead. */
+button.link {
+  min-height: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--lichen);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+button.link:hover { background: none; text-decoration-thickness: 2px; }
+.nav button.link { color: var(--ink); text-decoration: none; border-radius: 0; }
+
+/* Fields: a label above, the control, the rule it follows under it. Text is 17px, so a
+   phone does not zoom in on focus. */
+
+input[type="search"], input[type="password"], input[type="text"], input[type="email"], select, textarea {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 6px var(--space-3);
+  font: 400 17px/27px var(--font-sans);
+  color: var(--ink);
+  background: var(--sheet);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+}
+textarea { width: 100%; min-height: 8.5rem; resize: vertical; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--ink); }
+.stack { display: grid; gap: var(--space-2); }
+.stack > label, .use-name { font-size: 13px; line-height: 18px; font-weight: 600; letter-spacing: 0.01em; margin-top: var(--space-2); }
+.stack > label:first-child, .stack > input[type="hidden"] + label { margin-top: 0; }
+.stack > button, .stack > .button { justify-self: start; margin-top: var(--space-2); }
+p.hint { margin: 0; }
+
+.search { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0 0 var(--space-8); }
+.search input[type="search"] { flex: 1 1 14rem; }
+
+fieldset.reach {
+  min-width: 0;  /* not its widest control's width: a long option stays inside a phone */
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+fieldset.reach legend { padding: 0 var(--space-1); font-size: 13px; line-height: 18px; font-weight: 600; letter-spacing: 0.01em; }
+.option { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); min-height: 44px; font-size: 15px; line-height: 22px; }
+.option input { width: 18px; height: 18px; margin: 0; }
+/* A choice said in a sentence: the text wraps beside its button, not under it */
+.option.said { flex-wrap: nowrap; align-items: flex-start; padding: var(--space-2) 0; }
+.option.said input { flex: none; margin-top: 2px; }
+.ticks { display: grid; padding-left: 26px; }
+
+/* The consent's choice drawn as a Scope being filled in: one card, a row for which projects
+   and a row for what it may do there, each named in the Scope's mono label, and a last row
+   for what no choice opens. */
+.scope-choice { margin: var(--space-4) 0 0; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius-md); }
+.scope-choice fieldset.reach { margin: 0; padding: var(--space-2) var(--space-4) var(--space-2); background: none; border: 0; border-radius: 0; }
+.scope-choice fieldset.reach + fieldset.reach { border-top: 1px solid var(--rule); }
+.scope-choice fieldset.reach legend { float: left; width: 100%; margin: 0; padding: 0; font: 400 12.5px/22px var(--font-mono); letter-spacing: 0; color: var(--ink-soft); }
+.scope-choice fieldset.reach legend + * { clear: both; }
+.scope-beyond { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin: 0; padding: var(--space-2) var(--space-4) var(--space-3); font-size: 15px; line-height: 22px; border-top: 1px solid var(--rule); }
+
+/* Notices: plain, done or refused, each with its word. Nothing yellow. */
+
+.notice, .alert {
+  max-width: var(--measure);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  font-size: 15px;
+  line-height: 22px;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+.notice p:last-child, .alert p:last-child, .alert ul:last-child { margin-bottom: 0; }
+.notice pre { margin: var(--space-2) 0 var(--space-3); }
+.notice ul { margin: var(--space-2) 0 var(--space-3); padding-left: 1.2rem; overflow-wrap: anywhere; }
+.notice h2 { margin: 0 0 var(--space-2); font-size: 17px; line-height: 24px; }
+.notice.start { padding: var(--space-4); }
+.notice.is-done { background: var(--lichen-soft); border-color: var(--lichen); }
+.notice.is-done strong:first-child { color: var(--lichen); }
+.alert { background: var(--stop-soft); border-color: var(--stop); color: var(--ink); }
+.alert > strong:first-child, .alert p > strong:first-child { color: var(--stop); }
+.alert ul { margin: var(--space-2) 0 0; padding-left: 1.2rem; overflow-wrap: anywhere; }
+
+/* Empty state: a dashed border, a fact, the step that fills it. */
+
+.empty-state {
+  max-width: var(--measure);
+  margin: 0 0 var(--space-6);
+  padding: var(--space-6);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius-md);
+}
+.empty-state h2 { font-size: 17px; line-height: 24px; margin: 0 0 var(--space-2); }
+.empty-state p:last-child { margin-bottom: 0; }
+p.empty { color: var(--ink-soft); max-width: var(--measure); }
+p.empty-state { color: var(--ink); }
+
+/* Sheets: a form or a flow set apart on paper. Only the consent floats. */
+
+.sheet, .signin, .consent {
+  max-width: 34rem;
+  padding: var(--space-6);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+.signin, .consent { margin: var(--space-8) auto; }
+.consent { box-shadow: var(--lift); }
+.sheet { margin: var(--space-4) 0 var(--space-6); }
+.sheet > :last-child, .signin > :last-child, .consent > :last-child { margin-bottom: 0; }
+.sheet .stack { margin-top: var(--space-4); }
+.keep { display: inline-flex; align-items: center; min-height: 44px; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); margin: var(--space-4) 0; font-size: 15px; line-height: 22px; }
+.facts dt { color: var(--ink-soft); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.choices { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-6) 0 var(--space-4); }
+.providers { list-style: none; margin: var(--space-6) 0 0; padding: 0; display: grid; gap: var(--space-2); }
+.providers .button { display: flex; width: 100%; }
+
+/* Page header: the title, the counts a reader can check, the versions, who arranged it. */
+
+.heading-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4); margin-bottom: var(--space-4); }
+.heading-row h1 { margin: 0; }
+.counts { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-6); margin: 0 0 var(--space-3); padding: 0; list-style: none; font-size: 15px; line-height: 22px; color: var(--ink-soft); }
+.counts strong { font-family: var(--font-mono); font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.versions { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; margin: 0 0 var(--space-3); font: 400 12.5px/18px var(--font-mono); }
+.versions .count { font-family: var(--font-sans); margin-right: var(--space-2); }
+.versions a, .versions .current {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  color: var(--ink-soft);
+  text-decoration: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+}
+.versions a:hover { color: var(--ink); border-color: var(--rule-strong); }
+.versions .current { color: var(--paper); background: var(--ink); border-color: var(--ink); }
+.arranged { max-width: var(--measure); font-size: 15px; line-height: 22px; color: var(--ink-soft); }
+/* A section of a page: a heading over a 2px ink rule. */
+h2.section { margin: var(--space-8) 0 0; padding-bottom: var(--space-2); border-bottom: 2px solid var(--ink); }
+
+/* The numbered margin, shared by a claim and a source */
+
+.margin-grid { display: grid; grid-template-columns: var(--margin) minmax(0, 1fr); }
+.in-margin {
+  padding-right: var(--space-3);
+  font: 400 12px/27px var(--font-mono);
+  color: var(--ink-soft);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  border-right: 1px solid var(--rule);
+  user-select: none;
+}
+
+/* Claim: a line on a page, its source numbers in the margin, its proof one click away */
+
+.claim { padding-block: var(--space-2); scroll-margin-top: var(--space-4); }
+.claim + .claim { border-top: 1px solid var(--rule); }
+.claim-cites { display: flex; flex-direction: column; align-items: flex-end; }
+.claim-cites a { padding-left: var(--space-2); color: var(--ink-soft); text-decoration: none; }
+.claim-cites a:hover, .claim:target .claim-cites a { color: var(--ink); text-decoration: underline; }
+.claim-body { min-width: 0; padding-left: var(--space-4); }
+.claim-text { max-width: var(--measure); overflow-wrap: anywhere; }
+.proof { margin-top: var(--space-1); }
+.proof > summary { width: fit-content; padding-block: var(--space-1); font-size: 15px; line-height: 22px; color: var(--lichen); cursor: pointer; }
+.proof[open] > summary { margin-bottom: var(--space-2); }
+.proof > * + * { margin-top: var(--space-2); }
+.proof .source-missing { border: 1px solid var(--rule); border-radius: var(--radius-md); background: var(--sheet); max-width: calc(var(--measure) + var(--margin)); }
+
+/* A claim rendered from its Markdown (web/markdown.py): structure comes from its own
+   elements. */
+.md > * { margin: 0 0 var(--space-2); }
+.md > :last-child { margin-bottom: 0; }
+.md ul, .md ol { padding-left: 1.25rem; }
+.md li + li { margin-top: var(--space-1); }
+.md pre { margin-bottom: var(--space-2); }
+.md blockquote { margin-left: 0; padding-left: var(--space-3); border-left: 3px solid var(--rule); color: var(--ink-soft); }
+.md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 15px; line-height: 22px; }
+.md th, .md td { padding: var(--space-1) var(--space-3) var(--space-1) 0; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+.md th { font-weight: 600; }
+.md .align-right, .prose .align-right { text-align: right; }
+.md .align-center, .prose .align-center { text-align: center; }
+
+/* Source: a source's own lines, at their own numbers, the cited ones on mark */
+
+.sources { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+.sources > li { scroll-margin-top: var(--space-4); }
+.source {
+  max-width: calc(var(--measure) + var(--margin));
+  margin: 0;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.sources > li:target .source { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+.source-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  align-items: baseline;
+  padding: var(--space-2) var(--space-4);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-soft);
+  background: var(--well);
+  border-bottom: 1px solid var(--rule);
+}
+.source-head strong { color: var(--ink); font-weight: 600; }
+/* A1: a note a source's run wrote, where people outside the workspace can write. */
+.outside { color: var(--stop); font-weight: 600; }
+.source-head a { color: var(--lichen); }
+.source-lines { font: 400 14px/24px var(--font-mono); }
+.source-lines .in-margin { line-height: 24px; }
+.source-line { min-width: 0; min-height: 24px; padding: 0 var(--space-4); white-space: pre-wrap; overflow-wrap: anywhere; }
+.source-lines .is-cited { background: var(--mark); color: var(--on-mark); }
+.source-lines .in-margin.is-cited { font-weight: 600; border-right-color: var(--mark-edge); }
+.source-line.is-cited { box-shadow: inset 3px 0 0 var(--mark-edge); }
+.source-missing { margin: 0; padding: var(--space-3) var(--space-4); font-size: 15px; line-height: 22px; color: var(--stop); }
+.sources .back { margin: var(--space-1) 0 0; font-size: 13px; line-height: 18px; color: var(--ink-soft); }
+
+details.body { margin-top: var(--space-8); }
+details.body summary { display: list-item; width: fit-content; padding-block: 11px; line-height: 22px; color: var(--lichen); cursor: pointer; font-size: 15px; }
+details.body pre { margin-top: var(--space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Actor: who did something, its kind as a word */
+
+.actor {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  font-size: 15px;
+  line-height: 22px;
+  vertical-align: baseline;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.actor-kind {
+  flex: none;
+  padding: 0 var(--space-2);
+  font: 400 12px/22px var(--font-mono);
+  color: var(--ink-soft);
+  background: var(--well);
+  border-right: 1px solid var(--rule-strong);
+}
+.actor-name { min-width: 0; padding: 0 var(--space-2); color: var(--ink); overflow-wrap: anywhere; }
+
+/* Scope: what a connection may see, ending with what is out of reach */
+
+.scope { max-width: 32rem; margin: 0; padding: 0; list-style: none; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius-md); }
+.scope li { display: grid; grid-template-columns: 8.5rem minmax(0, 1fr); gap: var(--space-3); padding: var(--space-2) var(--space-4); font-size: 15px; line-height: 22px; }
+.scope li + li { border-top: 1px solid var(--rule); }
+.scope-mode { font: 400 12.5px/22px var(--font-mono); color: var(--ink-soft); }
+.scope-mode.is-write { color: var(--ink); font-weight: 600; }
+.scope-none { color: var(--ink-soft); }
+.rows .scope li { grid-template-columns: minmax(0, 1fr); gap: 0; padding: var(--space-1) var(--space-3); }
+
+/* Tags: a project's kind, and private */
+
+.tag { display: inline-block; padding: 0 6px; font: 400 12px/18px var(--font-mono); color: var(--ink-soft); border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); }
+.tag.is-private { color: var(--ink); border-color: var(--ink); }
+
+/* Project row: a project is its name and its facts */
+
+.projects { list-style: none; margin: 0 0 var(--space-8); padding: 0; }
+.project-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1) var(--space-4); align-items: baseline; padding: var(--space-3) 0; border-top: 1px solid var(--rule); }
+.project-row:last-child { border-bottom: 1px solid var(--rule); }
+.project-row > * { margin: 0; }
+.project-row > .meta, .project-row > .about { grid-column: 1 / -1; }
+.project-name { font-size: 17px; line-height: 24px; font-weight: 700; overflow-wrap: anywhere; }
+.project-name a { color: var(--ink); }
+.about { max-width: var(--measure); font-size: 15px; line-height: 22px; }
+
+/* Search hit: the claim itself, whole, its matched words on mark */
+
+.hits { list-style: none; margin: 0; padding: 0; max-width: calc(var(--measure) + var(--margin)); }
+.hit { padding-block: var(--space-3); }
+.hit + .hit { border-top: 1px solid var(--rule); }
+.hit-where { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-soft); }
+.hit-where a { color: var(--ink-soft); }
+.hit .claim-text { margin: var(--space-1) 0; }
+.hit .hit-where:last-child a { color: var(--lichen); }
+
+/* Tables: a row is a line on a wide screen and a card on a phone (below) */
+
+table { width: 100%; border-collapse: collapse; font-size: 15px; line-height: 22px; }
+.rows, table.metrics { background: var(--sheet); border: 1px solid var(--rule); }
+.rows th, .rows td, table.metrics th, table.metrics td { padding: var(--space-2) var(--space-3); text-align: left; vertical-align: top; }
+.rows th, table.metrics th { font-size: 13px; line-height: 18px; font-weight: 600; letter-spacing: 0.01em; color: var(--ink-soft); background: var(--well); border-bottom: 1px solid var(--rule); }
+.rows td, table.metrics td { border-top: 1px solid var(--rule); overflow-wrap: anywhere; }
+td.num, th.num { text-align: right; }
+td.num { font-family: var(--font-mono); font-size: 14px; font-variant-numeric: tabular-nums; }
+table.metrics { width: auto; min-width: 20rem; }
+.table-wrap { overflow-x: auto; margin-bottom: var(--space-6); }
+.rows .act { white-space: nowrap; }
+.rows .act form { display: inline; }
+.rows .act form + form { margin-left: var(--space-4); }
+.rows .act select { min-height: 36px; padding: 2px var(--space-2); font-size: 15px; }
+.rows td.details { overflow-wrap: anywhere; }
+/* An audit event's action and an actor's id tail are short tokens: they never break inside. */
+.rows td.mono[data-label="What"], .rows td[data-label="Who"] > .hint { white-space: nowrap; overflow-wrap: normal; }
+/* Wide enough for a column to hold a whole name: a project in the audit log, code in a table. */
+@media (min-width: 40.01rem) {
+  .rows td[data-label="Project"] { white-space: nowrap; }
+  .prose td code, .md td code { overflow-wrap: normal; }
+}
+.rows .slug { display: block; }
+
+/* A source (/sources): a section each, its state in words beside its switch, where it
+   writes as a Scope, its last run as facts, and the form that chooses where it writes. */
+
+.integration { max-width: var(--measure); margin-bottom: var(--space-8); }
+.integration h2.section { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); }
+.integration .state { margin: var(--space-3) 0; font-size: 15px; line-height: 22px; }
+.integration .stack, .integration .retarget { max-width: 34rem; }
+.switch { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4); margin: var(--space-3) 0; }
+.switch .state { margin: 0; }
+/* R2: the accounts a source is made from, each source's first line in words, an ending's
+   button with its sentence below it, and the form that makes a new source. */
+.integration .first-line { margin: var(--space-2) 0; font-weight: 600; overflow-wrap: anywhere; }
+.account-list { max-width: var(--measure); padding-left: 1.2rem; overflow-wrap: anywhere; }
+.account-list li { margin-bottom: var(--space-3); }
+.ending { margin: var(--space-3) 0; }
+.ending .hint { margin-top: var(--space-1); }
+.new-source { max-width: 34rem; margin-bottom: var(--space-8); }
+
+/* Meter: a cap and how much of it is used, the numbers first */
+
+meter {
+  display: block;
+  width: 100%;
+  max-width: 20rem;
+  height: 10px;
+  margin-top: var(--space-1);
+  background: var(--well);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+}
+meter::-webkit-meter-inner-element { display: block; }
+meter::-webkit-meter-bar { height: 8px; background: var(--well); border: 0; border-radius: 0; }
+meter::-webkit-meter-optimum-value,
+meter::-webkit-meter-suboptimum-value,
+meter::-webkit-meter-even-less-good-value { background: var(--ink); }
+meter::-moz-meter-bar { background: var(--ink); }
+meter.is-full::-webkit-meter-optimum-value { background: var(--stop); }
+meter.is-full::-moz-meter-bar { background: var(--stop); }
+.is-full-note { color: var(--stop); font-weight: 600; }
+
+/* The workspace page and the list of guides: a link, and one sentence under it */
+
+.parts { list-style: none; max-width: var(--measure); margin: var(--space-6) 0 var(--space-8); padding: 0; border-bottom: 1px solid var(--rule); }
+.parts li { padding: var(--space-3) 0; border-top: 1px solid var(--rule); }
+.parts a { font-size: 17px; line-height: 24px; font-weight: 700; text-decoration: none; }
+.parts a:hover { text-decoration: underline; }
+.parts p { margin: var(--space-1) 0 0; font-size: 15px; line-height: 22px; color: var(--ink-soft); }
+
+/* Writing: the composer and the new-project form */
+
+.composer, .new-project, .new-key, .new-set, .set, .guard, .invite, .share { max-width: 34rem; }
+.new-set, .new-key { margin-bottom: var(--space-8); }
+.writing select { width: 100%; }
+details.more { border-top: 1px solid var(--rule); margin-top: var(--space-2); }
+details.more summary { display: list-item; width: fit-content; padding-block: 11px; line-height: 22px; color: var(--lichen); cursor: pointer; font-size: 15px; }
+details.more > .stack { margin-bottom: var(--space-2); }
+details.kind { max-width: var(--measure); margin: var(--space-4) 0; padding: 0 var(--space-4); background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius-md); }
+details.kind summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--space-2); min-height: 44px; cursor: pointer; }
+.kind-title { font-weight: 700; }
+details.kind p, details.kind ul { font-size: 15px; line-height: 22px; }
+details.kind ul { padding-left: 1.2rem; }
+.kind-head { margin: var(--space-3) 0 var(--space-1); font-size: 13px; line-height: 18px; letter-spacing: 0.01em; }
+
+/* Setup: steps, uses, a key per app */
+
+.setup { max-width: var(--measure); }
+.steps { padding-left: 1.2rem; max-width: var(--measure); }
+.steps li { margin-bottom: var(--space-6); }
+.steps h3 { margin-top: 0; }
+.uses { list-style: none; margin: var(--space-3) 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
+.use { display: grid; gap: var(--space-1); padding: var(--space-2) var(--space-4) var(--space-4); background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius-md); }
+.use:has(input[name="use"]:checked) { border-color: var(--ink); box-shadow: inset 3px 0 0 var(--lichen); }
+.use-pick { font-size: 17px; line-height: 24px; font-weight: 700; cursor: pointer; }
+.use-summary { margin: 0 0 var(--space-2); font-size: 15px; line-height: 22px; color: var(--ink-soft); }
+.use input[type="text"] { width: 100%; }
+.project-list { margin: 0 0 var(--space-4); padding-left: 1.2rem; }
+.app-key { margin: var(--space-4) 0; padding: var(--space-2) var(--space-4) var(--space-4); background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius-md); }
+.app-key h3 { margin-top: var(--space-2); }
+.app-key input[type="text"] { width: 100%; }
+.done { margin-top: var(--space-8); }
+
+/* A guide: the reading measure, its sections first */
+
+.reading { max-width: var(--measure); }
+.prose { overflow-wrap: anywhere; }
+.prose pre { overflow-wrap: normal; }
+.prose h2 { margin-top: var(--space-12); padding-bottom: var(--space-2); border-bottom: 2px solid var(--ink); scroll-margin-top: var(--space-4); }
+.prose h3 { scroll-margin-top: var(--space-4); }
+.prose p, .prose ul, .prose ol, .prose pre, .prose table, .prose blockquote { margin: 0 0 var(--space-4); }
+.prose ul, .prose ol { padding-left: 1.3rem; }
+.prose li + li { margin-top: var(--space-1); }
+.prose li > p { margin: 0; }
+.prose blockquote { margin-left: 0; padding-left: var(--space-4); border-left: 3px solid var(--rule); color: var(--ink-soft); }
+.prose table { font-size: 15px; line-height: 22px; background: var(--sheet); border: 1px solid var(--rule); }
+.prose th, .prose td { padding: var(--space-2) var(--space-3); text-align: left; vertical-align: top; border-top: 1px solid var(--rule); }
+.prose th { font-size: 13px; line-height: 18px; font-weight: 600; color: var(--ink-soft); background: var(--well); }
+.toc { margin: var(--space-4) 0 var(--space-8); padding: var(--space-3) var(--space-4); background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius-md); }
+.toc-head { margin: 0 0 var(--space-1); font-size: 13px; line-height: 18px; font-weight: 600; color: var(--ink-soft); }
+.toc ol { margin: 0; padding-left: 1.3rem; columns: 2 16rem; column-gap: var(--space-8); font-size: 15px; line-height: 22px; }
+.toc li { margin: var(--space-1) 0; break-inside: avoid; }
+
+/* The public pages (landing, plans) are wider than the app, header and footer included. */
+
+.wide main > section { padding-top: var(--space-12); }
+.wide main > section:first-child { padding-top: 0; }
+.wide h2 { margin: 0; text-wrap: balance; }
+.wide main > section > p { max-width: var(--measure); margin: var(--space-3) 0 0; }
+.hero h1 { max-width: 16ch; margin: 0; font-size: 56px; line-height: 58px; letter-spacing: -0.02em; }
+.hero .lede { margin-top: var(--space-4); font-size: 19px; line-height: 29px; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-6); margin-top: var(--space-6); }
+
+/* The landing page's example: a real claim and the lines of the note it came from */
+.example { max-width: calc(var(--measure) + var(--margin) + 2px); margin: var(--space-12) 0 0; }
+.example > .crumbs { margin-bottom: var(--space-1); }
+.example-title { margin: 0 0 var(--space-2); padding-bottom: var(--space-2); font-size: 22px; line-height: 28px; font-weight: 700; border-bottom: 2px solid var(--ink); }
+.example > figcaption { margin-top: var(--space-3); font-size: 15px; line-height: 22px; color: var(--ink-soft); }
+
+/* The page's width, so a whole command line fits beside its client's name; a longer one
+   wraps rather than hiding its end behind a scroll. */
+.commands { display: grid; gap: var(--space-2); margin: var(--space-6) 0 0; max-width: var(--page); }
+.commands div { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); align-items: baseline; gap: var(--space-1) var(--space-4); }
+.commands dt { font-size: 15px; color: var(--ink-soft); }
+.commands dd { margin: 0; min-width: 0; }
+.commands pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.refusals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-6) var(--space-8); margin: var(--space-6) 0 var(--space-4); }
+.refusals dt { padding-top: var(--space-3); font-size: 17px; line-height: 24px; font-weight: 700; border-top: 2px solid var(--ink); }
+.refusals dd { margin: var(--space-2) 0 0; font-size: 15px; line-height: 22px; color: var(--ink-soft); }
+
+.ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: var(--space-6); border-top: 1px solid var(--rule); }
+.ways > div { min-width: 0; padding: var(--space-6) var(--space-6) var(--space-4) 0; }
+.ways > div + div { padding-left: var(--space-6); border-left: 1px solid var(--rule); }
+.ways h3 { margin: 0; font-size: 22px; line-height: 28px; }
+.ways p { margin: var(--space-2) 0 0; }
+.ways pre { margin-top: var(--space-3); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (max-width: 46rem) {
+  .refusals, .ways { grid-template-columns: minmax(0, 1fr); }
+  .ways > div { padding-right: 0; }
+  .ways > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--rule); }
+  .commands div { grid-template-columns: minmax(0, 1fr); }
+  .wide main > section { padding-top: var(--space-8); }
+}
+
+/* Under 40rem a listing row becomes a card: its first cell the title, the others
+   "label: value" lines, its actions last on their own line. The table's own headings are
+   kept for screen readers. A Markdown table in a guide or in a claim does the same. */
+@media (max-width: 40rem) {
+  .rows, .rows tbody, .rows tr, .rows td,
+  .prose table, .prose tbody, .prose tr, .prose td,
+  .md table, .md tbody, .md tr, .md td { display: block; width: 100%; }
+  .rows, .prose table { background: none; border: 0; }
+  .md table { overflow-x: visible; }
+  .rows thead, .prose thead, .md thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .rows tr, .prose tr, .md tr { margin: 0; padding: var(--space-3) 0; border-top: 2px solid var(--ink); }
+  .rows tr:last-child, .prose tr:last-child { border-bottom: 1px solid var(--rule); }
+  .md tr { padding: var(--space-2) 0; border-top-width: 1px; border-top-color: var(--rule); }
+  /* The label sits in a gutter of its own, so a value made of several pieces (an actor and
+     its id, a list of details) still flows as one line of text beside it. */
+  .rows td, .prose td, .md td { position: relative; min-height: 30px; padding: var(--space-1) 0 var(--space-1) calc(7rem + var(--space-3)); border: 0; text-align: left; overflow-wrap: anywhere; }
+  .rows td::before, .prose td::before, .md td::before { content: attr(data-label); position: absolute; top: var(--space-1); left: 0; width: 7rem; font-family: var(--font-sans); font-size: 13px; line-height: 22px; font-weight: 600; font-style: normal; color: var(--ink-soft); }
+  .rows td:empty { display: none; }
+  .md td[class^="align-"], .prose td[class^="align-"] { text-align: left; }
+  .rows td:first-child, .prose td:first-child, .md td:first-child { display: block; padding-left: 0; padding-bottom: var(--space-2); font-weight: 700; }
+  .rows td:first-child a { display: inline-flex; align-items: center; min-height: 44px; }
+  .rows td:first-child::before, .prose td:first-child::before, .md td:first-child::before,
+  .rows td.act::before { content: none; }
+  .rows td.num { font-family: var(--font-sans); font-size: 15px; text-align: left; }
+  .rows td.act { display: block; margin-top: var(--space-2); padding-top: var(--space-2); padding-left: 0; border-top: 1px solid var(--rule); white-space: normal; }
+  .rows td.act form { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); }
+  .rows td.act form + form { margin-left: var(--space-4); }
+  .rows td.act button.link { min-height: 44px; }
+  .rows td.act select { min-height: 44px; }
+  .table-wrap { overflow-x: visible; }
+  /* A command on the landing page or on /start/connect wraps rather than scroll sideways. */
+  .wide pre, .setup pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
+
+/* A phone: the narrow margin, 44px controls, the person beside the wordmark */
+@media (max-width: 34rem) {
+  h1 { font-size: 28px; line-height: 34px; }
+  .hero h1 { font-size: 38px; line-height: 42px; }
+  .margin-grid { grid-template-columns: var(--margin-narrow) minmax(0, 1fr); }
+  .claim-body { padding-left: var(--space-3); }
+  .claim-cites a { display: block; min-width: 100%; min-height: 44px; padding-bottom: 17px; line-height: 27px; text-align: right; }
+  .in-margin { padding-right: var(--space-2); }
+  .source-line { padding: 0 var(--space-2) 0 var(--space-3); }
+  .proof > summary { padding-block: 11px; }
+  .masthead { gap: 0 var(--space-4); }
+  .nav { margin-left: 0; gap: 0 var(--space-4); }
+  /* Signed in: the wordmark, then the person and the way out, share the first line; the
+     places keep a line of their own under it. The nav gives up its box (its links and the
+     person become the masthead's own items) so that one line can share the room. Both
+     start from nothing (so the line never wraps between them) and grow to what they hold,
+     the wordmark a thousand times as fast: its name is whole whenever there is room, the
+     person's name gives way first, down to a few letters, and "Sign out" is never cut.
+     Each name is cut with an ellipsis, and nothing can overlap: all of it is in the flow. */
+  .masthead:has(.who) .nav { display: contents; }
+  .masthead:has(.who)::after { content: ""; order: 2; flex-basis: 100%; }
+  .masthead:has(.who) .wordmark { order: 1; flex: 1000 1 0; min-width: 0; max-width: max-content; }
+  .masthead:has(.who) .nav > a { order: 3; }
+  /* The least the person and the way out take: the person's name at its floor (3.5rem), a
+     1rem gap and "Sign out" (under 4rem). Said outright, or a long name's own width would
+     count as the least and the wordmark would be cut first. */
+  .who { order: 1; flex: 1 1 0; min-width: 8.5rem; max-width: max-content; margin-left: auto; justify-content: flex-end; }
+  .who form { flex: none; }
+  .nav .person { display: block; flex: 0 1 auto; min-width: 3.5rem; max-width: 9rem; overflow: hidden; line-height: 44px; text-overflow: ellipsis; white-space: nowrap; }
+  .wordmark .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  main { padding-top: var(--space-6); }
+  button, .button { min-height: 44px; }
+  input[type="search"], input[type="password"], input[type="text"], input[type="email"], select { min-height: 44px; }
+  .stack > button, .stack > .button { justify-self: stretch; }
+  .versions a, .versions .current { min-height: 44px; padding: 0 12px; }
+  .scope li { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .option > .hint { flex-basis: 100%; margin-top: -10px; padding-left: 26px; }
+  .sheet, .signin, .consent { padding: var(--space-4); }
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .facts dd { margin-bottom: var(--space-2); }
+  .crumbs a, .meta a, .hit-where a, .source-head a, .sources .back a, .parts a, .toc a { display: inline-block; min-height: 44px; line-height: 44px; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button, .button, .nav a, .versions a { transition: background-color 120ms, border-color 120ms; }
+}
+
+/* Keep the graph independently scrollable on narrow screens. */
+.graph-diagram {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: 1.5rem;
+}

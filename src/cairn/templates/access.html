@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% from "_components.html" import actor %}
+{% block title %}Who reaches {{ project.name }}{% endblock %}
+{% block main %}
+<h1>Who reaches <a href="/b/{{ project.name|seg }}">{{ project.name }}</a></h1>
+<p class="lede">The workspace's owners read and write every project, and {% if maker %}{{ maker }}, who made this one, writes to it{% else %}this project's maker is no longer here{% endif %}. Everyone else gets the most this rule gives them.</p>
+<p>Private means only the maker, the people named, and the workspace's owners reach it, along with the keys and sources that belong to whoever runs the server, such as a key made on its command line. Everyone else gets nothing, and for them it does not exist.</p>
+<p>The workspace's owners, the project's maker and anyone given <strong>{{ person_labels.manage }}</strong> change this rule. Deciding who reaches a project is not a workspace role: a workspace admin manages people, keys and sources, and reaches this project only as this rule lets them.</p>
+{% if error %}
+<p class="alert" role="alert">Refused. {{ error }}</p>
+{% endif %}
+{% if unknown %}
+<section class="notice" aria-live="polite">
+  <p><strong>Not in this workspace.</strong> {{ "This address belongs" if unknown|length == 1 else "These addresses belong" }} to no member, so nothing was given to {{ "it" if unknown|length == 1 else "them" }}:</p>
+  <ul>
+    {% for address in unknown %}
+    <li class="email">{{ address }}</li>
+    {% endfor %}
+  </ul>
+  <p>Someone outside the workspace is invited under <a href="/members">People</a> first, by an owner or an admin; once they join, share this project with them here. Everyone else in the list now has the level you chose.</p>
+</section>
+{% endif %}
+<form method="post" action="/b/{{ project.name|seg }}/access" class="stack">
+  <fieldset class="reach">
+    <legend>Everyone in the workspace</legend>
+    {% for level in levels %}
+    <label class="option"><input type="radio" name="everyone" value="{{ level }}"{% if level == rule.everyone %} checked{% endif %}> {{ everyone_labels[level] }}</label>
+    {% endfor %}
+  </fieldset>
+  {% if people %}
+  <fieldset class="reach">
+    <legend>People named</legend>
+    {% for person in people %}
+    {% set given = rule.people.get(person.user_id, "none") %}
+    <label class="option">{{ actor("person", person.name) }}
+      <select name="people" aria-label="What {{ person.name }} gets">
+        {% for level, label in person_labels.items() %}
+        <option value="{{ person.user_id }}:{{ level }}"{% if level == given %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endfor %}
+  </fieldset>
+  {% endif %}
+  <button type="submit">Save who reaches it</button>
+</form>
+<section class="share" aria-labelledby="share">
+  <h2 id="share">Add several people</h2>
+  <form method="post" action="/b/{{ project.name|seg }}/share" class="stack">
+    <label for="share-emails">Their email addresses</label>
+    <p class="hint" id="share-emails-hint">Separate them with commas, semicolons, spaces or new lines, up to 200 at once. Each must already be in this workspace; anyone else is listed for you to invite first.</p>
+    <textarea id="share-emails" name="emails" aria-describedby="share-emails-hint" required autocomplete="off"{% if error %} autofocus{% endif %}>{{ typed.emails }}</textarea>
+    <label for="share-level">What they get</label>
+    <select id="share-level" name="level">
+      {% for level, label in share_labels.items() %}
+      <option value="{{ level }}"{% if level == typed.level %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="quiet">Add them</button>
+  </form>
+</section>
+{% endblock %}

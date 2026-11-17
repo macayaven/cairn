@@ -1,0 +1,28 @@
+{# B1: the frame of what a visitor sees under a brand (the sign-in page, the page that moves
+   on after it, the come-again page). The brand's name is the whole title and the one
+   heading; its logo sits on a light plate. No navigation, no footer, no form, no script. #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{ brand.name }}</title>
+{% if brand.logo %}
+<link rel="icon" href="{{ brand.logo.path }}" type="{{ brand.logo.media_type }}">
+{% endif %}
+<link rel="stylesheet" href="{{ branded_stylesheet }}">
+{% block head %}{% endblock %}
+</head>
+<body class="app">
+<main>
+<section class="signin branded">
+  {% if brand.logo %}
+  <p class="plate"><img src="{{ brand.logo.path }}" alt="{{ brand.logo_alt }}"></p>
+  {% endif %}
+  <h1>{{ brand.name }}</h1>
+{% block main %}{% endblock %}
+</section>
+</main>
+</body>
+</html>

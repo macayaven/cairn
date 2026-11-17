@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A security problem
+    url: https://github.com/macayaven/cairn/security/advisories/new
+    about: Report it privately, not in an issue. SECURITY.md says what to include.
+  - name: A question
+    url: https://github.com/macayaven/cairn/discussions
+    about: How to run it, how to connect an agent, whether something is meant to work that way.

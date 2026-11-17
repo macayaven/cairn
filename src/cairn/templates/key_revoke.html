@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "_components.html" import actor %}
+{% block title %}Revoke {{ label }} · Keys{% endblock %}
+{% block main %}
+<p class="crumbs"><a href="/keys">Keys</a> /</p>
+<h1>Revoke {{ label }}</h1>
+<p class="lede">These were made with {{ label }}, or with a key made with it, from a web session opened with it. They still work.</p>
+<ul>
+  {% for key in made.keys %}
+  <li>{{ actor("key", key) }}</li>
+  {% endfor %}
+  {% for agent in made.agents %}
+  <li>{{ actor("agent", agent) }}</li>
+  {% endfor %}
+</ul>
+{% if made.unrecorded_before %}
+<p class="hint">{{ unrecorded_words(made.unrecorded_before) }}</p>
+{% endif %}
+<section class="sheet" aria-label="Revoke the key">
+<form method="post" action="/keys/{{ label|seg }}/revoke" class="row">
+  <input type="hidden" name="made" value="keep">
+  <button type="submit">Revoke {{ label }} only</button>
+</form>
+<p>What was made with it stays, and works as before.</p>
+<form method="post" action="/keys/{{ label|seg }}/revoke" class="row">
+  <input type="hidden" name="made" value="take">
+  <button type="submit" class="danger">Revoke {{ label }} and everything made with it</button>
+</form>
+<p>Every key and agent above stops working, and every web session opened with one of those keys ends, all in one step.</p>
+<p><a class="keep" href="/keys">Keep them all</a></p>
+</section>
+{% endblock %}

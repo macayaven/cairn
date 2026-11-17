@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }}{% endblock %}
+{% block main %}
+<p class="crumbs"><a href="/">Projects</a> /</p>
+<div class="heading-row">
+  <h1>{{ project.name }}</h1>
+  <a class="button" href="/b/{{ project.name|seg }}/new">Write a note</a>
+</div>
+{% if project.description %}<p class="lede">{{ project.description }}</p>{% endif %}
+<p class="row">{% if sharing and sharing.startswith("Private") %}<span class="tag is-private">private</span> {% endif %}<span class="meta">{% if sharing %}<strong class="sharing">{{ sharing }}</strong>.{% else %}Every member reads and writes.{% endif %}</span></p>
+<div class="row models">
+  <p class="meta">{% if kept %}<strong>Models: never.</strong> No model is sent this project's pages, whatever their notes say or the operator set. Pages already arranged stay as they are.{% if kind_of(project.kind).private %} {{ kind_of(project.kind).title }} start this way.{% endif %}{% else %}<strong>Models: allowed.</strong> A model the operator connects can be sent this project's pages, to put their claims in order.{% endif %}</p>
+  {% if rule %}
+  <form method="post" action="/b/{{ project.name|seg }}/models">
+    <input type="hidden" name="models" value="{{ 'allowed' if kept else 'never' }}">
+    <button type="submit" class="quiet">{% if kept %}Allow a model{% else %}Keep from every model{% endif %}</button>
+  </form>
+  {% endif %}
+</div>
+{% set kind = kind_of(project.kind) %}
+<details class="kind"{% if not pages %} open{% endif %}>
+  <summary><span class="kind-title">{{ kind.title }}</span> <span class="hint">what belongs here</span></summary>
+  <p>{{ kind.summary }}</p>
+  {% if kind.belongs %}
+  <h2 class="kind-head">Belongs here</h2>
+  <ul>{% for phrase in kind.belongs %}<li>{{ phrase }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if kind.avoid %}
+  <h2 class="kind-head">Keep out</h2>
+  <ul>{% for phrase in kind.avoid %}<li>{{ phrase }}</li>{% endfor %}</ul>
+  {% endif %}
+  <p class="hint">Agents that use this project are told the same.</p>
+</details>
+<p class="meta"><strong class="mono">{{ pages_total }}</strong> {{ "page" if pages_total == 1 else "pages" }} compiled from <strong class="mono">{{ notes }}</strong> {{ "note" if notes == 1 else "notes" }} · id <span class="mono">{{ project.id }}</span> · <a href="/b/{{ project.name|seg }}/graph">Graph</a>{% if rule %} · <a href="/b/{{ project.name|seg }}/access">Who reaches it</a>{% endif %}{% if erase %} · <a href="/b/{{ project.name|seg }}/delete">Delete this project</a>{% endif %}</p>
+<form class="search" method="get" action="/search" role="search">
+  <input type="hidden" name="project" value="{{ project.name }}">
+  <input type="search" name="q" placeholder="Search {{ project.name }}" aria-label="Search {{ project.name }}">
+  <button type="submit" class="quiet">Search</button>
+</form>
+{% if pages %}
+<div class="table-wrap">
+<table class="rows">
+  <thead><tr><th>Page</th><th class="num">Claims</th><th class="num">Version</th><th>Updated</th></tr></thead>
+  <tbody>
+  {% for page in pages %}
+    <tr>
+      <td data-label="Page"><a href="/b/{{ project.name|seg }}/p/{{ page.slug|seg }}">{{ page.title }}</a><span class="slug count mono">{{ page.slug }}</span></td>
+      <td data-label="Claims" class="num">{{ page.claims }}</td>
+      <td data-label="Version" class="num">{{ page.version }}</td>
+      <td data-label="Updated" class="count"><time datetime="{{ page.updated_at }}">{{ page.updated_at|day }}</time></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if pages|length < pages_total %}
+<p class="meta">Showing {{ pages|length }} of {{ pages_total }} pages, by address.{% if pages_next %} <a href="/b/{{ project.name|seg }}?after={{ pages_next|urlencode }}">Next pages</a>{% endif %}{% if after %} · <a href="/b/{{ project.name|seg }}">First pages</a>{% endif %}</p>
+{% endif %}
+{% elif after %}
+<p class="meta">No pages after these. <a href="/b/{{ project.name|seg }}">First pages</a></p>
+{% else %}
+<section class="empty-state" aria-labelledby="no-pages">
+  <h2 id="no-pages">No pages yet</h2>
+  <p>A note filed in this project is compiled into a page.</p>
+</section>
+{% endif %}
+{% endblock %}

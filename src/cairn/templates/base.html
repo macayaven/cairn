@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{# The server's name, once: the brand's under a brand (B1), else the software's. #}
+<title>{% block document_title %}{% block title %}{% endblock %} · {{ product.name }}{% endblock %}</title>
+{% block description %}{% endblock %}
+{% if brand %}
+{% if brand.logo %}
+<link rel="icon" href="{{ brand.logo.path }}" type="{{ brand.logo.media_type }}">
+{% endif %}
+<link rel="stylesheet" href="{{ branded_stylesheet }}">
+{% else %}
+<link rel="icon" href="/static/cairn.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{ stylesheet }}">
+<link rel="manifest" href="/static/manifest.webmanifest">
+{% endif %}
+{% block head %}{% endblock %}
+</head>
+<body class="{% block page_class %}app{% endblock %}">
+<header class="masthead">
+  {% if brand %}
+  <a class="wordmark{% if brand.logo %} has-logo{% endif %}" href="/">{% if brand.logo %}<span class="plate"><img src="{{ brand.logo.path }}" alt=""></span>{% endif %}<span class="name">{{ brand.name }}</span></a>
+  {% else %}
+  <a class="wordmark" href="/"><img src="/static/cairn.svg" alt="" width="24" height="24"><span class="name">{{ product.name }}</span></a>{# the mark as it is, at 24px #}
+  {% endif %}
+  {% block nav %}
+  {% if signed_in %}
+  <nav class="nav" aria-label="Main">
+    {% set at = section() %}
+    {% for href, label in (("/", "Projects"), ("/search", "Search"), ("/new", "New note"), ("/workspace", "Workspace")) %}
+    <a href="{{ href }}"{% if at == href %} aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+    <span class="who">
+      {% if person %}<a class="person" href="/workspaces"{% if at == "/workspaces" %} aria-current="page"{% endif %} title="{{ person.email }}">{{ person.name }}</a>{% endif %}
+      <form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form>
+    </span>
+  </nav>
+  {% else %}
+  <nav class="nav" aria-label="Main">
+    {% if not brand %}
+    <a href="/docs">Guides</a>
+    {% endif %}
+    <a href="/login">Sign in</a>
+  </nav>
+  {% endif %}
+  {% endblock %}
+</header>
+<main>
+{% if signed_in and section() == "/workspace" and path() != "/workspace" %}
+<p class="meta"><a href="/workspace">Workspace</a> /</p>
+{% endif %}
+{% block main %}{% endblock %}
+</main>
+<footer class="colophon">
+  {% if brand %}
+  <span>{{ brand.name }}</span>
+  {% else %}
+  <span>{{ product.name }} {{ version }}</span>
+  {% endif %}
+  {% if signed_in or not brand %}{# a visitor under a brand is shown only the way in #}
+  {% if signed_in and help() %}<a href="/help">Help</a>{% endif %}
+  <a href="/docs">Guides</a>
+  <a href="/docs/security">Security</a>
+  <a href="/docs/privacy">Privacy</a>
+  {% endif %}
+</footer>
+</body>
+</html>

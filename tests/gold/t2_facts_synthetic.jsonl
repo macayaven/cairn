@@ -1,0 +1,32 @@
+{"marker": "date: 2026-03-14", "kind": "date", "value": "2026-03-14"}
+{"marker": "How one script drives", "kind": "date", "value": "2026-03-14"}
+{"marker": "How one script drives", "kind": "version", "value": "2.4.1"}
+{"marker": "How one script drives", "kind": "version", "value": "0.9.0-beta.2"}
+{"marker": "> Re-check versions", "kind": "number", "value": "30 days"}
+{"marker": "## Quill — `quill run`", "kind": "inline_code", "value": "quill run"}
+{"marker": "**Invoke:** `quill run", "kind": "inline_code", "value": "quill run \"<task>\" --json --workdir ./scratch"}
+{"marker": "**Invoke:** `quill run", "kind": "inline_code", "value": "--json"}
+{"marker": "**Invoke:** `quill run", "kind": "inline_code", "value": "--out last.txt"}
+{"marker": "**Timeout:**", "kind": "inline_code", "value": "--max-seconds 300"}
+{"marker": "**Timeout:**", "kind": "number", "value": "5 min"}
+{"marker": "**Cache off:**", "kind": "inline_code", "value": "--set cache.enabled=false --set cache.write=false"}
+{"marker": "**Config:**", "kind": "path", "value": "~/.config/quill/config.toml"}
+{"marker": "**Cost:**", "kind": "number", "value": "40-file"}
+{"marker": "**Cost:**", "kind": "number", "value": "$1.15"}
+{"marker": "**Cost:**", "kind": "number", "value": "1.2 GB"}
+{"marker": "## Lumen — `lumen exec`", "kind": "inline_code", "value": "lumen exec"}
+{"marker": "**Invoke:** `lumen exec", "kind": "inline_code", "value": "lumen exec \"<task>\" --format jsonl"}
+{"marker": "**Safety:**", "kind": "inline_code", "value": "--read-only"}
+{"marker": "**Safety:**", "kind": "inline_code", "value": "--no-network"}
+{"marker": "**Quiet:**", "kind": "flag", "value": "--quiet"}
+{"marker": "**Settings:**", "kind": "path", "value": "/etc/lumen/settings.json"}
+{"marker": "**Settings:**", "kind": "number", "value": "0600"}
+{"marker": "**Known gap:**", "kind": "date", "value": "2026-03-12"}
+{"marker": "**Known gap:**", "kind": "inline_code", "value": "<Kind>: <subject>"}
+{"marker": "| Tool | Version", "kind": "version", "value": "2.4.1"}
+{"marker": "| Tool | Version", "kind": "inline_code", "value": "quill run"}
+{"marker": "| Tool | Version", "kind": "version", "value": "0.9.0-beta.2"}
+{"marker": "| Tool | Version", "kind": "inline_code", "value": "lumen exec"}
+{"marker": "```bash", "kind": "code_block", "value": "# quill\nquill run \"<q>\" --json --set cache.enabled=false\n# lumen\nlumen exec \"<q>\" --format jsonl --read-only"}
+{"marker": "Two checks per day", "kind": "number", "value": "2,500 tokens"}
+{"marker": "Two checks per day", "kind": "url", "value": "https://example.com/quill-lumen"}

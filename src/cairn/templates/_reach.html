@@ -1,0 +1,21 @@
+{# The reach of a new connection: which projects, and whether it may write. Needs `projects`, `sets` and `names` (id to name). #}
+<fieldset class="reach">
+  <legend>Projects it reaches</legend>
+  <label class="option"><input type="radio" name="scope" value="all" checked> All projects <span class="hint">every project you reach in this workspace, now and later</span></label>
+  <label class="option"><input type="radio" name="scope" value="selected"> Selected projects <span class="hint">only the ones ticked here</span></label>
+  {% if projects or sets %}
+  <div class="ticks">
+    {% for project in projects %}
+    <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"> {{ project.name }}</label>
+    {% endfor %}
+    {% for group in sets %}
+    <label class="option"><input type="checkbox" name="projects" value="{{ group.id }}"> {{ group.name }} <span class="hint">set: {{ reach_label(group.project_ids, names) }}</span></label>
+    {% endfor %}
+  </div>
+  {% endif %}
+</fieldset>
+<fieldset class="reach">
+  <legend>What it may do there</legend>
+  <label class="option"><input type="radio" name="access" value="write" checked> {{ access_labels["write"] }}</label>
+  <label class="option"><input type="radio" name="access" value="read"> {{ access_labels["read"] }}</label>
+</fieldset>

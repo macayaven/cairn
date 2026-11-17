@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{% if query %}{{ query }} · {% endif %}Search{% endblock %}
+{% block main %}
+<h1>Search</h1>
+<form class="search" method="get" action="/search" role="search">
+  <input type="search" name="q" value="{{ query }}" placeholder="Words to look for" aria-label="Words to look for">
+  <select name="project" aria-label="Project">
+    <option value="">Every project</option>
+    {% for project in projects %}
+    <option value="{{ project.name }}"{% if project.name == scope %} selected{% endif %}>{{ project.name }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Search</button>
+</form>
+{% if query %}
+{% if hits|length >= most %}
+<p class="meta">The first {{ most }} claims that match{% if scope %} in {{ scope }}{% endif %}.</p>
+{% else %}
+<p class="meta">{{ hits|length }} {{ "claim" if hits|length == 1 else "claims" }} matched{% if scope %} in {{ scope }}{% endif %}.</p>
+{% endif %}
+<p class="meta searched">{{ searched.said }}</p>
+{% if hits %}
+<ul class="hits">
+{% for hit in hits %}
+  {% set claim_url = "/b/" ~ (hit.project|seg) ~ "/p/" ~ (hit.page|seg) ~ "#" ~ hit.claim_id %}
+  <li class="hit">
+    <p class="hit-where"><a href="/b/{{ hit.project|seg }}">{{ hit.project }}</a> / <a class="title" href="{{ claim_url }}">{{ hit.title }}</a>{% if hit.outside %} <span class="outside">outside text</span>{% endif %}</p>
+    <div class="claim-text md">{{ hit.text|truncate(600)|md|marked(query) }}</div>
+    <p class="hit-where"><a href="{{ claim_url }}">See where this comes from</a></p>
+  </li>
+{% endfor %}
+</ul>
+{% else %}
+<section class="empty-state" aria-labelledby="nothing-found">
+  <h2 id="nothing-found">No claim holds {% if searched.words_left_out_count %}the words searched{% else %}these words{% endif %}</h2>
+  <p>{{ product.name }} looked for {% if searched.words_left_out_count %}each word it searched{% else %}each of them{% endif %} in every claim {% if scope %}of {{ scope }}{% else %}of the projects you can read{% endif %}. Try fewer words, or another spelling.</p>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Delete {{ project.name }}{% endblock %}
+{% block main %}
+<p class="crumbs"><a href="/">Projects</a> / <a href="/b/{{ project.name|seg }}">{{ project.name }}</a> /</p>
+<h1>Delete {{ project.name }}</h1>
+{% if error %}
+<p class="alert" role="alert">Refused. {{ error }}</p>
+{% endif %}
+<p class="lede">Deleting this project removes its {{ notes }} {{ "note" if notes == 1 else "notes" }} and its {{ pages }} {{ "page" if pages == 1 else "pages" }}, with every earlier version of each page, its part of the search index and who reaches it.</p>
+<p>A set that holds it, and a key or connected agent limited to it, lose it: one limited to this project alone then reaches nothing. What it deletes is overwritten in the database file at once. The audit log keeps that it was deleted, by whom, and how many notes and pages went.</p>
+<p><strong>This cannot be undone.</strong> To keep a copy, an owner can export the workspace first from <a href="/account">Data and deletion</a>.</p>
+<section class="sheet" aria-label="Delete the project">
+<form method="post" action="/b/{{ project.name|seg }}/delete" class="stack">
+  <label for="confirm">Type <strong>{{ project.name }}</strong> to confirm</label>
+  <input type="text" id="confirm" name="confirm" autocomplete="off" required aria-describedby="confirm-hint">
+  <p class="hint" id="confirm-hint">Nothing happens until you press the button.</p>
+  <p class="row"><button type="submit" class="danger">Delete the project</button><a class="keep" href="/b/{{ project.name|seg }}">Keep it</a></p>
+</form>
+</section>
+{% endblock %}

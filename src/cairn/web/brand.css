@@ -1,0 +1,48 @@
+
+/* Under a brand (B1): the operator's logo, and the sign-in page that shows it. The logo was
+   drawn for a light background, so it always sits on a light plate: a fixed colour, the
+   same in the light theme and the dark one, never a token that flips. */
+.plate {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: #ffffff;
+  border-radius: var(--radius-sm);
+}
+/* The plate takes its width from the image. A logo with a viewBox and no width or height of
+   its own (most exported SVGs) has no size to give it, and a browser then draws the image at
+   zero by zero. So the height is a fixed length and the width follows from the image's
+   proportions; the cap is the screen's width less the page's margins and 20rem at most,
+   never a percentage of the plate; a logo wider than the cap is fitted, not stretched. */
+.plate img {
+  display: block;
+  width: auto;
+  height: 96px;
+  max-width: min(20rem, calc(100vw - 6rem));
+  object-fit: contain;
+}
+.wordmark .plate { padding: 2px var(--space-2); }
+.wordmark .plate img { width: auto; height: 24px; max-width: 10rem; }
+.branded { max-width: 100%; overflow-wrap: anywhere; }
+.branded .plate { margin: 0 0 var(--space-4); }
+.branded h1 { overflow-wrap: anywhere; }
+.branded .button { min-height: 44px; }
+.branded .button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* In the light theme the plate is the card's own colour: it hangs back by its padding, so
+   the logo starts where the heading under it starts. In the dark theme it is seen and
+   stays where it is. */
+@media (prefers-color-scheme: light) {
+  .branded .plate { margin-left: calc(-1 * var(--space-3)); }
+}
+/* On a phone the masthead's first line has room for the logo or for the name beside the
+   person and the way out, seldom both. The logo stands for the name there: the name leaves
+   the eye and stays for a screen reader (the image's own text is empty; the name is its
+   label). The logo is capped by the screen's width, as above: what is left of the line
+   after the person at their narrowest, "Sign out", the gaps and the page's margins (13rem
+   in all), so the line never overflows. */
+@media (max-width: 34rem) {
+  .wordmark.has-logo .name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .wordmark .plate { flex: none; }
+  .wordmark .plate img { max-width: min(10rem, calc(100vw - 13rem)); }
+}

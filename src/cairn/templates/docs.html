@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Guides{% endblock %}
+{% block main %}
+<div class="reading">
+<h1>Guides</h1>
+<p class="lede">How to connect agents to {{ product.name }}, how to lay out projects for a real setup, and what {{ product.name }} does with what you give it.</p>
+<ul class="parts guides">
+{% for name, title, summary in guides %}
+  <li><a href="/docs/{{ name }}">{{ title }}</a><p>{{ summary }}</p></li>
+{% endfor %}
+</ul>
+</div>
+{% endblock %}

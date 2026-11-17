@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_components.html" import actor %}
+{% block title %}Audit log{% endblock %}
+{% block main %}
+<h1>Audit log</h1>
+<p class="lede">What was written in this workspace, and by whom: notes saved, unchanged, rejected by the gate or refused by the note guard, projects, keys, sets of projects, connected agents and settings. Reads are not recorded here. No note text is kept in the log. It keeps at most the newest {{ "{:,}".format(kept) }} events of this workspace; older ones are deleted.</p>
+{% if events %}
+<div class="table-wrap">
+<table class="rows">
+  <thead><tr><th>When</th><th>Who</th><th>What</th><th>Project</th><th>Details</th></tr></thead>
+  <tbody>
+  {% for event in events %}
+    <tr>
+      <td data-label="When"><time datetime="{{ event.at }}">{{ event.at|when }}</time></td>
+      <td data-label="Who">{{ actor(actor_kind(event.actor_kind, event.actor_id, product.name), event.actor or "system") }}{% if event.actor_id %} <span class="mono hint" title="{{ event.actor_id }}">…{{ event.actor_id[-6:] }}</span>{% endif %}</td>
+      <td data-label="What" class="mono">{{ event.action }}</td>
+      <td data-label="Project">{{ event.project or "" }}</td>
+      <td data-label="Details" class="details">{% for name, value in event.detail|dictsort %}<span class="mono">{{ name }}</span> {% if value is string or value is number %}{{ arranger(value, product.name) if event.action == "page.arranged" and name == "model" else value }}{% elif value is none %}all{% elif event.action == "note.refused" and name == "rules" %}{% for rule in value %}<span data-rule="{{ rule }}">{{ rule_words(rule, product.name) }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}{{ value|join(", ") }}{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<section class="empty-state" aria-labelledby="nothing-yet">
+  <h2 id="nothing-yet">Nothing has been recorded yet</h2>
+  <p>Saving a note, making a key or connecting an agent writes its first line.</p>
+</section>
+{% endif %}
+{% endblock %}

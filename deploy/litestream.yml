@@ -1,0 +1,45 @@
+# Litestream 0.5 configuration: continuous replication of cairn's SQLite database.
+# Used unchanged by deploy/compose.backup.yaml and by the Google Cloud VM.
+#
+# 0.5 is not 0.3: one `replica` per database (no `replicas` list), retention is the global
+# `snapshot` block, and Google Cloud Storage URLs use the gs:// scheme. Litestream ignores
+# keys it does not know, so a misspelt setting here fails silently: check names against
+# https://litestream.io/reference/config/.
+#
+# LITESTREAM_REPLICA_URL is expanded from the environment before the file is parsed, e.g.
+#   gs://my-bucket/cairn                Google Cloud Storage (Application Default Credentials)
+#   s3://my-bucket/cairn                Amazon S3 (LITESTREAM_ACCESS_KEY_ID / _SECRET_ACCESS_KEY)
+#   s3://my-bucket/cairn?endpoint=HOST  S3-compatible storage
+# With the variable unset the URL is empty and Litestream has nowhere to replicate to.
+
+dbs:
+  - path: /data/cairn.db
+    replica:
+      url: ${LITESTREAM_REPLICA_URL}
+      # Changes are uploaded every 10 s instead of the default 1 s: at most ten seconds of
+      # writes are at risk, for a tenth of the storage write requests. The monthly cost
+      # items in infra/gcp/README.md assume this value.
+      sync-interval: 10s
+
+# What a restore can reach. Litestream replays whole files, so a point-in-time restore lands
+# on the end of a file that still exists, not on any instant:
+#   - for the last five minutes (l0-retention), one file per sync that had writes: 10 s apart;
+#   - before that, the level-1 files: 30 s apart while there were writes, none while idle;
+#   - back to the oldest snapshot, which is seven to eight days old once the database is.
+# Levels 2 and 3 merge the same data into fewer files so a restore reads less; they add no
+# restore points and remove none. Level-1 to level-3 files are deleted together with the
+# snapshot they follow, never earlier. The values below are Litestream's defaults, written
+# out so the numbers above cannot drift with a new version. Durations take s, m or h only.
+levels:
+  - interval: 30s
+  - interval: 5m
+  - interval: 1h
+l0-retention: 5m
+
+# One full snapshot a day (the default), kept for eight days (the default is 24h). A snapshot
+# is removed once it is older than the retention, so with daily snapshots the oldest one left
+# is seven to eight days old: 192h is what makes "the last seven days" true. 168h would
+# reach back six to seven.
+snapshot:
+  interval: 24h
+  retention: 192h

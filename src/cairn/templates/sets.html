@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Sets{% endblock %}
+{% block main %}
+<h1>Sets</h1>
+<p class="lede">A set is a named group of projects. A key or an agent that reaches a set reaches whatever the set holds when it calls, projects added later included.</p>
+{% if manage %}
+<section class="new-set" aria-labelledby="new-set">
+  <h2 id="new-set">New set</h2>
+  <form method="post" action="/sets" class="stack">
+    <label for="set-name">Name</label>
+    <input id="set-name" type="text" name="name" maxlength="64" required aria-describedby="set-name-hint">
+    <p class="hint" id="set-name-hint">A name, such as work.</p>
+    {% if projects %}
+    <fieldset class="reach">
+      <legend>Its projects</legend>
+      {% for project in projects %}
+      <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"> {{ project.name }}</label>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
+    <button type="submit">Create the set</button>
+  </form>
+</section>
+{% else %}
+<p class="empty">Only an owner or an admin of this workspace can make, change or delete its sets.</p>
+{% endif %}
+{% if sets %}
+{% for group in sets %}
+<section class="set" aria-labelledby="{{ group.id }}">
+  <h2 id="{{ group.id }}">{{ group.name }}</h2>
+  <p class="meta">{{ reach_label(group.project_ids, names) }}</p>
+  {% if manage %}
+  <form method="post" action="/sets/{{ group.id|seg }}" class="stack">
+    <fieldset class="reach">
+      <legend>Its projects</legend>
+      {% for project in projects %}
+      <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"{% if project.id in group.project_ids %} checked{% endif %}> {{ project.name }}</label>
+      {% endfor %}
+    </fieldset>
+    <div class="choices">
+      <button type="submit" class="quiet">Save</button>
+    </div>
+  </form>
+  <form method="post" action="/sets/{{ group.id|seg }}/delete"><button type="submit" class="link">Delete the set {{ group.name }}</button></form>
+  {% endif %}
+</section>
+{% endfor %}
+{% else %}
+<section class="empty-state" aria-labelledby="no-set">
+  <h2 id="no-set">No set yet</h2>
+  {% if manage %}<p>Make one above when several keys or agents should reach the same projects.</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

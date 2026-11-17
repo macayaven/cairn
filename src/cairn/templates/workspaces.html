@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Workspaces{% endblock %}
+{% block main %}
+<h1>Your workspaces</h1>
+{% if places %}
+<div class="table-wrap">
+<table class="rows">
+  <thead><tr><th>Workspace</th><th>Your role</th><th><span class="hint">Action</span></th></tr></thead>
+  <tbody>
+  {% for place in places %}
+    <tr>
+      <td data-label="Workspace">{{ place.name }}</td>
+      <td data-label="Your role">{{ place.role }}</td>
+      <td data-label="Action" class="act">{% if place.account_id == here %}You are here{% else %}<form method="post" action="/workspaces/{{ place.account_id|seg }}/switch"><button type="submit" class="link">Go there</button></form>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty">This session belongs to the workspace, not to a person, so it has no other workspace.</p>
+{% endif %}
+{% endblock %}

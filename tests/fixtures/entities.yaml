@@ -1,0 +1,5 @@
+entities:
+  - name: Quill
+    aliases: [quill run]
+  - name: Lumen
+    aliases: [lumen exec]

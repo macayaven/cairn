@@ -1,0 +1,42 @@
+# cairn on one computer, without a domain or a proxy. See the top-level README.md.
+#
+# Turn it on in deploy/.env, so that every `docker compose` command in this directory uses it:
+#
+#   COMPOSE_FILE=compose.local.yaml
+#
+# cairn answers at http://127.0.0.1:8765 on this computer only; nothing else on the network
+# reaches it. Set CAIRN_PORT in deploy/.env to use another port. CAIRN_IMAGE and
+# CAIRN_EXTRA_ARGS work as in compose.yaml, and cairn.env (cairn's own environment) is read
+# when it exists.
+#
+# The project name is the same as compose.yaml's, so the database is on the same volume,
+# cairn_cairn-data. Run one of the two files at a time: one cairn serves a database.
+
+name: cairn
+
+services:
+  cairn:
+    # Without CAIRN_IMAGE, Compose builds cairn:local from the repository's Dockerfile.
+    image: ${CAIRN_IMAGE:-cairn:local}
+    build:
+      context: ..
+    restart: unless-stopped
+    # The image's default command, with room for more arguments. Never scale this service.
+    command: >-
+      serve --db /data/cairn.db --host 0.0.0.0
+      ${CAIRN_EXTRA_ARGS:-}
+    env_file:
+      - path: cairn.env
+        required: false
+    ports:
+      - "127.0.0.1:${CAIRN_PORT:-8765}:8765"
+    volumes:
+      - cairn-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+volumes:
+  cairn-data:

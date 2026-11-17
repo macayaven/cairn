@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+{% from "_components.html" import scope %}
+{# Where a source writes, chosen: the projects (its own ticked), or a new private one. #}
+{% macro choose(field, named, projects, new="", decides=true) %}
+    <fieldset class="reach">
+      <legend>The projects it will write into</legend>
+      {% for project in projects %}
+      <label class="option"><input type="checkbox" name="project" value="{{ project.name }}"{% if project.name|lower in named %} checked{% endif %}> {{ project.name }}</label>
+      {% else %}
+      <p class="hint">{% if decides %}No project yet: make one below.{% else %}No project every member reaches yet.{% endif %}</p>
+      {% endfor %}
+    </fieldset>
+    {% if decides %}
+    <label for="{{ field }}">Or a new project</label>
+    <input type="text" id="{{ field }}" name="new_project"{% if new %} value="{{ new }}"{% endif %} aria-describedby="{{ field }}-hint" autocomplete="off" spellcheck="false">
+    <p class="hint" id="{{ field }}-hint">Made private, for you and the owners until you share it.</p>
+    {% else %}
+    <p class="hint">You can send a source only into a project every member reaches. An owner decides when it should write somewhere more private.</p>
+    {% endif %}
+{% endmacro %}
+{# What a preview would bring (R1), for a stored source or one not saved yet (R4): `ident`
+   names the region and its heading; `next_run`: an on source, which shows its next run. #}
+{% macro result(ident, shown, next_run=false) %}
+  <section class="preview-result" id="preview-{{ ident }}-region" aria-labelledby="preview-{{ ident }}" aria-live="polite">
+    <h3 id="preview-{{ ident }}" tabindex="-1">What it would bring</h3>
+    {% if shown["read"] %}
+    <p>{{ shown["count"] }} new {% if next_run %}for its next run{% else %}in the last {{ shown["days"] }} days{% endif %}.{% if shown["written_before"] %} {{ shown["written_before"] }} more it wrote before, which a run does not write again.{% endif %}{% if shown["out_of_reach"] %} {{ shown["out_of_reach"] }} for a project you do not reach, not shown.{% endif %}</p>
+    {% if shown["titles"] %}
+    <ol class="preview-titles">{% for title in shown["titles"] %}<li>{{ title }}</li>{% endfor %}</ol>
+    {% endif %}
+    {% if shown["more"] %}<p class="hint">And {{ shown["more"] }} more.</p>{% endif %}
+    <p class="hint">Nothing was stored.</p>
+    {% else %}
+    <p>It could not be read: {{ shown["said"] }}</p>
+    <p class="hint">Nothing was stored.</p>
+    {% endif %}
+  </section>
+{% endmacro %}
+{% block title %}Sources{% endblock %}
+{% block main %}
+<h1>Sources</h1>
+<p class="lede">{{ nothing_read }}</p>
+{% if error %}
+<p class="alert" role="alert" id="refused"><strong>Refused.</strong> {{ error }}</p>
+{% endif %}
+{% include "_google_connect.html" %}
+{% if bare %}
+<p>{{ no_account }}</p>
+{% else %}
+{% if manages %}<p>Owners and admins see every source and can switch any of them off.</p>{% endif %}
+<section class="accounts" id="accounts" aria-labelledby="accounts-heading">
+  <h2 id="accounts-heading">Your accounts</h2>
+  {% if accounts|selectattr("disconnects")|list or others %}<p class="hint">{{ says.disconnect }} It asks for the name first.</p>{% endif %}
+  {% if accounts %}
+  <ul class="account-list">
+    {% for account in accounts %}
+    <li id="account-{{ account.name }}"><strong>{{ account.service }}</strong>, {{ account.whose }}{% if account.account %}: {{ account.account }}{% endif %}. {{ account.sources }} {{ "source" if account.sources == 1 else "sources" }}.{% if account.refused %} {{ account.refused[:1]|upper }}{{ account.refused[1:] }}.{% endif %}
+      {% if account.disconnects %}
+      <form method="post" action="/integrations/accounts/{{ account.name|seg }}/disconnect" class="ending">
+        <button type="submit" class="quiet" aria-label="Disconnect {{ account.service }} ({{ account.name }})">Disconnect</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>{{ no_account }}</p>
+  {% endif %}
+  {% if others %}
+  <h3 id="others-heading">Other people's accounts in this workspace</h3>
+  <ul class="account-list" aria-labelledby="others-heading">
+    {% for account in others %}
+    <li><strong>{{ account.service }}</strong>, {{ account.whose }}. {{ account.sources }} {{ "source" if account.sources == 1 else "sources" }}.
+      <form method="post" action="/integrations/accounts/{{ account.name|seg }}/disconnect" class="ending">
+        <button type="submit" class="quiet" aria-label="Disconnect {{ account.whose }}'s {{ account.service }} ({{ account.name }})">Disconnect</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+<h2 id="coming-in">What comes in, and where</h2>
+{% if sources %}
+<p>What each button does:</p>
+<ul class="endings">
+  <li>{{ says.preview }}</li>
+  <li>{{ says.off }}</li>
+  <li>{{ says.change }}</li>
+  <li>{{ says.remove }} It asks for the name first.</li>
+  <li>{{ says.forget }}</li>
+</ul>
+{% endif %}
+{% for source in sources %}
+{% set named = proposed[source.name]["ticked"] %}
+{% set field = "source-" ~ source.name ~ "-new-project" %}
+<section class="integration" id="source-{{ source.name }}" aria-labelledby="source-{{ source.name }}-name">
+  {% set row = rows[source.name] %}
+  <h2 class="section" id="source-{{ source.name }}-name" tabindex="-1">{{ source.name }} <span class="tag">{{ source.kind }}</span></h2>
+  <p class="first-line">{{ row.first }}</p>
+  {% if saved and saved|lower == source.name|lower %}
+  <p class="notice" role="status">Saved, off. Preview it below to see what it would bring, then switch it on.</p>
+  {% endif %}
+  {% if source.enabled %}
+  <div class="switch">
+    <p class="state is-on"><strong>On since <time datetime="{{ source.enabled_at }}">{{ source.enabled_at|when }}</time></strong></p>
+    <form method="post" action="/integrations/{{ source.name|seg }}/off">
+      <button type="submit" class="quiet">Switch off</button>
+    </form>
+  </div>
+  {% else %}
+  {% if row.stopped %}
+  <p class="state is-off"><strong>Off:</strong> {{ row.stopped }}.</p>
+  {% elif not row.disconnected %}
+  <p class="state is-off"><strong>Off.</strong> It reads nothing.{% if row.switching %} {{ row.switching }}{% endif %}</p>
+  {% endif %}
+  {% endif %}
+  <h3>Writes into</h3>
+  {{ scope(destinations[source.name], "Where " ~ source.name ~ " writes") }}
+  <dl class="facts">
+    {% if row.reads %}<dt>Reads</dt><dd>{{ row.reads }}</dd>{% endif %}
+    <dt>Last run</dt>
+    <dd>{% if source.last_run_at %}<time datetime="{{ source.last_run_at }}">{{ source.last_run_at|when }}</time>{% else %}Never{% endif %}</dd>
+    <dt>Result</dt>
+    <dd>{% if source.last_error and row.stopped %}Not run since it was switched off{% elif source.last_error %}<span role="alert">Failed: {{ row.error or "the run was refused" }}</span>{% elif source.last_report %}{% set reasons = row.reasons %}{% for count in counts %}{{ source.last_report.get(count, 0) }} {{ count }}{% if count == "skipped" and reasons %} ({% for reason, n in reasons|dictsort(true) %}{{ n }} {{ reason }}{% if not loop.last %}; {% endif %}{% endfor %}){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}{% if source.last_report.get("left") %}; {{ source.last_report["left"] }} left for the next run{% endif %}{% if source.last_report.get("capped") %}; {{ source.last_report["capped"] }} left for the next run at the plan's cap{% endif %}{% set hold = source.last_report.get("hold") %}{% if hold and hold.get("until") %}<p class="hint">Held at the plan's monthly cap: not read again before <time datetime="{{ hold["until"] }}">{{ hold["until"]|when }}</time>, unless the workspace's plan changes.</p>{% endif %}{% if row.said %}<p class="hint">{{ row.said }}</p>{% endif %}{% if row.declined %}<ul class="declined">{% for item in row.declined %}<li>{% if item.href %}<a href="{{ item.href }}" rel="noreferrer">{{ item.text }}</a>{% else %}<span class="mono">{{ item.text }}</span>{% endif %} <span class="hint">{{ item.status }}: {{ item.codes|join(", ") }}</span></li>{% endfor %}</ul>{% endif %}{% else %}Not run yet{% endif %}</dd>
+  </dl>
+  {% if row.held or row.held_more or row.held_expired %}
+  <h3>Held</h3>
+  <p class="hint">{{ held_said }}</p>
+  {% if row.held %}<ul class="held">{% for item in row.held %}<li>{% if item.href %}<a href="{{ item.href }}" rel="noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+  {% if row.held_more %}<p>and {{ row.held_more }} more</p>{% endif %}
+  {% if row.held_expired %}<p>{{ row.held_expired }}.</p>{% endif %}
+  {% endif %}
+  {% if row.routes and not (source.unreached and not row.decides) %}
+  {% set days_field = "source-" ~ source.name ~ "-days" %}
+  <form method="post" action="/integrations/{{ source.name|seg }}/preview#preview-{{ source.name }}" class="stack preview">
+    {% if not source.enabled %}
+    <label for="{{ days_field }}">Days back to read</label>
+    <input type="number" id="{{ days_field }}" name="days" min="1" max="{{ preview_days_max }}" value="{{ preview_days }}" inputmode="numeric" aria-describedby="{{ days_field }}-hint">
+    <p class="hint" id="{{ days_field }}-hint">From 1 to {{ preview_days_max }}.{% if source.kind == "langfuse" %} Langfuse reads the marks of the last 7 days whatever the number.{% endif %}</p>
+    {% endif %}
+    <button type="submit" class="quiet">Preview</button>
+  </form>
+  {% endif %}
+  {% if preview and preview["source"] == source.name %}
+  {{ result(source.name, preview, source.enabled) }}
+  {% endif %}
+  {% if row.disconnected %}
+  {% elif not row.routes %}
+  <p class="hint">It reads another person's account: only they choose what it reads and where. You can switch it off.</p>
+  {% elif source.unreached and not row.decides %}
+  <p class="hint">It writes into a project you do not reach: an owner decides where it writes. You can switch it off.</p>
+  {% elif source.enabled %}
+  <details class="more retarget">
+    <summary>Change where it writes</summary>
+    <form method="post" action="/integrations/{{ source.name|seg }}/on" class="stack">
+      {{ choose(field, named, row.projects, proposed[source.name]["new"], row.decides) }}
+      <button type="submit">Write here from now on</button>
+    </form>
+  </details>
+  {% else %}
+  <form method="post" action="/integrations/{{ source.name|seg }}/on" class="stack switch-on">
+    {{ choose(field, named, row.projects, proposed[source.name]["new"], row.decides) }}
+    <button type="submit">Switch on</button>
+  </form>
+  {% endif %}
+  {% if not row.linked %}
+  <p class="hint">Added on the server's command line. {{ removed_there }}</p>
+  {% elif row.disconnected or (row.routes and not (source.unreached and not row.decides)) %}
+  <form method="post" action="/integrations/{{ source.name|seg }}/remove" class="stack ending">
+    <button type="submit" class="quiet">Remove the source</button>
+  </form>
+  {% endif %}
+</section>
+{% else %}
+<section class="empty-state" aria-labelledby="no-source">
+  <h3 id="no-source">No source yet</h3>
+  <p>Choose an account and what it reads below, or ask the person who runs this server to add one.</p>
+</section>
+{% endfor %}
+<section class="new-source" id="new-source" aria-labelledby="new-source-heading">
+  <h2 id="new-source-heading" tabindex="-1">Choose something new</h2>
+  {% if choosable %}
+  <form method="get" action="/sources#new-source-heading" class="stack">
+    <fieldset>
+      <legend>Which account</legend>
+      {% for account in choosable %}
+      <label class="option"><input type="radio" name="account" value="{{ account.name }}"{% if new and new.account.name == account.name %} checked{% endif %}> {{ account.service }}, {{ account.whose }} ({{ account.name }})</label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit" class="quiet">Choose this account</button>
+  </form>
+  {% else %}
+  <p>{{ no_account }}</p>
+  {% endif %}
+  {% if new %}
+  {% set invalid = new.invalid %}
+  <form method="post" action="/integrations/new#preview-new" class="stack" id="new-source-form">
+    <input type="hidden" name="credential" value="{{ new.account.name }}">
+    <label for="new-name">Its name</label>
+    <input type="text" id="new-name" name="name" value="{{ new.name }}" required autocomplete="off" spellcheck="false" aria-describedby="{% if invalid == "Its name" %}refused {% endif %}new-name-hint"{% if invalid == "Its name" %} aria-invalid="true"{% endif %}>
+    <p class="hint" id="new-name-hint">How this page names it: letters, digits, '.', '_' or '-'.</p>
+    <fieldset>
+      <legend>{{ new.legend }}</legend>
+      {% for field in new.fields %}
+      <label for="{{ field.id }}">{{ field.label }}</label>
+      <input type="text" id="{{ field.id }}" name="select_{{ field.setting }}"{% if field.value %} value="{{ field.value }}"{% endif %} autocomplete="off" spellcheck="false" aria-describedby="{% if invalid == "What it reads" %}refused {% endif %}{{ field.id }}-hint"{% if invalid == "What it reads" %} aria-invalid="true"{% endif %}>
+      <p class="hint" id="{{ field.id }}-hint">{{ field.hint }}</p>
+      {% else %}
+      <p class="hint">There is nothing to choose: it reads what the account's feed hands over.</p>
+      {% endfor %}
+    </fieldset>
+    {% if new.options or new.work %}
+    <details class="more"{% if new.more_open %} open{% endif %}>
+      <summary>More choices</summary>
+      <p class="hint">Left empty, each keeps its usual value, shown in the field.</p>
+      {% if new.work %}
+      <fieldset{% if new.work_invalid %} aria-describedby="refused"{% endif %}>
+        <legend>Which of its work (none ticked: all three)</legend>
+        {% for item in new.work %}
+        <label class="option"><input type="checkbox" name="select_items" value="{{ item.value }}"{% if item.checked %} checked{% endif %}{% if new.work_invalid %} aria-invalid="true"{% endif %}> {{ item.label }}</label>
+        {% endfor %}
+      </fieldset>
+      {% endif %}
+      {% for option in new.options %}
+      {% if option.type == "checkbox" %}
+      <label class="option"><input type="checkbox" id="{{ option.id }}" name="option_{{ option.setting }}" value="{{ "off" if option.setting == "comments" else "on" }}"{% if option.value %} checked{% endif %}{% if option.invalid %} aria-invalid="true" aria-describedby="refused"{% endif %}> {{ option.label }}</label>
+      {% else %}
+      <label for="{{ option.id }}">{{ option.label }}</label>
+      <input type="number" id="{{ option.id }}" name="option_{{ option.setting }}" inputmode="numeric"{% if option.min is not none %} min="{{ option.min }}"{% endif %}{% if option.max is not none %} max="{{ option.max }}"{% endif %}{% if option.placeholder is not none %} placeholder="{{ option.placeholder }}"{% endif %}{% if option.value %} value="{{ option.value }}"{% endif %}{% if option.invalid %} aria-describedby="refused" aria-invalid="true"{% endif %}>
+      {% endif %}
+      {% endfor %}
+    </details>
+    {% endif %}
+    <fieldset{% if invalid == "Where it writes" %} aria-describedby="refused"{% endif %}>
+      <legend>Where it writes</legend>
+      {% for project in new.projects %}
+      <label class="option"><input type="radio" name="project" value="{{ project.name }}"{% if project.name|lower == new.project %} checked{% endif %}{% if invalid == "Where it writes" %} aria-invalid="true"{% endif %}> {{ project.name }}</label>
+      {% else %}
+      <p class="hint">No project you may send it into yet.</p>
+      {% endfor %}
+      {% if new.makes %}
+      <label for="new-project">Or a new private project</label>
+      <input type="text" id="new-project" name="new_project"{% if new.new_project %} value="{{ new.new_project }}"{% endif %} autocomplete="off" spellcheck="false" aria-describedby="{% if invalid == "Where it writes" %}refused {% endif %}new-project-hint"{% if invalid == "Where it writes" %} aria-invalid="true"{% endif %}>
+      <p class="hint" id="new-project-hint">Made private: only you and the workspace's owners reach it, until you share it.</p>
+      {% endif %}
+    </fieldset>
+    <label for="new-days">Days back to read, for a preview</label>
+    <input type="number" id="new-days" name="days" min="1" max="{{ preview_days_max }}" value="{{ new.days or preview_days }}" inputmode="numeric" aria-describedby="new-days-hint">
+    <p class="hint" id="new-days-hint">From 1 to {{ preview_days_max }}. Preview reads once what saving would bring, shows how many items and their titles, and stores nothing.</p>
+    <p class="row"><button type="submit" name="then" value="preview" class="quiet">Preview</button></p>
+    {% if unsaved %}{{ result("new", unsaved) }}{% endif %}
+    <p class="row"><button type="submit" name="then" value="off">Save, off</button> <button type="submit" name="then" value="on" class="quiet">Save and switch on</button></p>
+    {% if new.switching %}<p class="hint">{{ new.switching }}</p>{% endif %}
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

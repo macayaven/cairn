@@ -1,0 +1,11 @@
+{% extends "brand_base.html" %}
+{% block main %}
+  {% if error %}
+  <p class="alert" role="alert">Refused. {{ error }}</p>
+  {% endif %}
+  <ul class="providers">
+  {% for provider in providers %}
+    <li><a class="button" href="{{ provider.href }}">Continue with {{ provider.label }}</a></li>
+  {% endfor %}
+  </ul>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Signed in{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="0; url={{ url }}">{% endblock %}
+{% block nav %}{% endblock %}
+{% block main %}
+<section class="signin">
+  <h1>Signed in</h1>
+  <p class="lede">One moment: this page moves on by itself, so that your browser brings your new session along.</p>
+  <p><a href="{{ url }}">Continue</a> if nothing happens.</p>
+</section>
+{% endblock %}

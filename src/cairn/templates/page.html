@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% from "_components.html" import source as source_lines %}
+{% block title %}{{ page.title }} · {{ project.name }}{% endblock %}
+{% block main %}
+{% set page_url = "/b/" ~ (project.name|seg) ~ "/p/" ~ (page.slug|seg) %}
+<header class="page-head">
+<p class="crumbs"><a href="/">Projects</a> / <a href="/b/{{ project.name|seg }}">{{ project.name }}</a> /</p>
+<h1>{{ page.title }}</h1>
+<ul class="counts" aria-label="What this page holds">
+  <li><strong>{{ page.claims|length }}</strong> {{ "claim" if page.claims|length == 1 else "claims" }}</li>
+  <li><strong>{{ lines_cited }}</strong> source {{ "line" if lines_cited == 1 else "lines" }} cited</li>
+  <li><strong>{{ notes }}</strong> {{ "note" if notes == 1 else "notes" }}</li>
+  <li>updated <time datetime="{{ page.updated_at }}">{{ page.updated_at|when }}</time></li>
+</ul>
+<nav class="versions" aria-label="Versions">
+  <span class="count">Versions</span>
+  {% for v in versions %}
+  {% if v == page.version %}
+  <span class="current" aria-current="page">v{{ v }}</span>
+  {% else %}
+  <a href="{{ page_url }}?version={{ v }}{% if before %}&amp;before={{ before }}{% endif %}">v{{ v }}</a>
+  {% endif %}
+  {% endfor %}
+  {% if versions|length < versions_total %}<span class="count">{{ versions|length }} of {{ versions_total }}</span>{% endif %}
+  {% if versions_next %}<a href="{{ page_url }}?before={{ versions_next }}{% if page.version != latest %}&amp;version={{ page.version }}{% endif %}">Earlier versions</a>{% endif %}
+  {% if before %}<a href="{{ page_url }}{% if page.version != latest %}?version={{ page.version }}{% endif %}">Newest versions</a>{% endif %}
+</nav>
+{% if trimmed %}
+<p class="meta">Showing the last {{ versions_total }} versions of this page: older ones were removed when it was saved, to keep its history bounded.</p>
+{% endif %}
+{% if page.metrics.get("arranged_by") == software %}
+<p class="arranged">Arranged by {{ product.name }}: each heading's claims were put together and repeated claims folded, with no model; every word is the sources' own.</p>
+{% elif page.metrics.get("arranged_by") %}
+<p class="arranged">Arranged by {{ page.metrics["arranged_by"] }}: the model chose the order and folded repeated claims; every word is the sources' own.</p>
+{% endif %}
+</header>
+{% if page.version != latest %}
+<p class="notice">You are reading version {{ page.version }}. <a href="{{ page_url }}">Read the latest, version {{ latest }}</a>.</p>
+{% endif %}
+
+<section aria-label="Claims">
+{% for item in items %}
+  {% if item.section %}
+  <h2 class="section">{{ item.section }}</h2>
+  {% endif %}
+  <article class="claim margin-grid {{ item.kind }}" id="{{ item.claim.id }}">
+    <div class="in-margin claim-cites">{% for span_id, n in item.cites %}<a href="#{{ span_id }}" title="Source {{ n }}">{{ n }}</a>{% endfor %}</div>
+    <div class="claim-body">
+      <div class="claim-text md">{{ item.claim.text|md }}</div>
+      <details class="proof">
+        <summary>{% if item.proof_lines == 1 %}See the source line{% elif item.proof_lines %}See the {{ item.proof_lines }} source lines{% else %}See where this comes from{% endif %}</summary>
+        {% for source in item.proof %}
+        {% if source.span %}
+        {{ source_lines(source) }}
+        {% else %}
+        <p class="source-missing">Source {{ source.n }} is not in this project.</p>
+        {% endif %}
+        {% endfor %}
+      </details>
+    </div>
+  </article>
+{% else %}
+  <p class="empty">This version has no claims.</p>
+{% endfor %}
+</section>
+
+<h2>Checks</h2>
+{% if metrics %}
+<table class="metrics">
+  <thead><tr><th>Check</th><th class="num">Value</th></tr></thead>
+  <tbody>
+  {% for name, label, value in metrics %}
+    <tr data-metric="{{ name }}"><td data-label="Check">{{ label }}</td><td data-label="Value" class="num">{{ arranger(value, product.name) if name == "arranged_by" else value }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No checks were recorded for this version.</p>
+{% endif %}
+
+<h2>Sources</h2>
+<ol class="sources">
+{% for source in sources %}
+  <li id="{{ source.id }}">
+    {% if source.span %}
+    {{ source_lines(source, "/b/" ~ (project.name|seg) ~ "/notes/" ~ (source.note.id|seg) ~ "/forget" if erase else None) }}
+    {% else %}
+    <figure class="source">
+      <figcaption class="source-head"><strong>Source {{ source.n }}</strong></figcaption>
+      <p class="source-missing">Source span <span class="id">{{ source.id }}</span> was not found in this project.</p>
+    </figure>
+    {% endif %}
+    <p class="back">Cited by {% for claim_id, n in source.cited_by %}<a href="#{{ claim_id }}">claim {{ n }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  </li>
+{% endfor %}
+</ol>
+
+<details class="body">
+  <summary>Markdown body of version {{ page.version }}</summary>
+  <pre>{{ page.body }}</pre>
+</details>
+{% endblock %}

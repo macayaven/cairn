@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% from "_components.html" import actor %}
+{% block title %}Members{% endblock %}
+{% block main %}
+<h1>Members</h1>
+<p class="lede">The people in this workspace. Owners reach every project and manage everything, owners included. Admins invite and remove people and manage keys and sets, and reach projects as members do. Members use the projects they reach. <a href="/workspaces">Your workspaces</a></p>
+{% if error %}
+<p class="alert" role="alert">Refused. {{ error }}</p>
+{% endif %}
+{% if made %}
+<section class="notice is-done" aria-live="polite">
+  <p><strong>Made.</strong> Send this link to <strong>{{ made.email }}</strong>. It makes them {{ made.role|a_role }} once they sign in with that address, and works once, until <time datetime="{{ made.expires_at }}">{{ made.expires_at|day }}</time>. Copy it now: {{ product.name }} keeps only a digest of it and will not show it again.</p>
+  <pre>{{ made.link }}</pre>
+</section>
+{% endif %}
+{% if manage %}
+<section class="invite" aria-labelledby="invite">
+  <h2 id="invite">Invite someone</h2>
+  <form method="post" action="/members/invite" class="stack">
+    <label for="invite-email">Their email address</label>
+    <input id="invite-email" name="email" type="email" value="{{ typed.email }}" required autocomplete="off"{% if error %} autofocus{% endif %}>
+    <label for="invite-role">Their role</label>
+    <select id="invite-role" name="role">
+      {% for role in roles %}
+      <option value="{{ role }}"{% if role == typed.role %} selected{% endif %}>{{ role }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Make an invitation link</button>
+  </form>
+</section>
+{% endif %}
+<h2 id="people">People</h2>
+{% if not members %}
+<section class="empty-state" aria-labelledby="no-people">
+  <h2 id="no-people">No one has joined yet</h2>
+  <p>This workspace is used with keys only.{% if manage %} Invite someone above: they show here, with their role, once they open their link and sign in.{% endif %}</p>
+</section>
+{% else %}
+<div class="table-wrap">
+<table class="rows" aria-labelledby="people">
+  <thead><tr><th>Name</th><th>Email</th><th>Role</th>{% if manage %}<th><span class="hint">Actions</span></th>{% endif %}</tr></thead>
+  <tbody>
+  {% for member in members %}
+    <tr>
+      <td data-label="Name">{{ actor("person", member.name) }}{% if member.user_id == me %} <span class="hint">(you)</span>{% endif %}</td>
+      <td data-label="Email" class="email">{{ member.email }}</td>
+      <td data-label="Role">{{ member.role }}</td>
+      {% if manage and member.user_id == sole_owner %}
+      <td data-label="Actions" class="act">The only owner</td>
+      {% elif manage %}
+      <td data-label="Actions" class="act">
+        <form method="post" action="/members/{{ member.user_id|seg }}/role" class="inline">
+          <select name="role" aria-label="Role of {{ member.name }}">
+            {% for role in roles %}
+            <option value="{{ role }}"{% if role == member.role %} selected{% endif %}>{{ role }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="link">Change role</button>
+        </form>
+        <form method="post" action="/members/{{ member.user_id|seg }}/remove" class="inline"><button type="submit" class="link">Remove</button></form>
+      </td>
+      {% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% if manage %}
+<h2 id="open-invitations">Open invitations</h2>
+{% if invites %}
+<div class="table-wrap">
+<table class="rows" aria-labelledby="open-invitations">
+  <thead><tr><th>Email</th><th>Role</th><th>Until</th><th><span class="hint">Action</span></th></tr></thead>
+  <tbody>
+  {% for invite in invites %}
+    <tr>
+      <td data-label="Email" class="email">{{ invite.email }}</td>
+      <td data-label="Role">{{ invite.role }}</td>
+      <td data-label="Until"><time datetime="{{ invite.expires_at }}">{{ invite.expires_at|day }}</time></td>
+      <td data-label="Action" class="act"><form method="post" action="/members/invites/{{ invite.id|seg }}/revoke"><button type="submit" class="link">Revoke</button></form></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<section class="empty-state" aria-labelledby="no-invitation">
+  <h2 id="no-invitation">No open invitation</h2>
+  <p>Invite someone above, and their link shows here until it is used.</p>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

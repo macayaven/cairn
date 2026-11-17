@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}One moment{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="0; url={{ url }}">{% endblock %}
+{% block nav %}{% endblock %}
+{% block main %}
+<section class="signin">
+  <h1>One moment</h1>
+  <p class="lede">Another site sent you here, so your browser left your {{ product.name }} session behind. This page reloads once to pick it up.</p>
+  <p><a href="{{ url }}">Continue</a> if nothing happens.</p>
+</section>
+{% endblock %}

@@ -1,0 +1,6 @@
+{% extends "brand_base.html" %}
+{% block head %}<meta http-equiv="refresh" content="0; url={{ url }}">{% endblock %}
+{% block main %}
+  <p class="lede">Signed in. This page moves on by itself, so that your browser brings your new session along.</p>
+  <p><a href="{{ url }}">Continue</a> if nothing happens.</p>
+{% endblock %}

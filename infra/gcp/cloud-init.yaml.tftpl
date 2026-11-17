@@ -1,0 +1,243 @@
+#cloud-config
+# cairn on Container-Optimized OS. Rendered by OpenTofu (infra/gcp/main.tf) into the VM's
+# user-data. COS keeps /etc on tmpfs and runs write_files and runcmd on every boot, so this
+# file is the whole host configuration: nothing here needs to survive a reboot.
+#
+# Template rules: only config.env takes OpenTofu values. The script, the two shared config
+# files and the plans file arrive as whole values, and the units are literal text with no
+# dollar-brace or percent-brace sequences.
+
+users:
+  # docker-credential-gcr writes its config to this user's home; root's own home is read-only.
+  - name: cairnhost
+    uid: 2000
+
+write_files:
+  # Settings for /etc/cairn/host.sh. Sourced by bash; every value is validated by OpenTofu.
+  - path: /etc/cairn/config.env
+    permissions: "0644"
+    owner: root
+    content: |
+      CAIRN_DOMAIN="${domain}"
+      CAIRN_PUBLIC_URL="${public_url}"
+      CAIRN_EXTRA_ARGS="${extra_args}"
+      CAIRN_REGISTRY_HOST="${registry_host}"
+      CAIRN_IMAGE="${image}"
+      CAIRN_DEPLOY_TAG="${deploy_tag}"
+      CAIRN_ENV_SECRET="${env_secret}"
+      LITESTREAM_REPLICA_URL="${replica_url}"
+      ACME_EMAIL="${acme_email}"
+      CADDY_IMAGE="${caddy_image}"
+      LITESTREAM_IMAGE="${litestream_image}"
+      DATA_DEVICE="${data_device}"
+      REPLICA_BOUND_SECONDS="${replica_bound_seconds}"
+
+  - path: /etc/cairn/host.sh
+    permissions: "0755"
+    owner: root
+    content: |
+      ${indent(6, chomp(host_sh))}
+
+  # The same two files deploy/compose.yaml uses.
+  - path: /etc/cairn/Caddyfile
+    permissions: "0644"
+    owner: root
+    content: |
+      ${indent(6, chomp(caddyfile))}
+
+  - path: /etc/cairn/litestream.yml
+    permissions: "0644"
+    owner: root
+    content: |
+      ${indent(6, chomp(litestream_yml))}
+
+  # The plans file from cairn_plans_file, empty when that is not set. cairn's user (uid
+  # 10001) reads it through a read-only mount and cannot change it; host.sh mounts it and
+  # gives serve --plans only when it has content. Plans are not secret: a workspace's Usage
+  # page shows its plan's limits.
+  - path: /etc/cairn/plans.yaml
+    permissions: "0644"
+    owner: root
+    content: |
+      ${indent(6, chomp(plans_yaml))}
+
+${brand_files}  - path: /etc/systemd/system/cairn-disk.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: check and mount the data disk, settle an interrupted deployment
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/bin/bash /etc/cairn/host.sh disk
+      ExecStart=/bin/bash /etc/cairn/host.sh boot-settle
+
+  # Also blocks the metadata server for containers. cairn and Caddy require this unit, so
+  # neither starts when the block cannot be installed.
+  - path: /etc/systemd/system/cairn-network.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: Docker networks and the metadata-server block for containers
+      Wants=docker.service
+      After=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/bin/bash /etc/cairn/host.sh network
+
+  # Blocks until the secret is read, so cairn never starts without its settings.
+  - path: /etc/systemd/system/cairn-env.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: fetch the env file from Secret Manager into tmpfs
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      TimeoutStartSec=infinity
+      ExecStart=/bin/bash /etc/cairn/host.sh env
+
+  # Blocks until the restore step succeeds, so cairn never starts on an empty database while a
+  # replica exists.
+  - path: /etc/systemd/system/cairn-restore.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: restore the database from the replica when it is missing
+      Requires=cairn-disk.service cairn-network.service
+      Wants=docker.service network-online.target gcr-online.target
+      After=cairn-disk.service cairn-network.service docker.service network-online.target gcr-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      TimeoutStartSec=infinity
+      ExecStart=/bin/bash /etc/cairn/host.sh restore
+
+  # Exactly one cairn container: a fixed name, started only here. Skipped while the data disk
+  # holds neither a proven image nor the record of a deployment in progress (the two "|"
+  # conditions are alternatives). host.sh decides which of the two it runs.
+  - path: /etc/systemd/system/cairn.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn
+      Requires=cairn-disk.service cairn-network.service cairn-env.service cairn-restore.service
+      Wants=docker.service gcr-online.target
+      After=cairn-disk.service cairn-network.service cairn-env.service cairn-restore.service docker.service gcr-online.target
+      ConditionPathExists=|/mnt/disks/data/deploy/image
+      ConditionPathExists=|/mnt/disks/data/deploy/pending
+
+      [Service]
+      Restart=always
+      RestartSec=5
+      ExecStartPre=-/usr/bin/docker rm -f cairn
+      ExecStart=/bin/bash /etc/cairn/host.sh run-cairn
+      ExecStop=-/usr/bin/docker stop -t 20 cairn
+      TimeoutStopSec=40
+
+  - path: /etc/systemd/system/caddy.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: Caddy (TLS and reverse proxy)
+      Requires=cairn-disk.service cairn-network.service
+      Wants=docker.service network-online.target gcr-online.target
+      After=cairn-disk.service cairn-network.service docker.service network-online.target gcr-online.target
+
+      [Service]
+      Restart=always
+      RestartSec=5
+      ExecStartPre=-/usr/bin/docker rm -f caddy
+      ExecStart=/bin/bash /etc/cairn/host.sh run-caddy
+      ExecStop=-/usr/bin/docker stop -t 10 caddy
+      TimeoutStopSec=30
+
+  - path: /etc/systemd/system/litestream.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: Litestream replication to Cloud Storage
+      Requires=cairn-disk.service cairn-network.service cairn-restore.service
+      Wants=docker.service
+      After=cairn-disk.service cairn-network.service cairn-restore.service docker.service
+
+      [Service]
+      Restart=always
+      RestartSec=10
+      ExecStartPre=-/usr/bin/docker rm -f litestream
+      ExecStart=/bin/bash /etc/cairn/host.sh run-litestream
+      ExecStop=-/usr/bin/docker stop -t 40 litestream
+      TimeoutStopSec=60
+
+  - path: /etc/systemd/system/cairn-update.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: follow the deploy tag in the registry, by digest
+      Wants=docker.service
+      After=docker.service
+
+      [Service]
+      Type=oneshot
+      TimeoutStartSec=900
+      ExecStart=/bin/bash /etc/cairn/host.sh update
+
+  - path: /etc/systemd/system/cairn-update.timer
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: check the deploy tag every minute
+
+      [Timer]
+      OnCalendar=minutely
+      AccuracySec=5s
+
+  # How old the newest copy in the replica is, written into Litestream's own log, where the
+  # two replica alerts read it (monitoring.tf). The bound is REPLICA_BOUND_SECONDS.
+  - path: /etc/systemd/system/cairn-replica-check.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: check that the replica holds the database's last change
+      Requires=cairn-disk.service cairn-network.service
+      Wants=docker.service
+      After=cairn-disk.service cairn-network.service docker.service
+
+      [Service]
+      Type=oneshot
+      TimeoutStartSec=240
+      ExecStart=/bin/bash /etc/cairn/host.sh replica-check
+
+  - path: /etc/systemd/system/cairn-replica-check.timer
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: check the replica every five minutes
+
+      [Timer]
+      OnCalendar=*:0/5
+      AccuracySec=10s
+
+# /etc is stateless, so `systemctl enable` would not persist; start the units instead.
+# --no-block: cairn waits for the secret and the restore, and cloud-init must not wait with it.
+runcmd:
+  - systemctl daemon-reload
+  - systemctl start --no-block caddy.service cairn.service litestream.service cairn-update.timer cairn-replica-check.timer

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}: {{ ended }}{% endblock %}
+{% block main %}
+<p class="crumbs"><a href="/sources">Sources</a> /</p>
+<h1>{{ title }}: {{ ended }}</h1>
+{% if error %}
+<p class="alert" role="alert" id="refused">Refused. {{ error }}</p>
+{% endif %}
+<p class="lede">{{ said }}</p>
+<section class="sheet" aria-label="{{ title }}">
+<form method="post" action="{{ action }}" class="stack">
+  <label for="confirm">Type <strong>{{ ended }}</strong> to confirm</label>
+  <input type="text" id="confirm" name="confirm" autocomplete="off" required aria-describedby="{% if error %}refused {% endif %}confirm-hint"{% if error %} aria-invalid="true"{% endif %}>
+  <p class="hint" id="confirm-hint">Nothing happens until you press the button.</p>
+  <p class="row"><button type="submit" class="danger">{{ title }}</button><a class="keep" href="/sources">Keep it</a></p>
+</form>
+</section>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Projects{% endblock %}
+{% block main %}
+<div class="heading-row">
+  <h1>Projects</h1>
+  {% if projects %}<a class="button" href="/new">Write a note</a>{% endif %}
+</div>
+<form class="search" method="get" action="/search" role="search">
+  <input type="search" name="q" placeholder="Search every project" aria-label="Search every project">
+  <button type="submit" class="quiet">Search</button>
+</form>
+{% if projects %}
+<ul class="projects">
+{% for project in projects %}
+  {% set sharing = shared[project.id] %}
+  <li class="project-row">
+    <p class="project-name"><a class="title" href="/b/{{ project.name|seg }}">{{ project.name }}</a></p>
+    <p class="row"><span class="tag">{{ kind_of(project.kind).title }}</span>{% if sharing and sharing.startswith("Private") %}<span class="tag is-private">private</span>{% endif %}</p>
+    <p class="meta">{% if sharing %}<strong class="sharing">{{ sharing }}</strong>.{% else %}Every member reads and writes.{% endif %} {{ project.pages }} {{ "page" if project.pages == 1 else "pages" }}.</p>
+    {% if project.description %}<p class="about">{{ project.description }}</p>{% endif %}
+  </li>
+{% endfor %}
+</ul>
+{% else %}
+<section class="empty-state" aria-labelledby="start-here">
+  <h2 id="start-here">No projects yet</h2>
+  <p>Say what you will use {{ product.name }} for, and it makes the projects for it and shows how to connect each agent and app.</p>
+  <p class="row"><a class="button" href="/start">Choose what you will use {{ product.name }} for</a></p>
+</section>
+<p class="empty">Or create one project below, or let an agent create one with the <code>new_project</code> tool.</p>
+{% endif %}
+<section class="new-project" aria-labelledby="new-project">
+  <h2 id="new-project">New project</h2>
+  {% with create_quiet = projects|length > 0 %}{% include "new_project.html" %}{% endwith %}
+</section>
+{% endblock %}

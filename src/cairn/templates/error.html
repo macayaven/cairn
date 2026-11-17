@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ status }}{% endblock %}
+{% block main %}
+{% set sentence = error_sentence(status, message) %}
+{# A refusal that explains itself is a paragraph's length: it reads at heading size. #}
+<h1{% if sentence|length > 80 %} class="is-long"{% endif %}>{{ sentence }}</h1>
+<p class="lede">Error {{ status }}. {% if signed_in %}<a href="/">Back to the projects</a>{% else %}<a href="/">Go to the start page</a>{% endif %}.</p>
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Setup{% endblock %}
+{% block main %}
+<div class="setup">
+<h1>Connect an agent</h1>
+<p class="lede">Agents reach {{ product.name }} over MCP (streamable HTTP). An agent with a browser at hand needs only the URL; a headless one sends an API key. This page never shows a key.</p>
+<h2>With only the URL</h2>
+{% if oauth %}
+{% include "_connect.html" %}
+{% else %}
+<p>This needs the address agents reach {{ product.name }} at: start the server with <code>--public-url</code> set to an <code>https://</code> origin (or <code>http://</code> on localhost). Until then agents connect with an API key, as below.</p>
+{% endif %}
+<h2>With an API key</h2>
+{% if sign_in %}
+<ol class="steps">
+  <li>
+    <h3>Make a key</h3>
+    <p>Under <a href="/keys">Keys</a>, give the agent's key a label. The key is shown once; keep it in the agent's environment, not in its config.</p>
+  </li>
+  <li>
+    <h3>Point the agent at the MCP endpoint</h3>
+    <pre>{{ mcp_url }}</pre>
+    <p>Send the key as <code>x-api-key: &lt;key&gt;</code> or <code>Authorization: Bearer &lt;key&gt;</code>. The REST API under <code>/api</code> takes the same headers.</p>
+  </li>
+</ol>
+{% else %}
+<ol class="steps">
+  <li>
+    <h3>The MCP endpoint</h3>
+    <pre>{{ mcp_url }}</pre>
+    {% if not public_url %}
+    <p class="meta">Start the server with <code>--public-url</code> to show its real address here.</p>
+    {% endif %}
+    <p>Send the key as <code>x-api-key: &lt;key&gt;</code> or <code>Authorization: Bearer &lt;key&gt;</code>. The REST API under <code>/api</code> takes the same headers.</p>
+  </li>
+  <li>
+    <h3>Mint a key</h3>
+    <p>On the server, write a new key into a file only its owner can read (mode 0600). The command refuses to overwrite a file and prints only the file's path, never the key.</p>
+    <pre>python -m cairn.server key-create --db PATH --label L --out FILE</pre>
+    <p>To retire every key with a label: <code>python -m cairn.server key-revoke --db PATH --label L</code></p>
+  </li>
+  <li>
+    <h3>Keep the key in an env file</h3>
+    <p>On each machine an agent runs on, keep the address and the key in a file only you can read (mode 0600), for example <code>cairn.env</code>:</p>
+    <pre>CAIRN_URL=https://&lt;your-host&gt;
+CAIRN_API_KEY=&lt;the key from key-create&gt;</pre>
+  </li>
+  <li>
+    <h3>Give it to the agent</h3>
+    <p>Load the file into the agent's environment and name the variable in the agent's MCP config, so the config itself holds no key. <a href="/docs/connect">The connect guide</a> has the steps for each client.</p>
+  </li>
+  <li>
+    <h3>Choose the project</h3>
+    <p>Keep one core project for what spans repositories, plus one project per repository, named after the repo. Agents create one with the <code>new_project</code> tool.</p>
+  </li>
+</ol>
+{% endif %}
+</div>
+{% endblock %}

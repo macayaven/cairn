@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ guide.title }}{% endblock %}
+{% block main %}
+<article class="reading guide">
+<p class="meta"><a href="/docs">Guides</a> /</p>
+<h1>{{ guide.title }}</h1>
+{% if guide.sections %}
+<nav class="toc" aria-label="On this page">
+  <p class="toc-head">On this page</p>
+  <ol>
+  {% for anchor, heading in guide.sections %}
+    <li><a href="#{{ anchor }}">{{ heading }}</a></li>
+  {% endfor %}
+  </ol>
+</nav>
+{% endif %}
+<div class="prose">
+{{ guide.html }}
+</div>
+</article>
+{% endblock %}

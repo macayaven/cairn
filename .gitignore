@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Local databases and run output
+*.db
+*.db-shm
+*.db-wal
+runs/
+
+# Private data: real notes, gold sets and eval results built from a person's own notes.
+# Never commit these; public fixtures must be synthetic.
+private/
+.env
+*.env
+# a service-account key for the backup bucket, which deploy/README.md has you put here
+deploy/gcs-key.json
+# an export taken as the README shows, which lands beside the compose files
+deploy/cairn-export.zip

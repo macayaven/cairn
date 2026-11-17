@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Account{% endblock %}
+{% block main %}
+<h1>{{ account.name }}</h1>
+<p class="lede">This workspace's memory is yours to take with you and to erase.</p>
+{% if error %}
+<p class="alert" role="alert">Refused. {{ error }}</p>
+{% endif %}
+<section aria-labelledby="export">
+  <h2 id="export">Export</h2>
+  {% if export %}
+  <p>The workspace's notes and pages in one zip file: every project's description, every note exactly as it was written, and every version of every page kept, with the source lines each claim cites. Keys, sessions, agents' connections, sets, settings, sources and the audit log are not in it: to move to another install, set up keys, agents' connections, sets, settings and sources again there. The audit log stays here.</p>
+  <p><a class="button is-quiet" href="/account/export">Download the export</a></p>
+  {% else %}
+  <p class="empty">Only an owner of this workspace can export it.</p>
+  {% endif %}
+</section>
+<section aria-labelledby="delete">
+  <h2 id="delete">Delete this workspace</h2>
+  {% if default %}
+  <p class="empty">The default workspace cannot be deleted: it is the install's own.</p>
+  {% elif delete %}
+  <p>Deleting removes every project, note, page, key, session, connected agent and audit event of this workspace. What it deletes is overwritten in the database file at once. It cannot be undone: export first if you want its notes and pages back.</p>
+  <div class="sheet">
+  <form method="post" action="/account/delete" class="stack">
+    <label for="confirm">Type <strong>{{ account.name }}</strong> to confirm</label>
+    <input type="text" id="confirm" name="confirm" autocomplete="off" required aria-describedby="confirm-hint">
+    <p class="hint" id="confirm-hint">Nothing happens until you press the button.</p>
+    <p class="row"><button type="submit" class="danger">Delete the workspace</button><a class="keep" href="/workspace">Keep it</a></p>
+  </form>
+  </div>
+  {% else %}
+  <p class="empty">Only an owner of this workspace can delete it.</p>
+  {% endif %}
+</section>
+{% endblock %}

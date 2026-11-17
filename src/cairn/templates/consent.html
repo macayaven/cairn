@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_components.html" import actor %}
+{% block title %}Connect an agent{% endblock %}
+{% block nav %}{% endblock %}
+{% block main %}
+<section class="consent">
+  <h1>Connect {{ client_name }}?</h1>
+  <p class="lede">It asks to use the memory of the workspace <strong>{{ account_name }}</strong>. You choose which projects it reaches and whether it may write there; by default, every project you reach in this workspace, now and later, to read and write.</p>
+  <dl class="facts">
+    <dt>It calls itself</dt>
+    <dd>{{ actor("agent", client_name) }}</dd>
+    <dt>It will be sent back to</dt>
+    <dd><code>{{ redirect_uri }}</code></dd>
+    <dt>Workspace</dt>
+    <dd>{{ account_name }}</dd>
+    {% if person %}
+    <dt>Signed in as</dt>
+    <dd>{{ actor("person", person.name) }} <span class="hint">{{ person.email }}</span></dd>
+    {% endif %}
+  </dl>
+  <p class="meta">Anyone can register a client under any name. Approve only if you started this from your own agent just now, and the address above is that agent's.</p>
+  <form method="post" action="/oauth/consent">
+    <input type="hidden" name="request" value="{{ request }}">
+    {# The choice is a Scope being filled in: which projects, what it may do there, and last
+       what no choice opens. #}
+    <div class="scope-choice">
+      {% include "_reach.html" %}
+      <p class="scope-beyond"><span class="scope-mode scope-none">No access</span><span class="scope-none">Every project left unticked when you choose Selected projects, and, whatever you choose, every project you cannot reach yourself. It cannot see that they exist.</span></p>
+    </div>
+    <div class="choices">
+      <button type="submit" name="decision" value="approve">Approve</button>
+      <button type="submit" name="decision" value="deny" class="quiet">Deny</button>
+    </div>
+  </form>
+  <p class="meta">You can disconnect it at any time under Workspace, then Agents.</p>
+</section>
+{% endblock %}

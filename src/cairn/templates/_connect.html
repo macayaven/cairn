@@ -1,0 +1,7 @@
+<p>Give the agent this URL as a remote MCP server:</p>
+<pre>{{ mcp_url }}</pre>
+<p>Claude Code:</p>
+<pre>claude mcp add --transport http {{ product.slug }} {{ mcp_url }}</pre>
+<p>Codex:</p>
+<pre>codex mcp add {{ product.slug }} --url {{ mcp_url }}</pre>
+<p>The agent opens a {{ product.name }} page in your browser. Sign in, check the agent's name and the address it will be sent back to, and approve. Nothing is installed and no key is copied. <a href="/agents">Agents</a> lists what you approved and disconnects it.</p>

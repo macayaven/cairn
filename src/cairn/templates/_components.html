@@ -1,0 +1,35 @@
+{# The design system's components that more than one page draws. Imported, never extended. #}
+
+{# Actor: who did something, its kind as a word (person, key, agent or cairn). #}
+{% macro actor(kind, name) %}<span class="actor"><span class="actor-kind">{{ kind }}</span><span class="actor-name">{{ name }}</span></span>{% endmacro %}
+
+{# Scope: what a key or an agent may see, one row a project or set, then what is out of reach
+   (components.scope_of). #}
+{% macro scope(found, label) %}
+<ul class="scope" aria-label="{{ label }}">
+{% for row in found.rows %}
+  <li><span class="scope-mode{% if row.write %} is-write{% endif %}">{{ row.mode }}</span><span>{{ row.what }}</span></li>
+{% endfor %}
+  <li><span class="scope-mode scope-none">No access</span><span class="scope-none">{{ found.beyond }}</span></li>
+</ul>
+{% endmacro %}
+
+{# Source: a source span's own lines at the note's own numbers, the cited ones on mark. The
+   list of sources gives it the forget link; a claim's proof shows the same lines without. #}
+{% macro source(source, forget=None) %}
+<figure class="source">
+  <figcaption class="source-head">
+    <strong>Source {{ source.n }}: {{ source.lines }}</strong>
+    {# A note's first heading is usually its title: the head names it once, then the section. #}
+    {% set path = source.span.heading_path|list %}
+    {% set within = path and path[0] == source.note.title %}
+    <span>{{ source.note.title }}{% if within and path|length > 1 %} › {{ path[1:]|join(" › ") }}{% elif path and not within %} · {{ path|join(" › ") }}{% endif %}</span>
+    {% if source.note.source_ref %}<span class="id">{{ source.note.source_ref }}</span>{% endif %}
+    <span>written <time datetime="{{ source.note.created_at }}">{{ source.note.created_at|when }}</time></span>
+    {% if source.writer is defined %}<span class="writer">{{ source.writer }}</span>{% endif %}
+    {% if source.outside %}<span class="outside">outside text</span>{% endif %}
+    {% if forget %}<a href="{{ forget }}">Forget this note</a>{% endif %}
+  </figcaption>
+  <div class="source-lines margin-grid">{% for n, line, cited in source.numbered %}<div class="in-margin{% if cited %} is-cited{% endif %}">{{ n }}</div><div class="source-line{% if cited %} is-cited{% endif %}">{{ line }}</div>{% endfor %}</div>
+</figure>
+{% endmacro %}

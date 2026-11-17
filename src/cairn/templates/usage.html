@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Usage{% endblock %}
+{% block main %}
+<h1>Usage</h1>
+<p class="lede">{% if usage.label %}This workspace is on the {{ usage.label }} plan. Whoever runs this server sets a workspace's plan.{% else %}This workspace has no plan: nothing is capped.{% endif %} Notes and model use count from the first of the month, UTC; this month's count starts again on <time datetime="{{ usage.resets_at }}">{{ usage.resets_at|when }}</time>.</p>
+{% if allows %}
+<p>The {{ usage.label }} plan allows:</p>
+<ul class="allows">
+  {% for said in allows %}<li>{{ said }}</li>{% endfor %}
+</ul>
+{% endif %}
+<div class="table-wrap">
+<table class="rows">
+  <thead><tr><th>Limit</th><th>Used</th></tr></thead>
+  <tbody>
+  {% for limit, name in names %}
+    {% set shown = usage.limits[limit] if limit in usage.limits else usage[limit] %}
+    <tr>
+      <td data-label="Limit">{{ name }}</td>
+      <td data-label="Used">{{ quantity(limit, shown.used) }}{% if shown.cap is none %}, no cap{% else %} of {{ quantity(limit, shown.cap) }}{% set full = shown.used >= shown.cap %}<meter class="{{ 'is-full' if full else '' }}" min="0" max="{{ [shown.cap, 1]|max }}" value="{{ [shown.used, shown.cap]|min }}" aria-label="{{ name }}: {{ quantity(limit, shown.used) }} of {{ quantity(limit, shown.cap) }}"></meter>{% if full %}<span class="is-full-note">At the cap.</span>{% endif %}{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

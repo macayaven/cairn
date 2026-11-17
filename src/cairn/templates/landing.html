@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block document_title %}cairn · memory your agents can check{% endblock %}
+{% block description %}<meta name="description" content="Agents write notes to cairn over MCP. cairn compiles them into pages, and every claim on a page links to the exact source lines it came from.">{% endblock %}
+{% block page_class %}app wide{% endblock %}
+{% block main %}
+<section class="hero">
+  <h1>Memory your agents can check.</h1>
+  <p class="lede">Agents write notes to cairn over MCP. cairn compiles them into pages, and every claim on a page links to the exact source lines it came from.</p>
+  <p class="actions">
+    <a class="button" href="/login">Sign in to connect an agent</a>
+    <a href="#run">Run it yourself</a>
+  </p>
+
+  {# A page as cairn shows it: claims with their source numbers in the margin, and the lines
+     of the note behind each one, at the note's own line numbers. #}
+  {% set note = ["# Retry policy", "", "Quill retries a failed charge 3 times, 30 s apart.", "", "Lumen never retries: it reports the failure and stops.", "", "```bash", "quill run --max-retries 3 --backoff 30s", "```"] %}
+  {% macro lines(note, n, first, last, cited_from, cited_to) %}
+  <figure class="source">
+    <figcaption class="source-head"><strong>Source {{ n }}: {% if cited_from == cited_to %}line {{ cited_from }}{% else %}lines {{ cited_from }}–{{ cited_to }}{% endif %}</strong><span>Retry policy</span><span class="id">session 2026-11-04</span><span>as the agent wrote it</span></figcaption>
+    <div class="source-lines margin-grid">{% for i in range(first, last + 1) %}{% set cited = cited_from <= i <= cited_to %}<div class="in-margin{% if cited %} is-cited{% endif %}">{{ i }}</div><div class="source-line{% if cited %} is-cited{% endif %}">{{ note[i - 1] }}</div>{% endfor %}</div>
+  </figure>
+  {% endmacro %}
+  <figure class="example" aria-labelledby="example-title">
+    <p class="crumbs">A page in the project <code>payments-api</code></p>
+    <p class="example-title" id="example-title">Retry policy</p>
+    <ul class="counts" aria-label="What this page holds">
+      <li><strong>3</strong> claims</li>
+      <li><strong>5</strong> source lines cited</li>
+      <li><strong>1</strong> note</li>
+    </ul>
+    <article class="claim margin-grid" id="example-1">
+      <div class="in-margin claim-cites"><a href="#example-1" title="Source 1">1</a></div>
+      <div class="claim-body">
+        <p class="claim-text">Quill retries a failed charge 3 times, 30 s apart.</p>
+        <details class="proof" open><summary>See the source line</summary>{{ lines(note, 1, 1, 5, 3, 3) }}</details>
+      </div>
+    </article>
+    <article class="claim margin-grid" id="example-2">
+      <div class="in-margin claim-cites"><a href="#example-2" title="Source 2">2</a></div>
+      <div class="claim-body">
+        <p class="claim-text">Lumen never retries: it reports the failure and stops.</p>
+        <details class="proof"><summary>See the source line</summary>{{ lines(note, 2, 3, 7, 5, 5) }}</details>
+      </div>
+    </article>
+    <article class="claim margin-grid code" id="example-3">
+      <div class="in-margin claim-cites"><a href="#example-3" title="Source 3">3</a></div>
+      <div class="claim-body">
+        <div class="claim-text md"><pre><code class="language-bash">quill run --max-retries 3 --backoff 30s</code></pre></div>
+        <details class="proof"><summary>See the 3 source lines</summary>{{ lines(note, 3, 5, 9, 7, 9) }}</details>
+      </div>
+    </article>
+    <figcaption>Every claim on every page in cairn opens the lines of the note it came from this way, word for word.</figcaption>
+  </figure>
+</section>
+
+<section id="connect">
+  <h2>One address. Every agent connects to it.</h2>
+  <p>cairn runs in one place, so nothing is installed on each machine. Give an agent this server's address, and your browser opens once to approve it. You choose which projects it reaches, and whether it may write there or only read.</p>
+  <dl class="commands">
+    <div><dt>Claude Code</dt><dd><pre>claude mcp add --transport http cairn {{ mcp_url }}</pre></dd></div>
+    <div><dt>Codex</dt><dd><pre>codex mcp add cairn --url {{ mcp_url }}</pre></dd></div>
+    <div><dt>Cursor</dt><dd><pre>{ "mcpServers": { "cairn": { "url": "{{ mcp_url }}" } } }</pre></dd></div>
+  </dl>
+  <p class="aside">Scripts and agents without a browser use an API key instead. One page lists connected agents and disconnects them: a member sees the ones they connected, and owners and admins see everyone's. <a href="/docs/connect">Every client, step by step</a></p>
+</section>
+
+<section id="checks">
+  <h2>What cairn refuses to save</h2>
+  <p>Memory tools turn notes into tidy pages. The failures that matter are quiet ones, so cairn checks every page against its notes before it saves it.</p>
+  <dl class="refusals">
+    <div><dt>A page that lost a fact</dt><dd>A version, a flag or a line of code in a note the page draws on is on the page, or is listed as left out.</dd></div>
+    <div><dt>A claim its source does not hold</dt><dd>A number, a flag or a path in a claim is in the lines that claim cites.</dd></div>
+    <div><dt>A claim without a source</dt><dd>Every claim cites the lines behind it, and you can open them.</dd></div>
+  </dl>
+  <p class="aside">A page that fails is rejected, and its last good version stays. Each claim is a passage copied word for word from a note. When the operator connects a model, it only chooses the order of a page's claims and folds repeated ones. cairn writes every claim from the note's own text, and the page says which model arranged it.</p>
+</section>
+
+<section id="run">
+  <h2>Two ways to run it</h2>
+  <div class="ways">
+    <div>
+      <h3>Here</h3>
+      <p>Sign in{% if providers %} with {{ providers }}{% endif %} and connect your agents. Invite people, give them roles and keep a project private. Download your workspace's notes and pages as one file, or delete it, whenever you like.</p>
+      <p class="actions"><a class="button" href="/login">Sign in</a></p>
+    </div>
+    <div>
+      <h3>On your own machine</h3>
+      <p>One container: the same software on your disk and your network, with no plans and no plan caps.</p>
+      <pre>docker run -d --name cairn --restart unless-stopped -p 127.0.0.1:8765:8765 -v cairn-data:/data ghcr.io/macayaven/cairn:main</pre>
+      <p class="aside">Then make a key and sign in. <a href="/docs/run">Run it yourself</a> has every step, and backups and upgrades.</p>
+    </div>
+  </div>
+</section>
+
+<section id="trust" class="trust">
+  <h2>What happens to what you write</h2>
+  <p>Keys, sessions and agents' tokens are stored only as digests. By default a guard refuses a note that holds a secret in a shape it recognises, such as a provider's API key or a private key, before any of it is stored; a password written in plain words is not recognised. Each project is an access boundary, and a connection limited to some projects cannot see that the others exist. <a href="/docs/security">Security</a> and <a href="/docs/privacy">privacy</a> say exactly what is kept, where, and for how long.</p>
+</section>
+{% endblock %}

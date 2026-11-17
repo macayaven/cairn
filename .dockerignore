@@ -1,0 +1,10 @@
+# Allow-list: the build reads only these. Databases, run output, private data, keys and
+# virtual environments can never enter the build context.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+**/__pycache__
+**/*.py[cod]

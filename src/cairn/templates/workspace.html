@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ account.name }}{% endblock %}
+{% block main %}
+<h1>{{ account.name }}</h1>
+<p class="lede">{% if role %}You are {{ role|a_role }} of this workspace. {% endif %}Everything about the workspace that is not a project is here.</p>
+<ul class="parts" id="parts">
+{% for part in parts %}
+  <li><a href="{{ part.href }}">{{ part.label }}</a><p>{{ part.sentence }}</p></li>
+{% endfor %}
+</ul>
+<section id="guard" class="guard" aria-labelledby="guard-heading">
+<h2 id="guard-heading">What notes may not hold</h2>
+<p>{{ policy_said }}</p>
+{% if policy %}
+<p>It holds for every note, whether it comes from this site, an agent, a key or a source.</p>
+{% if chooses %}
+<form method="post" action="/workspace/guard" class="stack">
+  <fieldset class="reach">
+    <legend>What is refused</legend>
+    {% for value, said in policies %}
+    <label class="option said"><input type="radio" name="policy" value="{{ value }}"{% if value == policy %} checked{% endif %}> <span>{{ said }}</span></label>
+    {% endfor %}
+  </fieldset>
+  <button type="submit">Save what is refused</button>
+</form>
+{% else %}
+<p class="meta">An owner or an admin of the workspace chooses this.</p>
+{% endif %}
+{% endif %}
+</section>
+{% if person %}
+<p class="meta">Signed in as {{ person.name }} ({{ person.email }}). <a href="/workspaces">Your workspaces</a> lists the others you belong to.</p>
+{% endif %}
+{% endblock %}

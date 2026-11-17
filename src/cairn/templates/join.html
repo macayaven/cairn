@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Join {{ invite.workspace }}{% endblock %}
+{% block head %}<meta name="referrer" content="no-referrer">{% endblock %}
+{% block main %}
+<h1>Join {{ invite.workspace }}</h1>
+<p class="lede">This invitation is for <strong>{{ invite.email }}</strong>, as {{ invite.role|a_role }}. It works for whoever signed in with that address, once.</p>
+{% if fits %}
+<form method="post" action="/join/{{ token }}">
+  <button type="submit">Join {{ invite.workspace }}</button>
+</form>
+{% elif person %}
+<p>You are signed in as <strong>{{ person.email }}</strong>, and this invitation is for <strong>{{ invite.email }}</strong>. Sign out, then sign in with that address to join.</p>
+<form method="post" action="/logout"><button type="submit">Sign out</button></form>
+{% else %}
+<p>This session signed in with a key, not as a person. Sign out, then sign in as <strong>{{ invite.email }}</strong> to join.</p>
+<form method="post" action="/logout"><button type="submit">Sign out</button></form>
+{% endif %}
+{% endblock %}

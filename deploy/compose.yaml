@@ -1,0 +1,90 @@
+# cairn behind Caddy on any Docker host with a domain. See deploy/README.md.
+#
+#   docker compose up -d      cairn + Caddy (automatic HTTPS), no backups
+#
+# Backups are a second file, compose.backup.yaml, merged over this one. It adds Litestream and
+# makes cairn wait for a successful restore step. Turn it on in deploy/.env, so that every
+# `docker compose` command uses both files:
+#
+#   COMPOSE_FILE=compose.yaml:compose.backup.yaml
+#
+# This file on its own has no Litestream and no dependency on it. There is deliberately no
+# optional dependency and no profile here: an optional dependency that fails only warns.
+#
+# Needs Docker Compose 2.24 or later (optional env files).
+# Settings come from deploy/.env: CAIRN_DOMAIN and ACME_EMAIL are required, CAIRN_IMAGE,
+# CAIRN_EXTRA_ARGS, CAIRN_SUBNET and COMPOSE_FILE are optional. cairn.env (cairn's own
+# environment) is read when it exists.
+
+name: cairn
+
+# With CAIRN_IMAGE set, that image is pulled. Without it, Compose looks for cairn:local,
+# does not find it in a registry, and builds it from the repository's Dockerfile.
+x-cairn-image: &cairn-image
+  image: ${CAIRN_IMAGE:-cairn:local}
+  build:
+    context: ..
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  cairn:
+    <<: *cairn-image
+    restart: unless-stopped
+    # Arguments replace the image's default command, so the whole command is spelled out.
+    # Exactly one cairn container may use the database: never scale this service.
+    # After a workspace is deleted, serve compacts the database (VACUUM) at most once a day
+    # (--compact-every 24, the default; 0: never); every request waits while it runs, about
+    # as long as copying the database file takes.
+    # Without --plans nothing is capped. To cap each workspace by its plan, copy a plans file
+    # into the volume and add `--plans /data/plans.yaml` to CAIRN_EXTRA_ARGS (deploy/README.md,
+    # "Plans"); the caps in plans.example.yaml are placeholders.
+    # Every request reaches cairn from Caddy, so cairn trusts this network's addresses, and
+    # nothing else, to say who the client is (X-Forwarded-For); Caddy sets that header itself
+    # and does not pass on one a client sent. Without it, every client would share one count
+    # in the per-client limits.
+    command: >-
+      serve --db /data/cairn.db --host 0.0.0.0
+      --public-url https://${CAIRN_DOMAIN:?set CAIRN_DOMAIN in deploy/.env}
+      --trusted-proxy ${CAIRN_SUBNET:-10.213.47.0/24}
+      ${CAIRN_EXTRA_ARGS:-}
+    env_file:
+      - path: cairn.env
+        required: false
+    volumes:
+      - cairn-data:/data
+    logging: *logging
+
+  caddy:
+    image: caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CAIRN_DOMAIN: ${CAIRN_DOMAIN:?set CAIRN_DOMAIN in deploy/.env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - cairn
+    logging: *logging
+
+# A fixed private subnet, so cairn can be told which addresses are the proxy's. Set
+# CAIRN_SUBNET in deploy/.env when this one is in use on the host or its networks.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${CAIRN_SUBNET:-10.213.47.0/24}
+
+volumes:
+  cairn-data:
+  caddy-data:
+  caddy-config:

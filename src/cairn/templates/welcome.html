@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Welcome{% endblock %}
+{% block main %}
+<div class="setup">
+<h1>Welcome{% if person %}, {{ person.name }}{% endif %}</h1>
+{% if start %}
+<p class="lede">Your memory is ready. The agents and apps you connect can write notes to it and recall them from any machine.</p>
+{% else %}
+<p class="lede">Your memory is ready. Connect an agent, and it can write notes to it and recall them from any machine.</p>
+{% endif %}
+{% if next %}
+<p class="notice">You were on your way somewhere: <a href="{{ next }}">continue there</a>.</p>
+{% endif %}
+{% if start %}
+<section class="notice start" aria-labelledby="start-here">
+  <h2 id="start-here">Start here</h2>
+  <p>Say what you will use {{ product.name }} for, and it makes the projects for it and shows how to connect each agent and app.</p>
+  <a class="button" href="/start">Choose what you will use {{ product.name }} for</a>
+</section>
+<h2>Or connect an agent now</h2>
+<p>An agent can make its own projects once it is connected.</p>
+{% else %}
+<h2>Connect an agent</h2>
+{% endif %}
+{% if oauth %}
+{% include "_connect.html" %}
+{% else %}
+<p>Agents reach {{ product.name }} at <code>{{ mcp_url }}</code> with an API key. <a href="/setup">Setup</a> shows how.</p>
+{% endif %}
+<h2>Agents without a browser</h2>
+<p>A headless agent, such as one in CI, sends an API key instead. Make one under <a href="/keys">Keys</a>.</p>
+</div>
+{% endblock %}

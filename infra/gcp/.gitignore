@@ -1,0 +1,14 @@
+# OpenTofu working files. State lives in the GCS backend, never here.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+
+# Local settings: real project IDs, domains, addresses and the state bucket's name.
+terraform.tfvars
+*.auto.tfvars
+backend.hcl
+
+# Keep the provider lock file (.terraform.lock.hcl) in git once `tofu init` has written it.

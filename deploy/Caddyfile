@@ -1,0 +1,62 @@
+# Caddy in front of cairn: automatic HTTPS for one domain, HSTS, a 4 MiB request-body cap and
+# logs that never contain a query string or an invitation link. Written for Caddy 2.11; used unchanged by
+# deploy/compose.yaml and by the Google Cloud VM in infra/gcp.
+#
+# Environment (both required; Caddy refuses to start if either is empty):
+#   CAIRN_DOMAIN  the public hostname, e.g. cairn.example.net. Its A record must point here.
+#   ACME_EMAIL    the contact address for the certificate authority account.
+#
+# Why the log filters: sign-in callbacks and OAuth codes arrive in the query string, an
+# invitation's token is the last part of its path (/join/<token>), and agents send their key in
+# an x-api-key header. One expression covers both parts of the URI: its first branch keeps
+# "/join/" and drops the token, its second keeps "?" and drops the query
+# (tests/unit/test_caddy_log_unit.py applies it to sample addresses). Caddy redacts Cookie, Set-Cookie, Authorization and
+# Proxy-Authorization on its own; everything else that can carry a secret is removed here. The
+# same filter is set on the default logger because proxy errors are logged there, with the
+# request attached, and not in the access log.
+{
+	email {$ACME_EMAIL}
+
+	# HTTP/1.1 and HTTP/2 only. HTTP/3 needs 443/udp, which neither the compose file nor the
+	# cloud firewall opens. To use it, remove this block and publish and allow 443/udp.
+	servers {
+		protocols h1 h2
+	}
+
+	log default {
+		output stderr
+		format filter {
+			request>uri regexp `^(/join/)[^/?#]+|(\?).*` "${1}${2}redacted"
+			request>headers>Referer delete
+			request>headers>X-Api-Key delete
+			request>headers>Mcp-Session-Id delete
+			resp_headers>Location delete
+			resp_headers>Mcp-Session-Id delete
+			wrap json
+		}
+	}
+}
+
+{$CAIRN_DOMAIN} {
+	header Strict-Transport-Security "max-age=31536000"
+
+	# The same cap cairn enforces itself (4 * 1024 * 1024 bytes). "4MB" would mean 4,000,000.
+	request_body {
+		max_size 4MiB
+	}
+
+	reverse_proxy cairn:8765
+
+	log {
+		output stdout
+		format filter {
+			request>uri regexp `^(/join/)[^/?#]+|(\?).*` "${1}${2}redacted"
+			request>headers>Referer delete
+			request>headers>X-Api-Key delete
+			request>headers>Mcp-Session-Id delete
+			resp_headers>Location delete
+			resp_headers>Mcp-Session-Id delete
+			wrap json
+		}
+	}
+}

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% from "_components.html" import actor, scope %}
+{% block title %}Keys{% endblock %}
+{% block main %}
+<h1>Keys</h1>
+<p class="lede">An API key lets a headless agent or a script use this workspace's memory: every project or only the ones you choose, to read and write or only to read. Send it as <code>x-api-key: &lt;key&gt;</code> or <code>Authorization: Bearer &lt;key&gt;</code>.</p>
+{% if created %}
+<section class="notice is-done" aria-live="polite">
+  <p><strong>Made.</strong> The key <strong>{{ created.label }}</strong> is below. Copy it now: {{ product.name }} keeps only a digest of it and will not show it again.</p>
+  <pre>{{ created.key }}</pre>
+  <p>An app needs these two lines in its environment. It sends the key as <code>x-api-key</code>, to the REST API under <code>/api</code> or to MCP at <code>/mcp</code>.</p>
+  <pre>CAIRN_URL={{ app_url }}
+CAIRN_API_KEY={{ created.key }}</pre>
+  <p><a href="/start/connect">See how each of your projects connects</a></p>
+</section>
+{% endif %}
+{% if manage %}
+<section class="new-key" aria-labelledby="new-key">
+  <h2 id="new-key">New key</h2>
+  <form method="post" action="/keys" class="stack">
+    <label for="key-label">Label</label>
+    <input id="key-label" type="text" name="label" maxlength="80" required aria-describedby="key-label-hint">
+    <p class="hint" id="key-label-hint">What will use the key, in up to 80 characters.</p>
+    {% include "_reach.html" %}
+    <button type="submit">Make a key</button>
+  </form>
+</section>
+{% else %}
+<p class="empty">Only an owner or an admin of this workspace can make or revoke its keys.</p>
+{% endif %}
+{% if keys %}
+<h2>Keys in this workspace</h2>
+<div class="table-wrap">
+<table class="rows">
+  <thead><tr><th>Key</th><th>What it can see</th><th>Made by</th><th>Made</th>{% if manage %}<th><span class="hint">Action</span></th>{% endif %}</tr></thead>
+  <tbody>
+  {% for key in keys %}
+    <tr>
+      {% set maker = makers.get(key.maker_id) if key.maker_id else None %}
+      <td data-label="Key">{{ actor("key", key.label) }}</td>
+      <td data-label="What it can see">{{ scope(scope_of(key.projects, key.access, names, sets, projects, "any project " ~ maker ~ " cannot reach" if maker else ("any project its maker cannot reach" if key.maker_id else "nothing in this workspace")), "What " ~ key.label ~ " can see") }}</td>
+      <td data-label="Made by">{% if maker %}{{ actor("person", maker) }}{% else %}The workspace{% endif %}{% set made_with = made_with_words(key.made_with, key.made_with_revoked) %}{% if made_with %}<span class="hint">, {{ made_with }}</span>{% endif %}{% if key.unrecorded_before %}<p class="hint">{{ unrecorded_words(key.unrecorded_before) }}</p>{% endif %}</td>
+      <td data-label="Made"><time datetime="{{ key.created_at }}">{{ key.created_at|day }}</time></td>
+      {% if manage %}<td data-label="Action" class="act"><form method="post" action="/keys/{{ key.label|seg }}/revoke"><button type="submit" class="link">Revoke</button></form></td>{% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<section class="empty-state" aria-labelledby="no-key">
+  <h2 id="no-key">No key yet</h2>
+  {% if manage %}<p>Make one above for each script or agent that runs without a browser.</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

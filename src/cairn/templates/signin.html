@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block nav %}{% endblock %}
+{% block main %}
+<section class="signin">
+  <h1>Sign in</h1>
+  <p class="lede">{{ product.name }} keeps no password. Sign in with an account you already have; {{ product.name }} keeps a session cookie, valid for {{ lasts }}.</p>
+  {% if error %}
+  <p class="alert" role="alert">Refused. {{ error }}</p>
+  {% endif %}
+  <ul class="providers">
+  {% for provider in providers %}
+    <li><a class="button" href="{{ provider.href }}">Continue with {{ provider.label }}</a></li>
+  {% endfor %}
+  </ul>
+</section>
+{% endblock %}

@@ -1,0 +1,50 @@
+{# A Google account connected in the browser (cairn.web.google_connect): nothing at all unless
+   the server was started with --google-connect and the reader is offered it. No script. #}
+{% set google = google_connect() if google_connect is defined else none %}
+{% if google %}
+<section class="google-connect" id="google-connect" aria-labelledby="google-connect-heading">
+  <h2 id="google-connect-heading" tabindex="-1">Google</h2>
+  {% if google.refused %}
+  <p class="alert" role="alert"><strong>Refused.</strong> {{ google.refused }}</p>
+  {% elif google.done %}
+  <p class="notice" role="status">{{ google.done }}</p>
+  {% endif %}
+  {% if google.offered %}
+  <p>{{ google.what }}</p>
+  <p class="hint">{{ google.testing }}</p>
+  {% endif %}
+  {% if google.accounts %}
+  <h3 id="google-accounts-heading">Connected Google accounts</h3>
+  <p class="hint">{{ google.disconnect }}</p>
+  <ul class="account-list" aria-labelledby="google-accounts-heading">
+    {% for account in google.accounts %}
+    <li><strong>{{ account.service }}</strong>: {{ account.address }} ({{ account.name }}){% if not account.mine %}, connected by another person{% endif %}. Google last issued its token <time datetime="{{ account.refreshed_at }}">{{ account.refreshed_at|when }}</time>.{% if account.ended %} <strong>{{ account.ended }}.</strong>{% endif %}
+      {% if account.mine and google.kinds %}
+      <form method="post" action="/integrations/google/connect" class="ending">
+        <input type="hidden" name="kind" value="{{ account.kind }}">
+        <input type="hidden" name="account" value="{{ account.name }}">
+        <button type="submit" class="quiet" aria-label="Reconnect {{ account.service }} ({{ account.address }})">Reconnect</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/integrations/google/disconnect" class="ending">
+        <input type="hidden" name="account" value="{{ account.name }}">
+        <label for="confirm-{{ account.name }}">Type <strong>{{ account.name }}</strong> to disconnect it</label>
+        <input type="text" id="confirm-{{ account.name }}" name="confirm" autocomplete="off" required>
+        <button type="submit" class="quiet danger" aria-label="Disconnect {{ account.service }} ({{ account.address }})">Disconnect</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <ul class="account-list">
+    {% for kind in google.kinds %}
+    <li>
+      <form method="post" action="/integrations/google/connect" class="ending">
+        <input type="hidden" name="kind" value="{{ kind.kind }}">
+        <button type="submit">Connect Google: {{ kind.service }}</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}

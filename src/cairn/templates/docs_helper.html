@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Help{% endblock %}
+{% block main %}
+<h1>Documentation search</h1>
+<form method="post" action="/help" role="search">
+  <label for="docs-query">Search documentation</label>
+  <input id="docs-query" type="search" name="q" value="{{ query }}" maxlength="200">
+  <button type="submit">Search</button>
+</form>
+{% if idle %}
+<p>Enter a question or topic to search the documentation.</p>
+{% if told %}<p>A search is 1 to 200 characters.</p>{% endif %}
+{% elif available %}
+  {% if results %}
+  <ul>{% for result in results %}<li><p class="meta">{{ result.context }}</p><div class="md">{{ result.html }}</div>{% if result.url %}<a href="{{ result.url }}">Source</a>{% endif %}</li>{% endfor %}</ul>
+  {% else %}<p>No documentation passages matched. Try another search.</p>{% endif %}
+{% else %}<p>Documentation search is unavailable. Browse the <a href="/docs">guides</a>.</p>{% endif %}
+{% endblock %}

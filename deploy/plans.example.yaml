@@ -1,0 +1,42 @@
+# The caps in this file are placeholders: set your own. One thing is decided (2026-11-13): no
+# plan carries a model budget until a model step has shown that it improves a page.
+#
+# The plans a hosted cairn offers: `serve --plans FILE`. Without that option nothing is capped,
+# which is how a self-hosted install runs. A workspace records only the name of its plan
+# (`python -m cairn.server plan-set --db PATH --account ID --plan NAME`, where
+# `workspace-list --db PATH` prints every workspace's ID); a workspace with no name, or with
+# one this file does not have, is on `default`. Edit a plan and restart `serve`:
+# every request reads its workspace's plan anew, and nothing about plans is in the database.
+#
+# Each plan has a label (what people read) and any of these, each a whole number, or left out
+# for no cap:
+#   notes_per_month      new notes a UTC month; the same note again is never counted
+#   storage_bytes        the UTF-8 size of every note the workspace holds
+#                        (it also bounds the workspace's passages, one per 40 bytes, and the
+#                        page history it keeps, four times the cap)
+#   projects               projects the workspace may have
+#   model_budget_micros  model use a UTC month, in millionths of a US dollar
+#                        (a page whose call reserves more is never arranged; at --model-price 0.15,0.6 the largest call, 64,000 bytes in, 3,632 tokens out, 3 tries, reserves 35,340, and a call that fails after sending pays 11,780 for each try it sent: all 35,340 when all three were)
+#   requests_per_minute  requests from the workspace's keys, agents and sessions together
+#                        in any 60 seconds (at least 1)
+#   versions_per_page    versions of each page kept, the latest always (at least 1); left
+#                        out, every version is kept
+
+default: free
+plans:
+  free:
+    label: Free
+    notes_per_month: 100
+    storage_bytes: 5000000
+    projects: 3
+    model_budget_micros: 0
+    requests_per_minute: 60
+    versions_per_page: 20
+  solo:
+    label: Solo
+    notes_per_month: 5000
+    storage_bytes: 500000000
+    projects: 50
+    model_budget_micros: 0
+    requests_per_minute: 300
+    versions_per_page: 100

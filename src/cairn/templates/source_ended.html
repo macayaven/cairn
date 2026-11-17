@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}: {{ ended }}{% endblock %}
+{% block main %}
+<p class="crumbs"><a href="/sources">Sources</a> /</p>
+<h1>{{ title }}: {{ ended }}</h1>
+<p class="notice" role="status">{{ said }}</p>
+<p><a href="/sources">Back to Sources</a></p>
+{% endblock %}

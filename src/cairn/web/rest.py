@@ -212,10 +212,12 @@ def rest_routes() -> list[Route]:
         return JSONResponse(found)
 
     def evidence(request: Request) -> Response:
-        _query(request)
+        """E1: `version` as the query, a version of the page as `page` takes it."""
+        version = _whole_number(_query(request, "version"), "version")
         params = request.path_params
         memory = _memory(request)
-        return JSONResponse(memory.evidence(params["project"], params["slug"], params["claim_id"]))
+        found = memory.evidence(params["project"], params["slug"], params["claim_id"], version)
+        return JSONResponse(found)
 
     def usage(request: Request) -> Response:
         _query(request)

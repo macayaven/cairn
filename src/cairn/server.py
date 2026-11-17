@@ -373,8 +373,10 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       part down to 1,000 from eight on, as before; cairn.store.ranking.scored_max).
   page(project, slug, version=None) -> {"project", "slug", "title", "version", "versions",
       "body", "claims": [{"id", "text", "passage_ids"}], "metrics"}
-  evidence(project, slug, claim_id) -> {"claim": {...}, "passages": [{"id", "note_id",
-      "note_title", "heading_path", "start_line", "end_line", "text"}]}
+  evidence(project, slug, claim_id, version=None) -> {"claim": {...}, "version", "passages":
+      [{"id", "note_id", "note_title", "heading_path", "start_line", "end_line", "text"}]}
+      (E1, frozen by tests/acceptance/test_e1_evidence_of_a_version.py: the claim as that
+      version of the page holds it, with the passages that version cites; None: the latest)
   overview(project) -> {"project", "kind", "guidance", "notes", "pages": [{"slug", "title",
       "version", "claims", "updated_at"}]}
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
@@ -481,7 +483,7 @@ REST (JSON; project = id or name; unknown project or page, or another account's 
   (8) (cairn.memory.LongHeadings, quoting nothing of the note), as the `note` tool's error
   and the composer's form again (400) also say; a source's draft like that is skipped
 - GET /api/projects/{project}/pages; GET /api/projects/{project}/pages/{slug}[?version=N]
-- GET /api/projects/{project}/pages/{slug}/claims/{claim_id}/evidence
+- GET /api/projects/{project}/pages/{slug}/claims/{claim_id}/evidence[?version=N] (E1)
 - GET /api/search?q=...[&project=...][&limit=N]: what `recall` answers, `searched` included;
   N is 1 to 50 (8 when left out), and any other is a 400 that says so (Q3)
 - GET /api/usage: the workspace's plan and what it has used of each cap (Plans, below)

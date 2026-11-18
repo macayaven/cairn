@@ -525,6 +525,12 @@ def _parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="name of the runtime environment variable holding the read-only documentation key",
     )
+    serve.add_argument(  # G2
+        "--graph-explorer",
+        action="store_true",
+        help="make a project's graph page the explorer, the one page that loads a script"
+        " (cairn's own, by a nonce and its hash); off: the graph page runs no script",
+    )
     cli_arrange.add_options(serve)
     _source_parsers(commands)
     _credential_parsers(commands)
@@ -1792,6 +1798,7 @@ def _serve(args: argparse.Namespace) -> int:
                 keep_versions=_kept(args, plans),  # Q1: a page's history bound
                 stats_every=args.stats_every or None,  # Q1: the line with the numbers
                 google_connect=google,  # a Google account connected in the browser, or off
+                graph_explorer=args.graph_explorer,  # G2: the graph page you can explore
             )
         except ValueError as error:
             print(f"cannot sign in that way: {error}", file=sys.stderr)

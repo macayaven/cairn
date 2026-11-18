@@ -355,19 +355,29 @@ def test_a_stale_continuation_is_409_and_an_unreadable_one_400_with_a_way_back(o
         "page-000",
         "Harbour page 0",
         "",
-        [Claim(id="a", text="Harbour claim a"), Claim(id="b", text="Harbour claim b")],
+        [
+            Claim(id="a", text="Harbour claim a", span_ids=()),
+            Claim(id="b", text="Harbour claim b", span_ids=()),
+        ],
     )
     on.ada.view.save_page(
         on.ops.id,
         "page-001",
         "Harbour page 1",
         "",
-        [Claim(id="a", text="Harbour claim a"), Claim(id="b", text="Harbour claim b")],
+        [
+            Claim(id="a", text="Harbour claim a", span_ids=()),
+            Claim(id="b", text="Harbour claim b", span_ids=()),
+        ],
     )
     first = get(on, "/b/ops/graph?focus=page%3Apage-001&limit=1", on.ada)
     (following,) = Page(first.text).next
     on.ada.view.save_page(
-        on.ops.id, "page-001", "Harbour page 1", "", [Claim(id="c", text="Harbour claim c")]
+        on.ops.id,
+        "page-001",
+        "Harbour page 1",
+        "",
+        [Claim(id="c", text="Harbour claim c", span_ids=())],
     )
     stale = get(on, unescape(following), on.ada)
     assert stale.status_code == 409

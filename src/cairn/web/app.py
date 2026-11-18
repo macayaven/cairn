@@ -281,6 +281,7 @@ def create_app(
     docs_release: str | None = None,
     docs_reader_env: str | None = None,
     google_connect: GoogleConnect | None = None,
+    graph_explorer: bool = False,
 ) -> Starlette:
     """The store goes to `Accounts` and nowhere else: no handler is defined where it is in reach.
     `sign_in`: people sign in through identity providers instead of with an API key
@@ -353,7 +354,15 @@ def create_app(
     `google_connect` (`serve --google-connect`; cairn.web.google_connect): a signed-in person
     it is offered to connects a Google account on the Sources page, and the store keeps and
     uses its sealed token (cairn.store.hosted). It needs `sign_in` and `public_url`
-    (ValueError otherwise). None, the default: no route, no block, no table read."""
+    (ValueError otherwise). None, the default: no route, no block, no table read.
+    `graph_explorer` (G2; `serve --graph-explorer`): a project's graph page becomes the
+    explorer (cairn.web.graph_routes), the one page that loads a script, cairn's own
+    /static/graph-view.js, by a nonce and its hash; it needs nothing else. False, the
+    default: the graph page is decision 134's, with no script, and /static/graph-view.js,
+    /static/graph-view.css and /b/<project>/graph/notes/<id> are 404. True or False only
+    (ValueError otherwise); `app.state.graph_explorer` holds it."""
+    if type(graph_explorer) is not bool:
+        raise ValueError("graph_explorer is True or False")
     if google_connect is not None and (sign_in is None or not public_url):
         raise ValueError("--google-connect needs --sign-in and --public-url")
     if plans is not None and keep_versions is not None:
@@ -569,6 +578,7 @@ def create_app(
     app.state.arranger = arranger
     app.state.credential_failures = failures
     app.state.stats_every = stats_every  # Q1: minutes; None when off
+    app.state.graph_explorer = graph_explorer  # G2
     if google_connect is not None:  # the key and the client, for every view made from now on
         store.google_custody = google_connect.custody
     store.bound_history(keep_versions)  # last: an app refused above changes nothing

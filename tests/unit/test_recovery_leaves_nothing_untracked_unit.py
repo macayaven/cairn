@@ -14,7 +14,6 @@ import subprocess
 
 from test_local_recovery_docs_unit import GUIDES, ROOT, docker_boundary, recipe  # noqa: F401
 
-FIXTURE_FILES = {"calls", "state", "restore-path", "data", "bin", "clone"}
 SERVE_FILES = ("cairn.db-wal", "cairn.db-shm", "cairn.db.serve.lock")
 
 

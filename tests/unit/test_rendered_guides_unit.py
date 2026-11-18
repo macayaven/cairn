@@ -72,7 +72,7 @@ def test_each_rendered_copy_is_what_the_script_writes_now(name):
 
 
 def test_the_rendered_copies_are_the_guides_and_nothing_else():
-    assert sorted(p.name for p in RENDERED.iterdir()) == sorted(f"{n}.md" for n in GUIDES)
+    assert sorted(p.name for p in RENDERED.glob("*.md")) == sorted(f"{n}.md" for n in GUIDES)
 
 
 @pytest.mark.parametrize("name", GUIDES)

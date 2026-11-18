@@ -66,3 +66,20 @@ def test_a_failed_tool_call_leaves_what_the_caller_sent_in_no_log_record(
     assert [r for r in caplog.records if CANARY in said(r)] == []
     access = [(r.action, r.status) for r in caplog.records if r.name == ACCESS_LOGGER]
     assert access == [(tool, 404)]
+
+
+def test_a_failed_read_of_a_projects_graph_leaves_the_name_in_no_log_record(store, caplog):
+    """The graph resource (graph://project/{project}/{limit}) refuses a project the caller
+    does not reach; its name is in no log record either."""
+    key = store.create_key("laptop")
+    caplog.set_level(logging.DEBUG)
+    with TestClient(create_app(store), base_url=BASE) as client:
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {"uri": f"graph://project/{CANARY}/20"},
+        }
+        answer = client.post("/mcp", headers={**MCP_HEADERS, "x-api-key": key}, json=body)
+    assert answer.status_code == 200 and "error" in answer.json()
+    assert [r for r in caplog.records if CANARY in said(r)] == []

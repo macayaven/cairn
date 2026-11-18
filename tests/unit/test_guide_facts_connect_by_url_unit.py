@@ -17,6 +17,7 @@ from cairn.store import Store
 METADATA = "/.well-known/oauth-authorization-server"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
 LIST = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
 LOCAL = "http://127.0.0.1:8765"  # the README's install: no --public-url
 HOSTED = "https://cairn.example.test"
 
@@ -56,6 +57,7 @@ def test_on_a_local_install_an_agent_connects_with_a_key_and_not_by_url_alone(st
         " off: an agent connects with an API key, and [Headless agents and scripts]"
         "(#headless-agents-and-scripts) says how to make one.",
         "A key is sent as `x-api-key: <key>` or `Authorization: Bearer <key>`.",
+        "How an agent connects depends on how the server was started.",
     )
     key = store.create_key("laptop")
     with TestClient(create_app(store), base_url=LOCAL) as client:
@@ -64,6 +66,11 @@ def test_on_a_local_install_an_agent_connects_with_a_key_and_not_by_url_alone(st
         for sent in ({"x-api-key": key}, {"authorization": f"Bearer {key}"}):
             listed = client.post("/mcp", headers={**MCP_HEADERS, **sent}, json=LIST)
             assert listed.status_code == 200 and listed.json()["result"]["tools"]
+        # Where Headless agents and scripts says a key is made: Workspace, then Keys.
+        assert client.get("/keys", follow_redirects=False).status_code == 303
+        signed_in = client.post("/login", data={"key": key}, headers=SAME_ORIGIN)
+        assert signed_in.status_code == 200
+        assert client.get("/keys", follow_redirects=False).status_code == 200
 
 
 @pytest.mark.parametrize("public_url", [HOSTED, LOCAL])
@@ -81,7 +88,9 @@ def test_with_a_public_url_an_agent_connects_by_url_alone(store, public_url):
         " and approves; a connection left unused for 30 days asks again.",
         "Sign-in through the browser is on only on an install started with `--public-url`,"
         " which must be https except on localhost.",
+        "Clients and jobs without a browser connect with a key on any install.",
     )
+    key = store.create_key("job")
     with TestClient(create_app(store, public_url=public_url), base_url=public_url) as client:
         metadata = client.get(METADATA)
         assert metadata.status_code == 200 and metadata.json()["issuer"] == public_url
@@ -90,6 +99,8 @@ def test_with_a_public_url_an_agent_connects_by_url_alone(store, public_url):
         unsigned = client.post("/mcp", headers=MCP_HEADERS, json=LIST)
         assert unsigned.status_code == 401
         assert "resource_metadata" in unsigned.headers["www-authenticate"]
+        keyed = client.post("/mcp", headers={**MCP_HEADERS, "x-api-key": key}, json=LIST)
+        assert keyed.status_code == 200 and keyed.json()["result"]["tools"]
 
 
 def test_where_no_browser_opens_the_guide_says_to_use_a_key(store):
@@ -113,6 +124,7 @@ def test_patterns_connects_by_url_only_where_sign_in_is_on():
     says(
         "patterns",
         "One project holds everything, and every agent reaches it.",
+        "2. Connect each agent.",
         "On an install started with `--public-url`, an agent that has a browser at hand"
         " connects by URL alone:",
         "On a local install, started without `--public-url`, sign-in through the browser is"

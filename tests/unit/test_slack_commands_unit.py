@@ -284,6 +284,50 @@ def test_link_says_who_and_unlink_undoes_it_and_offers_the_address(bench):
     assert f"{BASE}/integrations/slack/link?t=" in answer
 
 
+def test_after_unlink_the_answer_is_the_one_seam_for_it(bench, monkeypatch):
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    today = asyncio.run(people.unlinked(bench.context, ADA_SLACK))  # the offer, as before
+    assert f"{BASE}/integrations/slack/link?t=" in said(today)
+    asked = []
+
+    async def seam(context, slack_user):
+        asked.append((context, slack_user))
+        return blocks.refused("seam")
+
+    monkeypatch.setattr(people, "unlinked", seam)
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    assert said(ask(bench, "unlink")) == said(blocks.refused("seam"))
+    assert asked == [(bench.context, ADA_SLACK)]
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK) is None
+
+
+def test_a_note_waiting_for_its_page_is_answered_through_the_one_seam_for_it(bench, monkeypatch):
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    real = Memory.note
+
+    def waiting(self, *args, **kwargs):
+        return {**real(self, *args, **kwargs), "status": "waiting"}  # its page kept moving
+
+    asked = []
+
+    def seam(**fields):
+        asked.append(fields)
+        return blocks.refused("seam")
+
+    monkeypatch.setattr(Memory, "note", waiting)
+    monkeypatch.setattr(people, "filed_message", seam)
+    assert said(ask(bench, "note Row 4 holds the quince jars.")) == said(blocks.refused("seam"))
+    url = f"{BASE}/b/library/p/row-4-holds-the-quince-jars"
+    assert asked == [{"title": "Row 4 holds the quince jars.", "page_url": url,
+                      "project": "library", "waiting": True}]  # fmt: skip
+    monkeypatch.undo()
+    for flag in (True, False):  # today both are what blocks.filed says of a note filed
+        fields = {**asked[0], "waiting": flag}
+        assert people.filed_message(**fields) == blocks.filed(
+            title=fields["title"], page_url=url, project="library"
+        )
+
+
 def test_the_command_is_the_installs(bench):
     install = dataclasses.replace(bench.install, command="/shelf")
     bench.context = dataclasses.replace(bench.context, install=install)

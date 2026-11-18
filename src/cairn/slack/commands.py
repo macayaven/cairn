@@ -83,4 +83,4 @@ async def unlink(envelope: Envelope, context: Context) -> JSONResponse:
         await run_in_threadpool(
             context.view.unlink_slack_user, context.install.id, envelope.user_id
         )
-    return _answer(await people.link_prompt(context, envelope.user_id))
+    return _answer(await people.unlinked(context, envelope.user_id))

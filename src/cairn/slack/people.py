@@ -33,6 +33,9 @@ A search and a note, as the person's
   project forgot, a text that is not a note (NOT_A_NOTE), the store unable to write.
 - `already(context, asker, note_id)`: the answer for a message filed already, linking its
   note, or, when that note is out of the person's reach, ELSEWHERE, naming nothing of it.
+- Two seams, each the one place its message is built: `filed_message` (a note written, or
+  stored and waiting for its page: today both are said as filed) and `unlinked` (after
+  `unlink`: today the one-time address again).
 
 The author of a message (D7)
 - `author(context, message)`: the name of the message's author, once Slack shows the author
@@ -64,7 +67,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from cairn.compiler import page_for
-from cairn.memory import Malformed, Memory, NotFound, RequestError, unavailable
+from cairn.memory import WAITING, Malformed, Memory, NotFound, RequestError, unavailable
 from cairn.slack import blocks
 from cairn.slack.client import SlackError
 from cairn.slack.dispatch import Context
@@ -162,6 +165,13 @@ async def link_prompt(context: Context, slack_user: str | None) -> dict:
 def linked(asker: Asker) -> dict:
     """Who the Slack user is linked to."""
     return blocks.linked(asker.name)
+
+
+async def unlinked(context: Context, slack_user: str | None) -> dict:
+    """What a person is told once `unlink` undid their link: the one seam for it. Today the
+    one-time address again, as anyone not linked is offered (link_prompt)."""
+    # Replaced by blocks.unlinked(context.install.command) once blocks.py has it.
+    return await link_prompt(context, slack_user)
 
 
 def help_message(context: Context) -> dict:
@@ -267,11 +277,21 @@ def write(
     note = asker.memory.store.get_note(answer["note_id"])
     if project is None or note is None:  # gone since: what is said of a project gone
         return blocks.refused(OUT_OF_REACH.format(command=command))
-    return blocks.filed(
+    return filed_message(
         title=note.title,
         page_url=page_url(context, project.name, answer["page"]),
         project=project.name,
+        waiting=answer.get("status") == WAITING,
     )
+
+
+def filed_message(*, title: str, page_url: str, project: str, waiting: bool) -> dict:
+    """What a person is told of a note written: the one seam for it. `waiting`: the note is
+    stored and waits for its page (Memory.note's status WAITING, N1). Today both are said as
+    a note filed."""
+    # Replaced by blocks.filed(title=..., page_url=..., project=..., waiting=waiting) once
+    # blocks.py takes `waiting`.
+    return blocks.filed(title=title, page_url=page_url, project=project)
 
 
 def already(context: Context, asker: Asker, note_id: str) -> dict:

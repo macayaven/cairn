@@ -4,7 +4,7 @@ cairn is a memory service for AI agents. Agents write notes to it over MCP, and 
 
 ## Run it on your computer
 
-You need Docker with Compose 2.24 or later (`docker compose version` prints it) and a clone of this repository. The commands below run from the clone's `deploy` folder.
+You need Docker Engine 28.3.3 or later (`docker version` prints it under Server), Compose 2.24 or later (`docker compose version` prints it) and a clone of this repository. cairn is published here on `127.0.0.1` only, and Engine 28.3.3 is the release that [closed a way](https://docs.docker.com/engine/release-notes/28/) for such a port to be reached from the local network after a firewall reload. Docker Desktop carries its own Engine and Compose: check both the same way. The commands below run from the clone's `deploy` folder.
 
 ```bash
 cd deploy
@@ -77,13 +77,39 @@ docker compose cp cairn:/data/export.zip ./cairn-export.zip
 docker compose exec cairn rm /data/export.zip
 ```
 
-A copy of the database holds everything, keys included. Stop cairn first, so the copy is whole, and give each backup a folder of its own, named with the time. Copying into a folder that already holds a backup puts the new one inside the old one and leaves the old database on top:
+A copy of the database holds every project with its notes and pages, the people, and a digest of each key. It does not hold the keys themselves, which are in the files you copied out (`laptop.env`), nor an environment file you gave cairn, with the credentials of sources in it. Keep those somewhere else. Note the commit the clone is at (`git rev-parse HEAD`): a copy is restored with the code that made it. The commands below stop cairn so the copy is whole, copy into a new folder every time, and start cairn again whether or not the copy worked:
 
 ```bash
-docker compose stop cairn
-docker compose cp cairn:/data/. "./cairn-backup-$(date +%Y%m%d-%H%M%S)"
-docker compose start cairn
+(
+  set -e
+  BACKUP_DIR=$(mktemp -d "$PWD/cairn-backup.XXXXXX")
+  restart_cairn() {
+    BACKUP_STATUS=$?
+    trap - EXIT
+    if ! docker compose start cairn
+    then
+      printf 'Restart failed. Run docker compose start cairn and inspect its status. Backup directory: %s\n' "$BACKUP_DIR" >&2
+      exit 1
+    fi
+    if [ "$BACKUP_STATUS" -eq 0 ]
+    then
+      printf 'Backup saved in %s\n' "$BACKUP_DIR"
+    fi
+    exit "$BACKUP_STATUS"
+  }
+  trap restart_cairn EXIT
+  docker compose stop cairn
+  if ! docker compose cp cairn:/data/. "$BACKUP_DIR/"
+  then
+    printf 'Copy failed. This is not a successful backup: %s\n' "$BACKUP_DIR" >&2
+    exit 1
+  fi
+)
 ```
+
+A copy that fails is not a backup: the commands say so and end with an error. Run them again, and they make a new folder. If cairn does not start again, run `docker compose start cairn` and look at `docker compose ps`.
+
+To run cairn from a copy, follow [Restore a copy of the database](src/cairn/guides/run.md#restore-a-copy-of-the-database) with the folder a backup printed. Its steps copy the backup into a new folder and start a second container on it, so the backup and the data of the running cairn stay as they are.
 
 To bring an export back into a cairn whose workspace has no project of the same names, write it in as cairn's own user, import it and delete the copy:
 
@@ -263,7 +289,7 @@ One exception: a change that touches only paths no image job reads builds no ima
 2. **Infrastructure and deploy files:** OpenTofu formatting and validation, the host and deploy scripts, the compose files, Caddy's own check of its configuration, and the restore drill on a fresh database.
 3. **Image check:** builds the image for linux/amd64 and linux/arm64, then runs `scripts/smoke_container.py` against each.
 4. **Stack rehearsal:** runs the shipped compose stack on the runner, with Caddy and Litestream, and restores a lost database into it (`scripts/rehearse_stack.py`).
-5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags publish one multi-arch image, with provenance and an SBOM, to `ghcr.io/<owner>/<repo>`. Tags are the version, `major.minor`, the branch and the commit.
+5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags publish one multi-arch image, with provenance and an SBOM, to `ghcr.io/<owner>/<repo>`. Tags are the version, `major.minor`, the branch and the commit. A repository whose registry is not ready sets the variable `CAIRN_PUBLISH` to `false`: the gate runs as before, and items 5 and 6 are skipped.
 6. **Verify and deploy:** on `main`, the published image is smoke-tested, and a `deploy` job that waits for approval moves the production VM to it ([infra/gcp/README.md](infra/gcp/README.md)).
 
 Nothing is published from a pull request. Actions are pinned to commit SHAs, and Dependabot updates them, the base images and `uv.lock` weekly.

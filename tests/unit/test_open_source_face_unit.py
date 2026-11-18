@@ -210,21 +210,6 @@ def test_the_repository_names_itself_where_it_lives():
     assert 'REPOSITORY = "https://github.com/macayaven/cairn"' in publisher
 
 
-def test_a_second_backup_never_lands_inside_the_first():
-    """`docker cp SRC DEST` copies a folder into DEST when DEST exists, so the same
-    destination twice left the first database on top and hid the second under data/. Each
-    backup goes to a folder of its own, and the contents are what is copied."""
-    for path, tool in (
-        ("README.md", "docker compose cp"),
-        ("src/cairn/guides/run.md", "docker cp"),
-    ):
-        text = (ROOT / path).read_text(encoding="utf-8")
-        assert f"{tool} cairn:/data ./cairn-backup\n" not in text, path
-        (line,) = [row for row in text.splitlines() if row.startswith(f"{tool} cairn:/data/. ")]
-        assert line == f'{tool} cairn:/data/. "./cairn-backup-$(date +%Y%m%d-%H%M%S)"', path
-        assert "a folder of its own" in text, path
-
-
 def test_the_first_run_builds_the_code_that_was_cloned():
     """Without --build Compose starts an image named cairn:local that an earlier checkout
     left, whatever the clone holds."""

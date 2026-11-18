@@ -271,15 +271,59 @@ docker exec cairn rm /data/export.zip
 
 The workspace must not already have a project with the same name. Imported projects are private: only the workspace's owners reach them until you share them again. Each arrives at **Models** where the file says, and a project of Personal notes at never whatever it says. A file exported before cairn carried that choice does not say it, and the import says so: each then starts at **Models** as a new project of its kind does, a project of Personal notes at never, the others at allowed.
 
-**A copy of the database** holds everything, keys included. Stop cairn first, so the copy is whole, and give each backup a folder of its own, named with the time: copying into a folder that already holds a backup puts the new one inside the old one and leaves the old database on top.
+**A copy of the database** holds every project with its notes and pages, the people, and a digest of each key. It does not hold the keys themselves, which are in the files you wrote them to, nor the environment file you start cairn with and the credentials of sources in it. Keep those somewhere else. Note the image cairn runs from (`docker inspect cairn --format '{{.Image}}'` prints it): a copy is restored with the image that made it. The commands below stop cairn so the copy is whole, copy into a new folder every time, and start cairn again whether or not the copy worked:
 
 ```bash
-docker stop cairn
-docker cp cairn:/data/. "./cairn-backup-$(date +%Y%m%d-%H%M%S)"
-docker start cairn
+(
+  set -e
+  BACKUP_DIR=$(mktemp -d "$PWD/cairn-backup.XXXXXX")
+  restart_cairn() {
+    BACKUP_STATUS=$?
+    trap - EXIT
+    if ! docker start cairn
+    then
+      printf 'Restart failed. Run docker start cairn and inspect its status. Backup directory: %s\n' "$BACKUP_DIR" >&2
+      exit 1
+    fi
+    if [ "$BACKUP_STATUS" -eq 0 ]
+    then
+      printf 'Backup saved in %s\n' "$BACKUP_DIR"
+    fi
+    exit "$BACKUP_STATUS"
+  }
+  trap restart_cairn EXIT
+  docker stop cairn
+  if ! docker cp cairn:/data/. "$BACKUP_DIR/"
+  then
+    printf 'Copy failed. This is not a successful backup: %s\n' "$BACKUP_DIR" >&2
+    exit 1
+  fi
+)
 ```
 
-To run from a copy, start cairn on that folder as a host directory: `-v "$PWD/cairn-backup-20261118-090000:/data" --user "$(id -u):$(id -g)"` in place of `-v cairn-data:/data`, with the name of the folder you chose. Check first that `cairn.db` is directly inside it.
+A copy that fails is not a backup: the commands say so and end with an error. Run them again, and they make a new folder. If cairn does not start again, run `docker start cairn` and look at `docker ps -a`.
+
+## Restore a copy of the database
+
+Take the folder a backup printed, and the image that made it: the image you noted, while this computer still has it, or `cairn:local` built from the same commit. Do not start a copy with a newer image first. A newer cairn may move the database forward, and the older one then refuses it.
+
+Put the folder's path in the first line and the image in the second. The commands copy the backup into a new folder and start a second container on that folder, so the backup and the data of the running cairn stay as they are:
+
+```bash
+BACKUP_DIR="$PWD/cairn-backup.REPLACE_ME"
+CAIRN_IMAGE=cairn:local
+(
+  set -e
+  test -f "$BACKUP_DIR/cairn.db"
+  RESTORE_DIR=$(mktemp -d "$PWD/cairn-restore.XXXXXX")
+  cp -R "$BACKUP_DIR/." "$RESTORE_DIR/"
+  docker run -d --name cairn-restored --pull never \
+    -p 127.0.0.1:18765:8765 -v "$RESTORE_DIR:/data" \
+    --user "$(id -u):$(id -g)" "$CAIRN_IMAGE"
+)
+```
+
+Open http://127.0.0.1:18765 and sign in with a key you had before: the copy holds its digest. Add to the `docker run` line the environment file and the options your cairn runs with. If the port or the name `cairn-restored` is taken, choose others. If the copy or the start fails, the backup and the running cairn are as they were, and you can try again.
 
 ## Upgrade
 

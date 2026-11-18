@@ -421,7 +421,7 @@ def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
     assert needs(JOBS["host"]) == {"test", "changes"}
     assert needs(JOBS["stack"]) == {"changes"}
     assert needs(JOBS["publish"]) == {"infra", "image", "stack", "host"}
-    assert JOBS["publish"]["if"] == "github.event_name == 'push'"
+    assert JOBS["publish"]["if"] == "github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'"
     assert needs(JOBS["verify"]) == {"publish"}
     assert JOBS["verify"]["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
     assert needs(DEPLOY) == {"test", "infra", "image", "publish", "verify"}
@@ -587,6 +587,20 @@ def test_which_jobs_run_for_each_event_when_changes_says_nothing():
     }
     for event, (context, expected) in table.items():
         assert jobs_that_run(context) == expected, event
+
+
+def test_publishing_has_an_off_switch_and_is_on_when_nothing_is_set():
+    """A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`:
+    a push to main still runs the whole gate, and publishes, verifies and deploys nothing.
+    With the variable unset, or set to anything else, a push publishes as before."""
+    assert JOBS["publish"]["if"] == "github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'"
+    push = not_a_pull_request("push", "refs/heads/main")
+    assert jobs_that_run(push) == EVERYTHING
+    for said, expected in (("false", THE_GATE), ("true", EVERYTHING), ("", EVERYTHING)):
+        variables = {**REPOSITORY_VARIABLES, "CAIRN_PUBLISH": said}
+        assert jobs_that_run({**push, "vars": variables}) == expected, said
+    tag = {**not_a_pull_request("push", "refs/tags/v1.0.0"), "vars": {"CAIRN_PUBLISH": "false"}}
+    assert jobs_that_run(tag) == THE_GATE
 
 
 EVENTS = {

@@ -259,7 +259,7 @@ One exception: a change that touches only paths no image job reads builds no ima
 2. **Infrastructure and deploy files:** OpenTofu formatting and validation, the host and deploy scripts, the compose files, Caddy's own check of its configuration, and the restore drill on a fresh database.
 3. **Image check:** builds the image for linux/amd64 and linux/arm64, then runs `scripts/smoke_container.py` against each.
 4. **Stack rehearsal:** runs the shipped compose stack on the runner, with Caddy and Litestream, and restores a lost database into it (`scripts/rehearse_stack.py`).
-5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags publish one multi-arch image, with provenance and an SBOM, to `ghcr.io/<owner>/<repo>`. Tags are the version, `major.minor`, the branch and the commit.
+5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags publish one multi-arch image, with provenance and an SBOM, to `ghcr.io/<owner>/<repo>`. Tags are the version, `major.minor`, the branch and the commit. A repository whose registry is not ready sets the variable `CAIRN_PUBLISH` to `false`: the gate runs as before, and items 5 and 6 are skipped.
 6. **Verify and deploy:** on `main`, the published image is smoke-tested, and a `deploy` job that waits for approval moves the production VM to it ([infra/gcp/README.md](infra/gcp/README.md)).
 
 Nothing is published from a pull request. Actions are pinned to commit SHAs, and Dependabot updates them, the base images and `uv.lock` weekly.

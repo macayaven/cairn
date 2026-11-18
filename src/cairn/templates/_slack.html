@@ -13,6 +13,9 @@
   {% endif %}
   {% if slack.manages %}
   {% if slack.says %}<p>{{ slack.says }}</p>{% endif %}
+  {% if slack.gone %}
+  <p class="alert">Slack no longer accepts this install's bot token, since <time datetime="{{ slack.gone.since }}">{{ slack.gone.since|when }}</time>. Paste a new bot token here by <time datetime="{{ slack.gone.by }}">{{ slack.gone.by|when }}</time>: after that day, Slack is removed here, and every note Slack created is forgotten 10 days later.</p>
+  {% endif %}
   {% if not slack.state or slack.state == "removed" %}
   <p>One Slack app for this workspace, made by you at Slack from what this page gives: people then file a Slack message as a note, write one, and ask the bot to find something, each as the person they linked here.</p>
   <form method="post" action="/integrations/slack/setup">
@@ -38,9 +41,10 @@
     <dd><code>{{ slack.events }}</code></dd>
   </dl>
   {% endif %}
-  {% if slack.state in ("pending", "revoked") %}
+  {% if slack.state in ("pending", "ready", "on", "off", "revoked") %}
+  {% if slack.again %}<p>{{ slack.again }}</p>{% endif %}
   <form method="post" action="/integrations/slack/secrets" class="stack">
-    {% if slack.state == "pending" %}
+    {% if slack.state != "revoked" %}
     <label for="slack-signing-secret">Signing secret</label>
     <input type="password" id="slack-signing-secret" name="signing_secret" autocomplete="off" spellcheck="false" required aria-describedby="slack-signing-secret-hint">
     <p class="hint" id="slack-signing-secret-hint">At Slack, in the app's Basic Information.</p>
@@ -64,7 +68,7 @@
   <form method="post" action="/integrations/slack/disconnect" class="stack ending">
     <label for="slack-confirm">Type <strong>{{ slack.workspace }}</strong> to remove Slack</label>
     <input type="text" id="slack-confirm" name="confirm" autocomplete="off" spellcheck="false" required aria-describedby="slack-confirm-hint">
-    <p class="hint" id="slack-confirm-hint">Removing deletes both secrets and every link between a Slack user and a person at once, and forgets every note that came through Slack 10 days later.</p>
+    <p class="hint" id="slack-confirm-hint">Removing deletes both secrets and every link between a Slack user and a person at once, and 10 days later forgets every note Slack created in this workspace, in projects you do not reach too.</p>
     <button type="submit" class="quiet danger">Remove Slack</button>
   </form>
   {% endif %}

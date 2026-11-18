@@ -8,7 +8,9 @@ Who asks
   (Store.slack_person) with their Memory (Context.memory_for: their reach, the gate, the guard
   and the plan), or None when there is no link or the person is no longer a member: both are
   "not linked". `link_prompt` makes the one-time value (Store.offer_slack_link, 10 minutes,
-  one use) and answers with its address, <public url>/integrations/slack/link?t=<value>.
+  one use, replacing the Slack user's earlier offer and its code) and answers with its
+  address, <public url>/integrations/slack/link?t=<value>, and the two steps of a link: open
+  it signed in, it shows a code, type `<command> link` and the code (cairn.slack.commands).
 - `writable(memory)`: the projects the person may write to, by name. `chosen(context, asker,
   name)`: one of those made the person's Slack project (Store.set_slack_project), or a
   refusal that says nothing of whether a project of that name exists (NOT_WRITABLE).
@@ -24,8 +26,9 @@ A search and a note, as the person's
   its conversation and message time (D9: a message recorded already answers with the note it
   already is); typed, only when the note is new (a text the project held already came in
   some other way, and is not forgotten with the install, D10). The record is written when the
-  note is stored and before it is compiled (Memory.note's `on_stored`), so a compile that
-  then fails leaves a note the install's removal still finds; the person is then told it is
+  note is stored and before it is compiled (Memory.note's `on_stored`): for a filed message
+  it gives the claim cairn.slack.shortcuts made its note, so a compile that then fails leaves
+  a note the install's removal still finds; the person is then told it is
   stored (STORED_NOT_FILED). The answer links the note's page. Each refusal is its own
   sentence: no project chosen (NO_PROJECT), the project out of
   reach or gone (OUT_OF_REACH), read-only (the store's sentence), the guard's (cairn's own,
@@ -40,6 +43,7 @@ A search and a note, as the person's
   kept to be written later: what is answered is what is stored (D8).
 - `already(context, asker, note_id)`: the answer for a message filed already, linking its
   note, or, when that note is out of the person's reach, ELSEWHERE, naming nothing of it.
+  BEING_FILED: the answer for a message someone else is filing right now.
 - Two seams, each the one place its message is built: `filed_message` (a note written, or
   stored and waiting for its page: today both are said as filed) and `unlinked` (after
   `unlink`: today the one-time address again).
@@ -111,6 +115,10 @@ NOT_WRITABLE = (
 )
 NOT_A_NOTE = "This is not a note cairn keeps ({reason}), and nothing was stored."
 ELSEWHERE = "This message is filed already, in a project you do not reach."
+BEING_FILED = (
+    "This message is being filed right now, and nothing more was filed. Try again in a moment"
+    " to see its note."
+)
 NO_TEXT = "This message has no text to file, and nothing was filed."
 NOT_A_MESSAGE = "This is not a message cairn can file, and nothing was filed."
 NO_PERSON = (
@@ -168,11 +176,14 @@ async def asker(context: Context, slack_user: str | None) -> Asker | None:
 
 
 async def link_prompt(context: Context, slack_user: str | None) -> dict:
-    """A one-time address that links `slack_user` to whoever opens it signed in."""
+    """The first step of a link for `slack_user`: a one-time address, which replaces their
+    earlier offer and its code, and the two steps said (blocks.link_prompt)."""
     if not slack_user:
         return blocks.refused("Slack did not say who asked.")
     value = await run_in_threadpool(context.view.offer_slack_link, context.install.id, slack_user)
-    return blocks.link_prompt(f"{context.public_url}/integrations/slack/link?t={value}")
+    return blocks.link_prompt(
+        f"{context.public_url}/integrations/slack/link?t={value}", context.install.command
+    )
 
 
 def linked(asker: Asker) -> dict:
@@ -250,16 +261,21 @@ def write(
 
     def stored(note: Any, created: bool) -> None:
         if message is not None:  # a filed message is recorded always: it is its key (D9)
-            kept.append(
-                context.view.record_slack_note(
-                    context.install.id,
-                    note.id,
-                    how="filed",
-                    brought_by=asker.person.user_id,
-                    conversation_id=message[0],
-                    message_time=message[1],
-                )
+            recorded = context.view.record_slack_note(
+                context.install.id,
+                note.id,
+                how="filed",
+                brought_by=asker.person.user_id,
+                conversation_id=message[0],
+                message_time=message[1],
             )
+            if recorded != note.id and created:
+                # the claim was taken over and the message filed meanwhile: this note is
+                # one Slack created all the same, so it is forgotten with the install's
+                context.view.record_slack_note(
+                    context.install.id, note.id, how="typed", brought_by=asker.person.user_id
+                )
+            kept.append(recorded)
             return
         if created:  # a typed text the project held already did not come through here
             context.view.record_slack_note(

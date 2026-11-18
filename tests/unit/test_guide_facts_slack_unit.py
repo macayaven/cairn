@@ -22,6 +22,7 @@ from starlette.testclient import TestClient
 from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, ask, said
 from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
 
+import cairn.store.slack as store_slack
 from cairn import server
 from cairn.server import create_app
 from cairn.slack import (
@@ -40,7 +41,15 @@ from cairn.slack.text import note_from_message
 from cairn.slack.verify import BODY_MAX, SKEW, OtherTeam, envelope, signature, verified
 from cairn.store import Store
 from cairn.store.hosted import Sealer
-from cairn.store.slack import ACCEPTING, COMMAND, FORGET_AFTER, OFFER_TTL
+from cairn.store.slack import (
+    ACCEPTING,
+    CHECK_EVERY,
+    COMMAND,
+    FORGET_AFTER,
+    GONE_AFTER,
+    OFFER_TTL,
+    TRIES,
+)
 from cairn.web import slack as web_slack
 from cairn.web.brand import product_of
 
@@ -195,6 +204,15 @@ def test_run_slack_needs_a_public_address():
         assert str(refused.value) == web_slack.NEEDS_HTTPS
 
 
+def test_run_slack_not_tried_with_enterprise_grid_or_govslack():
+    """run.md: "This version was not tried with an Enterprise Grid organisation or with
+    GovSlack.\""""
+    says(
+        *RUN,
+        "This version was not tried with an Enterprise Grid organisation or with GovSlack.",
+    )
+
+
 def test_run_slack_keep_the_key_apart_and_losing_it_means_setting_up_again(world):  # noqa: F811
     """run.md: "Keep the key apart from the database and its backups, as you keep the
     environment file: a copy of the database holds each workspace's signing secret and bot
@@ -341,22 +359,51 @@ def test_connect_the_two_secrets_are_copied_from_slack_and_kept_sealed():
         assert setup.REFUSALS[code].startswith(words) and "nothing was kept" in setup.REFUSALS[code]
 
 
-def test_connect_ready_then_have_slack_verify_the_events_address():
-    """connect.md: "4. Slack is then ready: the slash command and the message shortcut are
-    answered. At Slack, have Slack verify the events address the page shows, on the page where
-    Slack lists events. Once it has, Slack is on, and direct messages to the bot are answered
-    too.\""""
+def test_connect_ready_says_the_signing_secret_is_not_proven_until_slack_verifies_the_address(
+    world,  # noqa: F811
+):
+    """connect.md: "4. Slack is then ready: Slack accepted the bot token, but nothing proves
+    the signing secret yet; only a request that Slack signed can. At Slack, have Slack verify
+    the events address the page shows, on the page where Slack lists events. If Slack reports
+    that the address did not answer, either Slack cannot reach this server or the signing
+    secret you pasted is not this app's: check the address, then paste the secret again.
+    Once Slack has verified the address, Slack is on: a request signed with this app's
+    signing secret was verified, and the slash command, the message shortcut and direct
+    messages to the bot are answered.\""""
     says(
         *CONNECT,
-        "4. Slack is then ready: the slash command and the message shortcut are answered. At"
-        " Slack, have Slack verify the events address the page shows, on the page where Slack"
-        " lists events. Once it has, Slack is on, and direct messages to the bot are answered"
-        " too.",
+        "4. Slack is then ready: Slack accepted the bot token, but nothing proves the signing"
+        " secret yet; only a request that Slack signed can. At Slack, have Slack verify the"
+        " events address the page shows, on the page where Slack lists events. If Slack reports"
+        " that the address did not answer, either Slack cannot reach this server or the signing"
+        " secret you pasted is not this app's: check the address, then paste the secret again."
+        " Once Slack has verified the address, Slack is on: a request signed with this app's"
+        " signing secret was verified, and the slash command, the message shortcut and direct"
+        " messages to the bot are answered.",
     )
-    assert "the slash command and the message shortcut are answered" in setup.STATES["ready"]
-    assert "have Slack verify the events address below" in setup.STATES["ready"]
+    ready_says = setup.STATES["ready"]
+    assert ready_says.startswith("Ready: Slack accepted the bot token.")
+    assert "The signing secret is not proven yet" in ready_says
+    assert "only a request that Slack signed can prove it" in ready_says
+    assert "have Slack verify the events address below" in ready_says
+    assert "If Slack reports that the address did not answer" in ready_says
+    assert "either Slack cannot reach this server" in ready_says
+    assert "the signing secret pasted here is not this app's" in ready_says
+    assert "check the address, then paste the secret again" in ready_says
+    assert "are answered" not in ready_says and "shortcut" not in ready_says
+    assert "a request signed with this app's signing secret was verified" in setup.STATES["on"]
     assert "direct messages to the bot are answered" in setup.STATES["on"]
+    for text in (ready_says, setup.STATES["on"]):
+        assert not set(text) & set('&<>"')  # shown as it is, in the page
     assert ACCEPTING == ("ready", "on")
+    # the state machine: ready becomes on only when Slack's signed challenge was verified
+    install = ready(world)
+    assert install.state == "ready"
+    # a signing secret pasted again while ready is the one requests are verified with
+    again = "9a" + "c0ffee11" * 3 + "b2c3d4"
+    assert ready(world, secret=again).state == "ready"
+    assert world.store.slack_inbound(install.id).signing_secret == again
+    assert world.store.slack_install_verified(install.id).state == "on"
     made = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab")
     events = made["settings"]["event_subscriptions"]["request_url"]
     assert events == f"{BASE}/integrations/slack/sl_0123456789ab/events"
@@ -367,9 +414,15 @@ def test_connect_the_page_says_the_state_switch_off_and_on():
     started, ready, on, off, or off because Slack revoked the bot's token. **Switch off** stops
     the bot and deletes nothing: the slash command and the shortcut are refused, and a direct
     message is not answered. **Switch on** needs nothing pasted, unless Slack revoked the bot's
-    token: then the page asks for a new one, and keeps the signing secret.\""""
+    token: then the page asks for a new one, and keeps the signing secret. When the signing
+    secret or the bot token is changed at Slack, paste both on the page again, whatever state
+    Slack is in: a signing secret other than the one kept makes Slack ready again, until Slack
+    verifies the events address.\""""
     says(
         *CONNECT,
+        "When the signing secret or the bot token is changed at Slack, paste both on the page"
+        " again, whatever state Slack is in: a signing secret other than the one kept makes"
+        " Slack ready again, until Slack verifies the events address.",
         "The page says which state Slack is in and what is left to do: set up started, ready,"
         " on, off, or off because Slack revoked the bot's token.",
         "**Switch off** stops the bot and deletes nothing: the slash command and the shortcut"
@@ -390,15 +443,15 @@ def test_connect_the_page_says_the_state_switch_off_and_on():
 
 def test_connect_remove_deletes_the_secrets_and_links_and_forgets_10_days_later(world):  # noqa: F811
     """connect.md: "**Remove Slack**, once you type the workspace's name, deletes both secrets
-    and every link between a Slack user and a person at once, and every note that came through
-    Slack is forgotten 10 days later. Removing the app at Slack does the same. Until then the
+    and every link between a Slack user and a person at once, and every note Slack created is
+    forgotten 10 days later. Removing the app at Slack does the same. Until then the
     page says how many notes and on which day, and offers an owner **Forget them now**; setting
     Slack up again for the same Slack workspace before that day keeps them.\""""
     says(
         *CONNECT,
         "**Remove Slack**, once you type the workspace's name, deletes both secrets and every"
-        " link between a Slack user and a person at once, and every note that came through Slack"
-        " is forgotten 10 days later. Removing the app at Slack does the same. Until then the"
+        " link between a Slack user and a person at once, and every note Slack created is"
+        " forgotten 10 days later. Removing the app at Slack does the same. Until then the"
         " page says how many notes and on which day, and offers an owner **Forget them now**;"
         " setting Slack up again for the same Slack workspace before that day keeps them.",
     )
@@ -419,26 +472,51 @@ def test_connect_remove_deletes_the_secrets_and_links_and_forgets_10_days_later(
     assert world.view.slack_notes_to_forget() is None and world.view.get_note(note) is not None
 
 
-def test_connect_a_person_links_once(bench):
-    """connect.md: "Each person links their Slack user to themselves once. The first time they
-    use the bot, or with `/cairn link`, the bot answers them alone with an address that works
-    once, within 10 minutes. Opened signed in to cairn, it names the Slack user and the person,
-    and asks for a yes. From then on, what they do through the bot acts as them, with what they
-    reach.\""""
+def yes_and_code(bench, slack_user: str, user_id: str) -> str:
+    """The Slack user asks for the address with `/cairn link`; the person `user_id` opens it
+    signed in and says yes. The code they are shown."""
+    (value,) = set(re.findall(r"link\?t=([A-Za-z0-9_-]+)", said(ask(bench, "link", slack_user))))
+    return bench.store.for_account(bench.account, user_id).claim_slack_offer(value)
+
+
+LINK_PAGE = (files("cairn") / "templates" / "slack_link.html").read_text(encoding="utf-8")
+CODE_PAGE = (files("cairn") / "templates" / "slack_link_code.html").read_text(encoding="utf-8")
+
+
+def test_connect_a_person_links_once_in_two_steps(bench):
+    """connect.md: "Each person links their Slack user to themselves once, in two steps within
+    10 minutes. The first time they use the bot, or with `/cairn link`, the bot answers them
+    alone with an address that works once. Opened signed in to cairn, it shows the Slack
+    user's id and the Slack workspace first, then the name that Slack user set themself, and
+    asks for a yes; if someone sent you the address, close the page. The yes shows a code,
+    once, and links nothing yet. The same Slack user then types `/cairn link <code>` in
+    Slack, and is linked. From then on, what they do through the bot acts as them, with what
+    they reach.\""""
     says(
         *CONNECT,
-        "Each person links their Slack user to themselves once. The first time they use the"
-        f" bot, or with `/{PRODUCT.slug} link`, the bot answers them alone with an address that"
-        f" works once, within 10 minutes. Opened signed in to {PRODUCT.name}, it names the Slack"
-        " user and the person, and asks for a yes. From then on, what they do through the bot"
-        " acts as them, with what they reach.",
+        "Each person links their Slack user to themselves once, in two steps within 10"
+        f" minutes. The first time they use the bot, or with `/{PRODUCT.slug} link`, the bot"
+        " answers them alone with an address that works once. Opened signed in to"
+        f" {PRODUCT.name}, it shows the Slack user's id and the Slack workspace first, then the"
+        " name that Slack user set themself, and asks for a yes; if someone sent you the"
+        " address, close the page. The yes shows a code, once, and links nothing yet. The same"
+        f" Slack user then types `/{PRODUCT.slug} link <code>` in Slack, and is linked. From"
+        " then on, what they do through the bot acts as them, with what they reach.",
     )
     assert timedelta(minutes=10) == OFFER_TTL and f"/{PRODUCT.slug}" == COMMAND
     for text in ("find jars", "link"):
         assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, text))  # ephemeral
-    page = (files("cairn") / "templates" / "slack_link.html").read_text(encoding="utf-8")
-    assert "<h1>Link this Slack user to you?</h1>" in page and "Yes, link them" in page
-    assert "with what you reach" in page and "<dt>Slack user</dt>" in page
+    assert "<h1>Link this Slack user to you?</h1>" in LINK_PAGE
+    assert LINK_PAGE.index("{{ slack_user }}") < LINK_PAGE.index("{{ slack_name }}")
+    assert LINK_PAGE.index("{{ team_domain }}") < LINK_PAGE.index("{{ slack_name }}")
+    assert "a name this Slack user set themself" in LINK_PAGE
+    assert "If someone sent you this address, close this page." in LINK_PAGE
+    assert "with what you reach" in LINK_PAGE and "{{ code" not in LINK_PAGE
+    assert "{{ command }} link {{ code }}" in CODE_PAGE
+    code = yes_and_code(bench, ADA_SLACK, bench.ada)
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK) is None  # nothing yet
+    assert said(ask(bench, f"link {code}")) == said(blocks.linked("Ada"))
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK).user_id == bench.ada
 
 
 def test_connect_the_slash_commands_words(bench):
@@ -454,7 +532,9 @@ def test_connect_the_slash_commands_words(bench):
         " page. |",
         "| `project` | Says which project is your Slack project and which projects you can write"
         " to. `project <name>` makes another of those your Slack project. |",
-        "| `link` | Says who your Slack user is linked to. |",
+        "| `link` | Says who your Slack user is linked to; if it is linked to nobody, gives a"
+        " new address to link it. `link <code>` links it with the code that address showed"
+        " you. |",
         "| `unlink` | Undoes your link, and offers a new address to link again. |",
         "| `help`, or no word | Lists what there is. |",
     )
@@ -474,6 +554,7 @@ def test_connect_the_slash_commands_words(bench):
     assert said(ask(bench, "project")) == said(blocks.project_is("library", writable=["library"]))
     assert said(ask(bench, "link")) == said(blocks.linked("Ada"))
     assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "unlink"))
+    assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "link"))  # linked to nobody
     for word in ("help", ""):
         assert said(ask(bench, word)) == said(blocks.help_text("/cairn"))
 
@@ -681,22 +762,19 @@ def test_privacy_only_an_author_of_the_same_slack_workspace_is_filed(bench):
 
 def test_privacy_when_the_app_is_removed(world):  # noqa: F811
     """privacy.md: "When the app is removed, at Slack or on the **Sources** page, both secrets
-    and every link are deleted at once, and every note that came through Slack, typed or filed,
-    is forgotten 10 days later, as a note is forgotten (below). Until then the **Sources** page
+    and every link are deleted at once, and every note Slack created, typed or filed, is
+    forgotten 10 days later, as a note is forgotten (below). Until then the **Sources** page
     says how many notes will go and when, and an owner can forget them at once with **Forget
-    them now**; setting Slack up again for the same Slack workspace before that day keeps them.
-    When Slack revokes only the bot's token, Slack is switched off and the token deleted, and
-    nothing is forgotten.\""""
+    them now**; setting Slack up again for the same Slack workspace before that day keeps
+    them.\""""
     says(
         *PRIVACY,
         "When the app is removed, at Slack or on the **Sources** page, both secrets and every"
-        " link are deleted at once, and every note that came through Slack, typed or filed, is"
-        " forgotten 10 days later, as a note is forgotten (below). Until then the **Sources**"
-        " page says how many notes will go and when, and an owner can forget them at once with"
-        " **Forget them now**; setting Slack up again for the same Slack workspace before that"
-        " day keeps them.",
-        "When Slack revokes only the bot's token, Slack is switched off and the token deleted,"
-        " and nothing is forgotten.",
+        " link are deleted at once, and every note Slack created, typed or filed, is forgotten"
+        " 10 days later, as a note is forgotten (below). Until then the **Sources** page says"
+        " how many notes will go and when, and an owner can forget them at once with **Forget"
+        " them now**; setting Slack up again for the same Slack workspace before that day keeps"
+        " them.",
     )
     install = ready(world)
     typed, filed = a_note(world), a_note(world, "# Moon\n\nThe moon is full.\n")
@@ -705,9 +783,6 @@ def test_privacy_when_the_app_is_removed(world):  # noqa: F811
         install.id, filed, how="filed", brought_by=world.owner, conversation_id="C0TIDES01",
         message_time="1900000000.000100",
     )  # fmt: skip
-    revoked = world.view.revoke_slack_bot(install.id)
-    assert revoked.state == "off" and not revoked.holds_bot_token
-    assert world.view.slack_notes_to_forget() is None
     system = world.store.for_account(world.account).acting_as("system", None)
     system.remove_slack_install(install.id)  # Slack's app_uninstalled
     assert world.view.slack_notes_to_forget().notes == 2
@@ -717,6 +792,53 @@ def test_privacy_when_the_app_is_removed(world):  # noqa: F811
     assert sorted(note for _, note in world.store.slack_notes_due()) == sorted([typed, filed])
     world.view.forget_slack_notes_now(install.id)
     assert world.view.get_note(typed) is None and world.view.get_note(filed) is None
+
+
+def test_privacy_what_was_there_before_slack_is_not_slacks_to_forget(bench):
+    """privacy.md: "A note typed in Slack whose text the project already held stores nothing
+    new and records nothing: what was there before Slack is not Slack's to forget.\""""
+    says(
+        *PRIVACY,
+        "A note typed in Slack whose text the project already held stores nothing new and"
+        " records nothing: what was there before Slack is not Slack's to forget.",
+    )
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    bench.owner.add_note(bench.library.id, "Row 4 holds the quince jars.", via="web")
+    assert said(ask(bench, "note Row 4 holds the quince jars.")).startswith("Filed: ")
+    assert len(bench.notes()) == 1
+    assert bench.store._con.execute("SELECT COUNT(*) FROM slack_notes").fetchone() == (0,)
+
+
+def test_privacy_a_token_slack_ended_is_removed_three_days_later(world):  # noqa: F811
+    """privacy.md: "When Slack revokes the bot's token, or no longer accepts it, Slack is
+    switched off and the token deleted; unless a new bot token is pasted on the **Sources**
+    page within 3 days, Slack is then removed here as above. A removal Slack did not tell this
+    server about is noticed within 12 hours, acted on 3 days later, and the notes are
+    forgotten 10 days after that.\""""
+    says(
+        *PRIVACY,
+        "When Slack revokes the bot's token, or no longer accepts it, Slack is switched off and"
+        " the token deleted; unless a new bot token is pasted on the **Sources** page within 3"
+        " days, Slack is then removed here as above.",
+        "A removal Slack did not tell this server about is noticed within 12 hours, acted on 3"
+        " days later, and the notes are forgotten 10 days after that.",
+    )
+    assert timedelta(hours=12) == 2 * CHECK_EVERY and timedelta(days=3) == GONE_AFTER
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    removed_at_slack = world.clock.now  # and Slack said nothing
+    ended = 0
+    while ended < 2:  # a check is due at most CHECK_EVERY after the last
+        world.clock.now += CHECK_EVERY
+        for check in world.store.take_slack_checks():
+            found = world.store.slack_token_checked(check, "ended")
+            ended += 1
+    assert found.state == "off" and not found.holds_bot_token
+    assert world.clock.now - removed_at_slack <= timedelta(hours=12)
+    world.clock.now += GONE_AFTER + timedelta(minutes=1)  # the loop's next pass
+    assert world.store.remove_gone_slack_installs() == [install.id]
+    assert world.view.slack_notes_to_forget().at == world.clock.now + FORGET_AFTER
 
 
 def test_privacy_backups_hold_the_notes_until_they_expire():
@@ -781,19 +903,34 @@ def test_security_the_three_addresses_slack_calls_and_their_signature(bench):
 def test_security_what_is_refused_before_and_after_the_signature(bench):
     """security.md: "Before the signature is checked, a body over 1 MiB is refused, and so is
     an install that does not exist or is not set up. After it, a request of another Slack
-    workspace is refused. An address that fails the signature 20 times in a minute is refused,
-    without the signature being computed, until the minute is over. An event is acted on once,
-    whatever Slack's retries say.\""""
+    workspace is refused. The signature is computed for every request that gets this far, and
+    a request whose signature holds is never refused because of requests whose signature did
+    not. Those that fail it are counted for each install and client address: after 20 in a
+    minute, a further one from that address to that install is refused until the oldest of
+    them is a minute old. An event is acted on once, whatever Slack's retries say.\""""
     says(
         *SECURITY,
         "Before the signature is checked, a body over 1 MiB is refused, and so is an install"
         " that does not exist or is not set up. After it, a request of another Slack workspace"
-        " is refused. An address that fails the signature 20 times in a minute is refused,"
-        " without the signature being computed, until the minute is over. An event is acted on"
-        " once, whatever Slack's retries say.",
+        " is refused. The signature is computed for every request that gets this far, and a"
+        " request whose signature holds is never refused because of requests whose signature"
+        " did not. Those that fail it are counted for each install and client address: after"
+        " 20 in a minute, a further one from that address to that install is refused until the"
+        " oldest of them is a minute old. An event is acted on once, whatever Slack's retries"
+        " say.",
     )
     assert BODY_MAX == 1024 * 1024 and "pending" not in ACCEPTING
     assert (web_slack.SIGNATURE_FAILURES, web_slack.SIGNATURE_WINDOW) == (20, 60)
+    now = [1_900_000_000.0]
+    failures = web_slack.signature_failures(lambda: now[0])
+    here, fable, quill = "203.0.113.5", "sl_0123456789ab", "sl_ba9876543210"
+    assert [failures.failed(fable, here) for _ in range(20)] == [0] * 20
+    assert failures.failed(fable, here) > 0  # refused
+    assert failures.failed(quill, here) == 0 and failures.failed(fable, "198.51.100.7") == 0
+    now[0] += 60
+    assert failures.failed(fable, here) == 0
+    receive = inspect.getsource(web_slack.slack_routes)
+    assert receive.index("verified(") < receive.index("failures.failed(")
     other = b'{"type": "event_callback", "team_id": "T0OTHER01", "event": {"type": "x"}}'
     with pytest.raises(OtherTeam):
         envelope("events", bench.install, other, {})
@@ -844,6 +981,59 @@ def test_security_answers_are_private_and_built_from_the_askers_reach(bench):
     assert "quince" in said(ask(bench, "find quince"))  # Ada reaches the cellar
     brooks = said(ask(bench, "find quince", BROOK_SLACK))  # ephemeral, checked by ask
     assert brooks == said(blocks.nothing_found("quince")) and "cellar" not in brooks
+
+
+def test_security_what_links_a_slack_user_to_a_person(bench, monkeypatch):
+    """security.md: "A Slack user is linked to a person in two steps, once they have asked the
+    bot for an address, which is theirs alone. The person opens it signed in and says
+    yes, and is shown a code, once. The same Slack user types that code with the command
+    within 10 minutes. So a Slack user is linked to a person only when that Slack user knew a
+    code shown only to that person: someone who sends their address to another person gains
+    nothing from that person's yes. A wrong code counts against the Slack user's offer, and
+    the fifth deletes it; a code typed by any other Slack user is dead.\""""
+    says(
+        *SECURITY,
+        "A Slack user is linked to a person in two steps, once they have asked the bot for an"
+        " address, which is theirs alone. The person opens it signed in and says yes, and is"
+        " shown a code, once. The same Slack user types that code with the command within 10"
+        " minutes. So a Slack user is linked to a person only when that Slack user knew a code"
+        " shown only to that person: someone who sends their address to another person gains"
+        " nothing from that person's yes. A wrong code counts against the Slack user's offer,"
+        " and the fifth deletes it; a code typed by any other Slack user is dead.",
+    )
+    monkeypatch.setattr(store_slack, "_new_code", lambda: "KM7QR2XZ")  # never AAAA-AAAA
+    assert timedelta(minutes=10) == OFFER_TTL and TRIES == 5
+    code = yes_and_code(bench, BROOK_SLACK, bench.ada)  # Brook's Slack user's address, Ada's yes
+    assert bench.owner.slack_person(bench.install.id, BROOK_SLACK) is None
+    assert "link?t=" in said(ask(bench, "find jars", BROOK_SLACK))  # still nobody's
+    code = yes_and_code(bench, BROOK_SLACK, bench.ada)
+    said(ask(bench, "link", ADA_SLACK))
+    assert "links nothing" in said(ask(bench, f"link {code}", ADA_SLACK))  # another's: dead
+    assert "links nothing" in said(ask(bench, f"link {code}", BROOK_SLACK))
+    code = yes_and_code(bench, BROOK_SLACK, bench.brook)
+    for _ in range(TRIES):
+        assert "links nothing" in said(ask(bench, "link AAAA-AAAA", BROOK_SLACK))
+    assert "links nothing" in said(ask(bench, f"link {code}", BROOK_SLACK))  # deleted
+    assert bench.owner.slack_person(bench.install.id, BROOK_SLACK) is None
+
+
+def test_security_a_link_is_never_moved_and_the_limit_of_the_code(bench):
+    """security.md: "A link is never moved to another person: a Slack user linked to someone
+    stays linked to them until it is undone. The limit is said plainly: someone who talks you
+    into sending them your code acts as you, which is why the page that shows it says to give
+    it to no one.\""""
+    says(
+        *SECURITY,
+        "A link is never moved to another person: a Slack user linked to someone stays linked"
+        " to them until it is undone. The limit is said plainly: someone who talks you into"
+        " sending them your code acts as you, which is why the page that shows it says to give"
+        " it to no one.",
+    )
+    bench.link(ADA_SLACK, bench.ada)
+    with pytest.raises(ValueError):
+        bench.owner.link_slack_user(bench.install.id, ADA_SLACK, bench.brook)
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK).user_id == bench.ada
+    assert "Give this code to no one: whoever types it in Slack acts as you here." in CODE_PAGE
 
 
 def test_security_the_client_reads_no_conversations_history():

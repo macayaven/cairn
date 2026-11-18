@@ -193,6 +193,19 @@ def test_on_off_and_on_again(world):
     assert pending.get_slack_install().state == "on"
 
 
+def test_another_signing_secret_pasted_while_on_is_ready_until_slack_proves_it(world):
+    """Nothing proves a signing secret but a request Slack signed with it: an install that
+    is on and is given another one is ready again; given the one it holds, it stays on."""
+    install = ready(world)
+    world.store.slack_install_verified(install.id)
+    same = ready(world, token=TOKEN + "1")  # a new bot token, the signing secret it holds
+    assert same.state == "on" and world.view.slack_bot_token(install.id) == TOKEN + "1"
+    other = ready(world, secret=SECRET + "ab")
+    assert other.state == "ready"
+    assert world.store.slack_inbound(install.id).signing_secret == SECRET + "ab"
+    assert world.store.slack_install_verified(install.id).state == "on"
+
+
 def test_a_pending_install_is_not_switched_on_and_the_challenge_does_not_turn_it_on(world):
     made = world.view.make_slack_install()
     with pytest.raises(ValueError):
@@ -341,13 +354,14 @@ def test_an_offer_is_a_digest_used_once_by_a_person_of_the_workspace(world, tmp_
     theirs = world.store.for_account(stranger.account_id, stranger.user.id)
     assert theirs.slack_offer(value) is None  # another workspace's person sees nothing
     with pytest.raises(KeyError):
-        theirs.take_slack_offer(value)
-    with pytest.raises(PermissionError):  # a view acting for no person links nobody
-        world.store.for_account(world.account).take_slack_offer(value)
-    taken = world.member_view.take_slack_offer(value)
+        theirs.claim_slack_offer(value)
+    with pytest.raises(PermissionError):  # a view acting for no person says yes for nobody
+        world.store.for_account(world.account).claim_slack_offer(value)
+    code = world.member_view.claim_slack_offer(value)
+    taken = world.store.for_account(world.account).take_slack_offer(install.id, "U0BOB0001", code)
     assert taken.user_id == world.member
     with pytest.raises(KeyError):
-        world.member_view.take_slack_offer(value)
+        world.member_view.claim_slack_offer(value)
 
 
 def test_a_note_is_recorded_once_per_message_and_found_by_it(world):
@@ -380,6 +394,25 @@ def test_events_are_seen_once_and_swept_after_a_day(world):
     world.clock.now += SEEN_FOR
     assert world.store.sweep_slack() == 1
     assert world.store.slack_event_seen(install.id, "Ev01") is True
+
+
+def test_a_forgotten_event_id_is_seen_again_as_the_first_time(world):
+    install = ready(world)
+    assert world.store.slack_event_seen(install.id, "Ev01") is True
+    world.store.forget_slack_event(install.id, "Ev01")
+    assert world.store.slack_event_seen(install.id, "Ev01") is True
+    assert world.store.slack_event_seen(install.id, "Ev01") is False
+    world.store.forget_slack_event(install.id, "Ev0NEVER")  # one never seen: nothing
+    world.store.forget_slack_event("sl_ffffffffffff", "Ev01")  # another install's: nothing
+    assert world.store.slack_event_seen(install.id, "Ev01") is False
+
+
+def test_forgetting_an_event_id_is_the_servers_alone(world):
+    install = ready(world)
+    world.store.slack_event_seen(install.id, "Ev01")
+    with pytest.raises(PermissionError):
+        world.view.forget_slack_event(install.id, "Ev01")
+    assert world.store.slack_event_seen(install.id, "Ev01") is False
 
 
 def test_the_sweep_takes_offers_past_their_time_and_is_part_of_sweep_expired(world):

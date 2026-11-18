@@ -72,7 +72,15 @@ from cairn.web.public import Public
 from cairn.web.ratelimit import CredentialFailures, RateLimiter
 from cairn.web.rest import rest_routes
 from cairn.web.signin import SignIn, signin_routes
-from cairn.web.slack import Keeper, Slack, desk_of, open_paths, signature_failures, slack_routes
+from cairn.web.slack import (
+    Keeper,
+    OneClient,
+    Slack,
+    desk_of,
+    open_paths,
+    signature_failures,
+    slack_routes,
+)
 from cairn.web.slack import check as check_slack
 from cairn.web.stats import CountResponses, Responses, StatsLog
 from cairn.web.sweeper import Sweeper
@@ -517,12 +525,18 @@ def create_app(
         test_instance=test_instance,
     )
     compactor = Compactor(store, compact_every) if compact_every else None
-    keeper = Keeper(store, slack.every) if slack is not None else None  # K1
+    keeper = (  # K1: the sweep, the bot tokens checked with Slack, the notes due forgotten
+        Keeper(store, slack.every, http=slack.http or source_http, api=slack.api)
+        if slack is not None
+        else None
+    )
     told = (  # K1b: what a Slack form came to, said once on the Sources page
         SlackOutcomes(slack.sealer(), now, secure, lambda scope: scope.get(MEMORY))
         if slack is not None
         else None
     )
+    # K1: the one client Slack's handlers send through, made at start and closed at shutdown
+    to_slack = OneClient(slack.http or source_http) if slack is not None else None
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -534,6 +548,9 @@ def create_app(
                     accounts.sync_sources(sync_every, http=http, env=os.environ)
                 )
                 running.push_async_callback(_stopped, syncing)
+            if to_slack is not None:  # K1: closed last, once every task is stopped
+                to_slack.open()
+                running.push_async_callback(to_slack.aclose)
             if compactor is not None:
                 compacting = asyncio.create_task(compactor.loop())
                 # on the way out, last pushed first: the loop is stopped, then a run ends
@@ -621,7 +638,7 @@ def create_app(
                 failures=signature_failures(lambda: now().timestamp()),
                 now=now,
                 public_url=public_url or "",
-                http=slack.http or source_http,
+                http=to_slack,
                 turn=turns.turn,
             )
             if slack is not None

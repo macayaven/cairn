@@ -174,7 +174,7 @@ def test_an_unlinked_user_gets_the_one_time_address_and_nothing_else(bench):
         answer = said(ask(bench, text))
         assert f"{BASE}/integrations/slack/link?t=" in answer
     offered = bench.store._con.execute("SELECT COUNT(*) FROM slack_link_offers").fetchone()
-    assert offered == (6,) and bench.notes() == []
+    assert offered == (1,) and bench.notes() == []  # one offer for a Slack user at a time
 
 
 def test_a_link_to_someone_no_longer_a_member_is_no_link(bench):

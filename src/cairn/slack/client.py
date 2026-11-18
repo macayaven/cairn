@@ -16,7 +16,9 @@ handed, so a test gives it an httpx.MockTransport.
   decision row (decision D3).
 - `reply(address, message)` answers through an address Slack gave in a signed request
   (`response_url`): only over https and only to one of REPLY_HOSTS, whatever the payload says,
-  and private to the person unless `private=False`. It carries no token.
+  and private to the person unless `private=False`. It carries no token. An address that is
+  none of these, or not a URL at all (a control character in it, for one), is
+  SlackError("bad_reply_address"), and nothing is sent.
 
 A SlackError holds a code and never a token, an address or a message's text."""
 
@@ -123,13 +125,16 @@ class SlackClient:
 
     async def reply(self, address: str, message: dict[str, Any], *, private: bool = True) -> None:
         """Answer through a `response_url` (the module)."""
-        try:
+        try:  # what is sent is httpx's reading of the address, and both readings must agree
+            url = httpx.URL(address)
             parts = urlsplit(address)
             host, port_ok = parts.hostname, parts.port is None or self._plain
-        except ValueError:
+        except (ValueError, httpx.InvalidURL):
             raise SlackError("bad_reply_address") from None
         scheme_ok = parts.scheme == "https" or (self._plain and parts.scheme == "http")
         if not scheme_ok or host not in self._reply_hosts or parts.username is not None:
+            raise SlackError("bad_reply_address")
+        if url.host != host:
             raise SlackError("bad_reply_address")
         if not port_ok:
             raise SlackError("bad_reply_address")
@@ -139,7 +144,7 @@ class SlackClient:
             "replace_original": False,
         }
         try:
-            response = await self._http.post(address, json=body)
+            response = await self._http.post(url, json=body)
         except httpx.HTTPError:
             raise SlackError("http_error") from None
         if response.status_code != 200:

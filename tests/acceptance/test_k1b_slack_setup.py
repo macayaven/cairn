@@ -49,9 +49,11 @@ Linking a Slack user to a person
   of the install's workspace with a value that is good, it shows which Slack user (by the
   name Slack gives, or the id when Slack does not answer) would be linked to which person,
   and asks for a yes; it changes nothing by being opened, however often.
-- The yes (POST /integrations/slack/link) links them and uses the value up: a second yes
-  with it, a value older than 10 minutes, a value of another workspace, and a person who is
-  not a member each get the page every address that is not a page gets, and nothing changes.
+- The yes (POST /integrations/slack/link) ties the offer to the person and shows them a code,
+  once; it links nothing (the Slack user types the code back, part 3). After it the address
+  is used up: a second yes or look with it, a value older than 10 minutes, a value of
+  another workspace, and a person who is not a member each get the page every address that
+  is not a page gets, and nothing changes.
 - A person who is not signed in is sent to sign in and comes back to the same address. A
   signed-in person who arrives from another site (a click in Slack), whose browser leaves
   the session cookie behind on that first request, is shown the page that loads the same
@@ -80,6 +82,7 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
+import cairn.store.slack as store_slack
 from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.slack import link, setup
@@ -531,6 +534,28 @@ def test_a_team_whose_install_another_workspace_removed_is_not_taken(world):
     assert world.view(world.ada).get_slack_install().state == "ready"
 
 
+def test_a_team_another_workspace_made_ready_meanwhile_is_taken_and_nothing_kept(
+    world, monkeypatch
+):
+    """The check of the team and the write are two transactions: Dara's workspace makes the
+    same team ready in between. The store's own index refuses it, with the same sentence."""
+    ada = world.browser(world.ada)
+    said(ada, ada.post(setup.SETUP_PATH, follow_redirects=False))
+    real, raced_once = Store.ready_slack_install, []
+
+    def raced(self, *args, **kwargs):  # after the check of the team, before this write
+        if not raced_once:
+            raced_once.append(True)
+            readied_elsewhere(world, TWIN_TOKEN, TEAM, "fable-works")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "ready_slack_install", raced)
+    page = block(said(ada, secrets(ada)))
+    assert setup.REFUSALS["taken"] in page
+    found = world.view(world.ada).get_slack_install()
+    assert found.state == "pending" and not found.holds_secrets
+
+
 def test_neither_secret_is_ever_shown_logged_audited_or_said_in_an_error(world, caplog):
     caplog.set_level(logging.DEBUG)
     ada = world.browser(world.ada)
@@ -569,6 +594,26 @@ def test_ready_says_to_have_slack_verify_the_events_address(world):
     assert f"{BASE}/integrations/slack/{install}/events" in page
 
 
+def test_ready_on_and_off_each_offer_both_secrets_again(world):
+    """While ready nothing has proven the signing secret, and the page says to paste it again
+    when Slack reports that the address did not answer. On or off, a secret changed at Slack
+    is pasted here too: without the form, the one way left would be to remove Slack, and
+    every link with it."""
+    install = world.readied()
+    ada = world.browser(world.ada)
+    page = shown(ada)
+    assert setup.STATES["ready"] in page
+    assert 'name="signing_secret"' in page and 'name="bot_token"' in page
+    world.store.slack_install_verified(install)
+    page = shown(ada)
+    assert setup.STATES["on"] in page and setup.CHANGED_AT_SLACK in page
+    assert 'name="signing_secret"' in page and 'name="bot_token"' in page
+    said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
+    page = shown(ada)
+    assert setup.STATES["off"] in page and setup.CHANGED_AT_SLACK in page
+    assert 'name="signing_secret"' in page and 'name="bot_token"' in page
+
+
 def test_on_off_and_off_because_revoked_say_their_state(world):
     install = world.readied()
     ada = world.browser(world.ada)
@@ -576,7 +621,7 @@ def test_on_off_and_off_because_revoked_say_their_state(world):
     assert setup.STATES["on"] in shown(ada)
     said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
     page = shown(ada)
-    assert setup.STATES["off"] in page and 'name="bot_token"' not in page
+    assert setup.STATES["off"] in page
     world.system().revoke_slack_bot(install)
     page = shown(ada)
     assert setup.STATES["revoked"] in page
@@ -593,6 +638,45 @@ def test_a_revoked_token_is_asked_for_again_and_the_signing_secret_is_not(world)
     assert found.state == "ready" and found.holds_secrets
     assert world.view(world.ada).slack_bot_token(install) == NEW_TOKEN
     assert world.store.slack_inbound(install).signing_secret == SECRET
+
+
+def test_a_token_slack_ended_says_since_when_the_day_to_paste_a_new_one_and_what_follows(
+    world,
+):
+    install = world.readied()
+    world.clock.now = START + timedelta(hours=7)
+    world.system().revoke_slack_bot(install)  # tokens_revoked, or two ended answers
+    page = " ".join(shown(world.browser(world.ada)).split())
+    assert (
+        "Slack no longer accepts this install's bot token, since <time datetime=\"2031-03-04"
+        in page
+    )
+    assert ">4 March 2031, 16:00 UTC</time>." in page
+    assert (
+        "Paste a new bot token here by <time" in page
+        and ">7 March 2031, 16:00 UTC</time>: after that day, Slack is removed here, and every"
+        " note Slack created is forgotten 10 days later."
+        in page
+    )
+    world.readied()  # a new token Slack accepts
+    assert "no longer accepts" not in shown(world.browser(world.ada))
+
+
+def test_an_install_only_switched_off_says_nothing_of_a_token_gone(world):
+    world.readied()
+    ada = world.browser(world.ada)
+    said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
+    assert "no longer accepts" not in shown(ada)
+
+
+def test_next_to_remove_the_page_says_it_forgets_notes_in_projects_out_of_reach_too(world):
+    world.readied()
+    page = " ".join(shown(world.browser(world.brook)).split())  # an admin removes too
+    assert (
+        "Removing deletes both secrets and every link between a Slack user and a person at"
+        " once, and 10 days later forgets every note Slack created in this workspace, in"
+        " projects you do not reach too." in page
+    )
 
 
 # Off and on
@@ -773,6 +857,21 @@ def offered(world: World, slack_user: str = CLEO_SLACK) -> tuple[str, str]:
     return install, world.system().offer_slack_link(install, slack_user)
 
 
+CODE = "KM7Q-R2XZ"  # every code shown here (the store's seam, cairn.store.slack._new_code)
+
+
+@pytest.fixture(autouse=True)
+def code(monkeypatch):
+    monkeypatch.setattr(store_slack, "_new_code", lambda: CODE.replace("-", ""))
+
+
+def linked_by_code(world: World, install: str, value: str, slack_user: str = CLEO_SLACK) -> None:
+    """Cleo's yes, then the code typed back in Slack by the Slack user (part 3's command)."""
+    cleo = world.browser(world.cleo)
+    assert CODE in cleo.post(f"{link.LINK_PATH}?t={value}").text
+    world.store.for_account(world.workspace).take_slack_offer(install, slack_user, CODE)
+
+
 def test_the_link_page_names_both_sides_asks_for_a_yes_and_changes_nothing(world):
     install, value = offered(world)
     cleo = world.browser(world.cleo)
@@ -796,13 +895,14 @@ def test_the_link_page_names_the_slack_user_by_id_when_slack_does_not_answer(wor
     assert page.status_code == 200 and CLEO_SLACK in page.text and "Cleo Marsh" not in page.text
 
 
-def test_the_yes_links_them_and_uses_the_value_up(world, caplog):
+def test_the_yes_shows_a_code_links_nothing_and_uses_the_value_up(world, caplog):
     caplog.set_level(logging.INFO, logger="cairn.access")
     install, value = offered(world)
     cleo = world.browser(world.cleo)
-    page = said(cleo, cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False))
-    assert link.SAID["linked"] in page
-    assert world.view(world.ada).slack_person(install, CLEO_SLACK).user_id == world.cleo["id"]
+    page = cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False)
+    assert page.status_code == 200 and CODE in page.text
+    keeps_the_rules(page.text)
+    assert world.view(world.ada).slack_person(install, CLEO_SLACK) is None
     before = world.slack_rows()
     again = cleo.post(f"{link.LINK_PATH}?t={value}")
     assert again.status_code == 404 and again.content == unknown(cleo).content
@@ -810,6 +910,7 @@ def test_the_yes_links_them_and_uses_the_value_up(world, caplog):
     assert cleo.get(f"{link.LINK_PATH}?t={value}").content == unknown(cleo).content
     assert [r.action for r in logged(caplog)].count("slack_link") == 3
     assert value not in everything_said(caplog, world)
+    assert CODE not in everything_said(caplog, world)
 
 
 def test_a_value_older_than_10_minutes_is_no_page_and_changes_nothing(world):
@@ -884,12 +985,13 @@ def test_the_one_time_value_is_in_no_log_line_on_either_way(world, caplog):
     world.browser(None).get(address, headers=CROSS_SITE)
     cleo = world.browser(world.cleo)
     cleo.get(address)
-    said(cleo, cleo.post(address, follow_redirects=False))
+    assert cleo.post(address, follow_redirects=False).status_code == 200
     # the test client's own request lines are not the server's (serve keeps httpx quiet)
     client = ("httpx", "httpx2", "httpcore")
     caplog.records[:] = [r for r in caplog.records if r.name.split(".")[0] not in client]
     assert any(r.name == "cairn.access" for r in caplog.records)
     assert value not in everything_said(caplog, world)
+    assert CODE not in everything_said(caplog, world)
 
 
 def test_a_person_not_signed_in_is_sent_to_sign_in_and_nothing_changes(world):
@@ -904,7 +1006,7 @@ def test_the_sources_page_shows_a_person_their_own_link_with_unlink(world):
     install, value = offered(world)
     world.view(world.ada).link_slack_user(install, BROOK_SLACK, world.brook["id"])
     cleo = world.browser(world.cleo)
-    said(cleo, cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False))
+    linked_by_code(world, install, value)
     page = shown(cleo)
     assert CLEO_SLACK in page and f'action="{link.UNLINK_PATH}"' in page
     assert f'name="slack_user" value="{CLEO_SLACK}"' in page
@@ -922,7 +1024,7 @@ def test_unlink_undoes_ones_own_link_only(world, caplog):
     install, value = offered(world)
     world.view(world.ada).link_slack_user(install, BROOK_SLACK, world.brook["id"])
     cleo = world.browser(world.cleo)
-    said(cleo, cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False))
+    linked_by_code(world, install, value)
     before = world.slack_rows()
     for slack_user in (BROOK_SLACK, "U0NOBODY1", "not an id"):
         theirs = cleo.post(link.UNLINK_PATH, data={"slack_user": slack_user})
@@ -933,7 +1035,9 @@ def test_unlink_undoes_ones_own_link_only(world, caplog):
     assert link.SAID["unlinked"] in page
     assert world.view(world.ada).slack_person(install, CLEO_SLACK) is None
     assert world.view(world.ada).slack_person(install, BROOK_SLACK).user_id == world.brook["id"]
-    assert [r.action for r in logged(caplog)].count("slack_link") == 5
+    assert [r.action for r in logged(caplog)].count(
+        "slack_link"
+    ) == 5  # the yes, three refused, the unlink
 
 
 def test_nobody_is_shown_anybody_elses_slack_user(world):

@@ -9,8 +9,13 @@ In this order, each refusal said privately with its reason and nothing filed:
 1. A Slack user who is not linked is answered with the one-time address alone.
 2. A message without a conversation or a time as Slack writes them is not one cairn can file
    (people.NOT_A_MESSAGE); one with no text is refused (people.NO_TEXT).
-3. A message filed already (D9) is answered with the note it already is, before anything is
-   asked of Slack; one in a project out of the person's reach names nothing of it.
+3. The message is claimed (Store.claim_slack_message), before anything is asked of Slack or
+   written: a message filed already (D9) is answered with the note it already is, one in a
+   project out of the person's reach naming nothing of it; one someone else is filing right
+   now is refused (people.BEING_FILED). From here on, whatever ends without a note stored (a
+   refusal below, a busy server, a write refused, an error) releases the claim
+   (Store.release_slack_claim), so the message can be filed again; a note stored keeps it,
+   as the write gives the claim its note (people.write).
 4. No project chosen is refused before anything is asked of Slack.
 5. The author (D7): a message with no person as its author is refused without asking; else
    Slack is asked who the author is, once, within 1.5 seconds in all, unless the answer is
@@ -30,7 +35,7 @@ from cairn.slack import blocks, people
 from cairn.slack.dispatch import Context, on_action
 from cairn.slack.text import NotText, note_from_message
 from cairn.slack.verify import Envelope
-from cairn.store.slack import MESSAGE_TIME, SLACK_ID
+from cairn.store.slack import FILED, FILING, MESSAGE_TIME, SLACK_ID
 
 
 def _place(payload: dict) -> tuple[dict, str, str] | None:
@@ -62,10 +67,28 @@ async def _filed(envelope: Envelope, context: Context) -> dict:
     if not _has_text(message):
         return blocks.refused(people.NO_TEXT)
     held = await run_in_threadpool(
-        context.view.slack_note_for, context.install.id, conversation_id, time
+        lambda: context.view.claim_slack_message(
+            context.install.id, conversation_id, time, brought_by=asker.person.user_id
+        )
     )
-    if held is not None:
-        return await run_in_threadpool(people.already, context, asker, held)
+    if held.outcome == FILED:
+        return await run_in_threadpool(people.already, context, asker, held.note_id)
+    if held.outcome == FILING:
+        return blocks.refused(people.BEING_FILED)
+    try:  # whatever ends this without a note stored releases the claim; a stored one stays
+        return await _write(context, asker, message, conversation_id, time)
+    finally:
+        try:
+            await run_in_threadpool(
+                context.view.release_slack_claim, context.install.id, conversation_id, time
+            )
+        except Exception as failed:  # its class only; a claim left is swept in ten minutes
+            people.log.warning("slack: a claim was not released: %s", type(failed).__name__)
+
+
+async def _write(
+    context: Context, asker: people.Asker, message: dict, conversation_id: str, time: str
+) -> dict:
     if asker.person.project_id is None:
         return blocks.refused(people.NO_PROJECT.format(command=context.install.command))
     try:

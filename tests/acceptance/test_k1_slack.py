@@ -38,13 +38,20 @@ The three addresses Slack calls
   time whatever the difference.
 - A request signed with another install's secret is 401. A body whose team is not the
   install's is refused after its signature holds, and nothing is done.
-- A client address that fails the signature 20 times in a minute is answered 429 without
-  the signature being computed, until the minute is over.
+- A request whose signature holds is never refused because of requests whose signature did
+  not, at its install or any other, from its address or any other. Failures are counted
+  per install and client address: once one install had 20 from one address in a minute, a
+  further request from it that fails is answered 429, until the oldest leaves the minute.
+  The signature is computed for every request that comes that far.
 - Slack's challenge (`"type": "url_verification"`) is answered with its `challenge`, as
   text, only when its signature holds; the first one answered turns an install that is
   ready into one that is on.
 - An event is done once: one whose `event_id` was seen is answered 200 and nothing happens
-  again, whatever `x-slack-retry-num` says. Ids are kept for a day.
+  again, whatever `x-slack-retry-num` says. Ids are kept for a day. An event whose handler
+  failed is answered 500 and its id forgotten, so Slack's next delivery runs it again;
+  `app_uninstalled` and `tokens_revoked` too.
+- What the handlers send to Slack goes through one client, made when the app starts and
+  closed when it stops.
 - A refusal writes nothing, and no log line or stored field holds the body, a secret or
   the signature: the access log names the action (`slack_event`, `slack_command`,
   `slack_action`), the install and the outcome.
@@ -72,10 +79,12 @@ When the app goes
   install ready again before the day cancels it.
 - `tokens_revoked` naming the bot switches the install off and deletes its bot token; the
   signing secret stays, sealed, so that what Slack sends next can still be verified. No
-  note is due to be forgotten. `app_uninstalled` after it, or before it, ends in the same
-  state as `app_uninstalled` alone: both secrets and the links deleted, the install
-  removed, the notes due. A `tokens_revoked` that arrives after the install is removed is
-  404 like any request to a removed install, and changes nothing.
+  note is due to be forgotten yet: unless a new bot token is pasted, the loop removes the
+  install more than 3 days later, as an owner removes it, and its notes go 10 days after.
+  `app_uninstalled` after it, or before it, ends in the same state as `app_uninstalled`
+  alone: both secrets and the links deleted, the install removed, the notes due. A
+  `tokens_revoked` that arrives after the install is removed is 404 like any request to a
+  removed install, and changes nothing.
 """
 
 import base64
@@ -102,6 +111,7 @@ from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.slack import dispatch
 from cairn.store import Claim, Store
+from cairn.web import slack as web_slack
 from cairn.web.slack import KEY_VARIABLE, Keeper, Slack
 
 BASE = "https://cairn.example.test"
@@ -225,7 +235,7 @@ class World:
     """A server (switch on or off) on a database with one workspace, Fable Works, owned by
     Ada, with Brook as a member; every clock is `clock`."""
 
-    def __init__(self, tmp_path: Path, slack: bool = True) -> None:
+    def __init__(self, tmp_path: Path, slack: bool = True, http=None) -> None:
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.db = tmp_path / "cairn.db"
         self.clock = Clock()
@@ -241,7 +251,7 @@ class World:
             public_url=BASE,
             sign_in=sign_in,
             clock=self.clock,
-            slack=Slack(key=KEY) if slack else None,
+            slack=Slack(key=KEY, http=http) if slack else None,
         )
         self.client = TestClient(self.app, base_url=BASE)
         self.ada = self.person("Ada", "personal")
@@ -633,24 +643,113 @@ def test_a_body_whose_team_is_not_the_installs_is_refused_and_nothing_is_done(wo
         dispatch.unregister("event", "fable_ping")
 
 
-def test_20_failures_in_a_minute_from_one_address_are_answered_429_without_the_hmac(
-    world, monkeypatch
+def test_20_failures_in_a_minute_at_one_install_from_one_address_make_the_next_failure_429(
+    world, caplog
 ):
+    caplog.set_level(logging.INFO, logger="cairn.access")
+    install = world.install()
+    quill = world.person("Quill", "personal")
+    theirs = world.install(OTHER_SECRET, OTHER_TOKEN, OTHER_TEAM, view=quill.view)
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    for _ in range(20):
+        assert world.post(install.id, "commands", command(), bad).status_code == 401
+    before = dump(world.db)
+    refused = world.post(install.id, "commands", command(), bad)
+    assert refused.status_code == 429 and refused.text == "Too many unsigned requests came" \
+        " from your address in the last minute."  # fmt: skip
+    assert refused.headers["retry-after"] == "60"
+    assert dump(world.db) == before  # a refusal writes nothing
+    said = [(r.action, r.install, r.status) for r in caplog.records if r.name == "cairn.access"]
+    assert said[-1] == ("slack_command", install.id, 429)
+    # another install from the same address, and the same install from another address
+    theirs_bad = tampered(signed(OTHER_SECRET, command(team=OTHER_TEAM), world.clock.stamp()))
+    assert world.post(theirs.id, "commands", command(team=OTHER_TEAM), theirs_bad).status_code \
+        == 401  # fmt: skip
+    elsewhere = from_address(world, "198.51.100.7")
+    answer = elsewhere.post(
+        f"/integrations/slack/{install.id}/commands", content=command(),
+        headers={"content-type": "application/x-www-form-urlencoded", **bad},
+    )  # fmt: skip
+    assert answer.status_code == 401
+    # until the oldest failure leaves the window
+    world.clock.now += timedelta(seconds=59)
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    answer = world.post(install.id, "commands", command(), bad)
+    assert answer.status_code == 429 and answer.headers["retry-after"] == "1"
+    world.clock.now += timedelta(seconds=1)
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    assert world.post(install.id, "commands", command(), bad).status_code == 401
+
+
+def test_the_signature_is_computed_for_every_request_that_reaches_it(world, monkeypatch):
     install = world.install()
     good = signed(SECRET, command(), world.clock.stamp())
     for _ in range(20):
         assert world.post(install.id, "commands", command(), tampered(good)).status_code == 401
-    good = signed(SECRET, command(), world.clock.stamp())
-    later = signed(SECRET, command(), world.clock.stamp() + 61)  # signed before the spy
     computed = []
     real = verify.hmac.new
     monkeypatch.setattr(verify.hmac, "new", lambda *a, **k: computed.append(1) or real(*a, **k))
-    assert world.post(install.id, "commands", command(), good).status_code == 429
-    assert computed == []
-    world.clock.now += timedelta(seconds=61)
-    assert world.post(install.id, "commands", command(), later).status_code == 200
+    assert world.post(install.id, "commands", command(), tampered(good)).status_code == 429
     assert computed == [1]
+    assert world.post(install.id, "commands", command(), good).status_code == 200
+    assert computed == [1, 1]
     monkeypatch.undo()
+
+
+def test_an_install_that_does_not_exist_is_404_before_anything_is_counted(world, monkeypatch):
+    counted = []
+    real = web_slack.SignatureFailures.failed
+    monkeypatch.setattr(
+        web_slack.SignatureFailures, "failed",
+        lambda self, *a: counted.append(a) or real(self, *a),
+    )  # fmt: skip
+    pending = world.ada.view.make_slack_install()
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    for target in ("sl_000000000000", pending.id):
+        assert world.post(target, "commands", command(), bad).status_code == 404
+    assert counted == []
+    install = world.install()
+    assert world.post(install.id, "commands", command(), bad).status_code == 401
+    assert [install_id for install_id, _ in counted] == [install.id]
+
+
+def test_a_request_from_another_address_is_answered_as_if_no_failure_was_counted(world):
+    install = world.install()
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    for _ in range(25):
+        world.post(install.id, "commands", command(), bad)
+    elsewhere = from_address(world, "198.51.100.7")
+    answer = elsewhere.post(
+        f"/integrations/slack/{install.id}/commands", content=command(),
+        headers={"content-type": "application/x-www-form-urlencoded",
+                 **signed(SECRET, command(), world.clock.stamp())},
+    )  # fmt: skip
+    assert answer.status_code == 200
+
+
+def from_address(world: World, host: str) -> TestClient:
+    """A client of `world`'s server whose requests come from `host`."""
+    return TestClient(world.app, base_url=BASE, client=(host, 50_000))
+
+
+def test_a_signed_request_is_never_refused_because_of_failures_counted_anywhere(world):
+    """No lockout: Quill's install holds a signing secret that is not its
+    app's, so 20 of Slack's requests to it fail; Slack's signed requests from the same address
+    are still answered, at Fable Works' install and at Quill's own."""
+    fable = world.install()
+    quill = world.person("Quill", "personal")
+    held = "wrong" + OTHER_SECRET[5:]
+    theirs = world.install(held, OTHER_TOKEN, OTHER_TEAM, view=quill.view)
+    for _ in range(20):
+        answer = world.post(theirs.id, "commands", command(team=OTHER_TEAM), secret=OTHER_SECRET)
+        assert answer.status_code == 401
+    assert world.post(fable.id, "commands", command()).status_code == 200
+    answer = world.post(theirs.id, "commands", command(team=OTHER_TEAM), secret=held)
+    assert answer.status_code == 200
+    for _ in range(5):  # and after more failures, at either install, as often as it comes
+        world.post(fable.id, "commands", command(), secret=OTHER_SECRET)
+        world.post(theirs.id, "commands", command(team=OTHER_TEAM), secret=OTHER_SECRET)
+        assert world.post(fable.id, "commands", command()).status_code == 200
 
 
 def test_the_challenge_is_answered_only_when_signed_and_turns_ready_into_on(world):
@@ -691,6 +790,172 @@ def test_an_event_is_done_once_whatever_the_retry_number_says_and_ids_are_kept_a
         assert world.post(install.id, "events", body).status_code == 200 and len(seen) == 2
     finally:
         dispatch.unregister("event", "fable_ping")
+
+
+def test_an_event_whose_handler_failed_runs_again_at_slacks_next_delivery(world):
+    install = world.install()
+    ran, recorded = [], []
+
+    @dispatch.on_event("fable_ping")
+    async def ping(envelope, context):
+        # recorded before it runs: a second delivery now would be answered 200 and not run
+        recorded.append(not world.store.slack_event_seen(install.id, envelope.event_id))
+        ran.append(envelope.event_id)
+        if len(ran) == 1:
+            raise RuntimeError("the store is busy")
+
+    try:
+        body = event("fable_ping", "Ev0FAILS001")
+        assert world.post(install.id, "events", body).status_code == 500
+        headers = {**signed(SECRET, body, world.clock.stamp()), "x-slack-retry-num": "1"}
+        assert world.post(install.id, "events", body, headers).status_code == 200
+        assert ran == ["Ev0FAILS001"] * 2 and recorded == [True, True]
+        headers = {**signed(SECRET, body, world.clock.stamp()), "x-slack-retry-num": "2"}
+        assert world.post(install.id, "events", body, headers).status_code == 200
+        assert len(ran) == 2  # a handler that returned is not run again
+    finally:
+        dispatch.unregister("event", "fable_ping")
+
+
+def failing_once(monkeypatch, name: str) -> list[int]:
+    """Store.<name> raises the first time it is called, and works after."""
+    calls = []
+    real = getattr(Store, name)
+
+    def once(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Store, name, once)
+    return calls
+
+
+def test_app_uninstalled_whose_handler_failed_is_done_at_the_next_delivery(world, monkeypatch):
+    install = world.install()
+    world.post(install.id, "events", challenge())
+    calls = failing_once(monkeypatch, "remove_slack_install")
+    body = event("app_uninstalled", "Ev0GONEFAIL")
+    assert world.post(install.id, "events", body).status_code == 500
+    assert world.ada.view.get_slack_install().state == "on"
+    assert world.post(install.id, "events", body).status_code == 200
+    assert world.ada.view.get_slack_install().state == "removed" and len(calls) == 2
+
+
+def test_tokens_revoked_whose_handler_failed_is_done_at_the_next_delivery(world, monkeypatch):
+    install = world.install()
+    world.post(install.id, "events", challenge())
+    calls = failing_once(monkeypatch, "revoke_slack_bot")
+    body = event("tokens_revoked", "Ev0BOTFAIL1", **revoked())
+    assert world.post(install.id, "events", body).status_code == 500
+    assert world.ada.view.get_slack_install().state == "on"
+    assert world.post(install.id, "events", body).status_code == 200
+    assert world.ada.view.get_slack_install().state == "off" and len(calls) == 2
+    assert world.post(install.id, "events", body).status_code == 200 and len(calls) == 2
+
+
+def test_a_failed_event_whose_id_cannot_be_forgotten_is_still_500_and_logged_by_class(
+    world, monkeypatch, caplog
+):
+    install = world.install()
+    failing_once(monkeypatch, "remove_slack_install")
+    failing_once(monkeypatch, "forget_slack_event")
+    caplog.set_level(logging.WARNING, logger="cairn.slack")
+    body = event("app_uninstalled", "Ev0NOFORGET")
+    assert world.post(install.id, "events", body).status_code == 500
+    said = [r.getMessage() for r in caplog.records if r.name == "cairn.slack"]
+    assert said == [
+        "slack: a handler failed: OperationalError",
+        "slack: a failed event was not forgotten: OperationalError",
+    ]
+
+
+class Made:
+    """Slack's answers to every call, and each client the server made to send them."""
+
+    def __init__(self) -> None:
+        self.clients: list[httpx.AsyncClient] = []
+        self.asked: list[str] = []
+
+    def answer(self, request: httpx.Request) -> httpx.Response:
+        self.asked.append(request.url.path)
+        if request.url.path.endswith("/users.info"):
+            cedar = {"id": "U0CEDAR01", "team_id": TEAM, "real_name": "Cedar Quill",
+                     "is_bot": False, "is_stranger": False, "deleted": False,
+                     "profile": {"real_name": "Cedar Quill", "display_name": "Cedar"}}  # fmt: skip
+            return httpx.Response(200, json={"ok": True, "user": cedar})
+        if request.url.path.endswith("/chat.postMessage"):
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, text="ok")
+
+    def __call__(self) -> httpx.AsyncClient:
+        made = httpx.AsyncClient(transport=httpx.MockTransport(self.answer))
+        self.clients.append(made)
+        return made
+
+
+def shortcut(user: str = ADA_SLACK, ts: str = "1900000000.000100") -> bytes:
+    payload = {
+        "type": "message_action", "callback_id": "file_in_cairn",
+        "team": {"id": TEAM, "domain": "fable-works"}, "user": {"id": user},
+        "channel": {"id": CONVERSATION},
+        "message": {"type": "message", "user": "U0CEDAR01", "ts": ts,
+                    "text": "The marmalade shelf moves to row 4."},
+        "response_url": "https://hooks.slack.com/actions/T0FABLE01/1/fable",
+        "trigger_id": "13345.0044.fable",
+    }  # fmt: skip
+    return urlencode({"payload": json.dumps(payload)}).encode()
+
+
+def direct(event_id: str, text: str = "marmalade") -> bytes:
+    return event(
+        "message", event_id, channel="D0ADA0001", channel_type="im", user=ADA_SLACK,
+        text=text, ts="1900000001.000200",
+    )  # fmt: skip
+
+
+def everything_that_sends(world: World, install: str) -> None:
+    """Commands, shortcuts and direct messages, from Ada unlinked and then linked."""
+    for n in range(3):
+        assert world.post(install, "commands", command(text="find marmalade")).status_code == 200
+        assert world.post(install, "actions", shortcut()).status_code == 200
+        assert world.post(install, "events", direct(f"Ev0UNLINKD{n}")).status_code == 200
+    world.ada.view.link_slack_user(install, ADA_SLACK, world.ada.id)
+    world.ada.view.set_slack_project(install, ADA_SLACK, world.project.id)
+    for n in range(3):
+        assert world.post(install, "commands", command(text="find marmalade")).status_code == 200
+        filed = shortcut(ts=f"1900000000.00020{n}")
+        assert world.post(install, "actions", filed).status_code == 200
+        assert world.post(install, "events", direct(f"Ev0LINKED0{n}")).status_code == 200
+
+
+def test_the_handlers_send_through_one_client_made_at_start_and_closed_at_shutdown(tmp_path):
+    made = Made()
+    world = World(tmp_path, http=made)
+    try:
+        install = world.install()
+        with TestClient(world.app, base_url=BASE) as started:
+            assert len(made.clients) == 1  # at start, before any request
+            world.client = started
+            everything_that_sends(world, install.id)
+            assert len(made.clients) == 1 and not made.clients[0].is_closed
+        assert made.clients[0].is_closed
+        sent = set(made.asked)
+        assert {"/api/users.info", "/api/chat.postMessage", "/actions/T0FABLE01/1/fable"} <= sent
+    finally:
+        world.store.close()
+
+
+def test_without_a_start_the_handlers_still_make_one_client_for_every_call(tmp_path):
+    made = Made()
+    world = World(tmp_path, http=made)
+    try:
+        install = world.install()
+        everything_that_sends(world, install.id)
+        assert len(made.clients) == 1 and len(made.asked) >= 9
+    finally:
+        world.store.close()
 
 
 def test_nothing_registered_is_acknowledged_and_does_nothing(world):
@@ -826,9 +1091,13 @@ def test_links_offers_events_and_notes_are_stored(world):
     offer = view.offer_slack_link(install.id, BROOK_SLACK)
     assert offer not in dump(world.db)  # kept as a digest
     assert world.brook.view.slack_offer(offer).slack_user_id == BROOK_SLACK
-    world.brook.view.take_slack_offer(offer)
+    code = world.brook.view.claim_slack_offer(offer)
+    assert code not in dump(world.db)  # kept as a digest
+    assert world.brook.view.slack_offer(offer) is None  # said yes to once
+    workspace = world.store.for_account(install.account_id)
+    workspace.take_slack_offer(install.id, BROOK_SLACK, code)
     assert view.slack_person(install.id, BROOK_SLACK).user_id == world.brook.id
-    assert world.brook.view.slack_offer(offer) is None  # used once
+    assert rows(world.db, "SELECT COUNT(*) FROM slack_link_offers") == [(0,)]  # used once
     world.post(install.id, "events", event("fable_nobody", "Ev0STORED01"))
     assert rows(world.db, "SELECT event_id FROM slack_events") == [("Ev0STORED01",)]
     filed = world.note("# Tides\n\nThe tide turns at nine.\n", "Tides")
@@ -858,7 +1127,7 @@ def test_an_offer_works_once_for_10_minutes(world):
     world.clock.now += timedelta(minutes=10, seconds=1)
     assert world.brook.view.slack_offer(offer) is None
     with pytest.raises(KeyError):
-        world.brook.view.take_slack_offer(offer)
+        world.brook.view.claim_slack_offer(offer)
     world.keeper().run_once()
     assert rows(world.db, "SELECT COUNT(*) FROM slack_link_offers") == [(0,)]
 
@@ -1006,7 +1275,7 @@ def revoked(bot: str = BOT, oauth: tuple = ()) -> dict:
     return {"tokens": {"oauth": list(oauth), "bot": [bot] if bot else []}}
 
 
-def test_tokens_revoked_naming_the_bot_switches_off_deletes_the_bot_token_and_forgets_nothing(
+def test_tokens_revoked_naming_the_bot_switches_off_and_three_days_later_removes_it(
     world,
 ):
     install = world.install()
@@ -1029,9 +1298,21 @@ def test_tokens_revoked_naming_the_bot_switches_off_deletes_the_bot_token_and_fo
     assert rows(world.db, "SELECT forget_at FROM slack_notes") == [(None,)] * 3
     with pytest.raises(ValueError):
         world.ada.view.switch_slack_install(install.id, on=True)
-    world.clock.now += timedelta(days=30)
+    assert datetime.fromisoformat(found.bot_gone_at) == world.clock.now  # since when
+    world.clock.now += timedelta(days=3)
+    world.keeper().run_once()
+    assert world.ada.view.get_slack_install().state == "off"  # three days, not more
+    assert rows(world.db, "SELECT forget_at FROM slack_notes") == [(None,)] * 3
+    world.clock.now += timedelta(minutes=1)
+    world.keeper().run_once()  # removed as an owner removes it
+    assert world.ada.view.get_slack_install().state == "removed"
+    assert world.ada.view.slack_person(install.id, ADA_SLACK) is None
+    world.clock.now += timedelta(days=10) - timedelta(seconds=1)
     world.keeper().run_once()
     assert held(world, notes) == [True] * 3
+    world.clock.now += timedelta(seconds=1)
+    world.keeper().run_once()
+    assert held(world, notes) == [False] * 3
 
 
 @pytest.mark.parametrize("order", ["uninstalled first", "revoked first"])

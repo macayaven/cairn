@@ -21,5 +21,10 @@ private/
 *.env
 # a service-account key for the backup bucket, which deploy/README.md has you put here
 deploy/gcs-key.json
-# an export taken as the README shows, which lands beside the compose files
-deploy/cairn-export.zip
+# What the README's backup, restore and export commands leave (they run from deploy/) and the
+# run guide's (from the clone's top folder): a folder per backup, a folder per restore that the
+# restored cairn writes into, and the export copied out. Pinned by
+# tests/unit/test_recovery_leaves_nothing_untracked_unit.py.
+cairn-backup.*/
+cairn-restore.*/
+cairn-export.zip

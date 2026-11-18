@@ -42,7 +42,11 @@ the reader is a person. An owner or an admin sees the install's state and what i
 (STATES), the forms that state takes, and, while notes that came through a removed install
 wait to be forgotten, how many and the day, with "Forget them now" for an owner while the
 install is removed. Anyone else
-sees only an outcome said to them (cairn.slack.link)."""
+sees only an outcome said to them (cairn.slack.link).
+
+The web layer depends on this package, never the other way round (tests/unit/test_layers_unit):
+what this module needs of it is handed in by cairn.web.app, `memory_in` (the request's Memory
+as Auth put it on the scope) and the template global `slack_block` (`block`)."""
 
 import contextlib
 import json
@@ -67,8 +71,6 @@ from cairn.slack.client import SlackClient, SlackError
 from cairn.slack.manifest import SCOPES, build_manifest, manifest_link
 from cairn.store.hosted import Sealer
 from cairn.store.slack import DOMAIN, NOT_AN_OWNER, SECRET_VALUE, SLACK_ID, SlackInstall
-from cairn.web.auth import MEMORY, _memory
-from cairn.web.templating import templates
 
 TEMPLATES = Path(__file__).parents[1] / "templates"
 PREFIX = "/integrations/slack"
@@ -254,10 +256,24 @@ class Outcomes:
     """The outcome a handler leaves for its person (the module): `told` writes it, `read`
     reads it back for the request's person, {} when there is none for them now."""
 
-    def __init__(self, sealer: Sealer, now: Callable[[], datetime], secure: bool) -> None:
+    def __init__(
+        self,
+        sealer: Sealer,
+        now: Callable[[], datetime],
+        secure: bool,
+        memory_in: Callable[[Scope], Any],
+    ) -> None:
         self.sealer = sealer
         self.now = now
         self.secure = secure
+        self.memory_in = memory_in  # the request's Memory, as Auth put it on the scope
+
+    def memory(self, request: Request) -> Memory:
+        """The caller's Memory; it fails closed, as a request Auth did not admit has none."""
+        memory = self.memory_in(request.scope)
+        if not isinstance(memory, Memory):
+            raise RuntimeError("this request was not authenticated: it has no account")
+        return memory
 
     def __repr__(self) -> str:
         return "Outcomes()"
@@ -276,7 +292,7 @@ class Outcomes:
         return response
 
     def read(self, scope: Scope) -> str:
-        memory = scope.get(MEMORY)
+        memory = self.memory_in(scope)
         sealed = cookie_parser(Headers(scope=scope).get("cookie", "")).get(SAID_COOKIE)
         plain = self.sealer.open(sealed, OUTCOME) if sealed else None
         try:
@@ -325,11 +341,13 @@ class Noted:
 Handler = Callable[[Request, Memory, Noted], Awaitable[Response]]
 
 
-def recorded(action: str, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
+def recorded(
+    action: str, handler: Handler, outcomes: Outcomes
+) -> Callable[[Request], Awaitable[Response]]:
     """`handler`, with one access record for whatever it ends with (`logged`)."""
 
     async def answer(request: Request) -> Response:
-        memory = _memory(request)
+        memory = outcomes.memory(request)
         noted, status = Noted(), 500
         try:
             response = await handler(request, memory, noted)
@@ -476,7 +494,7 @@ def setup_routes(
         return await told(memory, noted, "forgotten")
 
     return [
-        Route(path, recorded(ACTION, handler), methods=["POST"])
+        Route(path, recorded(ACTION, handler, outcomes), methods=["POST"])
         for path, handler in (
             (SETUP_PATH, set_up), (SECRETS_PATH, secrets), (OFF_PATH, switch(False)),
             (ON_PATH, switch(True)), (REMOVE_PATH, remove), (FORGET_PATH, forget),
@@ -491,14 +509,11 @@ BLOCK: ContextVar[Callable[[], dict[str, Any] | None] | None] = ContextVar(
 )
 
 
-def _block() -> dict[str, Any] | None:
+def block() -> dict[str, Any] | None:
     """What the block shows to the request being answered; None (and nothing read) when the
-    switch is off."""
+    switch is off. cairn.web.app makes it the template global `slack_block`."""
     found = BLOCK.get()
     return found() if found is not None else None
-
-
-templates.globals["slack_block"] = _block
 
 
 def _state(install: SlackInstall | None) -> str | None:
@@ -507,11 +522,10 @@ def _state(install: SlackInstall | None) -> str | None:
     return "revoked" if install.needs_bot_token else install.state
 
 
-def block_for(scope: Scope, public_url: str, said: str = "") -> dict[str, Any] | None:
-    """What the block shows the request's person (the module), or None."""
+def block_for(memory: Any, public_url: str, said: str = "") -> dict[str, Any] | None:
+    """What the block shows the request's person, `memory` (the module), or None."""
     from cairn.slack.link import SAID as LINKED  # it imports this module
 
-    memory = scope.get(MEMORY)
     if not isinstance(memory, Memory) or memory.person is None:
         return None
     store = memory.store
@@ -567,7 +581,8 @@ class Block:
         def shown() -> dict[str, Any] | None:
             if SAID_COOKIE in cookie_parser(Headers(scope=scope).get("cookie", "")):
                 read.append(True)
-            return block_for(scope, self.public_url, self.outcomes.read(scope))
+            memory = self.outcomes.memory_in(scope)
+            return block_for(memory, self.public_url, self.outcomes.read(scope))
 
         async def answer(message: Message) -> None:
             if message["type"] == "http.response.start" and read:

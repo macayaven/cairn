@@ -34,8 +34,6 @@ from starlette.routing import Route
 from cairn.memory import Memory, NotFound
 from cairn.slack.client import SlackClient, SlackError
 from cairn.slack.setup import PREFIX, Noted, Outcomes, recorded
-from cairn.web.templating import NO_PAGE
-from cairn.web.ui import _ui
 
 LINK_PATH = f"{PREFIX}/link"
 UNLINK_PATH = f"{PREFIX}/unlink"
@@ -74,21 +72,28 @@ def _value(request: Request) -> str | None:
 
 
 def link_routes(
-    outcomes: Outcomes, *, http: Callable[[], httpx.AsyncClient], api: str
+    outcomes: Outcomes,
+    *,
+    http: Callable[[], httpx.AsyncClient],
+    api: str,
+    page_of: Callable[..., Response],
+    no_page: str,
 ) -> list[Route]:
     """The three addresses (the module). `http`: what the call to Slack is made through;
-    `api`: the base of Slack's Web API (the switch's)."""
+    `api`: the base of Slack's Web API (the switch's); `page_of(request, template, **context)`:
+    a page for the signed-in caller; `no_page`: what an address that is not a page says. The
+    last two are the web layer's, handed in by cairn.web.app."""
 
     async def offered(request: Request, memory: Memory, noted: Noted) -> Any:
         value = _value(request)
         offer = await run_in_threadpool(memory.store.slack_offer, value) if value else None
         if offer is None or memory.person is None:
             noted.outcome = "no_offer"
-            raise NotFound(NO_PAGE)
+            raise NotFound(no_page)
         noted.install = offer.install_id
         return offer
 
-    async def page(request: Request, memory: Memory, noted: Noted) -> Response:
+    async def asked(request: Request, memory: Memory, noted: Noted) -> Response:
         offer = await offered(request, memory, noted)
         store = memory.store
         token = await run_in_threadpool(store.slack_bot_token, offer.install_id)
@@ -105,7 +110,7 @@ def link_routes(
         install = await run_in_threadpool(store.get_slack_install)
         account = await run_in_threadpool(store.get_account, store.account_id)
         noted.outcome = "asked"
-        response = _ui(
+        response = page_of(
             request, "slack_link.html", slack_name=name, slack_user=offer.slack_user_id,
             team_domain=install.team_domain if install else None,
             workspace=account.name if account else "", expires_at=offer.expires_at.isoformat(),
@@ -120,7 +125,7 @@ def link_routes(
             await run_in_threadpool(memory.store.take_slack_offer, _value(request))
         except (KeyError, PermissionError):
             noted.outcome = "no_offer"
-            raise NotFound(NO_PAGE) from None
+            raise NotFound(no_page) from None
         noted.outcome = "linked"
         noted.install = offer.install_id
         return outcomes.told(memory, "linked")
@@ -134,14 +139,14 @@ def link_routes(
             person = await run_in_threadpool(store.slack_person, install.id, slack_user)
         if person is None or person.user_id != store.user_id:
             noted.outcome = "not_linked"
-            raise NotFound(NO_PAGE)
+            raise NotFound(no_page)
         noted.install = install.id
         await run_in_threadpool(store.unlink_slack_user, install.id, slack_user)
         noted.outcome = "unlinked"
         return outcomes.told(memory, "unlinked")
 
     return [
-        Route(LINK_PATH, recorded(ACTION, page), methods=["GET"]),
-        Route(LINK_PATH, recorded(ACTION, yes), methods=["POST"]),
-        Route(UNLINK_PATH, recorded(ACTION, unlink), methods=["POST"]),
+        Route(LINK_PATH, recorded(ACTION, asked, outcomes), methods=["GET"]),
+        Route(LINK_PATH, recorded(ACTION, yes, outcomes), methods=["POST"]),
+        Route(UNLINK_PATH, recorded(ACTION, unlink, outcomes), methods=["POST"]),
     ]

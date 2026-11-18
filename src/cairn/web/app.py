@@ -39,6 +39,7 @@ from cairn.plans import Plans
 from cairn.slack.link import link_routes
 from cairn.slack.setup import Block as SlackBlock
 from cairn.slack.setup import Outcomes as SlackOutcomes
+from cairn.slack.setup import block as slack_block
 from cairn.slack.setup import office_of, setup_routes
 from cairn.sources.runner import MIN_SYNC_EVERY, source_client
 from cairn.store import CannotWrite, Principal, Store, StoreUnusable
@@ -79,15 +80,21 @@ from cairn.web.templating import (
     BRANDED_CSS,
     BRANDED_STYLESHEET,
     HERE,
+    NO_PAGE,
     _page,
     brand_of,
+    templates,
 )
 from cairn.web.turns import COMPILES, Compiles
-from cairn.web.ui import session_routes, ui_routes
+from cairn.web.ui import _ui, session_routes, ui_routes
 from cairn.web.workspace import workspace_routes
 
 if TYPE_CHECKING:  # never at run time: without an arranger no model code is imported
     from cairn.arrange import Arranger
+
+# K1b: the Sources page's Slack block (templates/_slack.html), nothing unless the switch's
+# middleware (cairn.slack.setup.Block) says what it shows
+templates.globals["slack_block"] = slack_block
 
 MAX_BODY = 4 * 1024 * 1024  # bytes, the same cap as the MCP transport's
 # Media types cairn names itself for its static files, rather than reading them from the
@@ -509,7 +516,11 @@ def create_app(
     )
     compactor = Compactor(store, compact_every) if compact_every else None
     keeper = Keeper(store, slack.every) if slack is not None else None  # K1
-    told = SlackOutcomes(slack.sealer(), now, secure) if slack is not None else None  # K1b
+    told = (  # K1b: what a Slack form came to, said once on the Sources page
+        SlackOutcomes(slack.sealer(), now, secure, lambda scope: scope.get(MEMORY))
+        if slack is not None
+        else None
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -580,7 +591,13 @@ def create_app(
                 *setup_routes(
                     told, office=office_of(store), http=slack.http or source_http, api=slack.api
                 ),
-                *link_routes(told, http=slack.http or source_http, api=slack.api),
+                *link_routes(
+                    told,
+                    http=slack.http or source_http,
+                    api=slack.api,
+                    page_of=_ui,
+                    no_page=NO_PAGE,
+                ),
             ]
             if slack is not None and told is not None
             else []

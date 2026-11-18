@@ -277,7 +277,12 @@ def test_an_invitation_does_not_let_in_an_address_the_limits_leave_out(store, li
     built = create_app(store, public_url=BASE, sign_in=sign_in_config, test_instance=True)
     with TestClient(built, base_url=BASE) as client:  # listed: the invitation is taken
         assert sign_in(client, next_path=f"/join/{invitation.token}").status_code == 200
-    assert team.list_invites() == []
+        taken = client.post(
+            f"/join/{invitation.token}",
+            headers={"sec-fetch-site": "same-origin"},
+            follow_redirects=False,
+        )
+    assert taken.status_code == 303 and team.list_invites() == []
 
 
 def test_every_sentence_of_the_section_is_pinned_here():

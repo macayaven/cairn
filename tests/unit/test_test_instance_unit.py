@@ -32,7 +32,7 @@ SIGNIN_PHRASES = (
     NOTICE,
     "<h1>Sign in to the test instance</h1>",
     'class="button" href="/docs/run">Run it yourself</a>',
-    'Read the <a href="/docs/privacy">privacy notice</a> before signing in.',
+    'Read the <a href="/docs/privacy">privacy guide</a> before signing in.',
 )
 PHRASES = (*LANDING_PHRASES, *SIGNIN_PHRASES)
 UNLISTED = "This install admits only the people its operator has listed."
@@ -177,7 +177,7 @@ def test_behind_the_wall_the_sign_in_page_links_to_no_guide(store, fake):
         assert client.get("/docs/run", follow_redirects=False).status_code == 303
         page = client.get("/login").text
     assert "<h1>Sign in to the test instance</h1>" in page and NOTICE in page
-    assert 'href="/docs' not in page  # neither the guide, the privacy notice nor the footer's
+    assert 'href="/docs' not in page  # neither the run guide, the privacy guide nor the footer's
     assert 'href="/auth/github"' in page
     assert "session cookie, valid for 12 hours" in page
 

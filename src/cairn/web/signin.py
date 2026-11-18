@@ -299,7 +299,13 @@ def _lasts(sessions: Sessions) -> str:
 
 
 def signin_routes(
-    sign_in: SignIn, accounts: Accounts, public_url: str | None, brand: Brand | None = None
+    sign_in: SignIn,
+    accounts: Accounts,
+    public_url: str | None,
+    brand: Brand | None = None,
+    *,
+    test_instance: bool = False,
+    wall: bool = False,
 ) -> list[Route]:
     """/login, /auth/<provider> and its callback. B1, `brand`: the sign-in page, a refusal on
     it and the page that moves on after signing in are pages of their own (brand_signin.html,
@@ -307,7 +313,11 @@ def signin_routes(
     logo, one link per provider and, after a refusal, its one sentence; no navigation, no
     footer, no form, no script. The state cookie is auth.branded_cookie(BRANDED_STATE_COOKIE),
     at Path=/ when it carries the __Host- prefix, and no sentence names cairn
-    (brand.server_name)."""
+    (brand.server_name). `test_instance` (`serve --test-instance`): signin.html says the
+    install is a private test instance for approved testers and, unless `wall`, links to the
+    run guide before the providers and to the privacy guide after them (with `wall`, its
+    footer links to no guide either); a refusal says what
+    it says without it, and brand_signin.html does not change. Nobody's admission changes."""
     issuer, domains, emails = check(sign_in, public_url)
     secure = issuer.startswith("https://")
     state_cookie = STATE_COOKIE if brand is None else branded_cookie(BRANDED_STATE_COOKIE, secure)
@@ -345,7 +355,16 @@ def signin_routes(
             for name, provider in providers.items()
         ]
         shown = "brand_signin.html" if brand else "signin.html"
-        return _page(shown, status_code, brand=brand, providers=links, error=error, lasts=lasts)
+        return _page(
+            shown,
+            status_code,
+            brand=brand,
+            providers=links,
+            error=error,
+            lasts=lasts,
+            test_instance=test_instance,
+            wall=wall,
+        )
 
     def login_form(request: Request) -> Response:
         error = LOGIN_ERRORS.get(request.query_params.get("error", ""))

@@ -58,7 +58,8 @@ def test_with_the_flag_every_page_a_visitor_reaches_keeps_the_p1_rules(tmp_path,
     if not wall:
         assert NOTICE in pages["/"][1] and "/docs/run" in pages and "/docs/privacy" in pages
     for path, (status, html) in pages.items():
-        assert status in (200, 303), (path, status)
+        to_provider = path.startswith("/auth/") and status == 302  # the sign-in button
+        assert status in (200, 303) or to_provider, (path, status)
         if not html:
             continue
         page = p1.Page(html)

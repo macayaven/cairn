@@ -3,8 +3,14 @@
 {% block nav %}{% endblock %}
 {% block main %}
 <section class="signin">
+  {% if test_instance %}
+  <h1>Sign in to the test instance</h1>
+  <p class="lede">This is a private test instance. Sign-in is limited to approved testers.</p>
+  {% if not wall %}<p class="actions"><a class="button" href="/docs/run">Run it yourself</a></p>{% endif %}
+  {% else %}
   <h1>Sign in</h1>
   <p class="lede">{{ product.name }} keeps no password. Sign in with an account you already have; {{ product.name }} keeps a session cookie, valid for {{ lasts }}.</p>
+  {% endif %}
   {% if error %}
   <p class="alert" role="alert">Refused. {{ error }}</p>
   {% endif %}
@@ -13,5 +19,9 @@
     <li><a class="button" href="{{ provider.href }}">Continue with {{ provider.label }}</a></li>
   {% endfor %}
   </ul>
+  {% if test_instance %}
+  <p>{{ product.name }} keeps no password. Sign in with an account you already have; {{ product.name }} keeps a session cookie, valid for {{ lasts }}.</p>
+  {% if not wall %}<p>Read the <a href="/docs/privacy">privacy guide</a> before signing in.</p>{% endif %}
+  {% endif %}
 </section>
 {% endblock %}

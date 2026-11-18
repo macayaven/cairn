@@ -95,10 +95,16 @@ tests/unit/test_sources_from_a_credential_unit.py)
   OwnerCannotWrite); a pass after it finds it off. Found so mid-run (holds_source_claim),
   its last error says so. Switching it on again is its owner's, as for any source.
 - Two sources of one account never write one item (R3, invariant 4). `add_source_from`
-  refuses a source whose selector overlaps wholesale with another source made from the same
-  account, on or off (cairn.sources.overlaps, OVERLAP). `held_selectors(claim)` names what
-  the account's other sources that are on select, so a run holds a Gmail message carrying
-  two of their labels (cairn.sources.runner). A source added with source-add has neither.
+  refuses a source that can select an item another source made from the same account
+  selects, on or off, or that cairn cannot show selects none of its items
+  (cairn.sources.overlaps, OVERLAP). `held_selectors(claim)` names what the account's
+  other sources that are on select, so a run holds a Gmail message carrying
+  two of their labels (cairn.sources.runner). The same check runs when a source is switched
+  on or moved (enable_source) and for a preview before saving. A pair made before its kind's
+  rule refused it stays as it is (nothing re-checks it when the server starts), neither is
+  switched on again or moved while the other exists, and `overlapping_source(claim)` names
+  the other while both are on, so a run of either reads and writes nothing (OVERLAP_ON). A
+  source added with source-add has none of it.
 
 A member's own sources (R4; tests/acceptance/test_r4_a_members_own_sources.py)
 - Who handles which source is decided in one place (_may_handle_sources, _own_sources,
@@ -989,6 +995,28 @@ class SourceMethods(StoreBase):
                     found |= marks(held["kind"], config)
             return frozenset(found)
 
+    def overlapping_source(self, claim: SourceClaim) -> str | None:
+        """R3: the name of another source made from the same account as the claim's source,
+        that is on and can select what it selects (cairn.sources.overlaps); None when there
+        is none, and for a source added with source-add. Such a pair was made before its
+        kind's rule refused it: a run of either reads and writes nothing (the runner says
+        OVERLAP_ON) until one is switched off. Writes nothing."""
+        from cairn.sources import overlaps
+
+        with self._read() as con:
+            self._may_manage_sources(con)
+            if self._find(con, claim.name) is None:
+                return None
+            linked, held = self._linked(con, claim.name)
+            if not linked or held is None:
+                return None
+            for other, config in self._made_from(con, held["name"], on=True):
+                if other.casefold() != claim.name.casefold() and overlaps(
+                    claim.kind, claim.config, config
+                ):
+                    return other
+            return None
+
     def holds_source_claim(self, claim: SourceClaim) -> bool:
         """Whether `claim` is still the source's: False once another run took it after the
         limit, or the source was removed, or it names a project the view does not reach, or
@@ -1179,7 +1207,7 @@ class SourceMethods(StoreBase):
         self, con: sqlite3.Connection, source: str, kind: str, config: dict
     ) -> None:
         """R3: ValueError (OVERLAP) when `config`, the config the source `source` is to have,
-        overlaps wholesale with another source made from the same account, on or off
+        can select what another source made from the same account selects, on or off
         (cairn.sources.overlaps). Nothing for a source with no live link (source-add's)."""
         from cairn.sources import OVERLAP, overlaps
 

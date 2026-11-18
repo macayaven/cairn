@@ -34,7 +34,14 @@ from cairn.memory import (
     _codes,
 )
 from cairn.plans import Plan, Plans
-from cairn.sources import HELD_CREDENTIALS, KINDS, Clock, SourceError, holds_secret
+from cairn.sources import (
+    HELD_CREDENTIALS,
+    KINDS,
+    OVERLAP_ON,
+    Clock,
+    SourceError,
+    holds_secret,
+)
 from cairn.store import SourceOff, Store
 from cairn.store.hosted import HOSTED_ENV, NOT_HERE, RECONNECT, TokenUnusable
 from cairn.store.sources import OwnerCannotWrite
@@ -359,7 +366,11 @@ async def run_source(
     (Gmail). They are read again after the pull, before any draft is written: at a draft held
     only by a source switched on meanwhile the run stops, as at its deadline: nothing after
     it is written, and the cursor is the one before it. A source added with source-add has
-    none.
+    none. Before anything else after the claim, a source with another source of its account
+    that is on and selects what it selects (Store.overlapping_source: a pair made before its
+    kind's rule refused it) raises SourceError in OVERLAP_ON's words: nothing is read or
+    written, the source stays on, and the sentence is its last error, until one of the two
+    is switched off.
 
     Items (I1). When a pull's drafts name items (NoteDraft.item), the run reads once which
     of them the source wrote before (Store.written_source_items). A draft whose item is
@@ -409,6 +420,9 @@ async def run_source(
     secrets = named
     source = None
     try:
+        both_on = await _off_loop(view.overlapping_source, claim)  # R3: a pair made before
+        if both_on is not None:
+            raise SourceError(OVERLAP_ON.format(both_on))
         config, opened_env, hosted = await _hosted(view, claim.name, claim.config, env)
         named = secrets = named + hosted
         kind = KINDS[claim.kind]

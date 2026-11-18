@@ -4,10 +4,11 @@ cairn is a memory service for AI agents. Agents write notes to it over MCP, and 
 
 ## Run it on your computer
 
-You need Docker Engine 28.3.3 or later (`docker version` prints it under Server), Compose 2.24 or later (`docker compose version` prints it) and a clone of this repository. cairn is published here on `127.0.0.1` only, and Engine 28.3.3 is the release that [closed a way](https://docs.docker.com/engine/release-notes/28/) for such a port to be reached from the local network after a firewall reload. Docker Desktop carries its own Engine and Compose: check both the same way. The commands below run from the clone's `deploy` folder.
+You need Docker Engine 28.3.3 or later (`docker version` prints it under Server), Compose 2.24 or later (`docker compose version` prints it) and a clone of this repository. cairn is published here on `127.0.0.1` only, and Engine 28.3.3 is the release that [closed a way](https://docs.docker.com/engine/release-notes/28/) for such a port to be reached from the local network after a firewall reload. Docker Desktop carries its own Engine and Compose: check both the same way. The commands below clone the public source and run from its `deploy` folder. They follow the `main` branch as it moves, not a pinned release. Record `git rev-parse HEAD` with each build to identify the code you run.
 
 ```bash
-cd deploy
+git clone https://github.com/macayaven/cairn.git
+cd cairn/deploy
 echo 'COMPOSE_FILE=compose.local.yaml' > .env
 docker compose up -d --build
 ```
@@ -123,12 +124,15 @@ An export brings back no key, so in a new install make a key again, as above. Ke
 
 ### Update
 
-Take a backup first. Then fetch the new code, build the image and replace the container. The volume stays:
+From the same clone's `deploy` folder, take a [cold database backup](#back-it-up) first and note the running image (`docker compose images -q cairn`) and source commit (`git rev-parse HEAD`). Then fetch the new code, build the image while cairn still runs and replace the container. Keep `.env`, `cairn.env` and any extra options as they were. The volume stays:
 
 ```bash
-git pull
-docker compose build cairn
-docker compose up -d
+(
+  set -e
+  git pull --ff-only origin main
+  docker compose build cairn
+  docker compose up -d
+)
 ```
 
 A newer cairn may update the database when it starts, and an older one then refuses to open it. Going back to an earlier version means going back to a backup taken before the update.
@@ -139,7 +143,7 @@ A newer cairn may update the database when it starts, and an older one then refu
 
 ## Run it for other people
 
-[deploy/README.md](deploy/README.md) runs cairn on a server that a domain points at, behind Caddy, which gets the certificate. It adds backups to object storage with Litestream, sign-in with GitHub, Google or your own identity provider, and caps per workspace from a plans file the operator writes. [Run it yourself](src/cairn/guides/run.md) runs the published image with `docker run` instead of Compose.
+[deploy/README.md](deploy/README.md) runs cairn on a server that a domain points at, behind Caddy, which gets the certificate. It adds backups to object storage with Litestream, sign-in with GitHub, Google or your own identity provider, and caps per workspace from a plans file the operator writes. [Run it yourself](src/cairn/guides/run.md) builds the source and runs it with `docker run` instead of Compose.
 
 ## Develop
 
@@ -220,7 +224,7 @@ Try a model before you give it the worker: `evals/t4_compile.py --arrange`, with
 
 ## Options of `serve` in a container
 
-One image serves the web UI, the REST API and the MCP endpoint on port 8765. It runs as a non-root user and keeps its database on the `/data` volume. The compose files in `deploy/` start it, and [Run it yourself](src/cairn/guides/run.md), served at `/docs/run`, starts the published image with `docker run`, from the first key to backups and upgrades.
+One image serves the web UI, the REST API and the MCP endpoint on port 8765. It runs as a non-root user and keeps its database on the `/data` volume. The compose files in `deploy/` start it, and [Run it yourself](src/cairn/guides/run.md), served at `/docs/run`, builds the source and starts it with `docker run`, from the first key to backups and upgrades.
 
 Arguments after the image name replace the default command, `serve --db /data/cairn.db --host 0.0.0.0`. With Compose they go in `CAIRN_EXTRA_ARGS` in `deploy/.env`, after the command the compose file already gives:
 - **Behind a reverse proxy or Tailscale Serve:** add `--public-url https://cairn.example.net`. Form posts are then checked against that origin, and the session cookie is marked Secure. Add `--trusted-proxy` with the address or network the proxy's requests arrive from too. In a container that is the Docker network (`docker network inspect bridge` shows its range), never 127.0.0.1, even for a proxy on the same machine. No proxy is trusted otherwise, loopback included, and every client would share one count in the limits on sign-in and agent registration.

@@ -232,7 +232,7 @@ def test_the_run_guides_command_is_one_serve_takes():
     parser takes, with the five options' values as the guide gives them."""
     block = THE_SECTION.split("```bash\n", 1)[1].split("```", 1)[0]
     words = shlex.split(block.replace("\\\n", " "))
-    command = words[words.index("ghcr.io/macayaven/cairn:main") + 1 :]
+    command = words[words.index("cairn:local") + 1 :]
     parsed = cli._parser().parse_args(command)
     assert command[0] == "serve" and parsed.wall is True
     assert (parsed.brand_name, parsed.brand_logo, parsed.session_days) == (

@@ -90,11 +90,12 @@ def test_the_run_guide_takes_a_self_hoster_from_docker_run_to_an_upgrade(env):
         "Sign in",
         "/data/cairn.db",
         "export --db /data/cairn.db --account acct_default",
-        "docker pull",
+        "docker build -t cairn:local .",
+        "git pull --ff-only origin main",
     ):
         assert step in text, step
     start = page.text.split('id="start-it"', 1)[1].split("<pre", 1)[0]  # before the commands
-    assert "main branch" in start and "public" in start and "not public yet" in start
+    assert "main branch" in start and "source" in start and "not a pinned release" in start
     assert 'href="/docs/run"' in client.get("/docs").text
 
 
@@ -144,20 +145,19 @@ def test_the_guides_say_what_a_repeat_and_a_refusal_record_and_no_more():
     assert "The answer names the rule and the line; the audit log names the rule" in security
 
 
-def test_only_the_landing_page_names_the_source_repository_and_only_to_clone_it(tmp_path, env):
-    """The guides and the sign-in page serve under a brand too, where the software is not
-    named, so they hold no address of the repository. The landing page is never shown under
-    a brand; it names the repository once, in the command that clones it."""
+def test_only_local_install_pages_name_the_source_repository(tmp_path, env):
+    """The local Run guide and landing name the clone and Compose update. The other
+    guides and sign-in can appear under a brand and keep its repository out."""
     client, _ = env
-    for path in ("/docs", *(f"/docs/{name}" for name in GUIDES), "/login"):
+    for path in ("/docs", *(f"/docs/{name}" for name in GUIDES if name != "run"), "/login"):
         assert "github.com/" not in client.get(path).text, path
     store = Store(tmp_path / "landing.db")
     offline = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
     sign_in = SignIn(providers=(GitHub("id", "secret"),), http=offline)
     with TestClient(create_app(store, public_url=BASE, sign_in=sign_in), base_url=BASE) as c:
         landing = c.get("/").text
-        assert landing.count("github.com/") == 1
-        assert "git clone https://github.com/macayaven/cairn\n" in landing
+        assert landing.count("github.com/") == 2
+        assert "git clone https://github.com/macayaven/cairn.git\n" in landing
     store.close()
 
 

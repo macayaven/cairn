@@ -4,18 +4,20 @@ This guide runs cairn on your own machine as one container: the same software as
 
 ## Start it
 
-The image is published from the repository's main branch and must be public for the pull below to work without signing in to the registry; it is not public yet, and the repository's operator decides when. Until then, build the image from a clone of the repository, from its top folder, and write `cairn:local` wherever this guide writes `ghcr.io/macayaven/cairn:main`:
+Build from the public source, with no registry sign-in. These commands follow the main branch as it moves, not a pinned release. Run them in a folder where you keep source checkouts, then record `git rev-parse HEAD` with the build so you know which code you run:
 
 ```bash
+git clone https://github.com/macayaven/cairn.git
+cd cairn
 docker build -t cairn:local .
 ```
 
-With a clone, the repository's README starts the same container with Docker Compose instead (`deploy/compose.local.yaml`), and its commands are `docker compose exec cairn ...` where this guide's are `docker exec cairn ...`.
+The repository's README starts the same source build with Docker Compose instead (`deploy/compose.local.yaml`), and its commands are `docker compose exec cairn ...` where this guide's are `docker exec cairn ...`. Choose one path: the commands below use Docker directly.
 
 ```bash
 docker run -d --name cairn --restart unless-stopped \
   -p 127.0.0.1:8765:8765 -v cairn-data:/data \
-  ghcr.io/macayaven/cairn:main
+  cairn:local
 ```
 
 What each part does:
@@ -26,7 +28,7 @@ What each part does:
 | `--restart unless-stopped` | Starts it again after a reboot, unless you stopped it yourself. |
 | `-p 127.0.0.1:8765:8765` | Serves it on port 8765 of this machine only, so nothing else on your network can reach it. On Linux that needs Docker Engine 28.3.3 or later: earlier releases could let machines on the same network segment reach a port published this way. |
 | `-v cairn-data:/data` | Keeps the database on a Docker volume named `cairn-data`, so it outlives the container. |
-| `ghcr.io/macayaven/cairn:main` | The image: the latest build of cairn's main line. |
+| `cairn:local` | The image you just built from this clone. |
 
 One process serves the web pages, the REST API and the MCP endpoint that agents connect to. It runs as a user without root rights.
 
@@ -101,7 +103,7 @@ docker run -d --name cairn --restart unless-stopped \
   -p 127.0.0.1:8765:8765 -v cairn-data:/data \
   -v "$PWD/logo.svg:/brand/logo.svg:ro" \
   -e CAIRN_GITHUB_CLIENT_ID -e CAIRN_GITHUB_CLIENT_SECRET \
-  ghcr.io/macayaven/cairn:main \
+  cairn:local \
   serve --db /data/cairn.db --host 0.0.0.0 --public-url https://kb.example.net \
   --sign-in github --wall --brand-name "Knowledge Base" --brand-logo /brand/logo.svg --session-days 30
 ```
@@ -146,7 +148,7 @@ and start cairn again, repeating the default command with `--no-tidy`:
 ```bash
 docker run -d --name cairn --restart unless-stopped \
   -p 127.0.0.1:8765:8765 -v cairn-data:/data \
-  ghcr.io/macayaven/cairn:main \
+  cairn:local \
   serve --db /data/cairn.db --host 0.0.0.0 --no-tidy
 ```
 
@@ -195,7 +197,7 @@ and start cairn again with the file, repeating the default command with `--model
 ```bash
 docker run -d --name cairn --restart unless-stopped \
   -p 127.0.0.1:8765:8765 -v cairn-data:/data --env-file ./anthropic.env \
-  ghcr.io/macayaven/cairn:main \
+  cairn:local \
   serve --db /data/cairn.db --host 0.0.0.0 --model-env ARRANGER
 ```
 
@@ -339,14 +341,20 @@ Open http://127.0.0.1:18765 and sign in with a key you had before: the copy hold
 
 ## Upgrade
 
-Take a backup, then replace the container. The data stays on the volume:
+These commands are for the direct Docker install above. For the Compose install, use the README's [Update steps](https://github.com/macayaven/cairn/blob/main/README.md#update) from `deploy`.
+
+Take a [cold database backup](#back-it-up) first, and note the running image (`docker inspect cairn --format '{{.Image}}'`) and source commit (`git rev-parse HEAD`). From the same clone's top folder, fetch the new code and build while cairn still runs, then replace the container. The data stays on the volume:
 
 ```bash
-docker pull ghcr.io/macayaven/cairn:main
-docker stop cairn
-docker rm cairn
+(
+  set -e
+  git pull --ff-only origin main
+  docker build -t cairn:local .
+  docker stop cairn
+  docker rm cairn
+)
 ```
 
-Then run the same `docker run` command you started it with. A newer version may update the database when it starts. An older image refuses to open a database a newer one has updated, so going back to an earlier version means going back to a backup taken before the upgrade.
+Then run the same `docker run` command you started it with, using `cairn:local` and keeping its volume, environment files, ports and options. A newer version may update the database when it starts. An older image refuses to open a database a newer one has updated, so going back to an earlier version means going back to a backup taken before the upgrade.
 
 An upgrade keeps every page's address, so links to a page and the claims cited from it keep working. Since pages are filed by topic, a page that held notes of two topics before the upgrade keeps them both and takes the topic of its latest title: later notes of that topic join it, and later notes of the other topic build a page of their own. A note that no page cites when you upgrade, because it was stored and never filed or because the gate rejected it, waits for its page, and `serve` files it: it gets its page, or its outcome is recorded again and it waits no more.

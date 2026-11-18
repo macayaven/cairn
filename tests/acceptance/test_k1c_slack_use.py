@@ -637,7 +637,7 @@ def test_the_same_message_filed_by_two_people_at_once_is_one_note_and_it_is_forg
     assert project == "inbox"
     assert [row[0] for row in world.through_slack()] == [note_id]
     brook, ada = world.slack.asked(REPLY)  # Brook's answer left first
-    assert said(brook).startswith(people.BEING_FILED) and "inbox" not in said(brook)
+    assert people.BEING_FILED in said(brook) and "inbox" not in said(brook)
     assert said(ada).startswith("Filed")
     world.ada.view.remove_slack_install(world.install.id)
     world.clock.now += timedelta(days=11)

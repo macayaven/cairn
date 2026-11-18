@@ -24,8 +24,9 @@ A search and a note, as the person's
   its conversation and message time (D9: a message recorded already answers with the note it
   already is); typed, only when the note is new (a text the project held already came in
   some other way, and is not forgotten with the install, D10). The record is written when the
-  note is stored and before it is compiled (Memory.note's `on_stored`), so a compile that
-  then fails leaves a note the install's removal still finds; the person is then told it is
+  note is stored and before it is compiled (Memory.note's `on_stored`): for a filed message
+  it gives the claim cairn.slack.shortcuts made its note, so a compile that then fails leaves
+  a note the install's removal still finds; the person is then told it is
   stored (STORED_NOT_FILED). The answer links the note's page. Each refusal is its own
   sentence: no project chosen (NO_PROJECT), the project out of
   reach or gone (OUT_OF_REACH), read-only (the store's sentence), the guard's (cairn's own,
@@ -40,6 +41,7 @@ A search and a note, as the person's
   kept to be written later: what is answered is what is stored (D8).
 - `already(context, asker, note_id)`: the answer for a message filed already, linking its
   note, or, when that note is out of the person's reach, ELSEWHERE, naming nothing of it.
+  BEING_FILED: the answer for a message someone else is filing right now.
 - Two seams, each the one place its message is built: `filed_message` (a note written, or
   stored and waiting for its page: today both are said as filed) and `unlinked` (after
   `unlink`: today the one-time address again).
@@ -111,6 +113,10 @@ NOT_WRITABLE = (
 )
 NOT_A_NOTE = "This is not a note cairn keeps ({reason}), and nothing was stored."
 ELSEWHERE = "This message is filed already, in a project you do not reach."
+BEING_FILED = (
+    "This message is being filed right now, and nothing more was filed. Try again in a moment"
+    " to see its note."
+)
 NO_TEXT = "This message has no text to file, and nothing was filed."
 NOT_A_MESSAGE = "This is not a message cairn can file, and nothing was filed."
 NO_PERSON = (

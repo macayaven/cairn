@@ -116,13 +116,15 @@ STATES = {  # the install's state, and what is left to do
         " (OAuth & Permissions) here."
     ),
     "ready": (
-        "Ready: Slack accepted the bot token, and the slash command and the message shortcut"
-        " are answered. Left to do: in the app's settings at Slack, have Slack verify the"
-        " events address below, so that direct messages to the bot are answered too."
+        "Ready: Slack accepted the bot token. The signing secret is not proven yet: only a"
+        " request that Slack signed can prove it. Left to do: in the app's settings at Slack,"
+        " have Slack verify the events address below. If Slack reports that the address did"
+        " not answer, the signing secret pasted here is not this app's: paste it again."
     ),
     "on": (
-        "On: Slack verified the events address, and the slash command, the message shortcut"
-        " and direct messages to the bot are answered."
+        "On: Slack verified the events address, so a request signed with this app's signing"
+        " secret was verified, and the slash command, the message shortcut and direct messages"
+        " to the bot are answered."
     ),
     "off": (
         "Off: commands and actions are refused, and nothing is deleted. Switch it on again to"

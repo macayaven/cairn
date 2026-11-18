@@ -55,7 +55,7 @@ async def note(envelope: Envelope, context: Context) -> JSONResponse:
     asker = await people.asker(context, envelope.user_id)
     if asker is None:
         return _answer(await people.link_prompt(context, envelope.user_id))
-    return _answer(await run_in_threadpool(people.write, context, asker, _rest(envelope)))
+    return _answer(await people.written(context, asker, _rest(envelope)))
 
 
 @on_command("project")

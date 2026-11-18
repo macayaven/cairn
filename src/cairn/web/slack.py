@@ -73,6 +73,7 @@ import pkgutil
 import re
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -296,10 +297,12 @@ def slack_routes(
     now: Callable[[], datetime],
     public_url: str,
     http: Callable[[], httpx.AsyncClient],
+    turn: Callable[[], AbstractAsyncContextManager[Any]] = contextlib.nullcontext,
 ) -> list[Route]:
     """The three addresses (the module). `memory_for(workspace, person)`: a person's Memory
     (Accounts); `failures`: signature_failures(clock); `now`: the app's clock; `http`: what
-    calls to Slack are made through."""
+    calls to Slack are made through; `turn`: one turn among the server's compiles (create_app's
+    Compiles.turn), which a note written from Slack holds (cairn.slack.people.written)."""
     _import_handlers()
 
     def no_page(request: Request) -> Response:
@@ -360,6 +363,7 @@ def slack_routes(
             now=now,
             api=config.api,
             reply_hosts=config.reply_hosts,
+            turn=turn,
         )
         try:
             answer = await dispatch(found, context)

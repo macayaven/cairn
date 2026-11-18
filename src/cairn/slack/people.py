@@ -31,6 +31,13 @@ A search and a note, as the person's
   reach or gone (OUT_OF_REACH), read-only (the store's sentence), the guard's (cairn's own,
   naming the rule), the plan's cap, a full page, a note filed under another topic, a text the
   project forgot, a text that is not a note (NOT_A_NOTE), the store unable to write.
+- `written`: `write` inside one of the server's turns of compiles (Context.turn; G1,
+  cairn.web.turns), as a REST note is: the turn is waited for on the event loop, holding no
+  worker thread, and the note is stored and compiled while it is held. Slack wants its
+  answer within three seconds, so the wait is at most TURN_WITHIN (1) seconds, which with
+  the shortcut's AUTHOR_WITHIN leaves time for the compile; past it nothing is stored, no
+  turn is held or waited for, and the person is told so (BUSY) and to try again. No note is
+  kept to be written later: what is answered is what is stored (D8).
 - `already(context, asker, note_id)`: the answer for a message filed already, linking its
   note, or, when that note is out of the person's reach, ELSEWHERE, naming nothing of it.
 - Two seams, each the one place its message is built: `filed_message` (a note written, or
@@ -56,6 +63,7 @@ Replies after the answer
 Nothing of a message, a search or a note's text, a token or an address is in a log line: a
 failure is logged by its class alone."""
 
+import asyncio
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -80,6 +88,11 @@ AUTHOR_WITHIN = 1.5  # seconds Slack has, in all, to say who wrote a message
 KNOWN_FOR = timedelta(minutes=10)  # how long a positive answer about an author is kept
 KNOWN_MAX = 512  # answers kept at most, the oldest dropped first
 REPLY_WITHIN = 10.0  # seconds a private reply may take; it is sent once
+TURN_WITHIN = 1.0  # seconds a note waits for a turn among the server's compiles
+BUSY = (
+    "cairn is compiling as many notes as it can at once, and nothing was stored."
+    " Try again in a moment."
+)
 
 STORED_NOT_FILED = (
     "The note is stored in your project, but cairn could not put it on a page."
@@ -292,6 +305,21 @@ def filed_message(*, title: str, page_url: str, project: str, waiting: bool) -> 
     # Replaced by blocks.filed(title=..., page_url=..., project=..., waiting=waiting) once
     # blocks.py takes `waiting`.
     return blocks.filed(title=title, page_url=page_url, project=project)
+
+
+async def written(context: Context, asker: Asker, text: str, **fields: Any) -> dict:
+    """`write` (the same arguments), holding one of the server's turns of compiles (the
+    module); BUSY when none came within TURN_WITHIN seconds, and nothing stored."""
+    turn = context.turn()
+    try:  # a turn that is free is taken at once, before the time is up, whatever it is
+        async with asyncio.timeout(TURN_WITHIN):
+            await turn.__aenter__()
+    except TimeoutError:  # the wait was taken back: no turn is held or waited for
+        return blocks.refused(BUSY)
+    try:
+        return await run_in_threadpool(lambda: write(context, asker, text, **fields))
+    finally:
+        await turn.__aexit__(None, None, None)
 
 
 def already(context: Context, asker: Asker, note_id: str) -> dict:

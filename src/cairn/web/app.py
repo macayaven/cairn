@@ -621,6 +621,7 @@ def create_app(
                 now=now,
                 public_url=public_url or "",
                 http=slack.http or source_http,
+                turn=turns.turn,
             )
             if slack is not None
             else []

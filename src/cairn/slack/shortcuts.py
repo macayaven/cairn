@@ -86,15 +86,13 @@ async def _filed(envelope: Envelope, context: Context) -> dict:
         return blocks.refused(people.NO_TEXT)
     except ValueError:  # a conversation, a time or a domain not as Slack writes them
         return blocks.refused(people.NOT_A_MESSAGE)
-    return await run_in_threadpool(
-        lambda: people.write(
-            context,
-            asker,
-            draft.text,
-            title=draft.title,
-            source_ref=draft.source_ref,
-            message=(conversation_id, time),
-        )
+    return await people.written(
+        context,
+        asker,
+        draft.text,
+        title=draft.title,
+        source_ref=draft.source_ref,
+        message=(conversation_id, time),
     )
 
 

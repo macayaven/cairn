@@ -48,7 +48,7 @@ async def _answer(event: dict, context: Context) -> dict:
     if asker is None:
         return await people.link_prompt(context, event["user"])
     if words[: len(NOTE)].casefold() == NOTE:
-        return await run_in_threadpool(people.write, context, asker, words[len(NOTE) :].strip())
+        return await people.written(context, asker, words[len(NOTE) :].strip())
     return await run_in_threadpool(people.search, context, asker, " ".join(words.split()))
 
 

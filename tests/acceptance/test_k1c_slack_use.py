@@ -48,6 +48,10 @@ Whatever the way
 - A write is durable before Slack is answered (D8): when the answer leaves, the note is in
   the store. The private reply that follows a shortcut or a direct message is sent after;
   when sending it fails, the note is there all the same and nothing is retried.
+- A note written from Slack takes its turn among the server's compiles (`serve --compiles`),
+  as every other note does: while every turn is held it waits, and it is written once one is
+  free. It waits at most a second, inside Slack's three: past that nothing is stored and the
+  person is told, privately, that nothing was stored and to try again.
 - Every refusal is said privately and specifically, never silence: no project chosen; the
   project out of reach or gone; the note guard refused it, with the rule's name as cairn
   says it; the workspace over its cap; the page full; a text that is not a note.
@@ -60,9 +64,12 @@ Whatever the way
   of 48, apart from what cairn's own search and note already cost.
 """
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
+import threading
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
@@ -650,6 +657,74 @@ def test_a_write_is_durable_before_slack_is_answered_and_the_reply_follows(world
     world.shortcut()
     world.direct("note: The quince crate is in the cellar.", "Ev0DURA0001")
     assert world.slack.notes_when_answered == [2, 3]
+
+
+class Held:
+    """Every one of the app's turns of compiles, held from outside its event loop until
+    `let_go`: what a server busy compiling other notes looks like to Slack's note."""
+
+    def __init__(self, world: World) -> None:
+        self.turns = world.app.state.compiles
+        self.release = threading.Event()
+        taken = threading.Event()
+
+        async def holding() -> None:
+            async with contextlib.AsyncExitStack() as stack:
+                for _ in range(self.turns.n):
+                    await stack.enter_async_context(self.turns.turn())
+                taken.set()
+                await asyncio.to_thread(self.release.wait)
+
+        self.holder = threading.Thread(target=lambda: asyncio.run(holding()))
+        self.holder.start()
+        assert taken.wait(10) and self.turns.held == self.turns.n
+
+    def let_go(self) -> None:
+        self.release.set()
+        self.holder.join(10)
+
+
+def looked(done, what: str) -> None:
+    """Wait, a bounded time, for `done()`: a look every few milliseconds, never a sleep that
+    decides the outcome."""
+    pause = threading.Event()
+    for _ in range(2000):
+        if done():
+            return
+        pause.wait(0.005)
+    raise AssertionError(f"waited 10 s for {what}")
+
+
+def test_a_note_from_slack_waits_for_the_servers_turn_and_is_written_once_one_is_free(world):
+    world.link(world.ada, ADA_SLACK, world.inbox)
+    held = Held(world)
+    answers = []
+    sending = threading.Thread(
+        target=lambda: answers.append(world.command("note The marmalade shelf moves to row 4."))
+    )
+    sending.start()
+    try:
+        looked(lambda: held.turns.waiting == 1, "the note waiting for a turn")
+        assert world.notes_held() == 0 and answers == []
+    finally:
+        held.let_go()
+        sending.join(10)
+    assert said(private(answers[0])).startswith("Filed: ") and world.notes_held() == 1
+    assert (held.turns.held, held.turns.waiting) == (0, 0)
+
+
+def test_a_note_from_slack_that_finds_no_turn_in_time_is_not_stored_and_is_said(world, monkeypatch):
+    world.link(world.ada, ADA_SLACK, world.inbox)
+    monkeypatch.setattr(people, "TURN_WITHIN", 0)  # past the time at once, without sleeping
+    held = Held(world)
+    try:
+        told = said(private(world.command("note The marmalade shelf moves to row 4.")))
+        assert people.BUSY in told and world.notes_held() == 0 and world.through_slack() == []
+        assert (held.turns.held, held.turns.waiting) == (held.turns.n, 0)
+    finally:
+        held.let_go()
+    assert said(private(world.command("note The marmalade shelf moves to row 4.")))
+    assert world.notes_held() == 1
 
 
 @pytest.mark.parametrize("way", ["typed", "filed"])

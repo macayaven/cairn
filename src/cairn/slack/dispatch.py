@@ -29,11 +29,15 @@ have it (Accounts.memory: their reach, the gate, the guard, the plan), or None w
 no longer one. `http()` makes the client every call to Slack goes through (create_app's, so a
 test hands in an httpx.MockTransport); `bot_token()` opens the install's bot token (a read of
 the store: call it on a worker thread). `slack()` is the client for them (cairn.slack.client).
-`public_url` is the server's address; `now()` its clock. The store's calls block: a handler
-runs them on a worker thread
+`public_url` is the server's address; `now()` its clock. `turn()` is one turn among the
+server's compiles (create_app's Compiles.turn, handed in by cairn.web.slack.slack_routes;
+none, a no-op, when not given): a note is written holding one (cairn.slack.people.written).
+The store's calls block: a handler runs them on a worker thread
 (starlette.concurrency.run_in_threadpool), as cairn.web.slack's own handlers do."""
 
+import contextlib
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -60,6 +64,9 @@ class Context:
     now: Callable[[], datetime] = field(default=datetime.now, repr=False)
     api: str = API
     reply_hosts: frozenset[str] = REPLY_HOSTS
+    turn: Callable[[], AbstractAsyncContextManager[Any]] = field(
+        default=contextlib.nullcontext, repr=False
+    )
 
     def slack(self) -> SlackClient:
         """The client every call to Slack is made with (cairn.slack.client), at the server's

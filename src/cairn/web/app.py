@@ -60,6 +60,7 @@ from cairn.web.erasure import erasure_routes
 from cairn.web.filing import Filer
 from cairn.web.google_connect import BACK_PATH, Block, GoogleConnect, Revoker, google_routes
 from cairn.web.graph_routes import graph_routes
+from cairn.web.graph_view import GRAPH_SCRIPT, GRAPH_STYLESHEET
 from cairn.web.mcp import build_mcp
 from cairn.web.members import member_routes
 from cairn.web.public import Public
@@ -92,17 +93,31 @@ STATIC_TYPES = {".ttf": "font/ttf", ".txt": "text/plain; charset=utf-8"}
 class _Static(StaticFiles):
     """/static/: the stylesheet, the icon, the manifest, the typefaces and their licences.
     `served`: when given, the only paths it serves, compared exactly as the request names
-    them; any other is 404, as if it were not there (branded_static). None: every file."""
+    them; any other is 404, as if it were not there (branded_static). None: every file.
+    The graph explorer's two files (G2: graph_view.GRAPH_SCRIPT and GRAPH_STYLESHEET) are
+    never served from here, by any spelling: a path that reaches either file, as the file
+    system resolves it, is 404. With the explorer on, routes of their own serve them."""
 
     def __init__(self, *, served: frozenset[str] | None = None, **options: Any) -> None:
         super().__init__(**options)
         self.served = served
+        self.withheld = set()  # (device, inode) of each file it never serves
+        for name in (GRAPH_SCRIPT, GRAPH_STYLESHEET):
+            with contextlib.suppress(FileNotFoundError):  # a folder without them
+                found = os.stat(os.path.join(options["directory"], name))
+                self.withheld.add((found.st_dev, found.st_ino))
 
     def get_path(self, scope: Scope) -> str:
         path = super().get_path(scope)
         if self.served is not None and path not in self.served:
             raise HTTPException(status_code=404)
         return path
+
+    def lookup_path(self, path: str) -> tuple[str, os.stat_result | None]:
+        full_path, found = super().lookup_path(path)
+        if found is not None and (found.st_dev, found.st_ino) in self.withheld:
+            return "", None
+        return full_path, found
 
     def file_response(self, full_path, stat_result, scope, status_code=200) -> Response:
         response = super().file_response(full_path, stat_result, scope, status_code)
@@ -517,7 +532,9 @@ def create_app(
         *member_routes(accounts, public_url),
         *rest_routes(),
         *(google_routes(google_connect, public_url) if google_connect and public_url else []),
-        *graph_routes(),  # a project's graph: GET /api/graph and GET /b/<project>/graph
+        # a project's graph: GET /api/graph and GET /b/<project>/graph; with the explorer
+        # on (G2), its note pages and its two files under /static/, before the Mount
+        *graph_routes(explorer=graph_explorer),
         *oauth_routes,
         *account_routes(accounts),
         Route("/mcp", mcp_app),  # an ASGI app on one path: unmatched paths stay with this router

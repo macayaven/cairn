@@ -32,6 +32,9 @@ services:
       - "127.0.0.1:${CAIRN_PORT:-8765}:8765"
     volumes:
       - cairn-data:/data
+    # No Linux capability and no privilege gained by exec: serve needs neither.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     logging:
       driver: json-file
       options:

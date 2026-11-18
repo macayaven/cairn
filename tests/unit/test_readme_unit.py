@@ -86,6 +86,6 @@ def test_the_docker_options_say_how_to_switch_the_tidy_off():
     assert "add `--no-tidy`" in line and "with no model" in line
     words = ["serve", "--db", "/data/cairn.db", "--host", "0.0.0.0", "--no-tidy"]
     assert cli._parser().parse_args(words).no_tidy is True
-    assert "## Tidy pages without a model" in (README.parent / "src/cairn/guides/run.md").read_text(
+    assert "## Tidy pages without a model" in (README.parent / "docs/guides/run.md").read_text(
         encoding="utf-8"
     )

@@ -56,7 +56,7 @@ set -a; . ./laptop.env; set +a
 claude
 ```
 
-Run the first line from `deploy`, or give the path to `deploy/laptop.env` from where you are. [The connect guide](src/cairn/guides/connect.md) has the steps for Codex, Cursor, VS Code, Gemini CLI and other clients.
+Run the first line from `deploy`, or give the path to `deploy/laptop.env` from where you are. [The connect guide](docs/guides/connect.md) has the steps for Codex, Cursor, VS Code, Gemini CLI and other clients.
 
 ### Write a note and see its page
 
@@ -110,7 +110,7 @@ A copy of the database holds every project with its notes and pages, the people,
 
 A copy that fails is not a backup: the commands say so and end with an error. Run them again, and they make a new folder. If cairn does not start again, run `docker compose start cairn` and look at `docker compose ps`.
 
-To run cairn from a copy, follow [Restore a copy of the database](src/cairn/guides/run.md#restore-a-copy-of-the-database) with the folder a backup printed. Its steps copy the backup into a new folder and start a second container on it, so the backup and the data of the running cairn stay as they are.
+To run cairn from a copy, follow [Restore a copy of the database](docs/guides/run.md#restore-a-copy-of-the-database) with the folder a backup printed. Its steps copy the backup into a new folder and start a second container on it, so the backup and the data of the running cairn stay as they are.
 
 To bring an export back into a cairn whose workspace has no project of the same names, write it in as cairn's own user, import it and delete the copy:
 
@@ -120,7 +120,7 @@ docker compose exec cairn python -m cairn.server import --db /data/cairn.db --ac
 docker compose exec cairn rm /data/export.zip
 ```
 
-An export brings back no key, so in a new install make a key again, as above. Keep the backups somewhere other than this computer. [Run it yourself](src/cairn/guides/run.md#back-it-up) says what an export holds and what it leaves out.
+An export brings back no key, so in a new install make a key again, as above. Keep the backups somewhere other than this computer. [Run it yourself](docs/guides/run.md#back-it-up) says what an export holds and what it leaves out.
 
 ### Update
 
@@ -143,7 +143,7 @@ A newer cairn may update the database when it starts, and an older one then refu
 
 ## Run it for other people
 
-[deploy/README.md](deploy/README.md) runs cairn on a server that a domain points at, behind Caddy, which gets the certificate. It adds backups to object storage with Litestream, sign-in with GitHub, Google or your own identity provider, and caps per workspace from a plans file the operator writes. [Run it yourself](src/cairn/guides/run.md) builds the source and runs it with `docker run` instead of Compose.
+[deploy/README.md](deploy/README.md) runs cairn on a server that a domain points at, behind Caddy, which gets the certificate. It adds backups to object storage with Litestream, sign-in with GitHub, Google or your own identity provider, and caps per workspace from a plans file the operator writes. [Run it yourself](docs/guides/run.md) builds the source and runs it with `docker run` instead of Compose.
 
 ## Develop
 
@@ -166,7 +166,7 @@ uv run python -m cairn.server serve --db runs/dev/cairn.db --host 127.0.0.1 --po
 
 ## What it does not promise
 
-A page keeps its newest 50 versions under `serve`: `--keep-versions N` keeps N, `--keep-versions all` keeps every one, and with a plans file the plans decide. A claim is found again by its project, page, claim id and version, which `evidence` takes, for as long as the page keeps that version. A citation shows what a note said, not which of two notes that disagree is right. What a source reads, and where the check that keeps two sources from writing one item stops, is in the [privacy guide](src/cairn/guides/privacy.md#what-a-source-reads).
+A page keeps its newest 50 versions under `serve`: `--keep-versions N` keeps N, `--keep-versions all` keeps every one, and with a plans file the plans decide. A claim is found again by its project, page, claim id and version, which `evidence` takes, for as long as the page keeps that version. A citation shows what a note said, not which of two notes that disagree is right. What a source reads, and where the check that keeps two sources from writing one item stops, is in the [privacy guide](docs/guides/privacy.md#what-a-source-reads).
 
 ## Licence
 
@@ -181,16 +181,16 @@ Third-party components keep the licences their owners gave them:
 
 ## Guides
 
-A running cairn serves these at `/docs`. The Markdown lives in the package, so the server and this repository show the same text.
+A running cairn serves these at `/docs`, from the Markdown in `src/cairn/guides`. The links here lead to `docs/guides`, the same guides as a server shows them without a brand, written by `uv run python scripts/render_guides.py`; a test fails when one is out of date.
 
 | Guide | For | On a running server |
 |---|---|---|
-| [Connect an agent](src/cairn/guides/connect.md) | Claude Code, Codex, the Claude apps, ChatGPT, Cursor, VS Code, Gemini CLI and scripts, by URL or with a key | `/docs/connect` |
-| [Patterns](src/cairn/guides/patterns.md) | Laying out projects and connections: many agents with one project, many projects, sets of projects per use | `/docs/patterns` |
-| [Bring in what you already have](src/cairn/guides/sources.md) | Recipes for meetings, mail, calendar, documents and to-dos through an agent you already use, and sources the server reads itself (Langfuse traces, Granola meeting notes, Google Meet transcripts, the documents of a Google Drive folder, Google Calendar events, the Gmail messages a person labels, Linear issues once they are finished, the finished work of one GitHub repository, and any other system through a connector of your own), which owners and admins switch on and off | `/docs/sources` |
-| [Security](src/cairn/guides/security.md) | Who reaches what, how sign-in and agent connections work, what the checks catch and what they do not | `/docs/security` |
-| [Run it yourself](src/cairn/guides/run.md) | One container on your own machine: the `docker run` command, a key, signing in, where the data lives, backups and upgrades | `/docs/run` |
-| [Privacy](src/cairn/guides/privacy.md) | What cairn stores, where and for how long, export and deletion, and a section for the operator to fill in | `/docs/privacy` |
+| [Connect an agent](docs/guides/connect.md) | Claude Code, Codex, the Claude apps, ChatGPT, Cursor, VS Code, Gemini CLI and scripts, by URL on an install with `--public-url`, or with a key | `/docs/connect` |
+| [Patterns](docs/guides/patterns.md) | Laying out projects and connections: many agents with one project, many projects, sets of projects per use | `/docs/patterns` |
+| [Bring in what you already have](docs/guides/sources.md) | Recipes for meetings, mail, calendar, documents and to-dos through an agent you already use, and sources the server reads itself (Langfuse traces, Granola meeting notes, Google Meet transcripts, the documents of a Google Drive folder, Google Calendar events, the Gmail messages a person labels, Linear issues once they are finished, the finished work of one GitHub repository, and any other system through a connector of your own), which owners and admins switch on and off | `/docs/sources` |
+| [Security](docs/guides/security.md) | Who reaches what, how sign-in and agent connections work, what the checks catch and what they do not | `/docs/security` |
+| [Run it yourself](docs/guides/run.md) | One container on your own machine: the `docker run` command, a key, signing in, where the data lives, backups and upgrades | `/docs/run` |
+| [Privacy](docs/guides/privacy.md) | What cairn stores, where and for how long, export and deletion, and a section for the operator to fill in | `/docs/privacy` |
 | [Deploying](deploy/README.md) | Running cairn for other people behind a domain, with backups | |
 | [Architecture](docs/architecture.md) and [decisions](docs/decisions.md) | Where the code can be extended, and the calls made along the way | |
 
@@ -224,13 +224,13 @@ Try a model before you give it the worker: `evals/t4_compile.py --arrange`, with
 
 ## Options of `serve` in a container
 
-One image serves the web UI, the REST API and the MCP endpoint on port 8765. It runs as a non-root user and keeps its database on the `/data` volume. The compose files in `deploy/` start it, and [Run it yourself](src/cairn/guides/run.md), served at `/docs/run`, builds the source and starts it with `docker run`, from the first key to backups and upgrades.
+One image serves the web UI, the REST API and the MCP endpoint on port 8765. It runs as a non-root user and keeps its database on the `/data` volume. The compose files in `deploy/` start it, and [Run it yourself](docs/guides/run.md), served at `/docs/run`, builds the source and starts it with `docker run`, from the first key to backups and upgrades.
 
 Arguments after the image name replace the default command, `serve --db /data/cairn.db --host 0.0.0.0`. With Compose they go in `CAIRN_EXTRA_ARGS` in `deploy/.env`, after the command the compose file already gives:
 - **Behind a reverse proxy or Tailscale Serve:** add `--public-url https://cairn.example.net`. Form posts are then checked against that origin, and the session cookie is marked Secure. Add `--trusted-proxy` with the address or network the proxy's requests arrive from too. In a container that is the Docker network (`docker network inspect bridge` shows its range), never 127.0.0.1, even for a proxy on the same machine. No proxy is trusted otherwise, loopback included, and every client would share one count in the limits on sign-in and agent registration.
 - **Other hostnames for `/mcp`:** add `--allowed-host NAME` for each one. Any other Host header gets 421.
 - **A host directory instead of a volume:** run as the directory's owner, with `-v "$PWD/data:/data" --user "$(id -u):$(id -g)"`. If cairn may not write there, `serve` stops at start with one line that names the folder or the database file and says to run cairn as its owner.
-- **No tidying:** add `--no-tidy`. cairn otherwise tidies each page a note arrives on, with no model ([the run guide](src/cairn/guides/run.md#tidy-pages-without-a-model)).
+- **No tidying:** add `--no-tidy`. cairn otherwise tidies each page a note arrives on, with no model ([the run guide](docs/guides/run.md#tidy-pages-without-a-model)).
 
 `python3 scripts/smoke_container.py cairn:local` checks the image Compose built end to end.
 

@@ -28,13 +28,16 @@ The three addresses Slack calls (`slack_routes`)
      address that is not a page gets. One that is off (switched off, or its bot token
      revoked: its signing secret is held either way) answers at /events only; its /commands
      and /actions are 404 the same way.
-  3. A client address (as CredentialFailures counts one) that failed the signature
-     SIGNATURE_FAILURES (20) times in the last SIGNATURE_WINDOW (60) seconds is answered 429
-     (TOO_MANY, Retry-After) and the signature is not computed, until the oldest failure
-     leaves the window.
-  4. The timestamp and the signature (cairn.slack.verify.verified, under that install's
-     signing secret, chosen by the address): otherwise 401 with UNSIGNED, and one failure
-     counted against the address.
+  3. The timestamp and the signature (cairn.slack.verify.verified, under that install's
+     signing secret, chosen by the address), computed for every request that comes this
+     far. A request whose signature holds goes on, answered exactly as if no failure had
+     ever been counted, at this install or any other, from this address or any other.
+  4. A request whose signature fails is counted against its (install, client address)
+     pair (SignatureFailures, never the address alone: failures at one install count
+     nothing at another) and answered 401 (UNSIGNED); once that pair had
+     SIGNATURE_FAILURES (20) failures in the last SIGNATURE_WINDOW (60) seconds, a further
+     one is answered 429 (TOO_MANY, Retry-After) and not counted, until the oldest leaves
+     the window. What the count keeps is bounded (SIGNATURE_KEYS pairs).
   5. The body is read (cairn.slack.verify.envelope): one that is not what Slack sends there
      is 400 (NOT_SLACK); one whose team is not the install's is 403 (OTHER_TEAM). Both carry
      `x-slack-no-retry: 1`, so Slack does not send it again, and nothing is done.
@@ -69,9 +72,11 @@ import binascii
 import contextlib
 import importlib
 import logging
+import math
 import pkgutil
 import re
 import threading
+from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -87,6 +92,7 @@ from starlette.routing import Route
 
 import cairn.slack
 from cairn.memory import Memory, access_log
+from cairn.oauth import _network as network  # the sign-in limit's rule for an address
 from cairn.slack.client import API, REPLY_HOSTS
 from cairn.slack.dispatch import Context, dispatch, on_event
 from cairn.slack.verify import (
@@ -100,7 +106,6 @@ from cairn.slack.verify import (
 )
 from cairn.store.hosted import KEY_BYTES, Sealer
 from cairn.store.slack import ACCEPTING
-from cairn.web.ratelimit import CredentialFailures
 from cairn.web.templating import NO_PAGE, _page, brand_of
 
 OFF_EVENTS = ("app_uninstalled", "tokens_revoked")  # what an install that is off acts on
@@ -127,6 +132,7 @@ OPEN_PATH = re.compile(r"/integrations/slack/sl_[0-9a-f]{12}/(?:events|commands|
 ACTIONS = {"events": "slack_event", "commands": "slack_command", "actions": "slack_action"}
 SIGNATURE_FAILURES = 20
 SIGNATURE_WINDOW = 60  # seconds
+SIGNATURE_KEYS = 10_000  # (install, client address) pairs whose recent failures are kept
 KEEP_EVERY = 60.0  # seconds between the loop's passes
 TOO_LARGE = "This request is larger than Slack sends."
 UNSIGNED = "This request is not signed by Slack for this address."
@@ -237,9 +243,68 @@ def open_paths(paths: frozenset[str]) -> frozenset[str]:
     return _OpenPaths(paths)
 
 
-def signature_failures(clock: Callable[[], float]) -> CredentialFailures:
-    """The count of failed signatures per client address (step 3 of the module)."""
-    return CredentialFailures(clock, limit=SIGNATURE_FAILURES, window=SIGNATURE_WINDOW)
+class SignatureFailures:
+    """The requests that failed the signature at Slack's addresses (step 3 of the module), in
+    this process's memory, counted per (install, client address) and never per address
+    alone, so failures at one install count nothing at another. `failed(install, address)`
+    takes one failure: 0 when it is counted (the request is answered 401), or, when the pair
+    had `limit` counted in the last `window` seconds, the whole seconds (at least 1) until
+    the oldest of them leaves the window (the request is answered 429, and is not counted).
+    Only a request whose signature failed is ever given here: a request whose signature
+    holds is answered as if nothing had been counted.
+
+    The address is read as the sign-in limit reads one (cairn.oauth's rule, as
+    CredentialFailures): one IPv6 /64 is one address, and requests without a usable address
+    share one. What is kept is bounded whatever arrives: at most `keys` pairs, each with at
+    most `limit` times, so at most keys x limit times in all (10,000 x 20 by default); when
+    the table is full, the pair seen longest ago is forgotten, never a new one refused. The
+    time is `clock()` in seconds (the app's clock), never earlier than a pair's last failure,
+    so a clock that steps back frees nothing. Thread-safe."""
+
+    def __init__(
+        self,
+        clock: Callable[[], float],
+        *,
+        limit: int = SIGNATURE_FAILURES,
+        window: float = SIGNATURE_WINDOW,
+        keys: int = SIGNATURE_KEYS,
+    ) -> None:
+        if limit < 1 or not window > 0 or keys < 1:
+            raise ValueError("a failure limit needs a limit, a window and room of at least 1")
+        self._clock, self._limit, self._window = clock, limit, window
+        self.keys = keys
+        self._failures: OrderedDict[tuple[str, str], deque[float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def failed(self, install: str, address: str | None) -> int:
+        key = (install, network(address))
+        with self._lock:
+            failures = self._failures.pop(key, None) or deque()
+            self._failures[key] = failures  # now the most recent
+            while len(self._failures) > self.keys:
+                self._failures.popitem(last=False)
+            now = max(self._clock(), failures[-1]) if failures else self._clock()
+            while failures and failures[0] <= now - self._window:
+                failures.popleft()
+            if len(failures) >= self._limit:
+                return max(1, math.ceil(failures[0] + self._window - now))
+            failures.append(now)
+            return 0
+
+    def tracked(self) -> int:
+        """How many (install, address) pairs are kept."""
+        with self._lock:
+            return len(self._failures)
+
+    def held(self) -> int:
+        """How many failures' times are kept, over every pair."""
+        with self._lock:
+            return sum(len(failures) for failures in self._failures.values())
+
+
+def signature_failures(clock: Callable[[], float]) -> SignatureFailures:
+    """The count of failed signatures per (install, client address) (step 3 of the module)."""
+    return SignatureFailures(clock)
 
 
 def _logged(action: str, install: str, status: int) -> None:
@@ -293,7 +358,7 @@ def slack_routes(
     *,
     desk: Desk,
     memory_for: Callable[[str, str], Memory | None],
-    failures: CredentialFailures,
+    failures: SignatureFailures,
     now: Callable[[], datetime],
     public_url: str,
     http: Callable[[], httpx.AsyncClient],
@@ -323,13 +388,12 @@ def slack_routes(
         ):
             _logged(action, install_id, 404)
             return no_page(request)
-        address = request.client.host if request.client else None
-        if wait := failures.blocked(address):
-            _logged(action, install_id, 429)
-            return PlainTextResponse(TOO_MANY, 429, headers={"retry-after": str(wait)})
         secret = inbound.signing_secret
         if secret is None or not verified(secret, request.headers, body, now().timestamp()):
-            failures.failed(address)
+            address = request.client.host if request.client else None
+            if wait := failures.failed(install_id, address):
+                _logged(action, install_id, 429)
+                return PlainTextResponse(TOO_MANY, 429, headers={"retry-after": str(wait)})
             _logged(action, install_id, 401)
             return PlainTextResponse(UNSIGNED, 401)
         install = inbound.install

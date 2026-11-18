@@ -38,8 +38,11 @@ The three addresses Slack calls
   time whatever the difference.
 - A request signed with another install's secret is 401. A body whose team is not the
   install's is refused after its signature holds, and nothing is done.
-- A client address that fails the signature 20 times in a minute is answered 429 without
-  the signature being computed, until the minute is over.
+- A request whose signature holds is never refused because of requests whose signature did
+  not, at its install or any other, from its address or any other. Failures are counted
+  per install and client address: once one install had 20 from one address in a minute, a
+  further request from it that fails is answered 429, until the oldest leaves the minute.
+  The signature is computed for every request that comes that far.
 - Slack's challenge (`"type": "url_verification"`) is answered with its `challenge`, as
   text, only when its signature holds; the first one answered turns an install that is
   ready into one that is on.
@@ -102,6 +105,7 @@ from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.slack import dispatch
 from cairn.store import Claim, Store
+from cairn.web import slack as web_slack
 from cairn.web.slack import KEY_VARIABLE, Keeper, Slack
 
 BASE = "https://cairn.example.test"
@@ -633,24 +637,113 @@ def test_a_body_whose_team_is_not_the_installs_is_refused_and_nothing_is_done(wo
         dispatch.unregister("event", "fable_ping")
 
 
-def test_20_failures_in_a_minute_from_one_address_are_answered_429_without_the_hmac(
-    world, monkeypatch
+def test_20_failures_in_a_minute_at_one_install_from_one_address_make_the_next_failure_429(
+    world, caplog
 ):
+    caplog.set_level(logging.INFO, logger="cairn.access")
+    install = world.install()
+    quill = world.person("Quill", "personal")
+    theirs = world.install(OTHER_SECRET, OTHER_TOKEN, OTHER_TEAM, view=quill.view)
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    for _ in range(20):
+        assert world.post(install.id, "commands", command(), bad).status_code == 401
+    before = dump(world.db)
+    refused = world.post(install.id, "commands", command(), bad)
+    assert refused.status_code == 429 and refused.text == "Too many unsigned requests came" \
+        " from your address in the last minute."  # fmt: skip
+    assert refused.headers["retry-after"] == "60"
+    assert dump(world.db) == before  # a refusal writes nothing
+    said = [(r.action, r.install, r.status) for r in caplog.records if r.name == "cairn.access"]
+    assert said[-1] == ("slack_command", install.id, 429)
+    # another install from the same address, and the same install from another address
+    theirs_bad = tampered(signed(OTHER_SECRET, command(team=OTHER_TEAM), world.clock.stamp()))
+    assert world.post(theirs.id, "commands", command(team=OTHER_TEAM), theirs_bad).status_code \
+        == 401  # fmt: skip
+    elsewhere = from_address(world, "198.51.100.7")
+    answer = elsewhere.post(
+        f"/integrations/slack/{install.id}/commands", content=command(),
+        headers={"content-type": "application/x-www-form-urlencoded", **bad},
+    )  # fmt: skip
+    assert answer.status_code == 401
+    # until the oldest failure leaves the window
+    world.clock.now += timedelta(seconds=59)
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    answer = world.post(install.id, "commands", command(), bad)
+    assert answer.status_code == 429 and answer.headers["retry-after"] == "1"
+    world.clock.now += timedelta(seconds=1)
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    assert world.post(install.id, "commands", command(), bad).status_code == 401
+
+
+def test_the_signature_is_computed_for_every_request_that_reaches_it(world, monkeypatch):
     install = world.install()
     good = signed(SECRET, command(), world.clock.stamp())
     for _ in range(20):
         assert world.post(install.id, "commands", command(), tampered(good)).status_code == 401
-    good = signed(SECRET, command(), world.clock.stamp())
-    later = signed(SECRET, command(), world.clock.stamp() + 61)  # signed before the spy
     computed = []
     real = verify.hmac.new
     monkeypatch.setattr(verify.hmac, "new", lambda *a, **k: computed.append(1) or real(*a, **k))
-    assert world.post(install.id, "commands", command(), good).status_code == 429
-    assert computed == []
-    world.clock.now += timedelta(seconds=61)
-    assert world.post(install.id, "commands", command(), later).status_code == 200
+    assert world.post(install.id, "commands", command(), tampered(good)).status_code == 429
     assert computed == [1]
+    assert world.post(install.id, "commands", command(), good).status_code == 200
+    assert computed == [1, 1]
     monkeypatch.undo()
+
+
+def test_an_install_that_does_not_exist_is_404_before_anything_is_counted(world, monkeypatch):
+    counted = []
+    real = web_slack.SignatureFailures.failed
+    monkeypatch.setattr(
+        web_slack.SignatureFailures, "failed",
+        lambda self, *a: counted.append(a) or real(self, *a),
+    )  # fmt: skip
+    pending = world.ada.view.make_slack_install()
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    for target in ("sl_000000000000", pending.id):
+        assert world.post(target, "commands", command(), bad).status_code == 404
+    assert counted == []
+    install = world.install()
+    assert world.post(install.id, "commands", command(), bad).status_code == 401
+    assert [install_id for install_id, _ in counted] == [install.id]
+
+
+def test_a_request_from_another_address_is_answered_as_if_no_failure_was_counted(world):
+    install = world.install()
+    bad = tampered(signed(SECRET, command(), world.clock.stamp()))
+    for _ in range(25):
+        world.post(install.id, "commands", command(), bad)
+    elsewhere = from_address(world, "198.51.100.7")
+    answer = elsewhere.post(
+        f"/integrations/slack/{install.id}/commands", content=command(),
+        headers={"content-type": "application/x-www-form-urlencoded",
+                 **signed(SECRET, command(), world.clock.stamp())},
+    )  # fmt: skip
+    assert answer.status_code == 200
+
+
+def from_address(world: World, host: str) -> TestClient:
+    """A client of `world`'s server whose requests come from `host`."""
+    return TestClient(world.app, base_url=BASE, client=(host, 50_000))
+
+
+def test_a_signed_request_is_never_refused_because_of_failures_counted_anywhere(world):
+    """The review's lockout probe: Quill's install holds a signing secret that is not its
+    app's, so 20 of Slack's requests to it fail; Slack's signed requests from the same address
+    are still answered, at Fable Works' install and at Quill's own."""
+    fable = world.install()
+    quill = world.person("Quill", "personal")
+    held = "wrong" + OTHER_SECRET[5:]
+    theirs = world.install(held, OTHER_TOKEN, OTHER_TEAM, view=quill.view)
+    for _ in range(20):
+        answer = world.post(theirs.id, "commands", command(team=OTHER_TEAM), secret=OTHER_SECRET)
+        assert answer.status_code == 401
+    assert world.post(fable.id, "commands", command()).status_code == 200
+    answer = world.post(theirs.id, "commands", command(team=OTHER_TEAM), secret=held)
+    assert answer.status_code == 200
+    for _ in range(5):  # and after more failures, at either install, as often as it comes
+        world.post(fable.id, "commands", command(), secret=OTHER_SECRET)
+        world.post(theirs.id, "commands", command(team=OTHER_TEAM), secret=OTHER_SECRET)
+        assert world.post(fable.id, "commands", command()).status_code == 200
 
 
 def test_the_challenge_is_answered_only_when_signed_and_turns_ready_into_on(world):

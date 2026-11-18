@@ -24,6 +24,8 @@
 # check, the stack rehearsal and the host rehearsal. A failed infrastructure check stops
 # the publication too.
 # Nothing is published from a pull request or a manual run.
+# A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
+# gate runs as before, and nothing is published, verified or deployed. Unset, it publishes.
 # A push to main then deploys that image, by digest, to the hosted VM (job `deploy`), when the
 # repository is configured for it; otherwise that job is skipped. infra/gcp/README.md has the
 # settings and the first-deploy checklist.
@@ -315,7 +317,7 @@ jobs:
   publish:
     name: publish to GHCR
     needs: [infra, image, stack, host]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:
       contents: read

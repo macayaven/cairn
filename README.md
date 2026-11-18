@@ -185,7 +185,7 @@ A running cairn serves these at `/docs`. The Markdown lives in the package, so t
 
 | Guide | For | On a running server |
 |---|---|---|
-| [Connect an agent](src/cairn/guides/connect.md) | Claude Code, Codex, the Claude apps, ChatGPT, Cursor, VS Code, Gemini CLI and scripts, by URL or with a key | `/docs/connect` |
+| [Connect an agent](src/cairn/guides/connect.md) | Claude Code, Codex, the Claude apps, ChatGPT, Cursor, VS Code, Gemini CLI and scripts, by URL on an install with `--public-url`, or with a key | `/docs/connect` |
 | [Patterns](src/cairn/guides/patterns.md) | Laying out projects and connections: many agents with one project, many projects, sets of projects per use | `/docs/patterns` |
 | [Bring in what you already have](src/cairn/guides/sources.md) | Recipes for meetings, mail, calendar, documents and to-dos through an agent you already use, and sources the server reads itself (Langfuse traces, Granola meeting notes, Google Meet transcripts, the documents of a Google Drive folder, Google Calendar events, the Gmail messages a person labels, Linear issues once they are finished, the finished work of one GitHub repository, and any other system through a connector of your own), which owners and admins switch on and off | `/docs/sources` |
 | [Security](src/cairn/guides/security.md) | Who reaches what, how sign-in and agent connections work, what the checks catch and what they do not | `/docs/security` |

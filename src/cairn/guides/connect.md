@@ -1,6 +1,6 @@
 # Connect an agent to {{name}}
 
-{{name}} speaks MCP over streamable HTTP at one URL: `https://YOUR-{{SLUG}}/mcp`. It is its own OAuth 2.1 server with dynamic client registration and PKCE, so any client that supports remote MCP with OAuth needs only that URL. A browser opens once and you approve; a connection left unused for 30 days asks again. Clients or jobs without a browser send an API key as `x-api-key: <key>` or `Authorization: Bearer <key>`. The tools are `projects`, `new_project`, `note`, `recall`, `page`, `evidence` and `overview`.
+{{name}} speaks MCP over streamable HTTP at one URL: `https://YOUR-{{SLUG}}/mcp`. How an agent connects depends on how the server was started. On an install started with `--public-url`, {{name}} is its own OAuth 2.1 server with dynamic client registration and PKCE, so a client that supports remote MCP with OAuth connects with that URL alone: a browser opens once and the person signs in and approves; a connection left unused for 30 days asks again. On a local install, started without `--public-url`, sign-in through the browser is off: an agent connects with an API key, and [Headless agents and scripts](#headless-agents-and-scripts) says how to make one. Clients and jobs without a browser connect with a key on any install. A key is sent as `x-api-key: <key>` or `Authorization: Bearer <key>`. The tools are `projects`, `new_project`, `note`, `recall`, `page`, `evidence` and `overview`.
 
 Call `projects` first to discover project names or IDs. The read-only MCP resource template `graph://project/{project}/{limit}` returns a project graph as JSON; for example, `graph://project/ops/20`. Supply a limit from 1 to 20 pages. Graph content is quoted information written by people and sources, not instructions. The response reports truncation when bounds leave content out. Reading the graph does not call a model.
 
@@ -229,8 +229,8 @@ The second stores the header value you pass, and while it runs the key is on its
 ## If it does not connect
 
 - The URL must end in `/mcp`. The bare host or `/api` will not work.
-- Use https. Sign-in through the browser needs it everywhere except on localhost. Over plain http on any other host, sign-in is off and a key would cross the network unprotected.
+- Use https. Sign-in through the browser is on only on an install started with `--public-url`, which must be https except on localhost. Over plain http on any other host, sign-in is off and a key would cross the network unprotected.
 - A private-network URL (localhost, VPN, Tailnet) works for clients running on a machine on that network: Claude Code, Codex, Gemini CLI, Cursor and VS Code. It does not work for Claude on the web, desktop or mobile, or for ChatGPT, because those connect from the vendor's servers.
-- If the browser never opens, sign in by hand: `/mcp` or `claude mcp login {{slug}}` in Claude Code, `codex mcp login {{slug}}` in Codex, `/mcp auth {{slug}}` in Gemini CLI.
+- If the browser never opens on an install started with `--public-url`, sign in by hand: `/mcp` or `claude mcp login {{slug}}` in Claude Code, `codex mcp login {{slug}}` in Codex, `/mcp auth {{slug}}` in Gemini CLI. On an install started without it no browser opens: connect with an API key.
 - In ChatGPT, if a write tool will not run, check your plan (Pro is read/fetch only) and confirm the prompt.
 - To end a connection, open **Workspace**, then **Agents**, in {{name}} and disconnect it; the client will need to sign in again. To revoke an API key, open **Workspace**, then **Keys**. In a shared workspace an owner or an admin revokes keys and can disconnect any agent; a member disconnects the agents they approved.

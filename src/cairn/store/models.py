@@ -396,6 +396,7 @@ class SearchHit(BaseModel):
     claim_id: str
     text: str  # the claim text
     span_ids: tuple[str, ...]
+    version: int  # the version of the page the claim was read on: its latest, at the search
     score: float  # higher is better
 
 

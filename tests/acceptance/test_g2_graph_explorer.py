@@ -496,20 +496,19 @@ def test_only_the_graph_page_has_a_script_for_a_visitor_a_member_and_an_owner(on
             html = r.text if "text/html" in r.headers.get("content-type", "") else ""
             policy = directives(r.headers.get("content-security-policy", ""))
             is_graph = re.fullmatch(r"/b/[^/?]+/graph(\?.*)?", path) and r.status_code == 200
+            if html:  # every page is whole, as P1 has it, the explorer's included
+                page = Page(html)
+                assert page.lang == "en" and page.h1 == 1 and page.styled == 0, (who, path)
+                assert page.unnamed == [], (who, path, page.unnamed)
             if not is_graph:
                 assert "script-src" not in policy, (who, path)
                 assert "<script" not in html.lower(), (who, path)
-                if html:
-                    assert Page(html).scripts == [], (who, path)
                 continue
             graphs += 1
-            page = Page(html)
             (tag,) = page.scripts
             assert tag["src"] == "/static/graph-view.js" and tag["integrity"] == integrity()
             assert html.lower().count("<script") == 1, (who, path)
             assert policy["script-src"] == [f"'nonce-{tag['nonce']}'"], (who, path)
-            assert page.lang == "en" and page.h1 == 1 and page.styled == 0, (who, path)
-            assert page.unnamed == [], (who, path, page.unnamed)
     assert graphs > 3  # the views, the batches and the claims were walked
     assert any("/graph/notes/" in path for path in visits["owner"])
 

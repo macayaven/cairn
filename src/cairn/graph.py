@@ -279,7 +279,7 @@ IDENTITY_FIELD_BYTES = 4096
 _CURSOR_KEY = secrets.token_bytes(32)
 
 
-def _authorized_project(store: Store, con: sqlite3.Connection, ref: str) -> tuple[str, str]:
+def _project_in_reach(store: Store, con: sqlite3.Connection, ref: str) -> tuple[str, str]:
     """The project `ref` names (id, else name) as (id, name), read in the caller's snapshot
     with the same checks project_graph makes: the person's level and every reach of the
     view. KeyError when it does not exist or is out of reach, the same for both."""
@@ -303,7 +303,8 @@ def _authorized_project(store: Store, con: sqlite3.Connection, ref: str) -> tupl
 
 
 class GraphStale(ValueError):
-    """The page changed during exploration; restart at its current page neighbourhood."""
+    """The page changed since the continuation or the claim's focus was made: the graph is
+    started again from the page as it is now."""
 
 
 class PageMissing(KeyError):
@@ -312,7 +313,8 @@ class PageMissing(KeyError):
 
 @contextmanager
 def _projection_blob(con: sqlite3.Connection, table: str, column: str, row: int):
-    """A missing/corrupt projection is unavailable, never a raw SQLite response."""
+    """A stored value read a part at a time; one that is missing or cannot be opened is
+    GraphUnavailable, never SQLite's own error."""
     try:
         with con.blobopen(table, column, row, readonly=True) as blob:
             yield blob
@@ -321,12 +323,13 @@ def _projection_blob(con: sqlite3.Connection, table: str, column: str, row: int)
 
 
 def _field_identity(con, table, column, row):
-    """Bounded identity material, including both ends of an oversized field.
+    """What a field contributes to a claim's or a page's identity: its size and, within
+    IDENTITY_FIELD_BYTES, its bytes, or both ends of a longer one.
 
-    Ordinary claim fields are covered in full. This is a navigation-staleness guard,
-    not an integrity checksum: equal-size edits confined to an unsampled middle of a
-    field larger than IDENTITY_FIELD_BYTES can preserve this identity under a reused
-    timestamp/row. Durable, collision-free page incarnations require a writer generation.
+    It tells a continuation that its page changed; it is not a checksum. Known limit: an
+    edit of the same size confined to the unread middle of a field longer than
+    IDENTITY_FIELD_BYTES, saved at the same time into the same row, is not seen. Seeing
+    every change needs a counter the store keeps per page save, which it does not.
     """
     with _projection_blob(con, table, column, row) as blob:
         size = len(blob)
@@ -407,23 +410,29 @@ def graph_neighbourhood(
     limit: int = PAGE_LIMIT,
     search: str = "",
 ) -> dict[str, Any]:
-    """Explore current authorized evidence, with independently bounded continuations.
+    """One batch of one view of the project `ref` names, as {nodes, edges, counts,
+    truncated, focus, next, state}. KeyError when the project does not exist or is out of
+    reach (the same for both); PageMissing when a focus names a page it does not have.
 
-    `project` visits page heads by slug; `notes` visits all notes by content hash and sequence;
-    `page:<slug>` visits current indexed claims by row; a returned claim's `focus`
-    visits its cited passages in stored order. Each response contains its anchor nodes,
-    so every edge has both endpoints even when merging batches is unnecessary.
+    `focus` is the view: "project" visits its pages' heads by slug, "notes" its notes by
+    their text's digest and sequence, "page:<slug>" the page's current claims as the search
+    index holds them, by row, and a claim's own `focus` (returned on each claim) the passages
+    it cites in stored order, each with the note it comes from. Every answer holds the nodes
+    its edges join, the project and the view's page included.
 
-    `limit` (1..20) bounds candidates checked, including nonmatches and missing citations.
-    Search matches case-insensitive slug or bounded label previews in this neighbourhood;
-    follow `next` even when a batch has no matches. Counts describe only this response.
-    No scope-wide totals are computed. Labels longer than 512 bytes have `omitted=True`;
-    their source and expansion remain reachable. Citation scanning reads at most 64 KiB.
+    `limit` (1 to 20) bounds the candidates a batch checks, those that do not match the
+    search and citations that name nothing in the project included. `search` keeps the
+    nodes whose label (as read, at most 512 bytes) or slug holds it, ignoring case; a batch
+    may keep none, and `next` still leads on. `counts` are this answer's, and no total of
+    what lies beyond it is computed. A label longer than 512 bytes is cut there and marked
+    `omitted`; its node's page and view still open. A claim's citations are read at most
+    64 KiB at a time ("scanning" while a long one is being read).
 
-    `next` is opaque, tied to account/project/focus/search and valid for this process.
-    Invalid tokens raise ValueError; GraphStale means restart the page after a change.
-    Missing index data raises GraphUnavailable rather than claiming completion.
-    Every request rechecks current authorization in the same snapshot as its content.
+    `next` is opaque, signed, tied to the workspace, the project, the view and the search,
+    and good for this process only: one that does not verify is a ValueError, and one whose
+    page changed since is GraphStale. A search index row that is missing, or that names
+    another project, is GraphUnavailable rather than a batch that looks complete. Every call
+    rechecks the person's and the view's reach in the same snapshot as what it reads.
     """
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= PAGE_LIMIT:
         raise ValueError("limit must be a whole number from 1 to 20")
@@ -432,7 +441,7 @@ def graph_neighbourhood(
     if not isinstance(search, str) or len(search.encode()) > TEXT_BYTES_LIMIT:
         raise ValueError("invalid graph search")
     with store._read() as con:
-        project = _authorized_project(store, con, ref)
+        project = _project_in_reach(store, con, ref)
         context = [store._account_id, project[0], focus, search]
         cursor = _decode_cursor(after, context) if after is not None else {}
         return _neighbourhood(con, store, project, focus, cursor, limit, search, context)
@@ -653,11 +662,12 @@ def _neighbourhood(con, store, project, focus, cursor, limit, search, context):
 
 
 def _citation_batch(con, table, row, state, limit):
-    """Resume a JSON string array with bounded bytes, memory, and citation lookups.
-
-    Large individual identifiers are skipped across bounded scanning continuations. Their
-    contents cannot name a stored span (generated span ids fit the bounded token buffer).
-    The signed cursor preserves the string escape state even at a chunk boundary.
+    """Up to `limit` passage ids from a claim's stored JSON list of them, reading at most
+    NEIGHBOURHOOD_BYTES from where `state` left off; returns (ids, the state to go on from or
+    None at the list's end, whether an id was skipped). An id longer than any passage id can
+    be is skipped, across as many reads as it takes, and marks the answer `omitted`. The
+    state keeps a string's escape across the boundary of a read, and travels in the signed
+    continuation.
     """
     state = dict(state or {"pos": 0, "token": None, "escape": False, "large": False})
     result = []
@@ -729,17 +739,18 @@ def _decode_cursor(token, context):
 def graph_note_detail(
     store: Store, ref: str, note_id: str, *, after: str | None = None
 ) -> dict[str, Any]:
-    """One exact authorized note's metadata and a Unicode-safe text chunk.
-
-    Text reads at most NOTE_DETAIL_BYTES per request, never a full note or its spans.
-    Every continuation rechecks membership, project/reach and note identity in the same
-    snapshot. Notes are immutable; the stored sequence additionally binds continuation
-    to this row. Foreign and absent notes both raise KeyError. No source URL is fetched.
+    """A note of the project `ref` names: its title, `source_ref`, `via` and one part of its
+    text, at most NOTE_DETAIL_BYTES, cut between characters, never inside one; `next` reads
+    on. It never reads the whole note or its passages. KeyError for a project that does not
+    exist or is out of reach and for a note that is not the project's, the same for all
+    three. Every continuation rechecks the person's and the view's reach in the same snapshot
+    and is tied to this note's row; one that does not verify is a ValueError. Nothing is
+    fetched from `source_ref`.
     """
     if not isinstance(note_id, str) or not note_id or len(note_id) > 128:
         raise ValueError("invalid note reference")
     with store._read() as con:
-        project_id, project = _authorized_project(store, con, ref)
+        project_id, project = _project_in_reach(store, con, ref)
         row = con.execute(
             "SELECT seq FROM notes WHERE id = ? AND project_id = ?", (note_id, project_id)
         ).fetchone()

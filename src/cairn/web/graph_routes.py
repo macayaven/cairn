@@ -70,6 +70,7 @@ def _graph(request: Request, project: str, limit: int | None) -> dict:
 
 
 STALE = "The page changed while you were exploring it."
+NOTE_STALE = "The note changed while you were reading it."
 UNREADABLE = "This continuation cannot be read, or was made before the server restarted."
 
 
@@ -140,6 +141,8 @@ def graph_routes(explorer: bool = False) -> list[Route]:
             raise NotFound("Not Found") from None
         except GraphUnavailable:
             raise Unavailable("The graph is unavailable for this connection.") from None
+        except GraphStale:
+            return _restart(request, project, NOTE_STALE, 409)
         except ValueError:
             if after is not None:
                 return _restart(request, project, UNREADABLE, 400)

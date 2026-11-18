@@ -1,4 +1,5 @@
-"""Bounded exploration reaches synthetic evidence beyond the legacy graph budgets."""
+"""The explorer's reads (cairn.graph.graph_neighbourhood, graph_note_detail), each bounded,
+reach what lies beyond project_graph's bounds, a batch at a time. Fixtures are synthetic."""
 
 import json
 
@@ -25,7 +26,7 @@ def batches(store, project, **query):
     pytest.fail("continuation did not complete")
 
 
-def test_all_page_heads_and_uncompiled_notes_are_reachable_past_legacy_caps(tmp_path):
+def test_all_page_heads_and_uncompiled_notes_are_reachable_past_project_graphs_bounds(tmp_path):
     store = Store(tmp_path / "pages.db")
     try:
         project = store.create_project("alpha")

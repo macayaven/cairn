@@ -260,3 +260,27 @@ def test_the_explorer_links_each_node_to_its_own_page_on_this_server():
     for kind in ("project", "page", "claim", "passage", "note"):
         assert f'data-graph-kind="{kind}"' in html
     assert " style=" not in html
+
+
+def test_a_stale_note_continuation_is_409_with_a_way_back(tmp_path, monkeypatch):
+    """graph_note_detail binds a continuation to the note's row; should that row change, the
+    note page answers as a stale page batch does: 409 and a link to the graph's start."""
+    from cairn import graph
+    from cairn.web import graph_routes
+
+    store = Store(tmp_path / "stale-note.db")
+    try:
+        project = store.create_project("alpha")
+        note, _ = store.add_note(project.id, "Synthetic note.\n")
+
+        def changed(*args, **kwargs):
+            raise graph.GraphStale("The note changed; restart its source detail.")
+
+        monkeypatch.setattr(graph_routes, "graph_note_detail", changed)
+        with TestClient(explorer(store), base_url=BASE) as client:
+            client.cookies.set("cairn_session", store.create_session())
+            stale = client.get(f"/b/alpha/graph/notes/{note.id}?after=made-before")
+            assert stale.status_code == 409
+            assert '<a href="/b/alpha/graph">Start again</a>' in stale.text
+    finally:
+        store.close()

@@ -634,6 +634,11 @@ OVERLAP = (
     "another source made from this account already reads what this one would ({}): two"
     " sources never read one item, so choose another selector or another account"
 )
+# A pair made before a kind's rule refused it, both on: neither run reads or writes (R3).
+OVERLAP_ON = (
+    "another source made from this account, {}, can read what this one reads, and both are"
+    " on: neither reads or writes anything until one of them is switched off"
+)
 
 
 def marks(kind: str, config: Mapping[str, Any]) -> frozenset[str]:
@@ -657,14 +662,42 @@ def _same(a: Mapping[str, Any], b: Mapping[str, Any], name: str) -> bool:
     return isinstance(x, str) and isinstance(y, str) and x.casefold() == y.casefold()
 
 
+PRIMARY_CALENDAR = "primary"  # Google's keyword for the calendar of the account it reads as
+
+
+def _calendar(config: Mapping[str, Any]) -> str:
+    """The calendar a Calendar config names, case-folded: `primary` when it names none, as
+    the kind's check reads it."""
+    named = config.get("calendar_id")
+    return named.casefold() if isinstance(named, str) else PRIMARY_CALENDAR
+
+
 def overlaps(kind: str, a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     """Whether two sources of `kind` made from one account, with the checked configs `a` and
-    `b`, can select one item wholesale (refused when the second is made, OVERLAP). Linear: a
-    team twice, teams beside a Linear project, or one project twice. GitHub: one repository
-    with an item kind in common. Langfuse: one project twice. A connector: always (its feed
-    is the selection). Drive, Granola, Calendar: one folder, space or calendar twice. Gmail:
-    one label twice (two labels are held per message instead). Google Meet: one meeting's
-    code twice."""
+    `b`, can select one item (refused when the second is made, OVERLAP). Where cairn cannot
+    show that two selections are apart, they overlap. Linear: a team twice, teams beside a
+    Linear project, or one project twice. GitHub: one repository with an item kind in
+    common. Langfuse: one project twice. A connector: always (its feed is the selection).
+    Drive: one folder twice. Gmail: one label twice (two labels are held per message
+    instead). Google Meet: one meeting's code twice.
+
+    Granola: always, whatever each selects. A source with no folder and no space reads every
+    note the key reads; a folder's notes include those of the folders below it; a note can be
+    in any number of folders, so in the spaces of each, and a folder may sit in the space
+    another source reads (docs/granola-api.md: List notes' `folder_id`, Get note's
+    `folder_membership` and `space_membership`, and the help center's "a note can be in any
+    number of folders"). Nothing in those notes shows two selections apart, so one account
+    has at most one Granola source made from it.
+
+    Google Calendar: one calendar id twice, in any letter case (no id is `primary`), and
+    `primary` beside any other id, whether or not the config's `subject` is known: the
+    primary calendar's id only "usually matches the user's primary email address", and that
+    `primary` is the delegated person's calendar is not stated (docs/google-calendar-api.md,
+    B and A), so cairn cannot tell `primary` from any address. Accepted: two ids, neither
+    `primary`, that differ beyond letter case. A calendar "is identified by an ID", and the
+    only second name for a calendar our notes record is the `primary` keyword. Not ruled
+    out: a person's other address (an alias) naming their primary calendar; Google's pages
+    do not say whether an alias is accepted as a calendar's id."""
     if kind == "linear":
         teams_a, teams_b = _folded(a.get("teams")), _folded(b.get("teams"))
         one_a, one_b = a.get("linear_project"), b.get("linear_project")
@@ -683,10 +716,12 @@ def overlaps(kind: str, a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     if kind == "connector":
         return True
     if kind == "granola":
-        return _same(a, b, "folder_id") or _same(a, b, "space_id")
+        return True
+    if kind == "google_calendar":
+        one, other = _calendar(a), _calendar(b)
+        return one == other or PRIMARY_CALENDAR in (one, other)
     selector = {
         "google_drive": "folder_id",
-        "google_calendar": "calendar_id",
         "gmail": "label",
         "google_meet": "meeting_code",
     }
@@ -833,6 +868,7 @@ __all__ = [
     "ITEM_MAX",
     "KINDS",
     "OVERLAP",
+    "OVERLAP_ON",
     "SECRET_ENCODED_MIN",
     "SOURCE_LOGGER",
     "SOURCE_REF_FORMS",

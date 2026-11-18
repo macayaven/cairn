@@ -10,6 +10,7 @@ request goes to an httpx.MockTransport.
 
 import asyncio
 import base64
+import html
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -520,6 +521,7 @@ SETTINGS = {
 }
 PROJECT = "0b7c1d2e-3f40-4a5b-8c6d-7e8f9a0b1c2d"
 FOLDER, SPACE = "fol_" + "Ab3" * 4 + "Zz", "spa_" + "Cd4" * 4 + "Yy"
+FOLDER_2, SPACE_2 = "fol_" + "Ef5" * 4 + "Xx", "spa_" + "Gh6" * 4 + "Ww"
 OVERLAPS = [  # (kind, the first source's selector, the second's, refused?)
     ("linear", {"teams": ["LED"]}, {"teams": ["led", "OPS"]}, True),  # a team twice
     ("linear", {"teams": ["LED"]}, {"linear_project": PROJECT}, True),  # teams beside one
@@ -545,9 +547,20 @@ OVERLAPS = [  # (kind, the first source's selector, the second's, refused?)
     ("google_drive", {"folder_id": "fold-r3-ledger-a"}, {"folder_id": "fold-r3-ledger-b"}, False),
     ("granola", {"folder_id": FOLDER}, {"folder_id": FOLDER}, True),
     ("granola", {"space_id": SPACE}, {"space_id": SPACE}, True),
-    ("granola", {"folder_id": FOLDER}, {"space_id": SPACE}, False),  # not covered per item
+    # Granola: a folder may sit in the space, a note may sit in any number of folders, and
+    # so in the spaces of each: no two selections of one account are shown to be apart
+    ("granola", {"folder_id": FOLDER}, {"space_id": SPACE}, True),
+    ("granola", {"space_id": SPACE}, {"folder_id": FOLDER}, True),
+    ("granola", {"folder_id": FOLDER}, {"folder_id": FOLDER_2}, True),
+    ("granola", {"folder_id": FOLDER}, {"folder_id": FOLDER.upper()}, True),
+    ("granola", {"space_id": SPACE}, {"space_id": SPACE_2}, True),
     ("google_calendar", {"calendar_id": "primary"}, {"calendar_id": "primary"}, True),
-    ("google_calendar", {"calendar_id": "primary"}, {"calendar_id": "team@example.test"}, False),
+    ("google_calendar", {"calendar_id": "primary"}, {"calendar_id": "PRIMARY"}, True),
+    ("google_calendar", {"calendar_id": "Team@Ex.test"}, {"calendar_id": "team@ex.test"}, True),
+    # `primary` beside any other id: cairn cannot tell it is not the primary calendar's id
+    ("google_calendar", {"calendar_id": "primary"}, {"calendar_id": "team@example.test"}, True),
+    ("google_calendar", {"calendar_id": "ada@example.test"}, {"calendar_id": "Primary"}, True),
+    ("google_calendar", {"calendar_id": "led@ex.test"}, {"calendar_id": "board@ex.test"}, False),
     ("gmail", {"label": LEDGER}, {"label": LEDGER.upper()}, True),
     ("gmail", {"label": LEDGER}, {"label": BOARD}, False),  # held per message instead
 ]
@@ -566,6 +579,193 @@ def test_overlapping_selectors_are_refused_when_made(world, kind, first, second,
         assert dump(world.db) == before  # nothing kept
     else:
         ada.add_source_from("two", "acct", second, {}, "ada-notes")
+
+
+def test_primary_beside_the_address_the_account_reads_as_is_refused(world):
+    """With `subject` the address is known to cairn, and still `primary` beside it, or beside
+    any other id, is refused: the primary calendar's id only usually matches that address."""
+    settings = {"credentials_env": GOOGLE_ENV, "subject": "ada@example.test"}
+    world.store.add_credential("cal", "google_calendar", settings, owner="ada@example.test")
+    ada = world.Ada.view
+    ada.add_source_from("main", "cal", {"calendar_id": "primary"}, {}, "ada-notes")
+    before = dump(world.db)
+    for other in ("ada@example.test", "Ada@Example.TEST", "team@example.test"):
+        with pytest.raises(ValueError, match="already reads"):
+            ada.add_source_from("two", "cal", {"calendar_id": other}, {}, "ada-notes")
+    assert dump(world.db) == before
+
+
+@pytest.mark.parametrize(
+    "kind, a, b",
+    [
+        ("granola", {}, {"folder_id": FOLDER}),  # no selector: every note the key reads
+        ("granola", {"folder_id": None, "space_id": None}, {"space_id": SPACE}),
+        ("granola", {}, {}),
+        ("google_calendar", {}, {"calendar_id": "primary"}),  # no id is primary
+        ("google_calendar", {}, {"calendar_id": "team@example.test"}),
+    ],
+)
+def test_a_selection_left_out_overlaps_in_both_orders(kind, a, b):
+    from cairn.sources import overlaps
+
+    assert overlaps(kind, a, b) and overlaps(kind, b, a)
+
+
+def test_two_calendars_by_two_other_ids_are_apart():
+    from cairn.sources import overlaps
+
+    one, two = {"calendar_id": "led@example.test"}, {"calendar_id": "board@example.test"}
+    assert not overlaps("google_calendar", one, two)
+    assert not overlaps("google_calendar", {**one, "subject": "ada@example.test"}, two)
+
+
+@pytest.mark.parametrize(
+    "kind, first, second",
+    [
+        ("granola", {"folder_id": FOLDER}, {"space_id": SPACE}),
+        ("google_calendar", {"calendar_id": "primary"}, {"calendar_id": "team@example.test"}),
+    ],
+)
+def test_a_preview_before_saving_refuses_as_saving_does(world, kind, first, second):
+    world.store.add_credential("acct", kind, SETTINGS[kind], owner="ada@example.test")
+    ada = world.Ada.view
+    ada.add_source_from("one", "acct", first, {}, "ada-notes")
+    before = dump(world.db)
+    with pytest.raises(ValueError, match="already reads") as said:
+        ada.source_from_to_preview("two", "acct", second, {}, "ada-notes")
+    with pytest.raises(ValueError) as saving:
+        ada.add_source_from("two", "acct", second, {}, "ada-notes")
+    assert str(said.value) == str(saving.value)
+    assert dump(world.db) == before
+
+
+# A pair made before the rule refused it: kept, never switched on again or moved, and while
+# both are on neither run reads or writes anything
+
+
+GRANOLA_KEY = {"R3_GRANOLA_KEY": "grn_" + "r3MadeUpKey" * 2}
+PAIRS = {  # kind: (the first source's selector, the second's), both accepted before this rule
+    "granola": ({"folder_id": FOLDER}, {"space_id": SPACE}),
+    "google_calendar": ({"calendar_id": "primary"}, {"calendar_id": "ada@example.test"}),
+}
+
+
+def _as_before(kind: str, a: dict, b: dict) -> bool:
+    """The rule for Granola and Calendar before this change: the same id twice."""
+    names = {"granola": ("folder_id", "space_id"), "google_calendar": ("calendar_id",)}[kind]
+    return any(
+        isinstance(a.get(n), str) and str(a.get(n)).casefold() == str(b.get(n)).casefold()
+        for n in names
+    )
+
+
+@pytest.fixture(params=sorted(PAIRS))
+def made_before(world, monkeypatch, request):
+    """Two sources of one account, both on, made while the old rule held: "first" and
+    "second", writing into "ada-notes"; "ada-more" is Ada's other project."""
+    import cairn.sources
+
+    kind = request.param
+    world.store.add_credential("acct", kind, SETTINGS[kind], owner="ada@example.test")
+    ada = world.Ada.view
+    ada.create_project("ada-more", everyone="none")
+    with monkeypatch.context() as old:
+        old.setattr(cairn.sources, "overlaps", _as_before)
+        for name, select in zip(("first", "second"), PAIRS[kind], strict=True):
+            ada.add_source_from(name, "acct", select, {}, "ada-notes")
+            ada.enable_source(name)
+    world.clock.now = NOW + 5 * MINUTE
+    return SimpleNamespace(kind=kind, sent=[])
+
+
+def sources_rows(world) -> list:
+    return rows(world.db, "sources")
+
+
+def run_made_before(world, made, name: str):
+    def handle(request: httpx.Request) -> httpx.Response:
+        made.sent.append(request)
+        return httpx.Response(401, json={"error": "made up"})
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            return await run_source(
+                world.store, name, http=http, env={**ENV, **GRANOLA_KEY}, clock=world.clock
+            )
+
+    return asyncio.run(go())
+
+
+def test_a_pair_made_before_is_kept_when_the_server_starts(world, made_before):
+    from starlette.testclient import TestClient
+
+    from cairn.server import create_app
+
+    before = sources_rows(world)
+    base = "http://127.0.0.1:8765"
+    with TestClient(create_app(world.store, public_url=base), base_url=base):
+        pass  # the app's start and stop, as `serve` runs them
+    again = Store(world.db, clock=world.clock)
+    try:
+        shown = {s.name: s for s in again.list_sources()}
+    finally:
+        again.close()
+    assert sources_rows(world) == before  # neither removed, switched off nor changed
+    assert shown["first"].enabled and shown["second"].enabled
+    assert shown["first"].last_error is None and shown["second"].last_error is None
+
+
+def test_a_pair_made_before_is_not_switched_on_again_nor_moved(world, made_before):
+    ada = world.Ada.view
+    before = dump(world.db)
+    for change in (
+        lambda: ada.enable_source("first"),  # on as it is: still asked
+        lambda: ada.enable_source("first", ["ada-more"]),  # moved
+        lambda: world.store.enable_source("second", ["ada-more"]),  # the operator too
+    ):
+        with pytest.raises(ValueError, match="already reads"):
+            change()
+    assert dump(world.db) == before
+    ada.disable_source("second")  # switching one off is always allowed
+    with pytest.raises(ValueError, match="already reads"):
+        ada.enable_source("second")  # switched on again
+    assert not world.store.get_source("second").enabled
+
+
+def test_a_pair_made_before_writes_nothing_while_both_are_on(world, made_before):
+    from cairn.sources import OVERLAP_ON, SourceError
+
+    project = world.store.get_project("ada-notes").id
+    for name, other in (("first", "second"), ("second", "first")):
+        with pytest.raises(SourceError) as said:
+            run_made_before(world, made_before, name)
+        assert str(said.value) == OVERLAP_ON.format(other)
+        shown = world.store.get_source(name)
+        assert shown.enabled and shown.last_error == OVERLAP_ON.format(other)
+    assert made_before.sent == []  # nothing read: not even a sign-in
+    assert world.store.list_notes(project) == []
+    world.Ada.view.disable_source("second")  # one off: the other reads again
+    with pytest.raises(SourceError) as said:
+        run_made_before(world, made_before, "first")
+    assert made_before.sent and "already" not in str(said.value)
+
+
+def test_the_sources_page_says_why_a_pair_made_before_wrote_nothing(world, made_before):
+    from starlette.testclient import TestClient
+
+    from cairn.server import create_app
+    from cairn.sources import OVERLAP_ON, SourceError
+
+    with pytest.raises(SourceError):
+        run_made_before(world, made_before, "first")
+    signed = world.store.sign_in(
+        "sso", "sub-Ada", "ada@example.test", "Ada", issuer=ISSUER, join="default"
+    )
+    base = "http://127.0.0.1:8765"
+    with TestClient(create_app(world.store, public_url=base), base_url=base) as client:
+        page = client.get("/sources", headers={"cookie": f"cairn_session={signed.token}"})
+    assert page.status_code == 200
+    assert OVERLAP_ON.format("second") in html.unescape(page.text)
 
 
 def test_overlap_is_400_over_the_api_and_another_account_is_free(world):

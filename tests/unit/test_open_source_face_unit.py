@@ -113,7 +113,7 @@ CLOUD_BILL = re.compile(
     [
         "README.md",
         "deploy/README.md",
-        "src/cairn/guides/run.md",
+        "docs/guides/run.md",
         "CONTRIBUTING.md",
         "SECURITY.md",
         "deploy/compose.yaml",

@@ -66,7 +66,7 @@ The ids come from `sudo docker exec cairn python -m cairn.server workspace-list 
 
 ## Sources on the pre-release
 
-A source (Granola, Google Meet, Google Calendar, Gmail, Google Drive, Langfuse, Linear, GitHub or a connector of your own) is read by the server with a credential from its own environment ([the sources guide](../src/cairn/guides/sources.md) says what each reads and how to get its credential). On the hosted VM that takes three things, and none of them happens by itself:
+A source (Granola, Google Meet, Google Calendar, Gmail, Google Drive, Langfuse, Linear, GitHub or a connector of your own) is read by the server with a credential from its own environment ([the sources guide](guides/sources.md) says what each reads and how to get its credential). On the hosted VM that takes three things, and none of them happens by itself:
 
 1. **The credential goes in the env secret**, as one more `KEY=value` line, in a new version of the secret. The VM passes that file to the container as Docker reads an env file: the value is taken as it is, so write no quotes. A Google credential is its JSON on one line: `GOOGLE_CREDENTIAL={"type": "service_account", ...}`. (With Compose on your own machine the same line goes in `deploy/cairn.env` between single quotes, as `deploy/README.md` says: Compose reads quotes, Docker's `--env-file` does not.) The VM reads the secret at boot, so restart it after adding the version.
 2. **The server syncs in the background only when told to.** Add `--sync-every 300` to `cairn_extra_args` and run `tofu apply`. Without it a source is read only when you run `source-sync` by hand, and nothing arrives by itself.

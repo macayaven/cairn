@@ -14,4 +14,4 @@ cairn has no numbered release yet. A fix lands on `main`, and the image built fr
 
 The code in this repository: the server, its web pages, the REST API and the MCP endpoint, the image built from the `Dockerfile`, and the files in `deploy/`. An install someone else runs is theirs to secure; report a flaw in its setup to whoever runs it.
 
-[The security guide](src/cairn/guides/security.md), also served at `/docs/security`, says who reaches what in cairn, and what its checks catch and what they do not.
+[The security guide](docs/guides/security.md), also served at `/docs/security`, says who reaches what in cairn, and what its checks catch and what they do not.

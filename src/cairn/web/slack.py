@@ -441,25 +441,36 @@ class Keeper:
         if self._http is None or self._stopped.is_set():
             return 0
         try:
-            due = await asyncio.to_thread(self._store.take_slack_checks)
+            return await self._check()
         except Exception as failed:  # its class only: a message can quote the database
             log.warning("slack: the checks of bot tokens failed: %s", type(failed).__name__)
             return 0
+
+    async def _check(self) -> int:
         asked = 0
+        due = await asyncio.to_thread(self._held, self._store.take_slack_checks)
         if not due:
             return asked
-        async with self._http() as client:
+        async with self._http() as client:  # type: ignore[misc]
             slack = SlackClient(client, api=self._api, sleep=_no_wait)
             for check in due:
                 if self._stopped.is_set():
                     break
                 try:
                     answer = await self._ask(slack, check.token)
-                    await asyncio.to_thread(self._store.slack_token_checked, check, answer)
-                    asked += 1
+                    done = await asyncio.to_thread(
+                        self._held, self._store.slack_token_checked, check, answer
+                    )
+                    asked += done is not None
                 except Exception as failed:  # its class only
                     log.warning("slack: a check of a bot token failed: %s", type(failed).__name__)
         return asked
+
+    def _held(self, call: Callable[..., Any], *args: Any) -> Any:
+        """`call` on this worker thread while holding the pass's lock, so stop() waits for
+        it; None, and nothing called, once stopped."""
+        with self._running:
+            return None if self._stopped.is_set() else call(*args)
 
     async def _ask(self, slack: SlackClient, token: str) -> str:
         try:
@@ -495,7 +506,7 @@ class Keeper:
 
     async def loop(self) -> None:
         while True:
-            await self.check()
+            await self.check()  # never raises: what fails is logged by its class
             await asyncio.to_thread(self.run_once)
             await self.wait(self.every)
 

@@ -23,13 +23,14 @@ The addresses (`setup_routes`, only with `serve --slack`)
   not_accepted; a Slack that does not answer is unreachable; an answer with no bot is
   not_a_bot; one that does not name its team, its workspace's address (`team_domain`) and the
   bot's user (`identity`) is unclear; a team for which another workspace of this server holds
-  an install that is not removed (`Office.team_held`) is taken. Each is one sentence
-  (REFUSALS) and keeps nothing. Otherwise Store.ready_slack_install records the team and seals
-  both secrets. When Slack revoked the bot's token (SlackInstall.needs_bot_token), only the
-  token is asked for and the signing secret kept is used (`Office.kept_secret`); when it does
-  not open (the key changed), that is said (unopened), and removing Slack and setting it up
-  again asks for both. A secret goes from the form to auth.test and to the store and
-  nowhere else: not into a cookie, a log line, an outcome or a page.
+  an install that is ready, on or off (`Office.team_held`, and the store's own index) is
+  taken. Each is one sentence (REFUSALS) and keeps nothing. Otherwise
+  Store.ready_slack_install records the team and seals both secrets. When Slack revoked the
+  bot's token (SlackInstall.needs_bot_token), only the token is asked for and the signing
+  secret kept is used (`Office.kept_secret`); when it does not open (the key changed), that
+  is said (unopened), and removing Slack and setting it up again asks for both. A secret
+  goes from the form to auth.test and to the store and nowhere else: not into a cookie, a
+  log line, an outcome or a page.
 - Off and on (Store.switch_slack_install): on again needs nothing pasted, unless Slack revoked
   the token (needs_token). Remove (Store.remove_slack_install, decision D10) needs the
   workspace's name typed as a check (confirm); next to it the block says that removing
@@ -239,8 +240,8 @@ def identity(answer: dict[str, Any]) -> Identity | None:
 class Office:
     """`kept_secret(install, workspace)`: the install's signing secret, opened, when the
     install is the workspace's (None otherwise, or when it does not open); `team_held(team,
-    workspace)`: whether another workspace's install that is not removed is for that Slack
-    team."""
+    workspace)`: whether another workspace's install that is ready, on or off is for that
+    Slack team."""
 
     kept_secret: Callable[[str, str], str | None] = field(repr=False)
     team_held: Callable[[str, str], bool] = field(repr=False)

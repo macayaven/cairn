@@ -281,3 +281,46 @@ def test_the_app_hands_the_loop_the_switchs_client_and_api(world, slack):  # noq
     world.clock.now += CHECK_EVERY
     assert asyncio.run(app.state.slack_keeper.check()) == 1
     assert slack.calls == [(f"{API}/auth.test", f"Bearer {TOKEN}")]
+
+
+def test_stopped_while_slack_is_asked_nothing_is_written_after(world, slack):  # noqa: F811
+    ready(world)
+    world.clock.now += CHECK_EVERY
+    loop = keeper(world, slack)
+    slack.answer = ended("invalid_auth")
+    real = slack.__call__
+
+    async def stopping(request):
+        loop.stop()  # the app is stopping while Slack answers
+        return await real(request)
+
+    loop._http = lambda: httpx.AsyncClient(transport=httpx.MockTransport(stopping))
+    assert asyncio.run(loop.check()) == 0
+    assert state(world) == ("ready", True, None, 0)
+
+
+def test_a_check_that_fails_as_a_whole_is_logged_and_the_pass_still_runs(world, caplog):  # noqa: F811
+    ready(world)
+    world.clock.now += CHECK_EVERY
+
+    def no_client():
+        raise RuntimeError(f"no client for {TOKEN}")
+
+    passes = []
+    loop = Keeper(world.store, http=no_client, api=API)
+    loop.run_once = lambda: passes.append(1)
+
+    async def stop(seconds):
+        raise asyncio.CancelledError
+
+    loop.wait = stop
+    with (
+        caplog.at_level(logging.WARNING, logger="cairn.slack"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(loop.loop())
+    assert passes == [1]
+    assert [r.getMessage() for r in caplog.records] == [
+        "slack: the checks of bot tokens failed: RuntimeError"
+    ]
+    assert TOKEN not in caplog.text

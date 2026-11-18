@@ -341,22 +341,44 @@ def test_connect_the_two_secrets_are_copied_from_slack_and_kept_sealed():
         assert setup.REFUSALS[code].startswith(words) and "nothing was kept" in setup.REFUSALS[code]
 
 
-def test_connect_ready_then_have_slack_verify_the_events_address():
-    """connect.md: "4. Slack is then ready: the slash command and the message shortcut are
-    answered. At Slack, have Slack verify the events address the page shows, on the page where
-    Slack lists events. Once it has, Slack is on, and direct messages to the bot are answered
-    too.\""""
+def test_connect_ready_says_the_signing_secret_is_not_proven_until_slack_verifies_the_address(
+    world,  # noqa: F811
+):
+    """connect.md: "4. Slack is then ready: Slack accepted the bot token, but nothing proves
+    the signing secret yet; only a request that Slack signed can. At Slack, have Slack verify
+    the events address the page shows, on the page where Slack lists events. If Slack reports
+    that the address did not answer, the signing secret you pasted is not this app's: paste it
+    again. Once Slack has verified the address, Slack is on: a request signed with this app's
+    signing secret was verified, and the slash command, the message shortcut and direct
+    messages to the bot are answered.\""""
     says(
         *CONNECT,
-        "4. Slack is then ready: the slash command and the message shortcut are answered. At"
-        " Slack, have Slack verify the events address the page shows, on the page where Slack"
-        " lists events. Once it has, Slack is on, and direct messages to the bot are answered"
-        " too.",
+        "4. Slack is then ready: Slack accepted the bot token, but nothing proves the signing"
+        " secret yet; only a request that Slack signed can. At Slack, have Slack verify the"
+        " events address the page shows, on the page where Slack lists events. If Slack reports"
+        " that the address did not answer, the signing secret you pasted is not this app's:"
+        " paste it again. Once Slack has verified the address, Slack is on: a request signed"
+        " with this app's signing secret was verified, and the slash command, the message"
+        " shortcut and direct messages to the bot are answered.",
     )
-    assert "the slash command and the message shortcut are answered" in setup.STATES["ready"]
-    assert "have Slack verify the events address below" in setup.STATES["ready"]
+    ready_says = setup.STATES["ready"]
+    assert ready_says.startswith("Ready: Slack accepted the bot token.")
+    assert "The signing secret is not proven yet" in ready_says
+    assert "only a request that Slack signed can prove it" in ready_says
+    assert "have Slack verify the events address below" in ready_says
+    assert "If Slack reports that the address did not answer" in ready_says
+    assert "the signing secret pasted here is not this app's" in ready_says
+    assert "paste it again" in ready_says
+    assert "are answered" not in ready_says and "shortcut" not in ready_says
+    assert "a request signed with this app's signing secret was verified" in setup.STATES["on"]
     assert "direct messages to the bot are answered" in setup.STATES["on"]
+    for text in (ready_says, setup.STATES["on"]):
+        assert not set(text) & set('&<>"')  # shown as it is, in the page
     assert ACCEPTING == ("ready", "on")
+    # the state machine: ready becomes on only when Slack's signed challenge was verified
+    install = ready(world)
+    assert install.state == "ready"
+    assert world.store.slack_install_verified(install.id).state == "on"
     made = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab")
     events = made["settings"]["event_subscriptions"]["request_url"]
     assert events == f"{BASE}/integrations/slack/sl_0123456789ab/events"
@@ -781,19 +803,34 @@ def test_security_the_three_addresses_slack_calls_and_their_signature(bench):
 def test_security_what_is_refused_before_and_after_the_signature(bench):
     """security.md: "Before the signature is checked, a body over 1 MiB is refused, and so is
     an install that does not exist or is not set up. After it, a request of another Slack
-    workspace is refused. An address that fails the signature 20 times in a minute is refused,
-    without the signature being computed, until the minute is over. An event is acted on once,
-    whatever Slack's retries say.\""""
+    workspace is refused. The signature is computed for every request that gets this far, and
+    a request whose signature holds is never refused because of requests whose signature did
+    not. Those that fail it are counted for each install and client address: after 20 in a
+    minute, a further one from that address to that install is refused until the oldest of
+    them is a minute old. An event is acted on once, whatever Slack's retries say.\""""
     says(
         *SECURITY,
         "Before the signature is checked, a body over 1 MiB is refused, and so is an install"
         " that does not exist or is not set up. After it, a request of another Slack workspace"
-        " is refused. An address that fails the signature 20 times in a minute is refused,"
-        " without the signature being computed, until the minute is over. An event is acted on"
-        " once, whatever Slack's retries say.",
+        " is refused. The signature is computed for every request that gets this far, and a"
+        " request whose signature holds is never refused because of requests whose signature"
+        " did not. Those that fail it are counted for each install and client address: after"
+        " 20 in a minute, a further one from that address to that install is refused until the"
+        " oldest of them is a minute old. An event is acted on once, whatever Slack's retries"
+        " say.",
     )
     assert BODY_MAX == 1024 * 1024 and "pending" not in ACCEPTING
     assert (web_slack.SIGNATURE_FAILURES, web_slack.SIGNATURE_WINDOW) == (20, 60)
+    now = [1_900_000_000.0]
+    failures = web_slack.signature_failures(lambda: now[0])
+    here, fable, quill = "203.0.113.5", "sl_0123456789ab", "sl_ba9876543210"
+    assert [failures.failed(fable, here) for _ in range(20)] == [0] * 20
+    assert failures.failed(fable, here) > 0  # refused
+    assert failures.failed(quill, here) == 0 and failures.failed(fable, "198.51.100.7") == 0
+    now[0] += 60
+    assert failures.failed(fable, here) == 0
+    receive = inspect.getsource(web_slack.slack_routes)
+    assert receive.index("verified(") < receive.index("failures.failed(")
     other = b'{"type": "event_callback", "team_id": "T0OTHER01", "event": {"type": "x"}}'
     with pytest.raises(OtherTeam):
         envelope("events", bench.install, other, {})

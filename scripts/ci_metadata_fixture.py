@@ -6,6 +6,7 @@ import http.server
 import os
 import signal
 import socket
+import socketserver
 import subprocess
 import sys
 import time
@@ -32,6 +33,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class Server(http.server.HTTPServer):
     allow_reuse_address = True
 
+    def server_bind(self):
+        # HTTPServer.server_bind asks for the address's name before the socket listens.
+        # Nothing here uses the name, and with no resolver answering the lookup alone can
+        # take the ten seconds wait_ready allows.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
 
 def serve_process():
     return subprocess.Popen(
@@ -52,19 +60,26 @@ def serve_process():
 
 def wait_ready(server):
     end = time.monotonic() + 10
+    last_observation = "no probe completed"
     while time.monotonic() < end:
-        if server.poll() is not None:
-            raise RuntimeError("metadata fixture server exited")
+        status = server.poll()
+        if status is not None:
+            raise RuntimeError(f"metadata fixture server exited (exit code: {status})")
         try:
             with socket.create_connection((ADDRESS, 80), timeout=0.2) as client:
                 client.sendall(b"GET / HTTP/1.0\r\n\r\n")
                 response = client.recv(1024)
                 if b"200 OK" in response:
                     return
-        except OSError:
-            pass
+                last_observation = "unexpected HTTP status" if response else "empty response"
+        except OSError as error:
+            last_observation = type(error).__name__
+            if isinstance(error.errno, int):
+                last_observation += f" errno={error.errno}"
         time.sleep(0.05)
-    raise RuntimeError("metadata fixture did not become ready")
+    raise RuntimeError(
+        f"metadata fixture did not become ready (last observation: {last_observation})"
+    )
 
 
 def run_rehearsal(command, guard=contextlib.nullcontext):

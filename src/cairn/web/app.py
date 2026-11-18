@@ -60,6 +60,7 @@ from cairn.web.erasure import erasure_routes
 from cairn.web.filing import Filer
 from cairn.web.google_connect import BACK_PATH, Block, GoogleConnect, Revoker, google_routes
 from cairn.web.graph_routes import graph_routes
+from cairn.web.graph_view import GRAPH_SCRIPT, GRAPH_STYLESHEET
 from cairn.web.mcp import build_mcp
 from cairn.web.members import member_routes
 from cairn.web.public import Public
@@ -92,17 +93,31 @@ STATIC_TYPES = {".ttf": "font/ttf", ".txt": "text/plain; charset=utf-8"}
 class _Static(StaticFiles):
     """/static/: the stylesheet, the icon, the manifest, the typefaces and their licences.
     `served`: when given, the only paths it serves, compared exactly as the request names
-    them; any other is 404, as if it were not there (branded_static). None: every file."""
+    them; any other is 404, as if it were not there (branded_static). None: every file.
+    The graph explorer's two files (G2: graph_view.GRAPH_SCRIPT and GRAPH_STYLESHEET) are
+    never served from here, by any spelling: a path that reaches either file, as the file
+    system resolves it, is 404. With the explorer on, routes of their own serve them."""
 
     def __init__(self, *, served: frozenset[str] | None = None, **options: Any) -> None:
         super().__init__(**options)
         self.served = served
+        self.withheld = set()  # (device, inode) of each file it never serves
+        for name in (GRAPH_SCRIPT, GRAPH_STYLESHEET):
+            with contextlib.suppress(FileNotFoundError):  # a folder without them
+                found = os.stat(os.path.join(options["directory"], name))
+                self.withheld.add((found.st_dev, found.st_ino))
 
     def get_path(self, scope: Scope) -> str:
         path = super().get_path(scope)
         if self.served is not None and path not in self.served:
             raise HTTPException(status_code=404)
         return path
+
+    def lookup_path(self, path: str) -> tuple[str, os.stat_result | None]:
+        full_path, found = super().lookup_path(path)
+        if found is not None and (found.st_dev, found.st_ino) in self.withheld:
+            return "", None
+        return full_path, found
 
     def file_response(self, full_path, stat_result, scope, status_code=200) -> Response:
         response = super().file_response(full_path, stat_result, scope, status_code)
@@ -250,6 +265,13 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _limited(sign_in: SignIn) -> bool:
+    """Whether only approved people can sign in: an allowed address or domain is listed, or
+    no provider lets anyone get an account."""
+    listed = sign_in.allowed_emails or sign_in.allowed_email_domains
+    return bool(listed) or not any(provider.open_to_anyone for provider in sign_in.providers)
+
+
 def create_app(
     store: Store,
     *,
@@ -268,6 +290,7 @@ def create_app(
     arranger: "Arranger | None" = None,
     operator_notes: str | None = None,
     wall: bool = False,
+    test_instance: bool = False,
     brand_name: str | None = None,
     brand_logo: "str | os.PathLike[str] | Logo | None" = None,
     brand_logo_alt: str | None = None,
@@ -281,6 +304,7 @@ def create_app(
     docs_release: str | None = None,
     docs_reader_env: str | None = None,
     google_connect: GoogleConnect | None = None,
+    graph_explorer: bool = False,
 ) -> Starlette:
     """The store goes to `Accounts` and nowhere else: no handler is defined where it is in reach.
     `sign_in`: people sign in through identity providers instead of with an API key
@@ -313,6 +337,13 @@ def create_app(
     the last section of /docs/privacy (cairn.web.public.privacy_guide).
     B1 (the contract is in cairn/server.py, "A wall, a brand"): `wall` (`serve --wall`): a
     browser that is not signed in is shown the sign-in page and nothing else (Auth).
+    `test_instance` (`serve --test-instance`): a browser that is not signed in is told the
+    install is a private test instance whose sign-in is limited to approved testers, on the
+    landing page and the sign-in page, which lead with the run guide (Public, signin_routes),
+    and the guides' header links to /login as "Tester sign-in". Under a brand a visitor is
+    shown what they are shown without it. Who is admitted does not change. It needs
+    `sign_in` limited to allowed addresses or domains, or with no provider open to anyone
+    (ValueError naming the option otherwise).
     `brand_name`, `brand_logo` (a file's path, or a cairn.web.brand.Logo already read) and
     `brand_logo_alt`: the operator's name in place of cairn's (cairn.web.brand). `session_days`
     (a whole number from 1 to 365): a sign-in lasts that many days and use renews it
@@ -353,7 +384,15 @@ def create_app(
     `google_connect` (`serve --google-connect`; cairn.web.google_connect): a signed-in person
     it is offered to connects a Google account on the Sources page, and the store keeps and
     uses its sealed token (cairn.store.hosted). It needs `sign_in` and `public_url`
-    (ValueError otherwise). None, the default: no route, no block, no table read."""
+    (ValueError otherwise). None, the default: no route, no block, no table read.
+    `graph_explorer` (G2; `serve --graph-explorer`): a project's graph page becomes the
+    explorer (cairn.web.graph_routes), the one page that loads a script, cairn's own
+    /static/graph-view.js, by a nonce and its hash; it needs nothing else. False, the
+    default: the graph page is decision 134's, with no script, and /static/graph-view.js,
+    /static/graph-view.css and /b/<project>/graph/notes/<id> are 404. True or False only
+    (ValueError otherwise); `app.state.graph_explorer` holds it."""
+    if type(graph_explorer) is not bool:
+        raise ValueError("graph_explorer is True or False")
     if google_connect is not None and (sign_in is None or not public_url):
         raise ValueError("--google-connect needs --sign-in and --public-url")
     if plans is not None and keep_versions is not None:
@@ -371,11 +410,17 @@ def create_app(
     if sign_in is None:
         for option, given in (
             ("--wall", wall),
+            ("--test-instance", test_instance),
             ("--brand-name", brand_name is not None),
             ("--session-days", session_days is not None),
         ):
             if given:
                 raise ValueError(f"{option} needs --sign-in")
+    elif test_instance and not _limited(sign_in):
+        raise ValueError(
+            "--test-instance needs sign-in limited to allowed addresses, allowed domains or"
+            " providers nobody can join on their own"
+        )
     if session_days is not None and (type(session_days) is not int or not 1 <= session_days <= 365):
         raise ValueError("--session-days is a whole number from 1 to 365")
     brand = make_brand(brand_name, brand_logo, brand_logo_alt)  # ValueError naming the option
@@ -413,7 +458,11 @@ def create_app(
     limiter = RateLimiter(clock or _utc_now) if plans is not None else None
     now = clock or _utc_now
     failures = CredentialFailures(lambda: now().timestamp())  # H1: every install has it
-    people = signin_routes(sign_in, accounts, public_url, brand) if sign_in else []
+    people = (
+        signin_routes(sign_in, accounts, public_url, brand, test_instance=test_instance, wall=wall)
+        if sign_in
+        else []
+    )
     oauth_routes = (
         oauth.routes(
             issuer,
@@ -439,6 +488,7 @@ def create_app(
         f"{public_url.rstrip('/') if public_url else 'https://<your-host>'}/mcp",
         providers=[provider.label for provider in sign_in.providers] if sign_in else (),
         operator_notes=operator_notes,
+        test_instance=test_instance,
     )
     compactor = Compactor(store, compact_every) if compact_every else None
 
@@ -508,7 +558,9 @@ def create_app(
         *member_routes(accounts, public_url),
         *rest_routes(),
         *(google_routes(google_connect, public_url) if google_connect and public_url else []),
-        *graph_routes(),  # a project's graph: GET /api/graph and GET /b/<project>/graph
+        # a project's graph: GET /api/graph and GET /b/<project>/graph; with the explorer
+        # on (G2), its note pages and its two files under /static/, before the Mount
+        *graph_routes(explorer=graph_explorer),
         *oauth_routes,
         *account_routes(accounts),
         Route("/mcp", mcp_app),  # an ASGI app on one path: unmatched paths stay with this router
@@ -569,6 +621,7 @@ def create_app(
     app.state.arranger = arranger
     app.state.credential_failures = failures
     app.state.stats_every = stats_every  # Q1: minutes; None when off
+    app.state.graph_explorer = graph_explorer  # G2
     if google_connect is not None:  # the key and the client, for every view made from now on
         store.google_custody = google_connect.custody
     store.bound_history(keep_versions)  # last: an app refused above changes nothing

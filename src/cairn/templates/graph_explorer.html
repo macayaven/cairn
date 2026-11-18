@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ project }} graph{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ explorer_stylesheet }}">{% endblock %}
+{% block main %}
+<div class="graph-explorer">
+<p class="crumbs"><a href="/b/{{ project|seg }}">{{ project }}</a> /</p>
+<h1>{{ project }} graph</h1>
+<nav class="graph-views" aria-label="Graph views">
+  <a href="{{ navigation.pages_href }}"{% if navigation.focus == "project" %} aria-current="page"{% endif %}>Pages</a>
+  <a href="{{ navigation.notes_href }}"{% if navigation.focus == "notes" %} aria-current="page"{% endif %}>Notes</a>
+</nav>
+<form class="search graph-search" action="{{ navigation.href }}" method="get">
+  <input type="hidden" name="focus" value="{{ navigation.focus }}">
+  {% if navigation.limit is not none %}<input type="hidden" name="limit" value="{{ navigation.limit }}">{% endif %}
+  <label for="graph-search">Find in this view</label>
+  <input id="graph-search" type="search" name="q" value="{{ navigation.search }}">
+  <button type="submit">Find</button>
+</form>
+<p>{{ counts[navigation.item] }} {{ navigation.item }}{% if counts[navigation.item] != 1 %}s{% endif %} shown.{% if navigation.next %} <a rel="next" href="{{ navigation.next }}">{% if navigation.search %}Keep looking{% else %}Next batch{% endif %}</a>{% endif %}</p>
+<p class="graph-legend"><strong>Graph legend</strong>
+{% for kind, mark in [("project", "◆"), ("page", "■"), ("claim", "▲"), ("passage", "●"), ("note", "✚")] %}
+  <span><span data-graph-kind="{{ kind }}" aria-hidden="true">{{ mark }}</span> {{ kind }}</span>
+{% endfor %}
+</p>
+<div data-graph-interactive data-graph-focus="{{ navigation.focus }}">
+<div hidden data-graph-controls>
+  <div class="choices graph-controls" role="group" aria-label="Graph controls">
+    <button type="button" data-graph-action="mode" aria-pressed="false">3D view</button>
+    <button type="button" data-graph-action="in">Zoom in</button>
+    <button type="button" data-graph-action="out">Zoom out</button>
+    <button type="button" data-graph-action="fit">Fit graph</button>
+  </div>
+  <p id="graph-help" class="meta">Drag to move the drawing, or to turn it in 3D. When the drawing has focus, the arrow keys move it and + or − zoom.</p>
+</div>
+<div class="graph-diagram" role="region" aria-label="Graph diagram" tabindex="0">
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="{{ height }}" viewBox="0 0 1400 {{ height }}" aria-hidden="true">
+  {% for edge in edges %}
+  <line data-graph-area="svg" data-graph-edge="{{ edge.number }}" data-graph-source="{{ edge.source.id }}" data-graph-target="{{ edge.target.id }}" x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="currentColor" />
+  {% endfor %}
+  {% for node in nodes %}
+  {% if node.href %}<a href="{{ node.href }}" tabindex="-1">{% endif %}
+  <g data-graph-area="svg" data-graph-node="{{ node.id }}" data-graph-kind="{{ node.kind }}" data-x="{{ node.x }}" data-y="{{ node.y }}" data-z="{{ node.z }}" transform="translate({{ node.x }} {{ node.y }})">
+    {% if node.href %}<rect class="graph-hit" x="-12" y="-12" width="24" height="24" fill="transparent" />{% endif %}
+    {% if node.kind == 'project' %}<polygon class="graph-mark" points="0,-7 7,0 0,7 -7,0" />
+    {% elif node.kind == 'page' %}<rect class="graph-mark" x="-5" y="-5" width="10" height="10" />
+    {% elif node.kind == 'claim' %}<polygon class="graph-mark" points="0,-7 6,5 -6,5" />
+    {% elif node.kind == 'passage' %}<circle class="graph-mark" cx="0" cy="0" r="5" />
+    {% else %}<path class="graph-mark graph-cross" d="M -6 0 h 12 M 0 -6 v 12" />{% endif %}
+    <svg x="9" y="-8" width="190" height="22" overflow="hidden"><text x="0" y="12" font-family="monospace" font-size="12" fill="currentColor">{{ node.display }}</text></svg>
+  </g>
+  {% if node.href %}</a>{% endif %}
+  {% endfor %}
+</svg>
+</div>
+</div>
+{% if truncated %}<p>This view shows part of the graph, and a label longer than 512 bytes is shortened.</p>{% endif %}
+<h2>Graph content</h2>
+<ul>
+{% for node in nodes %}
+<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ node.label }}</a>{% else %}{{ node.label }}{% endif %}{% if node.explore_href %} <a href="{{ node.explore_href }}" aria-label="Open the view of {{ node.kind }} {{ node.label }}">Open its view</a>{% endif %}{% if node.kind == 'note' %}; source_ref: {{ node.source_ref or '' }}; via: {{ node.via or '' }}{% endif %}</li>
+{% endfor %}
+</ul>
+<h2>Relationships</h2>
+<ul>
+{% for edge in edges %}
+<li data-graph-area="list" data-graph-edge="{{ edge.number }}"><a href="#{{ edge.source.anchor }}">{{ edge.source.kind }}: {{ edge.source.label }}</a> {{ edge.kind }} <a href="#{{ edge.target.anchor }}">{{ edge.target.kind }}: {{ edge.target.label }}</a></li>
+{% endfor %}
+</ul>
+</div>
+<script src="{{ script }}" integrity="{{ integrity }}" nonce="{{ nonce }}" defer></script>
+{% endblock %}

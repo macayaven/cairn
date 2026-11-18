@@ -42,7 +42,7 @@
     {% if not brand %}
     <a href="/docs">Guides</a>
     {% endif %}
-    <a href="/login">Sign in</a>
+    <a href="/login">{% if test_instance|default(false) %}Tester sign-in{% else %}Sign in{% endif %}</a>
   </nav>
   {% endif %}
   {% endblock %}
@@ -59,7 +59,7 @@
   {% else %}
   <span>{{ product.name }} {{ version }}</span>
   {% endif %}
-  {% if signed_in or not brand %}{# a visitor under a brand is shown only the way in #}
+  {% if signed_in or not (brand or (test_instance|default(false) and wall|default(false))) %}{# a visitor under a brand, or behind the wall of a test instance, is shown only the way in #}
   {% if signed_in and help() %}<a href="/help">Help</a>{% endif %}
   <a href="/docs">Guides</a>
   <a href="/docs/security">Security</a>

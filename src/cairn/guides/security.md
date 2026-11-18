@@ -84,12 +84,12 @@ What the checks do not do: they compare text, not meaning. A page holds what the
 
 ## The web pages
 
-- No page runs a script. The pages allow styles, images and fonts from {{name}} itself and nothing else, and cannot be shown inside another site's frame.
+- No page runs a script. With `serve --graph-explorer` a project's graph page alone loads one script, {{name}}'s own, by a nonce made for that page and with its hash, and the page still works without it. The pages allow styles, images and fonts from {{name}} itself and nothing else, and cannot be shown inside another site's frame.
 - The two typefaces, Atkinson Hyperlegible Next and Atkinson Hyperlegible Mono, ship with {{name}} under the SIL Open Font License 1.1; their licences are served at `/static/fonts/atkinson-hyperlegible-next.OFL.txt` and `/static/fonts/atkinson-hyperlegible-mono.OFL.txt`.
 - A form posted from another site is refused.
 - Pages are not cached, and a page's address is not sent to other sites.
 - An address that is not a page answers "There is no page at this address" for everyone, signed in or not.
-- A project's page links its **Graph**: its pages, the claims on them, the passages those claims cite and the notes the passages come from, at most 20 pages, drawn without a script and listed again as text below the drawing; a key reads the same at `GET /api/graph?project=<name>`, an agent at the MCP resource `graph://project/<name>/<limit>`, and a project out of reach is answered as one that does not exist.
+- A project's page links its **Graph**: its pages, the claims on them, the passages those claims cite and the notes the passages come from, drawn by the server and listed again as text below the drawing. Without `--graph-explorer` the page shows at most 20 pages; with it, one view at a time (the pages, the notes, a page's claims or a claim's passages), at most 20 to a batch, with **Next batch** for the rest, and each note has a page of its own. A key reads at most 20 pages of the graph at `GET /api/graph?project=<name>`, an agent at the MCP resource `graph://project/<name>/<limit>`, and a project out of reach is answered as one that does not exist.
 
 ## Logs
 

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ note.title or "Note" }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ explorer_stylesheet }}">{% endblock %}
+{% block main %}
+<p class="crumbs"><a href="/b/{{ note.project|seg }}">{{ note.project }}</a> / <a href="{{ graph_link }}">Graph notes</a> /</p>
+<h1>{{ note.title or "Note" }}</h1>
+<dl class="facts">
+  <dt>source_ref</dt>
+  <dd>{% if source_link %}<a href="{{ source_link }}" rel="noreferrer">{{ note.source_ref }}</a>{% else %}{{ note.source_ref or "" }}{% endif %}</dd>
+  <dt>via</dt>
+  <dd>{{ note.via or "" }}</dd>
+</dl>
+<pre class="graph-note">{{ note.text }}</pre>
+{% if next_href %}<p><a rel="next" href="{{ next_href }}">Read on</a></p>{% endif %}
+{% endblock %}

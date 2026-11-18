@@ -118,6 +118,14 @@ docker run -d --name cairn --restart unless-stopped \
 
 **Several browsers.** A person can be signed in on several browsers and machines at once, each with a sign-in of its own, and several sign-ins can be under way in one browser, in two tabs say: up to five at a time, each for ten minutes. When the sign-in page says "This sign-in is not valid any more", nobody was signed in or out by it: starting again signs the person in, and every sign-in they already have, in that browser or any other, stays.
 
+## A private test instance
+
+`--test-instance` tells people who are not signed in that this install is a private test instance. It needs `--sign-in` and one of four limits: `CAIRN_ALLOWED_EMAILS`, `--allowed-email-domain`, or, when your own identity provider is the only one, `CAIRN_OIDC_ALLOWED_GROUPS` or `--closed-directory`. Without one, `serve` stops at start, and the last line it prints names the option.
+
+The sign-in page says that sign-in is limited to approved testers, and links to this guide before the sign-in buttons. So does the landing page, which an install without `--join default` shows to visitors. In the guides, the link at the top reads **Tester sign-in**. With `--wall`, the sign-in page links to no guide. Under a brand, a visitor sees the same pages as without the option.
+
+The option changes what visitors are told, not who can sign in. An invitation does not let in an address that `CAIRN_ALLOWED_EMAILS` and `--allowed-email-domain` leave out, so list a tester's address before you invite them.
+
 ## Tidy pages without a model
 
 A page grows note by note: a later note's claims go at its end, even when they belong under a heading the page already shows, and a line that two notes both have under the same heading shows twice. cairn tidies pages by itself: it puts each heading's claims together and folds the claims that repeat. It needs no model, no key and no budget, and nothing leaves the container. Every word stays the sources' own, the version before stays readable, and a tidied page says "Arranged by cairn". A tidy is a new version of the page: where `serve` runs with `--plans` and a plan keeps only the last versions of each page, it counts toward them like any other version, and the oldest goes as it would for a note.
@@ -226,6 +234,10 @@ docker exec cairn python -m cairn.server compact --db /data/cairn.db
 ```
 
 Its first line says how many versions it removed and by what rule. On a database no `serve` of this version has run on, it removes no version and says so. With plans, each workspace keeps what its plan keeps; a workspace on a plan the plans file does not name keeps every version, and `compact` names it on a line of its own.
+
+## A graph to explore
+
+`serve --graph-explorer` makes a project's **Graph** page one to explore: its pages or its notes a batch of at most 20 at a time, with **Next batch** for the rest, a search within the view, a page's claims, the passages a claim cites, and a page for each note. That page is the only one that runs a script, cairn's own, and it works without it. Without the option the graph page is drawn by the server alone and runs no script.
 
 ## Numbers to watch
 

@@ -4,11 +4,17 @@
 {% block page_class %}app wide{% endblock %}
 {% block main %}
 <section class="hero">
+  {% if test_instance %}<p class="lede">This is a private test instance. Sign-in is limited to approved testers.</p>{% endif %}
   <h1>Memory your agents can check.</h1>
   <p class="lede">Agents write notes to cairn over MCP. cairn compiles them into pages, and every claim on a page links to the exact source lines it came from.</p>
   <p class="actions">
+    {% if test_instance %}
+    <a class="button" href="/docs/run">Run it yourself</a>
+    <a href="/login">Tester sign-in</a>
+    {% else %}
     <a class="button" href="/login">Sign in to connect an agent</a>
     <a href="#run">Run it yourself</a>
+    {% endif %}
   </p>
 
   {# A page as cairn shows it: claims with their source numbers in the margin, and the lines
@@ -80,8 +86,13 @@
   <div class="ways">
     <div>
       <h3>Here</h3>
+      {% if test_instance %}
+      <p>This instance is for approved testers. Run your own instance to create a workspace for yourself or your team.</p>
+      <p class="actions"><a href="/login">Tester sign-in</a></p>
+      {% else %}
       <p>Sign in{% if providers %} with {{ providers }}{% endif %} and connect your agents. Invite people, give them roles and keep a project private. Download your workspace's notes and pages as one file, or delete it, whenever you like.</p>
       <p class="actions"><a class="button" href="/login">Sign in</a></p>
+      {% endif %}
     </div>
     <div>
       <h3>On your own machine</h3>

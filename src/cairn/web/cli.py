@@ -525,6 +525,12 @@ def _parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="name of the runtime environment variable holding the read-only documentation key",
     )
+    serve.add_argument(  # G2
+        "--graph-explorer",
+        action="store_true",
+        help="make a project's graph page the explorer, the one page that loads a script"
+        " (cairn's own, by a nonce and its hash); off: the graph page runs no script",
+    )
     cli_arrange.add_options(serve)
     _source_parsers(commands)
     _credential_parsers(commands)
@@ -539,7 +545,15 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _wall_options(serve: argparse.ArgumentParser) -> None:
-    """B1: the wall, the brand and how long a sign-in lasts (cairn.web.brand, cairn.web.auth)."""
+    """B1: the wall, the brand and how long a sign-in lasts (cairn.web.brand, cairn.web.auth);
+    and what a visitor to a test instance is told (create_app's `test_instance`)."""
+    serve.add_argument(
+        "--test-instance",
+        action="store_true",
+        help="with --sign-in limited to the people you approve: a browser that is not signed in"
+        " is told this is a private test instance for approved testers and offered the guide"
+        " to run cairn itself; who can sign in does not change",
+    )
     serve.add_argument(
         "--wall",
         action="store_true",
@@ -591,6 +605,7 @@ def _would_do_nothing(args: argparse.Namespace) -> str | None:
     if not args.sign_in:
         for option, given in (
             ("--wall", args.wall),
+            ("--test-instance", args.test_instance),
             ("--brand-name", args.brand_name is not None),
             ("--session-days", args.session_days is not None),
         ):
@@ -1534,6 +1549,18 @@ def _closed(
         )
 
 
+def _limited(
+    args: argparse.Namespace, providers: tuple[IdentityProvider, ...], emails: tuple[str, ...]
+) -> bool:
+    """Whether only approved people sign in (`--test-instance` needs it): a listed address or
+    domain, or OIDC alone, closed by an allowed group or the operator's word."""
+    if args.domains or emails:
+        return True
+    return all(
+        isinstance(p, OIDC) and bool(p.allowed_groups or args.closed_directory) for p in providers
+    )
+
+
 def _sign_in(args: argparse.Namespace, environ: Mapping[str, str]) -> SignIn | None:
     emails = _allowed_emails(environ)
     if not args.sign_in:
@@ -1544,6 +1571,12 @@ def _sign_in(args: argparse.Namespace, environ: Mapping[str, str]) -> SignIn | N
             )
         return None
     providers = tuple(_provider(name, environ) for name in dict.fromkeys(args.sign_in))
+    if args.test_instance and not _limited(args, providers, emails):
+        raise ValueError(
+            "--test-instance needs sign-in limited to the people you approve: list them with"
+            f" {ALLOWED_EMAILS} or --allowed-email-domain or, when oidc is the only provider,"
+            " limit it with CAIRN_OIDC_ALLOWED_GROUPS or state --closed-directory"
+        )
     _closed(args, providers, emails)
     http = httpx.AsyncClient(timeout=PROVIDER_TIMEOUT, follow_redirects=False)
     return SignIn(
@@ -1783,6 +1816,7 @@ def _serve(args: argparse.Namespace) -> int:
                 arranger=arranger,
                 operator_notes=notes,
                 wall=args.wall,
+                test_instance=args.test_instance,
                 brand_name=args.brand_name,
                 brand_logo=brand.logo if brand else None,
                 brand_logo_alt=args.brand_logo_alt,
@@ -1792,6 +1826,7 @@ def _serve(args: argparse.Namespace) -> int:
                 keep_versions=_kept(args, plans),  # Q1: a page's history bound
                 stats_every=args.stats_every or None,  # Q1: the line with the numbers
                 google_connect=google,  # a Google account connected in the browser, or off
+                graph_explorer=args.graph_explorer,  # G2: the graph page you can explore
             )
         except ValueError as error:
             print(f"cannot sign in that way: {error}", file=sys.stderr)

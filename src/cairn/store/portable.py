@@ -28,6 +28,9 @@ mode, so two exports of the same data differ only in `exported_at`. Keys, sessio
 project sets, settings, sources and the audit log are not exported: they name the operator's
 environment or the people who held access, not what the workspace knows. Nor are the items
 each source wrote (I1, source_items), which go with their source: an import records none.
+Nor is anything of a Slack install (K1, cairn.store.slack: the install, its links, offers and
+events seen, and which notes came through it): the notes themselves are exported as any
+other, and an import records none of them as Slack's.
 One setting is exported: each project's Models choice (M4, below).
 
 Models (M4). Version 1 grew a `models` on each project of the manifest, "allowed" or

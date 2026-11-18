@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import yaml
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "rehearse_stack.py"
 spec = importlib.util.spec_from_file_location("rehearse_stack", SCRIPT)
@@ -70,6 +71,29 @@ def test_the_override_changes_nothing_the_shipped_files_decide():
     for shipped in ("command:", "ports:", "networks:", "caddy", "env_file"):
         assert shipped not in override, shipped
     assert override.count("rehearsal-replica:/replica") == 3
+
+
+def _mounted_at_data(service: dict) -> bool:
+    volumes = [str(volume) for volume in service.get("volumes", [])]
+    tmpfs = service.get("tmpfs", [])
+    tmpfs = [tmpfs] if isinstance(tmpfs, str) else list(tmpfs)
+    return any(v.split(":")[1] == "/data" for v in volumes if ":" in v) or "/data" in tmpfs
+
+
+@pytest.mark.parametrize("name", ["compose.yaml", "compose.backup.yaml", "compose.local.yaml", ""])
+def test_no_service_of_the_cairn_image_gets_a_volume_nobody_named(name):
+    """The image declares /data a volume, so a service that mounts nothing there is given a
+    new unnamed volume by Docker each time its container is made. `down` leaves those, and
+    the rehearsal brings the stack down three times with its named volumes kept."""
+    deploy = SCRIPT.parents[1] / "deploy"
+    text = (deploy / name).read_text() if name else rehearse.OVERRIDE
+    checked = 0
+    for service, settings in yaml.safe_load(text)["services"].items():
+        if "CAIRN_IMAGE" not in str(settings.get("image", "")):
+            continue
+        checked += 1
+        assert _mounted_at_data(settings), f"{service} in {name or 'the override'}"
+    assert checked, "no service of the cairn image was read"
 
 
 def _serve_once(answer: bytes, *, read_body: bool) -> tuple[int, list[int], threading.Thread]:

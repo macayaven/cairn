@@ -110,6 +110,10 @@ services:
     restart: "no"
     user: "0:0"
     entrypoint: ["python", "-c", "import os; os.chown('/replica', 10001, 10001)"]
+    # The image declares /data a volume: with nothing mounted there, each container of this
+    # step would get an unnamed one, which `down` without -v leaves behind.
+    tmpfs:
+      - /data
     volumes:
       - rehearsal-replica:/replica
   litestream-restore:

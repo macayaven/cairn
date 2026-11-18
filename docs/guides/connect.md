@@ -15,6 +15,7 @@ Call `projects` first to discover project names or IDs. The read-only MCP resour
 | VS Code with GitHub Copilot | [VS Code](#vs-code-github-copilot-agent-mode) |
 | Gemini CLI | [Gemini CLI](#gemini-cli) |
 | A script, cron job or CI | [Headless agents and scripts](#headless-agents-and-scripts) |
+| Slack, once the operator switched it on | [From Slack](#from-slack) |
 
 ## Claude Code
 
@@ -226,6 +227,47 @@ claude mcp add --transport http cairn https://YOUR-CAIRN/mcp --header "x-api-key
 ```
 
 The second stores the header value you pass, and while it runs the key is on its command line, where other processes can read it.
+
+## From Slack
+
+Slack is there only when the operator started cairn with `serve --slack`. One Slack app serves one workspace, and an owner or an admin of the workspace sets it up under **Workspace**, then **Sources**:
+
+1. Press **Set up Slack**. The page then gives a link that opens Slack's page for creating an app with the app's manifest filled in, and the same manifest as text to paste at Slack instead. It says what each of the app's four permissions is for.
+2. At Slack, create the app and install it to your Slack workspace. Copy its signing secret, from the app's Basic Information, and its bot token, from its OAuth & Permissions page once it is installed, into the two fields, and press **Keep them**.
+3. cairn asks Slack whose token it is, and keeps both secrets sealed: neither is shown again. A token Slack does not accept, a Slack that does not answer, and a Slack workspace that another workspace on this server set up already are each refused in one sentence, and nothing is kept.
+4. Slack is then ready: the slash command and the message shortcut are answered. At Slack, have Slack verify the events address the page shows, on the page where Slack lists events. Once it has, Slack is on, and direct messages to the bot are answered too.
+
+The page says which state Slack is in and what is left to do: set up started, ready, on, off, or off because Slack revoked the bot's token. **Switch off** stops the bot and deletes nothing: the slash command and the shortcut are refused, and a direct message is not answered. **Switch on** needs nothing pasted, unless Slack revoked the bot's token: then the page asks for a new one, and keeps the signing secret.
+
+**Remove Slack**, once you type the workspace's name, deletes both secrets and every link between a Slack user and a person at once, and every note that came through Slack is forgotten 10 days later. Removing the app at Slack does the same. Until then the page says how many notes and on which day, and offers an owner **Forget them now**; setting Slack up again for the same Slack workspace before that day keeps them.
+
+Each person links their Slack user to themselves once. The first time they use the bot, or with `/cairn link`, the bot answers them alone with an address that works once, within 10 minutes. Opened signed in to cairn, it names the Slack user and the person, and asks for a yes. From then on, what they do through the bot acts as them, with what they reach.
+
+The slash command is `/cairn`, unless the owner named it otherwise in the app's manifest:
+
+| Word | What it does |
+| --- | --- |
+| `find <words>` | Up to 5 claims that match, each with its page's title as a link to the claim, its project and the page's version; or Nothing found. |
+| `note <text>` | Writes a note in your Slack project, with `via` `slack`, and links its page. |
+| `project` | Says which project is your Slack project and which projects you can write to. `project <name>` makes another of those your Slack project. |
+| `link` | Says who your Slack user is linked to. |
+| `unlink` | Undoes your link, and offers a new address to link again. |
+| `help`, or no word | Lists what there is. |
+
+A direct message to the bot works the same way: plain words are a search, `note:` and text writes a note, and `help` lists what there is. The message shortcut **File in cairn**, used on a message, files it as a note in your Slack project: its text, a heading with who wrote it and when, and the message's own link as its `source_ref`. A message is filed once: filing it again answers with the note it already is.
+
+Every answer is for you alone: the slash command's and the shortcut's are shown only to you, and the bot answers a direct message in that direct conversation. When the bot refuses, it says why, to you alone, and stores nothing:
+
+- no project is chosen for your notes, or yours is out of your reach or gone: choose one with `project <name>`;
+- the note guard refused the note, and the answer names its rule;
+- the workspace is over its cap, or the page is full;
+- the message's author is not of this Slack workspace: only a message written there is filed;
+- an app, a bot or a deactivated account wrote the message, so it has no person as its author;
+- Slack did not say in time who wrote the message, or is limiting how often cairn asks: try again;
+- the message has no text;
+- cairn is compiling as many notes as it can at once: try again in a moment.
+
+In this version the bot reads no thread and no whole conversation, does not answer a mention, and cannot share an answer with a conversation.
 
 ## If it does not connect
 

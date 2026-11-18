@@ -35,7 +35,7 @@ This guide says who can reach what in cairn, how people and agents prove who the
 
 ## Stored as digests only
 
-API keys, browser sessions, OAuth codes and tokens, and invitation links are random values. cairn hands each one out once and stores only its SHA-256 digest. A copy of the database therefore holds none of them in a form anyone can use. The one credential of another service it can hold, a connected Google account's refresh token, is sealed: see [below](#google-accounts-connected-in-the-browser). A sign-in provider's own tokens are used during sign-in and never stored.
+API keys, browser sessions, OAuth codes and tokens, and invitation links are random values. cairn hands each one out once and stores only its SHA-256 digest. A copy of the database therefore holds none of them in a form anyone can use. The credentials of other services it can hold, a connected Google account's refresh token and a Slack app's signing secret and bot token, are sealed: see [below](#google-accounts-connected-in-the-browser) and [Slack](#slack). A sign-in provider's own tokens are used during sign-in and never stored.
 
 ## Google accounts connected in the browser
 
@@ -46,6 +46,16 @@ What a connect or a disconnect came to is said once on the Sources page, to the 
 When Google refuses to end a dropped account's permission (after the OAuth client was deleted, say), the server tries again less and less often, the wait doubling up to a day, and logs the refusal once. After 20 refusals it stops, keeps the sealed token, and logs `revoke_stopped` once. Then end the permission yourself: the person removes this server's access in their Google account's settings, or you delete the OAuth client's secret in the Cloud console, so that no token issued to it can be used with that secret again. The table of tokens waiting to be sent holds at most 10,000; past that, a dropped account's token is sent once and not kept, and the server logs `revocations_full`.
 
 Changing `CAIRN_GOOGLE_CONNECT_KEY` makes every connected account reconnect, and leaves the permissions Google gave for the old tokens in place, with nothing here able to end them. So disconnect every connected account first, wait until Google has answered each revocation (the log says when one was not ended), then change the key.
+
+## Slack
+
+Off unless the operator starts the server with `--slack`. Slack calls three addresses of each workspace's install: `/integrations/slack/<install>/events`, `/commands` and `/actions`. They take no session and no key. A request is acted on only when its signature holds: an HMAC-SHA256 of its timestamp and its body under that install's signing secret, compared in constant time, with a timestamp within 5 minutes of the server's clock. Before the signature is checked, a body over 1 MiB is refused, and so is an install that does not exist or is not set up. After it, a request of another Slack workspace is refused. An address that fails the signature 20 times in a minute is refused, without the signature being computed, until the minute is over. An event is acted on once, whatever Slack's retries say.
+
+The app asks Slack for four permissions: `chat:write`, to post the bot's answers; `commands`, for the slash command and the message shortcut; `users:read`, to know a Slack user's name and whether a message's author is of this Slack workspace; and `im:history`, which lets the bot read the direct messages people send it, and nothing among people.
+
+Answers are private: the slash command's and the shortcut's are shown only to the person who asked, and a direct message is answered in that direct conversation. An answer is built from the asker's reach, as a search of theirs: a project they do not reach gives nothing, not even a count.
+
+The signing secret and the bot token are sealed under the operator's key, `CAIRN_SLACK_KEY`, so a copy of the database opens neither. cairn's Slack client calls nothing at Slack that reads a conversation's history: it asks whose a token is and who a user is, posts the bot's answers, and answers through the address a signed request gave.
 
 ## The note guard
 
@@ -111,7 +121,7 @@ What the checks do not do: they compare text, not meaning. A page holds what the
 
 - cairn does not encrypt its database file. Disk encryption, and who may log in to the machine, are the operator's.
 - Backups are the operator's: the shipped configuration replicates the database to a storage bucket the operator owns.
-- A source's credentials, such as a Langfuse key, are environment variables of the server, so only the command line registers an account, or adds or removes a source from a config; a person makes sources from an account registered for them, and owners and admins from the workspace's. The database never holds a third party's key, except the sealed tokens of Google accounts connected in the browser, when the operator switches that on ([below](#google-accounts-connected-in-the-browser)).
+- A source's credentials, such as a Langfuse key, are environment variables of the server, so only the command line registers an account, or adds or removes a source from a config; a person makes sources from an account registered for them, and owners and admins from the workspace's. The database never holds a third party's key, except the sealed tokens of Google accounts connected in the browser and the sealed secrets of a Slack app, when the operator switches either on ([below](#google-accounts-connected-in-the-browser), [Slack](#slack)).
 - Anyone with the database file and the machine can read every workspace in it. The rules above govern people and agents that come through cairn.
 - cairn limits each client's sign-ins and agent registrations (20 registrations an hour from one address, unless the operator set another number), and bounds its own memory and its calls to the sign-in provider. A flood from many addresses is the operator's to stop, at the proxy or the network; while it lasts, new sign-ins can be refused. People already signed in are not affected.
 - cairn also limits the wrong keys and tokens each client address presents: once an address has presented 30 in a minute, a wrong one from it is answered 429 in place of 401 for the rest of that minute. A correct key or token is never refused by this limit, from any address.

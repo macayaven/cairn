@@ -108,7 +108,7 @@ def test_the_privacy_guide_says_what_is_kept_as_digests_and_what_sealed(served):
         f"Credentials {product} issues, as SHA-256 digests only:",
         f"A usable key, session or token that {product} issued.",
         f"the database cannot be used to sign in to {product}",
-        "the one credential of another service the database can hold",
+        "the only credentials of other services the database can hold",
     )
     # the promise that was too wide: no usable token at all
     assert "A usable key, session or token. Only digests are kept" not in words

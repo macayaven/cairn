@@ -1,0 +1,80 @@
+{# A workspace's Slack app (cairn.slack.setup): nothing at all unless the server was started
+   with --slack and the reader is a person. An owner or an admin sees the install and its
+   forms; anyone else only an outcome said to them. No script. No secret is ever filled in. #}
+{% set slack = slack_block() if slack_block is defined else none %}
+{% if slack %}
+<section class="integration" id="slack" aria-labelledby="slack-heading">
+  <h2 id="slack-heading" tabindex="-1">Slack</h2>
+  {% if slack.refused %}
+  <p class="alert" role="alert"><strong>Refused.</strong> {{ slack.refused }}</p>
+  {% elif slack.done %}
+  <p class="notice" role="status">{{ slack.done }}</p>
+  {% endif %}
+  {% if slack.manages %}
+  {% if slack.says %}<p>{{ slack.says }}</p>{% endif %}
+  {% if not slack.state or slack.state == "removed" %}
+  <p>One Slack app for this workspace, made by you at Slack from what this page gives: people then file a Slack message as a note, write one, and ask the bot to find something, each as the person they linked here.</p>
+  <form method="post" action="/integrations/slack/setup">
+    <button type="submit">Set up Slack</button>
+  </form>
+  {% endif %}
+  {% if slack.manifest %}
+  <h3 id="slack-app-heading">The app</h3>
+  <p><a href="{{ slack.manifest_link }}" rel="noreferrer">Create the app at Slack, with its manifest filled in</a></p>
+  <p class="hint">Or create it from a manifest at Slack and paste this:</p>
+  <pre class="mono" aria-labelledby="slack-app-heading">{{ slack.manifest }}</pre>
+  <h3 id="slack-permissions-heading">What it may do</h3>
+  <dl class="facts" aria-labelledby="slack-permissions-heading">
+    {% for scope, words in slack.permissions %}
+    <dt><code>{{ scope }}</code></dt>
+    <dd>{{ words }}</dd>
+    {% endfor %}
+  </dl>
+  {% endif %}
+  {% if slack.state in ("ready", "on") %}
+  <dl class="facts">
+    <dt>Events address</dt>
+    <dd><code>{{ slack.events }}</code></dd>
+  </dl>
+  {% endif %}
+  {% if slack.state in ("pending", "revoked") %}
+  <form method="post" action="/integrations/slack/secrets" class="stack">
+    {% if slack.state == "pending" %}
+    <label for="slack-signing-secret">Signing secret</label>
+    <input type="password" id="slack-signing-secret" name="signing_secret" autocomplete="off" spellcheck="false" required aria-describedby="slack-signing-secret-hint">
+    <p class="hint" id="slack-signing-secret-hint">At Slack, in the app's Basic Information.</p>
+    {% endif %}
+    <label for="slack-bot-token">Bot token</label>
+    <input type="password" id="slack-bot-token" name="bot_token" autocomplete="off" spellcheck="false" required aria-describedby="slack-bot-token-hint">
+    <p class="hint" id="slack-bot-token-hint">At Slack, in the app's OAuth &amp; Permissions, once it is installed to your Slack workspace. Both are checked with Slack, kept sealed, and never shown again.</p>
+    <button type="submit">Keep them</button>
+  </form>
+  {% endif %}
+  {% if slack.state in ("ready", "on") %}
+  <form method="post" action="/integrations/slack/off">
+    <button type="submit" class="quiet">Switch off</button>
+  </form>
+  {% elif slack.state == "off" %}
+  <form method="post" action="/integrations/slack/on">
+    <button type="submit">Switch on</button>
+  </form>
+  {% endif %}
+  {% if slack.state and slack.state != "removed" %}
+  <form method="post" action="/integrations/slack/remove" class="stack ending">
+    <label for="slack-confirm">Type <strong>{{ slack.workspace }}</strong> to remove Slack</label>
+    <input type="text" id="slack-confirm" name="confirm" autocomplete="off" spellcheck="false" required aria-describedby="slack-confirm-hint">
+    <p class="hint" id="slack-confirm-hint">Removing deletes both secrets and every link between a Slack user and a person at once, and forgets every note that came through Slack 10 days later.</p>
+    <button type="submit" class="quiet danger">Remove Slack</button>
+  </form>
+  {% endif %}
+  {% if slack.due %}
+  <p>{{ slack.due.notes }} {{ "note" if slack.due.notes == 1 else "notes" }} came through Slack: {{ "it" if slack.due.notes == 1 else "they" }} will be forgotten on <time datetime="{{ slack.due.at }}">{{ slack.due.at|when }}</time>, unless the same Slack workspace is set up again before then.</p>
+  {% if slack.forgets %}
+  <form method="post" action="/integrations/slack/forget" class="ending">
+    <button type="submit" class="quiet danger">Forget them now</button>
+  </form>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+</section>
+{% endif %}

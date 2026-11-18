@@ -9,10 +9,10 @@ You need Docker with Compose 2.24 or later (`docker compose version` prints it) 
 ```bash
 cd deploy
 echo 'COMPOSE_FILE=compose.local.yaml' > .env
-docker compose up -d
+docker compose up -d --build
 ```
 
-The `.env` line makes every `docker compose` command in this folder use `compose.local.yaml`: cairn alone, with no domain and no proxy. The first `up` looks for the image `cairn:local` in a registry, says `pull access denied`, and then builds it from your clone, which takes a few minutes. cairn then answers at http://127.0.0.1:8765, on this computer only; nothing else on your network can reach it. If another program already uses port 8765, choose a free port, write it into `.env` before `up`, and use it wherever this guide says 8765. For port 18765:
+The `.env` line makes every `docker compose` command in this folder use `compose.local.yaml`: cairn alone, with no domain and no proxy. `--build` builds the image from this clone and names it `cairn:local`. Keep it on the first run: without it Compose starts whatever image already has that name on this computer, such as one an earlier clone left, and the code you just fetched is not what runs. The build takes a few minutes. cairn then answers at http://127.0.0.1:8765, on this computer only; nothing else on your network can reach it. If another program already uses port 8765, choose a free port, write it into `.env` before `up`, and use it wherever this guide says 8765. For port 18765:
 
 ```bash
 echo 'CAIRN_PORT=18765' >> .env
@@ -77,11 +77,11 @@ docker compose cp cairn:/data/export.zip ./cairn-export.zip
 docker compose exec cairn rm /data/export.zip
 ```
 
-A copy of the database holds everything, keys included. Stop cairn first, so the copy is whole:
+A copy of the database holds everything, keys included. Stop cairn first, so the copy is whole, and give each backup a folder of its own, named with the time. Copying into a folder that already holds a backup puts the new one inside the old one and leaves the old database on top:
 
 ```bash
 docker compose stop cairn
-docker compose cp cairn:/data ./cairn-backup
+docker compose cp cairn:/data/. "./cairn-backup-$(date +%Y%m%d-%H%M%S)"
 docker compose start cairn
 ```
 

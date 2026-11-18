@@ -290,6 +290,13 @@ fieldset.reach {
   border-radius: var(--radius-md);
 }
 fieldset.reach legend { padding: 0 var(--space-1); font-size: 13px; line-height: 18px; font-weight: 600; letter-spacing: 0.01em; }
+.guard fieldset.reach legend {
+  float: left;
+  width: 100%;
+  margin-bottom: var(--space-2);
+  padding: 0;
+}
+.guard fieldset.reach legend + .option { clear: both; }
 .option { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); min-height: 44px; font-size: 15px; line-height: 22px; }
 .option input { width: 18px; height: 18px; margin: 0; }
 /* A choice said in a sentence: the text wraps beside its button, not under it */

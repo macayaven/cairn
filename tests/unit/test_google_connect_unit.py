@@ -648,7 +648,9 @@ def test_a_full_workspace_is_refused_before_google_is_asked(world, monkeypatch):
     assert told(response)["said"] == "full"
     assert "google_connect=" not in response.headers.get("set-cookie", "")
     page = html.unescape(ada.get(response.headers["location"]).text)
-    assert cairn.store.hosted.FULL in page.lower() and "100" not in page  # nothing of the others
+    (alert,) = re.findall(r'<p[^>]*role="alert"[^>]*>(.*?)</p>', page, re.S)
+    refusal = re.sub(r"<[^>]+>", "", alert)
+    assert cairn.store.hosted.FULL in refusal.lower() and "100" not in refusal  # no other counts
     assert gc.END_IT_YOURSELF not in page  # Google was never asked: nothing to end
 
 

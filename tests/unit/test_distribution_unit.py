@@ -50,3 +50,32 @@ def test_the_changelog_dates_the_version_and_keeps_a_place_for_the_slack_entry()
     section = changes[changes.index(f"## {VERSION} - ") :]
     assert "<!-- 0.1.0: Slack, when it lands -->\n" in section
     assert changes.index("## Unreleased") < changes.index(f"## {VERSION} - ")
+
+
+README = (ROOT / "README.md").read_text(encoding="utf-8")
+
+
+def flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_the_readme_says_what_a_tag_publishes_and_releases():
+    ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
+    for sentence in (
+        "5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags"
+        " publish one multi-arch image, with provenance and an SBOM, to"
+        " `ghcr.io/<owner>/<repo>`.",
+        "A tag is published only when it is `v` and the version in `pyproject.toml` and"
+        " `CHANGELOG.md` has a dated section for that version: `scripts/release_check.py`"
+        " checks it first.",
+        "A tag is published as `X.Y.Z`, `X.Y` and `latest`; a push to `main` as `main` and"
+        " `sha-<commit>`, never `latest`.",
+        "the gate runs as before, and items 5 to 7 are skipped.",
+        "6. **Verify and deploy:** on `main` and on tags, the published image is smoke-tested."
+        " On `main`, a `deploy` job that waits for approval moves the production VM to it",
+        "7. **Release:** a tag whose published image passed becomes a GitHub release, with the"
+        " version's section of `CHANGELOG.md` as its text and the wheel and source archive"
+        " that `uv build` makes attached. A tag never deploys.",
+    ):
+        assert sentence in ci, sentence
+    assert "Tags are the version, `major.minor`, the branch and the commit." not in ci

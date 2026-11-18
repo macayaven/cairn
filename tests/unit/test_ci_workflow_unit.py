@@ -55,11 +55,11 @@ def test_deploy_waits_for_tests_infra_both_image_smokes_publish_and_verify():
 
 
 def test_publish_waits_for_the_infrastructure_check_and_the_image_stack_and_host_jobs():
-    assert needs(JOBS["publish"]) == {"infra", "image", "stack", "host"}
+    assert needs(JOBS["publish"]) == {"infra", "image", "stack", "host", "release_check"}
 
 
 def test_gate_runner_uses_json_override_and_defaults_to_hosted():
-    for name in ("changes", "test", "infra", "image", "stack", "host"):
+    for name in ("changes", "test", "infra", "image", "stack", "host", "release_check"):
         expression = JOBS[name]["runs-on"]
         match = re.fullmatch(
             r"\$\{\{ fromJSON\(vars\.CAIRN_GATE_RUNNER \|\| '([^']+)'\) \}\}", expression
@@ -69,7 +69,7 @@ def test_gate_runner_uses_json_override_and_defaults_to_hosted():
 
 
 def test_release_runner_uses_separate_json_override_and_defaults_to_hosted():
-    for name in ("publish", "verify", "deploy"):
+    for name in ("publish", "verify", "deploy", "release"):
         expression = JOBS[name]["runs-on"]
         match = re.fullmatch(
             r"\$\{\{ fromJSON\(vars\.CAIRN_RELEASE_RUNNER \|\| '([^']+)'\) \}\}", expression
@@ -420,10 +420,13 @@ def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
     assert needs(JOBS["image"]) == {"test", "changes"}
     assert needs(JOBS["host"]) == {"test", "changes"}
     assert needs(JOBS["stack"]) == {"changes"}
-    assert needs(JOBS["publish"]) == {"infra", "image", "stack", "host"}
+    assert needs(JOBS["publish"]) == {"infra", "image", "stack", "host", "release_check"}
     assert JOBS["publish"]["if"] == "github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'"
     assert needs(JOBS["verify"]) == {"publish"}
-    assert JOBS["verify"]["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    assert JOBS["verify"]["if"] == (
+        "github.event_name == 'push' &&"
+        " (github.ref == 'refs/heads/main' || github.ref_type == 'tag')"
+    )
     assert needs(DEPLOY) == {"test", "infra", "image", "publish", "verify"}
     assert " ".join(DEPLOY["if"].split()) == (
         "github.event_name == 'push' && github.ref == 'refs/heads/main'"
@@ -552,6 +555,7 @@ def pull_request(draft: bool) -> dict:
         "github": {
             "event_name": "pull_request",
             "ref": "refs/pull/7/merge",
+            "ref_type": "branch",
             "sha": SHA,
             "event": {"pull_request": {"draft": draft, "head": {"sha": HEAD}}},
         },
@@ -564,7 +568,14 @@ def not_a_pull_request(event_name: str, ref: str) -> dict:
     if event_name == "push":
         event = {"before": BEFORE, "after": SHA, "created": False, "forced": False}
     return {
-        "github": {"event_name": event_name, "ref": ref, "sha": SHA, "event": event},
+        "github": {
+            "event_name": event_name,
+            "ref": ref,
+            "ref_type": "tag" if ref.startswith("refs/tags/") else "branch",
+            "ref_name": ref.split("/", 2)[2],
+            "sha": SHA,
+            "event": event,
+        },
         "vars": REPOSITORY_VARIABLES,
     }
 
@@ -572,7 +583,10 @@ def not_a_pull_request(event_name: str, ref: str) -> dict:
 # Job `changes` runs on every event, like the two cheap jobs, and takes a few seconds.
 CHEAP = {"test", "infra", "changes"}
 THE_GATE = CHEAP | {"image", "stack", "host"}
-EVERYTHING = THE_GATE | {"publish", "verify", "deploy"}
+EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "deploy"}
+# A v* tag runs the gate, checks the tag against the version, publishes, smoke-tests what it
+# published and makes the GitHub release; it never deploys.
+A_RELEASE = THE_GATE | {"release_check", "publish", "verify", "release"}
 
 
 def test_which_jobs_run_for_each_event_when_changes_says_nothing():
@@ -583,7 +597,7 @@ def test_which_jobs_run_for_each_event_when_changes_says_nothing():
         "a push to a pull request that is ready": (pull_request(draft=False), THE_GATE),
         "a push to main": (not_a_pull_request("push", "refs/heads/main"), EVERYTHING),
         "a manual run": (not_a_pull_request("workflow_dispatch", "refs/heads/work"), THE_GATE),
-        "a v* tag": (not_a_pull_request("push", "refs/tags/v1.0.0"), THE_GATE | {"publish"}),
+        "a v* tag": (not_a_pull_request("push", "refs/tags/v1.0.0"), A_RELEASE),
     }
     for event, (context, expected) in table.items():
         assert jobs_that_run(context) == expected, event
@@ -661,7 +675,7 @@ def test_which_jobs_run_for_each_event_with_a_change_that_ships_and_one_that_doe
         "a push to main": (EVERYTHING, CHEAP),
         # The changed paths of these two are not known, so they run as before either way.
         "a manual run": (THE_GATE, THE_GATE),
-        "a v* tag": (THE_GATE | {"publish"}, THE_GATE | {"publish"}),
+        "a v* tag": (A_RELEASE, A_RELEASE),
     }
     assert set(table) == set(EVENTS)
     for event, (ships, nothing) in table.items():
@@ -874,3 +888,137 @@ def test_the_build_backend_is_one_version():
     text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
     (requires,) = re.findall(r'^requires = \["([^"]+)"\]$', text, re.M)
     assert re.fullmatch(r"hatchling==\d+\.\d+\.\d+", requires), requires
+
+
+# --- a release: a v* tag ---------------------------------------------------------------------
+# A tag runs the whole gate as main does; `release_check` refuses a tag that is not the version
+# before anything is published; `publish` pushes the version's tags; `verify` smoke-tests the
+# published image; `release` makes the GitHub release with the changelog's section, the wheel
+# and the source archive.
+
+RAW_WORKFLOW = (REPO / ".github" / "workflows" / "ci-cd.yml").read_text(encoding="utf-8")
+TAG = not_a_pull_request("push", "refs/tags/v0.1.0")
+MAIN_PUSH = not_a_pull_request("push", "refs/heads/main")
+
+
+def expression(value: str) -> str:
+    """The expression inside `${{ ... }}`."""
+    found = re.fullmatch(r"\$\{\{ (.+) \}\}", value.strip())
+    assert found, value
+    return found[1]
+
+
+def test_every_action_names_its_version_in_a_comment():
+    lines = [line.strip() for line in RAW_WORKFLOW.splitlines() if "uses: " in line]
+    assert len(lines) > 10
+    for line in lines:
+        assert re.fullmatch(r"(- )?uses: [\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*", line), line
+
+
+def test_the_release_check_runs_on_a_tag_before_publish_and_needs_nothing_installed():
+    job = JOBS["release_check"]
+    assert needs(job) == {"changes"}
+    assert "release_check" in needs(JOBS["publish"])
+    assert job["permissions"] == {"contents": "read"}
+    checkout, check = job["steps"]
+    assert checkout["with"] == {"persist-credentials": False}
+    assert check["run"] == 'python3 scripts/release_check.py "$GITHUB_REF_NAME"'
+    # The check itself runs on a tag; on main the job passes without it and publish goes on.
+    assert evaluate(check["if"], TAG) and not evaluate(check["if"], MAIN_PUSH)
+
+
+def test_a_push_to_main_still_publishes_verifies_and_deploys_and_makes_no_release():
+    assert jobs_that_run(MAIN_PUSH) == EVERYTHING
+    assert "release" not in jobs_that_run(MAIN_PUSH)
+
+
+def test_a_tag_runs_the_gate_publishes_verifies_and_releases_but_never_deploys():
+    assert jobs_that_run(TAG) == A_RELEASE
+    assert "deploy" not in A_RELEASE
+    # Nothing of a release runs from a pull request or a manual run.
+    for event in (pull_request(draft=False), not_a_pull_request("workflow_dispatch", "x/y/z")):
+        assert not jobs_that_run(event) & {"release_check", "publish", "verify", "release"}
+
+
+def image_tags(context: dict) -> set[str]:
+    """The tags docker/metadata-action makes from the publish job's `tags` and `flavor`, as its
+    README documents them: `type=semver` works on a push of a semver tag only ({{version}}
+    is MAJOR.MINOR.PATCH, {{major}}.{{minor}} the first two); `type=ref,event=branch` gives
+    the branch's name on a branch push; `type=sha` gives `sha-` and the short commit;
+    `type=raw` gives its value; `enable` turns an entry off. `flavor: latest=false` adds no
+    `latest` of its own. Only the entry types this workflow uses are modelled."""
+    step = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "meta")
+    assert step["with"]["flavor"].strip() == "latest=false"
+    github = context["github"]
+    version = None
+    if github["ref_type"] == "tag":
+        found = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", github["ref_name"])
+        version = found.groups() if found else None
+    patterns = {"{{version}}": 3, "{{major}}.{{minor}}": 2}
+    made = set()
+    for line in step["with"]["tags"].strip().splitlines():
+        kind, *rest = line.split(",")
+        attributes = dict(part.split("=", 1) for part in rest)
+        enable = attributes.pop("enable", "true")
+        if enable != "true" and not evaluate(expression(enable), context):
+            continue
+        if kind == "type=semver":
+            parts = patterns[attributes.pop("pattern")]
+            if version:
+                made.add(".".join(version[:parts]))
+        elif kind == "type=raw":
+            made.add(attributes.pop("value"))
+        elif kind == "type=ref":
+            assert attributes.pop("event") == "branch"
+            if github["ref_type"] == "branch":
+                made.add(github["ref_name"])
+        elif kind == "type=sha":
+            made.add(f"sha-{github['sha'][:7]}")
+        else:
+            raise AssertionError(line)
+        assert attributes == {}, line
+    return made
+
+
+def test_a_tag_publishes_the_version_its_minor_and_latest_and_main_never_latest():
+    assert image_tags(TAG) == {"0.1.0", "0.1", "latest"}
+    assert image_tags(MAIN_PUSH) == {"main", f"sha-{SHA[:7]}"}
+    build = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "build")
+    assert build["with"]["tags"] == "${{ steps.meta.outputs.tags }}"
+    assert build["with"]["provenance"] == "mode=max" and build["with"]["sbom"] is True
+
+
+def test_the_release_is_made_from_the_tag_with_the_changelog_and_the_built_files():
+    job = JOBS["release"]
+    assert needs(job) == {"publish", "verify"}
+    assert evaluate(job["if"], TAG) and not evaluate(job["if"], MAIN_PUSH)
+    assert job["permissions"] == {"contents": "write"}
+    runs = [step.get("run", "") for step in job["steps"]]
+    notes = next(r for r in runs if "release_check.py" in r)
+    assert notes == (
+        'python3 scripts/release_check.py "$GITHUB_REF_NAME" --notes > "$RUNNER_TEMP/notes.md"'
+    )
+    build = next(r for r in runs if "uv build" in r)
+    assert "uv build --out-dir dist" in build
+    create = next(step for step in job["steps"] if "gh release create" in step.get("run", ""))
+    assert " ".join(create["run"].split()) == (
+        'gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME"'
+        ' --notes-file "$RUNNER_TEMP/notes.md" dist/*'
+    )
+    # The token reaches only the step that makes the release; the checkout keeps none.
+    holders = [step for step in job["steps"] if "github.token" in str(step)]
+    assert holders == [create] and create["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "GH_REPO": "${{ github.repository }}",
+    }
+    uv = next(s for s in job["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))
+    assert uv["with"]["enable-cache"] is False
+    assert job["steps"][0]["with"] == {"persist-credentials": False}
+
+
+def test_only_the_release_job_may_write_to_the_repository():
+    writers = {
+        name for name, job in JOBS.items() if job.get("permissions", {}).get("contents") == "write"
+    }
+    assert writers == {"release"}
+    assert WORKFLOW["permissions"] == {"contents": "read"}

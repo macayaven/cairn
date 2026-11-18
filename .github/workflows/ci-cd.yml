@@ -23,16 +23,22 @@
 # once every job of the gate has passed: the tests, the infrastructure checks, the image
 # check, the stack rehearsal and the host rehearsal. A failed infrastructure check stops
 # the publication too.
+# A v* tag is first checked against the version: job `release_check` runs
+# scripts/release_check.py, and `publish` needs it. A tag is published as X.Y.Z, X.Y and
+# latest; a push to main as main and sha-<commit>, never latest. Job `verify` smoke-tests the
+# published image on main and on tags. A tag then becomes a GitHub release (job `release`),
+# with the version's section of CHANGELOG.md and the wheel and source archive attached.
 # Nothing is published from a pull request or a manual run.
 # A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
-# gate runs as before, and nothing is published, verified or deployed. Unset, it publishes.
+# gate runs as before, and nothing is published, verified, released or deployed. Unset, it
+# publishes.
 # A push to main then deploys that image, by digest, to the hosted VM (job `deploy`), when the
 # repository is configured for it; otherwise that job is skipped. infra/gcp/README.md has the
-# settings and the first-deploy checklist.
+# settings and the first-deploy checklist. A tag never deploys.
 # Where the jobs run: two repository variables, each a JSON value for runs-on, each
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
-# jobs; CAIRN_RELEASE_RUNNER names the runner of publish, verify and deploy, which no job of
-# a pull request uses. docs/decisions.md, decision 150, says why there are two.
+# jobs; CAIRN_RELEASE_RUNNER names the runner of publish, verify, release and deploy, which no
+# job of a pull request uses. docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
 # pinned (resolved with git ls-remote on 2026-11-10). Dependabot keeps them current.
@@ -314,9 +320,32 @@ jobs:
       - name: Rehearse the VM's host setup
         run: sudo env "PATH=$PATH" "DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM" python3 scripts/ci_metadata_fixture.py -- python3 scripts/rehearse_host.py cairn:ci --on-this-throwaway-machine
 
+  # On a v* tag, refuses the tag unless it is `v` + the version in pyproject.toml and
+  # CHANGELOG.md has a dated section for that version with an entry (scripts/release_check.py
+  # says how); `publish` needs this job, so nothing is published for a tag it refuses. On main
+  # its one check is skipped and the job passes. It runs where `publish` would, so a change
+  # that ships nothing, or a repository that publishes nothing, skips it as it skips publish.
+  release_check:
+    name: the tag is the version
+    needs: changes
+    if: >-
+      github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false' &&
+      needs.changes.outputs.image != 'false'
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag against pyproject.toml and CHANGELOG.md
+        if: github.ref_type == 'tag'
+        run: python3 scripts/release_check.py "$GITHUB_REF_NAME"
+
   publish:
     name: publish to GHCR
-    needs: [infra, image, stack, host]
+    needs: [infra, image, stack, host, release_check]
     if: github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:
@@ -343,16 +372,21 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # A v* tag gives X.Y.Z, X.Y and latest; a push to main gives main and sha-<commit>, never
+      # latest. `latest` is written out, not left to the action's latest=auto.
       - name: Image tags and labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
             type=ref,event=branch
-            type=sha
+            type=sha,enable=${{ github.ref_type == 'branch' }}
       - name: Build and push linux/amd64 and linux/arm64
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -375,7 +409,9 @@ jobs:
   verify:
     name: smoke test of the published image (linux/amd64)
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:
       contents: read
@@ -413,6 +449,44 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}@$DIGEST"
           docker pull --quiet --platform linux/amd64 "$image"
           python3 scripts/smoke_container.py "$image"
+
+  # A v* tag whose image was published and smoke-tested becomes a GitHub release: the text is
+  # the version's section of CHANGELOG.md, and the wheel and source archive `uv build` makes
+  # are attached. The only job that may write to the repository, and only its last step
+  # holds the token. It needs the gh CLI on its runner, as GitHub's hosted runners have.
+  release:
+    name: GitHub release
+    needs: [publish, verify]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          # A release is built from the tag alone, never from a cache another run wrote.
+          enable-cache: false
+      - name: The release's text
+        run: python3 scripts/release_check.py "$GITHUB_REF_NAME" --notes > "$RUNNER_TEMP/notes.md"
+      - name: Build the wheel and the source archive
+        run: |
+          uv build --out-dir dist
+          version="${GITHUB_REF_NAME#v}"
+          test -f "dist/cairn_memory-$version-py3-none-any.whl"
+          test -f "dist/cairn_memory-$version.tar.gz"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME"
+          --notes-file "$RUNNER_TEMP/notes.md" dist/*
 
   # Moves the hosted VM to the image `publish` just pushed, by digest, and waits until the VM
   # reports it runs that digest healthy. Pushes to main only. Skipped, not failed, unless the

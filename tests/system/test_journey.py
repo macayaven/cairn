@@ -10,6 +10,7 @@ Nothing leaves the machine: the server binds 127.0.0.1 and the clients talk to i
 import asyncio
 import base64
 import html
+import importlib.util
 import json
 import os
 import re
@@ -67,6 +68,8 @@ def cairn(*args: str, env: dict[str, str] | None = None) -> subprocess.Completed
 class Server:
     """`python -m cairn.server serve` on a loopback port, with its output kept."""
 
+    runs = ("-m", "cairn.server")  # what runs `serve` (the Slack journey's launcher, there)
+
     def __init__(self, db: Path, *options: str, env: dict[str, str] | None = None) -> None:
         self.db = db
         self.options, self.env = options, env or {}
@@ -78,7 +81,7 @@ class Server:
         self.returncode: int | None = None
 
     def start(self) -> "Server":
-        command = [sys.executable, "-m", "cairn.server", "serve", "--db", str(self.db)]
+        command = [sys.executable, *self.runs, "serve", "--db", str(self.db)]
         command += ["--host", "127.0.0.1", "--port", str(self.port), "--public-url", self.url]
         self.process = subprocess.Popen(
             [*command, *self.options], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -2757,3 +2760,283 @@ def test_an_install_under_its_own_name_shows_only_the_sign_in_and_remembers_it(t
     stored = database_text(server.db)
     for secret in [*secrets_seen, *idp.issued]:
         assert secret not in stored
+
+
+# K1: Slack, both ways, from set-up to removal
+
+LAUNCHER = Path(__file__).with_name("slack_serve.py")
+STAND_IN = Path(__file__).resolve().parents[2] / "scripts" / "slack_standin.py"
+PUBLIC = "https://cairn.example.test"
+SLACK_KEY = base64.b64encode(bytes(range(100, 132))).decode()  # made up: 32 bytes
+LINK = re.compile(re.escape(PUBLIC) + r"/integrations/slack/link\?t=([A-Za-z0-9_-]+)")
+
+
+def slack_stand_in():
+    """scripts/slack_standin.py's SlackStandIn, a colleague's stand-in for Slack, loaded as
+    its own tests load it."""
+    spec = importlib.util.spec_from_file_location("slack_standin", STAND_IN)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.SlackStandIn
+
+
+class Loopback(httpx2.AsyncBaseTransport):
+    """A browser's way to PUBLIC: a request to its host goes to the server's loopback port, as
+    a proxy that ends TLS would send it, every header kept (Host among them); any other (the
+    identity provider's) goes where it says. The browser's cookie jar sees https, so it sends
+    back the cookies a server with an https public URL marks Secure."""
+
+    def __init__(self, port: int) -> None:
+        self.port = port
+        self.inner = httpx2.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request):
+        if request.url.host == urlsplit(PUBLIC).hostname:
+            local = request.url.copy_with(scheme="http", host="127.0.0.1", port=self.port)
+            request = httpx2.Request(
+                request.method, local, headers=request.headers, stream=request.stream
+            )
+        return await self.inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
+
+
+def slack_said(message: bytes | dict) -> str:
+    """What a message of the bot says: its fallback text and each block's text."""
+    found = json.loads(message) if isinstance(message, bytes) else message
+    texts = [found.get("text", "")]
+    texts += [block["text"]["text"] for block in found.get("blocks", []) if "text" in block]
+    return "\n".join(texts)
+
+
+def slack_rows(db: Path, query: str, *args) -> list[tuple]:
+    con = sqlite3.connect(db)
+    try:
+        return con.execute(query, args).fetchall()
+    finally:
+        con.close()
+
+
+INSTALLS = "SELECT state, bot_token IS NULL, signing_secret IS NULL FROM slack_installs"
+
+
+def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
+    """K1 on the real server process. `serve --slack` runs through tests/system/slack_serve.py:
+    `python -m cairn.server` with Slack's Web API and reply addresses pointed at the stand-in
+    (scripts/slack_standin.py) on loopback and, for the last part, the store's clock moved 10
+    days on at a restart; everything else is the real command. An owner sets the app up and
+    pastes the two secrets; the stand-in's signed challenge turns it on; a person is offered a
+    link by the slash command and confirms it signed in; they choose a project; the message
+    shortcut files a message whose author is of the team and refuses one whose author is not;
+    `find` answers with the claim and its link; a direct message is answered. Slack revokes
+    the bot's token and the install is off; Slack uninstalls the app and the notes are due,
+    not forgotten; 10 days on they are gone. A second workspace's install takes the two
+    removal events in the other order and ends in the same state. No secret, one-time value or
+    message is in the server's output, and no secret or one-time value in the database."""
+    idp = IdentityProvider()
+    standin = slack_stand_in()().__enter__()
+    env = {
+        "CAIRN_OIDC_ISSUER": idp.url,
+        "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
+        "CAIRN_OIDC_CLIENT_SECRET": idp.CLIENT_SECRET,
+        "CAIRN_OIDC_LABEL": "Fable Works SSO",
+        "CAIRN_SLACK_KEY": SLACK_KEY,
+        "JOURNEY_SLACK_API": standin.api_base,
+    }
+    options = ("--sign-in", "oidc", "--join", "personal", "--public-url", PUBLIC, "--slack")
+    server = Server(tmp_path / "cairn.db", *options, env=env)
+    server.runs = (str(LAUNCHER),)
+    ada = {"sub": "idp-ada", "email": "ada@fable.example.test", "name": "Ada Example"}
+    brook = {"sub": "idp-brook", "email": "brook@quill.example.test", "name": "Brook Example"}
+    secrets_seen = [standin.signing_secret, standin.bot_token, SLACK_KEY, idp.CLIENT_SECRET]
+    words = [
+        "The tide turns at nine on the north pier.",
+        "The harbour office opens at eight.",
+        "The pilot boat leaves at six.",
+    ]
+
+    def address(install: str, kind: str) -> str:
+        return f"{server.url}/integrations/slack/{install}/{kind}"  # where a proxy sends Slack
+
+    async def replied(method: str, count: int) -> dict:
+        """The `count`th call the server made to the stand-in by `method`, once it has."""
+
+        async def check():
+            found = [call.fields for call in standin.calls if call.method == method]
+            return found[count - 1] if len(found) >= count else None
+
+        return await until(f"call {count} to {method}", check)
+
+    async def set_up(person) -> str:
+        """The owner sets Slack up on the Sources page and pastes the two secrets; Slack's
+        signed challenge turns it on. Returns the install's id."""
+        assert ">Set up Slack</button>" in (await person.get("/sources")).text
+        made = await person.post("/integrations/slack/setup", headers=SAME_ORIGIN)
+        assert made.status_code == 303 and made.headers["location"] == "/sources#slack"
+        page = html.unescape((await person.get("/sources")).text)
+        (install,) = set(re.findall(r"/integrations/slack/(sl_[0-9a-f]{12})/events", page))
+        assert f'"request_url": "{PUBLIC}/integrations/slack/{install}/events"' in page
+        assert "https://api.slack.com/apps?new_app=1&manifest_json=" in page
+        assert "Set up started." in page and 'type="password"' in page
+        kept = await person.post(
+            "/integrations/slack/secrets", headers=SAME_ORIGIN,
+            data={"signing_secret": standin.signing_secret, "bot_token": standin.bot_token},
+        )  # fmt: skip
+        assert kept.status_code == 303
+        page = (await person.get("/sources")).text
+        assert "Ready: Slack accepted the bot token" in page
+        assert standin.signing_secret not in page and standin.bot_token not in page
+        assert standin.verify_url(address(install, "events")) == (200, b"review-challenge")
+        assert "On: Slack verified the events address" in (await person.get("/sources")).text
+        return install
+
+    async def linked(person, install: str) -> None:
+        """The slash command offers the Slack user a link, and the person confirms it."""
+        status, body = standin.send_command(address(install, "commands"), text="find tide")
+        assert status == 200 and json.loads(body)["response_type"] == "ephemeral"
+        (value,) = set(LINK.findall(slack_said(body)))
+        secrets_seen.append(value)
+        shown = await person.get(f"/integrations/slack/link?t={value}")
+        assert shown.status_code == 200 and "Link this Slack user to you?" in shown.text
+        assert "Ada Review" in shown.text  # the name Slack gives the user (users.info)
+        yes = await person.post(f"/integrations/slack/link?t={value}", headers=SAME_ORIGIN)
+        assert yes.status_code == 303
+        page = (await person.get("/sources")).text
+        assert "Linked: what you do through the bot in Slack now acts as you here" in page
+        assert f"<code>{standin.user_id}</code>" in page
+        again = await person.post(f"/integrations/slack/link?t={value}", headers=SAME_ORIGIN)
+        assert again.status_code == 404  # used up
+
+    async def chose(person, install: str, project: str) -> None:
+        """The person makes a project and makes it their Slack project."""
+        made = await person.post(
+            "/projects", data={"name": project, "kind": "general"}, headers=SAME_ORIGIN
+        )
+        assert made.status_code in (200, 303), made.text
+        status, body = standin.send_command(address(install, "commands"), text=f"project {project}")
+        assert status == 200 and f"Slack project: {project}" in slack_said(body)
+
+    async def journey() -> None:
+        async with (
+            httpx2.AsyncClient(base_url=PUBLIC, transport=Loopback(server.port), timeout=30) as one,
+            httpx2.AsyncClient(base_url=PUBLIC, transport=Loopback(server.port), timeout=30) as two,
+        ):
+            await sign_in(one, idp, ada)
+            secrets_seen.extend(cookie.value for cookie in one.cookies.jar)
+            first = await set_up(one)
+            await linked(one, first)
+            await chose(one, first, "tides")
+
+            # The message shortcut files a message whose author is of the team...
+            message = {"type": "message", "user": standin.user_id, "ts": "1700000000.000100",
+                       "text": words[0]}  # fmt: skip
+            sent = standin.send_action(address(first, "actions"), {"message": message})
+            assert sent == (200, b"")
+            filed = await replied("response_url", 1)
+            assert filed["response_type"] == "ephemeral"
+            assert slack_said(filed).startswith("Filed: ")
+            assert f"<{PUBLIC}/b/tides/p/" in slack_said(filed)
+            # ...and refuses one whose author is not, saying why.
+            outside = {**message, "user": standin.external_user_id, "ts": "1700000000.000200"}
+            sent = standin.send_action(address(first, "actions"), {"message": outside})
+            assert sent == (200, b"")
+            refused = await replied("response_url", 2)
+            assert "author is not of this Slack workspace" in slack_said(refused)
+            assert refused["response_type"] == "ephemeral"
+
+            # `find` answers with the claim and its link, for the asker alone.
+            status, body = standin.send_command(address(first, "commands"), text="find tide")
+            assert status == 200 and json.loads(body)["response_type"] == "ephemeral"
+            found = slack_said(body)
+            assert words[0] in found and "Project: tides" in found
+            claim = re.escape(f"<{PUBLIC}/b/tides/p/") + r"[a-z0-9-]+#cl_[0-9a-z]+\|"
+            assert re.search(claim, found), found
+
+            # A direct message is answered in that conversation: a search, then a note.
+            direct = {"type": "message", "channel": "D00000001", "channel_type": "im",
+                      "user": standin.user_id, "text": "north pier",
+                      "ts": "1700000001.000100"}  # fmt: skip
+            assert standin.send_event(address(first, "events"), direct) == (200, b"")
+            answer = await replied("chat.postMessage", 1)
+            assert answer["channel"] == "D00000001" and words[0] in slack_said(answer)
+            note = {**direct, "text": f"note: {words[1]}", "ts": "1700000001.000200"}
+            assert standin.send_event(address(first, "events"), note) == (200, b"")
+            assert slack_said(await replied("chat.postMessage", 2)).startswith("Filed: ")
+            came = slack_rows(server.db, "SELECT note_id, how FROM slack_notes ORDER BY how")
+            assert [how for _, how in came] == ["filed", "typed"]
+            notes = [note_id for note_id, _ in came]
+
+            # Slack revokes the bot's token: off, the token deleted, nothing due.
+            assert standin.revoke_bot(address(first, "events")) == (200, b"")
+            page = html.unescape((await one.get("/sources")).text)
+            assert "Off, because Slack revoked the bot's token." in page
+            assert slack_rows(server.db, f"{INSTALLS} WHERE id = ?", first) == [("off", 1, 0)]
+            assert standin.send_command(address(first, "commands"), text="find tide")[0] == 404
+            due = "SELECT COUNT(*), COUNT(forget_at) FROM slack_notes"
+            assert slack_rows(server.db, due) == [(2, 0)]
+
+            # Slack uninstalls the app: removed, both secrets and the links gone, notes due.
+            gone = standin.send_event(address(first, "events"), {"type": "app_uninstalled"})
+            assert gone == (200, b"")
+            page = (await one.get("/sources")).text
+            assert "2 notes came through Slack: they will be forgotten on" in page
+            assert ">Forget them now</button>" in page
+            assert slack_rows(server.db, f"{INSTALLS} WHERE id = ?", first) == [("removed", 1, 1)]
+            assert slack_rows(server.db, "SELECT COUNT(*) FROM slack_people") == [(0,)]
+            assert slack_rows(server.db, due) == [(2, 2)]
+            (when,) = {at for (at,) in slack_rows(server.db, "SELECT forget_at FROM slack_notes")}
+            left = datetime.fromisoformat(when) - datetime.now(UTC)
+            assert timedelta(days=9, hours=23) < left <= timedelta(days=10)
+            kept = "SELECT COUNT(*) FROM notes WHERE id IN (?, ?)"
+            assert slack_rows(server.db, kept, *notes) == [(2,)]  # due, not forgotten
+
+            # Ten days on (the store's clock, from a restart), they are gone.
+            server.stop()
+            server.env["JOURNEY_DAYS_AHEAD"] = "10.05"
+            server.start()
+
+            async def forgotten():
+                return slack_rows(server.db, kept, *notes) == [(0,)]
+
+            await until("the notes that came through Slack forgotten", forgotten)
+            assert slack_rows(server.db, due) == [(0, 0)]
+            stored = database_text(server.db)
+            assert words[0] not in stored and words[1] not in stored
+
+            # A second workspace's install: Slack uninstalls first, then revokes the token.
+            await sign_in(two, idp, brook)
+            secrets_seen.extend(cookie.value for cookie in two.cookies.jar)
+            second = await set_up(two)
+            assert second != first
+            await linked(two, second)
+            await chose(two, second, "harbour")
+            status, body = standin.send_command(
+                address(second, "commands"), text=f"note {words[2]}"
+            )
+            assert status == 200 and slack_said(body).startswith("Filed: ")
+            uninstalled, revoked = standin.uninstall(address(second, "events"), revoked_first=False)
+            assert uninstalled == (200, b"") and revoked[0] == 404  # removed: no address
+            both = slack_rows(server.db, f"{INSTALLS} WHERE id IN (?, ?)", first, second)
+            assert both == [("removed", 1, 1), ("removed", 1, 1)]
+            assert slack_rows(server.db, "SELECT COUNT(*) FROM slack_people") == [(0,)]
+            assert slack_rows(server.db, due) == [(1, 1)]
+            page = (await two.get("/sources")).text
+            assert "1 note came through Slack: it will be forgotten on" in page
+
+    server.start()
+    try:
+        asyncio.run(journey())
+    finally:
+        output = server.stop()
+        standin.__exit__(None, None, None)
+        idp.close()
+
+    for secret in [*secrets_seen, *idp.issued]:
+        assert secret not in output, "a secret or a one-time value reached the server's output"
+    assert "?t=" not in output, "a one-time address reached the server's output"
+    for said in [*words, "north pier"]:
+        assert said not in output, said
+    stored = database_text(server.db)
+    for secret in [*secrets_seen, *idp.issued]:
+        assert secret not in stored, "a secret or a one-time value is in the database"

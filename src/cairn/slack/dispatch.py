@@ -13,9 +13,12 @@ a module registers by being there.
 
 `dispatch(envelope, context)` runs the handler of the envelope's registry and name and
 answers with what it returns: a Starlette Response as it is, None as 200 with an empty body.
-An event, command or action nobody registered is acknowledged the same way, 200 with an empty
-body, and nothing else happens: Slack takes an event as received and does not retry it, and a
-command or an action then shows the person nothing. Slack's challenge (url_verification) never
+A slash command whose first word nobody registered is answered by the handler of no word
+(NO_WORD, ""), so a person who mistypes is shown what there is. An event or an action nobody
+registered, and a command when no handler of no word is there either, is acknowledged the
+same way, 200 with an empty body, and nothing else happens: Slack takes an event as received
+and does not retry it, and an action then shows the person nothing. Slack's challenge
+(url_verification) never
 reaches a registry: the address answers it (cairn.web.slack). A handler that raises is not
 caught here.
 
@@ -115,11 +118,15 @@ def unregister(kind: str, name: str) -> None:
 
 
 ACKNOWLEDGED = 200
+NO_WORD = ""  # the name a slash command with no word is registered under
 
 
 async def dispatch(envelope: Envelope, context: Context) -> Response:
     """The answer to a verified request (the module)."""
-    handler = BY_ADDRESS[envelope.kind].get(envelope.name)
+    registry = BY_ADDRESS[envelope.kind]
+    handler = registry.get(envelope.name)
+    if handler is None and envelope.kind == "commands":
+        handler = registry.get(NO_WORD)  # a word that is none of the command's is no word
     if handler is None:
         return Response(status_code=ACKNOWLEDGED)
     answer: Any = await handler(envelope, context)

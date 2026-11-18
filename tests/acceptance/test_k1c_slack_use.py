@@ -424,20 +424,13 @@ def test_link_unlink_and_help(world):
     assert "/cairn note" in said(private(world.command("help")))
 
 
-# cairn.slack.dispatch answers a word nobody registered with an empty 200 and has no handler
-# for "any other word"; answering such a word as help needs that fallback there (reported).
-UNREGISTERED = pytest.mark.xfail(
-    strict=True, reason="dispatch has no fallback for a word nobody registered"
-)
-
-
 @pytest.mark.parametrize(
     "text",
     [
         "",
         "   ",
-        pytest.param("fable", marks=UNREGISTERED),
-        pytest.param("shelve marmalade", marks=UNREGISTERED),
+        "fable",
+        "shelve marmalade",
     ],
 )
 def test_no_word_or_a_word_that_is_none_of_these_is_answered_as_help(world, text):

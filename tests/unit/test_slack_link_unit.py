@@ -152,7 +152,7 @@ def test_no_log_line_holds_the_value(world, caplog):
     access = [r for r in caplog.records if r.name == "cairn.access" and r.action == "slack_link"]
     assert [(r.status, r.install) for r in access] == [
         (200, world.install),
-        (303, world.install),
+        (200, world.install),  # the yes shows the code
         (404, None),
     ]
 

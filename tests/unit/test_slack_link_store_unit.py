@@ -302,4 +302,3 @@ def test_a_slack_user_linked_by_any_path_has_no_offer_left_at_that_install(world
     world.view.offer_slack_link(install.id, CAROL)
     world.view.link_slack_user(install.id, BOB, world.member)
     assert [row[0] for row in offers(world)] == [CAROL]
-

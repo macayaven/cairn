@@ -734,11 +734,14 @@ class SlackMethods(StoreBase):
         code = _new_code()
         with self._write() as con:  # refuses a person who is not a member (PermissionError)
             row = self._offer(con, value) if isinstance(value, str) and value else None
-            claimed = row is not None and con.execute(
-                "UPDATE slack_link_offers SET user_id = ?, code_digest = ?"
-                " WHERE digest = ? AND user_id IS NULL AND expires_at > ?",
-                (self._user_id, _code_digest(row[0], code), _digest(value), self._stamp()),
-            ).rowcount
+            claimed = (
+                row is not None
+                and con.execute(
+                    "UPDATE slack_link_offers SET user_id = ?, code_digest = ?"
+                    " WHERE digest = ? AND user_id IS NULL AND expires_at > ?",
+                    (self._user_id, _code_digest(row[0], code), _digest(value), self._stamp()),
+                ).rowcount
+            )
             if not claimed:
                 raise KeyError(NOT_OPEN)
         return _shown(code)

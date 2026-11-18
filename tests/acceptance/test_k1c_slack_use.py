@@ -340,7 +340,9 @@ def test_a_yes_to_an_address_someone_sent_links_them_to_nobody(world):
     it signed in and says yes. Mallory is linked to nobody, and is answered as anyone not
     linked is, never as Brook."""
     world.slack.users[MALLORY] = user(MALLORY, "Brook")
-    value = re.search(r"link\?t=([A-Za-z0-9_-]+)", said(private(world.command("link", user=MALLORY))))
+    value = re.search(
+        r"link\?t=([A-Za-z0-9_-]+)", said(private(world.command("link", user=MALLORY)))
+    )
     brook = browser(world, world.brook)
     address = f"/integrations/slack/link?t={value.group(1)}"
     assert brook.get(address).status_code == 200

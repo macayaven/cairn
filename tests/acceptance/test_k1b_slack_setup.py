@@ -49,9 +49,11 @@ Linking a Slack user to a person
   of the install's workspace with a value that is good, it shows which Slack user (by the
   name Slack gives, or the id when Slack does not answer) would be linked to which person,
   and asks for a yes; it changes nothing by being opened, however often.
-- The yes (POST /integrations/slack/link) links them and uses the value up: a second yes
-  with it, a value older than 10 minutes, a value of another workspace, and a person who is
-  not a member each get the page every address that is not a page gets, and nothing changes.
+- The yes (POST /integrations/slack/link) ties the offer to the person and shows them a code,
+  once; it links nothing (the Slack user types the code back, part 3). After it the address
+  is used up: a second yes or look with it, a value older than 10 minutes, a value of
+  another workspace, and a person who is not a member each get the page every address that
+  is not a page gets, and nothing changes.
 - A person who is not signed in is sent to sign in and comes back to the same address. A
   signed-in person who arrives from another site (a click in Slack), whose browser leaves
   the session cookie behind on that first request, is shown the page that loads the same
@@ -85,6 +87,7 @@ from cairn.server import SignIn, create_app
 from cairn.slack import link, setup
 from cairn.slack.manifest import build_manifest, manifest_link
 from cairn.sources import KINDS
+import cairn.store.slack as store_slack
 from cairn.store import Store
 from cairn.web.slack import Slack
 
@@ -773,6 +776,21 @@ def offered(world: World, slack_user: str = CLEO_SLACK) -> tuple[str, str]:
     return install, world.system().offer_slack_link(install, slack_user)
 
 
+CODE = "KM7Q-R2XZ"  # every code shown here (the store's seam, cairn.store.slack._new_code)
+
+
+@pytest.fixture(autouse=True)
+def code(monkeypatch):
+    monkeypatch.setattr(store_slack, "_new_code", lambda: CODE.replace("-", ""))
+
+
+def linked_by_code(world: World, install: str, value: str, slack_user: str = CLEO_SLACK) -> None:
+    """Cleo's yes, then the code typed back in Slack by the Slack user (part 3's command)."""
+    cleo = world.browser(world.cleo)
+    assert CODE in cleo.post(f"{link.LINK_PATH}?t={value}").text
+    world.store.for_account(world.workspace).take_slack_offer(install, slack_user, CODE)
+
+
 def test_the_link_page_names_both_sides_asks_for_a_yes_and_changes_nothing(world):
     install, value = offered(world)
     cleo = world.browser(world.cleo)
@@ -796,13 +814,14 @@ def test_the_link_page_names_the_slack_user_by_id_when_slack_does_not_answer(wor
     assert page.status_code == 200 and CLEO_SLACK in page.text and "Cleo Marsh" not in page.text
 
 
-def test_the_yes_links_them_and_uses_the_value_up(world, caplog):
+def test_the_yes_shows_a_code_links_nothing_and_uses_the_value_up(world, caplog):
     caplog.set_level(logging.INFO, logger="cairn.access")
     install, value = offered(world)
     cleo = world.browser(world.cleo)
-    page = said(cleo, cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False))
-    assert link.SAID["linked"] in page
-    assert world.view(world.ada).slack_person(install, CLEO_SLACK).user_id == world.cleo["id"]
+    page = cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False)
+    assert page.status_code == 200 and CODE in page.text
+    keeps_the_rules(page.text)
+    assert world.view(world.ada).slack_person(install, CLEO_SLACK) is None
     before = world.slack_rows()
     again = cleo.post(f"{link.LINK_PATH}?t={value}")
     assert again.status_code == 404 and again.content == unknown(cleo).content
@@ -810,6 +829,7 @@ def test_the_yes_links_them_and_uses_the_value_up(world, caplog):
     assert cleo.get(f"{link.LINK_PATH}?t={value}").content == unknown(cleo).content
     assert [r.action for r in logged(caplog)].count("slack_link") == 3
     assert value not in everything_said(caplog, world)
+    assert CODE not in everything_said(caplog, world)
 
 
 def test_a_value_older_than_10_minutes_is_no_page_and_changes_nothing(world):
@@ -884,12 +904,13 @@ def test_the_one_time_value_is_in_no_log_line_on_either_way(world, caplog):
     world.browser(None).get(address, headers=CROSS_SITE)
     cleo = world.browser(world.cleo)
     cleo.get(address)
-    said(cleo, cleo.post(address, follow_redirects=False))
+    assert cleo.post(address, follow_redirects=False).status_code == 200
     # the test client's own request lines are not the server's (serve keeps httpx quiet)
     client = ("httpx", "httpx2", "httpcore")
     caplog.records[:] = [r for r in caplog.records if r.name.split(".")[0] not in client]
     assert any(r.name == "cairn.access" for r in caplog.records)
     assert value not in everything_said(caplog, world)
+    assert CODE not in everything_said(caplog, world)
 
 
 def test_a_person_not_signed_in_is_sent_to_sign_in_and_nothing_changes(world):
@@ -904,7 +925,7 @@ def test_the_sources_page_shows_a_person_their_own_link_with_unlink(world):
     install, value = offered(world)
     world.view(world.ada).link_slack_user(install, BROOK_SLACK, world.brook["id"])
     cleo = world.browser(world.cleo)
-    said(cleo, cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False))
+    linked_by_code(world, install, value)
     page = shown(cleo)
     assert CLEO_SLACK in page and f'action="{link.UNLINK_PATH}"' in page
     assert f'name="slack_user" value="{CLEO_SLACK}"' in page
@@ -922,7 +943,7 @@ def test_unlink_undoes_ones_own_link_only(world, caplog):
     install, value = offered(world)
     world.view(world.ada).link_slack_user(install, BROOK_SLACK, world.brook["id"])
     cleo = world.browser(world.cleo)
-    said(cleo, cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False))
+    linked_by_code(world, install, value)
     before = world.slack_rows()
     for slack_user in (BROOK_SLACK, "U0NOBODY1", "not an id"):
         theirs = cleo.post(link.UNLINK_PATH, data={"slack_user": slack_user})
@@ -933,7 +954,9 @@ def test_unlink_undoes_ones_own_link_only(world, caplog):
     assert link.SAID["unlinked"] in page
     assert world.view(world.ada).slack_person(install, CLEO_SLACK) is None
     assert world.view(world.ada).slack_person(install, BROOK_SLACK).user_id == world.brook["id"]
-    assert [r.action for r in logged(caplog)].count("slack_link") == 5
+    assert [r.action for r in logged(caplog)].count(
+        "slack_link"
+    ) == 5  # the yes, three refused, the unlink
 
 
 def test_nobody_is_shown_anybody_elses_slack_user(world):

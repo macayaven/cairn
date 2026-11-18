@@ -416,7 +416,8 @@ def create_app(
     if type(graph_explorer) is not bool:
         raise ValueError("graph_explorer is True or False")
     if slack is not None:
-        check_slack(slack, sign_in=sign_in, public_url=public_url)  # ValueError, serve's sentence
+        # ValueError, serve's sentence; under a brand too, for now (UNDER_A_BRAND)
+        check_slack(slack, sign_in=sign_in, public_url=public_url, brand_name=brand_name)
     if google_connect is not None and (sign_in is None or not public_url):
         raise ValueError("--google-connect needs --sign-in and --public-url")
     if plans is not None and keep_versions is not None:

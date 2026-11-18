@@ -19,6 +19,9 @@ The switch
   bytes in base64, the key every install's two secrets are sealed with. Without any of
   them `serve` stops before it opens the database and its last line names what is missing;
   `create_app` raises the same sentence.
+- It is not offered under a brand yet (`--brand-name`: what the bot says, the shortcut's
+  name and the command's name would name the software): `serve` stops before it opens the
+  database, its last line saying so, and `create_app` raises the same sentence.
 
 The three addresses Slack calls
 - POST /integrations/slack/<install>/events, /commands and /actions, where <install> is
@@ -433,6 +436,36 @@ def test_create_app_raises_the_same_sentences(tmp_path, monkeypatch, capsys):
             code, _, _ = serve(monkeypatch, tmp_path / str(n), [*argv, "--slack"], env)
             assert code == 2
             assert str(raised.value) in capsys.readouterr().err.strip().splitlines()[-1]
+    finally:
+        store.close()
+
+
+BRANDED = ["--public-url", BASE, "--sign-in", "github", "--brand-name", "Fable Notes"]
+
+
+def test_serve_slack_under_a_brand_stops_before_the_database(tmp_path, monkeypatch, capsys):
+    env = {**SIGN_IN_ENV, KEY_VARIABLE: KEY_B64}
+    code, apps, db = serve(monkeypatch, tmp_path, [*BRANDED, "--slack"], env)
+    assert code == 2 and apps == [] and not db.parent.exists()
+    last = capsys.readouterr().err.strip().splitlines()[-1]
+    assert "Slack is not offered under a brand yet" in last and KEY_B64 not in last
+    code, apps, _ = serve(monkeypatch, tmp_path / "plain", BRANDED, env)  # without --slack
+    assert code == 0 and len(apps) == 1
+
+
+def test_create_app_under_a_brand_raises_the_same_sentence(tmp_path, monkeypatch, capsys):
+    store = Store(tmp_path / "cairn.db")
+    sign_in = SignIn(providers=(GitHub("gh-id", "gh-secret"),), http=no_http(), join="personal")
+    try:
+        with pytest.raises(ValueError) as raised:
+            create_app(
+                store, public_url=BASE, sign_in=sign_in, brand_name="Fable Notes",
+                slack=Slack(key=KEY),
+            )  # fmt: skip
+        env = {**SIGN_IN_ENV, KEY_VARIABLE: KEY_B64}
+        assert serve(monkeypatch, tmp_path / "served", [*BRANDED, "--slack"], env)[0] == 2
+        assert str(raised.value) in capsys.readouterr().err.strip().splitlines()[-1]
+        assert "Slack is not offered under a brand yet" in str(raised.value)
     finally:
         store.close()
 

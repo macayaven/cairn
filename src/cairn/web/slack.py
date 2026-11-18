@@ -8,7 +8,9 @@ The switch (off unless the operator gives it; decision D11)
   base64, the key every install's two secrets are sealed with. Without any of them `serve`
   exits 2 before it opens the database, its last line the sentence that names what is
   missing (NEEDS_SIGN_IN, NEEDS_HTTPS, NO_KEY, BAD_KEY), never a value; create_app raises
-  ValueError with the same sentence (`check`).
+  ValueError with the same sentence (`check`). Under a brand (`--brand-name`, B1) it is not
+  offered yet, as what the bot says, the shortcut's name and the command's name would name
+  the software: `serve` stops the same way and create_app raises, with UNDER_A_BRAND.
 - Off (create_app without `slack`): none of the addresses exists (each is 404 as any address
   that is not a page), nothing is shown about Slack and no request reads its tables. The
   schema step is there all the same, and so are the store's duties: deleting a workspace,
@@ -113,6 +115,10 @@ NO_KEY = (
     f" {KEY_BYTES}): the key every install's two secrets are sealed with"
 )
 BAD_KEY = f"{KEY_VARIABLE} is not {KEY_BYTES} bytes in base64"
+UNDER_A_BRAND = (
+    "Slack is not offered under a brand yet: what the bot says, the shortcut's name and the"
+    " command's name would name the software (leave out --slack or --brand-name)"
+)
 REFUSED = "cannot serve Slack: {}"
 PREFIX = "/integrations/slack/"
 PATH = PREFIX + "{install:slack_install}/{kind:slack_address}"
@@ -147,9 +153,13 @@ class Slack:
         return Sealer(self.key)
 
 
-def check(slack: Slack, *, sign_in: object, public_url: str | None) -> None:
-    """ValueError, with the sentence `serve` says, when the switch cannot work: no sign-in,
-    no https public URL, a key that is not KEY_BYTES bytes."""
+def check(
+    slack: Slack, *, sign_in: object, public_url: str | None, brand_name: str | None = None
+) -> None:
+    """ValueError, with the sentence `serve` says, when the switch cannot work: a brand
+    (UNDER_A_BRAND), no sign-in, no https public URL, a key that is not KEY_BYTES bytes."""
+    if brand_name is not None:
+        raise ValueError(UNDER_A_BRAND)
     if sign_in is None:
         raise ValueError(NEEDS_SIGN_IN)
     if not (public_url or "").lower().startswith("https://"):
@@ -185,6 +195,8 @@ def serve_switch(args: argparse.Namespace, environ: Mapping[str, str]) -> Slack 
     """What `serve` gives create_app, read before anything is opened; ValueError otherwise."""
     if not getattr(args, "slack", False):
         return None
+    if getattr(args, "brand_name", None) is not None:
+        raise ValueError(UNDER_A_BRAND)
     if not args.sign_in:
         raise ValueError(NEEDS_SIGN_IN)
     if not (args.public_url or "").lower().startswith("https://"):

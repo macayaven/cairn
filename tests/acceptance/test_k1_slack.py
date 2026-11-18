@@ -208,6 +208,10 @@ class Person:
     view: Store
 
 
+def no_http() -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+
+
 class World:
     """A server (switch on or off) on a database with one workspace, Fable Works, owned by
     Ada, with Brook as a member; every clock is `clock`."""
@@ -217,6 +221,20 @@ class World:
         self.db = tmp_path / "cairn.db"
         self.clock = Clock()
         self.store = Store(self.db, clock=self.clock)
+        sign_in = SignIn(
+            providers=(GitHub("gh-id", "gh-secret"),),
+            http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500))),
+            join="personal",
+        )
+        # the app first: a view copies the key create_app sets, as it does Google's custody
+        self.app = create_app(
+            self.store,
+            public_url=BASE,
+            sign_in=sign_in,
+            clock=self.clock,
+            slack=Slack(key=KEY) if slack else None,
+        )
+        self.client = TestClient(self.app, base_url=BASE)
         self.ada = self.person("Ada", "personal")
         brook = self.store.sign_in(
             "sso", "sub-brook", "brook@example.test", "Brook", issuer=ISSUER, join="default"
@@ -226,23 +244,10 @@ class World:
         self.brook = Person(
             brook.user.id,
             self.ada.account_id,
-            self.ada.view.for_account(self.ada.account_id, brook.user.id).create_session(),
+            self.store.for_account(self.ada.account_id, brook.user.id).create_session(),
             self.store.for_account(self.ada.account_id, brook.user.id),
         )
         self.project = self.ada.view.create_project("library")
-        sign_in = SignIn(
-            providers=(GitHub("gh-id", "gh-secret"),),
-            http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500))),
-            join="personal",
-        )
-        self.app = create_app(
-            self.store,
-            public_url=BASE,
-            sign_in=sign_in,
-            clock=self.clock,
-            slack=Slack(key=KEY) if slack else None,
-        )
-        self.client = TestClient(self.app, base_url=BASE)
 
     def person(self, name: str, join: str) -> Person:
         made = self.store.sign_in(
@@ -396,7 +401,7 @@ def test_serve_slack_stops_before_the_database_naming_what_is_missing(
 
 def test_create_app_raises_the_same_sentences(tmp_path, monkeypatch, capsys):
     store = Store(tmp_path / "cairn.db")
-    sign_in = SignIn(providers=(GitHub("gh-id", "gh-secret"),), join="personal")
+    sign_in = SignIn(providers=(GitHub("gh-id", "gh-secret"),), http=no_http(), join="personal")
     short = base64.b64encode(bytes(16)).decode()
     cases = [
         (
@@ -496,7 +501,7 @@ def test_a_signature_other_than_slacks_is_401_with_the_fixed_body(world):
         {k: v for k, v in good.items() if k != "X-Slack-Signature"},
         {**good, "X-Slack-Signature": good["X-Slack-Signature"].replace("v0=", "v1=")},
         {**good, "X-Slack-Signature": good["X-Slack-Signature"].upper()},
-        {**good, "X-Slack-Signature": "v0=é" + "0" * 63},
+        {**good, "X-Slack-Signature": ("v0=é" + "0" * 63).encode()},  # not ASCII
         signed(SECRET, command(text="find other"), world.clock.stamp()),  # another body's
     ]
     for headers in cases:
@@ -558,16 +563,17 @@ def test_20_failures_in_a_minute_from_one_address_are_answered_429_without_the_h
     good = signed(SECRET, command(), world.clock.stamp())
     for _ in range(20):
         assert world.post(install.id, "commands", command(), tampered(good)).status_code == 401
+    good = signed(SECRET, command(), world.clock.stamp())
+    later = signed(SECRET, command(), world.clock.stamp() + 61)  # signed before the spy
     computed = []
     real = verify.hmac.new
     monkeypatch.setattr(verify.hmac, "new", lambda *a, **k: computed.append(1) or real(*a, **k))
-    good = signed(SECRET, command(), world.clock.stamp())
     assert world.post(install.id, "commands", command(), good).status_code == 429
     assert computed == []
     world.clock.now += timedelta(seconds=61)
-    good = signed(SECRET, command(), world.clock.stamp())
-    assert world.post(install.id, "commands", command(), good).status_code == 200
+    assert world.post(install.id, "commands", command(), later).status_code == 200
     assert computed == [1]
+    monkeypatch.undo()
 
 
 def test_the_challenge_is_answered_only_when_signed_and_turns_ready_into_on(world):
@@ -624,11 +630,11 @@ def test_nothing_registered_is_acknowledged_and_does_nothing(world):
 def test_a_refusal_writes_nothing_and_no_log_holds_the_body_a_secret_or_the_signature(
     world, caplog
 ):
+    caplog.set_level(logging.DEBUG)
     install = world.install()
     world.post(install.id, "events", challenge())
     good = signed(SECRET, command(text="find marmalade"), world.clock.stamp())
     before = dump(world.db)
-    caplog.set_level(logging.DEBUG)
     refusals = [
         world.post(install.id, "commands", command(text="find marmalade"), tampered(good)),
         world.post(install.id, "commands", command(text="find marmalade"), headers={}),
@@ -706,7 +712,7 @@ def test_an_install_holds_its_workspace_state_team_and_two_sealed_secrets(world,
     con.close()
     other = Store(copy)
     try:
-        sign_in = SignIn(providers=(GitHub("gh-id", "gh-secret"),), join="personal")
+        sign_in = SignIn(providers=(GitHub("gh-id", "gh-secret"),), http=no_http(), join="personal")
         create_app(other, public_url=BASE, sign_in=sign_in, slack=Slack(key=OTHER_KEY))
         view = other.for_account(world.ada.account_id)
         assert view.slack_bot_token(install.id) is None

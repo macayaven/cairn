@@ -37,7 +37,7 @@ from cairn.guard import Guard
 from cairn.memory import OverQuota, Refused, RequestError, unavailable
 from cairn.plans import Plans
 from cairn.sources.runner import MIN_SYNC_EVERY, source_client
-from cairn.store import CannotWrite, Store, StoreUnusable
+from cairn.store import CannotWrite, Principal, Store, StoreUnusable
 from cairn.web.account import account_routes
 from cairn.web.auth import (
     BRANDED_SESSION_COOKIE,
@@ -67,6 +67,8 @@ from cairn.web.public import Public
 from cairn.web.ratelimit import CredentialFailures, RateLimiter
 from cairn.web.rest import rest_routes
 from cairn.web.signin import SignIn, signin_routes
+from cairn.web.slack import Keeper, Slack, desk_of, open_paths, signature_failures, slack_routes
+from cairn.web.slack import check as check_slack
 from cairn.web.stats import CountResponses, Responses, StatsLog
 from cairn.web.sweeper import Sweeper
 from cairn.web.templating import (
@@ -305,6 +307,7 @@ def create_app(
     docs_reader_env: str | None = None,
     google_connect: GoogleConnect | None = None,
     graph_explorer: bool = False,
+    slack: Slack | None = None,
 ) -> Starlette:
     """The store goes to `Accounts` and nowhere else: no handler is defined where it is in reach.
     `sign_in`: people sign in through identity providers instead of with an API key
@@ -390,9 +393,17 @@ def create_app(
     /static/graph-view.js, by a nonce and its hash; it needs nothing else. False, the
     default: the graph page is decision 134's, with no script, and /static/graph-view.js,
     /static/graph-view.css and /b/<project>/graph/notes/<id> are 404. True or False only
-    (ValueError otherwise); `app.state.graph_explorer` holds it."""
+    (ValueError otherwise); `app.state.graph_explorer` holds it.
+    `slack` (K1; `serve --slack`; cairn.web.slack): the three addresses Slack calls, open paths
+    of Auth with their own protection, and the loop that sweeps and forgets
+    (`app.state.slack_keeper`, started in the lifespan); the store seals and opens the
+    installs' secrets with its key. It needs `sign_in` and an https:// `public_url`, and a key
+    of 32 bytes (ValueError otherwise, with the sentence `serve` says). None, the default: no
+    route, no block, no table read."""
     if type(graph_explorer) is not bool:
         raise ValueError("graph_explorer is True or False")
+    if slack is not None:
+        check_slack(slack, sign_in=sign_in, public_url=public_url)  # ValueError, serve's sentence
     if google_connect is not None and (sign_in is None or not public_url):
         raise ValueError("--google-connect needs --sign-in and --public-url")
     if plans is not None and keep_versions is not None:
@@ -491,6 +502,7 @@ def create_app(
         test_instance=test_instance,
     )
     compactor = Compactor(store, compact_every) if compact_every else None
+    keeper = Keeper(store, slack.every) if slack is not None else None  # K1
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -528,6 +540,10 @@ def create_app(
                 revoker = Revoker(store, google_connect.custody, app.state.source_http)
                 revoking = asyncio.create_task(revoker.loop())
                 running.push_async_callback(revoker.stopped, revoking)
+            if keeper is not None:  # K1: Slack's sweep, and the notes due to be forgotten
+                keeping = asyncio.create_task(keeper.loop())
+                running.push_async_callback(asyncio.to_thread, keeper.stop)
+                running.push_async_callback(_stopped, keeping)
             if stats_log is not None:
                 logging_stats = asyncio.create_task(stats_log.loop())
                 # on the way out, last pushed first: the loop is stopped, then a pass that is
@@ -558,6 +574,21 @@ def create_app(
         *member_routes(accounts, public_url),
         *rest_routes(),
         *(google_routes(google_connect, public_url) if google_connect and public_url else []),
+        *(
+            slack_routes(
+                slack,
+                desk=desk_of(store),
+                memory_for=lambda account_id, user_id: accounts.memory(
+                    Principal(account_id=account_id, kind="session", user_id=user_id), user_id
+                ),
+                failures=signature_failures(lambda: now().timestamp()),
+                now=now,
+                public_url=public_url or "",
+                http=slack.http or source_http,
+            )
+            if slack is not None
+            else []
+        ),
         # a project's graph: GET /api/graph and GET /b/<project>/graph; with the explorer
         # on (G2), its note pages and its two files under /static/, before the Mount
         *graph_routes(explorer=graph_explorer),
@@ -594,7 +625,9 @@ def create_app(
                 public_url=public_url,
                 landing=public.landing if sign_in and sign_in.join == "personal" else None,
                 limiter=limiter,
-                open_paths=frozenset({BACK_PATH} if google_connect else set()),
+                open_paths=(open_paths if slack else frozenset)(
+                    frozenset({BACK_PATH} if google_connect else set())
+                ),
                 routed=lambda scope: any(r.matches(scope)[0] is not Match.NONE for r in routes),
                 brand=brand,
                 wall=wall,
@@ -622,7 +655,10 @@ def create_app(
     app.state.credential_failures = failures
     app.state.stats_every = stats_every  # Q1: minutes; None when off
     app.state.graph_explorer = graph_explorer  # G2
+    app.state.slack_keeper = keeper  # K1: None when off
     if google_connect is not None:  # the key and the client, for every view made from now on
         store.google_custody = google_connect.custody
+    if slack is not None:  # K1: the installs' secrets, for every view made from now on
+        store.slack_sealer = slack.sealer()
     store.bound_history(keep_versions)  # last: an app refused above changes nothing
     return app

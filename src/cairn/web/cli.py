@@ -256,6 +256,7 @@ from cairn.sources.runner import (
 from cairn.store import JOINS, CannotOpen, SchemaTooNew, SourceInfo, Store, UnknownSchema
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import cli_arrange, cli_data, cli_google, cli_stats, google_connect
+from cairn.web import slack as web_slack
 from cairn.web.app import create_app
 from cairn.web.auth import SESSION_TTL
 from cairn.web.brand import make_brand
@@ -425,6 +426,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     _wall_options(serve)
     google_connect.add_options(serve)
+    web_slack.add_options(serve)
     create = commands.add_parser(
         "key-create",
         help="mint an API key into a new 0600 file",
@@ -1739,6 +1741,11 @@ def _serve(args: argparse.Namespace) -> int:
     except ValueError as error:
         print(google_connect.REFUSED.format(error), file=sys.stderr)
         return 2
+    try:  # K1: read before anything is opened; names an option or the variable, never a value
+        slack = web_slack.serve_switch(args, os.environ)
+    except ValueError as error:
+        print(web_slack.REFUSED.format(error), file=sys.stderr)
+        return 2
     try:  # the logo is read here, once, before anything is opened
         brand = make_brand(args.brand_name, args.brand_logo, args.brand_logo_alt)
     except ValueError as error:  # names the option, never the file's path
@@ -1826,6 +1833,7 @@ def _serve(args: argparse.Namespace) -> int:
                 keep_versions=_kept(args, plans),  # Q1: a page's history bound
                 stats_every=args.stats_every or None,  # Q1: the line with the numbers
                 google_connect=google,  # a Google account connected in the browser, or off
+                slack=slack,  # K1: Slack, both ways, or off
                 graph_explorer=args.graph_explorer,  # G2: the graph page you can explore
             )
         except ValueError as error:

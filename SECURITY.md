@@ -6,6 +6,10 @@ Use GitHub's private vulnerability reporting on this repository: open the **Secu
 
 Say what you found, the version or commit, the steps that show it, and what an attacker gains. A report is acknowledged and then followed up in the same advisory.
 
+## Which versions get fixes
+
+cairn has no numbered release yet. A fix lands on `main`, and the image built from `main` carries it; an install built from an older commit gets it by updating to `main`.
+
 ## What is in scope
 
 The code in this repository: the server, its web pages, the REST API and the MCP endpoint, the image built from the `Dockerfile`, and the files in `deploy/`. An install someone else runs is theirs to secure; report a flaw in its setup to whoever runs it.

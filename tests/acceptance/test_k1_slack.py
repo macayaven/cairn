@@ -229,7 +229,7 @@ class World:
     """A server (switch on or off) on a database with one workspace, Fable Works, owned by
     Ada, with Brook as a member; every clock is `clock`."""
 
-    def __init__(self, tmp_path: Path, slack: bool = True) -> None:
+    def __init__(self, tmp_path: Path, slack: bool = True, http=None) -> None:
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.db = tmp_path / "cairn.db"
         self.clock = Clock()
@@ -245,7 +245,7 @@ class World:
             public_url=BASE,
             sign_in=sign_in,
             clock=self.clock,
-            slack=Slack(key=KEY) if slack else None,
+            slack=Slack(key=KEY, http=http) if slack else None,
         )
         self.client = TestClient(self.app, base_url=BASE)
         self.ada = self.person("Ada", "personal")
@@ -863,6 +863,93 @@ def test_a_failed_event_whose_id_cannot_be_forgotten_is_still_500_and_logged_by_
         "slack: a handler failed: OperationalError",
         "slack: a failed event was not forgotten: OperationalError",
     ]
+
+
+class Made:
+    """Slack's answers to every call, and each client the server made to send them."""
+
+    def __init__(self) -> None:
+        self.clients: list[httpx.AsyncClient] = []
+        self.asked: list[str] = []
+
+    def answer(self, request: httpx.Request) -> httpx.Response:
+        self.asked.append(request.url.path)
+        if request.url.path.endswith("/users.info"):
+            cedar = {"id": "U0CEDAR01", "team_id": TEAM, "real_name": "Cedar Quill",
+                     "is_bot": False, "is_stranger": False, "deleted": False,
+                     "profile": {"real_name": "Cedar Quill", "display_name": "Cedar"}}  # fmt: skip
+            return httpx.Response(200, json={"ok": True, "user": cedar})
+        if request.url.path.endswith("/chat.postMessage"):
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, text="ok")
+
+    def __call__(self) -> httpx.AsyncClient:
+        made = httpx.AsyncClient(transport=httpx.MockTransport(self.answer))
+        self.clients.append(made)
+        return made
+
+
+def shortcut(user: str = ADA_SLACK, ts: str = "1900000000.000100") -> bytes:
+    payload = {
+        "type": "message_action", "callback_id": "file_in_cairn",
+        "team": {"id": TEAM, "domain": "fable-works"}, "user": {"id": user},
+        "channel": {"id": CONVERSATION},
+        "message": {"type": "message", "user": "U0CEDAR01", "ts": ts,
+                    "text": "The marmalade shelf moves to row 4."},
+        "response_url": "https://hooks.slack.com/actions/T0FABLE01/1/fable",
+        "trigger_id": "13345.0044.fable",
+    }  # fmt: skip
+    return urlencode({"payload": json.dumps(payload)}).encode()
+
+
+def direct(event_id: str, text: str = "marmalade") -> bytes:
+    return event(
+        "message", event_id, channel="D0ADA0001", channel_type="im", user=ADA_SLACK,
+        text=text, ts="1900000001.000200",
+    )  # fmt: skip
+
+
+def everything_that_sends(world: World, install: str) -> None:
+    """Commands, shortcuts and direct messages, from Ada unlinked and then linked."""
+    for n in range(3):
+        assert world.post(install, "commands", command(text="find marmalade")).status_code == 200
+        assert world.post(install, "actions", shortcut()).status_code == 200
+        assert world.post(install, "events", direct(f"Ev0UNLINKD{n}")).status_code == 200
+    world.ada.view.link_slack_user(install, ADA_SLACK, world.ada.id)
+    world.ada.view.set_slack_project(install, ADA_SLACK, world.project.id)
+    for n in range(3):
+        assert world.post(install, "commands", command(text="find marmalade")).status_code == 200
+        filed = shortcut(ts=f"1900000000.00020{n}")
+        assert world.post(install, "actions", filed).status_code == 200
+        assert world.post(install, "events", direct(f"Ev0LINKED0{n}")).status_code == 200
+
+
+def test_the_handlers_send_through_one_client_made_at_start_and_closed_at_shutdown(tmp_path):
+    made = Made()
+    world = World(tmp_path, http=made)
+    try:
+        install = world.install()
+        with TestClient(world.app, base_url=BASE) as started:
+            assert len(made.clients) == 1  # at start, before any request
+            world.client = started
+            everything_that_sends(world, install.id)
+            assert len(made.clients) == 1 and not made.clients[0].is_closed
+        assert made.clients[0].is_closed
+        sent = set(made.asked)
+        assert {"/api/users.info", "/api/chat.postMessage", "/actions/T0FABLE01/1/fable"} <= sent
+    finally:
+        world.store.close()
+
+
+def test_without_a_start_the_handlers_still_make_one_client_for_every_call(tmp_path):
+    made = Made()
+    world = World(tmp_path, http=made)
+    try:
+        install = world.install()
+        everything_that_sends(world, install.id)
+        assert len(made.clients) == 1 and len(made.asked) >= 9
+    finally:
+        world.store.close()
 
 
 def test_nothing_registered_is_acknowledged_and_does_nothing(world):

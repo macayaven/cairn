@@ -72,7 +72,15 @@ from cairn.web.public import Public
 from cairn.web.ratelimit import CredentialFailures, RateLimiter
 from cairn.web.rest import rest_routes
 from cairn.web.signin import SignIn, signin_routes
-from cairn.web.slack import Keeper, Slack, desk_of, open_paths, signature_failures, slack_routes
+from cairn.web.slack import (
+    Keeper,
+    OneClient,
+    Slack,
+    desk_of,
+    open_paths,
+    signature_failures,
+    slack_routes,
+)
 from cairn.web.slack import check as check_slack
 from cairn.web.stats import CountResponses, Responses, StatsLog
 from cairn.web.sweeper import Sweeper
@@ -523,6 +531,8 @@ def create_app(
         if slack is not None
         else None
     )
+    # K1: the one client Slack's handlers send through, made at start and closed at shutdown
+    to_slack = OneClient(slack.http or source_http) if slack is not None else None
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -534,6 +544,9 @@ def create_app(
                     accounts.sync_sources(sync_every, http=http, env=os.environ)
                 )
                 running.push_async_callback(_stopped, syncing)
+            if to_slack is not None:  # K1: closed last, once every task is stopped
+                to_slack.open()
+                running.push_async_callback(to_slack.aclose)
             if compactor is not None:
                 compacting = asyncio.create_task(compactor.loop())
                 # on the way out, last pushed first: the loop is stopped, then a run ends
@@ -621,7 +634,7 @@ def create_app(
                 failures=signature_failures(lambda: now().timestamp()),
                 now=now,
                 public_url=public_url or "",
-                http=slack.http or source_http,
+                http=to_slack,
                 turn=turns.turn,
             )
             if slack is not None

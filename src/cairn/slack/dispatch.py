@@ -26,8 +26,9 @@ What a handler is given (Context): the install (never its secrets), `view`, the 
 the install's workspace acting for no person (links, offers, project, notes recorded), and
 `memory_for(user_id)`, the Memory of a person of the workspace, as a request of theirs would
 have it (Accounts.memory: their reach, the gate, the guard, the plan), or None when they are
-no longer one. `http()` makes the client every call to Slack goes through (create_app's, so a
-test hands in an httpx.MockTransport); `bot_token()` opens the install's bot token (a read of
+no longer one. `http()` gives the client every call to Slack goes through: the server's one
+(cairn.web.slack.OneClient, made at start and closed at shutdown, so a test hands in an
+httpx.MockTransport), never one made for the call, and never closed by a handler; `bot_token()` opens the install's bot token (a read of
 the store: call it on a worker thread). `slack()` is the client for them (cairn.slack.client).
 `public_url` is the server's address; `now()` its clock. `turn()` is one turn among the
 server's compiles (create_app's Compiles.turn, handed in by cairn.web.slack.slack_routes;

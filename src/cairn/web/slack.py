@@ -311,6 +311,36 @@ def signature_failures(clock: Callable[[], float]) -> SignatureFailures:
     return SignatureFailures(clock)
 
 
+class OneClient:
+    """The one httpx client the handlers send to Slack through (the author lookup, the
+    answer through the address Slack gave, the bot's message): made by `make` (the switch's
+    `http`, or create_app's `source_http`) once. The app makes it at start (`open`, in its
+    lifespan) and closes it at shutdown (`aclose`); a call before any start (a test's client
+    that never starts the app) makes it then, once. Calling it gives that client: what
+    cairn.slack.dispatch.Context.http is, so no handler makes a client of its own. The set-up
+    and link pages keep their own short-lived clients."""
+
+    def __init__(self, make: Callable[[], httpx.AsyncClient]) -> None:
+        self._make = make
+        self._client: httpx.AsyncClient | None = None
+
+    def __repr__(self) -> str:
+        return "OneClient()"
+
+    def __call__(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = self._make()
+        return self._client
+
+    def open(self) -> httpx.AsyncClient:
+        return self()
+
+    async def aclose(self) -> None:
+        made, self._client = self._client, None
+        if made is not None:
+            await made.aclose()
+
+
 def _logged(action: str, install: str, status: int) -> None:
     with contextlib.suppress(Exception):  # a log handler that raises fails no request
         access_log.info(
@@ -372,7 +402,7 @@ def slack_routes(
 ) -> list[Route]:
     """The three addresses (the module). `memory_for(workspace, person)`: a person's Memory
     (Accounts); `failures`: signature_failures(clock); `now`: the app's clock; `http`: what
-    calls to Slack are made through; `turn`: one turn among the server's compiles (create_app's
+    gives the client calls to Slack are made through (create_app's OneClient); `turn`: one turn among the server's compiles (create_app's
     Compiles.turn), which a note written from Slack holds (cairn.slack.people.written)."""
     _import_handlers()
 

@@ -42,3 +42,11 @@ def test_the_package_the_pages_and_the_command_line_say_the_version(tmp_path):
     )
     assert said.returncode == 0, said.stderr
     assert said.stdout == f"python -m cairn.server {VERSION}\n"
+
+
+def test_the_changelog_dates_the_version_and_keeps_a_place_for_the_slack_entry():
+    changes = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert f"\n## {VERSION} - 2026-11-19\n" in changes
+    section = changes[changes.index(f"## {VERSION} - ") :]
+    assert "<!-- 0.1.0: Slack, when it lands -->\n" in section
+    assert changes.index("## Unreleased") < changes.index(f"## {VERSION} - ")

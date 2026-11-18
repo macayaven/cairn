@@ -183,7 +183,7 @@ def test_the_refusal_is_recorded_without_what_was_presented(app, caplog):
         for n in range(FAILURES + 1):
             client.get("/api/projects", headers={"x-api-key": f"secret-looking-{n}"})
     lines = [r.getMessage() for r in caplog.records if r.name == ACCESS_LOGGER]
-    assert lines[-1] == "denied by none None (None), project None: 429"
+    assert lines[-1] == "denied by an unknown caller: 429"
     assert not any("secret-looking" in line for line in lines)
 
 

@@ -23,9 +23,10 @@ a configuration that cannot work exits 2 and names the problem, never a value.
 
 `serve` writes the access log (Memory.access) to stderr, one plain line per MCP tool call or
 REST request: "cairn.access: <action> by <actor kind> '<actor>' (<actor id>), project '<name>':
-<status>". The project reads None, without quotes, when the call acted on no project, and so do
-the actor and its id when a request was refused before anyone was identified ("denied by
-none None (None), project None: 401"). It is the only request log: uvicorn's own stays off
+<status>". The project reads None, without quotes, when the call acted on no project. A
+request refused before anyone was identified has no caller and no project, and its line says
+so in words ("denied by an unknown caller: 401"). It is the only request log: uvicorn's own
+stays off
 (see `_serve`), and so do httpx's lines for the requests cairn sends (to a source, to a
 sign-in provider), which carry query strings.
 

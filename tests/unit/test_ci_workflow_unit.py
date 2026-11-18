@@ -1000,6 +1000,10 @@ def test_the_release_is_made_from_the_tag_with_the_changelog_and_the_built_files
     )
     build = next(r for r in runs if "uv build" in r)
     assert "uv build --out-dir dist" in build
+    # The release runner runs no test suite and no rehearsal (decision 150): `uv build` makes
+    # the two files, and nothing installs or runs the application's environment.
+    used = [w for r in runs for w in re.findall(r"\buv \w+|\bpytest\b|rehearse_\w+", r)]
+    assert used == ["uv build"], used
     create = next(step for step in job["steps"] if "gh release create" in step.get("run", ""))
     assert " ".join(create["run"].split()) == (
         'gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME"'

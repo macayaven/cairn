@@ -51,6 +51,13 @@ def test_the_changelog_dates_the_version_and_keeps_a_place_for_the_slack_entry()
     section = changes[changes.index(f"## {VERSION} - ") :]
     assert "<!-- 0.1.0: Slack, when it lands -->\n" in section
     assert changes.index("## Unreleased") < changes.index(f"## {VERSION} - ")
+    # What the top of the changelog says about releases is what release_check.py does.
+    assert (
+        "Each release has a section headed `## <version> - <date>`, and the tag `v<version>`"
+        " publishes it: `scripts/release_check.py` refuses a tag that is not the version in"
+        " `pyproject.toml` or has no dated section here with at least one entry, and the"
+        " section is the GitHub release's text." in flat(changes)
+    )
 
 
 README = (ROOT / "README.md").read_text(encoding="utf-8")

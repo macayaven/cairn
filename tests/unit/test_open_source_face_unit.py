@@ -38,7 +38,7 @@ def test_the_first_section_turns_on_the_local_compose_file_and_starts_it():
     assert blocks(FIRST)[0] == [
         "cd deploy",
         "echo 'COMPOSE_FILE=compose.local.yaml' > .env",
-        "docker compose up -d",
+        "docker compose up -d --build",
     ]
     assert (ROOT / "deploy" / "compose.local.yaml").is_file()
 
@@ -208,3 +208,46 @@ def test_the_repository_names_itself_where_it_lives():
     assert "ghcr.io/macayaven/cairn:main" in run
     publisher = (ROOT / "src" / "cairn" / "docs_publisher.py").read_text(encoding="utf-8")
     assert 'REPOSITORY = "https://github.com/macayaven/cairn"' in publisher
+
+
+def test_a_second_backup_never_lands_inside_the_first():
+    """`docker cp SRC DEST` copies a folder into DEST when DEST exists, so the same
+    destination twice left the first database on top and hid the second under data/. Each
+    backup goes to a folder of its own, and the contents are what is copied."""
+    for path, tool in (
+        ("README.md", "docker compose cp"),
+        ("src/cairn/guides/run.md", "docker cp"),
+    ):
+        text = (ROOT / path).read_text(encoding="utf-8")
+        assert f"{tool} cairn:/data ./cairn-backup\n" not in text, path
+        (line,) = [row for row in text.splitlines() if row.startswith(f"{tool} cairn:/data/. ")]
+        assert line == f'{tool} cairn:/data/. "./cairn-backup-$(date +%Y%m%d-%H%M%S)"', path
+        assert "a folder of its own" in text, path
+
+
+def test_the_first_run_builds_the_code_that_was_cloned():
+    """Without --build Compose starts an image named cairn:local that an earlier checkout
+    left, whatever the clone holds."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    start = readme[readme.index("## Run it on your computer") : readme.index("### Make a key")]
+    assert "docker compose up -d --build\n" in start
+    assert "docker compose up -d\n" not in start
+
+
+def test_the_privacy_guide_says_how_many_versions_are_kept():
+    """`serve` without a plans file keeps the newest KEEP_VERSIONS of each page."""
+    from cairn.web import cli
+
+    privacy = (ROOT / "src" / "cairn" / "guides" / "privacy.md").read_text(encoding="utf-8")
+    assert f"the newest {cli.KEEP_VERSIONS} versions of each page" in privacy
+    assert "every version of each page, or fewer" not in privacy
+
+
+def test_the_landing_page_tells_a_visitor_to_build_what_they_cloned():
+    """It showed a `docker run` of a published image, which nobody can pull until the image
+    is public. The clone and the Compose file are what every visitor can use."""
+    page = (ROOT / "src" / "cairn" / "templates" / "landing.html").read_text(encoding="utf-8")
+    assert "docker run -d --name cairn" not in page and "ghcr.io" not in page
+    assert "git clone https://github.com/macayaven/cairn" in page
+    assert "docker compose up -d --build" in page
+    assert 'href="/docs/run"' in page

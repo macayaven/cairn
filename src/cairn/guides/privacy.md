@@ -5,7 +5,7 @@ This guide says what {{name}} stores, where, for how long, what it never stores,
 ## What {{name}} stores
 
 - **Notes**, exactly as they were written, with their title and the fields the agent or the person sent with them: topic, label, a reference back to where the note came from, and how it came in (the MCP server, the API, the web form or a source). Each note and each page also keeps the topic it is filed by, written as {{name}} compares topics: its topic, else its title, in lower case, without accents on Latin or Greek letters and without punctuation at the edges of words. Until a note is on its page, {{name}} also keeps that it is waiting and how many times filing it was tried.
-- **Pages** compiled from the notes, with the claims and the lines each claim cites: every version of each page, or fewer when the workspace's plan bounds them (below). A page holds at most 2,000 claims and 400,000 characters of claims.
+- **Pages** compiled from the notes, with the claims and the lines each claim cites: the newest 50 versions of each page unless the operator chose another number, or as many as the workspace's plan says (below). A page holds at most 2,000 claims and 400,000 characters of claims.
 - **A search index** of the pages, one per workspace.
 - **People**: an email address, a name, and for each way they sign in, the provider, the provider's issuer and the provider's account number. Then the workspaces they belong to and their role in each. An invitation holds the invited address and the role offered, until it is used, revoked or removed after it expires.
 - **Connected agents**: the name and the redirect addresses each agent registered with, who approved it, and what it reaches.
@@ -38,7 +38,7 @@ Everything is in one SQLite database file on the machine where {{name}} runs. Al
 
 | What | How long |
 |---|---|
-| Notes and pages | Until the note is forgotten, or its project or the workspace is deleted. Every version of a page stays, unless the workspace's plan bounds them: a plan may keep only the last versions of each page, and a plan with a storage cap keeps its pages' versions within four times that cap. Past either, the oldest versions are deleted when a newer one is saved; each page's latest always stays. |
+| Notes and pages | Until the note is forgotten, or its project or the workspace is deleted. The newest 50 versions of a page stay, or the number the operator set with `serve --keep-versions` (`all` keeps every one). Where the operator runs plans, the workspace's plan says how many: a plan may keep only the last versions of each page, and a plan with a storage cap keeps its pages' versions within four times that cap. Past either, the oldest versions are deleted when a newer one is saved; each page's latest always stays. |
 | A browser session | 12 hours, or as many days as the operator set with `serve --session-days`, counted again from a use more than a day after it was made or last renewed |
 | An agent's access token | 1 hour |
 | An agent's replaced refresh token (its digest) | 30 days, so that presenting it again is noticed |

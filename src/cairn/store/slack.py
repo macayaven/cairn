@@ -41,13 +41,26 @@ The install
 Links, offers, notes, events
 - `link_slack_user` / `unlink_slack_user` / `slack_person`: a Slack user of the install linked
   to a person who is a member of the workspace, with the project their notes go to
-  (`set_slack_project`: a project of the workspace, or None). `own_slack_links`: the view's
-  own person's links, and nobody else's. `slack_team_held` (the server's): whether another
-  workspace's install that is not removed is for a Slack team, so one team has one install.
-- `offer_slack_link` gives a one-time value (kept as its SHA-256 digest) for OFFER_TTL (10
-  minutes); `slack_offer` reads it for a view of the install's workspace (None: unknown,
-  used, run out, or another workspace's); `take_slack_offer` uses it once and links the
-  view's person (KeyError when it cannot; PermissionError for a view acting for no person).
+  (`set_slack_project`: a project of the workspace, or None). A link is never moved to
+  another person (ValueError, and the first link stands); linking a Slack user to the person
+  they are linked to changes nothing. Whenever a Slack user is linked, by any path, every
+  offer of theirs at the install is deleted. `own_slack_links`: the view's own person's
+  links, and nobody else's. `slack_team_held` (the server's): whether another workspace's
+  install that is not removed is for a Slack team, so one team has one install.
+- A link takes two steps (review finding B2), so a Slack user is linked to a person only
+  when that Slack user knew a code shown only to that person. `offer_slack_link`: a one-time
+  value (kept as its SHA-256 digest) for OFFER_TTL (10 minutes, for both steps), one for a
+  Slack user at a time: it replaces their earlier offer, claimed or not. `slack_offer` reads
+  it for a view of the install's workspace (None: unknown, run out, said yes to already, or
+  another workspace's). `claim_slack_offer`, the signed-in person's yes: ties the offer to
+  them and gives the code, CODE_LENGTH (8) of CODE_ALPHABET from `secrets`, shown XXXX-XXXX,
+  kept only as a digest bound to the install (KeyError: no such offer; PermissionError: a
+  view acting for no person, or a person who is not a member). `take_slack_offer(install,
+  Slack user, code)`, the command's, with the workspace's view: the code from the Slack user
+  whose offer it is, within its time, links them to the person who said yes; anything else
+  is KeyError with one sentence (NO_LINK), a wrong try counted (the TRIES-th, 5, deletes the
+  offer), the offer of another Slack user whose code it is deleted, and an offer whose
+  person is no longer a member deleted. A used offer is deleted.
 - `record_slack_note`: a note of the workspace came through the install, filed (with its
   conversation and message time: the same message is one note, D9, and the note it already is
   comes back) or typed; `slack_note_for` finds the note a message already is.
@@ -65,6 +78,7 @@ project and a forgotten note each take their rows with them (cairn.store.account
 erasure)."""
 
 import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -81,6 +95,9 @@ ACCEPTING = ("ready", "on")  # the states whose addresses answer Slack
 HOWS = ("filed", "typed")
 COMMAND = "/cairn"
 OFFER_TTL = timedelta(minutes=10)
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"  # no I, L, O, U, 0 or 1
+CODE_LENGTH = 8
+TRIES = 5  # wrong codes from a Slack user, the fifth of which deletes their offer
 SEEN_FOR = timedelta(days=1)
 FORGET_AFTER = timedelta(days=10)
 DUE_AT_ONCE = 100  # notes slack_notes_due gives at most, oldest first
@@ -93,6 +110,9 @@ NO_KEY = "this server holds no Slack key: it is started with --slack and CAIRN_S
 NOT_ONE = "there is no such Slack install in this workspace"
 NOT_AN_OWNER = "only an owner of the workspace forgets what came through Slack at once"
 MEMBERS_ONLY = "a Slack user is linked to a person of this workspace"
+LINKED_ELSEWHERE = "this Slack user is linked to another person: unlink it first"
+NOT_OPEN = "this link offer is not open"
+NO_LINK = "this code links nothing"
 
 
 class NoSlackKey(RuntimeError):
@@ -149,6 +169,8 @@ class SlackPerson:
 
 @dataclass(frozen=True)
 class SlackOffer:
+    """An offer as the link page reads it: never its value, nor its code."""
+
     install_id: str
     slack_user_id: str
     expires_at: datetime
@@ -181,6 +203,31 @@ def _associated(which: str, install_id: str, account_id: str) -> bytes:
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _new_code() -> str:
+    """A code: CODE_LENGTH characters of CODE_ALPHABET, each from `secrets`."""
+    return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+
+
+def _shown(code: str) -> str:
+    """A code as a person is shown it: XXXX-XXXX."""
+    return f"{code[:4]}-{code[4:]}"
+
+
+def _typed(text: object) -> str | None:
+    """The code a person typed, read without regard to case, hyphens or spaces; None when
+    it is not one."""
+    if not isinstance(text, str) or len(text) > 64:
+        return None
+    code = "".join(text.replace("-", " ").split()).upper()
+    if len(code) != CODE_LENGTH or any(char not in CODE_ALPHABET for char in code):
+        return None
+    return code
+
+
+def _code_digest(install_id: str, code: str) -> str:
+    return _digest(f"{install_id} {code}")
 
 
 def _slack_id(value: object, what: str) -> str:
@@ -531,8 +578,9 @@ class SlackMethods(StoreBase):
 
     def link_slack_user(self, install_id: str, slack_user_id: str, user_id: str) -> SlackPerson:
         """Link the install's Slack user to the person `user_id`, a member of the workspace
-        (KeyError otherwise), keeping the project of an earlier link of the same user to the
-        same person."""
+        (KeyError otherwise). A Slack user linked to that person already stays as they are,
+        with their project; one linked to another person is ValueError, and that link stands.
+        Every offer of the Slack user at the install is deleted."""
         _slack_id(slack_user_id, "user")
         with self._write() as con:
             self._slack_row(con, install_id)
@@ -548,14 +596,23 @@ class SlackMethods(StoreBase):
         ).fetchone()
         if member is None:
             raise KeyError(MEMBERS_ONLY)
+        linked = con.execute(
+            "SELECT user_id FROM slack_people WHERE install_id = ? AND slack_user_id = ?",
+            (install_id, slack_user),
+        ).fetchone()
+        if linked is not None and linked[0] != user_id:
+            raise ValueError(LINKED_ELSEWHERE)
+        if linked is None:
+            con.execute(
+                "INSERT INTO slack_people (install_id, slack_user_id, user_id, linked_at)"
+                " VALUES (?, ?, ?, ?)",
+                (install_id, slack_user, user_id, self._stamp()),
+            )
+            self._slack_audit(con, "slack.linked", install_id, person=user_id)
         con.execute(
-            "INSERT INTO slack_people (install_id, slack_user_id, user_id, linked_at)"
-            " VALUES (?, ?, ?, ?) ON CONFLICT (install_id, slack_user_id) DO UPDATE SET"
-            " project_id = CASE WHEN user_id = excluded.user_id THEN project_id END,"
-            " user_id = excluded.user_id, linked_at = excluded.linked_at",
-            (install_id, slack_user, user_id, self._stamp()),
+            "DELETE FROM slack_link_offers WHERE install_id = ? AND slack_user_id = ?",
+            (install_id, slack_user),
         )
-        self._slack_audit(con, "slack.linked", install_id, person=user_id)
 
     def unlink_slack_user(self, install_id: str, slack_user_id: str) -> bool:
         """Undo a link; whether there was one."""
@@ -635,21 +692,23 @@ class SlackMethods(StoreBase):
                 raise KeyError(slack_user_id)
 
     def offer_slack_link(self, install_id: str, slack_user_id: str) -> str:
-        """A one-time value that links the Slack user to whoever uses it, signed in to this
-        workspace, within OFFER_TTL. Only its digest is kept."""
+        """A one-time value for the Slack user to open signed in, within OFFER_TTL. It
+        replaces the Slack user's earlier offer at the install, claimed or not. Only its
+        digest is kept."""
         _slack_id(slack_user_id, "user")
         value = secrets.token_urlsafe(32)
         with self._write() as con:
             self._slack_row(con, install_id)
             con.execute(
-                "INSERT INTO slack_link_offers (digest, install_id, slack_user_id, expires_at)"
-                " VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO slack_link_offers"
+                " (digest, install_id, slack_user_id, expires_at) VALUES (?, ?, ?, ?)",
                 (_digest(value), install_id, slack_user_id, _iso(self._instant() + OFFER_TTL)),
             )
         return value
 
     def slack_offer(self, value: str) -> SlackOffer | None:
-        """The offer `value` for an install of this workspace, unused and unexpired; None."""
+        """The offer `value` for an install of this workspace, within its time, that nobody
+        said yes to yet; None."""
         if not isinstance(value, str) or not value:
             return None
         with self._read() as con:
@@ -660,26 +719,84 @@ class SlackMethods(StoreBase):
         return con.execute(
             "SELECT o.install_id, o.slack_user_id, o.expires_at FROM slack_link_offers AS o"
             " JOIN slack_installs AS i ON i.id = o.install_id"
-            " WHERE o.digest = ? AND i.account_id = ? AND o.used_at IS NULL"
+            " WHERE o.digest = ? AND i.account_id = ? AND o.user_id IS NULL"
             " AND o.expires_at > ? AND i.state != 'removed'",
             (_digest(value), self._account_id, self._stamp()),
         ).fetchone()
 
-    def take_slack_offer(self, value: str) -> SlackPerson:
-        """Use the offer once: its Slack user linked to the view's person. KeyError: unknown,
-        used, run out or another workspace's; PermissionError: a view acting for no person."""
+    def claim_slack_offer(self, value: str) -> str:
+        """The yes: the offer `value` tied to the view's person, a member of the install's
+        workspace, and the code they are shown (XXXX-XXXX), kept only as a digest. KeyError:
+        no such offer, run out, or someone said yes to it already; PermissionError: a view
+        acting for no person, or a person who is not a member."""
         if self._user_id is None:
             raise PermissionError(MEMBERS_ONLY)
-        with self._write() as con:
+        code = _new_code()
+        with self._write() as con:  # refuses a person who is not a member (PermissionError)
             row = self._offer(con, value) if isinstance(value, str) and value else None
-            if row is None:
-                raise KeyError("this link offer is not open")
-            con.execute(
-                "UPDATE slack_link_offers SET used_at = ? WHERE digest = ?",
-                (self._stamp(), _digest(value)),
+            claimed = row is not None and con.execute(
+                "UPDATE slack_link_offers SET user_id = ?, code_digest = ?"
+                " WHERE digest = ? AND user_id IS NULL AND expires_at > ?",
+                (self._user_id, _code_digest(row[0], code), _digest(value), self._stamp()),
+            ).rowcount
+            if not claimed:
+                raise KeyError(NOT_OPEN)
+        return _shown(code)
+
+    def take_slack_offer(self, install_id: str, slack_user_id: str, code: str) -> SlackPerson:
+        """The last step, `/cairn link <code>` (the workspace's view): the Slack user's own
+        offer, said yes to and within its time, whose code this is (digests compared in
+        constant time), links them to the person who said yes, and every offer of theirs at
+        the install goes. Otherwise KeyError (NO_LINK, whatever the reason) after: a try
+        counted on the Slack user's offer, which the TRIES-th deletes; any other Slack
+        user's offer whose code this is deleted; an offer whose person is no longer a member
+        deleted. A fixed number of statements, whatever the workspace holds."""
+        _slack_id(slack_user_id, "user")
+        typed = _typed(code)
+        given = _code_digest(install_id, typed) if typed else ""
+        with self._write() as con:
+            self._slack_row(con, install_id)
+            row = con.execute(
+                "SELECT user_id, code_digest, expires_at FROM slack_link_offers"
+                " WHERE install_id = ? AND slack_user_id = ?",
+                (install_id, slack_user_id),
+            ).fetchone()
+            matches = (
+                row is not None
+                and row[1] is not None
+                and bool(given)
+                and hmac.compare_digest(row[1], given)
+                and row[2] > self._stamp()
             )
-            self._link(con, row[0], row[1], self._user_id)
-            return self._person(con, row[0], row[1])  # type: ignore[return-value]
+            if matches:
+                member = con.execute(
+                    "SELECT 1 FROM memberships WHERE account_id = ? AND user_id = ?",
+                    (self._account_id, row[0]),
+                ).fetchone()
+                if member is not None:
+                    self._link(con, install_id, slack_user_id, row[0])
+                    return self._person(con, install_id, slack_user_id)  # type: ignore[return-value]
+                con.execute(
+                    "DELETE FROM slack_link_offers WHERE install_id = ? AND slack_user_id = ?",
+                    (install_id, slack_user_id),
+                )
+            else:
+                con.execute(  # a code that reached another Slack user is dead
+                    "DELETE FROM slack_link_offers WHERE install_id = ? AND code_digest = ?"
+                    " AND slack_user_id != ?",
+                    (install_id, given, slack_user_id),
+                )
+                con.execute(
+                    "UPDATE slack_link_offers SET tries = tries + 1"
+                    " WHERE install_id = ? AND slack_user_id = ?",
+                    (install_id, slack_user_id),
+                )
+                con.execute(
+                    "DELETE FROM slack_link_offers WHERE install_id = ? AND slack_user_id = ?"
+                    " AND tries >= ?",
+                    (install_id, slack_user_id, TRIES),
+                )
+        raise KeyError(NO_LINK)
 
     # Events, and the sweep
 

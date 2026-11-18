@@ -341,13 +341,14 @@ def test_an_offer_is_a_digest_used_once_by_a_person_of_the_workspace(world, tmp_
     theirs = world.store.for_account(stranger.account_id, stranger.user.id)
     assert theirs.slack_offer(value) is None  # another workspace's person sees nothing
     with pytest.raises(KeyError):
-        theirs.take_slack_offer(value)
-    with pytest.raises(PermissionError):  # a view acting for no person links nobody
-        world.store.for_account(world.account).take_slack_offer(value)
-    taken = world.member_view.take_slack_offer(value)
+        theirs.claim_slack_offer(value)
+    with pytest.raises(PermissionError):  # a view acting for no person says yes for nobody
+        world.store.for_account(world.account).claim_slack_offer(value)
+    code = world.member_view.claim_slack_offer(value)
+    taken = world.store.for_account(world.account).take_slack_offer(install.id, "U0BOB0001", code)
     assert taken.user_id == world.member
     with pytest.raises(KeyError):
-        world.member_view.take_slack_offer(value)
+        world.member_view.claim_slack_offer(value)
 
 
 def test_a_note_is_recorded_once_per_message_and_found_by_it(world):

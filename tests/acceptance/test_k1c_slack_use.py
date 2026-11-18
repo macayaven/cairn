@@ -324,6 +324,35 @@ def test_the_address_works_once_and_links_who_opens_it(world):
         world.brook.view.take_slack_offer(value)
 
 
+MALLORY = "U0MALLORY1"  # a Slack user of the team who names themself after someone else
+
+
+def browser(world: World, person: k1.Person) -> TestClient:
+    """A browser signed in as `person`."""
+    token = world.store.for_account(world.account, person.id).create_session()
+    signed_in = TestClient(world.app, base_url=BASE)
+    signed_in.cookies.set("cairn_session", token, domain="cairn.example.test", path="/")
+    return signed_in
+
+
+def test_a_yes_to_an_address_someone_sent_links_them_to_nobody(world):
+    """The review's probe (B2): Mallory asks for the address and sends it to Brook, who opens
+    it signed in and says yes. Mallory is linked to nobody, and is answered as anyone not
+    linked is, never as Brook."""
+    world.slack.users[MALLORY] = user(MALLORY, "Brook")
+    value = re.search(r"link\?t=([A-Za-z0-9_-]+)", said(private(world.command("link", user=MALLORY))))
+    brook = browser(world, world.brook)
+    address = f"/integrations/slack/link?t={value.group(1)}"
+    assert brook.get(address).status_code == 200
+    brook.post(address, follow_redirects=False)
+    assert world.ada.view.slack_person(world.install.id, MALLORY) is None
+    before = world.notes()
+    for text in ("find marmalade", "note The shelf moves."):
+        answer = said(private(world.command(text, user=MALLORY)))
+        assert LINK in answer and "Brook" not in answer
+    assert world.notes() == before
+
+
 def test_help_alone_is_answered_without_it(world):
     before = k1.dump(world.db)
     for text in ("help", "HELP"):

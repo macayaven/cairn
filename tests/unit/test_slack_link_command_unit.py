@@ -12,7 +12,7 @@ from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, Bench, ask, s
 from test_slack_messages_unit import handle
 
 import cairn.store.slack as store_slack
-from cairn.slack import blocks, commands, people
+from cairn.slack import blocks, commands
 from cairn.store.slack import OFFER_TTL, TRIES
 
 CODE = "KM7Q-R2XZ"

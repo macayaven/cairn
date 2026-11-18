@@ -28,7 +28,6 @@ from cairn.slack import blocks, people
 from cairn.slack.dispatch import Context, on_command
 from cairn.slack.verify import Envelope
 
-
 NO_LINK = "That code links nothing. To link your Slack user, type `{command} link` to start again."
 
 

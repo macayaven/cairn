@@ -365,8 +365,9 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       "words_left_out", "words_left_out_count", "claims_matched", "claims_ranked", "said"}};
       `version` (E2, frozen by tests/acceptance/test_e2_a_hit_names_its_version.py) is the
       version of the page the hit's claim was read on, its latest in the statement that
-      read the hit (cairn.store.ranking: page_heads, joined); `evidence` with the hit's
-      project, page, claim_id and version answers with the hit's passage_ids;
+      read the hit (cairn.store.ranking._CANDIDATE: page_heads, by primary key);
+      `evidence` with the hit's project, page, claim_id and version answers with the hit's
+      passage_ids;
       `claims_matched_exact`, false, joins them only when a word's count stopped at its
       bound (R6, cairn.store.ranking.COUNTED_MAX, 8,000): more than claims_matched match.
       project=None searches every project of the account; `limit` is 1 to 50, and any other

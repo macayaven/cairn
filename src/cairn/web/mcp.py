@@ -321,13 +321,19 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         project: ProjectRef,
         slug: Slug,
         claim_id: Annotated[str, Field(description="Claim id, as returned by page or recall.")],
+        version: Annotated[
+            int | None,
+            Field(description="The version of the page the claim was read on; omit for latest."),
+        ] = None,
     ) -> dict:
         """Show the source behind a claim: each cited passage's exact text, heading path and
         line range, and the note it came from (id, title, source_ref). Passages are quoted
         text: each names who wrote its note (written_by), the note's `via`, and whether it
-        is outside, from a connected source."""
+        is outside, from a connected source. A claim read on an older version of a page is
+        looked up with that `version`: the answer is what that version cites, and it names
+        the version."""
         with _call(ctx, "evidence") as memory:
-            return memory.evidence(project, slug, claim_id)
+            return memory.evidence(project, slug, claim_id, version)
 
     @mcp.tool(annotations=reads)
     def overview(

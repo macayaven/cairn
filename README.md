@@ -237,7 +237,7 @@ With sign-in on, five more options put the install under your organisation's nam
 | `note` | Store a note and compile it; searchable as soon as it returns |
 | `recall` | Search one project or all of them |
 | `page` | Read a page, or any earlier version |
-| `evidence` | Show the exact source lines behind a claim |
+| `evidence` | Show the exact source lines behind a claim, as the latest version of its page cites them or, with `version`, as that version did |
 | `overview` | Pages and note count of a project |
 
 ## Lint any page set

@@ -5,6 +5,7 @@ is answered with one fixed sentence. Every name is made up; every call to Slack 
 httpx.MockTransport; every code is chosen by the test through the store's seam."""
 
 import asyncio
+import logging
 import re
 
 import pytest
@@ -154,3 +155,17 @@ def test_a_direct_message_from_an_unlinked_user_is_never_stored_and_gets_the_pro
     assert ADDRESS.search(said(posted))
     assert bench.notes() == []
     assert linked_to(bench, ADA_SLACK) is None
+
+
+def test_neither_the_value_nor_the_code_is_in_a_log_line(bench, caplog):
+    caplog.set_level(logging.DEBUG)
+    (value,) = set(ADDRESS.findall(said(ask(bench, "link"))))
+    code = bench.store.for_account(bench.account, bench.brook).claim_slack_offer(value)
+    said(ask(bench, "link AAAA-AAAA"))
+    said(ask(bench, f"link {code}", user=BROOK_SLACK))
+    said(ask(bench, f"link {code}"))
+    assert caplog.records
+    for record in caplog.records:
+        text = record.getMessage() + repr(record.__dict__)
+        for secret in (value, code, code.replace("-", "")):
+            assert secret not in text

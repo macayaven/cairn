@@ -1,0 +1,44 @@
+/* The graph explorer's own rules, linked by its pages alone. They use the main stylesheet's
+   tokens and change nothing outside .graph-explorer and .graph-note. Nothing here moves by
+   itself: no transition and no animation. */
+
+.graph-explorer .graph-views,
+.graph-explorer .graph-legend { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.graph-explorer .graph-views { margin-bottom: var(--space-3); }
+.graph-explorer .graph-views [aria-current="page"] { font-weight: 600; }
+.graph-explorer .graph-search { align-items: center; margin-bottom: var(--space-3); }
+.graph-explorer .graph-controls { margin: var(--space-3) 0; }
+.graph-explorer .graph-controls button[aria-pressed="true"] {
+  background: var(--lichen);
+  border-color: var(--lichen);
+  color: var(--on-lichen);
+}
+
+.graph-explorer [data-graph-kind="project"] { --graph-mark: #af5e21; }
+.graph-explorer [data-graph-kind="page"] { --graph-mark: #197993; }
+.graph-explorer [data-graph-kind="claim"] { --graph-mark: #b2487a; }
+.graph-explorer [data-graph-kind="passage"] { --graph-mark: #587c31; }
+.graph-explorer [data-graph-kind="note"] { --graph-mark: #7e62ae; }
+@media (prefers-color-scheme: dark) {
+  .graph-explorer [data-graph-kind="project"] { --graph-mark: #f4b27e; }
+  .graph-explorer [data-graph-kind="page"] { --graph-mark: #76c7dc; }
+  .graph-explorer [data-graph-kind="claim"] { --graph-mark: #f4a5c6; }
+  .graph-explorer [data-graph-kind="passage"] { --graph-mark: #a4cc7e; }
+  .graph-explorer [data-graph-kind="note"] { --graph-mark: #c8aff3; }
+}
+.graph-explorer .graph-legend [data-graph-kind] { color: var(--graph-mark); }
+.graph-explorer .graph-mark { fill: var(--graph-mark); }
+.graph-explorer .graph-cross { fill: none; stroke: var(--graph-mark); stroke-width: 3; }
+
+.graph-explorer .graph-diagram {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background-color: var(--sheet);
+}
+.graph-explorer .graph-diagram line { stroke: var(--rule-strong); opacity: 0.7; }
+.graph-explorer .graph-diagram a:hover text,
+.graph-explorer .graph-diagram a:focus text { text-decoration: underline; }
+/* Set by the script once it runs: a drag on the drawing moves it, the page still scrolls. */
+.graph-explorer [data-graph-live] svg { touch-action: pan-y pinch-zoom; }
+
+.graph-note { white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -235,6 +235,10 @@ docker exec cairn python -m cairn.server compact --db /data/cairn.db
 
 Its first line says how many versions it removed and by what rule. On a database no `serve` of this version has run on, it removes no version and says so. With plans, each workspace keeps what its plan keeps; a workspace on a plan the plans file does not name keeps every version, and `compact` names it on a line of its own.
 
+## A graph to explore
+
+`serve --graph-explorer` makes a project's **Graph** page one to explore: its pages or its notes a batch of at most 20 at a time, with **Next batch** for the rest, a search within the view, a page's claims, the passages a claim cites, and a page for each note. That page is the only one that runs a script, cairn's own, and it works without it. Without the option the graph page is drawn by the server alone and runs no script.
+
 ## Numbers to watch
 
 `stats` prints how much the install holds, and it only reads:

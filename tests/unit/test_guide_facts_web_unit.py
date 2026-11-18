@@ -555,3 +555,199 @@ def test_no_agent_adds_a_source_and_a_member_sees_only_their_own(team):
         assert "<form" not in member.text.partition("<main>")[2].partition("</main>")[0]
         workspace = client.get("/workspace", headers=cookie(team.sessions["brook"])).text
         assert 'href="/sources"' in workspace
+
+
+# security.md and run.md: the graph, with and without `serve --graph-explorer` (G2)
+
+
+def guide_says(name: str, sentence: str) -> None:
+    whole = " ".join((files("cairn") / "guides" / name).read_text(encoding="utf-8").split())
+    assert sentence in whole, sentence
+
+
+def graph_world(store, pages: int = 3) -> SimpleNamespace:
+    """ "ops" with `pages` pages and one note that the first page's claim cites; "vault",
+    private to Ada, its owner. Cy is a member. The key reaches every project."""
+    from cairn.store import Claim
+
+    people = {name.lower(): person(store, name) for name in ("Ada", "Cy")}
+    ops = people["ada"].create_project("ops", everyone="write")
+    vault = people["ada"].create_project("vault", everyone="none")
+    note, _ = people["ada"].add_note(ops.id, "Quill retries 3 times.\n", source_ref="desk:1")
+    span = people["ada"].note_spans(note.id)[0].id
+    for i in range(pages):
+        cited = (span,) if i == 0 else ()
+        claims = [Claim(id="retries", text="Quill retries 3 times.", span_ids=cited)]
+        people["ada"].save_page(ops.id, f"p-{i:03}", f"Quill page {i}", "", claims)
+    people["ada"].save_page(vault.id, "hidden", "Juniper page", "", [])
+    return SimpleNamespace(
+        note=note,
+        key=store.create_key("graph-reader"),
+        sessions={name: view.create_session() for name, view in people.items()},
+    )
+
+
+def graph_markup(html: str) -> SimpleNamespace:
+    """A graph page's scripts, its drawing's nodes, its list's nodes, whether its controls
+    are hidden, and its "Next batch" links."""
+    from html.parser import HTMLParser
+
+    seen = SimpleNamespace(scripts=[], svg=[], listed=[], hidden=[], next=[])
+
+    class Parser(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "script":
+                seen.scripts.append(a)
+            if "data-graph-node" in a:
+                where = seen.svg if a.get("data-graph-area") == "svg" else seen.listed
+                where.append(a["data-graph-node"])
+            if "data-graph-controls" in a:
+                seen.hidden.append("hidden" in a)
+            if tag == "a" and a.get("rel") == "next":
+                seen.next.append(a["href"].replace("&amp;", "&"))
+
+    Parser().feed(html)
+    return seen
+
+
+def test_with_the_graph_explorer_the_graph_page_alone_loads_cairns_own_script(store):
+    """security.md, "The web pages": "No page runs a script. With `serve --graph-explorer` a
+    project's graph page alone loads one script, cairn's own, by a nonce made for that page
+    and with its hash, and the page still works without it.\""""
+    import base64
+    import hashlib
+
+    guide_says(
+        "security.md",
+        "No page runs a script. With `serve --graph-explorer` a project's graph page alone"
+        " loads one script, {{name}}'s own, by a nonce made for that page and with its hash,"
+        " and the page still works without it.",
+    )
+    world = graph_world(store)
+    own = (files("cairn") / "static" / "graph-view.js").read_bytes()  # shipped in the package
+    digest = "sha256-" + base64.b64encode(hashlib.sha256(own).digest()).decode()
+    paths = ("/", "/b/ops", "/b/ops/graph", "/b/ops/graph?focus=notes", "/docs/security")
+    for explorer in (False, True):
+        app = create_app(store, public_url=BASE, graph_explorer=explorer)
+        with TestClient(app, base_url=BASE) as client:
+            note_page = f"/b/ops/graph/notes/{world.note.id}"
+            for path in (*paths, note_page):
+                r = client.get(path, headers=cookie(world.sessions["ada"]))
+                policy = directives(r.headers["content-security-policy"])
+                shown = graph_markup(r.text)
+                graph_page = path == "/b/ops/graph" or path.startswith("/b/ops/graph?")
+                if not (explorer and graph_page):
+                    assert "script-src" not in policy and not shown.scripts, (explorer, path)
+                    assert r.status_code == (404 if path == note_page and not explorer else 200)
+                    continue
+                (tag,) = shown.scripts
+                assert tag["src"] == "/static/graph-view.js" and tag["integrity"] == digest
+                assert policy["script-src"] == [f"'nonce-{tag['nonce']}'"], path
+                assert client.get(tag["src"]).content == own  # this server's own copy
+                # It works without the script: everything drawn is listed, and the
+                # controls only the script uses are hidden until it shows them.
+                assert shown.svg and sorted(shown.svg) == sorted(shown.listed), path
+                assert shown.hidden == [True], path
+
+
+def test_the_graph_is_drawn_by_the_server_and_listed_again_in_both_states(store):
+    """security.md, "The web pages": "A project's page links its **Graph**: its pages, the
+    claims on them, the passages those claims cite and the notes the passages come from,
+    drawn by the server and listed again as text below the drawing. Without `--graph-explorer`
+    the page shows at most 20 pages; with it, one view at a time (the pages, the notes, a
+    page's claims or a claim's passages), at most 20 to a batch, with **Next batch** for the
+    rest, and each note has a page of its own. A key reads at most 20 pages of the graph at
+    `GET /api/graph?project=<name>`, an agent at the MCP resource
+    `graph://project/<name>/<limit>`, and a project out of reach is answered as one that does
+    not exist.\""""
+    guide_says(
+        "security.md",
+        "drawn by the server and listed again as text below the drawing. Without"
+        " `--graph-explorer` the page shows at most 20 pages; with it, one view at a time (the"
+        " pages, the notes, a page's claims or a claim's passages), at most 20 to a batch, with"
+        " **Next batch** for the rest, and each note has a page of its own. A key reads at most"
+        " 20 pages of the graph at `GET /api/graph?project=<name>`, an agent at the MCP"
+        " resource `graph://project/<name>/<limit>`, and a project out of reach is answered as"
+        " one that does not exist.",
+    )
+    world = graph_world(store, pages=23)
+    ada, cy = cookie(world.sessions["ada"]), cookie(world.sessions["cy"])
+
+    def pages_in(html: str) -> int:
+        return sum(1 for node in graph_markup(html).listed if node.startswith("page:"))
+
+    for explorer in (False, True):
+        app = create_app(store, public_url=BASE, graph_explorer=explorer)
+        with TestClient(app, base_url=BASE) as client:
+            assert 'href="/b/ops/graph"' in client.get("/b/ops", headers=ada).text
+            first = client.get("/b/ops/graph", headers=ada)
+            shown = graph_markup(first.text)
+            assert "<svg" in first.text and sorted(shown.svg) == sorted(shown.listed)
+            assert pages_in(first.text) == 20
+            if explorer:
+                (following,) = shown.next
+                assert pages_in(client.get(following, headers=ada).text) == 3
+                for view, kind in (("notes", "note:"), ("page%3Ap-000", "claim:")):
+                    listed = graph_markup(
+                        client.get(f"/b/ops/graph?focus={view}", headers=ada).text
+                    ).listed
+                    assert any(node.startswith(kind) for node in listed), view
+                note = client.get(f"/b/ops/graph/notes/{world.note.id}", headers=ada)
+                assert note.status_code == 200 and "Quill retries 3 times." in note.text
+            else:
+                assert not shown.next
+            api = client.get("/api/graph?project=ops", headers={"x-api-key": world.key})
+            assert api.json()["counts"]["page"] == 20
+            read = rpc(client, world.key, "resources/read", {"uri": "graph://project/ops/20"})
+            graph = json.loads(read.json()["result"]["contents"][0]["text"])
+            assert graph["counts"]["page"] == 20
+            for path in ("/b/vault/graph", "/b/vault/graph?focus=notes"):
+                hidden, missing = (
+                    client.get(path, headers=cy),
+                    client.get(path.replace("vault", "nowhere"), headers=cy),
+                )
+                assert hidden.status_code == missing.status_code == 404, path
+                assert "Juniper" not in hidden.text
+
+
+def test_run_md_says_what_the_graph_explorer_switches_on(store, tmp_path, monkeypatch, capsys):
+    """run.md, "A graph to explore": "`serve --graph-explorer` makes a project's **Graph**
+    page one to explore: its pages or its notes a batch of at most 20 at a time, with **Next
+    batch** for the rest, a search within the view, a page's claims, the passages a claim
+    cites, and a page for each note. That page is the only one that runs a script, cairn's
+    own, and it works without it. Without the option the graph page is drawn by the server
+    alone and runs no script.\" The batches, the views and the script are pinned by the two
+    tests above; here, the option and the search."""
+    import uvicorn
+
+    from cairn.web import cli
+
+    guide_says(
+        "run.md",
+        "`serve --graph-explorer` makes a project's **Graph** page one to explore: its pages or"
+        " its notes a batch of at most 20 at a time, with **Next batch** for the rest, a search"
+        " within the view, a page's claims, the passages a claim cites, and a page for each"
+        " note. That page is the only one that runs a script, cairn's own, and it works without"
+        " it. Without the option the graph page is drawn by the server alone and runs no"
+        " script.",
+    )
+    made = []
+
+    def note(store, **settings):
+        made.append(settings["graph_explorer"])
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "create_app", note)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("serve started"))
+    for argv in ([], ["--graph-explorer"]):
+        with pytest.raises(SystemExit):
+            server.main(["serve", "--db", str(tmp_path / "kb.db"), *argv])
+    assert made == [False, True]
+    with pytest.raises(SystemExit):
+        server.main(["serve", "--help"])
+    assert "--graph-explorer" in capsys.readouterr().out
+    world = graph_world(store, pages=3)
+    with TestClient(create_app(store, public_url=BASE, graph_explorer=True), base_url=BASE) as c:
+        found = c.get("/b/ops/graph?q=page%202", headers=cookie(world.sessions["ada"])).text
+        assert "Quill page 2" in found and "Quill page 1" not in found

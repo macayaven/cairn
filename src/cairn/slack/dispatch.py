@@ -26,7 +26,8 @@ have it (Accounts.memory: their reach, the gate, the guard, the plan), or None w
 no longer one. `http()` makes the client every call to Slack goes through (create_app's, so a
 test hands in an httpx.MockTransport); `bot_token()` opens the install's bot token (a read of
 the store: call it on a worker thread). `slack()` is the client for them (cairn.slack.client).
-`public_url` is the server's address; `now()` its clock. The store's calls block: a handler runs them on a worker thread
+`public_url` is the server's address; `now()` its clock. The store's calls block: a handler
+runs them on a worker thread
 (starlette.concurrency.run_in_threadpool), as cairn.web.slack's own handlers do."""
 
 from collections.abc import Awaitable, Callable

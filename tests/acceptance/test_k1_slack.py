@@ -47,7 +47,11 @@ The three addresses Slack calls
   text, only when its signature holds; the first one answered turns an install that is
   ready into one that is on.
 - An event is done once: one whose `event_id` was seen is answered 200 and nothing happens
-  again, whatever `x-slack-retry-num` says. Ids are kept for a day.
+  again, whatever `x-slack-retry-num` says. Ids are kept for a day. An event whose handler
+  failed is answered 500 and its id forgotten, so Slack's next delivery runs it again;
+  `app_uninstalled` and `tokens_revoked` too.
+- What the handlers send to Slack goes through one client, made when the app starts and
+  closed when it stops.
 - A refusal writes nothing, and no log line or stored field holds the body, a secret or
   the signature: the access log names the action (`slack_event`, `slack_command`,
   `slack_action`), the install and the outcome.

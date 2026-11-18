@@ -378,6 +378,10 @@ def test_connect_ready_says_the_signing_secret_is_not_proven_until_slack_verifie
     # the state machine: ready becomes on only when Slack's signed challenge was verified
     install = ready(world)
     assert install.state == "ready"
+    # a signing secret pasted again while ready is the one requests are verified with
+    again = "9a" + "c0ffee11" * 3 + "b2c3d4"
+    assert ready(world, secret=again).state == "ready"
+    assert world.store.slack_inbound(install.id).signing_secret == again
     assert world.store.slack_install_verified(install.id).state == "on"
     made = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab")
     events = made["settings"]["event_subscriptions"]["request_url"]

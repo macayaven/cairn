@@ -271,15 +271,15 @@ docker exec cairn rm /data/export.zip
 
 The workspace must not already have a project with the same name. Imported projects are private: only the workspace's owners reach them until you share them again. Each arrives at **Models** where the file says, and a project of Personal notes at never whatever it says. A file exported before cairn carried that choice does not say it, and the import says so: each then starts at **Models** as a new project of its kind does, a project of Personal notes at never, the others at allowed.
 
-**A copy of the database** holds everything, keys included. Stop cairn first, so the copy is whole:
+**A copy of the database** holds everything, keys included. Stop cairn first, so the copy is whole, and give each backup a folder of its own, named with the time: copying into a folder that already holds a backup puts the new one inside the old one and leaves the old database on top.
 
 ```bash
 docker stop cairn
-docker cp cairn:/data ./cairn-backup
+docker cp cairn:/data/. "./cairn-backup-$(date +%Y%m%d-%H%M%S)"
 docker start cairn
 ```
 
-To run from that copy, start cairn on it as a host directory: `-v "$PWD/cairn-backup:/data" --user "$(id -u):$(id -g)"` in place of `-v cairn-data:/data`.
+To run from a copy, start cairn on that folder as a host directory: `-v "$PWD/cairn-backup-20261118-090000:/data" --user "$(id -u):$(id -g)"` in place of `-v cairn-data:/data`, with the name of the folder you chose. Check first that `cairn.db` is directly inside it.
 
 ## Upgrade
 

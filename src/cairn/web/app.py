@@ -36,6 +36,10 @@ from cairn.compiler import Gate, provenance_gate
 from cairn.guard import Guard
 from cairn.memory import OverQuota, Refused, RequestError, unavailable
 from cairn.plans import Plans
+from cairn.slack.link import link_routes
+from cairn.slack.setup import Block as SlackBlock
+from cairn.slack.setup import Outcomes as SlackOutcomes
+from cairn.slack.setup import office_of, setup_routes
 from cairn.sources.runner import MIN_SYNC_EVERY, source_client
 from cairn.store import CannotWrite, Principal, Store, StoreUnusable
 from cairn.web.account import account_routes
@@ -396,7 +400,9 @@ def create_app(
     (ValueError otherwise); `app.state.graph_explorer` holds it.
     `slack` (K1; `serve --slack`; cairn.web.slack): the three addresses Slack calls, open paths
     of Auth with their own protection, and the loop that sweeps and forgets
-    (`app.state.slack_keeper`, started in the lifespan); the store seals and opens the
+    (`app.state.slack_keeper`, started in the lifespan); the set-up and linking addresses of a
+    signed-in browser and the Sources page's block (cairn.slack.setup, cairn.slack.link); the
+    store seals and opens the
     installs' secrets with its key. It needs `sign_in` and an https:// `public_url`, and a key
     of 32 bytes (ValueError otherwise, with the sentence `serve` says). None, the default: no
     route, no block, no table read."""
@@ -503,6 +509,7 @@ def create_app(
     )
     compactor = Compactor(store, compact_every) if compact_every else None
     keeper = Keeper(store, slack.every) if slack is not None else None  # K1
+    told = SlackOutcomes(slack.sealer(), now, secure) if slack is not None else None  # K1b
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -567,6 +574,17 @@ def create_app(
         Route("/healthz", _healthz(accounts)),
         *people,
         *session_routes(accounts, key_login=sign_in is None, failures=failures),
+        *(  # K1b: a signed-in browser's set-up and linking, through Auth as every form;
+            # before the sources' /integrations/<name>/off, /on and /remove: these are Slack's
+            [
+                *setup_routes(
+                    told, office=office_of(store), http=slack.http or source_http, api=slack.api
+                ),
+                *link_routes(told, http=slack.http or source_http, api=slack.api),
+            ]
+            if slack is not None and told is not None
+            else []
+        ),
         *ui_routes(public_url, sign_in=sign_in is not None),
         *workspace_routes(own_guard=guard is not None),
         *erasure_routes(),
@@ -616,6 +634,11 @@ def create_app(
                     )
                 ]
                 if google_connect
+                else []
+            ),
+            *(  # K1b: the Sources page's Slack block, and its outcome said once
+                [Middleware(SlackBlock, outcomes=told, public_url=public_url or "")]
+                if told is not None
                 else []
             ),
             *([Middleware(HelpLink)] if docs_on else []),  # the footer's Help link

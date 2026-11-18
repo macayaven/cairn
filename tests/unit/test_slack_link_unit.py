@@ -122,8 +122,9 @@ def test_the_page_names_the_person_and_the_workspace_and_posts_back_to_itself(wo
     text = html.unescape(page.text)
     name = world.store.get_account(world.gus["account"]).name
     assert "Gus" in text and "gus@example.test" in text and name in text
-    form = page.text[page.text.index("<form") : page.text.index(">", page.text.index("<form"))]
-    assert "action=" not in form and 'method="post"' in form
+    main = page.text[page.text.index("<main") :]
+    form = main[main.index("<form") : main.index(">", main.index("<form"))]
+    assert form == '<form method="post"'  # back to this very address
     assert value not in page.text
     assert page.headers["cache-control"] == "no-store"
     assert page.headers["referrer-policy"] == "no-referrer"
@@ -145,6 +146,8 @@ def test_no_log_line_holds_the_value(world, caplog):
     world.client.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False)
     world.client.post(f"{link.LINK_PATH}?t={value}")
     for record in caplog.records:
+        if record.name.startswith("httpx"):  # the test's own client, saying what it asked
+            continue
         assert value not in record.getMessage() + repr(record.__dict__)
     access = [r for r in caplog.records if r.name == "cairn.access" and r.action == "slack_link"]
     assert [(r.status, r.install) for r in access] == [

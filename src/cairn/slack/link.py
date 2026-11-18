@@ -1,0 +1,147 @@
+"""Linking a Slack user to a person of the workspace (K1, decision D5): the page a one-time
+address opens, the yes, and unlink. The value is made by the bot (Store.offer_slack_link,
+cairn.slack's commands) and sent as <public url>LINK_PATH?t=<value>; what is kept is
+cairn.store.slack.
+
+- GET LINK_PATH?t=<value>, for a signed-in person (Auth sends anyone else to sign in): when the
+  value is one offer of an install of the person's workspace, unused and within its ten
+  minutes (Store.slack_offer), the page (templates/slack_link.html) names the Slack user, by
+  the name Slack gives (users.info through cairn.slack.client with the install's bot token,
+  within NAME_WITHIN seconds; `slack_name`) or by their id when Slack does not answer or no
+  bot token is held, and the person and the workspace it would be linked to, and asks for a
+  yes. Its form posts back to the same address: the value is in no page, no log line and no
+  cookie. Opening it changes nothing, however often.
+- POST LINK_PATH?t=<value>, the yes (Store.take_slack_offer): the person is linked and the
+  value used up; then 303 to the Sources page, where the outcome is said once
+  (cairn.slack.setup.Outcomes).
+- POST UNLINK_PATH, `slack_user`: the person's own link to that Slack user undone
+  (Store.unlink_slack_user); a link that is not theirs is not touched.
+- Anything else: no value, more than one, a value used, run out, of another workspace, or a
+  person who is not a member of the install's workspace, gets the page every address that is
+  not a page gets (404), and nothing changes.
+- Each request is one record on the access log (ACTION, cairn.slack.setup.logged): who, the
+  install when one was found, and the outcome; never the value."""
+
+from collections.abc import Callable
+from typing import Any
+
+import httpx
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.routing import Route
+
+from cairn.memory import Memory, NotFound
+from cairn.slack.client import SlackClient, SlackError
+from cairn.slack.setup import PREFIX, Noted, Outcomes, recorded
+from cairn.web.templating import NO_PAGE
+from cairn.web.ui import _ui
+
+LINK_PATH = f"{PREFIX}/link"
+UNLINK_PATH = f"{PREFIX}/unlink"
+ACTION = "slack_link"  # the access log's action
+NAME_WITHIN = 3.0  # seconds users.info may take in all
+NAME_MAX = 80  # characters of a Slack user's name shown
+VALUE_MAX = 128  # characters of a one-time value read
+SAID = {
+    "linked": (
+        "Linked: what you do through the bot in Slack now acts as you here, with what you reach."
+    ),
+    "unlinked": "Unlinked: the bot no longer acts as you for that Slack user.",
+}
+
+
+def slack_name(user: dict[str, Any], fallback: str) -> str:
+    """The name Slack gives a user (`real_name`, then the profile's display name and real
+    name, then `name`), at most NAME_MAX characters; `fallback` when it gives none."""
+    profile = user.get("profile")
+    profile = profile if isinstance(profile, dict) else {}
+    for found in (
+        user.get("real_name"), profile.get("display_name"), profile.get("real_name"),
+        user.get("name"),
+    ):  # fmt: skip
+        if isinstance(found, str) and found.strip():
+            return found.strip()[:NAME_MAX]
+    return fallback
+
+
+def _value(request: Request) -> str | None:
+    """The one-time value of the address: one `t`, 1 to VALUE_MAX characters; else None."""
+    given = request.query_params.getlist("t")
+    if len(given) != 1 or not 0 < len(given[0]) <= VALUE_MAX:
+        return None
+    return given[0]
+
+
+def link_routes(
+    outcomes: Outcomes, *, http: Callable[[], httpx.AsyncClient], api: str
+) -> list[Route]:
+    """The three addresses (the module). `http`: what the call to Slack is made through;
+    `api`: the base of Slack's Web API (the switch's)."""
+
+    async def offered(request: Request, memory: Memory, noted: Noted) -> Any:
+        value = _value(request)
+        offer = await run_in_threadpool(memory.store.slack_offer, value) if value else None
+        if offer is None or memory.person is None:
+            noted.outcome = "no_offer"
+            raise NotFound(NO_PAGE)
+        noted.install = offer.install_id
+        return offer
+
+    async def page(request: Request, memory: Memory, noted: Noted) -> Response:
+        offer = await offered(request, memory, noted)
+        store = memory.store
+        token = await run_in_threadpool(store.slack_bot_token, offer.install_id)
+        name = offer.slack_user_id
+        if token:
+            try:
+                async with http() as client:
+                    user = await SlackClient(client, api=api).user(
+                        token, offer.slack_user_id, within=NAME_WITHIN
+                    )
+                name = slack_name(user, offer.slack_user_id)
+            except SlackError:
+                pass
+        install = await run_in_threadpool(store.get_slack_install)
+        account = await run_in_threadpool(store.get_account, store.account_id)
+        noted.outcome = "asked"
+        response = _ui(
+            request, "slack_link.html", slack_name=name, slack_user=offer.slack_user_id,
+            team_domain=install.team_domain if install else None,
+            workspace=account.name if account else "", expires_at=offer.expires_at.isoformat(),
+        )  # fmt: skip
+        response.headers["cache-control"] = "no-store"
+        response.headers["referrer-policy"] = "no-referrer"
+        return response
+
+    async def yes(request: Request, memory: Memory, noted: Noted) -> Response:
+        offer = await offered(request, memory, noted)
+        try:
+            await run_in_threadpool(memory.store.take_slack_offer, _value(request))
+        except (KeyError, PermissionError):
+            noted.outcome = "no_offer"
+            raise NotFound(NO_PAGE) from None
+        noted.outcome = "linked"
+        noted.install = offer.install_id
+        return outcomes.told(memory, "linked")
+
+    async def unlink(request: Request, memory: Memory, noted: Noted) -> Response:
+        slack_user = (await request.form()).get("slack_user")
+        store = memory.store
+        install = await run_in_threadpool(store.get_slack_install)
+        person = None
+        if install is not None and isinstance(slack_user, str) and memory.person is not None:
+            person = await run_in_threadpool(store.slack_person, install.id, slack_user)
+        if person is None or person.user_id != store.user_id:
+            noted.outcome = "not_linked"
+            raise NotFound(NO_PAGE)
+        noted.install = install.id
+        await run_in_threadpool(store.unlink_slack_user, install.id, slack_user)
+        noted.outcome = "unlinked"
+        return outcomes.told(memory, "unlinked")
+
+    return [
+        Route(LINK_PATH, recorded(ACTION, page), methods=["GET"]),
+        Route(LINK_PATH, recorded(ACTION, yes), methods=["POST"]),
+        Route(UNLINK_PATH, recorded(ACTION, unlink), methods=["POST"]),
+    ]

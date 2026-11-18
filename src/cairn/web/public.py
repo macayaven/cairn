@@ -135,7 +135,10 @@ def _either(labels: Sequence[str]) -> str:
 class Public:
     """The public pages of one app. `mcp_url`: where agents connect. `providers`: the sign-in
     providers' labels, for the landing page. `operator_notes`: the last section of
-    /docs/privacy (privacy_guide)."""
+    /docs/privacy (privacy_guide). `test_instance` (`serve --test-instance`): the landing page
+    says the install is a private test instance for approved testers and leads with the run
+    guide, and the landing page's and the guides' header links to /login as "Tester
+    sign-in"; a signed-in reader's pages do not change."""
 
     def __init__(
         self,
@@ -143,7 +146,9 @@ class Public:
         *,
         providers: Sequence[str] = (),
         operator_notes: str | None = None,
+        test_instance: bool = False,
     ) -> None:
+        self.test_instance = test_instance
         self.mcp_url = mcp_url
         self.notes = operator_notes
         # The privacy guide with the notes, by product (None: no brand), each made once.
@@ -154,7 +159,13 @@ class Public:
 
     def landing(self) -> Response:
         # Never under a brand: Auth has no landing page then (it names the software).
-        return _page("landing.html", brand=None, mcp_url=self.mcp_url, providers=self.providers)
+        return _page(
+            "landing.html",
+            brand=None,
+            mcp_url=self.mcp_url,
+            providers=self.providers,
+            test_instance=self.test_instance,
+        )
 
     def _reader(self, request: Request) -> dict[str, object]:
         memory = viewer(request)
@@ -162,6 +173,7 @@ class Public:
             "brand": brand_of(request),
             "person": memory.person if memory else None,
             "signed_in": memory is not None,
+            "test_instance": self.test_instance,
         }
 
     def routes(self) -> list[Route]:

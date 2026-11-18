@@ -82,12 +82,12 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
+import cairn.store.slack as store_slack
 from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.slack import link, setup
 from cairn.slack.manifest import build_manifest, manifest_link
 from cairn.sources import KINDS
-import cairn.store.slack as store_slack
 from cairn.store import Store
 from cairn.web.slack import Slack
 

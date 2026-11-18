@@ -370,7 +370,8 @@ def create_app(
     `compiles` (G1; `serve --compiles N`, COMPILES, 2, by default): this app compiles at most
     that many notes at a time, a whole number of at least 1 (ValueError otherwise); the
     others wait their turn in arrival order, on the event loop (cairn.web.turns). Requests'
-    notes, the sources' runs and the filer all take a turn; nothing else does.
+    notes, the sources' runs, the filer and a note written from Slack all take a turn;
+    nothing else does.
     `app.state.compiles` holds the Compiles.
     `keep_versions` (Q1; `serve` passes its --keep-versions, 50 unless told otherwise): every
     save, on any view of `store`'s connection, keeps the newest that many versions of its

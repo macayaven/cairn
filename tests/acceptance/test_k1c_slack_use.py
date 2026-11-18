@@ -70,6 +70,7 @@ import json
 import logging
 import re
 import threading
+from collections import deque
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
@@ -684,28 +685,30 @@ class Held:
         self.holder.join(10)
 
 
-def looked(done, what: str) -> None:
-    """Wait, a bounded time, for `done()`: a look every few milliseconds, never a sleep that
-    decides the outcome."""
-    pause = threading.Event()
-    for _ in range(2000):
-        if done():
-            return
-        pause.wait(0.005)
-    raise AssertionError(f"waited 10 s for {what}")
+class Queue(deque):
+    """The Compiles' queue of waiters, which says when one joins it: no look on a clock."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.joined = threading.Event()
+
+    def append(self, waiter) -> None:
+        super().append(waiter)
+        self.joined.set()
 
 
 def test_a_note_from_slack_waits_for_the_servers_turn_and_is_written_once_one_is_free(world):
     world.link(world.ada, ADA_SLACK, world.inbox)
     held = Held(world)
+    queue = held.turns._waiting = Queue()
     answers = []
     sending = threading.Thread(
         target=lambda: answers.append(world.command("note The marmalade shelf moves to row 4."))
     )
     sending.start()
     try:
-        looked(lambda: held.turns.waiting == 1, "the note waiting for a turn")
-        assert world.notes_held() == 0 and answers == []
+        assert queue.joined.wait(10), "the note never waited for a turn"
+        assert held.turns.waiting == 1 and world.notes_held() == 0 and answers == []
     finally:
         held.let_go()
         sending.join(10)

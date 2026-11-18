@@ -2,12 +2,14 @@
 the slash command's `note`, a direct message's `note:` and the message shortcut each hold a
 turn while the note is written, waiting for one on the event loop with no worker thread, and
 for at most people.TURN_WITHIN seconds; past that nothing is stored and the person is told.
-Nothing here sleeps for real: the wait ends when the test lets go of the turn it holds, and
-the bound is set to 0 to see what happens past it. Every name is made up."""
+Nothing here sleeps or looks on a clock: the test knows the note waits when it joins the
+queue, the wait ends when the test lets go of the turn it holds, and the bound is set to 0
+to see what happens past it. Every name is made up."""
 
 import asyncio
 import dataclasses
 import json
+from collections import deque
 from urllib.parse import urlencode
 
 import pytest
@@ -54,14 +56,16 @@ def the_shortcut(bench: Bench):
 WAYS = {"command": the_command, "direct message": the_direct_message, "shortcut": the_shortcut}
 
 
-async def looked(done, what: str) -> None:
-    """Wait, a bounded time, for `done()` (the handler's reads run on worker threads): a look
-    every millisecond, never a sleep that decides the outcome."""
-    for _ in range(10_000):
-        if done():
-            return
-        await asyncio.sleep(0.001)
-    raise AssertionError(f"waited 10 s for {what}")
+class Queue(deque):
+    """The Compiles' queue of waiters, which says when one joins it: no look on a clock."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.joined = asyncio.Event()
+
+    def append(self, waiter) -> None:
+        super().append(waiter)
+        self.joined.set()
 
 
 async def answered(bench: Bench, found) -> str:
@@ -89,20 +93,14 @@ def test_a_note_waits_while_every_turn_is_held_and_is_written_once_one_is_free(
     monkeypatch.setattr(people, "write", writing)
 
     async def scenario() -> str:
-        release = asyncio.Event()
-
-        async def holder() -> None:
-            async with bench.turns.turn():
-                await release.wait()
-
-        holding = asyncio.create_task(holder())
-        await looked(lambda: bench.turns.held == 1, "the turn held")
+        queue = bench.turns._waiting = Queue()
+        holding = bench.turns.turn()
+        await holding.__aenter__()  # a free turn is taken without waiting
         answering = asyncio.create_task(answered(bench, WAYS[way](bench)))
-        await looked(lambda: bench.turns.waiting == 1, "the note waiting")
-        assert written == [] and bench.notes() == []  # waiting, it holds no worker thread
-        assert not answering.done()
-        release.set()
-        await holding
+        await asyncio.wait_for(queue.joined.wait(), 10)  # bounds a failure, decides nothing
+        assert bench.turns.waiting == 1 and written == [] and bench.notes() == []
+        assert not answering.done()  # waiting, it holds no worker thread
+        await holding.__aexit__(None, None, None)
         return await answering
 
     told = asyncio.run(scenario())
@@ -117,19 +115,12 @@ def test_a_note_that_finds_no_turn_in_time_is_not_stored_and_the_person_is_told(
     monkeypatch.setattr(people, "TURN_WITHIN", 0)
 
     async def scenario() -> tuple[str, str]:
-        release = asyncio.Event()
-
-        async def holder() -> None:
-            async with bench.turns.turn():
-                await release.wait()
-
-        holding = asyncio.create_task(holder())
-        await looked(lambda: bench.turns.held == 1, "the turn held")
+        holding = bench.turns.turn()
+        await holding.__aenter__()
         refused = await answered(bench, WAYS[way](bench))
         assert (bench.turns.held, bench.turns.waiting) == (1, 0)  # as they were
         assert bench.notes() == []
-        release.set()
-        await holding
+        await holding.__aexit__(None, None, None)
         bench.calls.clear()
         later = await answered(bench, WAYS[way](bench))  # the next one gets a turn
         return refused, later

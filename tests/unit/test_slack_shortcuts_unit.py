@@ -189,3 +189,10 @@ def test_a_payload_without_a_reply_address_is_acknowledged_and_nothing_done(benc
     response = handle(bench, response_url=None)
     assert response.status_code == 200 and response.background is None
     assert bench.notes() == [] and bench.calls == []
+
+
+def test_a_persons_message_of_another_subtype_is_filed(bench):
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    message = {"type": "message", "subtype": "file_share", "user": CEDAR,
+               "ts": "1900000000.000100", "text": "Row 4."}  # fmt: skip
+    assert replied(bench, handle(bench, message)).startswith("Filed: ")

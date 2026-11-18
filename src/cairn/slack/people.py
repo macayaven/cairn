@@ -20,13 +20,14 @@ A search and a note, as the person's
   stored, then compiled into its page (extractive, no model) before this returns, so when
   Slack is answered the note is in the store (D8); a page that kept moving leaves it stored
   and waiting for `serve` (N1), and the answer still links its page. Then
-  Store.record_slack_note records it as having come through the install, typed or filed
-  with its conversation and message time (D9: a message recorded already answers with the
-  note it already is). The answer links the note's page. Each refusal is its own sentence:
-  no project chosen (NO_PROJECT), the project out of reach or gone (OUT_OF_REACH), read-only
-  (the store's sentence), the guard's (cairn's own, naming the rule), the plan's cap, a full
-  page, a note filed under another topic, a text the project forgot, a text that is not a
-  note (NOT_A_NOTE), the store unable to write.
+  Store.record_slack_note records it as having come through the install: filed, always, with
+  its conversation and message time (D9: a message recorded already answers with the note it
+  already is); typed, only when the note is new (a text the project held already came in
+  some other way, and is not forgotten with the install, D10). The answer links the note's
+  page. Each refusal is its own sentence: no project chosen (NO_PROJECT), the project out of
+  reach or gone (OUT_OF_REACH), read-only (the store's sentence), the guard's (cairn's own,
+  naming the rule), the plan's cap, a full page, a note filed under another topic, a text the
+  project forgot, a text that is not a note (NOT_A_NOTE), the store unable to write.
 - `already(context, asker, note_id)`: the answer for a message filed already, linking its
   note, or, when that note is out of the person's reach, ELSEWHERE, naming nothing of it.
 
@@ -230,15 +231,20 @@ def write(
         return blocks.refused(str(refused))
     except (CannotWrite, StoreUnusable) as trouble:
         return blocks.refused(str(unavailable(trouble)))
-    conversation, time = message if message else (None, None)
-    kept = context.view.record_slack_note(
-        context.install.id,
-        answer["note_id"],
-        how="filed" if message else "typed",
-        brought_by=asker.person.user_id,
-        conversation_id=conversation,
-        message_time=time,
-    )
+    kept = answer["note_id"]
+    if message is not None:  # a filed message is recorded always: it is its key (D9)
+        kept = context.view.record_slack_note(
+            context.install.id,
+            answer["note_id"],
+            how="filed",
+            brought_by=asker.person.user_id,
+            conversation_id=message[0],
+            message_time=message[1],
+        )
+    elif answer["created"]:  # a typed text the project held already did not come through here
+        context.view.record_slack_note(
+            context.install.id, kept, how="typed", brought_by=asker.person.user_id
+        )
     if kept != answer["note_id"]:  # the same message, filed meanwhile by someone else
         return already(context, asker, kept)
     project = asker.memory.store.get_project(project_id)
@@ -311,8 +317,6 @@ async def author(context: Context, message: dict) -> str | None:
     NotFiled otherwise."""
     author_id = message.get("user")
     if not isinstance(author_id, str) or not author_id or message.get("bot_id"):
-        raise NotFiled(NO_PERSON)
-    if message.get("subtype") not in (None, "thread_broadcast"):
         raise NotFiled(NO_PERSON)
     install = context.install
     known = AUTHORS.get(install.id, author_id, context.now())

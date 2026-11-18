@@ -279,3 +279,11 @@ def test_who_asks_shows_ids_in_a_repr_and_nothing_of_their_memory(bench):
     asker = asyncio.run(people.asker(bench.context, ADA_SLACK))
     shown = repr(asker)
     assert ADA_SLACK in shown and "Memory" not in shown and "store" not in shown.lower()
+
+
+def test_a_typed_text_the_project_held_already_is_not_recorded_as_come_through_slack(bench):
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    bench.owner.add_note(bench.library.id, "Row 4 holds the quince jars.", via="web")
+    assert said(ask(bench, "note Row 4 holds the quince jars.")).startswith("Filed: ")
+    assert len(bench.notes()) == 1
+    assert bench.store._con.execute("SELECT COUNT(*) FROM slack_notes").fetchone() == (0,)

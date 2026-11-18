@@ -721,6 +721,8 @@ def test_the_workspace_over_its_cap_is_refused(tmp_path):
         answer = said(private(world.command("note The quince crate moves.")))
         assert "Nothing was stored" in answer and "notes" in answer
         assert len(world.notes()) == 1
+        shown = said(private(world.command("project library")))  # on a view the plan limits
+        assert "Slack project: library" in shown and "inbox" in shown
     finally:
         world.store.close()
 
@@ -768,13 +770,18 @@ def test_nothing_of_a_message_a_search_or_a_note_is_in_a_log_line(world, caplog)
     world.slack.answers[REPLY] = httpx.Response(500)
     world.shortcut({"type": "message", "user": CEDAR_SLACK, "ts": "1900000060.000100",
                     "text": "The walnut barrel leaks."})  # fmt: skip
-    logged = "\n".join(
-        f"{record.getMessage()} {sorted(vars(record).items())}" for record in caplog.records
-    )
+    prompt = said(private(world.command("find hazelnut", user=BROOK_SLACK)))
+    value = re.search(r"link\?t=([A-Za-z0-9_-]+)", prompt).group(1)
+
+    def logged(records) -> str:
+        return "\n".join(f"{r.getMessage()} {sorted(vars(r).items())}" for r in records)
+
     assert caplog.records
     for word in ("marmalade", "quince", LOOKS_SECRET, "persimmon", "fig tree", "walnut",
-                 "Cedar", k1.TOKEN):  # fmt: skip
-        assert word not in logged
+                 "Cedar", "hazelnut", value, k1.TOKEN):  # fmt: skip
+        assert word not in logged(caplog.records)
+    # httpx's own INFO line names each address it posts to; no line of cairn's names a reply's
+    assert REPLY not in logged(r for r in caplog.records if r.name != "httpx")
 
 
 def counted(world: World, act) -> int:

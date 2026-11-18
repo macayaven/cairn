@@ -811,7 +811,8 @@ def test_a_source_is_not_moved_onto_another_sources_selection(world):
 def test_the_guide_says_how_long_an_item_is_held_and_that_case_is_blind():
     root = Path(__file__).resolve().parents[2]
     guide = (root / "src" / "cairn" / "guides" / "sources.md").read_text()
-    said = next(s for s in guide.split(". ") if "never write one item" in s)
+    words = "made from one registered account are compared"
+    said = next(s for s in guide.split(". ") if words in s)
     assert "case-blind" in said and "look-back window" in said and "unwritten" in said
     assert len(guide.encode()) < 70_000
 
@@ -821,7 +822,7 @@ def test_the_guide_says_which_second_source_the_form_refuses():
 
     root = Path(__file__).resolve().parents[2]
     guide = " ".join((root / "src" / "cairn" / "guides" / "sources.md").read_text().split())
-    start = guide.index("never write one item")
+    start = guide.index("made from one registered account are compared")
     said = guide[start : guide.index("**Four endings", start)]
     for words in (
         "one Granola account makes one source",

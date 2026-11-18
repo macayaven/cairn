@@ -134,6 +134,10 @@ uv run python -m cairn.server serve --db runs/dev/cairn.db --host 127.0.0.1 --po
 
 `runs/` is ignored by git. Tests come first: a change starts with a test that fails for the expected reason. Tests run offline, with a fake model and fake HTTP, and every fixture is synthetic. [CONTRIBUTING.md](CONTRIBUTING.md) says more, and [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
+## What it does not promise
+
+A page keeps its newest 50 versions under `serve`: `--keep-versions N` keeps N, `--keep-versions all` keeps every one, and with a plans file the plans decide. A claim is found again by its project, page, claim id and version, which `evidence` takes, for as long as the page keeps that version. A citation shows what a note said, not which of two notes that disagree is right. What a source reads, and where the check that keeps two sources from writing one item stops, is in the [privacy guide](src/cairn/guides/privacy.md#what-a-source-reads).
+
 ## Licence
 
 cairn's own code is under the MIT License: see [LICENSE](LICENSE).
@@ -167,7 +171,7 @@ A running cairn serves these at `/docs`. The Markdown lives in the package, so t
 | Chunker | Splits Markdown into headings and citable passages, with heading paths and stable ids | `tests/acceptance/test_t1_spans.py`, regression tests, a held-out set |
 | Fact extractor | Finds flags, paths, numbers with units, dates, versions, URLs, inline code and code blocks; code is scored per line | `tests/acceptance/test_t2_facts.py`, a synthetic gold set, a held-out set |
 | `python -m cairn lint` | Scores any page set against its sources: retention by fact type, code-line retention, passage coverage, duplicates, misplaced facts; pages that cite passages also get provenance, grounding and attribution checks | `tests/acceptance/test_t3_lint.py`, `test_t3_multisource.py` |
-| Store | Many workspaces and projects in one SQLite file, versioned pages, FTS5 search; keys, sessions and tokens stored only as digests; reads never write | `tests/acceptance/test_w1_store.py`, `test_h1_accounts.py` |
+| Store | Many workspaces and projects in one SQLite file, versioned pages, FTS5 search; keys, browser sessions, agents' tokens and invitation links cairn issues, stored only as digests; with `--google-connect`, a Google refresh token stored sealed; reads never write | `tests/acceptance/test_w1_store.py`, `test_h1_accounts.py` |
 | Compiler and gate | Turns each note into page claims and saves a version only if the gate passes | `test_w1_store.py`, `test_w3_gate.py` |
 | Arranging model | With `serve --model-env`, a model orders a page's claims and folds repeated ones; it answers with claim numbers, and cairn builds the page from text it already holds | `tests/acceptance/test_t4b_arrange.py` |
 | Tidying without a model | On by default in `serve` (`--no-tidy` turns it off; `--model-env` puts a model in its place), cairn keeps each heading's claims together and folds repeated ones itself: no model, key or budget, and the page says it was arranged by cairn | `tests/acceptance/test_t4f_tidy.py` |

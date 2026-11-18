@@ -39,6 +39,19 @@ Words after the image name replace its default command, `serve --db /data/cairn.
 
 When cairn listens on an address that is not loopback, as the default command does inside the container, and `--public-url` is not https, it says at start, in one line of its log, that keys, tokens and session cookies travel in clear text on that listener unless a proxy in front of it ends TLS. It starts all the same: published on 127.0.0.1 as above, nothing else on your network reaches it, and behind a proxy that ends TLS, `--public-url https://...` says so and the line goes.
 
+### Or pull a released image
+
+Each release of cairn is also published as an image for linux/amd64 and linux/arm64, built by the repository's workflow from the release's tag. A version such as `0.1.0` names one release, and is never moved to newer code. Instead of the clone and the build above:
+
+```bash
+docker pull ghcr.io/macayaven/cairn:0.1.0 &&
+  docker tag ghcr.io/macayaven/cairn:0.1.0 cairn:local
+```
+
+The second line gives the pulled image the name this guide's commands use, so run them as written, starting with the `docker run` above.
+
+To check what you pulled: `docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/macayaven/cairn:0.1.0` prints the digest you pulled; it must be the digest the repository's package page on GitHub shows for `0.1.0`. `docker buildx imagetools inspect ghcr.io/macayaven/cairn:0.1.0` lists the image for each platform and, beside each, an attestation that holds the provenance of the build that published it and its bill of materials.
+
 ## Make a key
 
 cairn has no password. You sign in with an API key, and agents connect with one. Make the first key inside the container, copy it out, and delete the copy inside:
@@ -360,6 +373,19 @@ Take a [cold database backup](#back-it-up) first, and note the running image (`d
   set -e
   git pull --ff-only origin main
   docker build -t cairn:local .
+  docker stop cairn
+  docker rm cairn
+)
+```
+
+With a pulled image, take the same [cold database backup](#back-it-up) and note the running image, then pull the next version and replace the container. Set `VERSION` to the release you move to, in place of `0.1.0`:
+
+```bash
+(
+  set -e
+  VERSION=0.1.0
+  docker pull "ghcr.io/macayaven/cairn:$VERSION"
+  docker tag "ghcr.io/macayaven/cairn:$VERSION" cairn:local
   docker stop cairn
   docker rm cairn
 )

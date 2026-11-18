@@ -224,7 +224,7 @@ Try a model before you give it the worker: `evals/t4_compile.py --arrange`, with
 
 ## Options of `serve` in a container
 
-One image serves the web UI, the REST API and the MCP endpoint on port 8765. It runs as a non-root user and keeps its database on the `/data` volume. The compose files in `deploy/` start it, and [Run it yourself](docs/guides/run.md), served at `/docs/run`, builds the source and starts it with `docker run`, from the first key to backups and upgrades.
+One image serves the web UI, the REST API and the MCP endpoint on port 8765. It runs as a non-root user and keeps its database on the `/data` volume. The compose files in `deploy/` start it, and [Run it yourself](docs/guides/run.md), served at `/docs/run`, builds the source and starts it with `docker run`, from the first key to backups and upgrades. Each release is also published as an image, such as `ghcr.io/macayaven/cairn:0.1.0`; the run guide says how to pull it and check what you pulled.
 
 Arguments after the image name replace the default command, `serve --db /data/cairn.db --host 0.0.0.0`. With Compose they go in `CAIRN_EXTRA_ARGS` in `deploy/.env`, after the command the compose file already gives:
 - **Behind a reverse proxy or Tailscale Serve:** add `--public-url https://cairn.example.net`. Form posts are then checked against that origin, and the session cookie is marked Secure. Add `--trusted-proxy` with the address or network the proxy's requests arrive from too. In a container that is the Docker network (`docker network inspect bridge` shows its range), never 127.0.0.1, even for a proxy on the same machine. No proxy is trusted otherwise, loopback included, and every client would share one count in the limits on sign-in and agent registration.
@@ -293,8 +293,9 @@ One exception: a change that touches only paths no image job reads builds no ima
 2. **Infrastructure and deploy files:** OpenTofu formatting and validation, the host and deploy scripts, the compose files, Caddy's own check of its configuration, and the restore drill on a fresh database.
 3. **Image check:** builds the image for linux/amd64 and linux/arm64, then runs `scripts/smoke_container.py` against each.
 4. **Stack rehearsal:** runs the shipped compose stack on the runner, with Caddy and Litestream, and restores a lost database into it (`scripts/rehearse_stack.py`).
-5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags publish one multi-arch image, with provenance and an SBOM, to `ghcr.io/<owner>/<repo>`. Tags are the version, `major.minor`, the branch and the commit. A repository whose registry is not ready sets the variable `CAIRN_PUBLISH` to `false`: the gate runs as before, and items 5 and 6 are skipped.
-6. **Verify and deploy:** on `main`, the published image is smoke-tested, and a `deploy` job that waits for approval moves the production VM to it ([infra/gcp/README.md](infra/gcp/README.md)).
+5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags publish one multi-arch image, with provenance and an SBOM, to `ghcr.io/<owner>/<repo>`. A tag is published only when it is `v` and the version in `pyproject.toml` and `CHANGELOG.md` has a dated section for that version: `scripts/release_check.py` checks it first. A tag is published as `X.Y.Z`, `X.Y` and `latest`; a push to `main` as `main` and `sha-<commit>`, never `latest`. A repository whose registry is not ready sets the variable `CAIRN_PUBLISH` to `false`: the gate runs as before, and items 5 to 7 are skipped.
+6. **Verify and deploy:** on `main` and on tags, the published image is smoke-tested. On `main`, a `deploy` job that waits for approval moves the production VM to it ([infra/gcp/README.md](infra/gcp/README.md)).
+7. **Release:** a tag whose published image passed becomes a GitHub release, with the version's section of `CHANGELOG.md` as its text and the wheel and source archive that `uv build` makes attached. A tag never deploys.
 
 Nothing is published from a pull request. Actions are pinned to commit SHAs, and Dependabot updates them, the base images and `uv.lock` weekly.
 

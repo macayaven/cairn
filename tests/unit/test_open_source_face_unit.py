@@ -274,7 +274,14 @@ def test_local_upgrades_build_from_source_before_replacing_the_container():
         "docker build -t cairn:local .",
     ]
     assert commands[1][-1].endswith("cairn:local")
-    assert "docker pull" not in RUN_GUIDE and "wherever this guide writes" not in RUN_GUIDE
+    # A pull is the second way only, of a released image by its version (test_distribution_unit).
+    pulls = re.findall(r"docker pull (\S+)", RUN_GUIDE)
+    assert pulls and set(pulls) <= {
+        "ghcr.io/macayaven/cairn:0.1.0",
+        '"ghcr.io/macayaven/cairn:$VERSION"',
+    }, pulls
+    assert RUN_GUIDE.index("docker pull") > RUN_GUIDE.index("docker build -t cairn:local .")
+    assert "wherever this guide writes" not in RUN_GUIDE
 
 
 def test_a_clone_that_fails_stops_the_first_commands_before_they_touch_a_folder():

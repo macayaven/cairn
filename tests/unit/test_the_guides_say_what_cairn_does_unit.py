@@ -120,7 +120,7 @@ def test_the_privacy_guide_says_how_many_versions_serve_keeps(served):
     holds(
         words,
         "serve keeps the newest 50 versions of a page unless --keep-versions N",
-        "or --keep-versions all says otherwise",
+        "or --keep-versions all (every one) says otherwise",
         "A program that uses the library without serve keeps every version",
     )
 
@@ -140,6 +140,7 @@ def test_the_privacy_guide_says_what_an_export_leaves_out_and_an_import_does_not
         "A forgotten note is not in it, nor the page versions erased with it.",
         "Every project an import brings is private.",
         "does not refuse the text of a note forgotten before the export",
+        "so it can bring a forgotten item back",
     )
 
 
@@ -170,6 +171,7 @@ def test_the_privacy_guide_says_what_a_source_reads_and_where_the_check_stops(se
         "Everyone who reads the project a source writes into reads what it brings.",
         "by no other member until its rule names them",
         "compares the sources made from one registered account",
+        "the labels of two of them that are on is held, per message",
         "one Google or Granola account registered twice is two accounts to it",
         "a source added on the command line is compared with nothing",
         "a person's other address naming their primary calendar is not ruled out",

@@ -3,14 +3,20 @@ address opens, the yes, and unlink. The value is made by the bot (Store.offer_sl
 cairn.slack's commands) and sent as <public url>LINK_PATH?t=<value>; what is kept is
 cairn.store.slack.
 
+- It is opened by a click in Slack, so Auth treats it as an invitation's link (cairn.web.auth,
+  `comes_back`, with the switch on): a person not signed in is sent to sign in and comes back
+  to the same address, the value with it (as `next`, sealed in the sign-in's state cookie);
+  a signed-in browser that another site sent here left its session cookie (SameSite=Strict)
+  behind, so it is first shown the page that loads the same address again by itself.
 - GET LINK_PATH?t=<value>, for a signed-in person (Auth sends anyone else to sign in): when the
   value is one offer of an install of the person's workspace, unused and within its ten
   minutes (Store.slack_offer), the page (templates/slack_link.html) names the Slack user, by
   the name Slack gives (users.info through cairn.slack.client with the install's bot token,
   within NAME_WITHIN seconds; `slack_name`) or by their id when Slack does not answer or no
   bot token is held, and the person and the workspace it would be linked to, and asks for a
-  yes. Its form posts back to the same address: the value is in no page, no log line and no
-  cookie. Opening it changes nothing, however often.
+  yes. Its form posts back to the same address: the value is in no log line, and in no page
+  or cookie but the ways back to this address above. Opening it changes nothing, however
+  often.
 - POST LINK_PATH?t=<value>, the yes (Store.take_slack_offer): the person is linked and the
   value used up; then 303 to the Sources page, where the outcome is said once
   (cairn.slack.setup.Outcomes).

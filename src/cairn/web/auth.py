@@ -203,12 +203,15 @@ def _presented_key(headers: Headers) -> str:
 _PLAIN_QUERY = re.compile(r"[A-Za-z0-9._~%=&+-]+")
 
 
-def _refusal(request: HTTPConnection, issuer: str | None = None) -> Response:
+def _refusal(
+    request: HTTPConnection, issuer: str | None = None, comes_back: frozenset[str] = frozenset()
+) -> Response:
     """What a request without a valid credential gets. /api and /mcp: a JSON 401, which on
     /mcp also says where OAuth starts when it is on (`issuer`). The web UI: the way to the
     login form. Only the consent page, the share target (/new, whose query holds what was
-    shared) and an invitation (/join/<token>) are worth coming back to after signing in, so
-    only they travel along as `next`;
+    shared), an invitation (/join/<token>) and the exact paths of `comes_back` (with Slack's
+    switch on, the page a link a person clicks in Slack opens, K1) are worth coming back to
+    after signing in, so only they travel along as `next`;
     and when another site sent the browser there, the session cookie (SameSite=Strict) was
     left behind, so the page first asks the browser to come again by itself."""
     path = request.scope["path"]
@@ -225,6 +228,7 @@ def _refusal(request: HTTPConnection, issuer: str | None = None) -> Response:
         path == SHARE_PATH
         or path.startswith(JOIN_PREFIX)
         or (issuer and path == oauth.CONSENT_PATH)
+        or path in comes_back
     )
     if comes_back and request.scope["method"] in ("GET", "HEAD"):
         target = f"{path}?{query}" if query else path
@@ -294,6 +298,9 @@ class Auth:
     `open_paths`: exact paths that pass with no credential, no rate count and no
     cross-origin check, for any method; the route checks the request itself (the address
     Google sends a browser back to after connecting an account, web/google_connect.py).
+    `comes_back`: exact paths of pages a signed-out GET or HEAD comes back to after signing
+    in (_refusal), with the come-again page when another site sent the browser there; with
+    Slack's switch on, the page a one-time link clicked in Slack opens (K1). Empty: none.
 
     H1: every answer on /api and /mcp carries `Cache-Control: no-store` and no other
     Cache-Control (`_no_store`), set here, before anything answers: a refusal, a 429, the MCP
@@ -350,8 +357,10 @@ class Auth:
         wall: bool = False,
         failures: CredentialFailures | None = None,
         draft: Callable[[Request], Awaitable[Response | None]] | None = None,
+        comes_back: frozenset[str] = frozenset(),
     ) -> None:
         self.app = app
+        self.comes_back = comes_back
         self.failures = failures
         self.accounts = accounts
         self.public_origin = _origin(public_url) if public_url else None
@@ -420,7 +429,7 @@ class Auth:
                 return await kept(scope, receive, answer)
         if memory is None and walled:  # B1: the sign-in page, and nothing else
             if scope["method"] in ("GET", "HEAD"):
-                return await _refusal(request, self.issuer)(scope, receive, answer)
+                return await _refusal(request, self.issuer, self.comes_back)(scope, receive, answer)
             refused = Response("Sign in first.", 401, media_type="text/plain")
             return await refused(scope, receive, answer)
         if walled:  # admitted: answered as without the wall
@@ -439,7 +448,7 @@ class Auth:
                 return await self.app(scope, receive, send)
             if _is_api(path):  # no route ran: the record says only that one was refused
                 record_access("none", None, None, DENIED, None, 401)
-            return await _refusal(request, self.issuer)(scope, receive, send)
+            return await _refusal(request, self.issuer, self.comes_back)(scope, receive, send)
         limit = memory.plan[1].requests_per_minute if memory.plan else None
         wait = 0
         if self.limiter is not None and limit is not None:

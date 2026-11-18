@@ -52,7 +52,11 @@ Linking a Slack user to a person
 - The yes (POST /integrations/slack/link) links them and uses the value up: a second yes
   with it, a value older than 10 minutes, a value of another workspace, and a person who is
   not a member each get the page every address that is not a page gets, and nothing changes.
-- A person who is not signed in is sent to sign in and comes back to the same address.
+- A person who is not signed in is sent to sign in and comes back to the same address. A
+  signed-in person who arrives from another site (a click in Slack), whose browser leaves
+  the session cookie behind on that first request, is shown the page that loads the same
+  address again by itself, as an invitation's link is. Neither way puts the one-time value
+  in a log line.
 - The Sources page shows a person their own link, with "Unlink"
   (POST /integrations/slack/unlink); nobody is shown anybody else's Slack user.
 - Each is one record on the access log (`slack_link`).
@@ -835,16 +839,57 @@ def test_a_value_of_another_workspace_and_a_person_not_a_member_get_no_page(worl
     assert world.slack_rows() == before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="cairn.web.auth._refusal carries `next` only for /new, /join/ and the consent page",
-)
 def test_a_person_not_signed_in_comes_back_to_the_same_address(world):
     _install, value = offered(world)
     address = f"{link.LINK_PATH}?t={value}"
     away = world.browser(None).get(address, follow_redirects=False)
     assert away.status_code == 303
     assert away.headers["location"] == f"/login?next={quote(address, safe='')}"
+    login = world.browser(None).get(away.headers["location"])
+    started = f"/auth/github?{urlencode({'next': address})}"
+    assert login.status_code == 200 and html.escape(started) in login.text
+
+
+CROSS_SITE = {"sec-fetch-site": "cross-site"}
+
+
+def test_a_signed_in_person_sent_by_another_site_comes_again_by_themselves(world):
+    """A click in Slack: the browser leaves the SameSite=Strict session cookie behind on the
+    first request, and the page asks it to load the same address again by itself."""
+    _install, value = offered(world)
+    address = f"{link.LINK_PATH}?t={value}"
+    before = world.slack_rows()
+    again = world.browser(None).get(address, headers=CROSS_SITE, follow_redirects=False)
+    assert again.status_code == 200
+    assert f'content="0; url={html.escape(address)}"' in again.text
+    assert world.slack_rows() == before
+    page = world.browser(world.cleo).get(address, headers={"sec-fetch-site": "same-origin"})
+    assert page.status_code == 200 and CLEO_SLACK in html.unescape(page.text)
+
+
+def test_off_the_link_address_is_no_page_signed_in_or_not(off):
+    signed_out = off.browser(None)
+    for headers in ({}, CROSS_SITE):
+        answer = signed_out.get(f"{link.LINK_PATH}?t=anything", headers=headers)
+        assert answer.status_code == 404
+        assert answer.content == signed_out.get("/integrations/nothing/here").content
+
+
+def test_the_one_time_value_is_in_no_log_line_on_either_way(world, caplog):
+    caplog.set_level(logging.DEBUG)
+    _install, value = offered(world)
+    address = f"{link.LINK_PATH}?t={value}"
+    away = world.browser(None).get(address, follow_redirects=False)
+    world.browser(None).get(away.headers["location"])
+    world.browser(None).get(address, headers=CROSS_SITE)
+    cleo = world.browser(world.cleo)
+    cleo.get(address)
+    said(cleo, cleo.post(address, follow_redirects=False))
+    # the test client's own request lines are not the server's (serve keeps httpx quiet)
+    client = ("httpx", "httpx2", "httpcore")
+    caplog.records[:] = [r for r in caplog.records if r.name.split(".")[0] not in client]
+    assert any(r.name == "cairn.access" for r in caplog.records)
+    assert value not in everything_said(caplog, world)
 
 
 def test_a_person_not_signed_in_is_sent_to_sign_in_and_nothing_changes(world):

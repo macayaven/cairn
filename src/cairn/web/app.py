@@ -36,7 +36,7 @@ from cairn.compiler import Gate, provenance_gate
 from cairn.guard import Guard
 from cairn.memory import OverQuota, Refused, RequestError, unavailable
 from cairn.plans import Plans
-from cairn.slack.link import link_routes
+from cairn.slack.link import LINK_PATH, link_routes
 from cairn.slack.setup import Block as SlackBlock
 from cairn.slack.setup import Outcomes as SlackOutcomes
 from cairn.slack.setup import block as slack_block
@@ -674,6 +674,8 @@ def create_app(
                 wall=wall,
                 failures=failures,
                 draft=signed_out_draft,
+                # K1: a link clicked in Slack comes back through sign-in, as an invitation's
+                comes_back=frozenset({LINK_PATH}) if slack is not None else frozenset(),
             ),
         ],
         exception_handlers={

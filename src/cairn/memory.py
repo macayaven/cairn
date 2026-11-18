@@ -181,16 +181,18 @@ def record_access(
     status: int,
 ) -> None:
     """One record on the access log. A handler that fails is the log's problem, not the
-    caller's: what logging raises is dropped, and the request ends as it would have."""
+    caller's: what logging raises is dropped, and the request ends as it would have. A
+    request refused before anyone was identified has no caller and no project, and its line
+    says so in words ("denied by an unknown caller: 401"), not with Python's None."""
     with contextlib.suppress(Exception):
+        unknown = actor is None and actor_id is None and project is None
+        form = "%s by an unknown caller: %s" if unknown else "%s by %s %r (%s), project %r: %s"
+        said = (
+            (action, status) if unknown else (action, actor_kind, actor, actor_id, project, status)
+        )
         access_log.info(
-            "%s by %s %r (%s), project %r: %s",
-            action,
-            actor_kind,
-            actor,
-            actor_id,
-            project,
-            status,
+            form,
+            *said,
             extra={
                 "actor_kind": actor_kind,
                 "actor": actor,

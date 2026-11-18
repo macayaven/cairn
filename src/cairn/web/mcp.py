@@ -22,6 +22,7 @@ and `evidence` say their results are quoted text and how each names who wrote it
 """
 
 import contextlib
+import logging
 from collections.abc import Iterator
 from typing import Annotated, Any
 
@@ -185,9 +186,18 @@ _PRIVATE_FIELD = (
 Slug = Annotated[str, Field(description="Page slug, as returned by note, recall or overview.")]
 
 
+# The SDK's logger of tool calls writes a failed call at INFO with the error's text, which
+# quotes what the caller sent (a project's name, a slug). The access log records the tool, the
+# caller and the status; the SDK's logger is held at WARNING, as the HTTP clients' are, so it
+# writes only a tool's unexpected exception.
+SDK_TOOL_LOGGER = "mcp.server.mcpserver.server"
+
+
 def build_mcp(brand: Brand | None = None) -> MCPServer:
     """The MCP server of an app under `brand` (None: none), named after its product. Its
     tools hold no Memory: each call takes its caller's (`_caller`)."""
+    sdk_log = logging.getLogger(SDK_TOOL_LOGGER)
+    sdk_log.setLevel(max(logging.WARNING, sdk_log.level))
     product = product_of(brand).name
     mcp = _Server(name=product, instructions=instructions(product), version=__version__)
     register_graph_resource(mcp, _caller)

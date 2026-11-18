@@ -221,7 +221,7 @@ def test_the_readme_says_what_cairn_does_not_promise_before_the_licence():
         "`--keep-versions N` keeps N",
         "for as long as the page keeps that version",
         "A citation shows what a note said, not which of two notes that disagree is right.",
-        f"src/cairn/guides/privacy.md#{ANCHOR}",
+        f"docs/guides/privacy.md#{ANCHOR}",
     )
 
 

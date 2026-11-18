@@ -93,3 +93,20 @@ def test_pages_that_show_no_memory_leave_no_access_record(world, caplog, path):
     with caplog.at_level(logging.INFO, logger="cairn.access"):
         assert client.get(path, headers=headers).status_code == 200, path
     assert records(caplog) == []
+
+
+def test_a_refused_requests_record_says_in_words_that_no_one_was_identified(world, caplog):
+    """An admitted request's record names who, by what and the project; a request refused
+    before its route has no caller and no project, and its record says so in words, not
+    with Python's None."""
+    client, headers, user_id, _, _ = world
+    asked = [
+        ("/b/team", headers, f"overview by session 'Ada' ({user_id}), project 'team': 200"),
+        ("/api/projects", {}, "denied by an unknown caller: 401"),
+        ("/api/projects", {"x-api-key": "made-up-key-4d2e"}, "denied by an unknown caller: 401"),
+    ]
+    for path, sent, line in asked:
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="cairn.access"):
+            client.get(path, headers=sent)
+        assert [r.getMessage() for r in records(caplog)] == [line], path

@@ -21,7 +21,7 @@ You can start with the first and move to the others later. Projects, sets and co
 
 ## Many agents, one project
 
-One project holds everything. Each agent connects by URL and reaches it.
+One project holds everything, and every agent reaches it.
 
 ```
 Claude Code ─┐
@@ -31,14 +31,14 @@ a CI job ────┘  (API key)
 ```
 
 1. Create one project, for example `core`.
-2. Connect each agent that has a browser at hand:
+2. Connect each agent. On an install started with `--public-url`, an agent that has a browser at hand connects by URL alone:
 
    ```bash
    claude mcp add --transport http {{slug}} https://YOUR-{{SLUG}}/mcp
    codex mcp add {{slug}} --url https://YOUR-{{SLUG}}/mcp
    ```
 
-   The browser opens once per agent. Leave **All projects** selected and approve.
+   The browser opens once per agent. Leave **All projects** selected and approve. On a local install, started without `--public-url`, sign-in through the browser is off: give each agent a key instead, as in step 3 and [the connect guide](connect.md#headless-agents-and-scripts) shows.
 3. For a job without a browser, create a key under **Workspace**, then **Keys**, and give it to the job as `CAIRN_API_KEY`.
 
 What one agent notes, every other agent finds at once. Nothing is separated, which is the point and the limit of this pattern.

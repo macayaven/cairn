@@ -57,6 +57,9 @@ services:
         required: false
     volumes:
       - cairn-data:/data
+    # No Linux capability and no privilege gained by exec: serve needs neither.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     logging: *logging
 
   caddy:
@@ -74,6 +77,10 @@ services:
       - caddy-config:/config
     depends_on:
       - cairn
+    # One capability, to bind ports 80 and 443; nothing else, and none gained by exec.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
     logging: *logging
 
 # A fixed private subnet, so cairn can be told which addresses are the proxy's. Set

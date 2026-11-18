@@ -235,6 +235,7 @@ from urllib.parse import urlsplit
 import httpx
 import uvicorn
 
+from cairn import __version__
 from cairn.gate import lint_gate
 from cairn.identity import OIDC, GitHub, Google, IdentityProvider
 from cairn.memory import ACCESS_LOGGER
@@ -333,6 +334,7 @@ def _parser() -> argparse.ArgumentParser:
         " pages, tidied by default or with a model; export, import and compact its data.",
         allow_abbrev=False,  # a mistyped option fails; it is never read as a longer one
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser(
         "serve", help="run the REST API, the MCP endpoint and the UI", allow_abbrev=False

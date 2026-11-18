@@ -1,6 +1,6 @@
 [project]
 name = "cairn-memory"
-version = "0.0.1"
+version = "0.1.0"
 description = "Pre-alpha: a provenance-first memory compiler for AI agents, built test-first."
 readme = "README.md"
 license = "MIT"

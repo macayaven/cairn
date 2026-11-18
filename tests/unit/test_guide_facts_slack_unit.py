@@ -40,7 +40,7 @@ from cairn.slack.text import note_from_message
 from cairn.slack.verify import BODY_MAX, SKEW, OtherTeam, envelope, signature, verified
 from cairn.store import Store
 from cairn.store.hosted import Sealer
-from cairn.store.slack import ACCEPTING, COMMAND, FORGET_AFTER, OFFER_TTL
+from cairn.store.slack import ACCEPTING, COMMAND, FORGET_AFTER, OFFER_TTL, TRIES
 from cairn.web import slack as web_slack
 from cairn.web.brand import product_of
 
@@ -419,26 +419,51 @@ def test_connect_remove_deletes_the_secrets_and_links_and_forgets_10_days_later(
     assert world.view.slack_notes_to_forget() is None and world.view.get_note(note) is not None
 
 
-def test_connect_a_person_links_once(bench):
-    """connect.md: "Each person links their Slack user to themselves once. The first time they
-    use the bot, or with `/cairn link`, the bot answers them alone with an address that works
-    once, within 10 minutes. Opened signed in to cairn, it names the Slack user and the person,
-    and asks for a yes. From then on, what they do through the bot acts as them, with what they
-    reach.\""""
+def yes_and_code(bench, slack_user: str, user_id: str) -> str:
+    """The Slack user asks for the address with `/cairn link`; the person `user_id` opens it
+    signed in and says yes. The code they are shown."""
+    (value,) = set(re.findall(r"link\?t=([A-Za-z0-9_-]+)", said(ask(bench, "link", slack_user))))
+    return bench.store.for_account(bench.account, user_id).claim_slack_offer(value)
+
+
+LINK_PAGE = (files("cairn") / "templates" / "slack_link.html").read_text(encoding="utf-8")
+CODE_PAGE = (files("cairn") / "templates" / "slack_link_code.html").read_text(encoding="utf-8")
+
+
+def test_connect_a_person_links_once_in_two_steps(bench):
+    """connect.md: "Each person links their Slack user to themselves once, in two steps within
+    10 minutes. The first time they use the bot, or with `/cairn link`, the bot answers them
+    alone with an address that works once. Opened signed in to cairn, it shows the Slack
+    user's id and the Slack workspace first, then the name that Slack user set themself, and
+    asks for a yes; if someone sent you the address, close the page. The yes shows a code,
+    once, and links nothing yet. The same Slack user then types `/cairn link <code>` in
+    Slack, and is linked. From then on, what they do through the bot acts as them, with what
+    they reach.\""""
     says(
         *CONNECT,
-        "Each person links their Slack user to themselves once. The first time they use the"
-        f" bot, or with `/{PRODUCT.slug} link`, the bot answers them alone with an address that"
-        f" works once, within 10 minutes. Opened signed in to {PRODUCT.name}, it names the Slack"
-        " user and the person, and asks for a yes. From then on, what they do through the bot"
-        " acts as them, with what they reach.",
+        "Each person links their Slack user to themselves once, in two steps within 10"
+        f" minutes. The first time they use the bot, or with `/{PRODUCT.slug} link`, the bot"
+        " answers them alone with an address that works once. Opened signed in to"
+        f" {PRODUCT.name}, it shows the Slack user's id and the Slack workspace first, then the"
+        " name that Slack user set themself, and asks for a yes; if someone sent you the"
+        " address, close the page. The yes shows a code, once, and links nothing yet. The same"
+        f" Slack user then types `/{PRODUCT.slug} link <code>` in Slack, and is linked. From"
+        " then on, what they do through the bot acts as them, with what they reach.",
     )
     assert timedelta(minutes=10) == OFFER_TTL and f"/{PRODUCT.slug}" == COMMAND
     for text in ("find jars", "link"):
         assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, text))  # ephemeral
-    page = (files("cairn") / "templates" / "slack_link.html").read_text(encoding="utf-8")
-    assert "<h1>Link this Slack user to you?</h1>" in page and "Yes, link them" in page
-    assert "with what you reach" in page and "<dt>Slack user</dt>" in page
+    assert "<h1>Link this Slack user to you?</h1>" in LINK_PAGE
+    assert LINK_PAGE.index("{{ slack_user }}") < LINK_PAGE.index("{{ slack_name }}")
+    assert LINK_PAGE.index("{{ team_domain }}") < LINK_PAGE.index("{{ slack_name }}")
+    assert "a name this Slack user set themself" in LINK_PAGE
+    assert "If someone sent you this address, close this page." in LINK_PAGE
+    assert "with what you reach" in LINK_PAGE and "{{ code" not in LINK_PAGE
+    assert "{{ command }} link {{ code }}" in CODE_PAGE
+    code = yes_and_code(bench, ADA_SLACK, bench.ada)
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK) is None  # nothing yet
+    assert said(ask(bench, f"link {code}")) == said(blocks.linked("Ada"))
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK).user_id == bench.ada
 
 
 def test_connect_the_slash_commands_words(bench):
@@ -454,7 +479,9 @@ def test_connect_the_slash_commands_words(bench):
         " page. |",
         "| `project` | Says which project is your Slack project and which projects you can write"
         " to. `project <name>` makes another of those your Slack project. |",
-        "| `link` | Says who your Slack user is linked to. |",
+        "| `link` | Says who your Slack user is linked to; if it is linked to nobody, gives a"
+        " new address to link it. `link <code>` links it with the code that address showed"
+        " you. |",
         "| `unlink` | Undoes your link, and offers a new address to link again. |",
         "| `help`, or no word | Lists what there is. |",
     )
@@ -474,6 +501,7 @@ def test_connect_the_slash_commands_words(bench):
     assert said(ask(bench, "project")) == said(blocks.project_is("library", writable=["library"]))
     assert said(ask(bench, "link")) == said(blocks.linked("Ada"))
     assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "unlink"))
+    assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "link"))  # linked to nobody
     for word in ("help", ""):
         assert said(ask(bench, word)) == said(blocks.help_text("/cairn"))
 
@@ -844,6 +872,58 @@ def test_security_answers_are_private_and_built_from_the_askers_reach(bench):
     assert "quince" in said(ask(bench, "find quince"))  # Ada reaches the cellar
     brooks = said(ask(bench, "find quince", BROOK_SLACK))  # ephemeral, checked by ask
     assert brooks == said(blocks.nothing_found("quince")) and "cellar" not in brooks
+
+
+def test_security_what_links_a_slack_user_to_a_person(bench, monkeypatch):
+    """security.md: "A Slack user is linked to a person in three steps. The Slack user asks
+    the bot for an address, which is theirs alone. The person opens it signed in and says
+    yes, and is shown a code, once. The same Slack user types that code with the command
+    within 10 minutes. So a Slack user is linked to a person only when that Slack user knew a
+    code shown only to that person: someone who sends their address to another person gains
+    nothing from that person's yes. A wrong code counts against the Slack user's offer, and
+    the fifth deletes it; a code typed by any other Slack user is dead.\""""
+    says(
+        *SECURITY,
+        "A Slack user is linked to a person in three steps. The Slack user asks the bot for an"
+        " address, which is theirs alone. The person opens it signed in and says yes, and is"
+        " shown a code, once. The same Slack user types that code with the command within 10"
+        " minutes. So a Slack user is linked to a person only when that Slack user knew a code"
+        " shown only to that person: someone who sends their address to another person gains"
+        " nothing from that person's yes. A wrong code counts against the Slack user's offer,"
+        " and the fifth deletes it; a code typed by any other Slack user is dead.",
+    )
+    assert timedelta(minutes=10) == OFFER_TTL and TRIES == 5
+    code = yes_and_code(bench, BROOK_SLACK, bench.ada)  # Brook's Slack user's address, Ada's yes
+    assert bench.owner.slack_person(bench.install.id, BROOK_SLACK) is None
+    assert "link?t=" in said(ask(bench, "find jars", BROOK_SLACK))  # still nobody's
+    code = yes_and_code(bench, BROOK_SLACK, bench.ada)
+    said(ask(bench, "link", ADA_SLACK))
+    assert "links nothing" in said(ask(bench, f"link {code}", ADA_SLACK))  # another's: dead
+    assert "links nothing" in said(ask(bench, f"link {code}", BROOK_SLACK))
+    code = yes_and_code(bench, BROOK_SLACK, bench.brook)
+    for _ in range(TRIES):
+        assert "links nothing" in said(ask(bench, "link AAAA-AAAA", BROOK_SLACK))
+    assert "links nothing" in said(ask(bench, f"link {code}", BROOK_SLACK))  # deleted
+    assert bench.owner.slack_person(bench.install.id, BROOK_SLACK) is None
+
+
+def test_security_a_link_is_never_moved_and_the_limit_of_the_code(bench):
+    """security.md: "A link is never moved to another person: a Slack user linked to someone
+    stays linked to them until it is undone. The limit is said plainly: someone who talks you
+    into sending them your code acts as you, which is why the page that shows it says to give
+    it to no one.\""""
+    says(
+        *SECURITY,
+        "A link is never moved to another person: a Slack user linked to someone stays linked"
+        " to them until it is undone. The limit is said plainly: someone who talks you into"
+        " sending them your code acts as you, which is why the page that shows it says to give"
+        " it to no one.",
+    )
+    bench.link(ADA_SLACK, bench.ada)
+    with pytest.raises(ValueError):
+        bench.owner.link_slack_user(bench.install.id, ADA_SLACK, bench.brook)
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK).user_id == bench.ada
+    assert "Give this code to no one: whoever types it in Slack acts as you here." in CODE_PAGE
 
 
 def test_security_the_client_reads_no_conversations_history():

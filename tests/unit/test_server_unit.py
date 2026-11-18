@@ -1333,6 +1333,9 @@ def test_no_tool_takes_the_request_context_as_an_argument(env):
         "note": ({"project", "text", "title", "topic", "label", "source_ref"}, {"project", "text"}),
         "recall": ({"query", "project", "limit"}, {"query"}),
         "page": ({"project", "slug", "version", "limit", "before"}, {"project", "slug"}),  # Q1
-        "evidence": ({"project", "slug", "claim_id"}, {"project", "slug", "claim_id"}),
+        "evidence": (
+            {"project", "slug", "claim_id", "version"},  # E1
+            {"project", "slug", "claim_id"},
+        ),
         "overview": ({"project", "limit", "after"}, {"project"}),  # Q1
     }

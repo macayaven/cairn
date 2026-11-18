@@ -1276,13 +1276,20 @@ class Memory:
         versions = sorted(newest[:count])
         return versions, total, latest, versions[0] if len(newest) > count else None
 
-    def evidence(self, project: str, slug: str, claim_id: str) -> dict[str, Any]:
-        """The source text behind a claim: each passage it cites, with its note (A1)."""
+    def evidence(
+        self, project: str, slug: str, claim_id: str, version: int | None = None
+    ) -> dict[str, Any]:
+        """The source text behind a claim: each passage it cites, with its note (A1). E1: the
+        claim as `version` of the page holds it, with the passages that version cites (None:
+        the latest); the answer names the version. A version the page does not keep is
+        refused as `page` refuses it (find_page); a claim that version does not hold is
+        NotFound, whatever another version holds."""
         target = self.project(project)
-        page = self.find_page(target, slug)
+        page = self.find_page(target, slug, version)
         claim = next((c for c in page.claims if c.id == claim_id), None)
         if claim is None:
-            raise NotFound(f"no claim {claim_id!r} on page {slug!r} in project {target.name!r}")
+            which = "page" if version is None else f"version {page.version} of page"
+            raise NotFound(f"no claim {claim_id!r} on {which} {slug!r} in project {target.name!r}")
         sources = self.sources(target, claim.span_ids)
         writers = self.store.note_writers(note.id for _, note in sources.values())
         passages = []
@@ -1299,7 +1306,7 @@ class Memory:
                     "outside": is_outside(kind, via),
                 }
             )
-        return {"claim": _claim(claim), "passages": passages}
+        return {"claim": _claim(claim), "version": page.version, "passages": passages}
 
     def pages(
         self, project: str, *, limit: int | None = None, after: str | None = None

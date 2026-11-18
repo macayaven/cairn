@@ -1,7 +1,9 @@
 """The research notes on other services quote a source only where its licence allows it. For
 Granola's pages, Linear's pages and Google's Help Center (support.google.com) no such licence
-was found, so docs/granola-api.md and docs/linear-api.md hold no quoted span longer than 60
-characters, and no line of a note that links support.google.com does either. A span inside a
+was found, and Langfuse's documentation and API definitions are MIT-licensed, which asks for a
+notice to travel with a substantial copy. So docs/granola-api.md, docs/linear-api.md and
+docs/langfuse-api.md hold no quoted span longer than 60 characters, and no line of a note that
+links support.google.com does either. A span inside a
 code block or a code span is an identifier, not a quote, and is not counted. The tests that
 check the Granola and Linear guides against those notes pin our sentences, not the provider's:
 no string in them other than a docstring (which quotes our own guide) opens a quoted span of
@@ -84,8 +86,8 @@ def quoting_strings(source: str) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("name", ["granola-api.md", "linear-api.md"])
-def test_the_granola_and_linear_notes_quote_no_long_span(name):
+@pytest.mark.parametrize("name", ["granola-api.md", "linear-api.md", "langfuse-api.md"])
+def test_the_provider_notes_quote_no_long_span(name):
     quotes = long_quotes((DOCS / name).read_text(encoding="utf-8"))
     assert quotes == [], f"{name}: {len(quotes)} quoted spans, first {quotes[:3]}"
 

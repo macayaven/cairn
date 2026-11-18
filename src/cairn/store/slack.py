@@ -21,22 +21,37 @@ The install
   another install, or to the other column, does not open. Pending, ready or off becomes ready;
   on stays on; removed is refused (make it pending first). Made ready with the team it had
   when it was removed, its notes are no longer due to be forgotten (D10); with another team,
-  they stay due and the old team's links go.
+  they stay due and the old team's links go. One Slack team has one install: the unique index
+  slack_installs_team counts the installs that are ready, on or off (a pending or removed one
+  holds no team), so making ready a team another workspace holds is TeamHeld, whatever races;
+  `slack_team_held` counts the same states. A new bot token clears `bot_gone_at` and the count
+  of ended answers.
 - `switch_slack_install(on=)`: an owner or admin. Off from ready or on; on from ready or off
   while it holds its secrets (ValueError otherwise). `slack_install_verified`: Slack's
   challenge answered, ready becomes on (the server's call, on the root store).
 - `remove_slack_install` (the owner, or Slack's app_uninstalled through a view acting for no
   person): the sealed secrets, the links and the offers are deleted at once, the install is
-  removed, and every note that came through it and is not due yet is due FORGET_AFTER (10
-  days) later. Removing a removed install changes nothing. `revoke_slack_bot` (Slack's
-  tokens_revoked naming the bot): off, and the bot token deleted; the signing secret stays,
-  sealed, so Slack's app_uninstalled after it is still verified (an install that is off
-  answers at its events address, cairn.web.slack); nothing is due.
-- What is due: `slack_notes_due` (the server's, every workspace, the oldest first) gives
-  (workspace, note) pairs whose time came; cairn.web.slack.Keeper forgets each with cairn's
-  own forgetting (Store.forget_note, H5b, by a view acting for no person), and the duty in
-  cairn.store.erasure deletes its record. `forget_slack_notes_now` (an owner or admin) does
-  it at once for a removed install. `slack_notes_to_forget`: how many and when, for the page.
+  removed, and every note it created and is not due yet is due FORGET_AFTER (10 days)
+  later. Removing a removed install changes nothing. `revoke_slack_bot` (Slack's
+  tokens_revoked naming the bot): off, the bot token deleted and `bot_gone_at` set (the first
+  time is kept); the signing secret stays, sealed, so Slack's app_uninstalled after it is
+  still verified (an install that is off answers at its events address, cairn.web.slack);
+  nothing is due yet.
+- The bot token checked with Slack (the server's, for cairn.web.slack.Keeper):
+  `take_slack_checks` gives the installs that hold a bot token, not checked within CHECK_EVERY
+  (6 hours), at most CHECKS_AT_ONCE (20), each stamped as checked when taken;
+  `slack_token_checked` records what Slack said: two ENDED answers in a row (invalid_auth,
+  account_inactive, token_revoked) do what revoke_slack_bot does, a good one starts the count
+  again, anything else changes nothing; an answer about a token replaced since changes
+  nothing. `remove_gone_slack_installs`: an install with no bot token for more than GONE_DAYS
+  (3) since `bot_gone_at` is removed as an owner removes it, the audit record naming no person
+  and saying why; one an owner only switched off holds its token and is never removed so.
+- What is due (a claim with no note never is): `slack_notes_due` (the server's, every
+  workspace, the oldest first) gives (workspace, note) pairs whose time came;
+  cairn.web.slack.Keeper forgets each with cairn's own forgetting (Store.forget_note, H5b, by
+  a view acting for no person), and the duty in cairn.store.erasure deletes its record.
+  `forget_slack_notes_now` (an owner or admin) does it at once for a removed install.
+  `slack_notes_to_forget`: how many and when, for the page.
 
 Links, offers, notes, events
 - `link_slack_user` / `unlink_slack_user` / `slack_person`: a Slack user of the install linked
@@ -48,16 +63,21 @@ Links, offers, notes, events
   minutes); `slack_offer` reads it for a view of the install's workspace (None: unknown,
   used, run out, or another workspace's); `take_slack_offer` uses it once and links the
   view's person (KeyError when it cannot; PermissionError for a view acting for no person).
-- `record_slack_note`: a note of the workspace came through the install, filed (with its
-  conversation and message time: the same message is one note, D9, and the note it already is
-  comes back) or typed; `slack_note_for` finds the note a message already is.
+- `claim_slack_message`: a filed message is claimed before anything is asked or written for
+  it, a row with no note: CLAIMED, FILED (its note) or FILING (someone else's claim, not yet
+  stored); `release_slack_claim` undoes a claim whose message was not stored; a claim with no
+  note is swept after CLAIM_FOR (10 minutes). `record_slack_note`: the install created a note
+  of the workspace, filed (the claim gets its note; the same message is one note, D9, and the
+  note it already is comes back) or typed; an install removed meanwhile makes it due with its
+  other notes. `slack_note_for` finds the note a message already is.
 - `slack_event_seen`: True the first time an install sees an event id, False after; ids are
   kept SEEN_FOR (a day). `sweep_slack` (also part of Store.sweep_expired) removes offers past
-  their time and ids older than that.
+  their time, ids older than that and claims with no note older than CLAIM_FOR.
 
 Who may: every method is a management call of cairn.store.reach (a narrowed view gets none).
 The cross-workspace ones (`slack_inbound`, `slack_install_verified`, `slack_event_seen`,
-`slack_notes_due`, `sweep_slack`, `slack_team_held`) are the server's: refused to a view
+`slack_notes_due`, `sweep_slack`, `slack_team_held`, `take_slack_checks`,
+`slack_token_checked`, `remove_gone_slack_installs`) are the server's: refused to a view
 acting for a person.
 Nothing here holds a secret in a repr, an exception's message or the audit log, and no
 table is exported (cairn.store.portable); a deleted workspace, a removed person, a deleted
@@ -71,6 +91,7 @@ import secrets
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from cairn.store.base import StoreBase, _iso, _require_account
 from cairn.store.hosted import Sealer
@@ -84,6 +105,16 @@ OFFER_TTL = timedelta(minutes=10)
 SEEN_FOR = timedelta(days=1)
 FORGET_AFTER = timedelta(days=10)
 DUE_AT_ONCE = 100  # notes slack_notes_due gives at most, oldest first
+CLAIM_FOR = timedelta(minutes=10)  # a claim with no note after this is swept
+CLAIMED, FILED, FILING = "claimed", "filed", "filing"  # the answers to a claim
+CHECK_EVERY = timedelta(hours=6)  # one install's bot token is checked with Slack at most so often
+CHECKS_AT_ONCE = 20  # installs checked in one pass, at most
+GONE_DAYS = 3  # days an install holds no bot token, as Slack ended it, before it is removed
+GONE_AFTER = timedelta(days=GONE_DAYS)
+# Slack's answers to auth.test that mean the token is ended for good: invalid credentials, a
+# token of a deleted user or workspace, the app removed. Anything else says nothing.
+ENDED = frozenset({"invalid_auth", "account_inactive", "token_revoked"})
+ANSWERS = ("works", "ended", "unclear")  # what a check of a bot token came to
 SLACK_ID = re.compile(r"[A-Za-z0-9]{1,64}")  # a team, user, conversation or event id
 MESSAGE_TIME = re.compile(r"[0-9]{1,12}\.[0-9]{1,9}")
 DOMAIN = re.compile(r"[A-Za-z0-9-]{1,100}")
@@ -93,6 +124,14 @@ NO_KEY = "this server holds no Slack key: it is started with --slack and CAIRN_S
 NOT_ONE = "there is no such Slack install in this workspace"
 NOT_AN_OWNER = "only an owner of the workspace forgets what came through Slack at once"
 MEMBERS_ONLY = "a Slack user is linked to a person of this workspace"
+
+
+class TeamHeld(ValueError):
+    """Another workspace's install that is ready, on or off is for this Slack team: one Slack
+    team has one install (the unique index slack_installs_team), and nothing is written."""
+
+    def __init__(self) -> None:
+        super().__init__("another workspace on this server has Slack set up for this team")
 
 
 class NoSlackKey(RuntimeError):
@@ -120,6 +159,7 @@ class SlackInstall:
     removed_at: str | None
     holds_secrets: bool
     holds_bot_token: bool
+    bot_gone_at: str | None = None  # since when Slack has ended its bot token; else None
 
     @property
     def needs_bot_token(self) -> bool:
@@ -154,6 +194,26 @@ class SlackOffer:
     expires_at: datetime
 
 
+class SlackClaim(NamedTuple):
+    """The answer to a claim on a message: CLAIMED (now, by this call), FILED (with its note)
+    or FILING (claimed by someone else, and not yet stored)."""
+
+    outcome: str
+    note_id: str | None
+
+
+@dataclass(frozen=True)
+class SlackCheck:
+    """An install whose bot token is to be checked with Slack: the token opened, and the
+    sealed value it was read from, so an answer about a token replaced since changes nothing.
+    Neither is in a repr."""
+
+    install_id: str
+    account_id: str
+    token: str = field(repr=False)
+    sealed: str = field(repr=False)
+
+
 @dataclass(frozen=True)
 class SlackDue:
     """The notes of a removed install still to be forgotten, and when the first is due."""
@@ -166,12 +226,15 @@ class SlackDue:
 _INSTALL_COLUMNS = (
     "id, account_id, state, team_id, enterprise_id, team_domain, bot_user_id, command,"
     " made_by, made_at, removed_at, signing_secret IS NOT NULL AND bot_token IS NOT NULL,"
-    " bot_token IS NOT NULL"
+    " bot_token IS NOT NULL, bot_gone_at"
 )
+_HOLDS_TEAM = "('ready', 'on', 'off')"  # the states whose install holds its team (the index)
 
 
 def _install(row: tuple) -> SlackInstall:
-    return SlackInstall(*row[:11], holds_secrets=bool(row[11]), holds_bot_token=bool(row[12]))
+    return SlackInstall(
+        *row[:11], holds_secrets=bool(row[11]), holds_bot_token=bool(row[12]), bot_gone_at=row[13]
+    )
 
 
 def _associated(which: str, install_id: str, account_id: str) -> bytes:
@@ -187,6 +250,12 @@ def _slack_id(value: object, what: str) -> str:
     if not isinstance(value, str) or not SLACK_ID.fullmatch(value):
         raise ValueError(f"not a Slack {what} id")
     return value
+
+
+def _message(conversation_id: object, message_time: object) -> None:
+    _slack_id(conversation_id, "conversation")
+    if not isinstance(message_time, str) or not MESSAGE_TIME.fullmatch(message_time):
+        raise ValueError("a filed message has its time, as Slack writes it")
 
 
 def _when(text: str) -> datetime:
@@ -234,7 +303,8 @@ class SlackMethods(StoreBase):
                 install_id = row[0]
                 con.execute(
                     "UPDATE slack_installs SET state = 'pending', command = ?, made_by = ?,"
-                    " made_at = ? WHERE id = ?",
+                    " made_at = ?, checked_at = NULL, dead_checks = 0, bot_gone_at = NULL"
+                    " WHERE id = ?",
                     (command, self._user_id, stamp, install_id),
                 )
             else:
@@ -292,13 +362,17 @@ class SlackMethods(StoreBase):
                 sealer.seal(signing_secret, _associated("signing_secret", install_id, account)),
                 sealer.seal(bot_token, _associated("bot_token", install_id, account)),
             )
-            con.execute(
-                "UPDATE slack_installs SET state = ?, team_id = ?, enterprise_id = ?,"
-                " team_domain = ?, bot_user_id = ?, signing_secret = ?, bot_token = ?,"
-                " removed_at = NULL WHERE id = ?",
-                ("on" if state == "on" else "ready", team_id, enterprise_id, team_domain,
-                 bot_user_id, *sealed, install_id),
-            )  # fmt: skip
+            try:
+                con.execute(
+                    "UPDATE slack_installs SET state = ?, team_id = ?, enterprise_id = ?,"
+                    " team_domain = ?, bot_user_id = ?, signing_secret = ?, bot_token = ?,"
+                    " removed_at = NULL, checked_at = ?, dead_checks = 0, bot_gone_at = NULL"
+                    " WHERE id = ?",
+                    ("on" if state == "on" else "ready", team_id, enterprise_id, team_domain,
+                     bot_user_id, *sealed, self._stamp(), install_id),
+                )  # fmt: skip
+            except sqlite3.IntegrityError:  # slack_installs_team: another workspace's team
+                raise TeamHeld() from None
             if was_team == team_id:  # the same Slack team again: its notes are not due (D10)
                 con.execute(
                     "UPDATE slack_notes SET forget_at = NULL WHERE install_id = ?", (install_id,)
@@ -346,21 +420,25 @@ class SlackMethods(StoreBase):
             row = self._slack_row(con, install_id)
             if row[2] == "removed":
                 return _install(row)
-            stamp = self._stamp()
-            con.execute(
-                "UPDATE slack_installs SET state = 'removed', signing_secret = NULL,"
-                " bot_token = NULL, removed_at = ? WHERE id = ?",
-                (stamp, install_id),
-            )
-            con.execute("DELETE FROM slack_people WHERE install_id = ?", (install_id,))
-            con.execute("DELETE FROM slack_link_offers WHERE install_id = ?", (install_id,))
-            due = _iso(self._instant() + FORGET_AFTER)
-            notes = con.execute(
-                "UPDATE slack_notes SET forget_at = ? WHERE install_id = ? AND forget_at IS NULL",
-                (due, install_id),
-            ).rowcount
+            notes = self._remove(con, install_id)
             self._slack_audit(con, "slack.install_removed", install_id, notes=notes)
             return _install(self._slack_row(con, install_id))
+
+    def _remove(self, con: sqlite3.Connection, install_id: str) -> int:
+        """Removal (D10), in the caller's write: the secrets, links and offers deleted, and
+        every note of the install not due yet due FORGET_AFTER from now. How many notes."""
+        stamp = self._instant()
+        con.execute(
+            "UPDATE slack_installs SET state = 'removed', signing_secret = NULL, bot_token = NULL,"
+            " removed_at = ?, checked_at = NULL, dead_checks = 0, bot_gone_at = NULL WHERE id = ?",
+            (_iso(stamp), install_id),
+        )
+        con.execute("DELETE FROM slack_people WHERE install_id = ?", (install_id,))
+        con.execute("DELETE FROM slack_link_offers WHERE install_id = ?", (install_id,))
+        return con.execute(
+            "UPDATE slack_notes SET forget_at = ? WHERE install_id = ? AND forget_at IS NULL",
+            (_iso(stamp + FORGET_AFTER), install_id),
+        ).rowcount
 
     def revoke_slack_bot(self, install_id: str) -> SlackInstall:
         """Slack revoked the bot's token: the install is off and its bot token deleted; the
@@ -371,12 +449,16 @@ class SlackMethods(StoreBase):
             row = self._slack_row(con, install_id)
             if row[2] == "removed":
                 return _install(row)
-            con.execute(
-                "UPDATE slack_installs SET state = 'off', bot_token = NULL WHERE id = ?",
-                (install_id,),
-            )
+            self._revoke(con, install_id)
             self._slack_audit(con, "slack.bot_revoked", install_id)
             return _install(self._slack_row(con, install_id))
+
+    def _revoke(self, con: sqlite3.Connection, install_id: str) -> None:
+        con.execute(
+            "UPDATE slack_installs SET state = 'off', bot_token = NULL,"
+            " bot_gone_at = COALESCE(bot_gone_at, ?) WHERE id = ?",
+            (self._stamp(), install_id),
+        )
 
     def slack_bot_token(self, install_id: str) -> str | None:
         """The install's bot token opened, for a call to Slack; None when it holds none or
@@ -404,11 +486,11 @@ class SlackMethods(StoreBase):
             ).fetchone()
         if row is None:
             return None
-        install = _install(row[:13])
+        install = _install(row[:14])
         secret = None
-        if row[13] is not None and self.slack_sealer is not None:
+        if row[14] is not None and self.slack_sealer is not None:
             associated = _associated("signing_secret", install.id, install.account_id)
-            secret = self.slack_sealer.open(row[13], associated)
+            secret = self.slack_sealer.open(row[14], associated)
         return SlackInbound(install, secret)
 
     # Notes, and forgetting them (D10)
@@ -423,27 +505,27 @@ class SlackMethods(StoreBase):
         conversation_id: str | None = None,
         message_time: str | None = None,
     ) -> str:
-        """Record that the note `note_id` came through the install: `how` one of HOWS, a
-        filed message with its conversation and time (D9), a typed note with neither. The
-        note recorded: for a message recorded already, the note it already is (nothing
-        written). KeyError: no such install or note here; ValueError otherwise."""
+        """Record that the install created the note `note_id`: `how` one of HOWS, a filed
+        message with its conversation and time (D9), a typed note with neither. A filed
+        message's claim gets its note (a claim swept meanwhile is made again). The note
+        recorded: for a message recorded already, the note it already is (nothing written).
+        An install removed meanwhile: the note is due when its other notes are. KeyError: no
+        such install or note here; ValueError otherwise."""
         if how not in HOWS:
             raise ValueError(f"a note comes through Slack {' or '.join(HOWS)}")
         if how == "filed":
-            _slack_id(conversation_id, "conversation")
-            if not isinstance(message_time, str) or not MESSAGE_TIME.fullmatch(message_time):
-                raise ValueError("a filed message has its time, as Slack writes it")
+            _message(conversation_id, message_time)
         elif conversation_id is not None or message_time is not None:
             raise ValueError("a typed note has no conversation or message time")
         with self._write() as con:
-            self._slack_row(con, install_id)
+            row = self._slack_row(con, install_id)
             if how == "filed":
                 found = con.execute(
                     "SELECT note_id FROM slack_notes WHERE install_id = ? AND conversation_id = ?"
                     " AND message_time = ?",
                     (install_id, conversation_id, message_time),
                 ).fetchone()
-                if found is not None:
+                if found is not None and found[0] is not None:
                     return found[0]
             held = con.execute(
                 "SELECT 1 FROM notes JOIN projects ON projects.id = notes.project_id"
@@ -452,19 +534,77 @@ class SlackMethods(StoreBase):
             ).fetchone()
             if held is None:
                 raise KeyError(note_id)
+            due = _iso(_when(row[10]) + FORGET_AFTER) if row[2] == "removed" else None
+            if how == "filed":  # the claim, made again when it was swept
+                con.execute(
+                    "INSERT INTO slack_notes (install_id, how, conversation_id, message_time,"
+                    " brought_by, brought_at) VALUES (?, 'filed', ?, ?, ?, ?)"
+                    " ON CONFLICT (install_id, conversation_id, message_time) DO NOTHING",
+                    (install_id, conversation_id, message_time, brought_by, self._stamp()),
+                )
+                con.execute(
+                    "UPDATE slack_notes SET note_id = ?, forget_at = COALESCE(forget_at, ?)"
+                    " WHERE install_id = ? AND conversation_id = ? AND message_time = ?"
+                    " AND note_id IS NULL AND NOT EXISTS"
+                    " (SELECT 1 FROM slack_notes WHERE note_id = ?)",
+                    (note_id, due, install_id, conversation_id, message_time, note_id),
+                )
+                return note_id
             con.execute(
-                "INSERT INTO slack_notes (note_id, install_id, how, conversation_id,"
-                " message_time, brought_by, brought_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT (note_id) DO NOTHING",
-                (note_id, install_id, how, conversation_id, message_time, brought_by,
-                 self._stamp()),
-            )  # fmt: skip
+                "INSERT INTO slack_notes (note_id, install_id, how, brought_by, brought_at,"
+                " forget_at) VALUES (?, ?, 'typed', ?, ?, ?) ON CONFLICT (note_id) DO NOTHING",
+                (note_id, install_id, brought_by, self._stamp(), due),
+            )
             return note_id
+
+    def claim_slack_message(
+        self, install_id: str, conversation_id: str, message_time: str, *, brought_by: str | None
+    ) -> SlackClaim:
+        """Claim a message before anything is asked or written for it (D9): CLAIMED, a row
+        with no note yet; FILED, with the note it is; FILING, claimed by someone else and not
+        stored yet. A claim with no note older than CLAIM_FOR is taken over. KeyError: no such
+        install here; ValueError: a conversation or a time not as Slack writes them."""
+        _message(conversation_id, message_time)
+        with self._write() as con:
+            self._slack_row(con, install_id)
+            key = (install_id, conversation_id, message_time)
+            con.execute(
+                "DELETE FROM slack_notes WHERE install_id = ? AND conversation_id = ?"
+                " AND message_time = ? AND note_id IS NULL AND brought_at <= ?",
+                (*key, _iso(self._instant() - CLAIM_FOR)),
+            )
+            made = con.execute(
+                "INSERT INTO slack_notes (install_id, how, conversation_id, message_time,"
+                " brought_by, brought_at) VALUES (?, 'filed', ?, ?, ?, ?)"
+                " ON CONFLICT (install_id, conversation_id, message_time) DO NOTHING",
+                (*key, brought_by, self._stamp()),
+            ).rowcount
+            if made:
+                return SlackClaim(CLAIMED, None)
+            (note,) = con.execute(
+                "SELECT note_id FROM slack_notes WHERE install_id = ? AND conversation_id = ?"
+                " AND message_time = ?",
+                key,
+            ).fetchone()
+            return SlackClaim(FILED, note) if note is not None else SlackClaim(FILING, None)
+
+    def release_slack_claim(self, install_id: str, conversation_id: str, message_time: str) -> bool:
+        """Undo a claim whose message was not stored, so it can be filed again; a claim that
+        has its note stays. Whether one was released."""
+        with self._write() as con:
+            self._slack_row(con, install_id)
+            return bool(
+                con.execute(
+                    "DELETE FROM slack_notes WHERE install_id = ? AND conversation_id = ?"
+                    " AND message_time = ? AND note_id IS NULL",
+                    (install_id, conversation_id, message_time),
+                ).rowcount
+            )
 
     def slack_note_for(
         self, install_id: str, conversation_id: str, message_time: str
     ) -> str | None:
-        """The note a Slack message already is (D9), or None."""
+        """The note a Slack message already is (D9), or None (a claim has none yet)."""
         with self._read() as con:
             self._slack_row(con, install_id)
             found = con.execute(
@@ -482,7 +622,7 @@ class SlackMethods(StoreBase):
                 "SELECT slack_notes.install_id, COUNT(*), MIN(forget_at) FROM slack_notes"
                 " JOIN slack_installs ON slack_installs.id = slack_notes.install_id"
                 " WHERE slack_installs.account_id = ? AND forget_at IS NOT NULL"
-                " GROUP BY slack_notes.install_id",
+                " AND note_id IS NOT NULL GROUP BY slack_notes.install_id",
                 (self._account_id,),
             ).fetchone()
         return SlackDue(found[0], found[1], _when(found[2])) if found else None
@@ -494,7 +634,7 @@ class SlackMethods(StoreBase):
             found = con.execute(
                 "SELECT slack_installs.account_id, slack_notes.note_id FROM slack_notes"
                 " JOIN slack_installs ON slack_installs.id = slack_notes.install_id"
-                " WHERE forget_at IS NOT NULL AND forget_at <= ?"
+                " WHERE forget_at IS NOT NULL AND forget_at <= ? AND note_id IS NOT NULL"
                 " ORDER BY forget_at, note_id LIMIT ?",
                 (self._stamp(), limit),
             ).fetchall()
@@ -514,7 +654,7 @@ class SlackMethods(StoreBase):
                 note
                 for (note,) in con.execute(
                     "SELECT note_id FROM slack_notes WHERE install_id = ?"
-                    " AND forget_at IS NOT NULL ORDER BY note_id",
+                    " AND forget_at IS NOT NULL AND note_id IS NOT NULL ORDER BY note_id",
                     (install_id,),
                 )
             ]
@@ -526,6 +666,82 @@ class SlackMethods(StoreBase):
             except KeyError:  # forgotten meanwhile: its record went with it
                 pass
         return forgotten
+
+    # The bot token checked with Slack, and an install whose token Slack ended
+
+    def take_slack_checks(self, limit: int = CHECKS_AT_ONCE) -> list[SlackCheck]:
+        """The server's: the installs that hold a bot token and were not checked within
+        CHECK_EVERY, the longest unchecked first, at most `limit`, each with its token opened
+        and each stamped as checked now, whatever its check comes to (a token that does not
+        open under this key is stamped and left out). NoSlackKey."""
+        sealer = self._slack_sealer()
+        with self._write() as con:
+            found = con.execute(
+                "SELECT id, account_id, bot_token FROM slack_installs WHERE bot_token IS NOT NULL"
+                " AND state != 'removed' AND (checked_at IS NULL OR checked_at <= ?)"
+                " ORDER BY checked_at IS NOT NULL, checked_at, id LIMIT ?",
+                (_iso(self._instant() - CHECK_EVERY), limit),
+            ).fetchall()
+            con.executemany(
+                "UPDATE slack_installs SET checked_at = ? WHERE id = ?",
+                [(self._stamp(), install_id) for install_id, _, _ in found],
+            )
+        checks = []
+        for install_id, account_id, sealed in found:
+            token = sealer.open(sealed, _associated("bot_token", install_id, account_id))
+            if token is not None:
+                checks.append(SlackCheck(install_id, account_id, token, sealed))
+        return checks
+
+    def slack_token_checked(self, check: SlackCheck, answer: str) -> SlackInstall | None:
+        """The server's: what Slack said of the token `check` holds (ANSWERS). "works": the
+        count of ended answers starts again; "unclear" changes nothing; "ended": counted, and
+        the second in a row does what revoke_slack_bot does (bot_gone_at set). An install
+        whose token was replaced or deleted since changes nothing. The install as it is now;
+        None when it is gone."""
+        if answer not in ANSWERS:
+            raise ValueError(f"a check comes to {', '.join(ANSWERS)}")
+        with self._write() as con:
+            same = "id = ? AND bot_token = ?", (check.install_id, check.sealed)
+            if answer == "works":
+                con.execute(f"UPDATE slack_installs SET dead_checks = 0 WHERE {same[0]}", same[1])
+            elif answer == "ended":
+                con.execute(
+                    f"UPDATE slack_installs SET dead_checks = dead_checks + 1 WHERE {same[0]}",
+                    same[1],
+                )
+                ended = con.execute(
+                    f"SELECT 1 FROM slack_installs WHERE {same[0]} AND dead_checks >= 2", same[1]
+                ).fetchone()
+                if ended:
+                    self._revoke(con, check.install_id)
+                    self._audit(
+                        con, "slack.bot_revoked", account_id=check.account_id,
+                        detail={"install": check.install_id, "why": "bot_token_ended"},
+                    )  # fmt: skip
+            row = con.execute(
+                f"SELECT {_INSTALL_COLUMNS} FROM slack_installs WHERE id = ?", (check.install_id,)
+            ).fetchone()
+        return _install(row) if row else None
+
+    def remove_gone_slack_installs(self) -> list[str]:
+        """The server's: every install that has held no bot token for more than GONE_AFTER
+        since Slack ended it (bot_gone_at) removed as an owner's removal does it (D10): its
+        secrets and links deleted at once, its notes due FORGET_AFTER later. The audit record
+        names no person and says why. The installs removed."""
+        with self._write() as con:
+            found = con.execute(
+                "SELECT id, account_id FROM slack_installs WHERE bot_gone_at IS NOT NULL"
+                " AND bot_gone_at < ? AND bot_token IS NULL AND state != 'removed' ORDER BY id",
+                (_iso(self._instant() - GONE_AFTER),),
+            ).fetchall()
+            for install_id, account_id in found:
+                notes = self._remove(con, install_id)
+                self._audit(
+                    con, "slack.install_removed", account_id=account_id, actor=("system", None),
+                    detail={"install": install_id, "notes": notes, "why": "bot_token_ended"},
+                )  # fmt: skip
+        return [install_id for install_id, _ in found]
 
     # Links and offers (D5)
 
@@ -598,14 +814,14 @@ class SlackMethods(StoreBase):
         return [SlackPerson(*row) for row in found]
 
     def slack_team_held(self, team_id: str, account_id: str) -> bool:
-        """The server's: whether an install of a workspace other than `account_id`, not
-        removed, is for the Slack team `team_id`. One statement, whatever the number of
-        workspaces."""
+        """The server's: whether an install of a workspace other than `account_id`, ready,
+        on or off (as the index slack_installs_team counts them), is for the Slack team
+        `team_id`. One statement, whatever the number of workspaces."""
         with self._read() as con:
             return (
                 con.execute(
                     "SELECT 1 FROM slack_installs WHERE team_id = ? AND account_id != ?"
-                    " AND state != 'removed' LIMIT 1",
+                    f" AND state IN {_HOLDS_TEAM} LIMIT 1",
                     (team_id, account_id),
                 ).fetchone()
                 is not None
@@ -709,4 +925,8 @@ class SlackMethods(StoreBase):
         events = con.execute(
             "DELETE FROM slack_events WHERE seen_at <= ?", (_iso(now - SEEN_FOR),)
         ).rowcount
-        return offers + events
+        claims = con.execute(  # a filed message claimed and never stored
+            "DELETE FROM slack_notes WHERE note_id IS NULL AND brought_at <= ?",
+            (_iso(now - CLAIM_FOR),),
+        ).rowcount
+        return offers + events + claims

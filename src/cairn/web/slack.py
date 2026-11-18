@@ -402,8 +402,9 @@ def slack_routes(
 ) -> list[Route]:
     """The three addresses (the module). `memory_for(workspace, person)`: a person's Memory
     (Accounts); `failures`: signature_failures(clock); `now`: the app's clock; `http`: what
-    gives the client calls to Slack are made through (create_app's OneClient); `turn`: one turn among the server's compiles (create_app's
-    Compiles.turn), which a note written from Slack holds (cairn.slack.people.written)."""
+    gives the client calls to Slack are made through (create_app's OneClient); `turn`: one
+    turn among the server's compiles (create_app's Compiles.turn), which a note written from
+    Slack holds (cairn.slack.people.written)."""
     _import_handlers()
 
     def no_page(request: Request) -> Response:

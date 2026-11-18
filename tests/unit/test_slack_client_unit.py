@@ -160,6 +160,31 @@ def test_a_reply_goes_only_to_slacks_reply_hosts_over_https_and_is_private_unles
     assert "hooks.slack.com" in REPLY_HOSTS and "hooks.slack-gov.com" in REPLY_HOSTS
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        "https://hoo\tks.slack.com/commands/T0/1/made-up",  # a control character in the host
+        "https://hooks.slack.com\n/commands/T0/1/made-up",
+        "https://hooks.slack.com/commands/T0/1/made\x00up",
+        "https://hooks.slack.com:99999/commands/T0/1/made-up",
+        "https://[hooks.slack.com/commands",
+    ],
+)
+def test_an_address_that_is_not_a_url_at_all_is_a_bad_reply_address_and_nothing_is_sent(
+    address,
+):
+    seen = []
+
+    def slack(request):
+        seen.append(request)
+        return httpx.Response(200, text="ok")
+
+    with pytest.raises(SlackError) as refused:
+        run(client(slack).reply(address, {"text": "Filed."}))
+    assert refused.value.code == "bad_reply_address"
+    assert "hooks" not in str(refused.value) and seen == []
+
+
 def test_a_reply_slack_does_not_take_is_an_error():
     with pytest.raises(SlackError) as refused:
         run(

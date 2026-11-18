@@ -41,6 +41,7 @@ from cairn.web.auth import _memory
 from cairn.web.graph_view import (
     explorer_files,
     page_limit,
+    page_query,
     render_explorer,
     render_graph,
     render_note,
@@ -99,7 +100,7 @@ def graph_routes(explorer: bool = False) -> list[Route]:
     def explore(request: Request) -> Response:
         project = request.path_params["project"]
         memory = _memory(request)
-        query = request.query_params  # a web page: what it does not take, it ignores
+        query = page_query(request)  # a web page: what it does not take, it ignores
         limit = page_limit(request)
         search = query.get("q", "")
         try:
@@ -132,7 +133,7 @@ def graph_routes(explorer: bool = False) -> list[Route]:
     def note(request: Request) -> Response:
         project = request.path_params["project"]
         memory = _memory(request)
-        after = request.query_params.get("after")
+        after = page_query(request).get("after")
         try:
             detail = graph_note_detail(
                 memory.store, project, request.path_params["note"], after=after

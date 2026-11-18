@@ -15,6 +15,7 @@ render_graph alone draws the graph page, as before."""
 import base64
 import hashlib
 import secrets
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -45,6 +46,13 @@ def page_limit(request: Request) -> int | None:
     (X1), as cairn.web.ui's pages do; so it reads its query here, outside the module of
     /api/graph, where only cairn.web.rest's helpers read one."""
     return _whole_number(request.query_params, "limit")
+
+
+def page_query(request: Request) -> Mapping[str, str]:
+    """The explorer's query (`focus`, `after`, `q`), read here for the reason page_limit is:
+    a web page ignores what it does not take, and in the module of /api/graph only
+    cairn.web.rest's helpers read a query."""
+    return request.query_params
 
 
 def render_graph(project: str, graph: dict[str, Any], *, brand: Any, person: Any) -> HTMLResponse:

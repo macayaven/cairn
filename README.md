@@ -7,10 +7,10 @@ cairn is a memory service for AI agents. Agents write notes to it over MCP, and 
 You need Docker Engine 28.3.3 or later (`docker version` prints it under Server), Compose 2.24 or later (`docker compose version` prints it) and a clone of this repository. cairn is published here on `127.0.0.1` only, and Engine 28.3.3 is the release that [closed a way](https://docs.docker.com/engine/release-notes/28/) for such a port to be reached from the local network after a firewall reload. Docker Desktop carries its own Engine and Compose: check both the same way. The commands below clone the public source and run from its `deploy` folder. They follow the `main` branch as it moves, not a pinned release. Record `git rev-parse HEAD` with each build to identify the code you run.
 
 ```bash
-git clone https://github.com/macayaven/cairn.git
-cd cairn/deploy
-echo 'COMPOSE_FILE=compose.local.yaml' > .env
-docker compose up -d --build
+git clone https://github.com/macayaven/cairn.git &&
+  cd cairn/deploy &&
+  echo 'COMPOSE_FILE=compose.local.yaml' > .env &&
+  docker compose up -d --build
 ```
 
 The `.env` line makes every `docker compose` command in this folder use `compose.local.yaml`: cairn alone, with no domain and no proxy. `--build` builds the image from this clone and names it `cairn:local`. Keep it on the first run: without it Compose starts whatever image already has that name on this computer, such as one an earlier clone left, and the code you just fetched is not what runs. The build takes a few minutes. cairn then answers at http://127.0.0.1:8765, on this computer only; nothing else on your network can reach it. If another program already uses port 8765, choose a free port, write it into `.env` before `up`, and use it wherever this guide says 8765. For port 18765:

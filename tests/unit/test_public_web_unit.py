@@ -157,7 +157,7 @@ def test_only_local_install_pages_name_the_source_repository(tmp_path, env):
     with TestClient(create_app(store, public_url=BASE, sign_in=sign_in), base_url=BASE) as c:
         landing = c.get("/").text
         assert landing.count("github.com/") == 2
-        assert "git clone https://github.com/macayaven/cairn.git\n" in landing
+        assert "git clone https://github.com/macayaven/cairn.git &amp;&amp;\n" in landing
     store.close()
 
 

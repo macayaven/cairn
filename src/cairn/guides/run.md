@@ -7,9 +7,9 @@ This guide runs cairn on your own machine as one container: the same software as
 Build from the public source, with no registry sign-in. These commands follow the main branch as it moves, not a pinned release. Run them in a folder where you keep source checkouts, then record `git rev-parse HEAD` with the build so you know which code you run:
 
 ```bash
-git clone https://github.com/macayaven/cairn.git
-cd cairn
-docker build -t cairn:local .
+git clone https://github.com/macayaven/cairn.git &&
+  cd cairn &&
+  docker build -t cairn:local .
 ```
 
 The repository's README starts the same source build with Docker Compose instead (`deploy/compose.local.yaml`), and its commands are `docker compose exec cairn ...` where this guide's are `docker exec cairn ...`. Choose one path: the commands below use Docker directly.

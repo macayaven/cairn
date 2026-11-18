@@ -36,9 +36,9 @@ FIRST = section(README, "## Run it on your computer")
 
 def test_the_first_section_turns_on_the_local_compose_file_and_starts_it():
     assert blocks(FIRST)[0] == [
-        "git clone https://github.com/macayaven/cairn.git",
-        "cd cairn/deploy",
-        "echo 'COMPOSE_FILE=compose.local.yaml' > .env",
+        "git clone https://github.com/macayaven/cairn.git &&",
+        "cd cairn/deploy &&",
+        "echo 'COMPOSE_FILE=compose.local.yaml' > .env &&",
         "docker compose up -d --build",
     ]
     assert (ROOT / "deploy" / "compose.local.yaml").is_file()
@@ -269,9 +269,28 @@ def test_local_upgrades_build_from_source_before_replacing_the_container():
     start = section(RUN_GUIDE, "## Start it")
     commands = blocks(start)
     assert commands[0] == [
-        "git clone https://github.com/macayaven/cairn.git",
-        "cd cairn",
+        "git clone https://github.com/macayaven/cairn.git &&",
+        "cd cairn &&",
         "docker build -t cairn:local .",
     ]
     assert commands[1][-1].endswith("cairn:local")
     assert "docker pull" not in RUN_GUIDE and "wherever this guide writes" not in RUN_GUIDE
+
+
+def test_a_clone_that_fails_stops_the_first_commands_before_they_touch_a_folder():
+    """In a folder that already holds a `cairn`, `git clone` fails. Run one line at a time,
+    the next lines would then enter that older checkout, overwrite its `.env` and build it.
+    Each first-install block is one chain: a step runs only when the one before it worked,
+    and the reader ends in the folder the later commands are written for."""
+    landing = (ROOT / "src" / "cairn" / "templates" / "landing.html").read_text(encoding="utf-8")
+    shown = re.search(r"<pre>(git clone.*?)</pre>", landing, re.S).group(1)
+    shown = shown.replace("&amp;", "&").replace("&gt;", ">")
+    for commands in (
+        blocks(FIRST)[0],
+        blocks(section(RUN_GUIDE, "## Start it"))[0],
+        shown.splitlines(),
+    ):
+        assert commands[0].startswith("git clone ")
+        assert all(line.endswith(" &&") for line in commands[:-1]), commands
+        assert not commands[-1].endswith("&&")
+        assert "(" not in commands[0]  # no subshell: the `cd` has to last

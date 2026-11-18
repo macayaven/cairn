@@ -97,10 +97,10 @@
     <div>
       <h3>On your own machine</h3>
       <p>One container: the same software on your disk and your network, with no plans and no plan caps.</p>
-      <pre>git clone https://github.com/macayaven/cairn.git
-cd cairn/deploy
-echo 'COMPOSE_FILE=compose.local.yaml' &gt; .env
-docker compose up -d --build</pre>
+      <pre>git clone https://github.com/macayaven/cairn.git &amp;&amp;
+  cd cairn/deploy &amp;&amp;
+  echo 'COMPOSE_FILE=compose.local.yaml' &gt; .env &amp;&amp;
+  docker compose up -d --build</pre>
       <p class="aside">Then make a key and sign in. The repository's README has each step, <a href="https://github.com/macayaven/cairn/blob/main/README.md#update">Update</a> covers the same Compose install, and <a href="/docs/run">Run it yourself</a> has backups and the direct Docker path.</p>
     </div>
   </div>

@@ -72,10 +72,12 @@ When the app goes
   install ready again before the day cancels it.
 - `tokens_revoked` naming the bot switches the install off and deletes its bot token; the
   signing secret stays, sealed, so that what Slack sends next can still be verified. No
-  note is due to be forgotten. `app_uninstalled` after it, or before it, ends in the same
-  state as `app_uninstalled` alone: both secrets and the links deleted, the install
-  removed, the notes due. A `tokens_revoked` that arrives after the install is removed is
-  404 like any request to a removed install, and changes nothing.
+  note is due to be forgotten yet: unless a new bot token is pasted, the loop removes the
+  install more than 3 days later, as an owner removes it, and its notes go 10 days after.
+  `app_uninstalled` after it, or before it, ends in the same state as `app_uninstalled`
+  alone: both secrets and the links deleted, the install removed, the notes due. A
+  `tokens_revoked` that arrives after the install is removed is 404 like any request to a
+  removed install, and changes nothing.
 """
 
 import base64
@@ -1006,7 +1008,7 @@ def revoked(bot: str = BOT, oauth: tuple = ()) -> dict:
     return {"tokens": {"oauth": list(oauth), "bot": [bot] if bot else []}}
 
 
-def test_tokens_revoked_naming_the_bot_switches_off_deletes_the_bot_token_and_forgets_nothing(
+def test_tokens_revoked_naming_the_bot_switches_off_and_three_days_later_removes_it(
     world,
 ):
     install = world.install()
@@ -1029,9 +1031,21 @@ def test_tokens_revoked_naming_the_bot_switches_off_deletes_the_bot_token_and_fo
     assert rows(world.db, "SELECT forget_at FROM slack_notes") == [(None,)] * 3
     with pytest.raises(ValueError):
         world.ada.view.switch_slack_install(install.id, on=True)
-    world.clock.now += timedelta(days=30)
+    assert datetime.fromisoformat(found.bot_gone_at) == world.clock.now  # since when
+    world.clock.now += timedelta(days=3)
+    world.keeper().run_once()
+    assert world.ada.view.get_slack_install().state == "off"  # three days, not more
+    assert rows(world.db, "SELECT forget_at FROM slack_notes") == [(None,)] * 3
+    world.clock.now += timedelta(minutes=1)
+    world.keeper().run_once()  # removed as an owner removes it
+    assert world.ada.view.get_slack_install().state == "removed"
+    assert world.ada.view.slack_person(install.id, ADA_SLACK) is None
+    world.clock.now += timedelta(days=10) - timedelta(seconds=1)
     world.keeper().run_once()
     assert held(world, notes) == [True] * 3
+    world.clock.now += timedelta(seconds=1)
+    world.keeper().run_once()
+    assert held(world, notes) == [False] * 3
 
 
 @pytest.mark.parametrize("order", ["uninstalled first", "revoked first"])

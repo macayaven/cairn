@@ -41,7 +41,15 @@ from cairn.slack.text import note_from_message
 from cairn.slack.verify import BODY_MAX, SKEW, OtherTeam, envelope, signature, verified
 from cairn.store import Store
 from cairn.store.hosted import Sealer
-from cairn.store.slack import ACCEPTING, COMMAND, FORGET_AFTER, OFFER_TTL, TRIES
+from cairn.store.slack import (
+    ACCEPTING,
+    CHECK_EVERY,
+    COMMAND,
+    FORGET_AFTER,
+    GONE_AFTER,
+    OFFER_TTL,
+    TRIES,
+)
 from cairn.web import slack as web_slack
 from cairn.web.brand import product_of
 
@@ -194,6 +202,15 @@ def test_run_slack_needs_a_public_address():
         with pytest.raises(ValueError) as refused:
             web_slack.serve_switch(options, {"CAIRN_SLACK_KEY": KEY_B64})
         assert str(refused.value) == web_slack.NEEDS_HTTPS
+
+
+def test_run_slack_not_tried_with_enterprise_grid_or_govslack():
+    """run.md: "This version was not tried with an Enterprise Grid organisation or with
+    GovSlack.\""""
+    says(
+        *RUN,
+        "This version was not tried with an Enterprise Grid organisation or with GovSlack.",
+    )
 
 
 def test_run_slack_keep_the_key_apart_and_losing_it_means_setting_up_again(world):  # noqa: F811
@@ -417,15 +434,15 @@ def test_connect_the_page_says_the_state_switch_off_and_on():
 
 def test_connect_remove_deletes_the_secrets_and_links_and_forgets_10_days_later(world):  # noqa: F811
     """connect.md: "**Remove Slack**, once you type the workspace's name, deletes both secrets
-    and every link between a Slack user and a person at once, and every note that came through
-    Slack is forgotten 10 days later. Removing the app at Slack does the same. Until then the
+    and every link between a Slack user and a person at once, and every note Slack created is
+    forgotten 10 days later. Removing the app at Slack does the same. Until then the
     page says how many notes and on which day, and offers an owner **Forget them now**; setting
     Slack up again for the same Slack workspace before that day keeps them.\""""
     says(
         *CONNECT,
         "**Remove Slack**, once you type the workspace's name, deletes both secrets and every"
-        " link between a Slack user and a person at once, and every note that came through Slack"
-        " is forgotten 10 days later. Removing the app at Slack does the same. Until then the"
+        " link between a Slack user and a person at once, and every note Slack created is"
+        " forgotten 10 days later. Removing the app at Slack does the same. Until then the"
         " page says how many notes and on which day, and offers an owner **Forget them now**;"
         " setting Slack up again for the same Slack workspace before that day keeps them.",
     )
@@ -736,22 +753,19 @@ def test_privacy_only_an_author_of_the_same_slack_workspace_is_filed(bench):
 
 def test_privacy_when_the_app_is_removed(world):  # noqa: F811
     """privacy.md: "When the app is removed, at Slack or on the **Sources** page, both secrets
-    and every link are deleted at once, and every note that came through Slack, typed or filed,
-    is forgotten 10 days later, as a note is forgotten (below). Until then the **Sources** page
+    and every link are deleted at once, and every note Slack created, typed or filed, is
+    forgotten 10 days later, as a note is forgotten (below). Until then the **Sources** page
     says how many notes will go and when, and an owner can forget them at once with **Forget
-    them now**; setting Slack up again for the same Slack workspace before that day keeps them.
-    When Slack revokes only the bot's token, Slack is switched off and the token deleted, and
-    nothing is forgotten.\""""
+    them now**; setting Slack up again for the same Slack workspace before that day keeps
+    them.\""""
     says(
         *PRIVACY,
         "When the app is removed, at Slack or on the **Sources** page, both secrets and every"
-        " link are deleted at once, and every note that came through Slack, typed or filed, is"
-        " forgotten 10 days later, as a note is forgotten (below). Until then the **Sources**"
-        " page says how many notes will go and when, and an owner can forget them at once with"
-        " **Forget them now**; setting Slack up again for the same Slack workspace before that"
-        " day keeps them.",
-        "When Slack revokes only the bot's token, Slack is switched off and the token deleted,"
-        " and nothing is forgotten.",
+        " link are deleted at once, and every note Slack created, typed or filed, is forgotten"
+        " 10 days later, as a note is forgotten (below). Until then the **Sources** page says"
+        " how many notes will go and when, and an owner can forget them at once with **Forget"
+        " them now**; setting Slack up again for the same Slack workspace before that day keeps"
+        " them.",
     )
     install = ready(world)
     typed, filed = a_note(world), a_note(world, "# Moon\n\nThe moon is full.\n")
@@ -760,9 +774,6 @@ def test_privacy_when_the_app_is_removed(world):  # noqa: F811
         install.id, filed, how="filed", brought_by=world.owner, conversation_id="C0TIDES01",
         message_time="1900000000.000100",
     )  # fmt: skip
-    revoked = world.view.revoke_slack_bot(install.id)
-    assert revoked.state == "off" and not revoked.holds_bot_token
-    assert world.view.slack_notes_to_forget() is None
     system = world.store.for_account(world.account).acting_as("system", None)
     system.remove_slack_install(install.id)  # Slack's app_uninstalled
     assert world.view.slack_notes_to_forget().notes == 2
@@ -772,6 +783,53 @@ def test_privacy_when_the_app_is_removed(world):  # noqa: F811
     assert sorted(note for _, note in world.store.slack_notes_due()) == sorted([typed, filed])
     world.view.forget_slack_notes_now(install.id)
     assert world.view.get_note(typed) is None and world.view.get_note(filed) is None
+
+
+def test_privacy_what_was_there_before_slack_is_not_slacks_to_forget(bench):
+    """privacy.md: "A note typed in Slack whose text the project already held stores nothing
+    new and records nothing: what was there before Slack is not Slack's to forget.\""""
+    says(
+        *PRIVACY,
+        "A note typed in Slack whose text the project already held stores nothing new and"
+        " records nothing: what was there before Slack is not Slack's to forget.",
+    )
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    bench.owner.add_note(bench.library.id, "Row 4 holds the quince jars.", via="web")
+    assert said(ask(bench, "note Row 4 holds the quince jars.")).startswith("Filed: ")
+    assert len(bench.notes()) == 1
+    assert bench.store._con.execute("SELECT COUNT(*) FROM slack_notes").fetchone() == (0,)
+
+
+def test_privacy_a_token_slack_ended_is_removed_three_days_later(world):  # noqa: F811
+    """privacy.md: "When Slack revokes the bot's token, or no longer accepts it, Slack is
+    switched off and the token deleted; unless a new bot token is pasted on the **Sources**
+    page within 3 days, Slack is then removed here as above. A removal Slack did not tell this
+    server about is noticed within 12 hours, acted on 3 days later, and the notes are
+    forgotten 10 days after that.\""""
+    says(
+        *PRIVACY,
+        "When Slack revokes the bot's token, or no longer accepts it, Slack is switched off and"
+        " the token deleted; unless a new bot token is pasted on the **Sources** page within 3"
+        " days, Slack is then removed here as above.",
+        "A removal Slack did not tell this server about is noticed within 12 hours, acted on 3"
+        " days later, and the notes are forgotten 10 days after that.",
+    )
+    assert timedelta(hours=12) == 2 * CHECK_EVERY and timedelta(days=3) == GONE_AFTER
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    removed_at_slack = world.clock.now  # and Slack said nothing
+    ended = 0
+    while ended < 2:  # a check is due at most CHECK_EVERY after the last
+        world.clock.now += CHECK_EVERY
+        for check in world.store.take_slack_checks():
+            found = world.store.slack_token_checked(check, "ended")
+            ended += 1
+    assert found.state == "off" and not found.holds_bot_token
+    assert world.clock.now - removed_at_slack <= timedelta(hours=12)
+    world.clock.now += GONE_AFTER + timedelta(minutes=1)  # the loop's next pass
+    assert world.store.remove_gone_slack_installs() == [install.id]
+    assert world.view.slack_notes_to_forget().at == world.clock.now + FORGET_AFTER
 
 
 def test_privacy_backups_hold_the_notes_until_they_expire():

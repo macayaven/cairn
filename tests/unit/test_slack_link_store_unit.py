@@ -1,4 +1,4 @@
-"""Linking a Slack user to a person in two steps (cairn.store.slack, review finding B2): the
+"""Linking a Slack user to a person in two steps (cairn.store.slack): the
 offer the Slack user asks for, the signed-in person's yes that ties it to them and gives a
 code, and the code typed back in Slack by the same Slack user. Every name, id and value here
 is made up; every code is chosen by the test through the store's seam (`_new_code`)."""
@@ -231,6 +231,14 @@ def test_when_the_person_who_said_yes_is_no_longer_a_member_nothing_is_linked(wo
     with pytest.raises(KeyError):
         system(world).take_slack_offer(install, BOB, code)
     assert world.view.slack_person(install, BOB) is None
+    assert offers(world) == []
+
+
+def test_removing_a_person_deletes_the_offers_they_said_yes_to(world, code):  # noqa: F811
+    """A removed person's Slack rows go with them, the offer they said yes to among them."""
+    claimed(world, code)
+    assert offers(world) != []
+    world.view.remove_member(world.member)
     assert offers(world) == []
 
 

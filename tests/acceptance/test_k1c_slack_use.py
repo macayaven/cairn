@@ -127,6 +127,7 @@ class Slack_:
             HELPER_BOT: user(HELPER_BOT, "Helper", is_bot=True),
         }
         self.answers: dict[str, object] = {}  # what a method or the reply address answers
+        self.before: dict[str, object] = {}  # a call made once before a method answers
         self.notes_when_answered: list[int] = []  # notes in the store at each reply or post
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -140,6 +141,9 @@ class Slack_:
         else:
             where, body = url, json.loads(request.content)
         self.calls.append((where, body))
+        hook = self.before.pop(where, None)
+        if hook is not None:  # forces an interleaving: it runs while the caller waits here
+            hook()
         if where != "users.info":
             self.notes_when_answered.append(self.world.notes_held())
         answer = self.answers.get(where)
@@ -343,9 +347,9 @@ def browser(world: World, person: k1.Person) -> TestClient:
 
 
 def test_a_yes_to_an_address_someone_sent_links_them_to_nobody(world):
-    """The review's probe (B2): Mallory asks for the address and sends it to Brook, who opens
-    it signed in and says yes. Mallory is linked to nobody, and is answered as anyone not
-    linked is, never as Brook."""
+    """A link sent to someone else binds nobody: Mallory asks for the address and sends it to
+    Brook, who opens it signed in and says yes. Mallory is linked to nobody, and is answered
+    as anyone not linked is, never as Brook."""
     world.slack.users[MALLORY] = user(MALLORY, "Brook")
     value = re.search(
         r"link\?t=([A-Za-z0-9_-]+)", said(private(world.command("link", user=MALLORY)))
@@ -687,6 +691,28 @@ def test_a_message_is_filed_once_and_the_second_time_links_the_note_it_already_i
     page = re.search(rf"<({re.escape(BASE)}/b/inbox/p/[^|>]+)\|", said(first)).group(1)
     assert page in said(again)
     assert len(world.slack.asked("users.info")) == 1
+
+
+def test_the_same_message_filed_by_two_people_at_once_is_one_note_and_it_is_forgotten(world):
+    """One message, one note: Brook files the message while Ada's filing is between its
+    claim and its write (Slack is being asked who wrote it)."""
+    world.link(world.ada, ADA_SLACK, world.inbox)
+    world.link(world.brook, BROOK_SLACK, world.library)
+    second = []
+    world.slack.before["users.info"] = lambda: second.append(world.shortcut(user=BROOK_SLACK))
+    world.shortcut()
+    assert [response.status_code for response in second] == [200]
+    ((note_id, project, *_),) = world.notes()
+    assert project == "inbox"
+    assert [row[0] for row in world.through_slack()] == [note_id]
+    brook, ada = world.slack.asked(REPLY)  # Brook's answer left first
+    assert people.BEING_FILED in said(brook) and "inbox" not in said(brook)
+    assert said(ada).startswith("Filed")
+    world.ada.view.remove_slack_install(world.install.id)
+    world.clock.now += timedelta(days=11)
+    k1.Keeper(world.store).run_once()
+    assert [row for row in world.notes() if row[5] == "slack"] == []
+    assert world.through_slack() == []
 
 
 def test_already_filed_in_a_project_out_of_the_persons_reach_names_nothing_of_it(world):

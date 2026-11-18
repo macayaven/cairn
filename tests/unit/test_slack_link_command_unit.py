@@ -1,5 +1,5 @@
 """The last step of a link, in Slack (cairn.slack.commands `link`, cairn.slack.people and
-blocks.link_prompt, review finding B2): `/cairn link <code>` from the Slack user whose offer
+blocks.link_prompt): `/cairn link <code>` from the Slack user whose offer
 it is links them to the person who said yes in the browser; anything else links nothing and
 is answered with one fixed sentence. Every name is made up; every call to Slack goes to an
 httpx.MockTransport; every code is chosen by the test through the store's seam."""

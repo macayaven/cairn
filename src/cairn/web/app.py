@@ -525,7 +525,11 @@ def create_app(
         test_instance=test_instance,
     )
     compactor = Compactor(store, compact_every) if compact_every else None
-    keeper = Keeper(store, slack.every) if slack is not None else None  # K1
+    keeper = (  # K1: the sweep, the bot tokens checked with Slack, the notes due forgotten
+        Keeper(store, slack.every, http=slack.http or source_http, api=slack.api)
+        if slack is not None
+        else None
+    )
     told = (  # K1b: what a Slack form came to, said once on the Sources page
         SlackOutcomes(slack.sealer(), now, secure, lambda scope: scope.get(MEMORY))
         if slack is not None

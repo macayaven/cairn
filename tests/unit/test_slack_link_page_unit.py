@@ -1,4 +1,4 @@
-"""The two pages of a link in the browser (cairn.slack.link, review finding B2): the page the
+"""The two pages of a link in the browser (cairn.slack.link): the page the
 one-time address opens, which says what cannot be chosen first and shows no code, and the
 yes, which ties the offer to the signed-in person and shows them the code once. Every name,
 id and value is made up; every call to Slack goes to an httpx.MockTransport; the code is

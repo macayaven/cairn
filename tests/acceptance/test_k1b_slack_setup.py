@@ -534,6 +534,28 @@ def test_a_team_whose_install_another_workspace_removed_is_not_taken(world):
     assert world.view(world.ada).get_slack_install().state == "ready"
 
 
+def test_a_team_another_workspace_made_ready_meanwhile_is_taken_and_nothing_kept(
+    world, monkeypatch
+):
+    """The check of the team and the write are two transactions: Dara's workspace makes the
+    same team ready in between. The store's own index refuses it, with the same sentence."""
+    ada = world.browser(world.ada)
+    said(ada, ada.post(setup.SETUP_PATH, follow_redirects=False))
+    real, raced_once = Store.ready_slack_install, []
+
+    def raced(self, *args, **kwargs):  # after the check of the team, before this write
+        if not raced_once:
+            raced_once.append(True)
+            readied_elsewhere(world, TWIN_TOKEN, TEAM, "fable-works")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "ready_slack_install", raced)
+    page = block(said(ada, secrets(ada)))
+    assert setup.REFUSALS["taken"] in page
+    found = world.view(world.ada).get_slack_install()
+    assert found.state == "pending" and not found.holds_secrets
+
+
 def test_neither_secret_is_ever_shown_logged_audited_or_said_in_an_error(world, caplog):
     caplog.set_level(logging.DEBUG)
     ada = world.browser(world.ada)
@@ -572,6 +594,19 @@ def test_ready_says_to_have_slack_verify_the_events_address(world):
     assert f"{BASE}/integrations/slack/{install}/events" in page
 
 
+def test_ready_offers_both_secrets_again_and_on_offers_neither(world):
+    """While ready nothing has proven the signing secret, and the page says to paste it again
+    when Slack reports that the address did not answer: so the form is there."""
+    install = world.readied()
+    ada = world.browser(world.ada)
+    page = shown(ada)
+    assert setup.STATES["ready"] in page
+    assert 'name="signing_secret"' in page and 'name="bot_token"' in page
+    world.store.slack_install_verified(install)
+    page = shown(ada)
+    assert 'name="signing_secret"' not in page and 'name="bot_token"' not in page
+
+
 def test_on_off_and_off_because_revoked_say_their_state(world):
     install = world.readied()
     ada = world.browser(world.ada)
@@ -596,6 +631,45 @@ def test_a_revoked_token_is_asked_for_again_and_the_signing_secret_is_not(world)
     assert found.state == "ready" and found.holds_secrets
     assert world.view(world.ada).slack_bot_token(install) == NEW_TOKEN
     assert world.store.slack_inbound(install).signing_secret == SECRET
+
+
+def test_a_token_slack_ended_says_since_when_the_day_to_paste_a_new_one_and_what_follows(
+    world,
+):
+    install = world.readied()
+    world.clock.now = START + timedelta(hours=7)
+    world.system().revoke_slack_bot(install)  # tokens_revoked, or two ended answers
+    page = " ".join(shown(world.browser(world.ada)).split())
+    assert (
+        "Slack no longer accepts this install's bot token, since <time datetime=\"2031-03-04"
+        in page
+    )
+    assert ">4 March 2031, 16:00 UTC</time>." in page
+    assert (
+        "Paste a new bot token here by <time" in page
+        and ">7 March 2031, 16:00 UTC</time>: after that day, Slack is removed here, and every"
+        " note Slack created is forgotten 10 days later."
+        in page
+    )
+    world.readied()  # a new token Slack accepts
+    assert "no longer accepts" not in shown(world.browser(world.ada))
+
+
+def test_an_install_only_switched_off_says_nothing_of_a_token_gone(world):
+    world.readied()
+    ada = world.browser(world.ada)
+    said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
+    assert "no longer accepts" not in shown(ada)
+
+
+def test_next_to_remove_the_page_says_it_forgets_notes_in_projects_out_of_reach_too(world):
+    world.readied()
+    page = " ".join(shown(world.browser(world.brook)).split())  # an admin removes too
+    assert (
+        "Removing deletes both secrets and every link between a Slack user and a person at"
+        " once, and 10 days later forgets every note Slack created in this workspace, in"
+        " projects you do not reach too." in page
+    )
 
 
 # Off and on

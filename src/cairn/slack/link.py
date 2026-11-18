@@ -1,4 +1,4 @@
-"""Linking a Slack user to a person of the workspace (K1, decision D5, review finding B2):
+"""Linking a Slack user to a person of the workspace (K1, decision D5):
 the page a one-time address opens, the yes, and unlink. The value is made by the bot
 (Store.offer_slack_link, cairn.slack's commands) and sent as <public url>LINK_PATH?t=<value>;
 what is kept is cairn.store.slack. A link takes two steps, both ends pinned before a code

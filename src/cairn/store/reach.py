@@ -209,6 +209,8 @@ MANAGEMENT = frozenset(
         "revoke_slack_bot",
         "slack_bot_token",
         "record_slack_note",
+        "claim_slack_message",  # a filed message claimed before it is written, and released
+        "release_slack_claim",
         "slack_note_for",
         "slack_notes_to_forget",
         "forget_slack_notes_now",
@@ -228,6 +230,9 @@ MANAGEMENT = frozenset(
         "slack_notes_due",
         "sweep_slack",
         "slack_team_held",  # the server's: whether another workspace holds a Slack team
+        "take_slack_checks",  # the server's: the bot tokens to check with Slack
+        "slack_token_checked",
+        "remove_gone_slack_installs",
     }
 )
 # Reads limited to the reach: an out-of-reach project, or a note, span or page in one,
@@ -620,6 +625,9 @@ OTHER_WORKSPACES = frozenset(
         "slack_notes_due",
         "sweep_slack",
         "slack_team_held",
+        "take_slack_checks",
+        "slack_token_checked",
+        "remove_gone_slack_installs",
     }
 )
 # The same kind of operation, kept by such a view when it asks about its own workspace or

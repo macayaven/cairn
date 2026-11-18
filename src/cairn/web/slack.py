@@ -63,11 +63,16 @@ The three addresses Slack calls (`slack_routes`)
   handler failed), whatever the workspace holds.
 
 The loop (Keeper): started in the app's lifespan with the switch on, a pass at start and then
-every `Slack.every` seconds on a worker thread: Store.sweep_slack (offers past their time,
-event ids older than a day), then every note whose day to be forgotten came
+every `Slack.every` seconds. First, on the event loop, Slack is asked whether each bot token
+still works (auth.test, at most once every 6 hours for one install, at most 20 installs a
+pass, each within 5 seconds): two answers in a row that say Slack ended it do what
+tokens_revoked does, and anything else changes nothing. Then, on a worker thread:
+Store.sweep_slack (offers past their time, event ids older than a day, claims never filed),
+every install whose bot token Slack ended more than 3 days ago removed as an owner removes
+it (Store.remove_gone_slack_installs), and every note whose day to be forgotten came
 (Store.slack_notes_due) forgotten with cairn's own forgetting (Store.forget_note, H5b) by a
-view of its workspace acting for no person. A pass that fails is logged by its error's class
-and the next one runs."""
+view of its workspace acting for no person. A check, a note or a pass that fails is logged by
+its error's class and the next one is done."""
 
 import argparse
 import asyncio
@@ -97,7 +102,7 @@ from starlette.routing import Route
 import cairn.slack
 from cairn.memory import Memory, access_log
 from cairn.oauth import _network as network  # the sign-in limit's rule for an address
-from cairn.slack.client import API, REPLY_HOSTS
+from cairn.slack.client import API, REPLY_HOSTS, SlackClient, SlackError
 from cairn.slack.dispatch import Context, dispatch, on_event
 from cairn.slack.verify import (
     CHALLENGE,
@@ -109,7 +114,7 @@ from cairn.slack.verify import (
     verified,
 )
 from cairn.store.hosted import KEY_BYTES, Sealer
-from cairn.store.slack import ACCEPTING
+from cairn.store.slack import ACCEPTING, ENDED
 from cairn.web.templating import NO_PAGE, _page, brand_of
 
 OFF_EVENTS = ("app_uninstalled", "tokens_revoked")  # what an install that is off acts on
@@ -508,23 +513,89 @@ async def _revoked(found: Any, context: Context) -> None:
 
 
 class Keeper:
-    """The background loop (the module). `run_once()`: one pass, never two at once, none
-    once stopped; (rows swept, notes forgotten), or None when it did not run or failed."""
+    """The background loop (the module). `check()`: on the event loop, before each pass, the
+    installs whose bot token is due a check (Store.take_slack_checks: those that hold one, at
+    most once every CHECK_EVERY for one install, at most CHECKS_AT_ONCE in one pass) are each
+    asked of Slack with auth.test (SlackClient.auth_test), through one short-lived client from
+    `http` at `api`, within CHECK_WITHIN seconds in all and a 429 not waited out; what Slack
+    said goes to Store.slack_token_checked: an answer in ENDED is "ended", a good one "works",
+    anything else (a timeout, no connection, 429, a 5xx, another error, not JSON) "unclear".
+    How many were asked; without `http`, none. `run_once()`: one pass on a worker thread,
+    never two at once, none once stopped: Store.sweep_slack, Store.remove_gone_slack_installs,
+    then every note due forgotten; (rows swept, notes forgotten), or None when it did not run
+    or failed. A check or a note that fails is logged by its error's class and the next one is
+    done; no token, note text or database text is in a log line."""
+
+    CHECK_WITHIN = 5.0  # seconds one check of a bot token takes in all
 
     def __init__(
-        self, store: Any, every: float = KEEP_EVERY, wait: Callable[[float], Any] | None = None
+        self,
+        store: Any,
+        every: float = KEEP_EVERY,
+        wait: Callable[[float], Any] | None = None,
+        *,
+        http: Callable[[], httpx.AsyncClient] | None = None,
+        api: str = API,
     ) -> None:
         self._store = store
         self.every = every
         self.wait = wait or asyncio.sleep
+        self._http = http
+        self._api = api
         self._running = threading.Lock()
         self._stopped = threading.Event()
+
+    async def check(self) -> int:
+        if self._http is None or self._stopped.is_set():
+            return 0
+        try:
+            return await self._check()
+        except Exception as failed:  # its class only: a message can quote the database
+            log.warning("slack: the checks of bot tokens failed: %s", type(failed).__name__)
+            return 0
+
+    async def _check(self) -> int:
+        asked = 0
+        due = await asyncio.to_thread(self._held, self._store.take_slack_checks)
+        if not due:
+            return asked
+        async with self._http() as client:  # type: ignore[misc]
+            slack = SlackClient(client, api=self._api, sleep=_no_wait)
+            for check in due:
+                if self._stopped.is_set():
+                    break
+                try:
+                    answer = await self._ask(slack, check.token)
+                    done = await asyncio.to_thread(
+                        self._held, self._store.slack_token_checked, check, answer
+                    )
+                    asked += done is not None
+                except Exception as failed:  # its class only
+                    log.warning("slack: a check of a bot token failed: %s", type(failed).__name__)
+        return asked
+
+    def _held(self, call: Callable[..., Any], *args: Any) -> Any:
+        """`call` on this worker thread while holding the pass's lock, so stop() waits for
+        it; None, and nothing called, once stopped."""
+        with self._running:
+            return None if self._stopped.is_set() else call(*args)
+
+    async def _ask(self, slack: SlackClient, token: str) -> str:
+        try:
+            async with asyncio.timeout(self.CHECK_WITHIN):
+                await slack.auth_test(token)
+        except SlackError as said:
+            return "ended" if said.code in ENDED else "unclear"
+        except TimeoutError:
+            return "unclear"
+        return "works"
 
     def run_once(self) -> tuple[int, int] | None:
         if self._stopped.is_set() or not self._running.acquire(blocking=False):
             return None
         try:
             swept = self._store.sweep_slack()
+            self._store.remove_gone_slack_installs()
             forgotten = 0
             for account_id, note_id in self._store.slack_notes_due():
                 try:
@@ -532,6 +603,8 @@ class Keeper:
                     forgotten += 1
                 except KeyError:  # the note or its workspace is gone, its record with it
                     pass
+                except Exception as failed:  # its class only; the others are still forgotten
+                    log.warning("slack: a note was not forgotten: %s", type(failed).__name__)
             return swept, forgotten
         except Exception as failed:  # its class only: a message can quote the database
             log.warning("slack: a pass of the loop failed: %s", type(failed).__name__)
@@ -541,6 +614,7 @@ class Keeper:
 
     async def loop(self) -> None:
         while True:
+            await self.check()  # never raises: what fails is logged by its class
             await asyncio.to_thread(self.run_once)
             await self.wait(self.every)
 
@@ -549,3 +623,8 @@ class Keeper:
         self._stopped.set()
         with self._running:
             pass
+
+
+async def _no_wait(seconds: float) -> None:
+    """A check does not wait out a 429: it is unclear, and asked again in CHECK_EVERY."""
+    raise SlackError("rate_limited")

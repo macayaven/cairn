@@ -1089,9 +1089,13 @@ def test_links_offers_events_and_notes_are_stored(world):
     offer = view.offer_slack_link(install.id, BROOK_SLACK)
     assert offer not in dump(world.db)  # kept as a digest
     assert world.brook.view.slack_offer(offer).slack_user_id == BROOK_SLACK
-    world.brook.view.take_slack_offer(offer)
+    code = world.brook.view.claim_slack_offer(offer)
+    assert code not in dump(world.db)  # kept as a digest
+    assert world.brook.view.slack_offer(offer) is None  # said yes to once
+    workspace = world.store.for_account(install.account_id)
+    workspace.take_slack_offer(install.id, BROOK_SLACK, code)
     assert view.slack_person(install.id, BROOK_SLACK).user_id == world.brook.id
-    assert world.brook.view.slack_offer(offer) is None  # used once
+    assert rows(world.db, "SELECT COUNT(*) FROM slack_link_offers") == [(0,)]  # used once
     world.post(install.id, "events", event("fable_nobody", "Ev0STORED01"))
     assert rows(world.db, "SELECT event_id FROM slack_events") == [("Ev0STORED01",)]
     filed = world.note("# Tides\n\nThe tide turns at nine.\n", "Tides")
@@ -1121,7 +1125,7 @@ def test_an_offer_works_once_for_10_minutes(world):
     world.clock.now += timedelta(minutes=10, seconds=1)
     assert world.brook.view.slack_offer(offer) is None
     with pytest.raises(KeyError):
-        world.brook.view.take_slack_offer(offer)
+        world.brook.view.claim_slack_offer(offer)
     world.keeper().run_once()
     assert rows(world.db, "SELECT COUNT(*) FROM slack_link_offers") == [(0,)]
 

@@ -220,9 +220,11 @@ MANAGEMENT = frozenset(
         "offer_slack_link",
         "slack_offer",
         "take_slack_offer",
+        "claim_slack_offer",
         "slack_inbound",  # the server's, across workspaces (OTHER_WORKSPACES)
         "slack_install_verified",
         "slack_event_seen",
+        "forget_slack_event",
         "slack_notes_due",
         "sweep_slack",
         "slack_team_held",  # the server's: whether another workspace holds a Slack team
@@ -614,6 +616,7 @@ OTHER_WORKSPACES = frozenset(
         "slack_inbound",  # K1: the install a request to one of Slack's addresses names
         "slack_install_verified",
         "slack_event_seen",
+        "forget_slack_event",
         "slack_notes_due",
         "sweep_slack",
         "slack_team_held",

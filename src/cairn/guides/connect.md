@@ -240,7 +240,7 @@ The page says which state Slack is in and what is left to do: set up started, re
 
 **Remove Slack**, once you type the workspace's name, deletes both secrets and every link between a Slack user and a person at once, and every note that came through Slack is forgotten 10 days later. Removing the app at Slack does the same. Until then the page says how many notes and on which day, and offers an owner **Forget them now**; setting Slack up again for the same Slack workspace before that day keeps them.
 
-Each person links their Slack user to themselves once. The first time they use the bot, or with `/{{slug}} link`, the bot answers them alone with an address that works once, within 10 minutes. Opened signed in to {{name}}, it names the Slack user and the person, and asks for a yes. From then on, what they do through the bot acts as them, with what they reach.
+Each person links their Slack user to themselves once, in two steps within 10 minutes. The first time they use the bot, or with `/{{slug}} link`, the bot answers them alone with an address that works once. Opened signed in to {{name}}, it shows the Slack user's id and the Slack workspace first, then the name that Slack user set themself, and asks for a yes; if someone sent you the address, close the page. The yes shows a code, once, and links nothing yet. The same Slack user then types `/{{slug}} link <code>` in Slack, and is linked. From then on, what they do through the bot acts as them, with what they reach.
 
 The slash command is `/{{slug}}`, unless the owner named it otherwise in the app's manifest:
 
@@ -249,7 +249,7 @@ The slash command is `/{{slug}}`, unless the owner named it otherwise in the app
 | `find <words>` | Up to 5 claims that match, each with its page's title as a link to the claim, its project and the page's version; or Nothing found. |
 | `note <text>` | Writes a note in your Slack project, with `via` `slack`, and links its page. |
 | `project` | Says which project is your Slack project and which projects you can write to. `project <name>` makes another of those your Slack project. |
-| `link` | Says who your Slack user is linked to. |
+| `link` | Says who your Slack user is linked to; if it is linked to nobody, gives a new address to link it. `link <code>` links it with the code that address showed you. |
 | `unlink` | Undoes your link, and offers a new address to link again. |
 | `help`, or no word | Lists what there is. |
 

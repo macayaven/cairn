@@ -2892,7 +2892,8 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
         return install
 
     async def linked(person, install: str) -> None:
-        """The slash command offers the Slack user a link, and the person confirms it."""
+        """The slash command offers the Slack user a link; the person says yes signed in and
+        is shown a code; the same Slack user types it back with the command."""
         status, body = standin.send_command(address(install, "commands"), text="find tide")
         assert status == 200 and json.loads(body)["response_type"] == "ephemeral"
         (value,) = set(LINK.findall(slack_said(body)))
@@ -2901,12 +2902,16 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
         assert shown.status_code == 200 and "Link this Slack user to you?" in shown.text
         assert "Ada Review" in shown.text  # the name Slack gives the user (users.info)
         yes = await person.post(f"/integrations/slack/link?t={value}", headers=SAME_ORIGIN)
-        assert yes.status_code == 303
-        page = (await person.get("/sources")).text
-        assert "Linked: what you do through the bot in Slack now acts as you here" in page
-        assert f"<code>{standin.user_id}</code>" in page
+        assert yes.status_code == 200 and yes.headers["cache-control"] == "no-store"
+        (code,) = set(re.findall(r"<code>([A-Z0-9]{4}-[A-Z0-9]{4})</code>", yes.text))
+        secrets_seen.append(code)
+        assert f"/cairn link {code}" in html.unescape(yes.text)
         again = await person.post(f"/integrations/slack/link?t={value}", headers=SAME_ORIGIN)
         assert again.status_code == 404  # used up
+        status, body = standin.send_command(address(install, "commands"), text=f"link {code}")
+        assert status == 200 and slack_said(body).startswith("Linked to ")
+        page = (await person.get("/sources")).text
+        assert f"<code>{standin.user_id}</code>" in page
 
     async def chose(person, install: str, project: str) -> None:
         """The person makes a project and makes it their Slack project."""

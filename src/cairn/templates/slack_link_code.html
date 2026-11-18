@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{# The second of two steps linking a Slack user to the signed-in person (cairn.slack.link):
+   the code, shown once, sent with no-store and no-referrer. No script. #}
+{% block title %}Your code for Slack{% endblock %}
+{% block head %}<meta name="referrer" content="no-referrer">{% endblock %}
+{% block main %}
+<section class="consent">
+  <h1>Your code for Slack</h1>
+  <p class="lede">In Slack, type <code>{{ command }} link {{ code }}</code></p>
+  <dl class="facts">
+    <dt>Code</dt>
+    <dd><code>{{ code }}</code></dd>
+    <dt>Slack user id</dt>
+    <dd><code>{{ slack_user }}</code></dd>
+    <dt>Type it in Slack by</dt>
+    <dd><time datetime="{{ expires_at }}">{{ expires_at|when }}</time></dd>
+  </dl>
+  <p><strong>Give this code to no one: whoever types it in Slack acts as you here.</strong></p>
+  <p class="meta">This page is shown once. If you lose the code, type <code>{{ command }} link</code> in Slack to start again.</p>
+</section>
+{% endblock %}

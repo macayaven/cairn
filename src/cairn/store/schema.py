@@ -767,13 +767,18 @@ _V29_SLACK_PEOPLE = """CREATE TABLE slack_people (
     linked_at TEXT NOT NULL,
     PRIMARY KEY (install_id, slack_user_id)
 ) WITHOUT ROWID"""
-# A one-time offer of a link, kept as the SHA-256 digest of the value the Slack user is given.
+# A one-time offer of a link, kept as the SHA-256 digest of the value the Slack user is given;
+# the person who said yes to it in the browser, and the digest of the code they were shown,
+# which the same Slack user types back to be linked. A used offer is deleted.
 _V29_SLACK_LINK_OFFERS = """CREATE TABLE slack_link_offers (
     digest TEXT PRIMARY KEY,
     install_id TEXT NOT NULL,
     slack_user_id TEXT NOT NULL,
-    expires_at TEXT NOT NULL,  -- ten minutes after it was made
-    used_at TEXT  -- set by its one use
+    expires_at TEXT NOT NULL,  -- ten minutes after it was made, for both steps
+    user_id TEXT,  -- the person who said yes in the browser; NULL until then
+    code_digest TEXT,  -- of the code that person was shown; NULL until then
+    tries INTEGER NOT NULL DEFAULT 0,  -- wrong codes this Slack user typed since
+    UNIQUE (install_id, slack_user_id)  -- one offer for a Slack user at a time
 ) WITHOUT ROWID"""
 # The event ids an install has seen, so an event is done once; swept after a day.
 _V29_SLACK_EVENTS = """CREATE TABLE slack_events (

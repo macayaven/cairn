@@ -8,7 +8,9 @@ Who asks
   (Store.slack_person) with their Memory (Context.memory_for: their reach, the gate, the guard
   and the plan), or None when there is no link or the person is no longer a member: both are
   "not linked". `link_prompt` makes the one-time value (Store.offer_slack_link, 10 minutes,
-  one use) and answers with its address, <public url>/integrations/slack/link?t=<value>.
+  one use, replacing the Slack user's earlier offer and its code) and answers with its
+  address, <public url>/integrations/slack/link?t=<value>, and the two steps of a link: open
+  it signed in, it shows a code, type `<command> link` and the code (cairn.slack.commands).
 - `writable(memory)`: the projects the person may write to, by name. `chosen(context, asker,
   name)`: one of those made the person's Slack project (Store.set_slack_project), or a
   refusal that says nothing of whether a project of that name exists (NOT_WRITABLE).
@@ -168,11 +170,14 @@ async def asker(context: Context, slack_user: str | None) -> Asker | None:
 
 
 async def link_prompt(context: Context, slack_user: str | None) -> dict:
-    """A one-time address that links `slack_user` to whoever opens it signed in."""
+    """The first step of a link for `slack_user`: a one-time address, which replaces their
+    earlier offer and its code, and the two steps said (blocks.link_prompt)."""
     if not slack_user:
         return blocks.refused("Slack did not say who asked.")
     value = await run_in_threadpool(context.view.offer_slack_link, context.install.id, slack_user)
-    return blocks.link_prompt(f"{context.public_url}/integrations/slack/link?t={value}")
+    return blocks.link_prompt(
+        f"{context.public_url}/integrations/slack/link?t={value}", context.install.command
+    )
 
 
 def linked(asker: Asker) -> dict:

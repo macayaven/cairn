@@ -562,7 +562,10 @@ def test_under_a_brand_the_script_is_served_by_its_exact_name_and_names_nothing(
             assert r.status_code == 200
             (tag,) = Page(r.text).scripts
             assert tag["integrity"] == integrity()
-            assert "cairn" not in r.text.lower().replace('content="', "")
+            # The nonce is 24 random Base64 characters; read without regard to case, about one
+            # page in 1.6 million spells "cairn" in it. It names nothing, so it is left out.
+            shown = r.text.replace(tag["nonce"], "")
+            assert "cairn" not in shown.lower().replace('content="', "")
     finally:
         store.close()
 

@@ -123,6 +123,12 @@ PERMISSIONS = {  # what each scope of the manifest (cairn.slack.manifest.SCOPES)
         " before it is filed."
     ),
 }
+CHANGED_AT_SLACK = (  # said with the secrets form while Slack is on or off
+    "If the signing secret or the bot token was changed at Slack, paste both here again. A"
+    " signing secret other than the one kept has to be proven anew: Slack is then ready, and"
+    " on once Slack verifies the events address again. Pasted while Slack is off, they"
+    " switch it on again."
+)
 STATES = {  # the install's state, and what is left to do
     "pending": (
         "Set up started. Create the app at Slack from the link below, install it to your Slack"
@@ -133,7 +139,8 @@ STATES = {  # the install's state, and what is left to do
         "Ready: Slack accepted the bot token. The signing secret is not proven yet: only a"
         " request that Slack signed can prove it. Left to do: in the app's settings at Slack,"
         " have Slack verify the events address below. If Slack reports that the address did"
-        " not answer, the signing secret pasted here is not this app's: paste it again."
+        " not answer, either Slack cannot reach this server or the signing secret pasted here"
+        " is not this app's: check the address, then paste the secret again."
     ),
     "on": (
         "On: Slack verified the events address, so a request signed with this app's signing"
@@ -567,6 +574,7 @@ def block_for(memory: Any, public_url: str, said: str = "") -> dict[str, Any] | 
         **shown,
         "state": state,
         "says": STATES.get(state or ""),
+        "again": CHANGED_AT_SLACK if state in ("on", "off") else None,
         "install": install,
         "events": f"{base}{PREFIX}/{install.id}/events" if install is not None else None,
         "manifest": json.dumps(manifest, indent=2) if manifest else None,

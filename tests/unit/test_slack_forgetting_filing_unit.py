@@ -12,7 +12,7 @@ from test_slack_commands_unit import ADA_SLACK, BROOK_SLACK, Bench
 from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle, replied
 
 from cairn.slack import people
-from cairn.store.slack import CLAIMED, FILED, FILING
+from cairn.store.slack import CLAIMED, FILED, FILING, SlackClaim
 
 TIME = "1900000000.000100"
 LOOKS_SECRET = "ghp_" + "Fable" * 7 + "0"  # the note guard's github_token rule
@@ -70,6 +70,29 @@ def test_a_message_filed_already_is_answered_with_its_note(bench):
     ((note_id, *_),) = bench.notes()
     assert claim(bench) == (FILED, note_id)
     assert replied(bench, handle(bench, user=BROOK_SLACK)).startswith("Already filed")
+
+
+def test_a_note_written_under_a_claim_someone_took_over_is_recorded_as_slacks_too(
+    bench, monkeypatch
+):
+    """A filing whose claim was taken over after CLAIM_FOR still writes its note: the message
+    stays the first note's, the second person is told it is filed already, and the note
+    their filing made is recorded as one Slack created, so removal forgets it too."""
+    bench.link(BROOK_SLACK, bench.brook, bench.library)
+    handle(bench, user=BROOK_SLACK)  # the one who took the claim over, and filed
+    ((first, *_),) = bench.notes()
+    bench.calls.clear()
+    other = bench.owner.create_project("inbox")
+    bench.link(ADA_SLACK, bench.ada, other)
+    taken_over = type(bench.view).claim_slack_message
+    monkeypatch.setattr(  # Ada's filing made its claim long ago and still acts on it
+        type(bench.view), "claim_slack_message", lambda self, *a, **k: SlackClaim(CLAIMED, None)
+    )
+    assert replied(bench, handle(bench)).startswith("Already filed")
+    monkeypatch.setattr(type(bench.view), "claim_slack_message", taken_over)
+    assert len(bench.notes()) == 2
+    (stray,) = [note_id for note_id, *_ in bench.notes() if note_id != first]
+    assert rows(bench) == [(first, CONVERSATION, TIME), (stray, None, None)]
 
 
 def refused_then_filed(bench: Bench, response, reason: str) -> None:

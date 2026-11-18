@@ -594,9 +594,11 @@ def test_ready_says_to_have_slack_verify_the_events_address(world):
     assert f"{BASE}/integrations/slack/{install}/events" in page
 
 
-def test_ready_offers_both_secrets_again_and_on_offers_neither(world):
+def test_ready_on_and_off_each_offer_both_secrets_again(world):
     """While ready nothing has proven the signing secret, and the page says to paste it again
-    when Slack reports that the address did not answer: so the form is there."""
+    when Slack reports that the address did not answer. On or off, a secret changed at Slack
+    is pasted here too: without the form, the one way left would be to remove Slack, and
+    every link with it."""
     install = world.readied()
     ada = world.browser(world.ada)
     page = shown(ada)
@@ -604,7 +606,12 @@ def test_ready_offers_both_secrets_again_and_on_offers_neither(world):
     assert 'name="signing_secret"' in page and 'name="bot_token"' in page
     world.store.slack_install_verified(install)
     page = shown(ada)
-    assert 'name="signing_secret"' not in page and 'name="bot_token"' not in page
+    assert setup.STATES["on"] in page and setup.CHANGED_AT_SLACK in page
+    assert 'name="signing_secret"' in page and 'name="bot_token"' in page
+    said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
+    page = shown(ada)
+    assert setup.STATES["off"] in page and setup.CHANGED_AT_SLACK in page
+    assert 'name="signing_secret"' in page and 'name="bot_token"' in page
 
 
 def test_on_off_and_off_because_revoked_say_their_state(world):
@@ -614,7 +621,7 @@ def test_on_off_and_off_because_revoked_say_their_state(world):
     assert setup.STATES["on"] in shown(ada)
     said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
     page = shown(ada)
-    assert setup.STATES["off"] in page and 'name="bot_token"' not in page
+    assert setup.STATES["off"] in page
     world.system().revoke_slack_bot(install)
     page = shown(ada)
     assert setup.STATES["revoked"] in page

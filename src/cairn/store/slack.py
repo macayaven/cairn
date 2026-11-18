@@ -407,6 +407,18 @@ class SlackMethods(StoreBase):
             if state == "removed":
                 raise ValueError("this Slack install was removed: set it up again first")
             account = self._account_id
+            kept = con.execute(
+                "SELECT signing_secret FROM slack_installs WHERE id = ?", (install_id,)
+            ).fetchone()[0]
+            held = (
+                sealer.open(kept, _associated("signing_secret", install_id, account))
+                if kept is not None
+                else None
+            )
+            # on stays on only with the signing secret a signed request proved already
+            proven = (
+                state == "on" and held is not None and hmac.compare_digest(held, signing_secret)
+            )
             sealed = (
                 sealer.seal(signing_secret, _associated("signing_secret", install_id, account)),
                 sealer.seal(bot_token, _associated("bot_token", install_id, account)),
@@ -417,7 +429,7 @@ class SlackMethods(StoreBase):
                     " team_domain = ?, bot_user_id = ?, signing_secret = ?, bot_token = ?,"
                     " removed_at = NULL, checked_at = ?, dead_checks = 0, bot_gone_at = NULL"
                     " WHERE id = ?",
-                    ("on" if state == "on" else "ready", team_id, enterprise_id, team_domain,
+                    ("on" if proven else "ready", team_id, enterprise_id, team_domain,
                      bot_user_id, *sealed, self._stamp(), install_id),
                 )  # fmt: skip
             except sqlite3.IntegrityError:  # slack_installs_team: another workspace's team

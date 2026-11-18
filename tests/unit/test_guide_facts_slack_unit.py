@@ -365,8 +365,9 @@ def test_connect_ready_says_the_signing_secret_is_not_proven_until_slack_verifie
     """connect.md: "4. Slack is then ready: Slack accepted the bot token, but nothing proves
     the signing secret yet; only a request that Slack signed can. At Slack, have Slack verify
     the events address the page shows, on the page where Slack lists events. If Slack reports
-    that the address did not answer, the signing secret you pasted is not this app's: paste it
-    again. Once Slack has verified the address, Slack is on: a request signed with this app's
+    that the address did not answer, either Slack cannot reach this server or the signing
+    secret you pasted is not this app's: check the address, then paste the secret again.
+    Once Slack has verified the address, Slack is on: a request signed with this app's
     signing secret was verified, and the slash command, the message shortcut and direct
     messages to the bot are answered.\""""
     says(
@@ -374,10 +375,11 @@ def test_connect_ready_says_the_signing_secret_is_not_proven_until_slack_verifie
         "4. Slack is then ready: Slack accepted the bot token, but nothing proves the signing"
         " secret yet; only a request that Slack signed can. At Slack, have Slack verify the"
         " events address the page shows, on the page where Slack lists events. If Slack reports"
-        " that the address did not answer, the signing secret you pasted is not this app's:"
-        " paste it again. Once Slack has verified the address, Slack is on: a request signed"
-        " with this app's signing secret was verified, and the slash command, the message"
-        " shortcut and direct messages to the bot are answered.",
+        " that the address did not answer, either Slack cannot reach this server or the signing"
+        " secret you pasted is not this app's: check the address, then paste the secret again."
+        " Once Slack has verified the address, Slack is on: a request signed with this app's"
+        " signing secret was verified, and the slash command, the message shortcut and direct"
+        " messages to the bot are answered.",
     )
     ready_says = setup.STATES["ready"]
     assert ready_says.startswith("Ready: Slack accepted the bot token.")
@@ -385,8 +387,9 @@ def test_connect_ready_says_the_signing_secret_is_not_proven_until_slack_verifie
     assert "only a request that Slack signed can prove it" in ready_says
     assert "have Slack verify the events address below" in ready_says
     assert "If Slack reports that the address did not answer" in ready_says
+    assert "either Slack cannot reach this server" in ready_says
     assert "the signing secret pasted here is not this app's" in ready_says
-    assert "paste it again" in ready_says
+    assert "check the address, then paste the secret again" in ready_says
     assert "are answered" not in ready_says and "shortcut" not in ready_says
     assert "a request signed with this app's signing secret was verified" in setup.STATES["on"]
     assert "direct messages to the bot are answered" in setup.STATES["on"]
@@ -411,9 +414,15 @@ def test_connect_the_page_says_the_state_switch_off_and_on():
     started, ready, on, off, or off because Slack revoked the bot's token. **Switch off** stops
     the bot and deletes nothing: the slash command and the shortcut are refused, and a direct
     message is not answered. **Switch on** needs nothing pasted, unless Slack revoked the bot's
-    token: then the page asks for a new one, and keeps the signing secret.\""""
+    token: then the page asks for a new one, and keeps the signing secret. When the signing
+    secret or the bot token is changed at Slack, paste both on the page again, whatever state
+    Slack is in: a signing secret other than the one kept makes Slack ready again, until Slack
+    verifies the events address.\""""
     says(
         *CONNECT,
+        "When the signing secret or the bot token is changed at Slack, paste both on the page"
+        " again, whatever state Slack is in: a signing secret other than the one kept makes"
+        " Slack ready again, until Slack verifies the events address.",
         "The page says which state Slack is in and what is left to do: set up started, ready,"
         " on, off, or off because Slack revoked the bot's token.",
         "**Switch off** stops the bot and deletes nothing: the slash command and the shortcut"
@@ -975,8 +984,8 @@ def test_security_answers_are_private_and_built_from_the_askers_reach(bench):
 
 
 def test_security_what_links_a_slack_user_to_a_person(bench, monkeypatch):
-    """security.md: "A Slack user is linked to a person in three steps. The Slack user asks
-    the bot for an address, which is theirs alone. The person opens it signed in and says
+    """security.md: "A Slack user is linked to a person in two steps, once they have asked the
+    bot for an address, which is theirs alone. The person opens it signed in and says
     yes, and is shown a code, once. The same Slack user types that code with the command
     within 10 minutes. So a Slack user is linked to a person only when that Slack user knew a
     code shown only to that person: someone who sends their address to another person gains
@@ -984,7 +993,7 @@ def test_security_what_links_a_slack_user_to_a_person(bench, monkeypatch):
     the fifth deletes it; a code typed by any other Slack user is dead.\""""
     says(
         *SECURITY,
-        "A Slack user is linked to a person in three steps. The Slack user asks the bot for an"
+        "A Slack user is linked to a person in two steps, once they have asked the bot for an"
         " address, which is theirs alone. The person opens it signed in and says yes, and is"
         " shown a code, once. The same Slack user types that code with the command within 10"
         " minutes. So a Slack user is linked to a person only when that Slack user knew a code"

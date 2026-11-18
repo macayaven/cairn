@@ -25,9 +25,9 @@ another person gains nothing from that person's yes.
 - POST LINK_PATH?t=<value>, the yes (Store.claim_slack_offer): the offer is tied to the
   person, nothing is linked, and the answer is 200 with the page that shows the code, once
   (templates/slack_link_code.html, `cache-control: no-store`, `referrer-policy:
-  no-referrer`): what to type in Slack with the install's command name, by when, and to give
-  the code to no one. After it the address is no page: the person who lost the code starts
-  again in Slack.
+  no-referrer`): what to type in Slack with the install's command name, by when, to type it
+  as the command and not in a message to the bot, and to give the code to no one. After it
+  the address is no page: the person who lost the code starts again in Slack.
 - POST UNLINK_PATH, `slack_user`: the person's own link to that Slack user undone
   (Store.unlink_slack_user); a link that is not theirs is not touched.
 - Anything else: no value, more than one, a value used, run out, of another workspace, or a
@@ -57,6 +57,9 @@ NAME_WITHIN = 3.0  # seconds users.info may take in all
 NAME_MAX = 80  # characters of a Slack user's name shown
 VALUE_MAX = 128  # characters of a one-time value read
 SAID = {"unlinked": "Unlinked: the bot no longer acts as you for that Slack user."}
+# On the code page: a message to the bot from someone not linked makes a new offer, which
+# ends the one this code belongs to.
+AS_THE_COMMAND = "Type it as the command above: sent to the bot as a message, it starts over."
 
 
 def slack_name(user: dict[str, Any], fallback: str) -> str:
@@ -142,6 +145,7 @@ def link_routes(
         response = page_of(
             request, "slack_link_code.html", code=code, slack_user=offer.slack_user_id,
             command=install.command if install else "", expires_at=offer.expires_at.isoformat(),
+            as_the_command=AS_THE_COMMAND,
         )  # fmt: skip
         response.headers["cache-control"] = "no-store"
         response.headers["referrer-policy"] = "no-referrer"

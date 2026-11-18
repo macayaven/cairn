@@ -193,6 +193,19 @@ def test_on_off_and_on_again(world):
     assert pending.get_slack_install().state == "on"
 
 
+def test_another_signing_secret_pasted_while_on_is_ready_until_slack_proves_it(world):
+    """Nothing proves a signing secret but a request Slack signed with it: an install that
+    is on and is given another one is ready again; given the one it holds, it stays on."""
+    install = ready(world)
+    world.store.slack_install_verified(install.id)
+    same = ready(world, token=TOKEN + "1")  # a new bot token, the signing secret it holds
+    assert same.state == "on" and world.view.slack_bot_token(install.id) == TOKEN + "1"
+    other = ready(world, secret=SECRET + "ab")
+    assert other.state == "ready"
+    assert world.store.slack_inbound(install.id).signing_secret == SECRET + "ab"
+    assert world.store.slack_install_verified(install.id).state == "on"
+
+
 def test_a_pending_install_is_not_switched_on_and_the_challenge_does_not_turn_it_on(world):
     made = world.view.make_slack_install()
     with pytest.raises(ValueError):

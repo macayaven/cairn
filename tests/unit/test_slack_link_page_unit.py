@@ -99,6 +99,14 @@ def test_the_code_page_says_what_to_type_by_when_and_to_give_the_code_to_no_one(
     assert "style=" not in page.text
 
 
+def test_the_code_page_says_the_code_goes_with_the_command_not_in_a_message(world):
+    """A message to the bot from someone not linked starts a new offer, which ends this one."""
+    assert link.AS_THE_COMMAND in main(yes(world, world.offer()))
+    assert link.AS_THE_COMMAND == (
+        "Type it as the command above: sent to the bot as a message, it starts over."
+    )
+
+
 def test_the_code_page_names_the_installs_own_command(world):
     world.view.remove_slack_install(world.install)
     world.view.make_slack_install("/notes")

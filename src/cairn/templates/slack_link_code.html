@@ -16,6 +16,7 @@
     <dd><time datetime="{{ expires_at }}">{{ expires_at|when }}</time></dd>
   </dl>
   <p><strong>Give this code to no one: whoever types it in Slack acts as you here.</strong></p>
+  <p>{{ as_the_command }}</p>
   <p class="meta">This page is shown once. If you lose the code, type <code>{{ command }} link</code> in Slack to start again.</p>
 </section>
 {% endblock %}

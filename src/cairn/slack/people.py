@@ -261,16 +261,21 @@ def write(
 
     def stored(note: Any, created: bool) -> None:
         if message is not None:  # a filed message is recorded always: it is its key (D9)
-            kept.append(
-                context.view.record_slack_note(
-                    context.install.id,
-                    note.id,
-                    how="filed",
-                    brought_by=asker.person.user_id,
-                    conversation_id=message[0],
-                    message_time=message[1],
-                )
+            recorded = context.view.record_slack_note(
+                context.install.id,
+                note.id,
+                how="filed",
+                brought_by=asker.person.user_id,
+                conversation_id=message[0],
+                message_time=message[1],
             )
+            if recorded != note.id and created:
+                # the claim was taken over and the message filed meanwhile: this note is
+                # one Slack created all the same, so it is forgotten with the install's
+                context.view.record_slack_note(
+                    context.install.id, note.id, how="typed", brought_by=asker.person.user_id
+                )
+            kept.append(recorded)
             return
         if created:  # a typed text the project held already did not come through here
             context.view.record_slack_note(

@@ -24,7 +24,8 @@ The addresses (`setup_routes`, only with `serve --slack`)
   (REFUSALS) and keeps nothing. Otherwise Store.ready_slack_install records the team and seals
   both secrets. When Slack revoked the bot's token (SlackInstall.needs_bot_token), only the
   token is asked for and the signing secret kept is used (`Office.kept_secret`); when it does
-  not open, both are asked for. A secret goes from the form to auth.test and to the store and
+  not open (the key changed), that is said (unopened), and removing Slack and setting it up
+  again asks for both. A secret goes from the form to auth.test and to the store and
   nowhere else: not into a cookie, a log line, an outcome or a page.
 - Off and on (Store.switch_slack_install): on again needs nothing pasted, unless Slack revoked
   the token (needs_token). Remove (Store.remove_slack_install, decision D10) needs the
@@ -39,7 +40,8 @@ The addresses (`setup_routes`, only with `serve --slack`)
 The block (templates/_slack.html, `Block`, `block_for`): nothing unless the switch is on and
 the reader is a person. An owner or an admin sees the install's state and what is left to do
 (STATES), the forms that state takes, and, while notes that came through a removed install
-wait to be forgotten, how many and the day, with "Forget them now" for an owner. Anyone else
+wait to be forgotten, how many and the day, with "Forget them now" for an owner while the
+install is removed. Anyone else
 sees only an outcome said to them (cairn.slack.link)."""
 
 import contextlib
@@ -149,6 +151,10 @@ REFUSALS = {  # each one sentence; none quotes what was typed
         " nothing was kept."
     ),
     "unkept": "This server could not keep these secrets, so nothing was kept.",
+    "unopened": (
+        "The signing secret kept here no longer opens, as this server's key changed: remove"
+        " Slack and set it up again, so that both are asked for; nothing was kept."
+    ),
     "needs_token": "Slack revoked the bot's token: paste the new one to switch Slack on again.",
     "confirm": "Type the workspace's name to remove Slack, as a check; nothing was changed.",
     "state": "That cannot be done while Slack is in this state; nothing was changed.",
@@ -389,6 +395,8 @@ def setup_routes(
         account = memory.store.account_id
         if not secret and install.needs_bot_token:
             secret = await run_in_threadpool(office.kept_secret, install.id, account) or ""
+            if not secret:
+                return await told(memory, noted, "unopened")
         if not (SECRET_VALUE.fullmatch(secret) and SECRET_VALUE.fullmatch(token)):
             return await told(memory, noted, "blank")
         try:
@@ -531,7 +539,7 @@ def block_for(scope: Scope, public_url: str, said: str = "") -> dict[str, Any] |
         "manifest_link": manifest_link(manifest) if manifest else None,
         "permissions": [(scope, PERMISSIONS[scope]) for scope in SCOPES],
         "due": {"notes": due.notes, "at": due.at.isoformat()} if due is not None else None,
-        "owner": store.role() == "owner",
+        "forgets": state == "removed" and store.role() == "owner",  # "Forget them now"
         "workspace": store.get_account(store.account_id).name,
     }
 

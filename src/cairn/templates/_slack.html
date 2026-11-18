@@ -69,7 +69,7 @@
   {% endif %}
   {% if slack.due %}
   <p>{{ slack.due.notes }} {{ "note" if slack.due.notes == 1 else "notes" }} came through Slack: {{ "it" if slack.due.notes == 1 else "they" }} will be forgotten on <time datetime="{{ slack.due.at }}">{{ slack.due.at|when }}</time>, unless the same Slack workspace is set up again before then.</p>
-  {% if slack.owner %}
+  {% if slack.forgets %}
   <form method="post" action="/integrations/slack/forget" class="ending">
     <button type="submit" class="quiet danger">Forget them now</button>
   </form>

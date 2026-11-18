@@ -551,12 +551,21 @@ def test_a_revoked_token_is_asked_for_again_and_the_signing_secret_is_not(world)
 # Off and on
 
 
-def command_answer(world: World, install: str) -> int:
-    """The status Slack gets for a signed `/cairn help` to the install's commands address."""
-    body = urlencode(
-        {"team_id": TEAM, "user_id": CLEO_SLACK, "command": "/cairn", "text": "help",
-         "response_url": "https://hooks.slack.com/commands/T0FABLE01/1/x"}
-    ).encode()  # fmt: skip
+def command_answer(world: World, install: str, kind: str = "commands") -> int:
+    """What Slack gets for a signed `/cairn help` to the install's commands address, or a
+    signed message shortcut to its actions address."""
+    if kind == "commands":
+        fields = {"team_id": TEAM, "user_id": CLEO_SLACK, "command": "/cairn", "text": "help",
+                  "response_url": "https://hooks.slack.com/commands/T0FABLE01/1/x"}  # fmt: skip
+    else:
+        payload = {
+            "type": "message_action", "callback_id": "fable_unregistered",
+            "team": {"id": TEAM, "domain": "fable-works"}, "user": {"id": CLEO_SLACK},
+            "channel": {"id": "C0LIBRARY1"}, "message": {"ts": "1900000000.000100", "text": "hi"},
+            "response_url": "https://hooks.slack.com/actions/T0FABLE01/1/x",
+        }  # fmt: skip
+        fields = {"payload": json.dumps(payload)}
+    body = urlencode(fields).encode()
     at = str(int(world.clock().timestamp()))
     digest = hmac.new(SECRET.encode(), b"v0:" + at.encode() + b":" + body, hashlib.sha256)
     headers = {
@@ -564,7 +573,7 @@ def command_answer(world: World, install: str) -> int:
         "X-Slack-Request-Timestamp": at, "X-Slack-Signature": "v0=" + digest.hexdigest(),
     }  # fmt: skip
     client = world.browser(None)
-    return client.post(f"/integrations/slack/{install}/commands", content=body, headers=headers)
+    return client.post(f"/integrations/slack/{install}/{kind}", content=body, headers=headers)
 
 
 def test_off_refuses_commands_and_deletes_nothing_and_on_needs_nothing_pasted(world):
@@ -578,6 +587,7 @@ def test_off_refuses_commands_and_deletes_nothing_and_on_needs_nothing_pasted(wo
     rows = world.slack_rows()
     assert view.get_slack_install().state == "off" and view.get_slack_install().holds_secrets
     assert command_answer(world, install).status_code == 404
+    assert command_answer(world, install, "actions").status_code == 404
     assert rows["slack_people"] and rows["slack_notes"]
     page = said(ada, ada.post(setup.ON_PATH, follow_redirects=False))
     assert setup.SAID["on"] in page and view.get_slack_install().state == "on"
@@ -633,6 +643,17 @@ def test_remove_says_how_many_notes_and_the_day_and_offers_only_the_owner_forget
         assert world.view(world.ada).get_note(note) is None
 
 
+def test_forget_now_is_offered_only_while_the_install_is_removed(world):
+    install = world.readied()
+    typed_note(world, install, "first")
+    ada = world.browser(world.ada)
+    name = world.store.get_account(world.workspace).name
+    said(ada, ada.post(setup.REMOVE_PATH, data={"confirm": name}, follow_redirects=False))
+    page = block(said(ada, ada.post(setup.SETUP_PATH, follow_redirects=False)))
+    assert world.view(world.ada).get_slack_install().state == "pending"
+    assert "1 note came through Slack" in page and "Forget them now" not in page
+
+
 def test_an_admin_removes_too(world):
     world.readied()
     brook = world.browser(world.brook)
@@ -658,6 +679,7 @@ def test_each_is_one_audit_record_and_one_access_record_naming_who_the_install_a
         (lambda: ada.post(setup.REMOVE_PATH, data={"confirm": name}, follow_redirects=False),
          "slack.install_removed"),
     ]  # fmt: skip
+    typed = None
     for step, action in steps:
         audit_before, records_before = len(world.audit()), len(logged(caplog))
         assert step().status_code == 303
@@ -668,8 +690,23 @@ def test_each_is_one_audit_record_and_one_access_record_naming_who_the_install_a
         assert [r.action for r in records] == ["slack_setup"]
         assert (records[0].actor_id, records[0].install) == (world.ada["id"], world.install())
         assert records[0].status == 303 and records[0].outcome
+        if action == "slack.install_ready":
+            typed = typed_note(world, world.install(), "first")
+    # Forgetting now is the store's forgetting of each note (H5b), with its own audit records
+    records_before = len(logged(caplog))
+    assert ada.post(setup.FORGET_PATH, follow_redirects=False).status_code == 303
+    (forgot,) = [r for r in logged(caplog)[records_before:] if r.action == "slack_setup"]
+    assert (forgot.install, forgot.outcome, forgot.actor_id) == (
+        world.install(),
+        "forgotten",
+        world.ada["id"],
+    )
+    assert world.view(world.ada).get_note(typed) is None
+    # A refusal changes nothing, so the store records nothing of it; the access log does
+    audit_before = len(world.audit())
     records_before = len(logged(caplog))
     world.browser(world.cleo).post(setup.OFF_PATH)
+    assert len(world.audit()) == audit_before
     (refused,) = logged(caplog)[records_before:]
     assert (refused.action, refused.status, refused.actor_id) == (
         "slack_setup",

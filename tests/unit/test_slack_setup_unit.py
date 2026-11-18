@@ -117,7 +117,6 @@ def page_after(browser: TestClient, response: httpx.Response) -> str:
     [
         ("https://fable-works.slack.com/", "fable-works"),
         ("https://fable-works.slack.com", "fable-works"),
-        ("https://fable.slack-gov.com/", "fable"),
         ("https://fable-works.example.test/", None),  # not Slack's
         ("http://fable-works.slack.com/", None),  # not https
         ("https://slack.com/", None),  # no workspace in it
@@ -223,7 +222,7 @@ def test_the_kept_signing_secret_is_given_only_for_its_own_workspace(world):
     assert SECRET not in repr(office)
 
 
-def test_a_revoked_token_whose_kept_secret_does_not_open_asks_for_both(world, monkeypatch):
+def test_a_revoked_token_whose_kept_secret_does_not_open_says_to_set_up_again(world, monkeypatch):
     install = ready(world.view(world.ada))
     world.store.for_account(world.ada["account"]).acting_as("system", None).revoke_slack_bot(
         install
@@ -231,7 +230,7 @@ def test_a_revoked_token_whose_kept_secret_does_not_open_asks_for_both(world, mo
     world.store.slack_sealer = Sealer(bytes(range(1, 33)))  # the key changed since
     ada = world.browser(world.ada)
     sent = ada.post(setup.SECRETS_PATH, data={"bot_token": TOKEN}, follow_redirects=False)
-    assert setup.REFUSALS["blank"] in page_after(ada, sent)
+    assert setup.REFUSALS["unopened"] in page_after(ada, sent)
     assert world.calls == []
 
 

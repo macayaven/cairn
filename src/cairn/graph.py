@@ -8,6 +8,20 @@ the data, and a reach over REACH_MAX entries, or a set too large to read within 
 fails closed here. Pages are visited by slug, claims and citations in stored order; only the
 latest page version is read. A limit stops traversal, never adds dangling edges, and is
 reported as truncation. No totals for omitted material are computed.
+
+With the explorer on (G2, `serve --graph-explorer`), the graph page reads
+graph_neighbourhood and a note's page reads graph_note_detail; project_graph, which
+/api/graph and the agent's resource read, is the same code in both states, and neither
+function calls it. Each request is one read snapshot that rechecks the project and the
+view's reach as project_graph does, and answers a project out of reach with the KeyError a
+missing one gets. A request does a bounded amount of work, whatever the project holds: one
+batch of at most 20 page heads, notes, claims or citations (the candidates it checks, matched
+or not), each label read up to 512 bytes, a claim's citations scanned at most
+64 KiB at a time, a note's text at most 16 KiB at a time. What is left is reached by a
+continuation: opaque, signed with a key made once per process, tied to the workspace, the
+project, the view and the search; one that does not verify is a ValueError, and one whose
+page changed since is GraphStale. An index row that is missing or names another project is
+GraphUnavailable, never a shorter answer. The tests count statements and rows, never time.
 """
 
 import base64

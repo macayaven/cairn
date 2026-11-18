@@ -145,9 +145,7 @@ def graph_routes(explorer: bool = False) -> list[Route]:
                 return _restart(request, project, UNREADABLE, 400)
             raise NotFound("Not Found") from None
         memory._touched = detail["project"]
-        return render_note(
-            detail["project"], detail, brand=brand_of(request), person=memory.person
-        )
+        return render_note(detail["project"], detail, brand=brand_of(request), person=memory.person)
 
     if not explorer:
         return [

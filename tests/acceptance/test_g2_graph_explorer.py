@@ -680,5 +680,5 @@ def test_a_batch_a_claims_passages_and_a_note_page_cost_the_same_in_a_larger_pro
         finally:
             w.store.close()
     assert costs[0] == costs[1]
-    assert all(0 < statements and 0 < rows <= 120 for _, statements, rows in costs[1])
+    assert all(statements > 0 and 0 < rows <= 120 for _, statements, rows in costs[1])
     assert json.dumps(costs)  # numbers only

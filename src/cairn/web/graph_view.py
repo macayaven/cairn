@@ -10,7 +10,7 @@ without it every node, link and continuation is in the markup, and the controls 
 stay `hidden` until it shows them. The explorer's stylesheet, GRAPH_STYLESHEET, is linked by
 the explorer's pages alone. Neither file names the product, so both are served, by their
 exact names, under a brand too (explorer_files). With the explorer off neither is served and
-render_graph is the only renderer, as before."""
+render_graph alone draws the graph page, as before."""
 
 import base64
 import hashlib
@@ -36,9 +36,7 @@ _SHEET_BYTES = (HERE / "static" / GRAPH_STYLESHEET).read_bytes()  # is what is s
 SCRIPT_INTEGRITY = "sha256-" + base64.b64encode(hashlib.sha256(_SCRIPT_BYTES).digest()).decode()
 SCRIPT_ADDRESS = "/static/" + GRAPH_SCRIPT
 # The stylesheet's address changes with its content, as the main stylesheet's does.
-STYLESHEET_ADDRESS = (
-    f"/static/{GRAPH_STYLESHEET}?v={hashlib.sha256(_SHEET_BYTES).hexdigest()[:12]}"
-)
+STYLESHEET_ADDRESS = f"/static/{GRAPH_STYLESHEET}?v={hashlib.sha256(_SHEET_BYTES).hexdigest()[:12]}"
 NONCE_BYTES = 18  # 144 bits from `secrets`, a new one for every explorer page
 
 

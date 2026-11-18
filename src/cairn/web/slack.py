@@ -84,6 +84,7 @@ from starlette.routing import Route
 
 import cairn.slack
 from cairn.memory import Memory, access_log
+from cairn.slack.client import API, REPLY_HOSTS
 from cairn.slack.dispatch import Context, dispatch, on_event
 from cairn.slack.verify import (
     CHALLENGE,
@@ -131,12 +132,16 @@ NO_RETRY = {"x-slack-no-retry": "1"}
 @dataclass(frozen=True)
 class Slack:
     """The switch, on: the key the installs' secrets are sealed with (never in a repr),
-    `http`, what every call to Slack is made through (None: create_app's `source_http`), and
-    `every`, the seconds between the loop's passes."""
+    `http`, what every call to Slack is made through (None: create_app's `source_http`),
+    `every`, the seconds between the loop's passes, and where Slack is: `api`, the base of its
+    Web API, and `reply_hosts`, the hosts a reply address may name (cairn.slack.client). Both
+    are Slack's own unless a test says a stand-in's; `serve` has no option for either."""
 
     key: bytes = field(repr=False)
     http: Callable[[], httpx.AsyncClient] | None = field(default=None, repr=False)
     every: float = KEEP_EVERY
+    api: str = API
+    reply_hosts: frozenset[str] = REPLY_HOSTS
 
     def sealer(self) -> Sealer:
         return Sealer(self.key)
@@ -341,6 +346,8 @@ def slack_routes(
             http=http,
             public_url=public_url,
             now=now,
+            api=config.api,
+            reply_hosts=config.reply_hosts,
         )
         try:
             answer = await dispatch(found, context)

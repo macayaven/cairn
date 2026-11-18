@@ -25,8 +25,8 @@ the install's workspace acting for no person (links, offers, project, notes reco
 have it (Accounts.memory: their reach, the gate, the guard, the plan), or None when they are
 no longer one. `http()` makes the client every call to Slack goes through (create_app's, so a
 test hands in an httpx.MockTransport); `bot_token()` opens the install's bot token (a read of
-the store: call it on a worker thread). `public_url` is the server's address; `now()` its
-clock. The store's calls block: a handler runs them on a worker thread
+the store: call it on a worker thread). `slack()` is the client for them (cairn.slack.client).
+`public_url` is the server's address; `now()` its clock. The store's calls block: a handler runs them on a worker thread
 (starlette.concurrency.run_in_threadpool), as cairn.web.slack's own handlers do."""
 
 from collections.abc import Awaitable, Callable
@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from starlette.responses import Response
 
+from cairn.slack.client import API, REPLY_HOSTS, SlackClient
 from cairn.slack.verify import Envelope
 from cairn.store.slack import SlackInstall
 
@@ -53,6 +54,13 @@ class Context:
     http: Callable[[], httpx.AsyncClient] = field(repr=False)
     public_url: str = ""
     now: Callable[[], datetime] = field(default=datetime.now, repr=False)
+    api: str = API
+    reply_hosts: frozenset[str] = REPLY_HOSTS
+
+    def slack(self) -> SlackClient:
+        """The client every call to Slack is made with (cairn.slack.client), at the server's
+        base and reply hosts: Slack's own, unless a test's switch says a stand-in's."""
+        return SlackClient(self.http(), api=self.api, reply_hosts=self.reply_hosts)
 
     def bot_token(self) -> str | None:
         """The install's bot token, opened; None when it holds none or it does not open."""

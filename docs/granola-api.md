@@ -515,20 +515,21 @@ transcript page by page, also when Get note answers `TRANSCRIPT_TOO_LARGE` (para
 
 ### E.1 Error body
 
-All error responses share one JSON body (paraphrased) [doc: INTRO]:
+All error responses share one JSON body (paraphrased) [doc: INTRO]. The fields below are
+INTRO's; the values are ours, made up, but for `code`, which is one of the codes in E.2:
 ```json
 {
   "code": "VALIDATION_ERROR",
-  "message": "Invalid query parameters",
-  "details": [{ "field": "page_size", "issue": "Number must be less than or equal to 30" }],
-  "requestId": "0c6f3f0e-7f0f-4c59-9d0b-2f1f6f1a3b7e",
-  "timestamp": "2026-01-27T15:30:00.000Z"
+  "message": "Example message about the request",
+  "details": [{ "field": "example_field", "issue": "Example issue with that field" }],
+  "requestId": "example-request-0001",
+  "timestamp": "2026-11-18T12:00:00.000Z"
 }
 ```
-[example: INTRO] `details` comes only with some errors, validation errors among them, and
-support asks for the `requestId` (paraphrased). [doc: INTRO] SPEC declares no error schema: a script
-over SPEC found no non-2xx response with `content` on any operation, so this shape rests on
-INTRO alone. [spec: SPEC]
+[example: INTRO, the field names] `details` comes only with some errors, validation errors
+among them, and support asks for the `requestId` (paraphrased). [doc: INTRO] SPEC declares no
+error schema: a script over SPEC found no non-2xx response with `content` on any operation,
+so this shape rests on INTRO alone. [spec: SPEC]
 Whether `message` can echo request input (for example a cursor or key fragment) is
 **[not stated]**.
 

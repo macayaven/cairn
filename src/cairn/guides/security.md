@@ -34,7 +34,7 @@ This guide says who can reach what in {{name}}, how people and agents prove who 
 
 ## Stored as digests only
 
-API keys, browser sessions, OAuth codes and tokens, and invitation links are random values. {{name}} hands each one out once and stores only its SHA-256 digest. A copy of the database therefore holds no credential anyone can use. A sign-in provider's own tokens are used during sign-in and never stored.
+API keys, browser sessions, OAuth codes and tokens, and invitation links are random values. {{name}} hands each one out once and stores only its SHA-256 digest. A copy of the database therefore holds none of them in a form anyone can use. The one credential of another service it can hold, a connected Google account's refresh token, is sealed: see [below](#google-accounts-connected-in-the-browser). A sign-in provider's own tokens are used during sign-in and never stored.
 
 ## Google accounts connected in the browser
 

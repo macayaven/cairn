@@ -814,3 +814,23 @@ def test_the_guide_says_how_long_an_item_is_held_and_that_case_is_blind():
     said = next(s for s in guide.split(". ") if "never write one item" in s)
     assert "case-blind" in said and "look-back window" in said and "unwritten" in said
     assert len(guide.encode()) < 70_000
+
+
+def test_the_guide_says_which_second_source_the_form_refuses():
+    from cairn.sources import OVERLAP_ON
+
+    root = Path(__file__).resolve().parents[2]
+    guide = " ".join((root / "src" / "cairn" / "guides" / "sources.md").read_text().split())
+    start = guide.index("never write one item")
+    said = guide[start : guide.index("**Four endings", start)]
+    for words in (
+        "one Granola account makes one source",
+        "any number of folders",
+        "`primary` beside any other calendar",
+        "the same calendar twice, in any case",
+        "made before this rule stay",
+        "switch one off",
+    ):
+        assert words in said, words
+    words = "neither reads or writes anything"  # what the page says beside such a source
+    assert words in said and words in OVERLAP_ON

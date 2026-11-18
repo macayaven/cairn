@@ -735,7 +735,7 @@ Trimmed: deprecated tracing, trace data deletion, prompts and deprecated metrics
 - **Feature-probe alternative:**
   - Call `GET /api/public/v2/observations?limit=1&fromStartTime=...`. A 404 suggests the server lacks v2 reads (v3, or v4 in `legacy` mode).
   - The spec lists 404 among its responses, but the body for an unknown route is [not stated].
-- **Self-hosted spec location:** v4.36.0+ serves its own spec at `/api/openapi.yaml` and an interactive reference at `/api/docs`. [doc: public-api; spec: `info.description`]
+- **Self-hosted spec location:** from v4.36.0, request `/api/openapi.yaml` for the machine-readable contract; the browser reference is on `/api/docs`. [doc: public-api; spec: `info.description`]
 - **SDK minimums (useful context):** Python SDK v5 and JS/TS SDK v6 need Langfuse Cloud, or a self-hosted Langfuse at v4.59.0 or later. [doc: migration#upgrade-sdk]
 
 ---

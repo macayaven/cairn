@@ -169,7 +169,7 @@ def test_the_readme_says_whose_the_quoted_provider_documentation_is():
     # The quotes that stay are under licences that ask for this: the licence named and linked.
     assert "https://creativecommons.org/licenses/by/4.0/" in section
     assert "developers.google.com" in section and "GitHub Docs" in section
-    # Langfuse's documentation is among the sources given in our own words: no notice owed.
+    # The notes' convention: Langfuse's documentation is among the sources given in our own words.
     assert "Linear's pages and Langfuse's documentation say" in section
     assert "is given in cairn's own words" in section
     notes = sorted(p.name for p in (ROOT / "docs").glob("*-api.md"))

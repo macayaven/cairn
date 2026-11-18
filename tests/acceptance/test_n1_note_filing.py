@@ -1237,8 +1237,8 @@ def test_a_note_its_gate_rejects_or_its_full_page_refuses_waits_no_more(
         store.close()
 
 
-LOCKED = "- Brook's locker code is 4471, and the spare is under the blue mat.\n"
-SECRET = ("4471", "locker", "blue mat")
+LOCKED = "- Brook's locker code is mint-test-4471, and the spare is under the blue mat.\n"
+SECRET = ("mint-test-4471", "locker", "blue mat")
 FLAKY = "- Cy turns the relay keys every Friday at noon.\n"
 
 
@@ -1272,7 +1272,7 @@ def test_a_compile_that_fails_unforeseen_is_logged_without_its_text_and_tried_a_
 
     def save_page(store, *args, **kwargs):
         seen = repr((args, kwargs))
-        if "4471" in seen:
+        if "locker code is mint-test-4471" in seen:
             tries["locked"] += 1
             raise RuntimeError(f"the disk refused {LOCKED!r}")
         if "relay keys" in seen:

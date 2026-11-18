@@ -224,7 +224,9 @@ def test_a_sealed_value_opens_with_its_key_and_its_associated_data_only():
     ):
         assert sealer.open(sealed, other) is None
     assert sealer.open("not-a-sealed-value", tied) is None
-    assert sealer.open(sealed[:-2] + ("A" if sealed[-2] != "A" else "B") + sealed[-1], tied) is None
+    changed = bytearray(base64.urlsafe_b64decode(sealed))
+    changed[-1] ^= 1  # Change the tag itself, not only padding bits in its Base64 spelling.
+    assert sealer.open(base64.urlsafe_b64encode(changed).decode("ascii"), tied) is None
 
 
 def test_each_seal_takes_a_fresh_nonce():

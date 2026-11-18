@@ -47,8 +47,11 @@ The three addresses Slack calls (`slack_routes`)
   7. Slack's challenge (url_verification, to /events) is answered with its `challenge`, as
      text; an install that is ready becomes on (Store.slack_install_verified).
   8. An event whose event_id the install saw within a day is answered 200 and nothing happens
-     again, whatever x-slack-retry-num says (Store.slack_event_seen records it first, so a
-     handler that fails is not run again by a retry).
+     again, whatever x-slack-retry-num says. Store.slack_event_seen records the id before
+     the handler runs, so two deliveries at once run it once. A handler that raises is
+     answered 500 and its event's id forgotten (Store.forget_slack_event; a forgetting that
+     fails too is logged by its class, and the answer is still 500), so Slack's next
+     delivery of it runs the handler again; one that returned is not run again.
   9. cairn.slack.dispatch answers the rest; this module registers what it owns:
      `app_uninstalled` (Store.remove_slack_install, D10) and `tokens_revoked` naming the
      install's bot (Store.revoke_slack_bot); another user's token revoked changes nothing.
@@ -56,7 +59,8 @@ The three addresses Slack calls (`slack_routes`)
   its action (ACTIONS: slack_event, slack_command, slack_action), the install and the
   status, under the actor kind "slack"; never the body, a secret, the signature or a header.
 - What verifying costs is counted in statements: one read of the install by its id, then a
-  write for a challenge or an event's id, whatever the workspace holds.
+  write for a challenge or an event's id (and one more to forget the id of an event whose
+  handler failed), whatever the workspace holds.
 
 The loop (Keeper): started in the app's lifespan with the switch on, a pass at start and then
 every `Slack.every` seconds on a worker thread: Store.sweep_slack (offers past their time,
@@ -329,13 +333,14 @@ def _logged(action: str, install: str, status: int) -> None:
 @dataclass(frozen=True)
 class Desk:
     """What the addresses get of the store (as Accounts.ledger hands OAuth its part): the
-    install a request names, the challenge answered, an event seen, and a view of a workspace
-    acting for no person."""
+    install a request names, the challenge answered, an event seen, an event forgotten again
+    (its handler failed), and a view of a workspace acting for no person."""
 
     inbound: Callable[[str], Any]
     verified: Callable[[str], Any]
     seen: Callable[[str, str], bool]
     view: Callable[[str], Any] = field(repr=False)
+    forget: Callable[[str, str], Any] = field(repr=False)
 
 
 def desk_of(store: Any) -> Desk:
@@ -344,6 +349,7 @@ def desk_of(store: Any) -> Desk:
         verified=store.slack_install_verified,
         seen=store.slack_event_seen,
         view=lambda account_id: store.for_account(account_id).acting_as("system", None),
+        forget=lambda install_id, event_id: store.forget_slack_event(install_id, event_id),
     )
 
 
@@ -433,6 +439,13 @@ def slack_routes(
             answer = await dispatch(found, context)
         except Exception as failed:  # its class only: a message can quote what a person wrote
             log.warning("slack: a handler failed: %s", type(failed).__name__)
+            if found.event_id is not None:  # so that Slack's next delivery runs it again
+                try:
+                    await run_in_threadpool(desk.forget, install.id, found.event_id)
+                except Exception as unforgotten:
+                    log.warning(
+                        "slack: a failed event was not forgotten: %s", type(unforgotten).__name__
+                    )
             _logged(action, install_id, 500)
             return Response(status_code=500)
         _logged(action, install_id, answer.status_code)

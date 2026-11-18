@@ -786,6 +786,85 @@ def test_an_event_is_done_once_whatever_the_retry_number_says_and_ids_are_kept_a
         dispatch.unregister("event", "fable_ping")
 
 
+def test_an_event_whose_handler_failed_runs_again_at_slacks_next_delivery(world):
+    install = world.install()
+    ran, recorded = [], []
+
+    @dispatch.on_event("fable_ping")
+    async def ping(envelope, context):
+        # recorded before it runs: a second delivery now would be answered 200 and not run
+        recorded.append(not world.store.slack_event_seen(install.id, envelope.event_id))
+        ran.append(envelope.event_id)
+        if len(ran) == 1:
+            raise RuntimeError("the store is busy")
+
+    try:
+        body = event("fable_ping", "Ev0FAILS001")
+        assert world.post(install.id, "events", body).status_code == 500
+        headers = {**signed(SECRET, body, world.clock.stamp()), "x-slack-retry-num": "1"}
+        assert world.post(install.id, "events", body, headers).status_code == 200
+        assert ran == ["Ev0FAILS001"] * 2 and recorded == [True, True]
+        headers = {**signed(SECRET, body, world.clock.stamp()), "x-slack-retry-num": "2"}
+        assert world.post(install.id, "events", body, headers).status_code == 200
+        assert len(ran) == 2  # a handler that returned is not run again
+    finally:
+        dispatch.unregister("event", "fable_ping")
+
+
+def failing_once(monkeypatch, name: str) -> list[int]:
+    """Store.<name> raises the first time it is called, and works after."""
+    calls = []
+    real = getattr(Store, name)
+
+    def once(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Store, name, once)
+    return calls
+
+
+def test_app_uninstalled_whose_handler_failed_is_done_at_the_next_delivery(world, monkeypatch):
+    install = world.install()
+    world.post(install.id, "events", challenge())
+    calls = failing_once(monkeypatch, "remove_slack_install")
+    body = event("app_uninstalled", "Ev0GONEFAIL")
+    assert world.post(install.id, "events", body).status_code == 500
+    assert world.ada.view.get_slack_install().state == "on"
+    assert world.post(install.id, "events", body).status_code == 200
+    assert world.ada.view.get_slack_install().state == "removed" and len(calls) == 2
+
+
+def test_tokens_revoked_whose_handler_failed_is_done_at_the_next_delivery(world, monkeypatch):
+    install = world.install()
+    world.post(install.id, "events", challenge())
+    calls = failing_once(monkeypatch, "revoke_slack_bot")
+    body = event("tokens_revoked", "Ev0BOTFAIL1", **revoked())
+    assert world.post(install.id, "events", body).status_code == 500
+    assert world.ada.view.get_slack_install().state == "on"
+    assert world.post(install.id, "events", body).status_code == 200
+    assert world.ada.view.get_slack_install().state == "off" and len(calls) == 2
+    assert world.post(install.id, "events", body).status_code == 200 and len(calls) == 2
+
+
+def test_a_failed_event_whose_id_cannot_be_forgotten_is_still_500_and_logged_by_class(
+    world, monkeypatch, caplog
+):
+    install = world.install()
+    failing_once(monkeypatch, "remove_slack_install")
+    failing_once(monkeypatch, "forget_slack_event")
+    caplog.set_level(logging.WARNING, logger="cairn.slack")
+    body = event("app_uninstalled", "Ev0NOFORGET")
+    assert world.post(install.id, "events", body).status_code == 500
+    said = [r.getMessage() for r in caplog.records if r.name == "cairn.slack"]
+    assert said == [
+        "slack: a handler failed: OperationalError",
+        "slack: a failed event was not forgotten: OperationalError",
+    ]
+
+
 def test_nothing_registered_is_acknowledged_and_does_nothing(world):
     install = world.install()
     before = dump(world.db)

@@ -52,13 +52,14 @@ Links, offers, notes, events
   conversation and message time: the same message is one note, D9, and the note it already is
   comes back) or typed; `slack_note_for` finds the note a message already is.
 - `slack_event_seen`: True the first time an install sees an event id, False after; ids are
-  kept SEEN_FOR (a day). `sweep_slack` (also part of Store.sweep_expired) removes offers past
-  their time and ids older than that.
+  kept SEEN_FOR (a day). `forget_slack_event`: an id is no longer seen (its handler failed),
+  so Slack's next delivery of it is the first time again. `sweep_slack` (also part of
+  Store.sweep_expired) removes offers past their time and ids older than that.
 
 Who may: every method is a management call of cairn.store.reach (a narrowed view gets none).
 The cross-workspace ones (`slack_inbound`, `slack_install_verified`, `slack_event_seen`,
-`slack_notes_due`, `sweep_slack`, `slack_team_held`) are the server's: refused to a view
-acting for a person.
+`forget_slack_event`, `slack_notes_due`, `sweep_slack`, `slack_team_held`) are the server's:
+refused to a view acting for a person.
 Nothing here holds a secret in a repr, an exception's message or the audit log, and no
 table is exported (cairn.store.portable); a deleted workspace, a removed person, a deleted
 project and a forgotten note each take their rows with them (cairn.store.accounts, people,
@@ -693,6 +694,15 @@ class SlackMethods(StoreBase):
                     " ON CONFLICT DO NOTHING",
                     (install_id, event_id, self._stamp()),
                 ).rowcount
+            )
+
+    def forget_slack_event(self, install_id: str, event_id: str) -> None:
+        """The server's: the install no longer has seen `event_id` (its handler failed), so
+        Slack's next delivery of it is the first time again. One never seen: nothing."""
+        with self._write() as con:
+            con.execute(
+                "DELETE FROM slack_events WHERE install_id = ? AND event_id = ?",
+                (install_id, event_id),
             )
 
     def sweep_slack(self) -> int:

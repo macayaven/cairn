@@ -382,6 +382,25 @@ def test_events_are_seen_once_and_swept_after_a_day(world):
     assert world.store.slack_event_seen(install.id, "Ev01") is True
 
 
+def test_a_forgotten_event_id_is_seen_again_as_the_first_time(world):
+    install = ready(world)
+    assert world.store.slack_event_seen(install.id, "Ev01") is True
+    world.store.forget_slack_event(install.id, "Ev01")
+    assert world.store.slack_event_seen(install.id, "Ev01") is True
+    assert world.store.slack_event_seen(install.id, "Ev01") is False
+    world.store.forget_slack_event(install.id, "Ev0NEVER")  # one never seen: nothing
+    world.store.forget_slack_event("sl_ffffffffffff", "Ev01")  # another install's: nothing
+    assert world.store.slack_event_seen(install.id, "Ev01") is False
+
+
+def test_forgetting_an_event_id_is_the_servers_alone(world):
+    install = ready(world)
+    world.store.slack_event_seen(install.id, "Ev01")
+    with pytest.raises(PermissionError):
+        world.view.forget_slack_event(install.id, "Ev01")
+    assert world.store.slack_event_seen(install.id, "Ev01") is False
+
+
 def test_the_sweep_takes_offers_past_their_time_and_is_part_of_sweep_expired(world):
     install = ready(world)
     world.view.offer_slack_link(install.id, "U0BOB0001")

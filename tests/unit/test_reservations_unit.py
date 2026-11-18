@@ -87,8 +87,8 @@ def test_a_reservation_never_settled_counts_in_full_and_is_listed(store, clock):
     assert store.usage("2026-11").model_micros == 3 and store.usage("2026-12").model_micros == 0
 
 
-def test_two_connections_cannot_both_take_the_last_of_a_budget(db, store):
-    other = Store(db)
+def test_two_connections_cannot_both_take_the_last_of_a_budget(db, store, clock):
+    other = Store(db, clock=clock)  # one clock: a budget is a calendar month's
     try:
         mine = store.limited(Limits(model_budget_micros=100))
         theirs = other.limited(Limits(model_budget_micros=100))

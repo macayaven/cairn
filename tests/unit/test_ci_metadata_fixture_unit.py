@@ -4,7 +4,7 @@ import importlib.util
 import socket
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -147,3 +147,111 @@ def test_fixture_blocks_metadata_traffic_routed_outside_its_veth():
         rule = ["-d", m.ADDRESS, "!", "-o", m.HOST, "-j", "REJECT"]
         assert ["iptables", "-w", "-I", chain, "1", *rule] in commands
         assert ["iptables", "-w", "-D", chain, *rule] in commands
+
+
+@pytest.mark.parametrize(
+    ("observation", "expected"),
+    [
+        (
+            ConnectionRefusedError(111, "private synthetic detail"),
+            "ConnectionRefusedError errno=111",
+        ),
+        (TimeoutError("private synthetic detail"), "TimeoutError"),
+        (b"", "empty response"),
+        (
+            b"HTTP/1.0 503 private synthetic detail\r\nX-Private: hidden\r\n\r\nhidden body",
+            "unexpected HTTP status",
+        ),
+    ],
+    ids=["refused", "timeout", "empty", "unexpected-status"],
+)
+def test_readiness_timeout_reports_only_safe_last_observation(observation, expected):
+    m = fixture()
+    server = Mock()
+    server.poll.return_value = None
+    client = Mock()
+    client.__enter__ = Mock(return_value=client)
+    client.__exit__ = Mock(return_value=False)
+    if isinstance(observation, OSError):
+        connection = patch.object(m.socket, "create_connection", side_effect=observation)
+    else:
+        client.recv.return_value = observation
+        connection = patch.object(m.socket, "create_connection", return_value=client)
+
+    with (
+        patch.object(m.time, "monotonic", side_effect=[0, 0, 10]),
+        patch.object(m.time, "sleep"),
+        connection,
+        pytest.raises(RuntimeError) as error,
+    ):
+        m.wait_ready(server)
+    assert (
+        str(error.value) == f"metadata fixture did not become ready (last observation: {expected})"
+    )
+
+
+def test_readiness_timeout_uses_latest_observation_instead_of_stale_error():
+    m = fixture()
+    server = Mock()
+    server.poll.return_value = None
+    client = Mock()
+    client.__enter__ = Mock(return_value=client)
+    client.__exit__ = Mock(return_value=False)
+    client.recv.return_value = b""
+    with (
+        patch.object(m.time, "monotonic", side_effect=[0, 0, 0, 10]),
+        patch.object(m.time, "sleep"),
+        patch.object(
+            m.socket,
+            "create_connection",
+            side_effect=[ConnectionRefusedError(111, "hidden"), client],
+        ),
+        pytest.raises(RuntimeError, match=r"last observation: empty response\)$"),
+    ):
+        m.wait_ready(server)
+
+
+@pytest.mark.parametrize("status", [0, 2, -15])
+def test_readiness_early_exit_reports_numeric_child_status(status):
+    m = fixture()
+    server = Mock()
+    server.poll.return_value = status
+    with (
+        patch.object(m.time, "monotonic", side_effect=[0, 0]),
+        patch.object(
+            m.socket, "create_connection", side_effect=AssertionError("no probe after exit")
+        ),
+        pytest.raises(RuntimeError) as error,
+    ):
+        m.wait_ready(server)
+    assert str(error.value) == f"metadata fixture server exited (exit code: {status})"
+
+
+def test_readiness_still_accepts_existing_success_check_without_sleep():
+    m = fixture()
+    server = Mock()
+    server.poll.return_value = None
+    client = Mock()
+    client.__enter__ = Mock(return_value=client)
+    client.__exit__ = Mock(return_value=False)
+    client.recv.return_value = b"HTTP/1.0 200 OK\r\n\r\n"
+    with (
+        patch.object(m.time, "monotonic", side_effect=[0, 0]),
+        patch.object(m.time, "sleep", side_effect=AssertionError("no sleep after readiness")),
+        patch.object(m.socket, "create_connection", return_value=client),
+    ):
+        assert m.wait_ready(server) is None
+
+
+def test_the_server_listens_without_looking_its_address_up():
+    """http.server.HTTPServer asks for its address's name before it listens. With no
+    resolver answering, that one lookup can take the ten seconds wait_ready allows."""
+    m = fixture()
+    with patch.object(m.socket, "getfqdn", side_effect=AssertionError("looked up")) as lookup:
+        server = m.Server(("127.0.0.1", 0), m.Handler)
+    try:
+        assert lookup.call_count == 0
+        with socket.create_connection(server.server_address, timeout=2):
+            pass  # it listens: the connection is accepted into the backlog
+    finally:
+        server.server_close()

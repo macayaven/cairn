@@ -45,7 +45,9 @@ the reader is a person. An owner or an admin sees the install's state and what i
 (STATES), the forms that state takes, and, while notes that came through a removed install
 wait to be forgotten, how many and the day, with "Forget them now" for an owner while the
 install is removed. Anyone else
-sees only an outcome said to them (cairn.slack.link).
+sees only an outcome said to them (cairn.slack.link). Every person, whatever their role, is
+shown their own links (Store.own_slack_links), each Slack user by its id with "Unlink"
+(cairn.slack.link.UNLINK_PATH), and nobody else's.
 
 The web layer depends on this package, never the other way round (tests/unit/test_layers_unit):
 what this module needs of it is handed in by cairn.web.app, `memory_in` (the request's Memory
@@ -232,9 +234,8 @@ class Office:
 
 
 def office_of(store: Any) -> Office:
-    """The Office of the server's store. The store has no read of the installs by team, so
-    `team_held` asks each other workspace for its install: one statement for the list, then
-    one for each workspace."""
+    """The Office of the server's store: `team_held` is Store.slack_team_held, one statement
+    whatever the number of workspaces."""
 
     def kept_secret(install_id: str, account_id: str) -> str | None:
         found = store.slack_inbound(install_id)
@@ -242,16 +243,7 @@ def office_of(store: Any) -> Office:
             return None
         return found.signing_secret
 
-    def team_held(team_id: str, account_id: str) -> bool:
-        for account in store.list_accounts():
-            if account.id == account_id:
-                continue
-            install = store.for_account(account.id).get_slack_install()
-            if install is not None and install.state != "removed" and install.team_id == team_id:
-                return True
-        return False
-
-    return Office(kept_secret=kept_secret, team_held=team_held)
+    return Office(kept_secret=kept_secret, team_held=store.slack_team_held)
 
 
 # An outcome, said once on the Sources page
@@ -536,8 +528,11 @@ def block_for(memory: Any, public_url: str, said: str = "") -> dict[str, Any] | 
     store = memory.store
     words = {**SAID, **LINKED}
     shown = {"done": words.get(said), "refused": REFUSALS.get(said)}
+    mine = [found.slack_user_id for found in store.own_slack_links()]  # theirs alone
     if not store.manages():
-        return {"manages": False, **shown} if shown["done"] or shown["refused"] else None
+        if shown["done"] or shown["refused"] or mine:
+            return {"manages": False, "links": mine, **shown}
+        return None
     install = store.get_slack_install()
     state = _state(install)
     base = public_url.rstrip("/")
@@ -549,6 +544,7 @@ def block_for(memory: Any, public_url: str, said: str = "") -> dict[str, Any] | 
     due = store.slack_notes_to_forget()
     return {
         "manages": True,
+        "links": mine,
         **shown,
         "state": state,
         "says": STATES.get(state or ""),

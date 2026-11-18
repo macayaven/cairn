@@ -184,12 +184,9 @@ def search(context: Context, asker: Asker, query: str) -> dict:
 
 
 def writable(memory: Memory) -> list[Project]:
-    """The projects in the person's reach they may write to, by name: two reads of the
-    person's level per project the person reaches."""
-    store = memory.store
-    projects = store.list_projects()
-    with store._read() as con:  # the person's level, as cairn.graph reads it
-        return [project for project in projects if store._level(con, project.id) == "write"]
+    """The projects in the person's reach they may write to, by name
+    (Store.writable_projects: one read, whatever the workspace holds)."""
+    return memory.store.writable_projects()
 
 
 def project_said(context: Context, asker: Asker) -> dict:

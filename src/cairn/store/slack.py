@@ -41,7 +41,9 @@ The install
 Links, offers, notes, events
 - `link_slack_user` / `unlink_slack_user` / `slack_person`: a Slack user of the install linked
   to a person who is a member of the workspace, with the project their notes go to
-  (`set_slack_project`: a project of the workspace, or None).
+  (`set_slack_project`: a project of the workspace, or None). `own_slack_links`: the view's
+  own person's links, and nobody else's. `slack_team_held` (the server's): whether another
+  workspace's install that is not removed is for a Slack team, so one team has one install.
 - `offer_slack_link` gives a one-time value (kept as its SHA-256 digest) for OFFER_TTL (10
   minutes); `slack_offer` reads it for a view of the install's workspace (None: unknown,
   used, run out, or another workspace's); `take_slack_offer` uses it once and links the
@@ -55,7 +57,8 @@ Links, offers, notes, events
 
 Who may: every method is a management call of cairn.store.reach (a narrowed view gets none).
 The cross-workspace ones (`slack_inbound`, `slack_install_verified`, `slack_event_seen`,
-`slack_notes_due`, `sweep_slack`) are the server's: refused to a view acting for a person.
+`slack_notes_due`, `sweep_slack`, `slack_team_held`) are the server's: refused to a view
+acting for a person.
 Nothing here holds a secret in a repr, an exception's message or the audit log, and no
 table is exported (cairn.store.portable); a deleted workspace, a removed person, a deleted
 project and a forgotten note each take their rows with them (cairn.store.accounts, people,
@@ -579,6 +582,34 @@ class SlackMethods(StoreBase):
             (install_id, slack_user),
         ).fetchone()
         return SlackPerson(*row) if row else None
+
+    def own_slack_links(self) -> list[SlackPerson]:
+        """The view's own person's links: each Slack user of the workspace's installs linked
+        to them, by Slack user id; [] for a view acting for no person. One statement."""
+        if self._user_id is None:
+            return []
+        with self._read() as con:
+            found = con.execute(
+                "SELECT p.install_id, p.slack_user_id, p.user_id, p.project_id, p.linked_at"
+                " FROM slack_people AS p JOIN slack_installs AS i ON i.id = p.install_id"
+                " WHERE i.account_id = ? AND p.user_id = ? ORDER BY p.slack_user_id",
+                (self._account_id, self._user_id),
+            ).fetchall()
+        return [SlackPerson(*row) for row in found]
+
+    def slack_team_held(self, team_id: str, account_id: str) -> bool:
+        """The server's: whether an install of a workspace other than `account_id`, not
+        removed, is for the Slack team `team_id`. One statement, whatever the number of
+        workspaces."""
+        with self._read() as con:
+            return (
+                con.execute(
+                    "SELECT 1 FROM slack_installs WHERE team_id = ? AND account_id != ?"
+                    " AND state != 'removed' LIMIT 1",
+                    (team_id, account_id),
+                ).fetchone()
+                is not None
+            )
 
     def set_slack_project(
         self, install_id: str, slack_user_id: str, project_id: str | None

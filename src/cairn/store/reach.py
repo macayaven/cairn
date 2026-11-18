@@ -33,6 +33,7 @@ from cairn.store.models import (
     KeyInfo,
     Note,
     Page,
+    Project,
     ProjectSet,
     SourceInfo,
 )
@@ -214,6 +215,7 @@ MANAGEMENT = frozenset(
         "link_slack_user",
         "unlink_slack_user",
         "slack_person",
+        "own_slack_links",  # the view's own person's links, for the Sources page
         "set_slack_project",
         "offer_slack_link",
         "slack_offer",
@@ -223,6 +225,7 @@ MANAGEMENT = frozenset(
         "slack_event_seen",
         "slack_notes_due",
         "sweep_slack",
+        "slack_team_held",  # the server's: whether another workspace holds a Slack team
     }
 )
 # Reads limited to the reach: an out-of-reach project, or a note, span or page in one,
@@ -232,6 +235,7 @@ MANAGEMENT = frozenset(
 LIMITED_READS = frozenset(
     {
         "list_projects",
+        "writable_projects",  # those the view's person may write to: none on a read-only view
         "get_project",
         "get_note",
         "holds_note",  # whether the project holds a note of this text (H6c)
@@ -521,6 +525,10 @@ class ReachMethods(StoreBase):
     def source_credentials(self, *args: Any, **kwargs: Any) -> dict[str, str | None]:
         return {} if self._narrowed else super().source_credentials(*args, **kwargs)  # type: ignore[misc]
 
+    def writable_projects(self, *args: Any, **kwargs: Any) -> list[Project]:
+        """None on a read-only view: it writes nowhere."""
+        return [] if self._read_only else super().writable_projects(*args, **kwargs)  # type: ignore[misc]
+
     def manages(self) -> bool:
         """False on any narrowed view: it manages nothing (MANAGEMENT)."""
         return False if self._narrowed else super().manages()  # type: ignore[misc]
@@ -608,6 +616,7 @@ OTHER_WORKSPACES = frozenset(
         "slack_event_seen",
         "slack_notes_due",
         "sweep_slack",
+        "slack_team_held",
     }
 )
 # The same kind of operation, kept by such a view when it asks about its own workspace or

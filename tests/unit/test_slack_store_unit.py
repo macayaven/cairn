@@ -393,6 +393,98 @@ def test_the_sweep_takes_offers_past_their_time_and_is_part_of_sweep_expired(wor
     assert rows(world.db, "SELECT COUNT(*) FROM slack_events") == [(0,)]
 
 
+# What the set-up, the Sources page and the handlers read
+
+
+def selects(store: Store, call) -> int:
+    """How many SELECT statements `call()` runs on the store's connection."""
+    asked: list[str] = []
+    store._con.set_trace_callback(asked.append)
+    try:
+        call()
+    finally:
+        store._con.set_trace_callback(None)
+    return len([s for s in asked if s.lstrip().upper().startswith(("SELECT", "WITH"))])
+
+
+def workspaces(w, n: int) -> list:
+    """`n` more workspaces, each with its own install ready, for a team of its own."""
+    made = []
+    for i in range(n):
+        signed = w.store.sign_in(
+            "sso", f"sub-w{i}", f"w{i}@example.test", f"W{i}", issuer=ISSUER, join="personal"
+        )
+        view = w.store.for_account(signed.account_id, signed.user.id)
+        made.append(ready(w, team=f"T0OTHER{i:02d}", view=view))
+    return made
+
+
+def test_a_persons_own_links_are_theirs_alone(world):
+    install = ready(world)
+    world.view.link_slack_user(install.id, "U0BOB0001", world.member)
+    world.view.link_slack_user(install.id, "U0BOB0002", world.member)
+    world.view.link_slack_user(install.id, "U0ADA0001", world.owner)
+    mine = world.member_view.own_slack_links()
+    assert [(p.install_id, p.slack_user_id, p.user_id) for p in mine] == [
+        (install.id, "U0BOB0001", world.member),
+        (install.id, "U0BOB0002", world.member),
+    ]
+    assert [p.slack_user_id for p in world.view.own_slack_links()] == ["U0ADA0001"]
+    assert world.store.for_account(world.account).own_slack_links() == []  # no person
+    world.view.remove_slack_install(install.id)
+    assert world.member_view.own_slack_links() == []
+
+
+def test_a_persons_own_links_are_one_read_whatever_the_number_of_workspaces(world):
+    install = ready(world)
+    world.view.link_slack_user(install.id, "U0BOB0001", world.member)
+    workspaces(world, 1)
+    few = selects(world.store, world.member_view.own_slack_links)
+    workspaces(world, 6)
+    assert few == selects(world.store, world.member_view.own_slack_links) == 1
+
+
+def test_whether_another_workspace_holds_a_team_is_one_read(world):
+    mine = ready(world)
+    others = workspaces(world, 1)
+    other = others[0]
+    held = world.store.slack_team_held
+    assert held(other.team_id, world.account) is True
+    assert held(TEAM, world.account) is False  # its own install is not another's
+    assert held(TEAM, other.account_id) is True
+    assert held("T0NOBODY1", world.account) is False
+    world.store.for_account(other.account_id).remove_slack_install(other.id)
+    assert held(other.team_id, world.account) is False  # a removed install holds nothing
+    assert mine.team_id == TEAM
+    few = selects(world.store, lambda: held(TEAM, other.account_id))
+    workspaces(world, 6)
+    assert few == selects(world.store, lambda: held(TEAM, other.account_id)) == 1
+
+
+def test_the_projects_a_person_may_write_to(world):
+    store = world.view
+    reading = store.create_project("archive")
+    store.set_project_access(reading.id, everyone="read")
+    hidden = store.create_project("diary")
+    store.set_project_access(hidden.id, everyone="none")
+    assert [p.name for p in world.view.writable_projects()] == ["archive", "diary", "library"]
+    assert [p.name for p in world.member_view.writable_projects()] == ["library"]
+    assert world.member_view.narrow(access="read").writable_projects() == []
+    narrowed = world.store.for_account(world.account).narrow(projects=(reading.id,))
+    assert [p.name for p in narrowed.writable_projects()] == ["archive"]
+
+
+def test_the_projects_a_person_may_write_to_cost_the_same_with_2_or_8_workspaces(world):
+    for name in ("archive", "diary"):
+        world.view.create_project(name)
+    workspaces(world, 1)
+    few = selects(world.store, world.member_view.writable_projects)
+    workspaces(world, 6)
+    for name in ("ledger", "maps", "notes"):
+        world.view.create_project(name)
+    assert selects(world.store, world.member_view.writable_projects) == few
+
+
 # Classification
 
 
@@ -419,6 +511,7 @@ def test_the_cross_workspace_ones_refuse_a_view_acting_for_a_person(world):
         lambda v: v.slack_notes_due(),
         lambda v: v.sweep_slack(),
         lambda v: v.slack_install_verified(install.id),
+        lambda v: v.slack_team_held(TEAM, world.account),
     ):
         with pytest.raises(PermissionError):
             call(world.view)

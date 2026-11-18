@@ -501,6 +501,19 @@ class MemoryMethods(StoreBase):
             ).fetchall()
         return [_project(row) for row in rows]
 
+    def writable_projects(self) -> list[Project]:
+        """The projects in reach the view's person may write to, sorted as list_projects: in
+        one section, the same few statements whatever the workspace or the server holds."""
+        with self._read() as con:
+            rows = con.execute(
+                f"SELECT {_PROJECT_COLUMNS} FROM projects"
+                f" WHERE account_id = ? AND {_IN_REACH.format('id')} ORDER BY name",
+                self._scope(con),
+            ).fetchall()
+            writable = self._writable(con)
+        projects = [_project(row) for row in rows]
+        return [p for p in projects if writable is None or p.id in writable]
+
     def get_project(self, ref: str) -> Project | None:
         """An id match wins over a (case-insensitive) name match."""
         with self._read() as con:

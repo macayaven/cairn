@@ -1,6 +1,7 @@
 {# A workspace's Slack app (cairn.slack.setup): nothing at all unless the server was started
    with --slack and the reader is a person. An owner or an admin sees the install and its
-   forms; anyone else only an outcome said to them. No script. No secret is ever filled in. #}
+   forms; anyone else only an outcome said to them. Everyone sees their own links, with
+   Unlink, and nobody else's. No script. No secret is ever filled in. #}
 {% set slack = slack_block() if slack_block is defined else none %}
 {% if slack %}
 <section class="integration" id="slack" aria-labelledby="slack-heading">
@@ -75,6 +76,16 @@
   </form>
   {% endif %}
   {% endif %}
+  {% endif %}
+  {% if slack.links %}
+  <h3 id="slack-links-heading">Linked to you</h3>
+  {% for slack_user in slack.links %}
+  <p>The Slack user <code>{{ slack_user }}</code>: what it does through the bot acts as you here, with what you reach.</p>
+  <form method="post" action="/integrations/slack/unlink" class="ending">
+    <input type="hidden" name="slack_user" value="{{ slack_user }}">
+    <button type="submit" class="quiet">Unlink</button>
+  </form>
+  {% endfor %}
   {% endif %}
 </section>
 {% endif %}

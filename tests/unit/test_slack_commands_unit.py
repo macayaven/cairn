@@ -239,6 +239,22 @@ def test_project_lists_the_projects_the_person_writes_to(bench):
     assert said(ask(bench, "project")) == said(blocks.project_is(None, writable=everything))
 
 
+def test_the_projects_a_person_writes_to_are_the_stores_own_answer(bench, monkeypatch):
+    memory = bench.memory_for(bench.brook)
+    asked = []
+
+    def answered(self):
+        asked.append(self)
+        return [bench.library]
+
+    def private(*args, **kwargs):
+        raise AssertionError("people.writable reads none of the store's private members")
+
+    monkeypatch.setattr(Store, "writable_projects", answered)
+    monkeypatch.setattr(Store, "_level", private)
+    assert people.writable(memory) == [bench.library] and asked == [memory.store]
+
+
 def test_project_name_chooses_one_by_name_in_any_case_and_refuses_the_rest_alike(bench):
     bench.owner.create_project("cellar", everyone="none")
     bench.owner.create_project("reading-room", everyone="read")

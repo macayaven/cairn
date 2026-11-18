@@ -855,16 +855,21 @@ def test_a_person_not_signed_in_is_sent_to_sign_in_and_nothing_changes(world):
     assert world.slack_rows() == before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="cairn.store.slack has no read of a person's own links (from person to Slack user)",
-)
 def test_the_sources_page_shows_a_person_their_own_link_with_unlink(world):
-    _install, value = offered(world)
+    install, value = offered(world)
+    world.view(world.ada).link_slack_user(install, BROOK_SLACK, world.brook["id"])
     cleo = world.browser(world.cleo)
     said(cleo, cleo.post(f"{link.LINK_PATH}?t={value}", follow_redirects=False))
     page = shown(cleo)
     assert CLEO_SLACK in page and f'action="{link.UNLINK_PATH}"' in page
+    assert f'name="slack_user" value="{CLEO_SLACK}"' in page
+    assert BROOK_SLACK not in page  # nobody is shown anybody else's
+    keeps_the_rules(cleo.get("/sources").text)
+    for other in (world.ada, world.brook):
+        theirs = shown(world.browser(other))
+        assert CLEO_SLACK not in theirs
+    assert BROOK_SLACK in shown(world.browser(world.brook))
+    assert BROOK_SLACK not in shown(world.browser(world.ada))
 
 
 def test_unlink_undoes_ones_own_link_only(world, caplog):

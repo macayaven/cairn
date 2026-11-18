@@ -213,6 +213,25 @@ def test_a_team_is_held_only_by_another_workspaces_install_that_is_not_removed(w
     assert office.team_held(TEAM, world.bob["account"])
 
 
+def test_whether_a_team_is_held_is_one_statement_with_2_workspaces_or_8(world):
+    office = setup.office_of(world.store)
+    ready(world.view(world.bob))
+
+    def counted() -> int:
+        asked: list[str] = []
+        world.store._con.set_trace_callback(asked.append)
+        try:
+            assert office.team_held(TEAM, world.ada["account"])
+        finally:
+            world.store._con.set_trace_callback(None)
+        return len([s for s in asked if s.lstrip().upper().startswith("SELECT")])
+
+    two = counted()
+    for n in range(6):
+        ready(world.view(world.signed(f"Wren{n}", "personal")), team=f"T0WREN{n:03d}")
+    assert two == counted() == 1
+
+
 def test_the_kept_signing_secret_is_given_only_for_its_own_workspace(world):
     office = setup.office_of(world.store)
     install = ready(world.view(world.ada))

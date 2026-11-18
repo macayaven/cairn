@@ -335,6 +335,7 @@ def test_a_narrowed_view_cannot_leave_its_workspace(store, ids, narrowing):
 # a function of the fixture's ids and of a note, span and page in "api".
 PROJECT_CALLS = {
     "list_projects": lambda d: (),
+    "writable_projects": lambda d: (),  # K1: those the person may write to
     "get_project": lambda d: (d["api"],),
     "get_note": lambda d: (d["note"],),
     "holds_note": lambda d: (d["api"], "# Retries\n\nQuill retries.\n"),

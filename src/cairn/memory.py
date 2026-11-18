@@ -1044,7 +1044,11 @@ class Memory:
         label: str | None = None,
         source_ref: str | None = None,
         via: str | None = None,
+        on_stored: Callable[[Note, bool], None] | None = None,
     ) -> dict[str, Any]:
+        """`on_stored(note, created)` is called once the note is in the store and before it is
+        compiled: what a caller must record of a note it brought is then recorded whatever
+        the compile does (cairn.slack.people records that a note came through an install)."""
         target = self.project(project)
         if not text.strip():
             raise EmptyText("the note's text is empty")
@@ -1059,6 +1063,8 @@ class Memory:
                 source_ref=source_ref,
                 via=via,
             )
+            if on_stored is not None:
+                on_stored(note, created)
             result = self._file(note, record_errors=True)
         except FiledElsewhere as elsewhere:  # N1: the same note, for another topic
             raise FiledOnce(target.name, self._page_of(elsewhere.held)) from None

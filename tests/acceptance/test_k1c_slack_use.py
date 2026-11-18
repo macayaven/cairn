@@ -652,6 +652,34 @@ def test_a_write_is_durable_before_slack_is_answered_and_the_reply_follows(world
     assert world.slack.notes_when_answered == [2, 3]
 
 
+@pytest.mark.parametrize("way", ["typed", "filed"])
+def test_a_note_that_is_stored_and_then_not_filed_is_still_recorded_as_from_slack(
+    world, monkeypatch, caplog, way
+):
+    """D10 forgets what came through an install by its record. A note is stored before it is
+    compiled, so the record is written when it is stored: a compile that then fails leaves a
+    note that removal still finds, and the person is told it is stored."""
+    world.link(world.ada, ADA_SLACK, world.inbox)
+
+    def refuses(*args, **kwargs):
+        raise RuntimeError("the disk refused The marmalade shelf")
+
+    monkeypatch.setattr("cairn.memory.compile_note", refuses)
+    caplog.set_level(logging.DEBUG)
+    if way == "typed":
+        told = said(private(world.command("note The marmalade shelf moves to row 4.")))
+        expected = ("typed", None, None)
+    else:
+        assert world.shortcut().status_code == 200
+        (reply,) = world.slack.asked(REPLY)
+        told = said(reply)
+        expected = ("filed", CONVERSATION, MESSAGE_TIME)
+    ((note_id, *_),) = world.notes()
+    assert world.through_slack() == [(note_id, world.install.id, *expected, world.ada.id)]
+    assert "stored" in told and "marmalade" not in told
+    assert "marmalade" not in caplog.text and "RuntimeError" in caplog.text
+
+
 @pytest.mark.parametrize("where", [REPLY, "chat.postMessage"])
 def test_when_the_reply_fails_the_note_is_there_and_nothing_is_retried(world, where, caplog):
     world.link(world.ada, ADA_SLACK, world.inbox)

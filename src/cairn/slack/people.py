@@ -23,8 +23,11 @@ A search and a note, as the person's
   Store.record_slack_note records it as having come through the install: filed, always, with
   its conversation and message time (D9: a message recorded already answers with the note it
   already is); typed, only when the note is new (a text the project held already came in
-  some other way, and is not forgotten with the install, D10). The answer links the note's
-  page. Each refusal is its own sentence: no project chosen (NO_PROJECT), the project out of
+  some other way, and is not forgotten with the install, D10). The record is written when the
+  note is stored and before it is compiled (Memory.note's `on_stored`), so a compile that
+  then fails leaves a note the install's removal still finds; the person is then told it is
+  stored (STORED_NOT_FILED). The answer links the note's page. Each refusal is its own
+  sentence: no project chosen (NO_PROJECT), the project out of
   reach or gone (OUT_OF_REACH), read-only (the store's sentence), the guard's (cairn's own,
   naming the rule), the plan's cap, a full page, a note filed under another topic, a text the
   project forgot, a text that is not a note (NOT_A_NOTE), the store unable to write.
@@ -75,6 +78,10 @@ KNOWN_FOR = timedelta(minutes=10)  # how long a positive answer about an author 
 KNOWN_MAX = 512  # answers kept at most, the oldest dropped first
 REPLY_WITHIN = 10.0  # seconds a private reply may take; it is sent once
 
+STORED_NOT_FILED = (
+    "The note is stored in your project, but cairn could not put it on a page."
+    " An owner of the workspace can see it there."
+)
 NO_PROJECT = (
     "No project is chosen for your notes from Slack. Choose one with `{command} project <name>`."
 )
@@ -219,9 +226,30 @@ def write(
     project_id = asker.person.project_id
     if project_id is None:
         return blocks.refused(NO_PROJECT.format(command=command))
+    kept: list[str] = []  # the note this became, once it is stored and recorded
+
+    def stored(note: Any, created: bool) -> None:
+        if message is not None:  # a filed message is recorded always: it is its key (D9)
+            kept.append(
+                context.view.record_slack_note(
+                    context.install.id,
+                    note.id,
+                    how="filed",
+                    brought_by=asker.person.user_id,
+                    conversation_id=message[0],
+                    message_time=message[1],
+                )
+            )
+            return
+        if created:  # a typed text the project held already did not come through here
+            context.view.record_slack_note(
+                context.install.id, note.id, how="typed", brought_by=asker.person.user_id
+            )
+        kept.append(note.id)
+
     try:
         answer = asker.memory.note(
-            project_id, text, title=title, source_ref=source_ref, via="slack"
+            project_id, text, title=title, source_ref=source_ref, via="slack", on_stored=stored
         )
     except NotFound:
         return blocks.refused(OUT_OF_REACH.format(command=command))
@@ -231,22 +259,13 @@ def write(
         return blocks.refused(str(refused))
     except (CannotWrite, StoreUnusable) as trouble:
         return blocks.refused(str(unavailable(trouble)))
-    kept = answer["note_id"]
-    if message is not None:  # a filed message is recorded always: it is its key (D9)
-        kept = context.view.record_slack_note(
-            context.install.id,
-            answer["note_id"],
-            how="filed",
-            brought_by=asker.person.user_id,
-            conversation_id=message[0],
-            message_time=message[1],
-        )
-    elif answer["created"]:  # a typed text the project held already did not come through here
-        context.view.record_slack_note(
-            context.install.id, kept, how="typed", brought_by=asker.person.user_id
-        )
-    if kept != answer["note_id"]:  # the same message, filed meanwhile by someone else
-        return already(context, asker, kept)
+    except Exception as failed:  # the compile, after the note was stored and recorded
+        if not kept:
+            raise
+        log.warning("slack: a note was stored and not filed: %s", type(failed).__name__)
+        return blocks.refused(STORED_NOT_FILED)
+    if kept[0] != answer["note_id"]:  # the same message, filed meanwhile by someone else
+        return already(context, asker, kept[0])
     project = asker.memory.store.get_project(project_id)
     note = asker.memory.store.get_note(answer["note_id"])
     if project is None or note is None:  # gone since: what is said of a project gone

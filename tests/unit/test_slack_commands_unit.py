@@ -272,3 +272,10 @@ def test_the_command_is_the_installs(bench):
     install = dataclasses.replace(bench.install, command="/shelf")
     bench.context = dataclasses.replace(bench.context, install=install)
     assert said(ask(bench, "help")) == said(blocks.help_text("/shelf"))
+
+
+def test_who_asks_shows_ids_in_a_repr_and_nothing_of_their_memory(bench):
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    asker = asyncio.run(people.asker(bench.context, ADA_SLACK))
+    shown = repr(asker)
+    assert ADA_SLACK in shown and "Memory" not in shown and "store" not in shown.lower()

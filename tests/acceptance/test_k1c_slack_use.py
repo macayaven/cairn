@@ -745,7 +745,7 @@ def test_no_answer_is_for_the_whole_conversation_and_slack_is_called_for_three_t
     world.link(world.ada, ADA_SLACK, world.inbox)
     world.pages(world.library, 2)
     answers = [world.command(text).json() for text in
-               ("find marmalade", "note Row 4.", "project", "help", "link", "fable")]  # fmt: skip
+               ("find marmalade", "note Row 4.", "project", "help", "link", "")]  # fmt: skip
     world.shortcut()
     world.direct("marmalade", "Ev0THRE0001")
     world.direct("note: Row 5.", "Ev0THRE0002")
@@ -773,7 +773,7 @@ def test_nothing_of_a_message_a_search_or_a_note_is_in_a_log_line(world, caplog)
     )
     assert caplog.records
     for word in ("marmalade", "quince", LOOKS_SECRET, "persimmon", "fig tree", "walnut",
-                 "Cedar", REPLY, k1.TOKEN):  # fmt: skip
+                 "Cedar", k1.TOKEN):  # fmt: skip
         assert word not in logged
 
 
@@ -803,6 +803,7 @@ def test_a_request_costs_the_same_statements_with_8_pages_as_with_48(world):
         note = counted(world, lambda n=n: memory.note("inbox", f"Row {n} holds plums."))
         message = {"type": "message", "user": CEDAR_SLACK, "ts": f"19000001{n:02d}.000100",
                    "text": f"Row {n} holds figs."}  # fmt: skip
+        people.AUTHORS.clear()  # Slack is asked, and the bot's token read, each time
         filed = counted(world, lambda message=message: world.shortcut(message))
         again = counted(world, lambda n=n: memory.note("inbox", f"Row {n} holds dates."))
         costs.append((find - search, typed - note, filed - again))

@@ -32,7 +32,10 @@ The addresses (`setup_routes`, only with `serve --slack`)
   nowhere else: not into a cookie, a log line, an outcome or a page.
 - Off and on (Store.switch_slack_install): on again needs nothing pasted, unless Slack revoked
   the token (needs_token). Remove (Store.remove_slack_install, decision D10) needs the
-  workspace's name typed as a check (confirm). Forget now: Store.forget_slack_notes_now.
+  workspace's name typed as a check (confirm); next to it the block says that removing
+  forgets, 10 days later, every note Slack created in the workspace, in projects the person
+  removing does not reach too. A team made ready elsewhere between the check and the write is
+  refused by the store (TeamHeld), and said as taken. Forget now: Store.forget_slack_notes_now.
 - Each answer is 303 to the Sources page (ANCHOR), its outcome a code in a cookie sealed with
   the switch's key and OUTCOME as associated data, for its person and workspace, for SAID_TTL
   seconds by the app's clock (`Outcomes`): the block says it once (SAID, or REFUSALS in
@@ -44,10 +47,12 @@ The block (templates/_slack.html, `Block`, `block_for`): nothing unless the swit
 the reader is a person. An owner or an admin sees the install's state and what is left to do
 (STATES), the forms that state takes, and, while notes that came through a removed install
 wait to be forgotten, how many and the day, with "Forget them now" for an owner while the
-install is removed. Anyone else
-sees only an outcome said to them (cairn.slack.link). Every person, whatever their role, is
-shown their own links (Store.own_slack_links), each Slack user by its id with "Unlink"
-(cairn.slack.link.UNLINK_PATH), and nobody else's.
+install is removed. While Slack no longer accepts the bot token (SlackInstall.bot_gone_at,
+cairn.store.slack), it says since when, the day by which a new one must be pasted, and that
+after that day Slack is removed here and the notes Slack created are forgotten 10 days
+later. Anyone else sees only an outcome said to them (cairn.slack.link). Every person,
+whatever their role, is shown their own links (Store.own_slack_links), each Slack user by
+its id with "Unlink" (cairn.slack.link.UNLINK_PATH), and nobody else's.
 
 The web layer depends on this package, never the other way round (tests/unit/test_layers_unit):
 what this module needs of it is handed in by cairn.web.app, `memory_in` (the request's Memory
@@ -75,7 +80,15 @@ from cairn.memory import Forbidden, Memory, RequestError, access_log
 from cairn.slack.client import SlackClient, SlackError
 from cairn.slack.manifest import SCOPES, build_manifest, manifest_link
 from cairn.store.hosted import Sealer
-from cairn.store.slack import DOMAIN, NOT_AN_OWNER, SECRET_VALUE, SLACK_ID, SlackInstall
+from cairn.store.slack import (
+    DOMAIN,
+    GONE_AFTER,
+    NOT_AN_OWNER,
+    SECRET_VALUE,
+    SLACK_ID,
+    SlackInstall,
+    TeamHeld,
+)
 
 TEMPLATES = Path(__file__).parents[1] / "templates"
 PREFIX = "/integrations/slack"
@@ -439,6 +452,8 @@ def setup_routes(
             raise Forbidden(NOT_A_MANAGER) from None
         except KeyError:
             return await told(memory, noted, "none")
+        except TeamHeld:  # made ready for this team elsewhere since team_held was asked
+            return await told(memory, noted, "taken")
         except ValueError:
             return await told(memory, noted, "unkept")
         return await told(memory, noted, "ready")
@@ -542,6 +557,7 @@ def block_for(memory: Any, public_url: str, said: str = "") -> dict[str, Any] | 
         else None
     )
     due = store.slack_notes_to_forget()
+    gone = install.bot_gone_at if install is not None and state != "removed" else None
     return {
         "manages": True,
         "links": mine,
@@ -554,6 +570,12 @@ def block_for(memory: Any, public_url: str, said: str = "") -> dict[str, Any] | 
         "manifest_link": manifest_link(manifest) if manifest else None,
         "permissions": [(scope, PERMISSIONS[scope]) for scope in SCOPES],
         "due": {"notes": due.notes, "at": due.at.isoformat()} if due is not None else None,
+        # Slack ended the bot token: since when, and the day after which Slack is removed here
+        "gone": (
+            {"since": gone, "by": (datetime.fromisoformat(gone) + GONE_AFTER).isoformat()}
+            if gone
+            else None
+        ),
         "forgets": state == "removed" and store.role() == "owner",  # "Forget them now"
         "workspace": store.get_account(store.account_id).name,
     }

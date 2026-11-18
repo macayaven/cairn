@@ -751,8 +751,8 @@ _V29_SLACK_INSTALLS = """CREATE TABLE slack_installs (
     enterprise_id TEXT,
     team_domain TEXT,
     bot_user_id TEXT,  -- the bot's own Slack user id, as auth.test names it
-    signing_secret TEXT,  -- sealed; NULL until ready, and once removed or revoked
-    bot_token TEXT,  -- sealed; the same
+    signing_secret TEXT,  -- sealed; NULL until ready, and once removed
+    bot_token TEXT,  -- sealed; NULL until ready, once removed, and once Slack revoked it
     command TEXT NOT NULL,  -- the slash command's name, "/cairn" unless changed
     made_by TEXT,  -- the person who made it
     made_at TEXT NOT NULL,

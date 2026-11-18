@@ -1181,6 +1181,7 @@ from cairn.store.schema import (
     _upgrade,
 )
 from cairn.store.sets import SET_ID_PREFIX, SetMethods
+from cairn.store.slack import SlackMethods
 from cairn.store.sources import SOURCE_CLAIM_TTL, SourceMethods, SourceOff
 from cairn.store.usage import (
     BYTES_PER_PASSAGE,
@@ -1344,7 +1345,7 @@ __all__ = [
 
 # Store is assembled from one class per area (accounts.py, audit.py,
 # credentials.py, erasure.py, expiry.py, grants.py, history.py, memory.py, numbers.py,
-# people.py, portable.py, sets.py, sources.py, usage.py), each built
+# people.py, portable.py, sets.py, slack.py, sources.py, usage.py), each built
 # on base.StoreBase: the connection, the lock, the clock, the account binding and the actor.
 # ReachMethods (reach.py) comes first, so that a narrowed view sees each call before the
 # area that serves it. Opening the database lives here because it runs the schema upgrade
@@ -1368,6 +1369,7 @@ class Store(
     NumbersMethods,
     ReservationMethods,
     HostedMethods,
+    SlackMethods,
 ):
     """One account's view of the SQLite database that holds every account."""
 

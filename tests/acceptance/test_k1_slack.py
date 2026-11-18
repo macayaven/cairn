@@ -222,7 +222,7 @@ class World:
             "sso", "sub-brook", "brook@example.test", "Brook", issuer=ISSUER, join="default"
         )
         invite = self.ada.view.invite("brook@example.test")
-        self.ada.view.accept_invite(invite.token, brook.user.id)
+        self.store.accept_invite(invite.token, brook.user.id)
         self.brook = Person(
             brook.user.id,
             self.ada.account_id,

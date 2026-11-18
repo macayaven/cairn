@@ -198,6 +198,31 @@ MANAGEMENT = frozenset(
         "pending_google_revocations",  # the server's: what waits to be revoked at Google
         "settle_google_revocation",  # what removing an account says with the switch off
         "hosted_document",  # a run's: the document of the account a source reads
+        # A workspace's Slack install (K1, cairn.store.slack): set up, switched and removed by
+        # its owners and admins, used by the server's handlers for a linked person
+        "make_slack_install",
+        "get_slack_install",
+        "ready_slack_install",
+        "switch_slack_install",
+        "remove_slack_install",
+        "revoke_slack_bot",
+        "slack_bot_token",
+        "record_slack_note",
+        "slack_note_for",
+        "slack_notes_to_forget",
+        "forget_slack_notes_now",
+        "link_slack_user",
+        "unlink_slack_user",
+        "slack_person",
+        "set_slack_project",
+        "offer_slack_link",
+        "slack_offer",
+        "take_slack_offer",
+        "slack_inbound",  # the server's, across workspaces (OTHER_WORKSPACES)
+        "slack_install_verified",
+        "slack_event_seen",
+        "slack_notes_due",
+        "sweep_slack",
     }
 )
 # Reads limited to the reach: an out-of-reach project, or a note, span or page in one,
@@ -578,6 +603,11 @@ OTHER_WORKSPACES = frozenset(
         "renew_session",
         "end_person_sessions",
         "cap_web_sessions",
+        "slack_inbound",  # K1: the install a request to one of Slack's addresses names
+        "slack_install_verified",
+        "slack_event_seen",
+        "slack_notes_due",
+        "sweep_slack",
     }
 )
 # The same kind of operation, kept by such a view when it asks about its own workspace or

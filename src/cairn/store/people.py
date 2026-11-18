@@ -459,6 +459,8 @@ class PeopleMethods(StoreBase):
                 "DELETE FROM sessions WHERE account_id = ? AND user_id = ?",
                 "DELETE FROM project_people WHERE user_id = ?2 AND project_id IN"
                 " (SELECT id FROM projects WHERE account_id = ?1)",
+                "DELETE FROM slack_people WHERE user_id = ?2 AND install_id IN"  # K1: links
+                " (SELECT id FROM slack_installs WHERE account_id = ?1)",
                 "UPDATE projects SET maker_id = NULL WHERE account_id = ? AND maker_id = ?",
                 "DELETE FROM memberships WHERE account_id = ? AND user_id = ?",
             ):

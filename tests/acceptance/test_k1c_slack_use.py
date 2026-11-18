@@ -11,8 +11,11 @@ every call cairn would make to Slack goes to an httpx.MockTransport that records
 
 A Slack user who is not linked
 - Whatever they ask, with the slash command, the message shortcut or a direct message, they
-  are answered privately with a one-time address to link themselves (10 minutes, one use)
-  and nothing else happens. `help` alone is answered without it.
+  are answered privately with a one-time address to link themselves (10 minutes, one use,
+  one at a time) and nothing else happens. `help` alone is answered without it.
+- A link takes two steps: the person who opens the address signed in and says yes is shown
+  a code, and the Slack user who asked types `/cairn link <code>`. Someone who sends their
+  address to another person gains nothing from that person's yes.
 
 The slash command (`/cairn`, or the name the owner gave it)
 - `find <words>`: the claims that match, as cairn's search finds them for that person: at
@@ -85,7 +88,7 @@ from cairn.identity import GitHub
 from cairn.memory import Memory
 from cairn.plans import Plan, Plans
 from cairn.server import SignIn, create_app
-from cairn.slack import people
+from cairn.slack import blocks, people
 from cairn.slack.client import SlackClient
 from cairn.store import Claim, Store
 from cairn.web.slack import Slack
@@ -290,7 +293,7 @@ def world(tmp_path):
 
 
 def offers(world: World) -> list[tuple]:
-    return k1.rows(world.db, "SELECT slack_user_id, expires_at, used_at FROM slack_link_offers")
+    return k1.rows(world.db, "SELECT slack_user_id, expires_at, user_id FROM slack_link_offers")
 
 
 def test_an_unlinked_user_is_answered_only_with_a_one_time_address_whatever_they_ask(world):
@@ -310,18 +313,21 @@ def test_an_unlinked_user_is_answered_only_with_a_one_time_address_whatever_they
     assert world.notes() == before and world.through_slack() == []
     assert k1.rows(world.db, "SELECT COUNT(*) FROM slack_people") == [(0,)]
     made = offers(world)
-    assert len(made) == 9 and {row[0] for row in made} == {ADA_SLACK}
+    assert len(made) == 1 and {row[0] for row in made} == {ADA_SLACK}  # one at a time
     in_ten = (k1.START + timedelta(minutes=10)).isoformat()
     assert all(row[1][:19] == in_ten[:19] and row[2] is None for row in made)
 
 
-def test_the_address_works_once_and_links_who_opens_it(world):
+def test_the_address_shows_a_code_once_and_the_same_slack_user_typing_it_is_linked(world):
     answer = said(private(world.command("find marmalade")))
     value = re.search(r"link\?t=([A-Za-z0-9_-]+)", answer).group(1)
-    world.ada.view.take_slack_offer(value)
-    assert world.ada.view.slack_person(world.install.id, ADA_SLACK).user_id == world.ada.id
+    code = world.ada.view.claim_slack_offer(value)
+    assert world.ada.view.slack_person(world.install.id, ADA_SLACK) is None
     with pytest.raises(KeyError):
-        world.brook.view.take_slack_offer(value)
+        world.brook.view.claim_slack_offer(value)
+    assert "Linked to Ada" in said(private(world.command(f"link {code}")))
+    assert world.ada.view.slack_person(world.install.id, ADA_SLACK).user_id == world.ada.id
+    assert offers(world) == []
 
 
 MALLORY = "U0MALLORY1"  # a Slack user of the team who names themself after someone else
@@ -353,6 +359,20 @@ def test_a_yes_to_an_address_someone_sent_links_them_to_nobody(world):
         answer = said(private(world.command(text, user=MALLORY)))
         assert LINK in answer and "Brook" not in answer
     assert world.notes() == before
+
+
+def test_a_slack_user_is_linked_by_the_code_shown_to_the_person_who_said_yes(world):
+    """Both steps, as people take them: Ada's Slack user asks for the address, Ada opens it
+    signed in and says yes, and her Slack user types the code the page showed her."""
+    value = re.search(r"link\?t=([A-Za-z0-9_-]+)", said(private(world.command("link"))))
+    ada = browser(world, world.ada)
+    shown = ada.post(f"/integrations/slack/link?t={value.group(1)}", follow_redirects=False)
+    assert shown.status_code == 200
+    (code,) = set(re.findall(r"<code>([A-Z0-9]{4}-[A-Z0-9]{4})</code>", shown.text))
+    assert world.ada.view.slack_person(world.install.id, ADA_SLACK) is None
+    assert said(private(world.command(f"link {code}"))) == said(blocks.linked("Ada"))
+    assert world.ada.view.slack_person(world.install.id, ADA_SLACK).user_id == world.ada.id
+    assert offers(world) == []
 
 
 def test_help_alone_is_answered_without_it(world):

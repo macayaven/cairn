@@ -106,12 +106,18 @@ def refused(reason: str) -> dict:
     return _one(f"Cannot do that: {reason or 'No reason was provided.'}")
 
 
-def link_prompt(url: str) -> dict:
+def link_prompt(url: str, command: str = "/cairn") -> dict:
+    """The two steps of a link, for a Slack user who is not linked: the address to open
+    signed in, which shows a code, and the code typed back here with `<command> link`."""
+    name = _text(command or "/cairn", 200)
     explanation = (
-        "Link your Slack account to cairn. This link expires in 10 minutes and works once."
+        "Link your Slack user to your cairn account in two steps, both within 10 minutes."
+        " Open the address below, signed in to cairn. It shows you a code."
+        f" Then type `{name} link` and the code here."
+        " The address is yours alone and works once: send it to no one."
     )
     fallback = f"{explanation}\n{_url(url) or 'Link unavailable. Request a new link.'}"
-    return _message(fallback, [f"{explanation}\n{_link('Open cairn to link your account', url)}"])
+    return _message(fallback, [f"{explanation}\n{_link('Open cairn to get your code', url)}"])
 
 
 def linked(person: str) -> dict:

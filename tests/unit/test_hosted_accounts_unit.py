@@ -152,9 +152,9 @@ def test_a_database_at_28_without_a_column_the_code_needs_does_not_open(tmp_path
 def test_step_28_adds_the_empty_token_table_and_changes_nothing_else(tmp_path):
     db = tmp_path / "cairn.db"
     v27 = v27_database(db)
-    assert cairn.store.schema._CREDENTIAL_TOKENS == 28 == SCHEMA_VERSION
+    assert cairn.store.schema._CREDENTIAL_TOKENS == 28 and SCHEMA_VERSION >= 28
     Store(db).close()
-    assert user_version(db) == 28
+    assert user_version(db) == SCHEMA_VERSION
     assert [row[1] for row in rows(db, "PRAGMA table_info(credential_tokens)")] == COLUMNS
     assert rows(db, "SELECT COUNT(*) FROM credential_tokens") == [(0,)]
     waiting = [row[1] for row in rows(db, "PRAGMA table_info(google_revocations)")]
@@ -163,7 +163,8 @@ def test_step_28_adds_the_empty_token_table_and_changes_nothing_else(tmp_path):
     before = set(v27["statements"])
     added = [line for line in statements(db) if line not in before]
     assert added and all(
-        "credential_tokens" in line or "google_revocations" in line for line in added
+        "credential_tokens" in line or "google_revocations" in line or "slack_" in line
+        for line in added
     ), added
     assert before <= set(statements(db))
 

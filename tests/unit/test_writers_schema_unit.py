@@ -44,6 +44,7 @@ def test_step_25_adds_three_empty_tables_and_the_moment_it_ran(tmp_path):
         "checkouts",
         "credential_tokens",
         "google_revocations",
+        "slack_",
     )
     assert all(
         "note_writers" in line

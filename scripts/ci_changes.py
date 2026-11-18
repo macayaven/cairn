@@ -3,10 +3,11 @@
 Job `changes` in .github/workflows/ci-cd.yml runs this first. It writes `image=false` to
 $GITHUB_OUTPUT only when the changed paths are known and every one of them is on
 NO_IMAGE_WORK, the paths no image job reads; then `image`, `stack` and `host` are skipped,
-and with them `publish`, `verify` and `deploy`. In every other case it writes `image=true`
-and the whole gate runs, as before this script: a path not on the list, an empty list, a
-manual run, a tag, a first or forced push, a lookup that fails, anything unexpected. Being
-wrong costs runner minutes, never a skipped check. `test` and `infra` do not depend on it.
+and with them `release_check`, `publish`, `verify` and `deploy`. In every other case it
+writes `image=true` and the whole gate runs, as before this script: a path not on the list,
+an empty list, a manual run, a tag, a first or forced push, a lookup that fails, anything
+unexpected. Being wrong costs runner minutes, never a skipped check. `test` and `infra` do
+not depend on it.
 
 How the changed paths are found (the checkout has the whole history, fetch-depth 0):
 - pull_request: GITHUB_SHA is the merge commit GitHub made of the pull request's head into
@@ -30,7 +31,8 @@ How the changed paths are found (the checkout has the whole history, fetch-depth
   unknown when `before` is not a full SHA, is all zeros or is not in the history, or the
   push created, deleted or forced the ref. (The workflow runs on pushes to main and tags
   only.)
-- a tag, a manual run or any other event: unknown.
+- a tag, a manual run or any other event: unknown. A v* tag is a release: its image jobs
+  always run, and it publishes, verifies and releases once they pass.
 `git diff --name-only -z --no-renames` lists both the old and the new path of a rename and
 prints every name as it is, spaces and non-ASCII included.
 

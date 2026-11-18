@@ -1464,3 +1464,13 @@ def test_the_files_for_people_who_contribute_need_no_image_work():
         assert ci_changes.needs_no_image_work(path), path
     for path in ("README.md", "LICENSE", ".github/workflows/ci-cd.yml", ".github/dependabot.yml"):
         assert not ci_changes.needs_no_image_work(path), path
+
+
+def test_a_release_tag_runs_every_job_without_asking_git_or_the_api(tmp_path):
+    """A push of v0.1.0 publishes a release, so its image jobs always run, whatever the commit
+    changed since the last image: the tag's changed paths are never looked up."""
+    api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
+    git = FakeGit()  # its only changed path is docs/x.md, which alone would ship nothing
+    code, out = run_main(tmp_path, "push", "refs/tags/v0.1.0", SHA, push_event(), git, api)
+    assert code == 0 and out == "earlier=1\nimage=true\n"
+    assert git.calls == [] and api.calls == []

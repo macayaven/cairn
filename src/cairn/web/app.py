@@ -585,8 +585,8 @@ def create_app(
         Route("/healthz", _healthz(accounts)),
         *people,
         *session_routes(accounts, key_login=sign_in is None, failures=failures),
-        *(  # K1b: a signed-in browser's set-up and linking, through Auth as every form;
-            # before the sources' /integrations/<name>/off, /on and /remove: these are Slack's
+        *(  # K1b: a signed-in browser's set-up and linking, through Auth as every form; none
+            # ends as a source's /integrations/<name>/off, /on, /remove or /preview does
             [
                 *setup_routes(
                     told, office=office_of(store), http=slack.http or source_http, api=slack.api

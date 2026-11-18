@@ -4,11 +4,14 @@ cairn.store.slack; the addresses Slack calls are cairn.web.slack; linking a Slac
 person is cairn.slack.link.
 
 The addresses (`setup_routes`, only with `serve --slack`)
-- POST SETUP_PATH, SECRETS_PATH, OFF_PATH, ON_PATH, REMOVE_PATH and FORGET_PATH: forms of a
-  signed-in browser. They go through Auth as every form does (a session, the same-origin
-  check, the rate count). Each is an owner's or an admin's (Store.manages, as the Members and
-  Keys pages ask it): anyone else is refused 403 with NOT_A_MANAGER and nothing is read or
-  asked of Slack; FORGET_PATH is an owner's only (cairn.store.slack.NOT_AN_OWNER).
+- POST SETUP_PATH, SECRETS_PATH, PAUSE_PATH (off), RESUME_PATH (on), DISCONNECT_PATH (remove)
+  and FORGET_PATH: forms of a signed-in browser. No address here, nor cairn.slack.link's,
+  ends as a source's own does (/integrations/<source>/off, /on, /remove, /preview), so a
+  source named "slack" keeps its own. They go through Auth as every form does (a session,
+  the same-origin check, the rate count). Each is an owner's or an admin's (Store.manages,
+  as the Members and Keys pages ask it): anyone else is refused 403 with NOT_A_MANAGER and
+  nothing is read or asked of Slack; FORGET_PATH is an owner's only
+  (cairn.store.slack.NOT_AN_OWNER).
 - Set up (Store.make_slack_install): the workspace's install, pending, or the one it has. The
   block then shows the link that opens Slack's "create an app" page with this install's
   manifest filled in (cairn.slack.manifest.manifest_link of build_manifest, with this
@@ -76,9 +79,11 @@ TEMPLATES = Path(__file__).parents[1] / "templates"
 PREFIX = "/integrations/slack"
 SETUP_PATH = f"{PREFIX}/setup"
 SECRETS_PATH = f"{PREFIX}/secrets"
-OFF_PATH = f"{PREFIX}/off"
-ON_PATH = f"{PREFIX}/on"
-REMOVE_PATH = f"{PREFIX}/remove"
+# Off, on and remove: not /off, /on and /remove, which are a source named "slack"'s own
+# (cairn.web.ui serves /integrations/<source>/off, /on, /remove and /preview).
+PAUSE_PATH = f"{PREFIX}/pause"
+RESUME_PATH = f"{PREFIX}/resume"
+DISCONNECT_PATH = f"{PREFIX}/disconnect"
 FORGET_PATH = f"{PREFIX}/forget"
 ACTION = "slack_setup"  # the access log's action
 ANCHOR = "/sources#slack"
@@ -496,8 +501,8 @@ def setup_routes(
     return [
         Route(path, recorded(ACTION, handler, outcomes), methods=["POST"])
         for path, handler in (
-            (SETUP_PATH, set_up), (SECRETS_PATH, secrets), (OFF_PATH, switch(False)),
-            (ON_PATH, switch(True)), (REMOVE_PATH, remove), (FORGET_PATH, forget),
+            (SETUP_PATH, set_up), (SECRETS_PATH, secrets), (PAUSE_PATH, switch(False)),
+            (RESUME_PATH, switch(True)), (DISCONNECT_PATH, remove), (FORGET_PATH, forget),
         )
     ]  # fmt: skip
 

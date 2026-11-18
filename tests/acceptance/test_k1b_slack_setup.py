@@ -12,6 +12,9 @@ httpx.MockTransport.
 The switch
 - Without `--slack` none of the addresses below exists (404 as an address that is not a
   page) and the Sources page says nothing about Slack.
+- None of them has the shape of a source's own address (/integrations/<source>/off, /on,
+  /remove, /preview): with the switch on, a source named "slack" is switched off, on and
+  removed in the browser as any source is.
 
 Set-up (Workspace, then Sources), for an owner or an admin only
 - A member who is neither sees nothing of it there, and each address below refuses them as
@@ -32,9 +35,9 @@ Set-up (Workspace, then Sources), for an owner or an admin only
 - The page says what state the install is in and what is left to do: ready (have Slack
   verify the events address), on, off, and off because Slack revoked the bot's token (then
   the token is asked for again, and the signing secret is not).
-- Off and on (POST /integrations/slack/off, /on): off refuses commands and actions and
-  deletes nothing; on again needs nothing pasted unless the token was revoked.
-- Remove (POST /integrations/slack/remove), after the workspace's name is typed as a check:
+- Off and on (POST /integrations/slack/pause, /resume): off refuses commands and actions
+  and deletes nothing; on again needs nothing pasted unless the token was revoked.
+- Remove (POST /integrations/slack/disconnect), after the workspace's name is typed as a check:
   what part 1 says of removal. The page then says how many notes came through Slack, the
   day they will be forgotten, and offers an owner "Forget them now"
   (POST /integrations/slack/forget), which an admin is not offered and is refused.
@@ -77,6 +80,7 @@ from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.slack import link, setup
 from cairn.slack.manifest import build_manifest, manifest_link
+from cairn.sources import KINDS
 from cairn.store import Store
 from cairn.web.slack import Slack
 
@@ -100,8 +104,8 @@ START = datetime(2031, 3, 4, 9, 0, tzinfo=UTC)
 NO_PAGE = "There is no page at this address."
 SLACK_TABLES = ("slack_installs", "slack_people", "slack_link_offers", "slack_notes")
 POSTED = (  # every address here a form is posted to
-    setup.SETUP_PATH, setup.SECRETS_PATH, setup.OFF_PATH, setup.ON_PATH, setup.REMOVE_PATH,
-    setup.FORGET_PATH, link.LINK_PATH, link.UNLINK_PATH,
+    setup.SETUP_PATH, setup.SECRETS_PATH, setup.PAUSE_PATH, setup.RESUME_PATH,
+    setup.DISCONNECT_PATH, setup.FORGET_PATH, link.LINK_PATH, link.UNLINK_PATH,
 )  # fmt: skip
 
 
@@ -343,12 +347,25 @@ def typed_note(world: World, install: str, text: str) -> str:
     return note.id
 
 
+def a_source_kind() -> str:
+    """A kind of source the software ships, taken from its own list: the first that is added
+    off and reads with a key from an environment variable."""
+    for kind, spec in KINDS.items():
+        try:
+            spec.check({"key_env": "SLACK_NOTES_KEY", "projects": []})
+        except ValueError:
+            continue
+        if spec.starts_off:
+            return kind
+    pytest.fail("no kind of source is added off and takes key_env and projects")
+
+
 # The switch
 
 
-# The sources' own addresses, /integrations/<source>/off, /on and /remove, have these shapes:
-# with the switch off they are a source named "slack"'s, and say there is none.
-SOURCE_SHAPED = (setup.OFF_PATH, setup.ON_PATH, setup.REMOVE_PATH)
+# What a source's own addresses end with (/integrations/<source>/<ending>, cairn.web.ui).
+SOURCE_ENDINGS = ("off", "on", "remove", "preview")
+SWITCHES = (setup.PAUSE_PATH, setup.RESUME_PATH, setup.DISCONNECT_PATH)
 
 
 @pytest.fixture
@@ -364,24 +381,49 @@ def test_off_none_of_the_addresses_exists_and_the_sources_page_says_nothing_of_s
     assert nowhere.status_code == 404 and NO_PAGE in html.unescape(nowhere.text)
     for path in POSTED:
         answer = ada.post(path, data={"confirm": "x"})
-        assert answer.status_code == 404, path
-        if path not in SOURCE_SHAPED:
-            assert answer.content == nowhere.content, path
+        assert answer.status_code == 404 and answer.content == nowhere.content, path
     got = ada.get(f"{link.LINK_PATH}?t=anything")
     assert got.status_code == 404 and got.content == unknown(ada).content
     assert "slack" not in ada.get("/sources").text.lower()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="cairn.web.ui serves /integrations/<source>/off, /on and /remove: with the switch off"
-    " these answer that there is no source named slack",
-)
-def test_off_the_three_addresses_shaped_as_a_sources_are_no_page_either(off):
+def test_off_the_switch_and_removal_are_no_page_either(off):
     ada = off.browser(off.ada)
     nowhere = ada.post("/integrations/nothing/here")
-    for path in SOURCE_SHAPED:
+    for path in SWITCHES:
         assert ada.post(path, data={"confirm": "x"}).content == nowhere.content, path
+
+
+def test_none_of_the_addresses_ends_as_a_sources_own_does():
+    for path in POSTED:
+        assert path.startswith("/integrations/slack/"), path
+        assert path.rsplit("/", 1)[1] not in SOURCE_ENDINGS, path
+
+
+def test_on_a_source_named_slack_is_switched_off_on_and_removed_as_any_source(world):
+    install = world.readied()
+    before = world.view(world.ada).get_slack_install()
+    ada = world.browser(world.ada)
+
+    def journey(name: str) -> list:
+        """A source `name` added at the command line, then switched on, off and removed in
+        the browser by the owner: each answer's status and the source as it is after."""
+        config = {"key_env": "SLACK_NOTES_KEY", "projects": []}
+        world.system().add_source(name, a_source_kind(), config)
+        seen = []
+        for ending, form in (
+            ("on", {"project": world.project.name}), ("off", {}), ("remove", {}),
+            ("remove", {"confirm": name}), ("remove", {"confirm": "not its name"}),
+        ):  # fmt: skip
+            answer = ada.post(f"/integrations/{name}/{ending}", data=form)
+            found = world.view(world.ada).get_source(name)
+            seen.append((answer.status_code, found is not None and found.enabled))
+        return seen
+
+    slack, other = journey("slack"), journey("minutes")
+    assert slack == other
+    assert slack == [(200, True), (200, False), (200, False), (403, False), (400, False)]
+    assert world.view(world.ada).get_slack_install() == before and before.id == install
 
 
 # Set-up, for an owner or an admin only
@@ -406,7 +448,8 @@ def test_each_address_refuses_a_member_as_any_management_address_does(world):
     for path, form in (
         (setup.SETUP_PATH, {}),
         (setup.SECRETS_PATH, {"signing_secret": SECRET, "bot_token": TOKEN}),
-        (setup.OFF_PATH, {}),(setup.ON_PATH, {}), (setup.REMOVE_PATH, {"confirm": name}),
+        (setup.PAUSE_PATH, {}), (setup.RESUME_PATH, {}),
+        (setup.DISCONNECT_PATH, {"confirm": name}),
         (setup.FORGET_PATH, {}),
     ):  # fmt: skip
         answer = cleo.post(path, data=form, follow_redirects=False)
@@ -527,7 +570,7 @@ def test_on_off_and_off_because_revoked_say_their_state(world):
     ada = world.browser(world.ada)
     world.store.slack_install_verified(install)
     assert setup.STATES["on"] in shown(ada)
-    said(ada, ada.post(setup.OFF_PATH, follow_redirects=False))
+    said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
     page = shown(ada)
     assert setup.STATES["off"] in page and 'name="bot_token"' not in page
     world.system().revoke_slack_bot(install)
@@ -583,13 +626,13 @@ def test_off_refuses_commands_and_deletes_nothing_and_on_needs_nothing_pasted(wo
     typed_note(world, install, "kept")
     assert command_answer(world, install).status_code == 200
     ada = world.browser(world.ada)
-    assert setup.SAID["off"] in said(ada, ada.post(setup.OFF_PATH, follow_redirects=False))
+    assert setup.SAID["off"] in said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
     rows = world.slack_rows()
     assert view.get_slack_install().state == "off" and view.get_slack_install().holds_secrets
     assert command_answer(world, install).status_code == 404
     assert command_answer(world, install, "actions").status_code == 404
     assert rows["slack_people"] and rows["slack_notes"]
-    page = said(ada, ada.post(setup.ON_PATH, follow_redirects=False))
+    page = said(ada, ada.post(setup.RESUME_PATH, follow_redirects=False))
     assert setup.SAID["on"] in page and view.get_slack_install().state == "on"
     assert command_answer(world, install).status_code == 200
     after = world.slack_rows()
@@ -604,7 +647,7 @@ def test_on_after_slack_revoked_the_token_asks_for_it_and_changes_nothing(world)
     world.system().revoke_slack_bot(install)
     ada = world.browser(world.ada)
     before = world.slack_rows()
-    page = block(said(ada, ada.post(setup.ON_PATH, follow_redirects=False)))
+    page = block(said(ada, ada.post(setup.RESUME_PATH, follow_redirects=False)))
     assert setup.REFUSALS["needs_token"] in page and world.slack_rows() == before
 
 
@@ -615,7 +658,9 @@ def test_remove_needs_the_workspaces_name_typed(world):
     install = world.readied()
     ada = world.browser(world.ada)
     before = world.slack_rows()
-    refused = ada.post(setup.REMOVE_PATH, data={"confirm": "not its name"}, follow_redirects=False)
+    refused = ada.post(
+        setup.DISCONNECT_PATH, data={"confirm": "not its name"}, follow_redirects=False
+    )
     assert setup.REFUSALS["confirm"] in block(said(ada, refused))
     assert world.slack_rows() == before and world.install() == install
 
@@ -626,7 +671,7 @@ def test_remove_says_how_many_notes_and_the_day_and_offers_only_the_owner_forget
     world.view(world.ada).link_slack_user(install, CLEO_SLACK, world.cleo["id"])
     ada, brook = world.browser(world.ada), world.browser(world.brook)
     name = world.store.get_account(world.workspace).name
-    page = block(said(ada, ada.post(setup.REMOVE_PATH, data={"confirm": name},
+    page = block(said(ada, ada.post(setup.DISCONNECT_PATH, data={"confirm": name},
                                     follow_redirects=False)))  # fmt: skip
     found = world.view(world.ada).get_slack_install()
     assert found.state == "removed" and not found.holds_secrets
@@ -648,7 +693,7 @@ def test_forget_now_is_offered_only_while_the_install_is_removed(world):
     typed_note(world, install, "first")
     ada = world.browser(world.ada)
     name = world.store.get_account(world.workspace).name
-    said(ada, ada.post(setup.REMOVE_PATH, data={"confirm": name}, follow_redirects=False))
+    said(ada, ada.post(setup.DISCONNECT_PATH, data={"confirm": name}, follow_redirects=False))
     page = block(said(ada, ada.post(setup.SETUP_PATH, follow_redirects=False)))
     assert world.view(world.ada).get_slack_install().state == "pending"
     assert "1 note came through Slack" in page and "Forget them now" not in page
@@ -658,7 +703,7 @@ def test_an_admin_removes_too(world):
     world.readied()
     brook = world.browser(world.brook)
     name = world.store.get_account(world.workspace).name
-    said(brook, brook.post(setup.REMOVE_PATH, data={"confirm": name}, follow_redirects=False))
+    said(brook, brook.post(setup.DISCONNECT_PATH, data={"confirm": name}, follow_redirects=False))
     assert world.view(world.ada).get_slack_install().state == "removed"
 
 
@@ -674,9 +719,9 @@ def test_each_is_one_audit_record_and_one_access_record_naming_who_the_install_a
     steps = [
         (lambda: ada.post(setup.SETUP_PATH, follow_redirects=False), "slack.install_made"),
         (lambda: secrets(ada), "slack.install_ready"),
-        (lambda: ada.post(setup.OFF_PATH, follow_redirects=False), "slack.install_switched"),
-        (lambda: ada.post(setup.ON_PATH, follow_redirects=False), "slack.install_switched"),
-        (lambda: ada.post(setup.REMOVE_PATH, data={"confirm": name}, follow_redirects=False),
+        (lambda: ada.post(setup.PAUSE_PATH, follow_redirects=False), "slack.install_switched"),
+        (lambda: ada.post(setup.RESUME_PATH, follow_redirects=False), "slack.install_switched"),
+        (lambda: ada.post(setup.DISCONNECT_PATH, data={"confirm": name}, follow_redirects=False),
          "slack.install_removed"),
     ]  # fmt: skip
     typed = None
@@ -705,7 +750,7 @@ def test_each_is_one_audit_record_and_one_access_record_naming_who_the_install_a
     # A refusal changes nothing, so the store records nothing of it; the access log does
     audit_before = len(world.audit())
     records_before = len(logged(caplog))
-    world.browser(world.cleo).post(setup.OFF_PATH)
+    world.browser(world.cleo).post(setup.PAUSE_PATH)
     assert len(world.audit()) == audit_before
     (refused,) = logged(caplog)[records_before:]
     assert (refused.action, refused.status, refused.actor_id) == (
@@ -868,7 +913,7 @@ def test_every_page_here_keeps_the_rules_and_forms_from_another_site_are_refused
     world.system().revoke_slack_bot(world.install())
     keeps_the_rules(ada.get("/sources").text)
     name = world.store.get_account(world.workspace).name
-    said(ada, ada.post(setup.REMOVE_PATH, data={"confirm": name}, follow_redirects=False))
+    said(ada, ada.post(setup.DISCONNECT_PATH, data={"confirm": name}, follow_redirects=False))
     keeps_the_rules(ada.get("/sources").text)
     before = world.slack_rows()
     for path in POSTED:

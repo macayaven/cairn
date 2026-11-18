@@ -51,16 +51,16 @@
   </form>
   {% endif %}
   {% if slack.state in ("ready", "on") %}
-  <form method="post" action="/integrations/slack/off">
+  <form method="post" action="/integrations/slack/pause">
     <button type="submit" class="quiet">Switch off</button>
   </form>
   {% elif slack.state == "off" %}
-  <form method="post" action="/integrations/slack/on">
+  <form method="post" action="/integrations/slack/resume">
     <button type="submit">Switch on</button>
   </form>
   {% endif %}
   {% if slack.state and slack.state != "removed" %}
-  <form method="post" action="/integrations/slack/remove" class="stack ending">
+  <form method="post" action="/integrations/slack/disconnect" class="stack ending">
     <label for="slack-confirm">Type <strong>{{ slack.workspace }}</strong> to remove Slack</label>
     <input type="text" id="slack-confirm" name="confirm" autocomplete="off" spellcheck="false" required aria-describedby="slack-confirm-hint">
     <p class="hint" id="slack-confirm-hint">Removing deletes both secrets and every link between a Slack user and a person at once, and forgets every note that came through Slack 10 days later.</p>

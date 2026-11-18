@@ -32,6 +32,8 @@ services:
       litestream-restore:
         condition: service_completed_successfully
         required: true # the default, spelled out: this line is the point of the file
+    # cap_drop and security_opt come from compose.yaml. Not repeated here: Compose joins the
+    # two files' lists and refuses the same security_opt item twice.
 
   # Mounts the data volume from the cairn image first, so the volume takes that image's
   # ownership (uid 10001, mode 0700) before Litestream, which has no /data of its own, sees it.
@@ -41,6 +43,8 @@ services:
     entrypoint: ["python", "-c", "pass"]
     volumes:
       - cairn-data:/data
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     logging: *logging
 
   # Before cairn starts: restore the database if it is missing and a replica exists. Exit 0
@@ -59,6 +63,8 @@ services:
     volumes: &litestream-volumes
       - cairn-data:/data
       - ./litestream.yml:/etc/litestream.yml:ro
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       data-init:
         condition: service_completed_successfully
@@ -72,6 +78,8 @@ services:
     environment: *litestream-environment
     env_file: *litestream-env-file
     volumes: *litestream-volumes
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       cairn:
         condition: service_healthy

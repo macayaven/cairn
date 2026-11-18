@@ -1,5 +1,6 @@
 """Execute the documented shell recipes against an offline Docker boundary."""
 
+import json
 import os
 import re
 import subprocess
@@ -34,6 +35,9 @@ def docker_boundary(tmp_path):
     date = bin_dir / "date"
     date.write_text("#!/bin/sh\nprintf 20261118-010000\n")
     date.chmod(0o755)
+    git = bin_dir / "git"
+    git.write_text('#!/bin/sh\n[ "$FAIL_ACTION" != pull ]\n')
+    git.chmod(0o755)
     docker = bin_dir / "docker"
     docker.write_text("""#!/usr/bin/env python3
 import json, os, pathlib, shutil, sys
@@ -42,7 +46,9 @@ args = sys.argv[1:]
 if args[0] == "compose": args.pop(0)
 with (root / "calls").open("a") as log: log.write(json.dumps(args) + "\\n")
 action = args[0]
-if action in ("stop", "start"):
+if action == "build":
+    if os.environ.get("FAIL_ACTION") == "build": sys.exit(19)
+elif action in ("stop", "start"):
     if os.environ.get("FAIL_ACTION") == action:
         print(action + " refused by Docker", file=sys.stderr)
         sys.exit(17)
@@ -125,3 +131,20 @@ def test_restore_copies_chosen_snapshot_into_fresh_storage(docker_boundary):
     assert (snapshot / "cairn.db").read_text() == "first database"
     assert (root / "data/cairn.db").read_text() == "live database"
     assert (target / "hidden/state").read_text() == "suppression state"
+
+
+@pytest.mark.parametrize("guide", GUIDES, ids=["compose", "docker"])
+@pytest.mark.parametrize("failure", ["pull", "build"])
+def test_a_failed_source_upgrade_keeps_the_running_container(docker_boundary, guide, failure):
+    root, env = docker_boundary
+    text = guide.read_text()
+    heading = "### Update" if guide.name == "README.md" else "## Upgrade"
+    upgrade = text.split(heading, 1)[1]
+    block = re.findall(r"```bash\n(.*?)```", upgrade, re.S)[0]
+    result = execute(block, root, dict(env, FAIL_ACTION=failure))
+    assert result.returncode != 0
+    calls = root / "calls"
+    actions = (
+        [json.loads(line)[0] for line in calls.read_text().splitlines()] if calls.exists() else []
+    )
+    assert not set(actions) & {"stop", "rm", "up"}

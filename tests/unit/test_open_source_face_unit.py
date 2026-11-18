@@ -36,8 +36,9 @@ FIRST = section(README, "## Run it on your computer")
 
 def test_the_first_section_turns_on_the_local_compose_file_and_starts_it():
     assert blocks(FIRST)[0] == [
-        "cd deploy",
-        "echo 'COMPOSE_FILE=compose.local.yaml' > .env",
+        "git clone https://github.com/macayaven/cairn.git &&",
+        "cd cairn/deploy &&",
+        "echo 'COMPOSE_FILE=compose.local.yaml' > .env &&",
         "docker compose up -d --build",
     ]
     assert (ROOT / "deploy" / "compose.local.yaml").is_file()
@@ -203,9 +204,10 @@ def test_the_repository_has_what_a_newcomer_looks_for():
 
 
 def test_the_repository_names_itself_where_it_lives():
-    """The guides' image and the publisher's repository are the public one's."""
+    """Source installs and the publisher name the public repository."""
     run = (ROOT / "src" / "cairn" / "guides" / "run.md").read_text(encoding="utf-8")
-    assert "ghcr.io/macayaven/cairn:main" in run
+    assert "git clone https://github.com/macayaven/cairn.git" in run
+    assert "ghcr.io/macayaven/cairn:main" not in run
     publisher = (ROOT / "src" / "cairn" / "docs_publisher.py").read_text(encoding="utf-8")
     assert 'REPOSITORY = "https://github.com/macayaven/cairn"' in publisher
 
@@ -236,3 +238,59 @@ def test_the_landing_page_tells_a_visitor_to_build_what_they_cloned():
     assert "git clone https://github.com/macayaven/cairn" in page
     assert "docker compose up -d --build" in page
     assert 'href="/docs/run"' in page
+    assert 'href="https://github.com/macayaven/cairn/blob/main/README.md#update"' in page
+
+
+def test_local_upgrades_build_from_source_before_replacing_the_container():
+    compose = section(README, "### Update")
+    assert blocks(compose)[0] == [
+        "(",
+        "set -e",
+        "git pull --ff-only origin main",
+        "docker compose build cairn",
+        "docker compose up -d",
+        ")",
+    ]
+    assert "backup" in compose.lower() and "volume stays" in compose.lower()
+    direct = section(RUN_GUIDE, "## Upgrade")
+    assert blocks(direct)[0] == [
+        "(",
+        "set -e",
+        "git pull --ff-only origin main",
+        "docker build -t cairn:local .",
+        "docker stop cairn",
+        "docker rm cairn",
+        ")",
+    ]
+    assert "backup" in direct.lower()
+    assert "same `docker run` command" in direct
+    assert "environment" in direct and "options" in direct
+    assert "README.md#update" in direct
+    start = section(RUN_GUIDE, "## Start it")
+    commands = blocks(start)
+    assert commands[0] == [
+        "git clone https://github.com/macayaven/cairn.git &&",
+        "cd cairn &&",
+        "docker build -t cairn:local .",
+    ]
+    assert commands[1][-1].endswith("cairn:local")
+    assert "docker pull" not in RUN_GUIDE and "wherever this guide writes" not in RUN_GUIDE
+
+
+def test_a_clone_that_fails_stops_the_first_commands_before_they_touch_a_folder():
+    """In a folder that already holds a `cairn`, `git clone` fails. Run one line at a time,
+    the next lines would then enter that older checkout, overwrite its `.env` and build it.
+    Each first-install block is one chain: a step runs only when the one before it worked,
+    and the reader ends in the folder the later commands are written for."""
+    landing = (ROOT / "src" / "cairn" / "templates" / "landing.html").read_text(encoding="utf-8")
+    shown = re.search(r"<pre>(git clone.*?)</pre>", landing, re.S).group(1)
+    shown = shown.replace("&amp;", "&").replace("&gt;", ">")
+    for commands in (
+        blocks(FIRST)[0],
+        blocks(section(RUN_GUIDE, "## Start it"))[0],
+        shown.splitlines(),
+    ):
+        assert commands[0].startswith("git clone ")
+        assert all(line.endswith(" &&") for line in commands[:-1]), commands
+        assert not commands[-1].endswith("&&")
+        assert "(" not in commands[0]  # no subshell: the `cd` has to last

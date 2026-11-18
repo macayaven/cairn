@@ -107,7 +107,7 @@ def test_the_command_starts_serve_with_the_model_and_the_settings_file():
     prefix, and gives the settings with --env-file: the key is on no command line."""
     words = command(section())
     assert words[:2] == ["docker", "run"]
-    image = words.index("ghcr.io/macayaven/cairn:main")
+    image = words.index("cairn:local")
     assert words[words.index("--env-file") + 1] in {"./openai.env", "./anthropic.env"}
     args = cli._parser().parse_args(words[image + 1 :])
     assert (args.command, str(args.db), args.host) == ("serve", "/data/cairn.db", "0.0.0.0")
@@ -190,7 +190,7 @@ def test_the_tidy_command_switches_it_off_with_no_tidy_and_no_model():
     no_tidy_turns_it_off). "Start it" made a container named cairn, so it is removed first."""
     text = tidy_section()
     words = command(text)
-    image = words.index("ghcr.io/macayaven/cairn:main")
+    image = words.index("cairn:local")
     args = cli._parser().parse_args(words[image + 1 :])
     assert (args.command, str(args.db), args.host) == ("serve", "/data/cairn.db", "0.0.0.0")
     assert args.no_tidy and not args.tidy and args.model_env is None

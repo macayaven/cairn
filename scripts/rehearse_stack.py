@@ -471,6 +471,23 @@ def tail(result: subprocess.CompletedProcess[str], size: int = 600) -> str:
     return (result.stderr + result.stdout).strip()[-size:]
 
 
+MOUNTS = '{{index .Config.Labels "com.docker.compose.service"}} {{json .Mounts}}'
+
+
+def unnamed_volumes(inspected: str, project: str) -> list[str]:
+    """The volumes nobody named among the mounts `docker inspect -f MOUNTS` printed, one line
+    for each container, as `service at /path`. A volume a compose file names is called
+    PROJECT_name; any other name is one Docker made up, or belongs to another project."""
+    found = []
+    for line in inspected.splitlines():
+        service, _, mounts = line.strip().partition(" ")
+        for mount in json.loads(mounts or "null") or []:
+            named = str(mount.get("Name", "")).startswith(f"{project}_")
+            if mount.get("Type") == "volume" and not named:
+                found.append(f"{service} at {mount.get('Destination')}")
+    return sorted(found)
+
+
 DIGEST = """\
 import hashlib, os
 digest, count = hashlib.sha256(), 0
@@ -560,6 +577,7 @@ class Rehearsal:
         self.wrote_env = False
         self.dotenv = DEPLOY / ".env"
         self.wrote: list[Path] = []  # other files written into deploy/, removed at the end
+        self.unnamed: set[str] = set()  # volumes nobody named, seen on a container before it went
         self.key = ""
         self.base = f"https://{NAME}"
         self.env = {
@@ -575,7 +593,19 @@ class Rehearsal:
         files = ["-f", str(DEPLOY / "compose.yaml"), "-f", str(DEPLOY / "compose.backup.yaml")]
         files += ["-f", str(self.override)]
         base = ["docker", "compose", "-p", self.project, "--project-directory", str(DEPLOY)]
+        if "down" in args:
+            self.look_at_volumes()
         return run(*base, *files, *args, env=self.env, check=check)
+
+    def look_at_volumes(self) -> None:
+        """Remember each volume nobody named on the rehearsal's containers. Called before they
+        are removed: `down` without -v leaves such a volume on the machine, and from then on
+        nothing about it says whose it was."""
+        label = f"label=com.docker.compose.project={self.project}"
+        containers = run("docker", "ps", "-aq", "--filter", label, check=False).split()
+        if containers:
+            inspected = run("docker", "inspect", "-f", MOUNTS, *containers, check=False)
+            self.unnamed.update(unnamed_volumes(inspected, self.project))
 
     def compose_finished(self, *args: str) -> subprocess.CompletedProcess[str]:
         files = ["-f", str(DEPLOY / "compose.yaml"), "-f", str(DEPLOY / "compose.backup.yaml")]
@@ -592,6 +622,8 @@ class Rehearsal:
 
     def plain(self, *args: str) -> str:
         """`docker compose ARGS` run in deploy/, as the guide runs it."""
+        if "down" in args:
+            self.look_at_volumes()
         result = finished(["docker", "compose", *args], env=self.plain_env(), cwd=DEPLOY)
         expect(
             result.returncode == 0,
@@ -924,6 +956,7 @@ class Rehearsal:
         except subprocess.TimeoutExpired as error:
             raise Failed("litestream without credentials did not exit in 120 s") from error
         finally:
+            self.look_at_volumes()
             run("docker", "rm", "-f", name, check=False)
         expect(result.returncode != 0, f"litestream without credentials exited 0: {tail(result)}")
         return [line for line in (result.stdout + result.stderr).splitlines() if line.strip()]
@@ -1283,7 +1316,12 @@ class Rehearsal:
         expect(not self.replica_env.exists(), "deploy/litestream.env remains")
         left = [path.name for path in self.wrote if path.exists()]
         expect(not left, f"deploy/{', deploy/'.join(left)} remains")
-        return "no container, volume, file in deploy/ or temporary directory left"
+        held = ", ".join(sorted(self.unnamed))
+        expect(not held, f"a container held a volume nobody named: {held}")
+        return (
+            "no container, volume, file in deploy/ or temporary directory left; every volume a"
+            " container held had a name"
+        )
 
 
 def run_checks(checks: list[Callable[[], str]]) -> int:

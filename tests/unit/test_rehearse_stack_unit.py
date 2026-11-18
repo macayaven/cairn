@@ -96,6 +96,102 @@ def test_no_service_of_the_cairn_image_gets_a_volume_nobody_named(name):
     assert checked, "no service of the cairn image was read"
 
 
+# What `docker inspect` prints for a container, in the form the rehearsal asks for: the
+# service's name, then its mounts. The long name is one Docker made up.
+MADE_UP = "3f1c9a0e" * 8
+INSPECTED = "\n".join(
+    [
+        "cairn " + json.dumps([{"Type": "volume", "Name": "p_cairn-data", "Destination": "/data"}]),
+        "caddy "
+        + json.dumps(
+            [
+                {"Type": "bind", "Source": "/srv/deploy/Caddyfile", "Destination": "/etc/caddy"},
+                {"Type": "volume", "Name": "p_caddy-data", "Destination": "/data"},
+            ]
+        ),
+        "replica-init "
+        + json.dumps(
+            [
+                {"Type": "volume", "Name": MADE_UP, "Destination": "/data"},
+                {"Type": "volume", "Name": "p_rehearsal-replica", "Destination": "/replica"},
+            ]
+        ),
+    ]
+)
+
+
+def test_a_volume_nobody_named_is_read_from_a_containers_mounts():
+    assert rehearse.unnamed_volumes(INSPECTED, "p") == ["replica-init at /data"]
+
+
+def test_a_container_with_no_mounts_and_an_empty_answer_hold_none():
+    assert rehearse.unnamed_volumes("cairn []\n\ncaddy null", "p") == []
+    assert rehearse.unnamed_volumes("", "p") == []
+
+
+def test_another_projects_volume_is_not_this_projects_named_one():
+    line = "cairn " + json.dumps([{"Type": "volume", "Name": "px_data", "Destination": "/data"}])
+    assert rehearse.unnamed_volumes(line, "p") == ["cairn at /data"]
+
+
+@pytest.fixture
+def staged(monkeypatch):
+    """A rehearsal whose commands are recorded and answered here: one container, holding
+    what INSPECTED says."""
+    calls = []
+
+    def run(*args, env=None, check=True):
+        calls.append(args)
+        if args[:3] == ("docker", "ps", "-aq") and any("label=" in arg for arg in args):
+            return "0a1b2c"
+        if args[:2] == ("docker", "inspect"):
+            return INSPECTED
+        return ""
+
+    monkeypatch.setattr(rehearse, "run", run)
+    rehearsal = rehearse.Rehearsal("cairn:made-up")
+    rehearsal.project = "p"
+    yield rehearsal, calls
+    rehearse.shutil.rmtree(rehearsal.tmp, ignore_errors=True)
+
+
+def test_the_rehearsal_looks_at_its_containers_before_it_takes_them_down(staged):
+    rehearsal, calls = staged
+
+    rehearsal.compose("down")
+
+    assert rehearsal.unnamed == {"replica-init at /data"}
+    looked = next(i for i, args in enumerate(calls) if args[:2] == ("docker", "inspect"))
+    down = next(i for i, args in enumerate(calls) if args[-1] == "down")
+    assert looked < down
+    assert "0a1b2c" in calls[looked]
+
+
+def test_a_command_that_removes_no_container_is_not_looked_at(staged):
+    rehearsal, calls = staged
+
+    rehearsal.compose("ps", "-q", "cairn")
+
+    assert rehearsal.unnamed == set()
+    assert not [args for args in calls if args[:2] == ("docker", "inspect")]
+
+
+def test_cleanup_fails_on_a_volume_nobody_named_and_says_where(staged, monkeypatch):
+    rehearsal, _ = staged
+    monkeypatch.setattr(rehearse, "unnamed_volumes", lambda inspected, project: [])
+    rehearsal.unnamed = {"replica-init at /data"}
+
+    with pytest.raises(rehearse.Failed, match="replica-init at /data"):
+        rehearsal.cleanup()
+
+
+def test_cleanup_passes_when_every_volume_had_a_name(staged, monkeypatch):
+    rehearsal, _ = staged
+    monkeypatch.setattr(rehearse, "unnamed_volumes", lambda inspected, project: [])
+
+    assert "no container, volume" in rehearsal.cleanup()
+
+
 def _serve_once(answer: bytes, *, read_body: bool) -> tuple[int, list[int], threading.Thread]:
     """A one-request HTTP server on loopback: (port, [bytes of body it read], its thread)."""
     listener = socket.create_server(("127.0.0.1", 0))

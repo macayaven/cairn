@@ -145,6 +145,7 @@ MANAGEMENT = frozenset(
         "written_source_items",  # a run's items (I1), as its claim
         "record_source_item",
         "held_selectors",  # R3: what the other sources of a run's account select
+        "overlapping_source",  # R3: another source of a run's account that selects its items
         "source_to_preview",  # a source's whole config, for a preview (R1)
         "source_items_written",  # a preview's count of the items written before
         "source_from_to_preview",  # R4: a source not yet saved, its whole config, for a preview

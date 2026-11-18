@@ -238,17 +238,34 @@ def test_removing_deletes_secrets_links_and_offers_and_makes_its_notes_due_in_10
     assert world.store.slack_notes_due() == [(world.account, note)]
 
 
-def test_revoking_the_bot_switches_off_and_deletes_the_secrets_only(world):
+def test_revoking_the_bot_switches_off_and_deletes_the_bot_token_only(world):
     install = ready(world)
     world.view.link_slack_user(install.id, "U0ADA0001", world.owner)
     note = a_note(world)
     world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
     found = world.store.for_account(world.account).revoke_slack_bot(install.id)
-    assert found.state == "off" and not found.holds_secrets
+    assert found.state == "off" and not found.holds_secrets and not found.holds_bot_token
+    assert found.needs_bot_token
+    assert world.store.slack_inbound(install.id).signing_secret == SECRET  # still verified
+    assert world.view.slack_bot_token(install.id) is None
     assert world.view.slack_person(install.id, "U0ADA0001") is not None
     assert world.view.slack_notes_to_forget() is None
     with pytest.raises(ValueError):  # nothing to switch on with
         world.view.switch_slack_install(install.id, on=True)
+    again = ready(world, token=TOKEN + "new")  # a new bot token puts it back
+    assert again.state == "ready" and again.holds_bot_token and not again.needs_bot_token
+
+
+def test_an_install_switched_off_keeps_its_token_and_is_told_from_a_revoked_one(world):
+    install = ready(world)
+    off = world.view.switch_slack_install(install.id, on=False)
+    assert off.state == "off" and off.holds_secrets and off.holds_bot_token
+    assert not off.needs_bot_token
+    assert world.view.switch_slack_install(install.id, on=True).state == "on"
+    assert not world.view.get_slack_install().needs_bot_token
+    removed = world.view.remove_slack_install(install.id)
+    assert not removed.holds_bot_token and not removed.needs_bot_token  # set up again instead
+    assert world.view.revoke_slack_bot(install.id).state == "removed"  # changes nothing
 
 
 def test_set_up_again_reuses_the_id_and_the_same_team_cancels_the_forgetting(world):

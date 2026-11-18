@@ -17,7 +17,7 @@ INSTALL = SlackInstall(
     id="sl_0123456789ab", account_id="acct_0123456789ab", state="on", team_id="T0FABLE01",
     enterprise_id=None, team_domain="fable", bot_user_id="U0BOT0001", command="/cairn",
     made_by=None, made_at="2031-03-04T09:00:00.000000+00:00", removed_at=None,
-    holds_secrets=True,
+    holds_secrets=True, holds_bot_token=True,
 )  # fmt: skip
 SECRET_NAMES = ("key", "signing_secret", "bot_token", "token", "secret", "payload", "view")
 

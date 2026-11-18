@@ -22,8 +22,10 @@ The three addresses Slack calls (`slack_routes`)
   signature. Every protection is here, in this order, and nothing of the body is parsed
   before the signature holds:
   1. The body is read with a limit: over 1 MiB is 413 (TOO_LARGE).
-  2. An install that does not exist, or is pending, off or removed, is 404 with the page every
-     address that is not a page gets.
+  2. An install that does not exist, is pending or is removed is 404 with the page every
+     address that is not a page gets. One that is off (switched off, or its bot token
+     revoked: its signing secret is held either way) answers at /events only; its /commands
+     and /actions are 404 the same way.
   3. A client address (as CredentialFailures counts one) that failed the signature
      SIGNATURE_FAILURES (20) times in the last SIGNATURE_WINDOW (60) seconds is answered 429
      (TOO_MANY, Retry-After) and the signature is not computed, until the oldest failure
@@ -34,12 +36,15 @@ The three addresses Slack calls (`slack_routes`)
   5. The body is read (cairn.slack.verify.envelope): one that is not what Slack sends there
      is 400 (NOT_SLACK); one whose team is not the install's is 403 (OTHER_TEAM). Both carry
      `x-slack-no-retry: 1`, so Slack does not send it again, and nothing is done.
-  6. Slack's challenge (url_verification, to /events) is answered with its `challenge`, as
+  6. An install that is off acts on a signed `app_uninstalled` or `tokens_revoked`
+     (OFF_EVENTS) only; any other signed event, the challenge too, is answered 200 with an
+     empty body and nothing is done, its id not even recorded.
+  7. Slack's challenge (url_verification, to /events) is answered with its `challenge`, as
      text; an install that is ready becomes on (Store.slack_install_verified).
-  7. An event whose event_id the install saw within a day is answered 200 and nothing happens
+  8. An event whose event_id the install saw within a day is answered 200 and nothing happens
      again, whatever x-slack-retry-num says (Store.slack_event_seen records it first, so a
      handler that fails is not run again by a retry).
-  8. cairn.slack.dispatch answers the rest; this module registers what it owns:
+  9. cairn.slack.dispatch answers the rest; this module registers what it owns:
      `app_uninstalled` (Store.remove_slack_install, D10) and `tokens_revoked` naming the
      install's bot (Store.revoke_slack_bot); another user's token revoked changes nothing.
 - A refusal writes nothing. Each request is one record on the access log (cairn.access):
@@ -94,6 +99,7 @@ from cairn.store.slack import ACCEPTING
 from cairn.web.ratelimit import CredentialFailures
 from cairn.web.templating import NO_PAGE, _page, brand_of
 
+OFF_EVENTS = ("app_uninstalled", "tokens_revoked")  # what an install that is off acts on
 log = logging.getLogger("cairn.slack")
 KEY_VARIABLE = "CAIRN_SLACK_KEY"
 NEEDS_SIGN_IN = "--slack needs --sign-in: a Slack user is linked to a person who signs in here"
@@ -291,7 +297,10 @@ def slack_routes(
             _logged(action, install_id, 413)
             return PlainTextResponse(TOO_LARGE, 413)
         inbound = await run_in_threadpool(desk.inbound, install_id)
-        if inbound is None or inbound.install.state not in ACCEPTING:
+        if inbound is None or (
+            inbound.install.state not in ACCEPTING
+            and (inbound.install.state != "off" or kind != "events")
+        ):
             _logged(action, install_id, 404)
             return no_page(request)
         address = request.client.host if request.client else None
@@ -312,6 +321,9 @@ def slack_routes(
         except NotSlack:
             _logged(action, install_id, 400)
             return PlainTextResponse(NOT_SLACK, 400, headers=NO_RETRY)
+        if install.state == "off" and (found.type == CHALLENGE or found.name not in OFF_EVENTS):
+            _logged(action, install_id, 200)  # off: acknowledged, and nothing is done
+            return Response(status_code=200)
         if found.type == CHALLENGE:
             await run_in_threadpool(desk.verified, install.id)
             _logged(action, install_id, 200)
@@ -354,7 +366,7 @@ async def _uninstalled(found: Any, context: Context) -> None:
 @on_event("tokens_revoked")
 async def _revoked(found: Any, context: Context) -> None:
     """Slack revoked tokens: when the bot's is among them, the install is switched off and its
-    secrets deleted (Store.revoke_slack_bot); a person's token alone changes nothing."""
+    bot token deleted (Store.revoke_slack_bot); a person's token alone changes nothing."""
     tokens = found.payload["event"].get("tokens")
     bots = tokens.get("bot") if isinstance(tokens, dict) else None
     if isinstance(bots, list) and context.install.bot_user_id in bots:

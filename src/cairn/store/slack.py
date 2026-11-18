@@ -6,6 +6,9 @@ The install
   carry (cairn.web.slack). Its state is one of STATES: pending (made, nothing pasted yet),
   ready (Slack accepted its bot token: commands and actions are answered), on (Slack's
   signed challenge was answered), off (switched off, or its bot token revoked) and removed.
+  `holds_secrets`: it holds both; `holds_bot_token`; `needs_bot_token`: off because its bot
+  token was revoked (off with no bot token), so on again only through ready_slack_install
+  with a new one, where an install switched off holds its token and is switched on as it is.
 - `make_slack_install`: an owner or admin of the workspace (a view acting for no person
   too). The workspace's install as it is when it has one that is not removed; a removed one
   comes back pending under the same id, so the addresses in the app Slack holds stay right;
@@ -26,7 +29,9 @@ The install
   person): the sealed secrets, the links and the offers are deleted at once, the install is
   removed, and every note that came through it and is not due yet is due FORGET_AFTER (10
   days) later. Removing a removed install changes nothing. `revoke_slack_bot` (Slack's
-  tokens_revoked naming the bot): off, and the secrets deleted; nothing is due.
+  tokens_revoked naming the bot): off, and the bot token deleted; the signing secret stays,
+  sealed, so Slack's app_uninstalled after it is still verified (an install that is off
+  answers at its events address, cairn.web.slack); nothing is due.
 - What is due: `slack_notes_due` (the server's, every workspace, the oldest first) gives
   (workspace, note) pairs whose time came; cairn.web.slack.Keeper forgets each with cairn's
   own forgetting (Store.forget_note, H5b, by a view acting for no person), and the duty in
@@ -111,6 +116,14 @@ class SlackInstall:
     made_at: str
     removed_at: str | None
     holds_secrets: bool
+    holds_bot_token: bool
+
+    @property
+    def needs_bot_token(self) -> bool:
+        """Off because Slack revoked its bot token (Store.revoke_slack_bot): on again only once
+        a new bot token is kept (Store.ready_slack_install). An install the owner switched off
+        holds its token and is switched on as it is."""
+        return self.state == "off" and not self.holds_bot_token
 
 
 @dataclass(frozen=True)
@@ -149,12 +162,13 @@ class SlackDue:
 
 _INSTALL_COLUMNS = (
     "id, account_id, state, team_id, enterprise_id, team_domain, bot_user_id, command,"
-    " made_by, made_at, removed_at, signing_secret IS NOT NULL AND bot_token IS NOT NULL"
+    " made_by, made_at, removed_at, signing_secret IS NOT NULL AND bot_token IS NOT NULL,"
+    " bot_token IS NOT NULL"
 )
 
 
 def _install(row: tuple) -> SlackInstall:
-    return SlackInstall(*row[:11], holds_secrets=bool(row[11]))
+    return SlackInstall(*row[:11], holds_secrets=bool(row[11]), holds_bot_token=bool(row[12]))
 
 
 def _associated(which: str, install_id: str, account_id: str) -> bytes:
@@ -346,16 +360,16 @@ class SlackMethods(StoreBase):
             return _install(self._slack_row(con, install_id))
 
     def revoke_slack_bot(self, install_id: str) -> SlackInstall:
-        """Slack revoked the bot's token: the install is off and its secrets deleted; nothing
-        is due. A removed install stays as it is. KeyError, PermissionError."""
+        """Slack revoked the bot's token: the install is off and its bot token deleted; the
+        signing secret stays, so what Slack sends next (app_uninstalled) is still verified.
+        Nothing is due. A removed install stays as it is. KeyError, PermissionError."""
         with self._write() as con:
             self._require_manager(con)
             row = self._slack_row(con, install_id)
             if row[2] == "removed":
                 return _install(row)
             con.execute(
-                "UPDATE slack_installs SET state = 'off', signing_secret = NULL,"
-                " bot_token = NULL WHERE id = ?",
+                "UPDATE slack_installs SET state = 'off', bot_token = NULL WHERE id = ?",
                 (install_id,),
             )
             self._slack_audit(con, "slack.bot_revoked", install_id)
@@ -387,11 +401,11 @@ class SlackMethods(StoreBase):
             ).fetchone()
         if row is None:
             return None
-        install = _install(row[:12])
+        install = _install(row[:13])
         secret = None
-        if row[12] is not None and self.slack_sealer is not None:
+        if row[13] is not None and self.slack_sealer is not None:
             associated = _associated("signing_secret", install.id, install.account_id)
-            secret = self.slack_sealer.open(row[12], associated)
+            secret = self.slack_sealer.open(row[13], associated)
         return SlackInbound(install, secret)
 
     # Notes, and forgetting them (D10)

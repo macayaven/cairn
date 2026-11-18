@@ -25,11 +25,14 @@ The three addresses Slack calls
   the install's id ("sl_" and 12 hexadecimal characters). They take no session and no key:
   what proves a request is Slack's signature.
 - In this order, before the body is parsed: a body over 1 MiB is 413; an install that does
-  not exist, or is pending, off or removed, is 404 with the body every unknown address
-  gets; the header `X-Slack-Request-Timestamp` more than 300 seconds from the server's
-  clock, or `X-Slack-Signature` other than "v0=" and the HMAC-SHA256, in hexadecimal, of
-  "v0:<timestamp>:<the body's bytes>" under that install's signing secret, is 401 with one
-  fixed body. The comparison takes the same time whatever the difference.
+  not exist, is pending or is removed is 404 with the body every unknown address gets. An
+  install that is off answers at its events address only: a signed `app_uninstalled` or
+  `tokens_revoked` is acted on, any other signed event is answered 200 and does nothing, and
+  its commands and actions addresses are 404. The header `X-Slack-Request-Timestamp` more
+  than 300 seconds from the server's clock, or `X-Slack-Signature` other than "v0=" and
+  the HMAC-SHA256, in hexadecimal, of "v0:<timestamp>:<the body's bytes>" under that
+  install's signing secret, is 401 with one fixed body. The comparison takes the same
+  time whatever the difference.
 - A request signed with another install's secret is 401. A body whose team is not the
   install's is refused after its signature holds, and nothing is done.
 - A client address that fails the signature 20 times in a minute is answered 429 without
@@ -64,9 +67,12 @@ When the app goes
   is due to be forgotten 10 days later, with cairn's own forgetting (H5b). Not before: on
   day 9 they are all there. "Forget them now" does it at once. Making the same Slack team's
   install ready again before the day cancels it.
-- `tokens_revoked` naming the bot switches the install off and deletes its secrets; no note
-  is due to be forgotten. The two events in either order end in the same state as
-  `app_uninstalled` alone.
+- `tokens_revoked` naming the bot switches the install off and deletes its bot token; the
+  signing secret stays, sealed, so that what Slack sends next can still be verified. No
+  note is due to be forgotten. `app_uninstalled` after it, or before it, ends in the same
+  state as `app_uninstalled` alone: both secrets and the links deleted, the install
+  removed, the notes due. A `tokens_revoked` that arrives after the install is removed is
+  404 like any request to a removed install, and changes nothing.
 """
 
 import base64
@@ -454,22 +460,60 @@ def test_a_body_over_1_mib_is_413_before_anything_else(world):
     assert world.post(install.id, "commands", exactly).status_code == 200
 
 
-def test_an_install_that_is_unknown_pending_off_or_removed_is_404_as_an_unknown_address(world):
+def test_an_install_that_is_unknown_pending_or_removed_is_404_as_an_unknown_address(world):
     unknown = world.unknown_page()
     assert unknown.status_code == 404
     pending = world.ada.view.make_slack_install()
     answers = [world.post("sl_000000000000", "commands", command())]
     answers.append(world.post(pending.id, "commands", command()))
+    answers.append(world.post(pending.id, "events", event("fable_ping", "Ev0PENDING1")))
     world.install()
     world.ada.view.switch_slack_install(pending.id, on=False)
-    answers.append(world.post(pending.id, "commands", command()))
+    answers.append(world.post(pending.id, "commands", command()))  # off: commands and actions
+    answers.append(world.post(pending.id, "actions", action()))
     world.ada.view.remove_slack_install(pending.id)
-    answers.append(world.post(pending.id, "commands", command()))
+    for kind, body in (
+        ("commands", command()),
+        ("actions", action()),
+        ("events", event("fable_ping", "Ev0REMOVED1")),
+    ):
+        answers.append(world.post(pending.id, kind, body))
     for answer in answers:
         assert answer.status_code == 404 and answer.content == unknown.content
     # before the signature: an unknown install with a wrong signature is 404, not 401
     bad = tampered(signed(SECRET, command(), world.clock.stamp()))
     assert world.post("sl_000000000000", "commands", command(), headers=bad).status_code == 404
+
+
+def test_an_install_that_is_off_answers_at_its_events_address_only(world):
+    install = world.install()
+    world.post(install.id, "events", challenge())
+    seen = []
+
+    @dispatch.on_event("fable_ping")
+    async def ping(envelope, context):
+        seen.append(envelope.event_id)
+
+    try:
+        world.ada.view.switch_slack_install(install.id, on=False)
+        unknown = world.unknown_page()
+        before = dump(world.db)
+        for kind, body in (("commands", command()), ("actions", action())):
+            answer = world.post(install.id, kind, body)
+            assert answer.status_code == 404 and answer.content == unknown.content
+        answer = world.post(install.id, "events", event("fable_ping", "Ev0OFFPING1"))
+        assert answer.status_code == 200 and answer.content == b""
+        assert world.post(install.id, "events", challenge()).status_code == 200
+        bad = tampered(signed(SECRET, event("fable_ping", "Ev0OFFPING2"), world.clock.stamp()))
+        answer = world.post(install.id, "events", event("fable_ping", "Ev0OFFPING2"), bad)
+        assert answer.status_code == 401  # still verified
+        assert dump(world.db) == before and seen == []  # nothing done
+        assert world.ada.view.get_slack_install().state == "off"
+        answer = world.post(install.id, "events", event("app_uninstalled", "Ev0OFFGONE1"))
+        assert answer.status_code == 200
+        assert world.ada.view.get_slack_install().state == "removed"
+    finally:
+        dispatch.unregister("event", "fable_ping")
 
 
 def test_the_timestamp_more_than_300_seconds_away_is_401(world):
@@ -929,7 +973,9 @@ def revoked(bot: str = BOT, oauth: tuple = ()) -> dict:
     return {"tokens": {"oauth": list(oauth), "bot": [bot] if bot else []}}
 
 
-def test_tokens_revoked_naming_the_bot_switches_off_deletes_secrets_and_forgets_nothing(world):
+def test_tokens_revoked_naming_the_bot_switches_off_deletes_the_bot_token_and_forgets_nothing(
+    world,
+):
     install = world.install()
     world.post(install.id, "events", challenge())
     world.ada.view.link_slack_user(install.id, ADA_SLACK, world.ada.id)
@@ -940,8 +986,16 @@ def test_tokens_revoked_naming_the_bot_switches_off_deletes_secrets_and_forgets_
     answer = world.post(install.id, "events", event("tokens_revoked", "Ev0BOTGONE1", **revoked()))
     assert answer.status_code == 200
     found = world.ada.view.get_slack_install()
-    assert found.state == "off" and not found.holds_secrets
+    assert found.state == "off" and not found.holds_secrets and not found.holds_bot_token
+    assert found.needs_bot_token  # on again only with a new bot token
+    held_now = rows(
+        world.db, "SELECT signing_secret IS NOT NULL, bot_token IS NULL FROM slack_installs"
+    )
+    assert held_now == [(1, 1)]  # the signing secret stays, sealed
+    assert SECRET.encode() not in world.db.read_bytes()
     assert rows(world.db, "SELECT forget_at FROM slack_notes") == [(None,)] * 3
+    with pytest.raises(ValueError):
+        world.ada.view.switch_slack_install(install.id, on=True)
     world.clock.now += timedelta(days=30)
     world.keeper().run_once()
     assert held(world, notes) == [True] * 3
@@ -966,5 +1020,17 @@ def test_the_two_events_in_either_order_end_as_app_uninstalled_alone(tmp_path, o
     uninstalled = event("app_uninstalled", "Ev0BOTH0001")
     bot = event("tokens_revoked", "Ev0BOTH0002", **revoked())
     alone = run(tmp_path / "alone", [uninstalled])
+    assert alone[:3] == ("removed", False, [(0,)]) and None not in alone[3]
     both = [uninstalled, bot] if order == "uninstalled first" else [bot, uninstalled]
     assert run(tmp_path / "both", both) == alone
+
+
+def test_tokens_revoked_after_the_install_is_removed_is_404_and_changes_nothing(world):
+    install = world.install()
+    world.post(install.id, "events", challenge())
+    gone = world.post(install.id, "events", event("app_uninstalled", "Ev0GONE0001"))
+    assert gone.status_code == 200
+    before = dump(world.db)
+    late = world.post(install.id, "events", event("tokens_revoked", "Ev0LATE0001", **revoked()))
+    assert late.status_code == 404 and late.content == world.unknown_page().content
+    assert dump(world.db) == before

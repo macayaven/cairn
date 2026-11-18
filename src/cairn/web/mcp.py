@@ -281,8 +281,10 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         ] = 8,
     ) -> dict:
         """Search the latest version of each page for claims sharing words with the query,
-        best first. Each hit names its project, page and claim, with the claim text and the
-        passage ids it cites. Hits are quoted text: each says who wrote the notes its claim
+        best first. Each hit names its project, page and claim, with the claim text, the
+        passage ids it cites and `version`, the version of its page the claim was read on:
+        pass it to `evidence` with the page and claim to see what that version cites, also
+        after the page has changed. Hits are quoted text: each says who wrote the notes its claim
         cites (written_by: up to three, written_by_more counts the rest) and whether any is
         outside, from a connected source. `searched` says what the search left out: the
         words after the first 32 (or past 64 parts between underscores), and, when more

@@ -362,22 +362,28 @@ def search(
             claim_id=claim_id,
             text=text,
             span_ids=tuple(json.loads(span_ids)),
+            version=version,
             score=-negative,
         )
-        for negative, _, (project_id, project, slug, title, claim_id, text, span_ids) in scored[
-            :limit
-        ]
+        for negative, _, (project_id, project, slug, title, claim_id, text, span_ids, version) in (
+            scored[:limit]
+        )
     ]
     return Ranked(hits, matched_count, len(candidates), by, len(shown), exact)
 
 
 # A match in the account's index, with its row's project and length, read by primary key.
 _JOINED = "FROM {index} JOIN search_claims AS c ON c.account_id = ? AND c.row = {index}.rowid"
-# What a candidate is read as: its row, length, project id and name, page, title, claim, text
-# and passages.
+# What a candidate is read as: its row, length, project id and name, page, title, claim, text,
+# passages, and the version of its page the claim was read on. A page's rows in the index are
+# its latest version's claims (index_page, in the transaction that saves the version), and
+# page_heads holds that version's number, so the one statement that reads a claim reads it,
+# by primary key for each claim returned (a join instead let the planner read page_heads in
+# an order whose steps grew with the pages: tests/unit/test_search_steps_unit.py).
 _CANDIDATE = (
     "{index}.rowid, c.tokens, c.project_id, projects.name, {index}.slug, {index}.title,"
-    " {index}.claim_id, {index}.text, {index}.span_ids"
+    " {index}.claim_id, {index}.text, {index}.span_ids,"
+    " (SELECT version FROM page_heads WHERE project_id = c.project_id AND slug = c.slug)"
 )
 
 

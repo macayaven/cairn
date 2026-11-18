@@ -1218,6 +1218,7 @@ class Memory:
                 "claim_id": hit.claim_id,
                 "text": hit.text,
                 "passage_ids": list(hit.span_ids),
+                "version": hit.version,
                 "score": hit.score,
                 "outside": any(entry["outside"] for entry in entries),
                 "written_by": entries[:WRITTEN_BY_MAX],

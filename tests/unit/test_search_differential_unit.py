@@ -6,6 +6,9 @@ reference and with the store, on the same connection, the same reach and the sam
 searched, and asserts that the hits are equal, field by field and in order, scores to the last
 bit. Objects of the two copies are the same class (both import cairn.store.models), so they
 are compared as dumps all the same. When a case differs, the reference is right by definition.
+E2 added a hit's `version`, which the reference never read: the reference's hits are made by
+a copy of the class where it may be left out (the test sets the name, never the file), and
+the dumps compared leave it out on both sides.
 
 Under the bounds: every search whose words all count (32 at most, holding 64 parts at most)
 and whose matches are all ranked (1,000 at most); for those the store must also say that
@@ -32,9 +35,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from pydantic import create_model
 from test_search_unit import QUERIES, VOCABULARY, random_corpus
 
-from cairn.store import Claim, Store, ranking
+from cairn.store import Claim, SearchHit, Store, ranking
 from cairn.store.base import _has_table
 
 REFERENCE = Path(__file__).resolve().parent / "reference" / "ranking_before_q2.py"
@@ -45,7 +49,17 @@ def _load():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    module.SearchHit = BEFORE_E2  # its hits are made as they were, without a version
     return module
+
+
+# A hit as the reference makes it: E2 added `version`, which the reference never read.
+BEFORE_E2 = create_model("SearchHitBeforeE2", __base__=SearchHit, version=(int | None, None))
+
+
+def dump(hit) -> dict:
+    """A hit's fields but `version` (E2), which the reference does not read."""
+    return hit.model_dump(exclude={"version"})
 
 
 old = _load()
@@ -93,8 +107,8 @@ def same(view, query: str, project_ids=None, limit: int = 10_000) -> None:
     expected = reference(view, query, project_ids, limit)
     COUNT["searches"] += 1
     COUNT["hits"] += len(expected)
-    mine = [hit.model_dump() for hit in found.hits]
-    theirs = [hit.model_dump() for hit in expected]
+    mine = [dump(hit) for hit in found.hits]
+    theirs = [dump(hit) for hit in expected]
     if mine != theirs:
         COUNT["differences"] += 1
     assert mine == theirs, (query, project_ids)
@@ -138,7 +152,7 @@ def test_over_the_cap_one_word_ranks_the_newest_and_every_score_is_uncapped(
             COUNT["capped"] += 1
             assert not found.searched.complete and found.searched.claims_ranked == cap
         if len(set(ranking.words(query))) == 1:  # one word: the reference's own rule
-            assert [h.model_dump() for h in found.hits] == [h.model_dump() for h in newest]
+            assert [dump(h) for h in found.hits] == [dump(h) for h in newest]
     assert ids
 
 
@@ -203,8 +217,8 @@ def test_over_1000_matches_every_match_is_scored_as_the_reference_with_no_cap_sc
             expected = reference(view, query, project_ids, 10_000)
             COUNT["searches"] += 1
             COUNT["hits"] += len(expected)
-            mine = [hit.model_dump() for hit in found.hits]
-            theirs = [hit.model_dump() for hit in expected]
+            mine = [dump(hit) for hit in found.hits]
+            theirs = [dump(hit) for hit in expected]
             if mine != theirs:
                 COUNT["differences"] += 1
             assert mine == theirs, (query, project_ids)

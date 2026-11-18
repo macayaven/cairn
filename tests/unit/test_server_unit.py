@@ -362,6 +362,7 @@ class FakeStore:
                             claim_id=claim.id,
                             text=claim.text,
                             span_ids=claim.span_ids,
+                            version=page.version,
                             score=float(score),
                         )
                     )

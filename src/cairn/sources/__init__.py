@@ -685,9 +685,9 @@ def overlaps(kind: str, a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     note the key reads; a folder's notes include those of the folders below it; a note can be
     in any number of folders, so in the spaces of each, and a folder may sit in the space
     another source reads (docs/granola-api.md: List notes' `folder_id`, Get note's
-    `folder_membership` and `space_membership`, and the help center's "a note can be in any
-    number of folders"). Nothing in those notes shows two selections apart, so one account
-    has at most one Granola source made from it.
+    `folder_membership` and `space_membership`, and the help center, paraphrased there: a
+    note can be in any number of folders). Nothing in those notes shows two selections apart,
+    so one account has at most one Granola source made from it.
 
     Google Calendar: one calendar id twice, in any letter case (no id is `primary`), and
     `primary` beside any other id, whether or not the config's `subject` is known: the

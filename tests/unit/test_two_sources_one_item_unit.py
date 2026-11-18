@@ -747,7 +747,7 @@ def test_a_pair_made_before_writes_nothing_while_both_are_on(world, made_before)
     world.Ada.view.disable_source("second")  # one off: the other reads again
     with pytest.raises(SourceError) as said:
         run_made_before(world, made_before, "first")
-    assert made_before.sent and "already" not in str(said.value)
+    assert made_before.sent and str(said.value) != OVERLAP_ON.format("second")
 
 
 def test_the_sources_page_says_why_a_pair_made_before_wrote_nothing(world, made_before):
@@ -826,8 +826,8 @@ def test_the_guide_says_which_second_source_the_form_refuses():
     for words in (
         "one Granola account makes one source",
         "any number of folders",
-        "`primary` beside any other calendar",
-        "the same calendar twice, in any case",
+        "`primary` beside another calendar",
+        "one calendar twice in any case",
         "made before this rule stay",
         "switch one off",
     ):

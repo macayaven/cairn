@@ -95,9 +95,10 @@ tests/unit/test_sources_from_a_credential_unit.py)
   OwnerCannotWrite); a pass after it finds it off. Found so mid-run (holds_source_claim),
   its last error says so. Switching it on again is its owner's, as for any source.
 - Two sources of one account never write one item (R3, invariant 4). `add_source_from`
-  refuses a source whose selector overlaps wholesale with another source made from the same
-  account, on or off (cairn.sources.overlaps, OVERLAP). `held_selectors(claim)` names what
-  the account's other sources that are on select, so a run holds a Gmail message carrying
+  refuses a source that can select an item another source made from the same account
+  selects, on or off, or that cairn cannot show selects none of its items
+  (cairn.sources.overlaps, OVERLAP). `held_selectors(claim)` names what the account's
+  other sources that are on select, so a run holds a Gmail message carrying
   two of their labels (cairn.sources.runner). The same check runs when a source is switched
   on or moved (enable_source) and for a preview before saving. A pair made before its kind's
   rule refused it stays as it is (nothing re-checks it when the server starts), neither is
@@ -1206,7 +1207,7 @@ class SourceMethods(StoreBase):
         self, con: sqlite3.Connection, source: str, kind: str, config: dict
     ) -> None:
         """R3: ValueError (OVERLAP) when `config`, the config the source `source` is to have,
-        overlaps wholesale with another source made from the same account, on or off
+        can select what another source made from the same account selects, on or off
         (cairn.sources.overlaps). Nothing for a source with no live link (source-add's)."""
         from cairn.sources import OVERLAP, overlaps
 

@@ -142,3 +142,13 @@ def test_neither_the_value_nor_the_code_is_in_a_log_line_or_a_cookie(world, capl
         (200, "code_shown"),
         (404, "no_offer"),
     ]
+
+
+@pytest.mark.parametrize(
+    "headers", [{"origin": "https://elsewhere.example.test"}, {"sec-fetch-site": "cross-site"}]
+)
+def test_a_yes_from_another_site_is_refused_and_ties_nothing(world, headers):
+    value = world.offer()
+    answer = world.client.post(f"{link.LINK_PATH}?t={value}", headers=headers)
+    assert answer.status_code == 403 and CODE not in answer.text
+    assert offers(world) == [(GUS, None, 0)]

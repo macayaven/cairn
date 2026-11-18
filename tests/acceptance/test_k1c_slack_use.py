@@ -83,6 +83,7 @@ import pytest
 import test_k1_slack as k1
 from starlette.testclient import TestClient
 
+import cairn.store.slack as store_slack
 from cairn.compiler import provenance_gate
 from cairn.identity import GitHub
 from cairn.memory import Memory
@@ -373,6 +374,23 @@ def test_a_slack_user_is_linked_by_the_code_shown_to_the_person_who_said_yes(wor
     assert said(private(world.command(f"link {code}"))) == said(blocks.linked("Ada"))
     assert world.ada.view.slack_person(world.install.id, ADA_SLACK).user_id == world.ada.id
     assert offers(world) == []
+
+
+def test_neither_the_value_nor_the_code_is_in_a_log_line_at_slacks_addresses(
+    world, caplog, monkeypatch
+):
+    monkeypatch.setattr(store_slack, "_new_code", lambda: "KM7QR2XZ")
+    caplog.set_level(logging.DEBUG)
+    value = re.search(r"link\?t=([A-Za-z0-9_-]+)", said(private(world.command("link"))))
+    code = world.ada.view.claim_slack_offer(value.group(1))
+    world.direct(code, "Ev0CODE0001")
+    world.command(f"link {code}", user=BROOK_SLACK)
+    world.command(f"link {code}")
+    assert caplog.records
+    for record in caplog.records:
+        text = f"{record.getMessage()} {sorted(vars(record).items())}"
+        for secret in (value.group(1), code, "KM7QR2XZ"):
+            assert secret not in text
 
 
 def test_help_alone_is_answered_without_it(world):

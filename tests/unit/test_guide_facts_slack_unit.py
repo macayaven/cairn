@@ -22,6 +22,7 @@ from starlette.testclient import TestClient
 from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, ask, said
 from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
 
+import cairn.store.slack as store_slack
 from cairn import server
 from cairn.server import create_app
 from cairn.slack import (
@@ -892,6 +893,7 @@ def test_security_what_links_a_slack_user_to_a_person(bench, monkeypatch):
         " nothing from that person's yes. A wrong code counts against the Slack user's offer,"
         " and the fifth deletes it; a code typed by any other Slack user is dead.",
     )
+    monkeypatch.setattr(store_slack, "_new_code", lambda: "KM7QR2XZ")  # never AAAA-AAAA
     assert timedelta(minutes=10) == OFFER_TTL and TRIES == 5
     code = yes_and_code(bench, BROOK_SLACK, bench.ada)  # Brook's Slack user's address, Ada's yes
     assert bench.owner.slack_person(bench.install.id, BROOK_SLACK) is None

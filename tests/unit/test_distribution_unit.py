@@ -3,6 +3,7 @@ package, the pages and the command line."""
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tomllib
@@ -79,3 +80,107 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
     ):
         assert sentence in ci, sentence
     assert "Tags are the version, `major.minor`, the branch and the commit." not in ci
+
+
+# --- the guides offer the released image beside the source build ----------------------------
+
+RUN_GUIDE = (ROOT / "src" / "cairn" / "guides" / "run.md").read_text(encoding="utf-8")
+IMAGE = f"ghcr.io/macayaven/cairn:{VERSION}"
+
+
+def guide_section(text: str, heading: str) -> str:
+    """From HEADING to the next heading of its level or higher."""
+    level = len(heading.split(" ", 1)[0])
+    start = text.index(f"\n{heading}\n") + 1
+    rest = text[start + len(heading) :]
+    for match in re.finditer(r"^(#+) ", rest, re.M):
+        if len(match.group(1)) <= level:
+            return text[start : start + len(heading) + match.start()]
+    return text[start:]
+
+
+def bash_blocks(text: str) -> list[list[str]]:
+    return [
+        [line.strip() for line in block.strip().splitlines()]
+        for block in re.findall(r"```bash\n(.*?)```", text, re.S)
+    ]
+
+
+def test_every_image_the_guides_name_is_the_version_in_pyproject():
+    """A version tag does not move; the guides name the one this commit is, so they cannot
+    drift from pyproject.toml. No guide offers `latest` or `main`."""
+    for name, text in (("run.md", RUN_GUIDE), ("README.md", README)):
+        named = re.findall(r"ghcr\.io/macayaven/cairn:([^\s`\"']+)", text)
+        assert named, name
+        assert set(named) <= {VERSION, "$VERSION"}, (name, named)
+        for value in re.findall(r"^\s*VERSION=(\S+)$", text, re.M):
+            assert value == VERSION, (name, value)
+
+
+def test_the_run_guide_builds_the_source_first_and_offers_the_image_second():
+    start = guide_section(RUN_GUIDE, "## Start it")
+    assert start.index("git clone https://github.com/macayaven/cairn.git") < start.index(IMAGE)
+    image = flat(guide_section(RUN_GUIDE, "### Or pull a released image"))
+    assert bash_blocks(guide_section(RUN_GUIDE, "### Or pull a released image"))[0] == [
+        f"docker pull {IMAGE} &&",
+        f"docker tag {IMAGE} cairn:local",
+    ]
+    for sentence in (
+        "Each release of cairn is also published as an image for linux/amd64 and linux/arm64,"
+        " built by the repository's workflow from the release's tag.",
+        f"A version such as `{VERSION}` names one release, and is never moved to newer code.",
+        "Instead of the clone and the build above:",
+        "The second line gives the pulled image the name this guide's commands use, so run"
+        " them as written, starting with the `docker run` above.",
+    ):
+        assert sentence in image, sentence
+
+
+def test_the_run_guide_says_how_to_check_what_was_pulled():
+    """True of what job `publish` pushes: a multi-arch index by digest, with the provenance
+    (mode=max) and the bill of materials BuildKit attaches beside each platform's image."""
+    image = flat(guide_section(RUN_GUIDE, "### Or pull a released image"))
+    for sentence in (
+        f"`docker inspect --format '{{{{index .RepoDigests 0}}}}' {IMAGE}` prints the digest"
+        " you pulled; it must be the digest the repository's package page on GitHub shows"
+        f" for `{VERSION}`.",
+        f"`docker buildx imagetools inspect {IMAGE}` lists the image for each platform and,"
+        " beside each, an attestation that holds the provenance of the build that published"
+        " it and its bill of materials.",
+    ):
+        assert sentence in image, sentence
+    publish = (ROOT / ".github" / "workflows" / "ci-cd.yml").read_text(encoding="utf-8")
+    assert "provenance: mode=max" in publish and "sbom: true" in publish
+    assert "linux/amd64,linux/arm64" in publish
+
+
+def test_the_run_guide_upgrades_a_pulled_image_after_the_same_cold_backup():
+    upgrade = guide_section(RUN_GUIDE, "## Upgrade")
+    blocks = bash_blocks(upgrade)
+    assert blocks[1] == [
+        "(",
+        "set -e",
+        f"VERSION={VERSION}",
+        'docker pull "ghcr.io/macayaven/cairn:$VERSION"',
+        'docker tag "ghcr.io/macayaven/cairn:$VERSION" cairn:local',
+        "docker stop cairn",
+        "docker rm cairn",
+        ")",
+    ]
+    said = flat(upgrade)
+    for sentence in (
+        "With a pulled image, take the same [cold database backup](#back-it-up) and note the"
+        " running image, then pull the next version and replace the container.",
+        f"Set `VERSION` to the release you move to, in place of `{VERSION}`:",
+    ):
+        assert sentence in said, sentence
+    # The source path stays first.
+    assert blocks[0][2] == "git pull --ff-only origin main"
+
+
+def test_the_readme_names_the_released_image_beside_the_source_build():
+    part = flat(guide_section(README, "## Options of `serve` in a container"))
+    assert (
+        "Each release is also published as an image, such as"
+        f" `{IMAGE}`; the run guide says how to pull it and check what you pulled." in part
+    )

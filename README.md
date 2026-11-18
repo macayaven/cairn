@@ -224,7 +224,7 @@ Try a model before you give it the worker: `evals/t4_compile.py --arrange`, with
 
 ## Options of `serve` in a container
 
-One image serves the web UI, the REST API and the MCP endpoint on port 8765. It runs as a non-root user and keeps its database on the `/data` volume. The compose files in `deploy/` start it, and [Run it yourself](src/cairn/guides/run.md), served at `/docs/run`, builds the source and starts it with `docker run`, from the first key to backups and upgrades.
+One image serves the web UI, the REST API and the MCP endpoint on port 8765. It runs as a non-root user and keeps its database on the `/data` volume. The compose files in `deploy/` start it, and [Run it yourself](src/cairn/guides/run.md), served at `/docs/run`, builds the source and starts it with `docker run`, from the first key to backups and upgrades. Each release is also published as an image, such as `ghcr.io/macayaven/cairn:0.1.0`; the run guide says how to pull it and check what you pulled.
 
 Arguments after the image name replace the default command, `serve --db /data/cairn.db --host 0.0.0.0`. With Compose they go in `CAIRN_EXTRA_ARGS` in `deploy/.env`, after the command the compose file already gives:
 - **Behind a reverse proxy or Tailscale Serve:** add `--public-url https://cairn.example.net`. Form posts are then checked against that origin, and the session cookie is marked Secure. Add `--trusted-proxy` with the address or network the proxy's requests arrive from too. In a container that is the Docker network (`docker network inspect bridge` shows its range), never 127.0.0.1, even for a proxy on the same machine. No proxy is trusted otherwise, loopback included, and every client would share one count in the limits on sign-in and agent registration.

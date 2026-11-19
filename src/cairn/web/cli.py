@@ -1754,11 +1754,13 @@ def _serve(args: argparse.Namespace) -> int:
     except ValueError as error:  # names the option, never the file's path
         print(f"cannot use that brand: {error}", file=sys.stderr)
         return 2
-    send = slack_send = False  # <PREFIX>_SOURCE_NOTES and _SLACK_NOTES, with a model only
+    # <PREFIX>_SOURCE_NOTES, _SLACK_NOTES and _UNDECIDED_PROJECTS, with a model only
+    send = slack_send = opt_in = False
     if args.model_env is not None:
         try:
             send = cli_arrange.sends_source_notes(args.model_env)
             slack_send = cli_arrange.sends_slack_notes(args.model_env)
+            opt_in = cli_arrange.opts_in(args.model_env)
         except ValueError as error:  # names the setting, never its value
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2
@@ -1805,7 +1807,12 @@ def _serve(args: argparse.Namespace) -> int:
     try:
         try:
             arranger = cli_arrange.serve_arranger(
-                args, store, plans, send_source_notes=send, send_slack_notes=slack_send
+                args,
+                store,
+                plans,
+                send_source_notes=send,
+                send_slack_notes=slack_send,
+                opt_in=opt_in,
             )
         except ValueError as error:  # a cairn.llm.LLMConfigError names the setting only
             print(f"cannot use that model: {error}", file=sys.stderr)
@@ -1852,7 +1859,7 @@ def _serve(args: argparse.Namespace) -> int:
         # carry a client's `state` and the sealed authorization request there. Proxy headers
         # are read only from --trusted-proxy peers, and the list is always given, so neither
         # uvicorn's default (127.0.0.1) nor FORWARDED_ALLOW_IPS in the environment applies.
-        if (says := cli_arrange.serve_says(args, arranger, send)) is not None:
+        if (says := cli_arrange.serve_says(args, arranger, send, opt_in)) is not None:
             print(says, file=sys.stderr, flush=True)  # what the model is sent, at a glance
         if (says := clear_text(args.host, args.public_url)) is not None:  # H1
             print(says, file=sys.stderr, flush=True)

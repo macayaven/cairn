@@ -18,10 +18,10 @@ default, which needs <PREFIX>_API_KEY), thinking is switched off unless
 request ({"thinking": null} for an endpoint that does not know it). A missing or malformed
 setting exits 2 naming the variable, never its value.
 <PREFIX>_SOURCE_NOTES (M2, frozen by tests/acceptance/test_m2_withheld_notes.py) says whether
-pages that hold notes read from a withheld source (the Google kinds and the connector:
-cairn.sources.withheld_via), or notes whose source_ref names a source (M3: a meeting, a mail
-thread, a calendar, a document or a to-do list, cairn.sources.withheld_by_ref), go to the
-model: "withhold", the default, also unset or
+pages that hold notes read from a withheld source (every kind the server reads, since review
+finding Privacy 4: cairn.sources.withheld_via), or notes whose source_ref names a source
+(M3: a meeting, a mail thread, a calendar, a document or a to-do list,
+cairn.sources.withheld_by_ref), go to the model: "withhold", the default, also unset or
 blank, keeps them from it and has the worker tidy them instead (cairn.arrange); "send" sends
 every page, as before. White space around the word is dropped and the word is matched exactly,
 in lower case ("SEND" is refused). Anything else makes `serve` and `arrange` exit 2 before
@@ -38,6 +38,13 @@ Slack (`via` "slack", cairn.sources.HELD_VIA) go to the model: "withhold", the d
 keeps them from it and has the worker tidy them; "send" sends them, except in a project its
 people keep from every model. It is the only choice that sends them: <PREFIX>_SOURCE_NOTES=send,
 which was chosen before Slack existed, does not, and the start-up line is unchanged by it.
+<PREFIX>_UNDECIDED_PROJECTS (opts_in; Privacy 4, tests/unit/test_arrange_undecided_projects_unit.py)
+says whether projects opt in: "send", the default, also unset or blank, sends the pages of every
+project not kept from every model, as before; "withhold" sends only the pages of projects whose
+people set Models to allowed themselves (cairn.arrange `opt_in`), and a page of any other is
+"undecided" and tidied without the model. Read by the same rule at the same moments, with the
+model's settings only, and refused the same way (the variable and both words, never the value).
+With "withhold" the start-up line says so too. It sends nothing the other two hold back.
 `--model-price IN,OUT` is the model's
 price in US dollars per million tokens in and out ("0.15,0.6"); without it the tokens are
 recorded at no cost, so a plan's model budget is never spent.
@@ -139,6 +146,8 @@ ARRANGE_EVERY = 1.0  # seconds between the background worker's passes
 MODEL_DEADLINE = 300.0
 SOURCE_NOTES = "SOURCE_NOTES"  # <PREFIX>_SOURCE_NOTES: "withhold" (the default) or "send"
 SLACK_NOTES = "SLACK_NOTES"  # <PREFIX>_SLACK_NOTES: "withhold" (the default) or "send"
+# <PREFIX>_UNDECIDED_PROJECTS: "send" (the default) or "withhold" (projects opt in: Privacy 4)
+UNDECIDED_PROJECTS = "UNDECIDED_PROJECTS"
 _model_options: dict[str, Any] = {}  # extra options for the model (a test gives a transport)
 
 
@@ -195,14 +204,17 @@ def add_options(serve: argparse.ArgumentParser, *, required: bool = False) -> No
         " and the optional PREFIX_REQUEST_EXTRA from the environment, and PREFIX_PROVIDER:"
         " openai (the default, an OpenAI-compatible endpoint) or anthropic (Anthropic's"
         " Messages API, where PREFIX_BASE_URL is optional). PREFIX_SOURCE_NOTES is withhold"
-        " (the default, also unset or blank: a page that holds a note read from a Google"
-        " source or a connector, or a note whose source_ref says it came from a meeting, a"
+        " (the default, also unset or blank: a page that holds a note any source the server"
+        " reads brought, a connector's included, or a note whose source_ref says it came from"
+        " a meeting, a"
         " mail thread, a calendar, a document or a to-do list, is not sent to the model, and"
         " is tidied without it) or send (such pages are sent too, except in a project its"
         " people keep from every model);"
         " the two words in lower case. PREFIX_SLACK_NOTES, in the same two words, does the"
         " same for a page that holds a note that came through Slack, which"
-        " PREFIX_SOURCE_NOTES=send does not send",
+        " PREFIX_SOURCE_NOTES=send does not send. PREFIX_UNDECIDED_PROJECTS is send (the"
+        " default, also unset or blank) or withhold: only the pages of projects whose people"
+        " set Models to allowed themselves are sent to the model",
     )
     tidy.add_argument("--tidy", action="store_true", help=TIDY_HELP)
     if not required:
@@ -288,6 +300,21 @@ def sends_slack_notes(prefix: str, environ: Mapping[str, str] | None = None) -> 
     return _sends(f"{prefix}_{SLACK_NOTES}", environ)
 
 
+def opts_in(prefix: str, environ: Mapping[str, str] | None = None) -> bool:
+    """Whether <PREFIX>_UNDECIDED_PROJECTS says "withhold": only the pages of projects whose
+    people chose "allowed" themselves go to the model (cairn.arrange: `opt_in`). False for
+    "send", the default, unset or blank: today's behaviour. Read by sends_source_notes' rule,
+    and refused the same way, naming the variable and both words, never the value given."""
+    name = f"{prefix}_{UNDECIDED_PROJECTS}"
+    env = os.environ if environ is None else environ
+    value = env.get(name, "").strip()
+    if value in ("", "send"):
+        return False
+    if value == "withhold":
+        return True
+    raise ValueError(f"{name} must be send (the default) or withhold, in lower case")
+
+
 def _sends(name: str, environ: Mapping[str, str] | None) -> bool:
     env = os.environ if environ is None else environ
     value = env.get(name, "").strip()
@@ -298,7 +325,9 @@ def _sends(name: str, environ: Mapping[str, str] | None) -> bool:
     raise ValueError(f"{name} must be withhold (the default) or send, in lower case")
 
 
-def serve_says(args: argparse.Namespace, arranger: "Arranger | None", send: bool) -> str | None:
+def serve_says(
+    args: argparse.Namespace, arranger: "Arranger | None", send: bool, opt_in: bool = False
+) -> str | None:
     """The line `serve` prints as it starts with a model: the model, and whether pages that
     hold notes read from Google sources or a connector, or notes whose source_ref says they
     came from a meeting, a mail thread, a calendar, a document or a to-do list, are sent to
@@ -314,11 +343,18 @@ def serve_says(args: argparse.Namespace, arranger: "Arranger | None", send: bool
         )
     else:
         how = f"are withheld from it and tidied without it ({name}=withhold)"
-    return (
+    said = (
         f"arranging pages with model {arranger.model.name!r} ({args.model_env}_*): pages that"
-        " hold notes read from Google sources or a connector, or notes whose source_ref says"
+        " hold notes any source the server reads brought, a connector's included, or notes"
+        " whose source_ref says"
         f" they came from a meeting, a mail thread, a calendar, a document or a to-do list, {how}"
     )
+    if opt_in:
+        said += (
+            "; only projects whose people set Models to allowed are sent"
+            f" ({args.model_env}_{UNDECIDED_PROJECTS}=withhold)"
+        )
+    return said
 
 
 def refused(args: argparse.Namespace) -> str | None:
@@ -344,6 +380,7 @@ def serve_arranger(
     *,
     send_source_notes: bool = False,
     send_slack_notes: bool = False,
+    opt_in: bool = False,
 ) -> "Arranger | None":
     """The background worker `serve` runs: with --model-env, the model's (`refused` has turned
     down --tidy with it, and --no-tidy changes nothing), withholding the withheld kinds'
@@ -370,6 +407,7 @@ def serve_arranger(
         every=ARRANGE_EVERY,
         withhold=() if send_source_notes else None,
         held_via=() if send_slack_notes else None,
+        opt_in=opt_in,
     )
 
 
@@ -394,11 +432,12 @@ def run(args: argparse.Namespace) -> int:
     from cairn.llm import LLMConfigError
 
     model = None  # --tidy: the worker without a model
-    send = slack = False  # read with the model's settings, and only then
+    send = slack = opt_in = False  # read with the model's settings, and only then
     if not args.tidy:
         try:
             send = sends_source_notes(args.model_env)
             slack = sends_slack_notes(args.model_env)
+            opt_in = opts_in(args.model_env)
         except ValueError as error:  # names the setting, never its value
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2
@@ -446,6 +485,7 @@ def run(args: argparse.Namespace) -> int:
             capacity=max(1, len(pages)),
             withhold=() if send else None,
             held_via=() if slack else None,
+            opt_in=opt_in,
         )
         for project_id, slug in pages:
             arranger.queue(view.account_id, project_id, slug)

@@ -55,8 +55,9 @@ The author of a message (D7)
   `is_bot` nor `deleted` set. Otherwise NotFiled with the reason: no person as its author,
   another organisation, no answer in time, a rate limit, Slack's error by its code.
 - AUTHORS keeps positive answers, KNOWN_MAX at most, each for KNOWN_FOR by the server's clock
-  (Context.now), per install and author, so a second filing of the same author's message
-  asks Slack nothing. A negative answer is not kept.
+  (Context.now), per install, the Slack team it holds and author, so a second filing of the
+  same author's message asks Slack nothing, and an answer for one team is never used for
+  another team the same install holds later. A negative answer is not kept.
 
 Replies after the answer
 - `reply_later` and `post_later` send a private reply once Slack has its 200 (the response's
@@ -347,29 +348,38 @@ def already(context: Context, asker: Asker, note_id: str) -> dict:
 
 
 class Authors:
-    """Positive answers about authors (the module): at most `most`, each for `keep`."""
+    """Positive answers about authors (the module): at most `most`, each for `keep`, by
+    install, Slack team and author."""
 
     def __init__(self, most: int = KNOWN_MAX, keep: timedelta = KNOWN_FOR) -> None:
         self.most, self.keep = most, keep
-        self._known: OrderedDict[tuple[str, str], tuple[str | None, Any]] = OrderedDict()
+        self._known: OrderedDict[tuple[str, str | None, str], tuple[str | None, Any]] = (
+            OrderedDict()
+        )
 
     def __len__(self) -> int:
         return len(self._known)
 
-    def get(self, install: str, author: str, now: Any) -> tuple[str | None] | None:
-        """(name,) when the author is known to be of the install's team, else None."""
-        found = self._known.get((install, author))
+    def get(
+        self, install: str, team: str | None, author: str, now: Any
+    ) -> tuple[str | None] | None:
+        """(name,) when the author is known to be of the team the install holds, else None."""
+        key = (install, team, author)
+        found = self._known.get(key)
         if found is None:
             return None
         name, until = found
         if now >= until:
-            del self._known[(install, author)]
+            del self._known[key]
             return None
         return (name,)
 
-    def remember(self, install: str, author: str, name: str | None, now: Any) -> None:
-        self._known.pop((install, author), None)
-        self._known[(install, author)] = (name, now + self.keep)
+    def remember(
+        self, install: str, team: str | None, author: str, name: str | None, now: Any
+    ) -> None:
+        key = (install, team, author)
+        self._known.pop(key, None)
+        self._known[key] = (name, now + self.keep)
         while len(self._known) > self.most:
             self._known.popitem(last=False)
 
@@ -395,7 +405,7 @@ async def author(context: Context, message: dict) -> str | None:
     if not isinstance(author_id, str) or not author_id or message.get("bot_id"):
         raise NotFiled(NO_PERSON)
     install = context.install
-    known = AUTHORS.get(install.id, author_id, context.now())
+    known = AUTHORS.get(install.id, install.team_id, author_id, context.now())
     if known is not None:
         return known[0]
     token = await run_in_threadpool(context.bot_token)
@@ -414,7 +424,7 @@ async def author(context: Context, message: dict) -> str | None:
     if found.get("is_bot") or found.get("deleted"):
         raise NotFiled(NO_PERSON)
     name = _name(found)
-    AUTHORS.remember(install.id, author_id, name, context.now())
+    AUTHORS.remember(install.id, install.team_id, author_id, name, context.now())
     return name
 
 

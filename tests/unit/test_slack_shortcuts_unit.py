@@ -113,11 +113,11 @@ def test_the_answers_kept_are_bounded_the_oldest_going_first():
     authors = people.Authors(most=2, keep=timedelta(minutes=1))
     now = START
     for author in ("U1", "U2", "U3"):
-        authors.remember("sl_000000000001", author, author.lower(), now)
-    assert authors.get("sl_000000000001", "U1", now) is None
-    assert authors.get("sl_000000000001", "U3", now) == ("u3",)
-    assert authors.get("sl_000000000002", "U3", now) is None  # per install
-    assert authors.get("sl_000000000001", "U3", now + timedelta(minutes=1)) is None
+        authors.remember("sl_000000000001", TEAM, author, author.lower(), now)
+    assert authors.get("sl_000000000001", TEAM, "U1", now) is None
+    assert authors.get("sl_000000000001", TEAM, "U3", now) == ("u3",)
+    assert authors.get("sl_000000000002", TEAM, "U3", now) is None  # per install
+    assert authors.get("sl_000000000001", TEAM, "U3", now + timedelta(minutes=1)) is None
 
 
 @pytest.mark.parametrize(

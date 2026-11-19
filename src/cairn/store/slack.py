@@ -680,11 +680,22 @@ class SlackMethods(StoreBase):
                  self._stamp()),
             )  # fmt: skip
             con.execute(
-                "UPDATE slack_notes SET note_id = ?, forget_at = COALESCE(forget_at, ?), owns = ?"
+                # a row that owns its note keeps the day a removal gave its claim; a tie has none
+                "UPDATE slack_notes SET note_id = ?,"
+                " forget_at = CASE WHEN ? THEN COALESCE(forget_at, ?) ELSE NULL END, owns = ?"
                 " WHERE install_id = ? AND conversation_id = ? AND message_time = ?"
                 " AND note_id IS NULL AND NOT EXISTS"
                 " (SELECT 1 FROM slack_notes WHERE note_id = ?)",
-                (note_id, due, int(owns), install_id, conversation_id, message_time, note_id),
+                (
+                    note_id,
+                    int(owns),
+                    due,
+                    int(owns),
+                    install_id,
+                    conversation_id,
+                    message_time,
+                    note_id,
+                ),
             )
             return note_id
         con.execute(
@@ -770,7 +781,7 @@ class SlackMethods(StoreBase):
                 "SELECT slack_notes.install_id, COUNT(*), MIN(forget_at) FROM slack_notes"
                 " JOIN slack_installs ON slack_installs.id = slack_notes.install_id"
                 " WHERE slack_installs.account_id = ? AND forget_at IS NOT NULL"
-                " AND note_id IS NOT NULL GROUP BY slack_notes.install_id",
+                " AND note_id IS NOT NULL AND owns = 1 GROUP BY slack_notes.install_id",
                 (self._account_id,),
             ).fetchone()
         return SlackDue(found[0], found[1], _when(found[2])) if found else None
@@ -783,7 +794,7 @@ class SlackMethods(StoreBase):
                 "SELECT slack_installs.account_id, slack_notes.note_id FROM slack_notes"
                 " JOIN slack_installs ON slack_installs.id = slack_notes.install_id"
                 " WHERE forget_at IS NOT NULL AND forget_at <= ? AND note_id IS NOT NULL"
-                " ORDER BY forget_at, note_id LIMIT ?",
+                " AND owns = 1 ORDER BY forget_at, note_id LIMIT ?",
                 (self._stamp(), limit),
             ).fetchall()
         return [(account, note) for account, note in found]
@@ -802,7 +813,8 @@ class SlackMethods(StoreBase):
                 note
                 for (note,) in con.execute(
                     "SELECT note_id FROM slack_notes WHERE install_id = ?"
-                    " AND forget_at IS NOT NULL AND note_id IS NOT NULL ORDER BY note_id",
+                    " AND forget_at IS NOT NULL AND note_id IS NOT NULL AND owns = 1"
+                    " ORDER BY note_id",
                     (install_id,),
                 )
             ]

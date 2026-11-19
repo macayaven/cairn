@@ -12,7 +12,7 @@ from test_slack_commands_unit import ADA_SLACK, BROOK_SLACK, Bench
 from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle, replied
 
 from cairn.slack import people
-from cairn.store.slack import CLAIMED, FILED, FILING, SlackClaim
+from cairn.store.slack import CLAIMED, FILED, FILING, FORGET_AFTER, SlackClaim
 
 TIME = "1900000000.000100"
 LOOKS_SECRET = "ghp_" + "Fable" * 7 + "0"  # the note guard's github_token rule
@@ -121,6 +121,49 @@ def test_a_message_whose_text_the_project_already_held_is_not_made_slacks_to_for
     assert bench.owner.slack_notes_to_forget() is None  # nothing of Slack's to forget
     assert bench.owner.get_note(held) is not None
     assert rows(bench) == []  # the tie went with the install
+
+
+def test_a_tie_made_after_slack_was_removed_never_makes_the_note_due(bench):
+    """A filing is in hand when Slack is removed: its claim takes the removal's day, as a
+    note Slack creates would. It then finishes on a note the project already held. The
+    tie owns nothing, so it must not keep that day: nothing ever forgets the note."""
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    handle(bench)
+    ((held, *_),) = bench.notes()
+    bench.store._con.execute("DELETE FROM slack_notes")  # an ordinary note, as if typed here
+    bench.store._con.commit()
+    assert claim(bench) == (CLAIMED, None)  # the second filing, in hand
+    bench.owner.remove_slack_install(bench.install.id)
+    (due,) = bench.store._con.execute("SELECT forget_at FROM slack_notes").fetchone()
+    assert due is not None  # the claim took the removal's day
+    bench.view.record_slack_note(
+        bench.install.id, held, how="filed", brought_by=bench.ada, conversation_id=CONVERSATION,
+        message_time=TIME, owns=False,
+    )  # fmt: skip
+    assert bench.store._con.execute(
+        "SELECT note_id, owns, forget_at FROM slack_notes"
+    ).fetchall() == [(held, 0, None)]
+    assert bench.owner.slack_notes_to_forget() is None
+    bench.clock.now += FORGET_AFTER * 2
+    assert bench.store.slack_notes_due() == []
+    assert bench.owner.forget_slack_notes_now(bench.install.id) == 0
+    assert bench.owner.get_note(held) is not None
+
+
+def test_a_tie_is_never_due_even_if_a_day_is_on_its_row(bench):
+    """Belt and braces: whatever wrote a day onto a tie's row, no query that drives
+    forgetting takes a row that owns nothing."""
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    handle(bench)
+    ((held, *_),) = bench.notes()
+    bench.owner.remove_slack_install(bench.install.id)
+    bench.store._con.execute("UPDATE slack_notes SET owns = 0")  # the day stays on the row
+    bench.store._con.commit()
+    bench.clock.now += FORGET_AFTER * 2
+    assert bench.owner.slack_notes_to_forget() is None
+    assert bench.store.slack_notes_due() == []
+    assert bench.owner.forget_slack_notes_now(bench.install.id) == 0
+    assert bench.owner.get_note(held) is not None
 
 
 def refused_then_filed(bench: Bench, response, reason: str) -> None:

@@ -173,8 +173,9 @@ def test_the_repository_itself_would_release_its_version(capsys):
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
         "version"
     ]
-    assert release_check.main([f"v{version}", "--root", str(ROOT)]) == 0
-    assert release_check.main([f"v{version}", "--notes", "--root", str(ROOT)]) == 0
+    today = ["--today", "2026-11-19"]  # the section's date: pinned, not the clock's
+    assert release_check.main([f"v{version}", "--root", str(ROOT), *today]) == 0
+    assert release_check.main([f"v{version}", "--notes", "--root", str(ROOT), *today]) == 0
     text = capsys.readouterr().out.split("\n", 1)[1]
     assert "<!--" not in text and "\n- " in text
 
@@ -346,6 +347,14 @@ def test_a_tag_with_no_github_release_passes_and_gh_is_asked_for_the_list(tmp_pa
         "v1.2.3 may be released: it is the version, CHANGELOG.md has its section,"
         " and it has no GitHub release yet\n"
     )
+
+
+def test_a_repository_with_no_release_yet_passes_the_first_tag(tmp_path):
+    """gh's manual does not say what `release list --json` prints when there is no release:
+    `[]`, or nothing with exit 0. Both are a listing that succeeded and found none."""
+    for out in ("[]\n", "", "\n"):
+        gh = FakeGh(out=out)
+        assert release_check.main(["v1.2.3", *files(tmp_path), "--not-released"], gh=gh) == 0
 
 
 def test_a_tag_that_already_has_a_github_release_is_refused(tmp_path, capsys):

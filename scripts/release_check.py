@@ -171,7 +171,12 @@ def not_released(tag: str, gh) -> None:
     """Refuses TAG if the repository has a GitHub release for it, or if gh cannot say."""
     code, out = gh(["release", "list", "--limit", str(RELEASES_ASKED), "--json", "tagName"])
     try:
-        names = [release["tagName"] for release in json.loads(out)] if code == 0 else None
+        if code != 0:
+            names = None
+        elif not out.strip():  # a listing that succeeded and found nothing
+            names = []
+        else:
+            names = [release["tagName"] for release in json.loads(out)]
     except (ValueError, TypeError, KeyError):
         names = None
     if names is None:

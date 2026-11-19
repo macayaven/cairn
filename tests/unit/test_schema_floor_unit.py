@@ -92,7 +92,7 @@ def test_no_code_that_runs_names_the_retired_tables_but_the_steps_that_are_histo
     """Steps 12, 13 and 27 made them and stay (an older database still runs them, then 31
     drops them); nothing else in the package names them."""
     for path in sorted((ROOT / "src" / "cairn").rglob("*.py")):
-        if path.name == "schema.py":
+        if path.parent == ROOT / "src" / "cairn" / "store" / "schema":  # the steps and DDL
             continue
         text = path.read_text(encoding="utf-8").replace("event_subscriptions", "")
         for name in RETIRED:

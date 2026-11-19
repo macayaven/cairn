@@ -122,7 +122,9 @@ def test_step_28_is_one_step_a_database_at_28_has_both_tables_or_does_not_open(
     assert {"credential_tokens", "google_revocations"} <= made
     halfway = tmp_path / "halfway.db"
     v27_database(halfway)
-    monkeypatch.setattr(cairn.store.schema, "_V28_GOOGLE_REVOCATIONS", "CREATE TABLE (")
+    monkeypatch.setattr(
+        cairn.store.schema.v28_credential_tokens, "_V28_GOOGLE_REVOCATIONS", "CREATE TABLE ("
+    )
     with pytest.raises(sqlite3.Error):  # the step's second table fails: nothing of it stays
         Store(halfway)
     monkeypatch.undo()

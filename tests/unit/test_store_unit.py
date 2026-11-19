@@ -1186,7 +1186,7 @@ def test_indexes_delete_securely_when_this_sqlite_can(db):
 
 
 def test_an_sqlite_without_fts5_secure_delete_still_indexes_and_migrates(db, monkeypatch):
-    monkeypatch.setattr(cairn.store.schema, "_FTS5_SECURE_DELETE", False)
+    monkeypatch.setattr(cairn.store.schema.shared, "_FTS5_SECURE_DELETE", False)
     v0_database(db)
     s = Store(db)
     try:

@@ -109,6 +109,7 @@ from cairn.compiler import (
     lost_race,
     page_for,
     render_body,
+    slugify,
 )
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
@@ -161,6 +162,7 @@ HITS_RANGE = f"'limit' is a whole number, 1 to {MAX_HITS}"  # what a search says
 PAGES_AT_ONCE = 100  # Q1: the most pages one answer of `pages` or `overview` lists
 VERSIONS_AT_ONCE = 50  # Q1: the most version numbers one answer of `page` lists
 WRITTEN_BY_MAX = 3  # the notes a recall hit names; `written_by_more` counts the rest (A1)
+NEAREST_SHOWN = 3  # 8.6: the page names a page not found names
 ACCESS_LOGGER = "cairn.access"
 access_log = logging.getLogger(ACCESS_LOGGER)
 # The note fields the guard checks besides the text, as a person reads their names.
@@ -320,6 +322,22 @@ WAITS = (
     "The note is stored, and its page changed under it while it was filed, more often than a"
     " note is tried at once. It will be filed on its page by itself: do not send it again."
 )
+
+
+NO_PAGE = (
+    "No page was made from this note: it is stored, but no page holds it, so there is no page"
+    " to read."
+)
+
+
+def without_missing_page(answer: dict[str, Any]) -> dict[str, Any]:
+    """8.6: what `note` answers an agent (MCP and REST): a note that made no page (it is on
+    none: `version` None, and not WAITING for its page) has `page` None and `message`
+    NO_PAGE, so it names no page that does not open. Any other answer as it is. The web
+    composer and Slack read Memory.note's own answer."""
+    if answer["version"] is not None or answer["status"] == WAITING:
+        return answer
+    return {**answer, "page": None, "message": NO_PAGE}
 
 
 class FiledOnce(Conflict):
@@ -957,6 +975,36 @@ class Memory:
             raise NotFound(f"no {which} {slug!r} in project {project.name!r}")
         return page
 
+    def named_page(self, project: Project, slug: str, version: int | None = None) -> Page:
+        """find_page, for an agent (8.6): a latest page that is not there is NotFound with
+        the nearest of the project's page names (nearest_pages), or that it has none."""
+        try:
+            return self.find_page(project, slug, version)
+        except NotFound as missing:
+            if version is not None:
+                raise
+            raise NotFound(f"{missing}. {self.nearest_pages(project, slug)}") from None
+
+    def nearest_pages(self, project: Project, name: str) -> str:
+        """The sentence naming the NEAREST_SHOWN page names of `project` nearest to `name`,
+        a slug or a title: those whose slug sorts at or after `name` made a slug, then the
+        project's first ones; or that the project has no pages. Bounded: at most
+        NEAREST_SHOWN page heads, in three statements."""
+        key = slugify(name)  # never empty; slugs hold [a-z0-9-], all below "\x7f"
+        below = key[:-1] + chr(ord(key[-1]) - 1) + "\x7f"  # the slugs after it are key's and on
+        heads, total = self.store.page_heads(project.id, NEAREST_SHOWN, below)
+        if not total:
+            return f"Project {project.name!r} has no pages yet."
+        if len(heads) < NEAREST_SHOWN:
+            held = {head.slug for head in heads}
+            first = self.store.first_page_heads(project.id, NEAREST_SHOWN)
+            heads += [head for head in first if head.slug not in held]
+        shown = ", ".join(f"{head.slug!r} ({head.title})" for head in heads[:NEAREST_SHOWN])
+        return (
+            "A page is named by its slug, as note, recall and overview give it; the nearest:"
+            f" {shown}."
+        )
+
     def sources(self, project: Project, span_ids: Iterable[str]) -> dict[str, tuple[Span, Note]]:
         """The known spans among `span_ids` whose note is in `project`, with that note:
         two reads, however many notes they cite (Q1)."""
@@ -1281,7 +1329,7 @@ class Memory:
         rendered when read (compiler.render_body of its claims and the spans they cite, read
         once with the writers), so a version stored under an earlier rendering reads as now."""
         target = self.project(project)
-        page = self.find_page(target, slug, version)
+        page = self.named_page(target, slug, version)
         writers, spans, origins = self._written_by(claim.span_ids for claim in page.claims)
         versions, total, _, following = self.versions_of(target, page.slug, limit, before)
         answer = {
@@ -1331,7 +1379,7 @@ class Memory:
         refused as `page` refuses it (find_page); a claim that version does not hold is
         NotFound, whatever another version holds."""
         target = self.project(project)
-        page = self.find_page(target, slug, version)
+        page = self.named_page(target, slug, version)
         claim = next((c for c in page.claims if c.id == claim_id), None)
         if claim is None:
             which = "page" if version is None else f"version {page.version} of page"

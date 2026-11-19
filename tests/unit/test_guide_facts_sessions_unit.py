@@ -98,6 +98,19 @@ def test_the_run_guide_says_what_serve_says_at_start():
 
 
 def test_the_run_guide_names_the_two_options():
-    """Behaviour: test_idle_sessions_unit.py and test_require_mfa_unit.py."""
-    says(RUN, "`--idle-minutes N` (1 to 1440) ends a sign-in that is not used for N minutes")
-    says(RUN, "`--require-mfa` admits only a sign-in whose ID token shows a second factor")
+    """Behaviour: test_idle_sessions_unit.py (the first start with the option, too) and
+    test_require_mfa_unit.py."""
+    says(
+        RUN,
+        "`--idle-minutes N` (1 to 1440) ends a sign-in that is not used for N minutes, up to a"
+        " minute late, whatever its length. No use is recorded without it, so the first start"
+        " with it counts each sign-in made before from when it was made: one older than N"
+        " minutes ends then, used or not, and the person signs in again.",
+    )
+    says(
+        RUN,
+        "`--require-mfa` admits only a sign-in whose ID token shows a second factor; only"
+        " `--sign-in oidc` can say so, and `serve` does not start with it and `github` or"
+        " `google` (the security guide says which values count).",
+    )
+    assert OIDC.states_factors and not GitHub.states_factors and not Google.states_factors

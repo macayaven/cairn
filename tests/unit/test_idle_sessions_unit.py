@@ -274,3 +274,18 @@ def test_a_session_cookie_is_not_changed_by_a_recorded_use(store, clock):
     for header in r.headers.get_list("set-cookie"):
         jar.load(header)
     assert not [name for name in jar if name.endswith("session")]
+
+
+def test_the_first_start_with_the_option_counts_from_the_sign_in(store, clock):
+    """No use is recorded without the option, so a server first started with it counts a
+    session made before from its sign-in, used or not."""
+    old = signed_in(store, clock)
+    at(clock, 25 * MINUTE)
+    assert in_use(old)  # used, but nothing recorded
+    recent = signed_in(store, clock)
+    at(clock, 30 * MINUTE)
+    with_option = app(store, clock, idle_minutes=10)
+    for browser, expected in ((old, False), (recent, True)):
+        client = TestClient(with_option, base_url=BASE)
+        client.cookies = browser.cookies
+        assert in_use(client) is expected

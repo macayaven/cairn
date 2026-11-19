@@ -82,7 +82,7 @@ async def project(envelope: Envelope, context: Context) -> JSONResponse:
 async def link(envelope: Envelope, context: Context) -> JSONResponse:
     asker = await people.asker(context, envelope.user_id)
     if asker is not None:  # linked: said, and nothing changes, a code or not
-        return _answer(people.linked(asker))
+        return _answer(people.linked(asker, context.product))
     code = _rest(envelope).strip()
     if not code or not envelope.user_id:
         return _answer(await people.link_prompt(context, envelope.user_id))
@@ -94,7 +94,7 @@ async def link(envelope: Envelope, context: Context) -> JSONResponse:
     except (KeyError, ValueError):
         return _answer(no_link)
     asker = await people.asker(context, envelope.user_id)
-    return _answer(people.linked(asker) if asker is not None else no_link)
+    return _answer(people.linked(asker, context.product) if asker is not None else no_link)
 
 
 @on_command("unlink")

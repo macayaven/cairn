@@ -65,7 +65,7 @@ async def _filed(envelope: Envelope, context: Context) -> dict:
         return await people.link_prompt(context, envelope.user_id)
     place = _place(envelope.payload)
     if place is None:
-        return blocks.refused(people.NOT_A_MESSAGE)
+        return blocks.refused(people.with_product(people.NOT_A_MESSAGE, context.product))
     message, conversation_id, time = place
     if not _has_text(message):
         return blocks.refused(people.NO_TEXT)
@@ -118,7 +118,7 @@ async def _write(
     except NotText:
         return blocks.refused(people.NO_TEXT)
     except ValueError:  # a conversation, a time or a domain not as Slack writes them
-        return blocks.refused(people.NOT_A_MESSAGE)
+        return blocks.refused(people.with_product(people.NOT_A_MESSAGE, context.product))
     return await people.written(
         context,
         asker,

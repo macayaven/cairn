@@ -100,12 +100,12 @@ KNOWN_MAX = 512  # answers kept at most, the oldest dropped first
 REPLY_WITHIN = 10.0  # seconds a private reply may take; it is sent once
 TURN_WITHIN = 1.0  # seconds a note waits for a turn among the server's compiles
 BUSY = (
-    "cairn is compiling as many notes as it can at once, and nothing was stored."
+    "{product} is compiling as many notes as it can at once, and nothing was stored."
     " Try again in a moment."
 )
 
 STORED_NOT_FILED = (
-    "The note is stored in your project, but cairn could not put it on a page."
+    "The note is stored in your project, but {product} could not put it on a page."
     " An owner of the workspace can see it there."
 )
 NO_PROJECT = (
@@ -119,7 +119,7 @@ NOT_WRITABLE = (
     "You cannot write to a project of that name, or there is none."
     " `{command} project` lists the projects you can write to."
 )
-NOT_A_NOTE = "This is not a note cairn keeps ({reason}), and nothing was stored."
+NOT_A_NOTE = "This is not a note {product} keeps ({reason}), and nothing was stored."
 ELSEWHERE = "This message is filed already, in a project you do not reach."
 TEAM_CHANGED = (
     "Slack was set up again here for another Slack workspace since you asked, and nothing was"
@@ -130,25 +130,41 @@ BEING_FILED = (
     " to see its note."
 )
 NO_TEXT = "This message has no text to file, and nothing was filed."
-NOT_A_MESSAGE = "This is not a message cairn can file, and nothing was filed."
+NOT_A_MESSAGE = "This is not a message {product} can file, and nothing was filed."
 NO_PERSON = (
     "This message has no person as its author (an app, a bot or a deactivated account wrote"
     " it), and nothing was filed."
 )
 OTHER_ORGANISATION = (
-    "This message's author is not of this Slack workspace, and cairn files only what was"
+    "This message's author is not of this Slack workspace, and {product} files only what was"
     " written here: nothing was filed."
 )
 NOT_IN_TIME = "Slack did not say in time who wrote this message, and nothing was filed. Try again."
 RATE_LIMITED = (
-    "Slack is limiting how often cairn asks who wrote a message, and nothing was filed."
+    "Slack is limiting how often {product} asks who wrote a message, and nothing was filed."
     " Try again in a minute."
 )
 SLACK_SAID = "Slack did not say who wrote this message (it answered {code}), and nothing was filed."
 NO_TOKEN = (
-    "This install holds no bot token, so cairn cannot ask Slack who wrote this message:"
+    "This install holds no bot token, so {product} cannot ask Slack who wrote this message:"
     " nothing was filed."
 )
+
+# The sentences above that name the product: each is written with the software's name
+# (blocks.PRODUCT), and said with the app's (with_product, Context.product).
+_NAMED = ("BUSY", "STORED_NOT_FILED", "NOT_A_NOTE", "NOT_A_MESSAGE", "OTHER_ORGANISATION",
+          "RATE_LIMITED", "NO_TOKEN")  # fmt: skip
+_TEMPLATES = {name: globals()[name] for name in _NAMED}
+for _name_of in _NAMED:
+    globals()[_name_of] = _TEMPLATES[_name_of].replace("{product}", blocks.PRODUCT)
+_TEMPLATE_OF = {globals()[name]: _TEMPLATES[name] for name in _NAMED}
+
+
+def with_product(sentence: str, product: str) -> str:
+    """`sentence`, one of the sentences above, naming `product` where it names the
+    software; any other sentence as it is."""
+    template = _TEMPLATE_OF.get(sentence)
+    return sentence if template is None else template.replace("{product}", product)
 
 
 @dataclass(frozen=True)
@@ -202,13 +218,15 @@ async def link_prompt(context: Context, slack_user: str | None) -> dict:
         return blocks.refused("Slack did not say who asked.")
     value = await run_in_threadpool(context.view.offer_slack_link, context.install.id, slack_user)
     return blocks.link_prompt(
-        f"{context.public_url}/integrations/slack/link?t={value}", context.install.command
+        f"{context.public_url}/integrations/slack/link?t={value}",
+        context.install.command,
+        product=context.product,
     )
 
 
-def linked(asker: Asker) -> dict:
+def linked(asker: Asker, product: str = blocks.PRODUCT) -> dict:
     """Who the Slack user is linked to."""
-    return blocks.linked(asker.name)
+    return blocks.linked(asker.name, product=product)
 
 
 async def unlinked(context: Context, slack_user: str | None) -> dict:
@@ -218,7 +236,7 @@ async def unlinked(context: Context, slack_user: str | None) -> dict:
 
 
 def help_message(context: Context) -> dict:
-    return blocks.help_text(context.install.command)
+    return blocks.help_text(context.install.command, product=context.product)
 
 
 def page_url(context: Context, project: str, slug: str) -> str:
@@ -321,7 +339,9 @@ def write(
     except NotFound:
         return blocks.refused(OUT_OF_REACH.format(command=command))
     except Malformed as malformed:
-        return blocks.refused(NOT_A_NOTE.format(reason=str(malformed)))
+        return blocks.refused(
+            with_product(NOT_A_NOTE, context.product).replace("{reason}", str(malformed))
+        )
     except RequestError as refused:  # read-only, the guard's, the plan's cap, a full page...
         return blocks.refused(str(refused))
     except (CannotWrite, StoreUnusable) as trouble:
@@ -330,7 +350,7 @@ def write(
         if not kept or asker.memory.store.get_note(kept[0]) is None:  # the write rolled back
             raise
         log.warning("slack: a note was stored and not filed: %s", type(failed).__name__)
-        return blocks.refused(STORED_NOT_FILED)
+        return blocks.refused(with_product(STORED_NOT_FILED, context.product))
     project = asker.memory.store.get_project(project_id)
     note = asker.memory.store.get_note(answer["note_id"])
     if project is None or note is None:  # gone since: what is said of a project gone
@@ -363,7 +383,7 @@ async def written(context: Context, asker: Asker, text: str, **fields: Any) -> d
         async with asyncio.timeout(TURN_WITHIN):
             await turn.__aenter__()
     except TimeoutError:  # the wait was taken back: no turn is held or waited for
-        return blocks.refused(BUSY)
+        return blocks.refused(with_product(BUSY, context.product))
     try:
         return await run_in_threadpool(lambda: write(context, asker, text, **fields))
     finally:
@@ -445,17 +465,17 @@ async def author(context: Context, message: dict) -> str | None:
         return known[0]
     token = await run_in_threadpool(context.bot_token)
     if not token:
-        raise NotFiled(NO_TOKEN)
+        raise NotFiled(with_product(NO_TOKEN, context.product))
     try:
         found = await context.slack().user(token, author_id, within=AUTHOR_WITHIN)
     except SlackError as failed:
         if failed.code == "timeout":
             raise NotFiled(NOT_IN_TIME) from None
         if failed.code == "rate_limited":
-            raise NotFiled(RATE_LIMITED) from None
+            raise NotFiled(with_product(RATE_LIMITED, context.product)) from None
         raise NotFiled(SLACK_SAID.format(code=failed.code)) from None
     if found.get("team_id") != install.team_id or found.get("is_stranger"):
-        raise NotFiled(OTHER_ORGANISATION)
+        raise NotFiled(with_product(OTHER_ORGANISATION, context.product))
     if found.get("is_bot") or found.get("deleted"):
         raise NotFiled(NO_PERSON)
     name = _name(found)

@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from starlette.responses import Response
 
+from cairn.slack.blocks import PRODUCT
 from cairn.slack.client import API, REPLY_HOSTS, SlackClient
 from cairn.slack.verify import Envelope
 from cairn.store.slack import SlackInstall
@@ -69,6 +70,7 @@ class Context:
     turn: Callable[[], AbstractAsyncContextManager[Any]] = field(
         default=contextlib.nullcontext, repr=False
     )
+    product: str = PRODUCT  # the product's name, as the app names it, in what Slack is told
 
     def slack(self) -> SlackClient:
         """The client every call to Slack is made with (cairn.slack.client), at the server's

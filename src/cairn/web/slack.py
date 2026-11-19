@@ -118,6 +118,7 @@ from cairn.slack.verify import (
 )
 from cairn.store.hosted import KEY_BYTES, Sealer, previous_keys
 from cairn.store.slack import ACCEPTING, ENDED
+from cairn.web.brand import product_of
 from cairn.web.templating import NO_PAGE, _page, brand_of
 
 OFF_EVENTS = ("app_uninstalled", "tokens_revoked")  # what an install that is off acts on
@@ -505,6 +506,7 @@ def slack_routes(
             api=config.api,
             reply_hosts=config.reply_hosts,
             turn=turn,
+            product=product_of(brand_of(request)).name,
         )
         try:
             answer = await dispatch(found, context)

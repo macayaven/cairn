@@ -662,11 +662,15 @@ def test_the_readme_says_what_one_run_on_a_real_project_showed_and_what_it_did_n
     blocks = sum(len(re.findall(r'^resource "', f.read_text(), re.M)) for f in INFRA.glob("*.tf"))
     assert "created the 28 resources besides the address reserved first" in said
     # 34 when it ran, the replica alert and the later alerts among them; then the audit
-    # configuration and the log bucket's retention.
-    assert blocks == 34 + 2
+    # configuration and the log bucket's retention; then the host alerts (one block).
+    assert blocks == 34 + 2 + 1
     assert (
         "The audit configuration, the log bucket's retention and the other settings of [Audit,"
         " keys and network](#audit-keys-and-network) came after that too, two resources more,"
+        " and have not been applied." in said
+    )
+    assert (
+        "The host alerts came after that too, one resource more (one block, four policies),"
         " and have not been applied." in said
     )
     assert "The replica alert was added after that run" in said

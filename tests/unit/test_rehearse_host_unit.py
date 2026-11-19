@@ -298,6 +298,7 @@ def test_runcmd_reloads_systemd_and_starts_the_services():
         "cairn-update.timer",
         "cairn-replica-check.timer",
         "cairn-compact.timer",
+        "cairn-host-check.timer",
     ]
 
 
@@ -337,6 +338,7 @@ def test_the_rehearsal_starts_neither_timer_with_the_boot_units():
         "cairn-update.timer",
         "cairn-replica-check.timer",
         "cairn-compact.timer",
+        "cairn-host-check.timer",
     )
     units = rehearse.started_units(rehearse.runcmd(_shipped()))
     assert [u for u in units if u not in rehearse.TIMERS] == [
@@ -348,6 +350,8 @@ def test_the_rehearsal_starts_neither_timer_with_the_boot_units():
     assert "cairn-replica-check.service" in rehearse.STOP_ORDER
     assert "cairn-compact.timer" in rehearse.STOP_ORDER
     assert "cairn-compact.service" in rehearse.STOP_ORDER
+    assert "cairn-host-check.timer" in rehearse.STOP_ORDER
+    assert "cairn-host-check.service" in rehearse.STOP_ORDER
     assert "cairn-replica-check" in rehearse.CONTAINERS
 
 

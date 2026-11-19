@@ -233,3 +233,21 @@ run "a_key_in_another_region_is_refused" {
   }
   expect_failures = [google_storage_bucket.replica]
 }
+
+# --- alerts on the host ------------------------------------------------------------------------
+
+run "four_host_alerts_mail_the_existing_address" {
+  command = plan
+  assert {
+    condition     = toset(keys(google_monitoring_alert_policy.host)) == toset(["certificate", "disk", "memory", "restarts"])
+    error_message = "the host alerts are not disk, memory, restarts and certificate"
+  }
+  assert {
+    condition     = alltrue([for p in google_monitoring_alert_policy.host : p.alert_strategy[0].notification_rate_limit[0].period == "3600s" && p.alert_strategy[0].auto_close == "1800s"])
+    error_message = "a host alert mails more than hourly or does not close after 30 minutes"
+  }
+  assert {
+    condition     = alltrue([for k, p in google_monitoring_alert_policy.host : strcontains(p.conditions[0].condition_matched_log[0].filter, "=~ \"^host-check: ${k}: \"")])
+    error_message = "a host alert does not read its own kind of line"
+  }
+}

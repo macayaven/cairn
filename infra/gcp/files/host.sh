@@ -17,6 +17,7 @@
 #   replica-check   say how old the newest copy in the replica is, in Litestream's own log
 #                   (cairn-replica-check.timer, every 5 minutes; the replica alerts read it)
 #   compact-if-due  compact, when a deletion waits for one (cairn-compact.timer, nightly)
+#   host-check      disks, memory kills, restart loops, certificates (cairn-host-check.timer)
 #   compact         by hand, after a workspace is deleted: check that cairn answers and the
 #                   replica is current, stop Litestream, run cairn's compact, start Litestream
 #                   again whatever happened, and wait until the replica has copied it
@@ -441,6 +442,103 @@ replica_line() {
   echo "$1"
   printf '%s\n' "$1" | docker exec -i litestream sh -c 'cat >/proc/1/fd/1' ||
     die "the litestream container is not running: the line above reached the journal only"
+}
+
+# --- host check -----------------------------------------------------------------------------
+#
+# Every five minutes (cairn-host-check.timer): what can take the server down without cairn
+# saying so. One line for each finding, into the log of a running container (litestream, else
+# cairn, else caddy), which Cloud Logging receives; monitoring.tf has one alert for each kind:
+#   host-check: disk: the data disk (PATH) is NN% full, over 80%
+#   host-check: memory: the container NAME was killed for memory
+#   host-check: restarts: systemd restarted UNIT N times since the last check
+#   host-check: certificate: Caddy logged N errors obtaining or renewing a certificate ...
+# State lives on tmpfs: restart counts start again with the boot, as systemd's do.
+HOST_CHECK_DIR=/run/cairn-host-check
+HOST_CHECK_DISK_PERCENT=80
+HOST_CHECK_RESTARTS=3
+HOST_CHECK_UNITS="cairn.service caddy.service litestream.service"
+
+disk_percent() { df -P "$1" | awk 'NR == 2 { sub("%", "", $5); print $5 }'; }
+
+# host_line LINE: into the journal, and into the log of the first container that takes it.
+host_line() {
+  local name
+  echo "$1"
+  for name in litestream cairn caddy; do
+    printf '%s\n' "$1" | docker exec -i "$name" sh -c 'cat >/proc/1/fd/1' 2>/dev/null &&
+      return 0
+  done
+  err "host check: no container runs to write into: the line above reached the journal only"
+  return 1
+}
+
+cmd_host_check() {
+  local now since failed=0 lines="" label path percent name unit count previous errors line
+  now=$(date +%s)
+  mkdir -p "$HOST_CHECK_DIR"
+  since=$(first_line "$HOST_CHECK_DIR/since")
+  is_count "$since" || since=$((now - 300))
+
+  for label in data boot; do
+    if [ "$label" = data ]; then
+      is_mounted || continue
+      path=$DATA_MOUNT
+    else
+      path=/var/lib/docker
+    fi
+    percent=$(disk_percent "$path") || percent=""
+    if ! is_count "$percent"; then
+      err "host check: could not read how full $path is"
+      failed=1
+    elif [ "$percent" -gt "$HOST_CHECK_DISK_PERCENT" ]; then
+      lines="$lines
+host-check: disk: the $label disk ($path) is $percent% full, over $HOST_CHECK_DISK_PERCENT%"
+    fi
+  done
+
+  if names=$(docker events --since "$since" --until "$now" --filter event=oom \
+    --format '{{.Actor.Attributes.name}}'); then
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      lines="$lines
+host-check: memory: the container $name was killed for memory"
+    done <<<"$names"
+  else
+    err "host check: could not read Docker's events"
+    failed=1
+  fi
+
+  for unit in $HOST_CHECK_UNITS; do
+    count=$(systemctl show -p NRestarts --value "$unit") || count=""
+    is_count "$count" || continue
+    previous=$(first_line "$HOST_CHECK_DIR/restarts.$unit")
+    is_count "$previous" || previous=0
+    [ "$count" -ge "$previous" ] || previous=0
+    if [ $((count - previous)) -ge "$HOST_CHECK_RESTARTS" ]; then
+      lines="$lines
+host-check: restarts: systemd restarted $unit $((count - previous)) times since the last check"
+    fi
+    write_state "$HOST_CHECK_DIR/restarts.$unit" "$count"
+  done
+
+  errors=$(docker logs --since "$since" --until "$now" caddy 2>&1 |
+    grep '"level":"error"' | grep -c -E '"logger":"tls[.](obtain|renew)"' || true)
+  if is_count "$errors" && [ "$errors" -gt 0 ]; then
+    lines="$lines
+host-check: certificate: Caddy logged $errors errors obtaining or renewing a certificate since the last check"
+  fi
+
+  write_state "$HOST_CHECK_DIR/since" "$now"
+  if [ -z "$lines" ]; then
+    log "host check: nothing found"
+  else
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      host_line "$line" || failed=1
+    done <<<"$lines"
+  fi
+  [ "$failed" = 0 ] || exit 1
 }
 
 # --- compact --------------------------------------------------------------------------------
@@ -1085,6 +1183,7 @@ case "${1:-}" in
   replica-check) cmd_replica_check ;;
   compact) cmd_compact ;;
   compact-if-due) cmd_compact_if_due ;;
+  host-check) cmd_host_check ;;
   update) cmd_update ;;
   hold) cmd_hold ;;
   pin)
@@ -1097,7 +1196,7 @@ case "${1:-}" in
     ;;
   state) cmd_state ;;
   *)
-    echo "usage: host.sh disk|boot-settle|network|env|restore|run-cairn|run-caddy|run-litestream|litestream ARGS|replica-check|compact|compact-if-due|update|hold|pin DIGEST|release [--force]|state" >&2
+    echo "usage: host.sh disk|boot-settle|network|env|restore|run-cairn|run-caddy|run-litestream|litestream ARGS|replica-check|compact|compact-if-due|host-check|update|hold|pin DIGEST|release [--force]|state" >&2
     exit 2
     ;;
 esac

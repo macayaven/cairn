@@ -274,8 +274,36 @@ ${brand_files}  - path: /etc/systemd/system/cairn-disk.service
       OnCalendar=*-*-* 03:00:00 UTC
       AccuracySec=1min
 
+  # Every five minutes: the disks, containers killed for memory, units restarting in a loop
+  # and Caddy's certificate errors, as lines the host alerts read (monitoring.tf).
+  - path: /etc/systemd/system/cairn-host-check.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: check the disks, memory kills, restart loops and certificates
+      Wants=docker.service
+      After=docker.service
+
+      [Service]
+      Type=oneshot
+      TimeoutStartSec=120
+      ExecStart=/bin/bash /etc/cairn/host.sh host-check
+
+  - path: /etc/systemd/system/cairn-host-check.timer
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: check the host every five minutes
+
+      [Timer]
+      OnBootSec=5min
+      OnCalendar=*:0/5
+      AccuracySec=10s
+
 # /etc is stateless, so `systemctl enable` would not persist; start the units instead.
 # --no-block: cairn waits for the secret and the restore, and cloud-init must not wait with it.
 runcmd:
   - systemctl daemon-reload
-  - systemctl start --no-block caddy.service cairn.service litestream.service cairn-update.timer cairn-replica-check.timer cairn-compact.timer
+  - systemctl start --no-block caddy.service cairn.service litestream.service cairn-update.timer cairn-replica-check.timer cairn-compact.timer cairn-host-check.timer

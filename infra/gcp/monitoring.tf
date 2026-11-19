@@ -258,3 +258,66 @@ resource "google_monitoring_alert_policy" "compact_not_finished" {
     content   = "cairn at https://${var.domain} logged more than two unfinished compactions within an hour, and each one rewrote the whole database. Runbook: \"When a compaction keeps not finishing\" in infra/gcp/README.md in the cairn repository."
   }
 }
+
+# Four alerts on the host itself, one for each kind of line `host.sh host-check` writes every
+# five minutes (cairn-host-check.timer) into the log of a running container: litestream, else
+# cairn, else caddy. So the filters name no container. Each takes the form
+# scripts/rehearse_stack.py evaluates (see the replica alert), and
+# tests/unit/test_host_check_unit.py holds each to the line host.sh writes.
+locals {
+  host_alerts = {
+    "disk" = {
+      title = "a disk is above 80 percent"
+      about = "The data disk or the boot disk of ${var.name} is more than 80 percent full."
+    }
+    "memory" = {
+      title = "a container was killed for memory"
+      about = "A container on ${var.name} reached its memory limit and was killed."
+    }
+    "restarts" = {
+      title = "a unit keeps restarting"
+      about = "systemd restarted cairn, Caddy or Litestream on ${var.name} three times or more within five minutes."
+    }
+    "certificate" = {
+      title = "Caddy cannot obtain or renew a certificate"
+      about = "Caddy on ${var.name} logged an error obtaining or renewing the certificate for ${var.domain}."
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "host" {
+  for_each = local.host_alerts
+
+  display_name = "${var.name}: ${each.value.title}"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "host-check on ${var.name}: ${each.key}"
+
+    condition_matched_log {
+      filter = <<-EOT
+        logName = "projects/${var.project_id}/logs/cos_containers"
+        AND resource.type = "gce_instance"
+        AND resource.labels.instance_id = "${google_compute_instance.cairn.instance_id}"
+        AND jsonPayload.message =~ "^host-check: ${each.key}: "
+      EOT
+    }
+  }
+
+  # As for the replica alert: one email an hour while the lines go on (one every five
+  # minutes), and the incident closes 30 minutes after the last one, without an email.
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+
+    auto_close = "1800s"
+  }
+
+  notification_channels = [google_monitoring_notification_channel.email.name]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "${each.value.about} The line itself says which. Runbook: \"When a host alert fires\" in infra/gcp/README.md in the cairn repository."
+  }
+}

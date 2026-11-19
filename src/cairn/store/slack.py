@@ -306,6 +306,20 @@ class SlackDue:
     at: datetime
 
 
+class SlackForgetting(NamedTuple):
+    """One owned note and the deadline and installation seen when it was selected."""
+
+    account_id: str
+    note_id: str
+    install_id: str
+    made_at: str
+    forget_at: str
+
+
+class _ForgettingCancelled(Exception):
+    """The selected note is no longer eligible for this erasure."""
+
+
 _INSTALL_COLUMNS = (
     "id, account_id, state, team_id, enterprise_id, team_domain, bot_user_id, command,"
     " made_by, made_at, removed_at, signing_secret IS NOT NULL AND bot_token IS NOT NULL,"
@@ -438,6 +452,8 @@ class SlackMethods(StoreBase):
             stamp = self._stamp()
             if row is not None:
                 install_id = row[0]
+                # Distinguish set-ups even if the wall clock has stayed put or gone back.
+                stamp = max(stamp, _iso(_when(row[9]) + timedelta(microseconds=1)))
                 con.execute(
                     "UPDATE slack_installs SET state = 'pending', command = ?, made_by = ?,"
                     " made_at = ?, checked_at = NULL, dead_checks = 0, bot_gone_at = NULL"
@@ -840,15 +856,58 @@ class SlackMethods(StoreBase):
     def slack_notes_due(self, limit: int = DUE_AT_ONCE) -> list[tuple[str, str]]:
         """The server's: (workspace, note) of each note whose time to be forgotten came, the
         oldest first, at most `limit`."""
+        return [(note.account_id, note.note_id) for note in self._slack_due_notes(limit=limit)]
+
+    def _slack_due_notes(
+        self, *, limit: int = DUE_AT_ONCE, after: tuple[str, str] | None = None
+    ) -> list[SlackForgetting]:
+        """One page of eligible notes, ordered by deadline then note id."""
+        position = " AND (n.forget_at, n.note_id) > (?, ?)" if after is not None else ""
         with self._read() as con:
             found = con.execute(
-                "SELECT slack_installs.account_id, slack_notes.note_id FROM slack_notes"
-                " JOIN slack_installs ON slack_installs.id = slack_notes.install_id"
-                " WHERE forget_at IS NOT NULL AND forget_at <= ? AND note_id IS NOT NULL"
-                " AND owns = 1 ORDER BY forget_at, note_id LIMIT ?",
-                (self._stamp(), limit),
+                "SELECT i.account_id, n.note_id, n.install_id, i.made_at, n.forget_at"
+                " FROM slack_notes AS n JOIN slack_installs AS i ON i.id = n.install_id"
+                " WHERE n.forget_at <= ? AND n.note_id IS NOT NULL AND n.owns = 1"
+                f"{position} ORDER BY n.forget_at, n.note_id LIMIT ?",
+                (self._stamp(), *(after or ()), limit),
             ).fetchall()
-        return [(account, note) for account, note in found]
+        return [SlackForgetting(*row) for row in found]
+
+    def _require_slack_forget_owner(self, con: sqlite3.Connection) -> None:
+        if self._user_id is not None and self._role_in(con) != "owner":
+            raise PermissionError(NOT_AN_OWNER)
+
+    def _forget_slack_note(self, note: SlackForgetting, *, now: bool = False) -> bool:
+        """Forget only while Slack still owns the note under the selected deadline."""
+
+        def still_due(con: sqlite3.Connection) -> None:
+            params: tuple[str, ...] = (
+                note.note_id,
+                note.install_id,
+                self._account_id,
+                note.made_at,
+                note.forget_at,
+            )
+            if now:
+                self._require_slack_forget_owner(con)
+                condition = "i.state = 'removed'"
+            else:
+                condition = "n.forget_at <= ?"
+                params += (self._stamp(),)
+            row = con.execute(
+                "SELECT 1 FROM slack_notes AS n JOIN slack_installs AS i ON i.id = n.install_id"
+                " WHERE n.note_id = ? AND n.install_id = ? AND i.account_id = ?"
+                f" AND i.made_at = ? AND n.forget_at = ? AND n.owns = 1 AND {condition}",
+                params,
+            ).fetchone()
+            if row is None:
+                raise _ForgettingCancelled()
+
+        try:
+            self._slack_checked_view(still_due).forget_note(note.note_id)
+        except (_ForgettingCancelled, KeyError):  # a cancelled deadline or a note gone already
+            return False
+        return True
 
     def forget_slack_notes_now(self, install_id: str) -> int:
         """ "Forget them now": every note of the removed install that is due to be forgotten,
@@ -856,27 +915,20 @@ class SlackMethods(StoreBase):
         KeyError; ValueError (the install is not removed); PermissionError for anyone but an
         owner or a view acting for no person, who may forget any note of the workspace."""
         with self._read() as con:
-            if self._user_id is not None and self._role_in(con) != "owner":
-                raise PermissionError(NOT_AN_OWNER)
-            if self._slack_row(con, install_id)[2] != "removed":
+            self._require_slack_forget_owner(con)
+            install = _install(self._slack_row(con, install_id))
+            if install.state != "removed":
                 raise ValueError("only a removed install's notes are forgotten")
             notes = [
-                note
-                for (note,) in con.execute(
-                    "SELECT note_id FROM slack_notes WHERE install_id = ?"
+                SlackForgetting(self._account_id, note_id, install_id, install.made_at, deadline)
+                for note_id, deadline in con.execute(
+                    "SELECT note_id, forget_at FROM slack_notes WHERE install_id = ?"
                     " AND forget_at IS NOT NULL AND note_id IS NOT NULL AND owns = 1"
                     " ORDER BY note_id",
                     (install_id,),
                 )
             ]
-        forgotten = 0
-        for note in notes:
-            try:
-                self.forget_note(note)
-                forgotten += 1
-            except KeyError:  # forgotten meanwhile: its record went with it
-                pass
-        return forgotten
+        return sum(self._forget_slack_note(note, now=True) for note in notes)
 
     # The bot token checked with Slack, and an install whose token Slack ended
 

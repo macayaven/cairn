@@ -283,7 +283,7 @@ class PortableMethods(StoreBase):
         an owner (NOT_AN_EXPORTER): a partial archive that looks whole would be worse than a
         refusal. KeyError: the workspace was deleted. The summary carries no notice."""
         with self._read() as con:
-            self._require_owner(con)
+            self._require_exporter(con)
             if self._reach(con) is not None:  # a later limit on this view (cairn.store.reach)
                 raise PermissionError("only a view of the whole workspace exports it")
             account = _find_account(con, self._account_id)
@@ -427,7 +427,7 @@ class PortableMethods(StoreBase):
         index = self._index
         with self._write() as con:
             _require_account(con, self._account_id)
-            self._require_owner(con)
+            self._require_exporter(con)
             if self._reach(con) is not None:
                 raise PermissionError("only a view of the whole workspace imports into it")
             _refuse(self._in_force(con, found))
@@ -525,7 +525,7 @@ class PortableMethods(StoreBase):
             said = IMPORTED_MODELS_UNSAID
         return summary.model_copy(update={"notice": f"{notice} {said}"})
 
-    def _require_owner(self, con: sqlite3.Connection) -> None:
+    def _require_exporter(self, con: sqlite3.Connection) -> None:
         """PermissionError(NOT_AN_EXPORTER) for a person who does not own the workspace now;
         a view acting for no person passes (cairn.store.reach has refused a narrowed one)."""
         if self._user_id is not None and self._role_in(con) != "owner":

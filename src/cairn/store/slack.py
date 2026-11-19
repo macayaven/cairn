@@ -19,11 +19,15 @@ The install
   NoSlackKey without it) with the install, the workspace and which secret it is as associated
   data (`_associated`): a copy of the database opens neither, and a sealed value moved to
   another install, or to the other column, does not open. Pending, ready or off becomes ready;
-  on stays on; removed is refused (make it pending first). Made ready with the team it had
-  when it was removed, its notes are no longer due to be forgotten (D10); with another team,
-  they stay due and the old team's links go. One Slack team has one install: the unique index
-  slack_installs_team counts the installs that are ready, on or off (a pending or removed one
-  holds no team), so making ready a team another workspace holds is TeamHeld, whatever races;
+  on stays on; removed is refused (make it pending first). An install that is ready, on or off
+  belongs to its team: secrets of another team are OtherTeam, and nothing changes (connecting
+  another team takes removing the install first). Made ready with the team it had when it was
+  removed, that team's notes are no longer due to be forgotten (D10), and only that team's:
+  each row of slack_notes holds the team its install held when the row was made. With another
+  team, the old team's notes stay due, and are forgotten on their day whatever happens to the
+  install afterwards, and the old team's links go. One Slack team has one install: the unique
+  index slack_installs_team counts the installs that are ready, on or off (a pending or removed
+  one holds no team), so making ready a team another workspace holds is TeamHeld, whatever races;
   `slack_team_held` counts the same states. A new bot token clears `bot_gone_at` and the count
   of ended answers.
 - `switch_slack_install(on=)`: an owner or admin. Off from ready or on; on from ready or off
@@ -154,6 +158,19 @@ class TeamHeld(ValueError):
 
     def __init__(self) -> None:
         super().__init__("another workspace on this server has Slack set up for this team")
+
+
+class OtherTeam(ValueError):
+    """Secrets of another Slack team than the one an install that is ready, on or off holds:
+    the install belongs to its team, so nothing is written; connecting another Slack team
+    takes removing Slack first, after which the first team's notes are forgotten on their
+    day."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "this bot token is of another Slack workspace than the one set up here:"
+            " remove Slack first to connect that one"
+        )
 
 
 class NoSlackKey(RuntimeError):
@@ -387,9 +404,9 @@ class SlackMethods(StoreBase):
         enterprise_id: str | None = None,
     ) -> SlackInstall:
         """Keep the install's two secrets and its team once Slack accepted the token (see
-        the module). KeyError: no such install here; ValueError: a removed install, or a value
-        that is blank or not of its shape (never quoted); PermissionError: not an owner or
-        admin; NoSlackKey."""
+        the module). KeyError: no such install here; OtherTeam: an install ready, on or off for
+        another team; ValueError: a removed install, or a value that is blank or not of its
+        shape (never quoted); PermissionError: not an owner or admin; NoSlackKey."""
         sealer = self._slack_sealer()
         for value in (signing_secret, bot_token):
             if not isinstance(value, str) or not SECRET_VALUE.fullmatch(value):
@@ -406,6 +423,8 @@ class SlackMethods(StoreBase):
             state, was_team = row[2], row[3]
             if state == "removed":
                 raise ValueError("this Slack install was removed: set it up again first")
+            if state != "pending" and was_team != team_id:  # it belongs to its team
+                raise OtherTeam()
             account = self._account_id
             kept = con.execute(
                 "SELECT signing_secret FROM slack_installs WHERE id = ?", (install_id,)
@@ -434,9 +453,10 @@ class SlackMethods(StoreBase):
                 )  # fmt: skip
             except sqlite3.IntegrityError:  # slack_installs_team: another workspace's team
                 raise TeamHeld() from None
-            if was_team == team_id:  # the same Slack team again: its notes are not due (D10)
+            if was_team == team_id:  # the same Slack team again: its own notes are not due
                 con.execute(
-                    "UPDATE slack_notes SET forget_at = NULL WHERE install_id = ?", (install_id,)
+                    "UPDATE slack_notes SET forget_at = NULL WHERE install_id = ? AND team_id = ?",
+                    (install_id, team_id),
                 )
             elif was_team is not None:  # another team: the old team's people are not its
                 con.execute("DELETE FROM slack_people WHERE install_id = ?", (install_id,))
@@ -598,11 +618,12 @@ class SlackMethods(StoreBase):
             due = _iso(_when(row[10]) + FORGET_AFTER) if row[2] == "removed" else None
             if how == "filed":  # the claim, made again when it was swept
                 con.execute(
-                    "INSERT INTO slack_notes (install_id, how, conversation_id, message_time,"
-                    " brought_by, brought_at) VALUES (?, 'filed', ?, ?, ?, ?)"
+                    "INSERT INTO slack_notes (install_id, how, team_id, conversation_id,"
+                    " message_time, brought_by, brought_at) VALUES (?, 'filed', ?, ?, ?, ?, ?)"
                     " ON CONFLICT (install_id, conversation_id, message_time) DO NOTHING",
-                    (install_id, conversation_id, message_time, brought_by, self._stamp()),
-                )
+                    (install_id, row[3], conversation_id, message_time, brought_by,
+                     self._stamp()),
+                )  # fmt: skip
                 con.execute(
                     "UPDATE slack_notes SET note_id = ?, forget_at = COALESCE(forget_at, ?)"
                     " WHERE install_id = ? AND conversation_id = ? AND message_time = ?"
@@ -612,9 +633,10 @@ class SlackMethods(StoreBase):
                 )
                 return note_id
             con.execute(
-                "INSERT INTO slack_notes (note_id, install_id, how, brought_by, brought_at,"
-                " forget_at) VALUES (?, ?, 'typed', ?, ?, ?) ON CONFLICT (note_id) DO NOTHING",
-                (note_id, install_id, brought_by, self._stamp(), due),
+                "INSERT INTO slack_notes (note_id, install_id, how, team_id, brought_by,"
+                " brought_at, forget_at) VALUES (?, ?, 'typed', ?, ?, ?, ?)"
+                " ON CONFLICT (note_id) DO NOTHING",
+                (note_id, install_id, row[3], brought_by, self._stamp(), due),
             )
             return note_id
 
@@ -627,7 +649,7 @@ class SlackMethods(StoreBase):
         install here; ValueError: a conversation or a time not as Slack writes them."""
         _message(conversation_id, message_time)
         with self._write() as con:
-            self._slack_row(con, install_id)
+            team = self._slack_row(con, install_id)[3]
             key = (install_id, conversation_id, message_time)
             con.execute(
                 "DELETE FROM slack_notes WHERE install_id = ? AND conversation_id = ?"
@@ -635,10 +657,10 @@ class SlackMethods(StoreBase):
                 (*key, _iso(self._instant() - CLAIM_FOR)),
             )
             made = con.execute(
-                "INSERT INTO slack_notes (install_id, how, conversation_id, message_time,"
-                " brought_by, brought_at) VALUES (?, 'filed', ?, ?, ?, ?)"
+                "INSERT INTO slack_notes (install_id, how, team_id, conversation_id,"
+                " message_time, brought_by, brought_at) VALUES (?, 'filed', ?, ?, ?, ?, ?)"
                 " ON CONFLICT (install_id, conversation_id, message_time) DO NOTHING",
-                (*key, brought_by, self._stamp()),
+                (install_id, team, conversation_id, message_time, brought_by, self._stamp()),
             ).rowcount
             if made:
                 return SlackClaim(CLAIMED, None)

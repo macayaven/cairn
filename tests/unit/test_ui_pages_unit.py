@@ -381,3 +381,87 @@ def test_the_first_run_choice_of_projects_is_under_projects(env):
         html = client.get(path).text
         assert current(html) == [section], path
         assert html.count(BREADCRUMB) == 1 and crumbs_of(html) == trail, path
+
+
+# 8. Narrow screens: 44 by 44 to touch, and no label on a node's icon
+
+
+def phone_rules(css: str) -> dict[str, str]:
+    """The phone block's rules (max-width: 34rem), each selector of a list on its own."""
+    start = css.index("{", css.index("@media (max-width: 34rem)"))
+    depth, at = 0, start
+    while True:
+        depth += {"{": 1, "}": -1}.get(css[at], 0)
+        if depth == 0:
+            break
+        at += 1
+    block = re.sub(r"/\*.*?\*/", "", css[start + 1 : at], flags=re.S)
+    rules: dict[str, str] = {}
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", block):
+        for selector in selectors.split(","):
+            rules[" ".join(selector.split())] = rules.get(" ".join(selector.split()), "") + body
+    return rules
+
+
+def test_at_phone_width_the_small_links_are_44_by_44_to_touch():
+    from cairn.web.templating import HERE
+
+    css = (HERE / "static" / "cairn.css").read_text("utf-8")
+    main = phone_rules(css)
+    explorer = phone_rules((HERE / "static" / "graph-view.css").read_text("utf-8"))
+    for selector in (".claim-cites a", ".versions a", ".ending a", ".choices a.quiet"):
+        assert "min-height: 44px" in main[selector], selector
+        assert "min-width: 44px" in main[selector], selector
+    assert "min-height: 44px" in main[".rows td.act a"]
+    narrow = re.search(r"--margin-narrow: (\d+)px", css)
+    assert narrow and int(narrow.group(1)) >= 44 + 8  # the cites' column holds a 44px link
+    assert "min-height: 44px" in explorer[".graph-explorer .graph-views a"]
+    assert "min-width: 44px" in explorer[".graph-explorer .graph-views a"]
+
+
+def boxes(html: str, *, explorer: bool) -> tuple[list, list]:
+    """The node icons' and labels' boxes in a drawing, as (left, top, right, bottom)."""
+    icons, labels = [], []
+    if explorer:
+        for x, y in re.findall(r'data-x="(-?\d+)" data-y="(-?\d+)"', html):
+            x, y = int(x), int(y)
+            icons.append((x - 7, y - 7, x + 7, y + 7))
+            labels.append((x + 9, y - 8, x + 9 + 190, y - 8 + 22))
+    else:
+        for x, y in re.findall(r'<circle cx="(-?\d+)" cy="(-?\d+)" r="5"', html):
+            x, y = int(x), int(y)
+            icons.append((x - 5, y - 5, x + 5, y + 5))
+            labels.append((x + 8, y + 4, x + 8 + 210, y + 4 + 24))
+    return icons, labels
+
+
+def test_the_server_drawn_graph_keeps_every_label_off_every_icon():
+    from cairn.web.graph_view import render_explorer, render_graph
+
+    nodes = [{"id": "project:1", "kind": "project", "label": "alpha-ops", "focus": "project"}]
+    edges = []
+    for n in range(4):
+        nodes.append({"id": f"page:{n}", "kind": "page", "label": f"deploy-{n}" * 3,
+                      "slug": f"deploy-{n}"})  # fmt: skip
+        nodes.append({"id": f"claim:{n}", "kind": "claim", "label": "Run it." * 9,
+                      "slug": f"deploy-{n}", "claim_id": f"c{n}"})  # fmt: skip
+        nodes.append({"id": f"passage:{n}", "kind": "passage", "label": "lines 1-2"})
+        nodes.append({"id": f"note:{n}", "kind": "note", "label": "Quill's note" * 4,
+                      "note_id": f"n{n}", "source_ref": None, "via": "mcp"})  # fmt: skip
+        edges.append({"kind": "has page", "from": "project:1", "to": f"page:{n}"})
+    graph = {"nodes": nodes, "edges": edges, "truncated": False, "focus": "project",
+             "next": None}  # fmt: skip
+    drawn = [
+        (render_graph("alpha-ops", graph, brand=None, person=None), False),
+        (render_explorer("alpha-ops", graph, brand=None, person=None), True),
+    ]
+    for response, explorer in drawn:
+        icons, labels = boxes(response.body.decode(), explorer=explorer)
+        assert len(icons) == len(nodes)
+        for label in labels:
+            for icon in icons:
+                apart = (
+                    label[2] <= icon[0] or icon[2] <= label[0]
+                    or label[3] <= icon[1] or icon[3] <= label[1]
+                )  # fmt: skip
+                assert apart, (label, icon)

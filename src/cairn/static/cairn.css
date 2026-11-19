@@ -51,7 +51,7 @@
   --space-12: 48px;
   --space-16: 64px;
   --margin: 56px;
-  --margin-narrow: 36px;
+  --margin-narrow: 52px;  /* a 44px citation link and the margin's 8px gap, on a phone */
   --measure: 40rem;
   --radius-0: 0;
   --radius-sm: 3px;
@@ -754,7 +754,7 @@ details.kind ul { padding-left: 1.2rem; }
   .hero h1 { font-size: 38px; line-height: 42px; }
   .margin-grid { grid-template-columns: var(--margin-narrow) minmax(0, 1fr); }
   .claim-body { padding-left: var(--space-3); }
-  .claim-cites a { display: block; min-width: 100%; min-height: 44px; padding-bottom: 17px; line-height: 27px; text-align: right; }
+  .claim-cites a { display: block; min-width: 44px; min-height: 44px; padding-bottom: 17px; line-height: 27px; text-align: right; }
   .in-margin { padding-right: var(--space-2); }
   .source-line { padding: 0 var(--space-2) 0 var(--space-3); }
   .proof > summary { padding-block: 11px; }
@@ -782,7 +782,10 @@ details.kind ul { padding-left: 1.2rem; }
   button, .button { min-height: 44px; }
   input[type="search"], input[type="password"], input[type="text"], input[type="email"], select { min-height: 44px; }
   .stack > button, .stack > .button { justify-self: stretch; }
-  .versions a, .versions .current { min-height: 44px; padding: 0 12px; }
+  .versions a, .versions .current { min-width: 44px; min-height: 44px; padding: 0 12px; justify-content: center; }
+  /* A link alone on its line, beside a button or under a list's row: 44 by 44 to touch. */
+  .ending a, .choices a.quiet { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; }
+  .rows td.act a { display: inline-flex; align-items: center; min-height: 44px; }
   .scope li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .option > .hint { flex-basis: 100%; margin-top: -10px; padding-left: 26px; }
   .sheet, .signin, .consent { padding: var(--space-4); }

@@ -989,16 +989,54 @@ def test_bootstrap_says_to_remove_the_default_network_and_the_editor_role_with_t
         assert command in said, command
 
 
+def description_of(name: str) -> str:
+    start = VARIABLES_TF.index(f'variable "{name}"')
+    block = VARIABLES_TF[start : VARIABLES_TF.index("\n}\n", start)]
+    return re.search(r'^  description\s*=\s*"(.+)"$', block, re.M).group(1)
+
+
+# What an operator without 2-Step Verification meets, said in the variable and in the README
+REFUSED = (
+    "An operator whose Google account has no 2-Step Verification is refused SSH through IAP"
+    " until they switch it on or set"
+)
+WAYS_BACK = "the serial console and a start-up script are the ways back in"
+
+
 def test_the_guide_says_what_a_second_factor_asks_of_whoever_connects():
-    assert default_of("os_login_2fa") == "false"
+    assert default_of("os_login_2fa") == "true"
     said = flat(guide_part("## Bootstrap (once, by a person)"))
     assert (
-        "**A second factor for SSH** is off by default. With `os_login_2fa = true`, OS Login"
-        " asks everyone who connects for a second factor (a security key, an authenticator"
-        " code or a phone prompt) at every connection, and their Google account must have"
-        " 2-Step Verification on. A script or a scheduled job can then no longer connect by"
-        " SSH. Whether to turn it on is the operator's decision." in said
+        "**A second factor for SSH** is on by default (`os_login_2fa`): OS Login asks everyone"
+        " who connects for a second factor (a security key, an authenticator code or a phone"
+        " prompt) at every connection, and their Google account must have 2-Step Verification"
+        " on. A script or a scheduled job can therefore not connect by SSH. Whether to keep it"
+        " on is the operator's decision." in said
     )
+    assert "off by default" not in said.split("**A second factor for SSH**", 1)[1][:200]
+
+
+def test_the_variable_says_who_is_refused_and_the_ways_back_in():
+    described = description_of("os_login_2fa")
+    assert REFUSED in described and WAYS_BACK in described
+    assert "set this variable to false" in described
+
+
+def test_an_existing_deployment_reviews_the_second_factor_first_before_its_next_apply():
+    part = guide_part("### Before the next apply on an existing deployment")
+    assert part.startswith("### Before the next apply on an existing deployment\n")
+    assert "\n### Before the next apply on an existing deployment\n" in guide_part(
+        "## Changing the configuration"
+    )
+    items = re.findall(r"^- (.+(?:\n  .+)*)", part, re.M)
+    assert len(items) >= 2, items
+    first = flat(items[0])
+    assert first.startswith("**`os_login_2fa` is now on by default.**"), first
+    assert REFUSED in first and "set `os_login_2fa = false`" in first and WAYS_BACK in first
+    # every variable an item names is one variables.tf declares, at the default it says
+    for item in items:
+        for name in re.findall(r"`([a-z_0-9]+) = ", item):
+            assert f'variable "{name}"' in VARIABLES_TF, name
 
 
 def test_the_guide_names_the_baselines_variables_and_their_defaults():

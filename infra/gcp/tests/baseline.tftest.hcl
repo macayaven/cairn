@@ -130,11 +130,11 @@ run "log_retention_and_audit_follow_their_variables" {
 
 # --- OS Login, the subnet, the firewall --------------------------------------------------------
 
-run "by_default_no_second_factor_private_access_on_and_no_paid_logs" {
+run "by_default_a_second_factor_private_access_on_and_no_paid_logs" {
   command = plan
   assert {
-    condition     = !contains(keys(google_compute_instance.cairn.metadata), "enable-oslogin-2fa")
-    error_message = "the metadata names a second factor while os_login_2fa is off"
+    condition     = google_compute_instance.cairn.metadata["enable-oslogin-2fa"] == "TRUE" && google_compute_instance.cairn.metadata["enable-oslogin"] == "TRUE"
+    error_message = "os_login_2fa does not ask for a second factor by default"
   }
   assert {
     condition     = google_compute_subnetwork.cairn.private_ip_google_access == true
@@ -150,16 +150,16 @@ run "by_default_no_second_factor_private_access_on_and_no_paid_logs" {
   }
 }
 
-run "a_second_factor_flow_logs_and_firewall_logs_when_asked" {
+run "no_second_factor_flow_logs_and_firewall_logs_when_asked" {
   command = plan
   variables {
-    os_login_2fa     = true
+    os_login_2fa     = false
     vpc_flow_logs    = true
     firewall_logging = true
   }
   assert {
-    condition     = google_compute_instance.cairn.metadata["enable-oslogin-2fa"] == "TRUE" && google_compute_instance.cairn.metadata["enable-oslogin"] == "TRUE"
-    error_message = "os_login_2fa does not ask for a second factor"
+    condition     = !contains(keys(google_compute_instance.cairn.metadata), "enable-oslogin-2fa") && google_compute_instance.cairn.metadata["enable-oslogin"] == "TRUE"
+    error_message = "the metadata names a second factor while os_login_2fa is off"
   }
   assert {
     condition     = length(google_compute_subnetwork.cairn.log_config) == 1

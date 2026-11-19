@@ -394,7 +394,7 @@ resource "google_compute_instance" "cairn" {
   # than whoever applies this configuration can set instance metadata.
   # Guest attributes carry the updater's status (cairn/status, files/host.sh) out to the
   # deploy job, which may read them and nothing else on this VM (iam.tf).
-  # A second factor for OS Login only when os_login_2fa asks for it (README, "Bootstrap").
+  # A second factor for OS Login unless os_login_2fa is false; it is on by default (README, "Bootstrap").
   metadata = merge({
     user-data                 = local.cloud_init
     enable-oslogin            = "TRUE"

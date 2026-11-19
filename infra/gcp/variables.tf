@@ -408,9 +408,9 @@ variable "log_retention_days" {
 }
 
 variable "os_login_2fa" {
-  description = "Ask for a second factor at every SSH connection through OS Login. Off by default: with it, a connection needs a person at a prompt, and unattended SSH (a script, a scheduled job) stops working (README, \"Bootstrap\")."
+  description = "Ask for a second factor at every SSH connection through OS Login. On by default: a connection needs a person at a prompt, and unattended SSH (a script, a scheduled job) does not work. An operator whose Google account has no 2-Step Verification is refused SSH through IAP until they switch it on or set this variable to false; the serial console and a start-up script are the ways back in (README, \"Before the next apply on an existing deployment\")."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "firewall_logging" {

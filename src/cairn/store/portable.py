@@ -537,7 +537,7 @@ class PortableMethods(StoreBase):
         deletion came meanwhile."""
         if not self._owner:
             raise PermissionError("only the store that opened the database compacts it")
-        self._room()
+        self._room_for_rewrite()
         began = self._stamp()
         with self._holding() as con:
             try:
@@ -600,7 +600,7 @@ class PortableMethods(StoreBase):
         with self._locked() as con, contextlib.suppress(sqlite3.OperationalError):
             con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
 
-    def _room(self) -> None:
+    def _room_for_rewrite(self) -> None:
         """NoRoom unless the database's disk has twice the database free (its file and its
         write-ahead log): a rewrite writes a second copy, and the margin is as much again,
         the rule `stats` calls low disk. A database in memory has no disk to check."""

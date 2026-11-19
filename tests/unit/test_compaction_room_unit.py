@@ -95,3 +95,12 @@ def test_the_compactor_logs_one_line_with_both_numbers_and_tries_again(
     assert compactor.due()  # stays due: the next poll checks again
     amounts[0] = needed
     assert compactor.run_once() is True
+
+
+def test_the_room_check_shadows_no_other_method_of_the_store():
+    """The store is one class of many mixins: the check's name is its own (a first version
+    took the name of the hosted plan's check and broke Google's connect flow)."""
+    from cairn.store.hosted import HostedMethods
+
+    assert Store._room is HostedMethods._room
+    assert Store._room_for_rewrite is portable.PortableMethods._room_for_rewrite

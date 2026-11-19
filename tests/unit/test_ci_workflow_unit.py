@@ -169,12 +169,13 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
     ]
 
 
-GUIDE_PULL = "Pull the version as the run guide does, with no login"
+GUIDE_PULL = "Pull the image as the run guide does, with no login"
 
 
-def run_the_guide_pull(tmp_path, repo_digest: str) -> tuple[int, str, list[str]]:
+def run_the_guide_pull(tmp_path, repo_digest: str, **ref: str) -> tuple[int, str, list[str]]:
     """Job `verify`'s anonymous pull as bash runs it, with a docker that records its calls and
-    answers `inspect` with REPO_DIGEST. The tag pushed is v1.2.3 of Owner/Repo."""
+    answers `inspect` with REPO_DIGEST. The tag pushed is v1.2.3 of the public Owner/Repo,
+    unless `ref` says otherwise."""
     step = next(s for s in JOBS["verify"]["steps"] if s.get("name") == GUIDE_PULL)
     docker = tmp_path / "docker"
     docker.write_text(
@@ -191,24 +192,30 @@ def run_the_guide_pull(tmp_path, repo_digest: str) -> tuple[int, str, list[str]]
             "REPO_DIGEST": repo_digest,
             "GITHUB_REPOSITORY": "Owner/Repo",
             "GITHUB_REF_NAME": "v1.2.3",
+            "GITHUB_REF_TYPE": "tag",
+            "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567",
+            "REPOSITORY_PRIVATE": "false",
             "DIGEST": "sha256:" + "a" * 64,
+            **ref,
         },
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
         check=False,
     )
-    return done.returncode, done.stdout, calls.read_text().splitlines()
+    made = calls.read_text().splitlines() if calls.exists() else []
+    return done.returncode, done.stdout, made
 
 
 def test_on_a_tag_verify_pulls_the_version_as_the_guide_says_with_no_login(tmp_path):
     steps = JOBS["verify"]["steps"]
     pull = next(s for s in steps if s.get("name") == GUIDE_PULL)
-    # On a tag only; on main there is no version to pull.
-    assert evaluate(pull["if"], TAG) and not evaluate(pull["if"], MAIN_PUSH)
+    # No condition of its own: it runs on main too, so the merge that comes before a release
+    # has run it; what it pulls and whether it pulls is decided in the script, from `env:`.
     login = next(s for s in steps if s.get("uses", "").startswith("docker/login-action"))
     assert steps.index(pull) < steps.index(login)
-    assert set(pull) == {"name", "if", "run"}
+    assert set(pull) == {"name", "env", "run"}
+    assert pull["env"] == {"REPOSITORY_PRIVATE": "${{ github.event.repository.private }}"}
     published = "ghcr.io/owner/repo@sha256:" + "a" * 64
     code, _, calls = run_the_guide_pull(tmp_path, published)
     image = "ghcr.io/owner/repo:1.2.3"
@@ -219,6 +226,33 @@ def test_on_a_tag_verify_pulls_the_version_as_the_guide_says_with_no_login(tmp_p
         f"pull {image}",
         f"inspect --format {{{{index .RepoDigests 0}}}} {image}",
     ]
+
+
+def test_on_main_verify_pulls_the_commits_own_tag_with_no_login(tmp_path):
+    """A push to main is published as `main` and `sha-<7>`: the commit's own tag is the one
+    no later push moves, so that is what is pulled. The first release then repeats a step
+    that main has run already."""
+    published = "ghcr.io/owner/repo@sha256:" + "a" * 64
+    code, _, calls = run_the_guide_pull(
+        tmp_path, published, GITHUB_REF_TYPE="branch", GITHUB_REF_NAME="main"
+    )
+    image = "ghcr.io/owner/repo:sha-0123456"
+    assert code == 0
+    assert calls == [
+        "logout ghcr.io",
+        f"pull {image}",
+        f"inspect --format {{{{index .RepoDigests 0}}}} {image}",
+    ]
+    assert "type=sha,enable=" in RAW_WORKFLOW  # the tag publish gives a push to main
+
+
+@pytest.mark.parametrize("private", ["true", "", "False"])
+def test_in_a_private_repository_nothing_is_pulled_without_a_login(tmp_path, private):
+    """Nobody pulls a private repository's image without a login, so there is nothing to
+    check there, and its runs are not failed for it: only exactly `false` pulls."""
+    code, out, calls = run_the_guide_pull(tmp_path, "unused", REPOSITORY_PRIVATE=private)
+    assert code == 0 and calls == []
+    assert out == "This repository is not public: nobody pulls its image without a login.\n"
 
 
 def test_the_pull_with_no_login_fails_when_the_digest_is_not_the_one_published(tmp_path):
@@ -1140,8 +1174,9 @@ def test_the_header_says_what_a_tag_must_be_and_what_it_publishes():
         " its X.Y, and a version that already has a GitHub release.",
         "A tag is published as X.Y.Z and X.Y, and as latest only when it is the highest"
         " version tagged; a push to main as main and sha-<commit>, never latest.",
-        "Job `verify` smoke-tests the published image on main and on tags; on a tag it first"
-        " pulls the version with no login, as the run guide does, and checks its digest.",
+        "Job `verify` smoke-tests the published image on main and on tags; in a public"
+        " repository it first pulls the image with no login, as the run guide does (a tag's"
+        " version, or on main the commit's own tag), and checks its digest.",
         "A run that failed after `publish` and before the release was made is finished by"
         " re-running only its failed jobs.",
     ):

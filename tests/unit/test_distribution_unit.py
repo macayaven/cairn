@@ -89,7 +89,8 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         " version tagged; a push to `main` as `main` and `sha-<commit>`, never `latest`.",
         "the gate runs as before, and items 5 to 7 are skipped.",
         "6. **Verify and deploy:** on `main` and on tags, the published image is smoke-tested."
-        " On a tag, the version is first pulled with no login, as the run guide does, and must"
+        " In a public repository the image is first pulled with no login, as the run guide"
+        " does (a tag's version, or on `main` the commit's own tag), and must"
         " be the digest just published. On `main`, a `deploy` job that waits for approval"
         " moves the production VM to it",
         "7. **Release:** a tag whose published image passed becomes a GitHub release, with the"

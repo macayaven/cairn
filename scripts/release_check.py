@@ -22,7 +22,7 @@ A tag passes only when, in this order:
 5. with --not-released, gh lists the repository's releases and none is the tag's.
 Otherwise it prints `release refused: ` and the first rule that failed, on one line, and exits
 1. Job `release_check` of .github/workflows/ci-cd.yml runs it on a tag with every flag before
-anything is published; job `release` runs it with --notes for the text of the GitHub release.
+anything is published; job `package` runs it with --notes for the text of the GitHub release.
 
 It reads the two files, and runs git and gh only for their flags. It needs only the standard
 library, so the runner's python3 runs it before any environment is installed.

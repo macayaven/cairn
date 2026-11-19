@@ -8,7 +8,8 @@ A tag passes only when, in this order:
    local part, no leading zero);
 2. the tag is `v` followed by that version, exactly;
 3. CHANGELOG.md has exactly one section headed `## <version> - <YYYY-MM-DD>`, the date a
-   real date, and that section has at least one entry: a line that starts with `- `.
+   real date and not after today (UTC; --today gives another), and that section has at
+   least one entry: a line that starts with `- `.
    HTML comments (`<!-- ... -->`) are not part of the section: what they hide is no entry,
    and they are left out of the notes.
 Otherwise it prints `release refused: ` and the first rule that failed, on one line, and exits
@@ -25,7 +26,7 @@ import argparse
 import re
 import sys
 import tomllib
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 PLAIN = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
@@ -50,8 +51,9 @@ def version_of(pyproject: str) -> str:
     return version
 
 
-def _section(version: str, changelog: str) -> str:
-    """The text of VERSION's section, its heading and its comments left out."""
+def _section(version: str, changelog: str, today: date | None = None) -> str:
+    """The text of VERSION's section, its heading and its comments left out. With TODAY, a
+    section dated after it is refused."""
     headings = [m for m in HEADING.finditer(changelog) if m["version"] == version]
     if not headings:
         raise Refused(f"CHANGELOG.md has no section '## {version} - YYYY-MM-DD'")
@@ -59,19 +61,28 @@ def _section(version: str, changelog: str) -> str:
         raise Refused(f"CHANGELOG.md has {len(headings)} sections for {version}")
     heading = headings[0]
     try:
-        date.fromisoformat(heading["date"])
+        dated = date.fromisoformat(heading["date"])
     except ValueError:
         raise Refused(
             f"CHANGELOG.md's section for {version} is dated {heading['date']}, which is not a date"
         ) from None
+    if today is not None and dated > today:
+        raise Refused(
+            f"CHANGELOG.md's section for {version} is dated {dated}, after today ({today}, UTC)"
+        )
     rest = changelog[heading.end() :]
     end = NEXT_SECTION.search(rest)
     body = rest[: end.start()] if end else rest
     return COMMENT.sub("", body).strip("\n")
 
 
-def check(tag: str, pyproject: str, changelog: str) -> str:
-    """The version TAG releases; raises Refused with the first rule that fails."""
+def utc_today() -> date:
+    return datetime.now(UTC).date()
+
+
+def check(tag: str, pyproject: str, changelog: str, today: date | None = None) -> str:
+    """The version TAG releases; raises Refused with the first rule that fails. TODAY is the
+    run's UTC date unless given."""
     version = version_of(pyproject)
     if not PLAIN.fullmatch(version):
         raise Refused(
@@ -79,7 +90,7 @@ def check(tag: str, pyproject: str, changelog: str) -> str:
         )
     if tag != f"v{version}":
         raise Refused(f"the tag {tag!r} is not v{version}, the version in pyproject.toml")
-    if not ENTRY.search(_section(version, changelog)):
+    if not ENTRY.search(_section(version, changelog, today or utc_today())):
         raise Refused(
             f"CHANGELOG.md's section for {version} has no entry (a line that starts with '- ')"
         )
@@ -98,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("tag", help="the tag's name, such as v0.1.0")
     parser.add_argument("--notes", action="store_true", help="print the changelog's section")
     parser.add_argument("--root", type=Path, default=Path("."), help="the repository (.)")
+    parser.add_argument(
+        "--today", type=date.fromisoformat, help="YYYY-MM-DD, in place of the UTC date"
+    )
     args = parser.parse_args(argv)
     try:
         texts = []
@@ -106,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             if not path.is_file():
                 raise Refused(f"there is no {name}")
             texts.append(path.read_text(encoding="utf-8"))
-        version = check(args.tag, *texts)
+        version = check(args.tag, *texts, today=args.today)
     except Refused as refusal:
         print(f"release refused: {refusal}", file=sys.stderr)
         return 1

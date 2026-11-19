@@ -5,6 +5,7 @@ at least one entry. The section is the release's text."""
 from __future__ import annotations
 
 import importlib.util
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,34 @@ def test_a_changelog_without_a_dated_section_for_the_version_is_refused():
     )
     twice = CHANGELOG + "\n## 1.2.3 - 2026-02-01\n\n- Again.\n"
     assert refused("v1.2.3", changelog=twice) == "CHANGELOG.md has 2 sections for 1.2.3"
+
+
+def test_a_section_dated_after_today_is_refused_and_a_past_date_passes():
+    """Today is the run's UTC date; a flag gives it, so that a test pins it."""
+    today = date(2026, 1, 31)
+    assert release_check.check("v1.2.3", PYPROJECT, CHANGELOG, today=today) == "1.2.3"
+    assert release_check.check("v1.2.3", PYPROJECT, CHANGELOG, today=date(2030, 1, 1)) == "1.2.3"
+    with pytest.raises(release_check.Refused) as caught:
+        release_check.check("v1.2.3", PYPROJECT, CHANGELOG, today=date(2026, 1, 30))
+    assert str(caught.value) == (
+        "CHANGELOG.md's section for 1.2.3 is dated 2026-01-31, after today (2026-01-30, UTC)"
+    )
+
+
+def test_main_takes_today_from_a_flag_and_otherwise_from_the_utc_clock(tmp_path, capsys):
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+    future = CHANGELOG.replace("## 1.2.3 - 2026-01-31", "## 1.2.3 - 2999-01-01")
+    (tmp_path / "CHANGELOG.md").write_text(future, encoding="utf-8")
+    assert release_check.main(["v1.2.3", "--root", str(tmp_path)]) == 1
+    assert capsys.readouterr().err.startswith(
+        "release refused: CHANGELOG.md's section for 1.2.3 is dated 2999-01-01, after today ("
+    )
+    argv = ["v1.2.3", "--root", str(tmp_path), "--today", "2999-01-01"]
+    assert release_check.main(argv) == 0
+    assert release_check.main([*argv[:-1], "2998-12-31"]) == 1
+    with pytest.raises(SystemExit) as caught:  # not a date: argparse refuses it
+        release_check.main([*argv[:-1], "yesterday"])
+    assert caught.value.code == 2
 
 
 def test_a_section_without_an_entry_is_refused_and_a_comment_is_not_an_entry():

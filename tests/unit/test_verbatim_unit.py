@@ -243,7 +243,6 @@ REFUSED = {
     "spacing changed inside a code line": (CODE.text.replace("  ", " "), (CODE,)),
     "a code block indented": ("\n".join(f"  {line}" for line in CODE.text.split("\n")), (CODE,)),
     "a closing fence left out": (CODE.text.removesuffix("\n```"), (CODE,)),
-    "a fence the passage leaves open": (OPEN_FENCE.text, (OPEN_FENCE,)),
     "a table row alone": ("| Drift | 1.8.2 |", (TABLE,)),
     "a hard line break removed": ("Alpha. Beta.", (HARD_BREAK,)),
     "a hard line break's spaces changed": ("Alpha.   \nBeta.", (HARD_BREAK,)),
@@ -301,9 +300,8 @@ def test_structure_added_to_a_passage_is_named_by_its_line():
     assert "line 3" in violation and PROSE.id in violation and "Deleting" not in violation
 
 
-def test_a_fence_left_open_is_said_as_before():
-    (violation,) = refusals((OPEN_FENCE.text, (OPEN_FENCE,)))
-    assert violation.endswith(": line 2 opens a code fence the claim never closes")
+def test_a_fence_the_passage_leaves_open_passes_since_the_body_closes_it():
+    assert refusals((OPEN_FENCE.text, (OPEN_FENCE,))) == []  # review 7.2
 
 
 def test_one_violation_per_claim():
@@ -359,7 +357,7 @@ def test_the_sentence_machinery_is_gone():
 # 8n, the work counted (every character handed to the gate's readers), no clock: linear work
 # grows about 8 times, work that reads a passage once per claim about 64 times.
 
-READERS = ("_text", "_rows", "_structure", "_open_fence")
+READERS = ("_text", "_rows", "_structure")
 TIMES = 8
 
 

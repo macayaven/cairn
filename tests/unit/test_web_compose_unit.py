@@ -67,11 +67,11 @@ def test_a_browsers_crlf_line_ends_are_stored_as_lf(env):
     assert note.text == NOTE
 
 
-def test_a_note_that_compiles_into_no_page_lands_on_its_project(env):
+def test_a_note_with_no_passage_is_refused_and_nothing_is_stored(env):  # review 7.6
     store, client = env
     r = post(client, "/b/alpha/notes", text="# Only a heading\n")
-    assert r.status_code == 303 and r.headers["location"] == "/b/alpha"
-    assert len(notes(store)) == 1
+    assert r.status_code == 400 and "no body text" in r.text
+    assert len(notes(store)) == 0
 
 
 def test_the_project_is_named_in_the_redirect_even_when_posted_by_id(env):

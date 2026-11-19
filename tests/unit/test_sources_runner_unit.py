@@ -918,7 +918,8 @@ def test_a_draft_under_headings_past_their_bound_is_skipped_as_malformed(store):
 
 def test_a_draft_of_mostly_headings_is_skipped_as_malformed(store):
     outline = draft(
-        text="".join(f"## Part {i}\n\n" for i in range(9)), ref="https://example.test/3"
+        text="".join(f"## Part {i}\n\n" for i in range(10)) + "One line.\n",  # one passage
+        ref="https://example.test/3",
     )
     Fake.answers = [Pulled(drafts=[outline, draft()], cursor="c1")]
     report = run(store)

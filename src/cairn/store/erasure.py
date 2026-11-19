@@ -74,14 +74,17 @@ def kept_claims(
 ) -> tuple[Claim, ...]:
     """A page's claims once the spans `gone` are forgotten, in their order, with their ids
     and text. A claim that cites none of them is kept as it is. One that cites some of them
-    and other spans too keeps citing those others, when its text (whitespace aside) is still
-    within one of them (`spans`: the spans the store still holds, by id): a claim folded from
-    identical text is, while a claim that joined sentences of the forgotten note would
-    otherwise keep that note's words, so it goes. One that cites only forgotten spans goes.
+    and other spans too keeps citing those others when its text is the whole of every one of
+    them that the store still holds (`spans`, by id), by the verbatim gate's own equality
+    (cairn.gate.whole, review 7.5): a claim folded from passages that say the same is kept,
+    while one whose text merely occurs inside a remaining passage ("Enable X." inside "Never
+    enable X. in prod.") or that joined the forgotten note's words goes. One that cites only
+    forgotten spans goes.
     A kept claim whose id was made from a forgotten span (compiler.claim_id: a span id is a
     digest of its text) takes the id of the first span it keeps, or, when another claim
     already has that one, an id made from its place and the spans it keeps."""
     from cairn.compiler import claim_id  # the compiler builds on the store
+    from cairn.gate import whole  # the gate builds on the compiler
 
     kept = []
     for claim in claims:
@@ -89,9 +92,9 @@ def kept_claims(
         if len(left) == len(claim.span_ids):
             kept.append(claim)
             continue
-        text = " ".join(claim.text.split())
-        if any(text in " ".join(spans[i].text.split()) for i in left if i in spans):
-            kept.append(claim.model_copy(update={"span_ids": left}))
+        survivor = claim.model_copy(update={"span_ids": left})
+        if whole(survivor, spans):
+            kept.append(survivor)
     made_from_gone = {claim_id(span_id) for span_id in gone}
     taken = {claim.id for claim in kept if claim.id not in made_from_gone}
     for place, claim in enumerate(kept):

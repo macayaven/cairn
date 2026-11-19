@@ -53,6 +53,10 @@ def _load(name: str, path: Path):
 
 
 old = _load("t5d_reference_gate", HERE / "reference" / "gate_before_t5d.py")
+# One rule of the old gate is gone on purpose (review 7.2): a claim that leaves a code fence
+# open passes, since the body closes the fence where the claim ends. The old gate is read
+# without it, so every other rule is still held to "stricter, never looser".
+old._open_fence = lambda lines: None
 
 
 # The shapes a claim the old gate passed and the new one refuses may take: for each, what the
@@ -140,10 +144,9 @@ _RUN = re.compile(r"[ \t\r]+")
 
 def oracle(text: str, cited: list[Span]) -> bool:
     """Whether a claim is the whole of each passage it cites, by the rule's own words. A claim
-    that cites no passage it can be read against is never whole; nor is one that leaves a code
-    fence open, as before."""
+    that cites no passage it can be read against is never whole."""
     lines = text.split("\n")
-    if not cited or old._open_fence(lines) is not None:
+    if not cited:
         return False
     return all(_whole(lines, span) for span in cited)
 

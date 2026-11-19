@@ -4,8 +4,9 @@ turns a RequestError into a status. The note guard is enforced below this, in
 `Store.add_note`, the one place a note is written, so no caller can store a note it
 has not screened; `Memory.note` turns its refusal into Refused (422). A note refused for what it is
 raises Malformed (a BadRequest, 400) with a `reason` that quotes nothing of it: EmptyText
-for blank text, PastBound for a field past cairn.store.FIELD_MAX (naming the field and its
-bound), LongHeadings for headings past theirs, ManyFacts (G1) for more facts than
+for blank text, NoPassage for text with no passage to compile (headings, front matter and
+blank lines only: review 7.6), PastBound for a field past cairn.store.FIELD_MAX (naming the
+field and its bound), LongHeadings for headings past theirs, ManyFacts (G1) for more facts than
 cairn.store.FACTS_MAX (giving the count and the bound).
 
 The access log: each MCP tool call and REST request runs inside `Memory.access(action)`, as
@@ -114,6 +115,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import IO, Any
 
 from cairn.compiler import (
+    CONTENT_KINDS,
     CompileResult,
     Gate,
     compile_note,
@@ -258,6 +260,18 @@ class EmptyText(Malformed):
     """A note whose text is empty or blank."""
 
     reason = "empty text"
+
+
+class NoPassage(Malformed):
+    """A note of headings, front matter and blank lines only: nothing on it becomes a claim,
+    so nothing of it is stored (review 7.6)."""
+
+    reason = "no body text"
+
+
+NO_PASSAGE = (
+    "the note holds no body text, only headings or front matter: write the text under a heading"
+)
 
 
 class PastBound(Malformed):
@@ -1192,6 +1206,8 @@ class Memory:
         target = self.project(project)
         if not text.strip():
             raise EmptyText("the note's text is empty")
+        if not any(span.kind in CONTENT_KINDS for span in chunk("", text)):
+            raise NoPassage(NO_PASSAGE)  # nothing stored, counted or bound to its topic
         self._room_on_page(target, text, title, topic, source_ref)  # PageFull: nothing stored
         try:
             note, created = self.store.add_note(

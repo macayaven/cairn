@@ -1,6 +1,11 @@
-"""Pure Slack message builders. Callers own authorization and reply visibility."""
+"""Pure Slack message builders. Callers own authorization and reply visibility. A message
+that names the product names it as the caller says (`product`; PRODUCT when not said)."""
 
 from urllib.parse import quote, urlsplit
+
+PRODUCT = "cairn"  # the name a message gives the product when the caller names none
+SHOWN = 5  # the claims a search answer shows; the rest are counted and linked
+OUTSIDE = "outside text"  # a hit whose note a source wrote: the search page's own mark
 
 
 def escape(text: str) -> str:
@@ -63,14 +68,17 @@ def _one(raw: str) -> dict:
     return _message(text, [text])
 
 
-def found(hits: list[dict], *, query: str, base_url: str) -> dict:
-    """Render only the first five authorized recall hits, with claim-position links."""
+def found(hits: list[dict], *, query: str, base_url: str, asked: int | None = None) -> dict:
+    """Render only the first SHOWN authorized recall hits, with claim-position links, each
+    hit of outside text marked as the search page marks it. With more hits than that, say
+    how many there are ("5 of 12", "or more" when the search found as many as it `asked`
+    for) and give the search page's address for the rest; the rest are only counted."""
     if not hits:
         return nothing_found(query)
     heading = "Found claims for: " + _text(query, 300)
     sections = [heading]
     fallback = [heading]
-    for hit in hits[:5]:
+    for hit in hits[:SHOWN]:
         project = str(hit["project"])
         page = str(hit["page"])
         claim_id = str(hit["claim_id"])
@@ -80,13 +88,22 @@ def found(hits: list[dict], *, query: str, base_url: str) -> dict:
         )
         title = str(hit["title"])
         metadata = f"Project: {_text(project, 350)} · Version: {_text(hit['version'], 100)}"
+        if hit.get("outside"):
+            metadata += f" · {OUTSIDE}"
         evidence = _text(hit["text"], 1100) or "(Empty claim)"
         sections.append(f"{_link(title, url)}\n{metadata}\n{evidence}")
         fallback.append(
             f"{_text(title or 'Untitled', 150)}\n"
-            f"Project: {_text(project, 100)} · Version: {_text(hit['version'], 50)}\n"
+            f"Project: {_text(project, 100)} · Version: {_text(hit['version'], 50)}"
+            f"{f' · {OUTSIDE}' if hit.get('outside') else ''}\n"
             f"{_text(hit['text'], 300) or '(Empty claim)'}"
         )
+    if len(hits) > SHOWN:
+        more = " or more" if asked is not None and len(hits) >= asked else ""
+        count = f"{SHOWN} of {len(hits)}{more} claims shown."
+        rest = f"{base_url.rstrip('/')}/search?q={quote(query, safe='')}"
+        sections.append(f"{count} {_link('See them all on the search page', rest)}")
+        fallback.append(f"{count} The search page has them all: {_url(rest) or 'unavailable'}")
     return _message("\n".join(fallback), sections)
 
 
@@ -95,13 +112,24 @@ def nothing_found(query: str) -> dict:
 
 
 def filed(
-    *, title: str, page_url: str, project: str, already: bool = False, waiting: bool = False
+    *,
+    title: str,
+    page_url: str,
+    project: str,
+    already: bool = False,
+    waiting: bool = False,
+    project_url: str | None = None,
 ) -> dict:
+    """A note filed, or filed already, linking its page. A note stored and still `waiting`
+    for its page links its project (`project_url`), since the page is not there yet."""
     if waiting and not already:
-        status = f"Note stored in {_text(project, 350)}. It will appear shortly."
+        status = f"Note stored in {_text(project, 350)}. Its page will appear shortly."
+        shown = (
+            f"Note stored in {_link(project, project_url) if project_url else _text(project, 350)}"
+        )
         return _message(
             f"{status}\n{_text(title or 'Untitled', 450)}",
-            [f"{status}\n{_link(title, page_url)}"],
+            [f"{shown}. Its page will appear shortly.\n{_text(title or 'Untitled', 450)}"],
         )
     status = "Already filed" if already else "Filed"
     fallback = f"{status}: {_text(title or 'Untitled', 450)}\nProject: {_text(project, 350)}"
@@ -110,26 +138,32 @@ def filed(
     )
 
 
+def name_of(product: str) -> str:
+    """The product's name as a message says it, escaped for Slack."""
+    return _text(product or PRODUCT, 100)
+
+
 def refused(reason: str) -> dict:
     return _one(f"Cannot do that: {reason or 'No reason was provided.'}")
 
 
-def link_prompt(url: str, command: str = "/cairn") -> dict:
+def link_prompt(url: str, command: str = "/cairn", *, product: str = PRODUCT) -> dict:
     """The two steps of a link, for a Slack user who is not linked: the address to open
     signed in, which shows a code, and the code typed back here with `<command> link`."""
     name = _text(command or "/cairn", 200)
     explanation = (
-        "Link your Slack user to your cairn account in two steps, both within 10 minutes."
-        " Open the address below, signed in to cairn. It shows you a code."
+        f"Link your Slack user to your {name_of(product)} account in two steps, both within 10"
+        f" minutes. Open the address below, signed in to {name_of(product)}. It shows you a"
+        " code."
         f" Then type `{name} link` and the code here."
         " The address is yours alone and works once: send it to no one."
     )
     fallback = f"{explanation}\n{_url(url) or 'Link unavailable. Request a new link.'}"
-    return _message(fallback, [f"{explanation}\n{_link('Open cairn to get your code', url)}"])
+    return _message(fallback, [f"{explanation}\n{_link(f'Open {product} to get your code', url)}"])
 
 
-def linked(person: str) -> dict:
-    return _one(f"Linked to {person or 'your cairn account'}.")
+def linked(person: str, *, product: str = PRODUCT) -> dict:
+    return _one(f"Linked to {person or f'your {product} account'}.")
 
 
 def unlinked(command: str = "/cairn") -> dict:
@@ -149,19 +183,20 @@ def project_is(project: str | None, *, writable: list[str]) -> dict:
     return _message(text, [text])
 
 
-def help_text(command: str) -> dict:
+def help_text(command: str, *, product: str = PRODUCT) -> dict:
     name = _text(command or "/cairn", 200)
+    called = name_of(product)
     text = "\n".join(
         [
-            "cairn help",
-            f"Link your cairn account with `{name} link`.",
-            f"Unlink your cairn account with `{name} unlink`.",
+            f"{called} help",
+            f"Link your {called} account with `{name} link`.",
+            f"Unlink your {called} account with `{name} unlink`.",
             f"Find claims with `{name} find <words>`.",
             f"File a note with `{name} note <text>`.",
             f"Show or choose your Slack project with `{name} project [name]`.",
             f"Show this help with `{name} help`.",
             "In a direct message, enter search words, `note: <text>`, or `help`.",
-            'Use the message shortcut "File in cairn" to file a selected message.',
+            f'Use the message shortcut "File in {called}" to file a selected message.',
         ]
     )
     # Escape only the static placeholders; the custom command is already escaped.

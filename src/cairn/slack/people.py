@@ -16,12 +16,13 @@ Who asks
   refusal that says nothing of whether a project of that name exists (NOT_WRITABLE).
 
 A search and a note, as the person's
-- `search`: Memory.recall(query, limit=5), in their reach; a project out of it contributes
-  nothing, not even a count (blocks.found shows only the hits).
+- `search`: Memory.recall(query, limit=FOUND_COUNTED), in their reach; blocks.found shows
+  the first five and says how many of what came back it shows, with the search page's
+  address for the rest. A project out of reach contributes nothing, not even a count.
 - `write`: Memory.note into the person's Slack project, `via` "slack", whole: the note is
   stored, then compiled into its page (extractive, no model) before this returns, so when
   Slack is answered the note is in the store (D8); a page that kept moving leaves it stored
-  and waiting for `serve` (N1), and the answer still links its page. Then
+  and waiting for `serve` (N1), and the answer links its project, the page not being there. Then
   Store.record_slack_note records it as having come through the install, only when the
   note is new: filed, with its conversation and message time, or typed (a text the project
   held already came in some other way, stores nothing and is not forgotten with the install,
@@ -91,7 +92,8 @@ from cairn.store import CannotWrite, Project, StoreUnusable, stored_key
 from cairn.store.slack import SlackPerson, TeamChanged
 
 log = logging.getLogger("cairn.slack")
-FOUND_AT_ONCE = 5  # claims a search shows
+FOUND_AT_ONCE = blocks.SHOWN  # claims a search shows
+FOUND_COUNTED = 30  # claims a search asks for, to say how many it shows of (the web's UI_HITS)
 AUTHOR_WITHIN = 1.5  # seconds Slack has, in all, to say who wrote a message
 KNOWN_FOR = timedelta(minutes=10)  # how long a positive answer about an author is kept
 KNOWN_MAX = 512  # answers kept at most, the oldest dropped first
@@ -226,12 +228,12 @@ def page_url(context: Context, project: str, slug: str) -> str:
 def search(context: Context, asker: Asker, query: str) -> dict:
     """The person's search (the module). Blocking: run it on a worker thread."""
     try:
-        hits = asker.memory.recall(query, limit=FOUND_AT_ONCE)["hits"]
+        hits = asker.memory.recall(query, limit=FOUND_COUNTED)["hits"]
     except RequestError as refused:
         return blocks.refused(str(refused))
     if not hits:
         return blocks.nothing_found(query)
-    return blocks.found(hits, query=query, base_url=context.public_url)
+    return blocks.found(hits, query=query, base_url=context.public_url, asked=FOUND_COUNTED)
 
 
 def writable(memory: Memory) -> list[Project]:
@@ -338,13 +340,19 @@ def write(
         page_url=page_url(context, project.name, answer["page"]),
         project=project.name,
         waiting=answer.get("status") == WAITING,
+        project_url=f"{context.public_url}/b/{quote(project.name, safe='')}",
     )
 
 
-def filed_message(*, title: str, page_url: str, project: str, waiting: bool) -> dict:
+def filed_message(
+    *, title: str, page_url: str, project: str, waiting: bool, project_url: str | None = None
+) -> dict:
     """What a person is told of a note written: the one seam for it. `waiting`: the note is
-    stored and waits for its page (Memory.note's status WAITING, N1)."""
-    return blocks.filed(title=title, page_url=page_url, project=project, waiting=waiting)
+    stored and waits for its page (Memory.note's status WAITING, N1), so it links its
+    project (`project_url`), not a page that is not there yet."""
+    return blocks.filed(
+        title=title, page_url=page_url, project=project, waiting=waiting, project_url=project_url
+    )
 
 
 async def written(context: Context, asker: Asker, text: str, **fields: Any) -> dict:

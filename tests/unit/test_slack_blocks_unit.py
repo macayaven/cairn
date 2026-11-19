@@ -136,16 +136,18 @@ def test_filed_links_page_and_distinguishes_duplicate(already, word):
     assert_valid(payload)
 
 
-def test_waiting_note_says_stored_and_links_the_page_that_will_appear_shortly():
+def test_waiting_note_says_stored_and_links_its_project_until_its_page_appears():
     payload = blocks.filed(
-        title="Note & <x>", page_url="https://example.test/p", project="lab", waiting=True
-    )
+        title="Note & <x>", page_url="https://example.test/p", project="lab", waiting=True,
+        project_url="https://example.test/b/lab",
+    )  # fmt: skip
     for text in (payload["text"], section_text(payload)):
         assert "stored" in text.lower() and "appear shortly" in text.lower()
         assert "Filed" not in text
         assert "—" not in text and ";" not in re.sub(r"&(?:amp|lt|gt);", "", text)
         assert ": " not in text
-    assert "<https://example.test/p|Note &amp; &lt;x&gt;>" in section_text(payload)
+    assert "<https://example.test/b/lab|lab>" in section_text(payload)
+    assert "Note &amp; &lt;x&gt;" in section_text(payload) and "example.test/p" not in str(payload)
     assert "lab" in payload["text"]
     assert_valid(payload)
 

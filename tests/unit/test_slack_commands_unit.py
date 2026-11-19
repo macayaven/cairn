@@ -183,7 +183,7 @@ def test_a_link_to_someone_no_longer_a_member_is_no_link(bench):
     assert "link?t=" in said(ask(bench, "find jars"))
 
 
-def test_find_runs_the_persons_search_for_five_and_links_each_claim(bench, monkeypatch):
+def test_find_runs_the_persons_search_shows_five_and_counts_the_rest(bench, monkeypatch):
     bench.link(ADA_SLACK, bench.ada, bench.library)
     for n in range(7):
         claim = Claim(id=f"cl_jar{n:04d}", text=f"Jar {n} holds quince.", span_ids=())
@@ -197,8 +197,10 @@ def test_find_runs_the_persons_search_for_five_and_links_each_claim(bench, monke
 
     monkeypatch.setattr(Memory, "recall", spying)
     answer = said(ask(bench, "find   quince jars "))
-    assert asked == [("quince jars", 5)]
+    assert asked == [("quince jars", people.FOUND_COUNTED)]
     assert answer.count(f"<{BASE}/b/library/p/jar-") == 5
+    assert "5 of 7 claims shown." in answer
+    assert f"<{BASE}/search?q=quince%20jars|See them all on the search page>" in answer
 
 
 def test_find_with_no_words_is_help_and_nothing_found_is_said(bench):
@@ -321,16 +323,18 @@ def test_a_note_waiting_for_its_page_is_answered_through_the_one_seam_for_it(ben
     assert said(ask(bench, "note Row 4 holds the quince jars.")) == said(blocks.refused("seam"))
     url = f"{BASE}/b/library/p/row-4-holds-the-quince-jars"
     assert asked == [{"title": "Row 4 holds the quince jars.", "page_url": url,
-                      "project": "library", "waiting": True}]  # fmt: skip
+                      "project": "library", "waiting": True,
+                      "project_url": f"{BASE}/b/library"}]  # fmt: skip
     monkeypatch.undo()
     for flag in (True, False):
         fields = {**asked[0], "waiting": flag}
         assert people.filed_message(**fields) == blocks.filed(
-            title=fields["title"], page_url=url, project="library", waiting=flag
-        )
+            title=fields["title"], page_url=url, project="library", waiting=flag,
+            project_url=f"{BASE}/b/library",
+        )  # fmt: skip
 
 
-def test_waiting_command_keeps_the_note_and_links_its_future_page(bench, monkeypatch):
+def test_waiting_command_keeps_the_note_and_links_its_project(bench, monkeypatch):
     bench.link(ADA_SLACK, bench.ada, bench.library)
 
     def moving(*args, **kwargs):
@@ -344,7 +348,8 @@ def test_waiting_command_keeps_the_note_and_links_its_future_page(bench, monkeyp
     for text in (payload["text"], payload["blocks"][0]["text"]["text"]):
         assert "stored" in text.lower() and "appear shortly" in text.lower()
         assert "Filed" not in text
-    assert f"<{BASE}/b/library/p/row-4-holds-the-quince-jars|" in said(payload)
+    assert f"<{BASE}/b/library|library>" in said(payload)
+    assert "/p/row-4-holds-the-quince-jars" not in said(payload)  # no page there yet
 
 
 def test_the_command_is_the_installs(bench):

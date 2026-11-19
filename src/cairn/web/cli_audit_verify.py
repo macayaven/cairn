@@ -4,7 +4,9 @@ here): whether each workspace's audit trail still chains (cairn.store.audit.chec
 It opens the file as `stats` does (cairn.web.cli_stats): read-only, with SQLite alone, never
 through the store, which would upgrade an older database and so write the very values it is
 asked to check. It refuses as `stats` does, with the same lines, and an older schema with its
-own OLDER_DATABASE. Nothing is written, made, removed, or changed in mode.
+own OLDER_DATABASE. Nothing is written, made, removed, or changed in mode. It runs beside a
+serving cairn: the check is one read transaction (check_trail), so a prune the server commits
+meanwhile does not change the verdict.
 
 For each workspace, in creation order (or the one --workspace names), one line: how many
 events it checked and that the chain holds, or the first event whose value does not follow

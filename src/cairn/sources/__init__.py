@@ -784,7 +784,7 @@ def withheld_via() -> frozenset[str]:
 
 
 # The `via` of notes held back from a model that no kind in KINDS writes: Slack's
-# (cairn.slack.people.written, for a filed message, a note typed with the command and a direct
+# (cairn.slack.people.write, for a filed message, a note typed with the command and a direct
 # message alike). Slack is not a kind: it cannot be added, listed or switched on as a source.
 # Held by `via` alone, never by `source_ref`, and sent only when the operator names it
 # (<PREFIX>_SLACK_NOTES=send, cairn.web.cli_arrange): <PREFIX>_SOURCE_NOTES=send does not.

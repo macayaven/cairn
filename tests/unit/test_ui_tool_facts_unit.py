@@ -411,7 +411,9 @@ def test_a_provider_sign_in_sets_a_twelve_hour_cookie_and_keeps_no_password(tmp_
             done = client.get(f"/auth/github/callback?code=c&state={state}", follow_redirects=False)
             assert done.status_code == 200
             cookie = next(
-                c for c in done.headers.get_list("set-cookie") if c.startswith("cairn_session=")
+                c
+                for c in done.headers.get_list("set-cookie")
+                if c.startswith("__Host-cairn_session=")
             )
             assert "max-age=43200" in cookie.lower()
             now[0] = NOW + timedelta(hours=12) - timedelta(seconds=1)

@@ -45,7 +45,12 @@ SESSION_COOKIE = "cairn_session"
 BRANDED_SESSION_COOKIE = "session"  # its name under a brand (B1): no cookie names cairn
 HOST_ONLY = "__Host-"  # a browser takes such a cookie only Secure, at Path=/, with no Domain
 # Every name the session cookie has had: signing out ends and clears each one a browser sends.
-SESSION_COOKIES = (SESSION_COOKIE, BRANDED_SESSION_COOKIE, HOST_ONLY + BRANDED_SESSION_COOKIE)
+SESSION_COOKIES = (
+    SESSION_COOKIE,
+    BRANDED_SESSION_COOKIE,
+    HOST_ONLY + BRANDED_SESSION_COOKIE,
+    HOST_ONLY + SESSION_COOKIE,
+)
 MEMORY = "cairn.memory"  # the ASGI scope key under which Auth puts the caller's Memory
 COMPILES = SCOPE_KEY  # ... and the server's turns of compiles (G1; cairn.web.turns)
 WALLED = "cairn.walled"  # ... and whether the wall answers for the address (B1)
@@ -60,8 +65,8 @@ RATE_LIMITED = "rate_limited"  # the action of a request refused for its workspa
 
 
 def branded_cookie(name: str, secure: bool) -> str:
-    """The name of a cookie under a brand (B1): `name` with the __Host- prefix when the site
-    is https (`secure`), else `name` as it is (a browser refuses the prefix without Secure).
+    """The name of a cookie: `name` with the __Host- prefix when the site is https
+    (`secure`), else `name` as it is (a browser refuses the prefix without Secure).
 
     Why the prefix: another host under the same parent domain can set a cookie of a plain
     name for the whole parent domain, and the browser sends it along with this server's own,
@@ -70,9 +75,11 @@ def branded_cookie(name: str, secure: bool) -> str:
     host, and the server reads only the name it sets. The session cookie and the sign-in
     state cookie (cairn.web.signin) both take their names from here.
 
-    Without a brand the names stay `cairn_session` and `cairn_signin`, with no prefix: frozen
-    tests pin them, and every byte without the settings is today's. Over plain http the
-    branded names carry no prefix either; there a planted cookie can still shadow them."""
+    Without a brand the names are `cairn_session` and `cairn_signin`, with the prefix on
+    https as under a brand (`__Host-cairn_session`, `__Host-cairn_signin`); a cookie a
+    browser still sends under the old name signs nobody in, and Auth clears it
+    (Sessions.retired). Over plain http no name carries the prefix; there a planted cookie
+    can still shadow them."""
     return f"{HOST_ONLY}{name}" if secure else name
 
 
@@ -96,6 +103,10 @@ class Sessions:
     seconds: int = SESSION_TTL
     renews: bool = False
     secure: bool = False
+    # Cookies of names this server no longer reads, each with its path: a request that sends
+    # one off /api and /mcp gets it cleared in the answer (on https without a brand, the
+    # names before the __Host- prefix: cairn_session at /, cairn_signin at /auth).
+    retired: tuple[tuple[str, str], ...] = ()
 
     def set(self, response: Response, token: str, seconds: int | None = None) -> None:
         response.set_cookie(
@@ -131,6 +142,29 @@ class Sessions:
             await send(message)
 
         return sending
+
+
+def _clearing(send: Send, retired: Sequence[tuple[str, str]]) -> Send:
+    """`send`, with each cookie of `retired` (name, path) cleared in the response, unless the
+    response sets that cookie itself."""
+    made = Response()
+    for name, path in retired:
+        made.delete_cookie(name, path=path, secure=True, httponly=True, samesite="strict")
+    cleared = [(name, value) for name, value in made.raw_headers if name == b"set-cookie"]
+
+    async def sending(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            headers = list(message.get("headers", []))
+            own = [v for n, v in headers if n.lower() == b"set-cookie"]
+            added = [
+                (name, value)
+                for name, value in cleared
+                if not any(v.startswith(value.partition(b"=")[0] + b"=") for v in own)
+            ]
+            message = {**message, "headers": [*headers, *added]}
+        await send(message)
+
+    return sending
 
 
 def _is_api(path: str) -> bool:
@@ -373,6 +407,14 @@ class Auth:
         self.wall = wall
         self.draft = draft
 
+    def _retired(self, scope: Scope) -> list[tuple[str, str]]:
+        """The cookies of retired names (Sessions.retired) the request sends."""
+        retired = self.accounts.sessions.retired
+        if not retired:
+            return []
+        sent = HTTPConnection(scope).cookies
+        return [(name, path) for name, path in retired if name in sent]
+
     def machine(self, scope: Scope) -> bool:
         """Whether the address is one machines use, which the wall leaves as it is."""
         path = scope["path"]
@@ -388,6 +430,8 @@ class Auth:
         path = scope["path"]
         if _is_api(path):  # H1: every answer to a machine, whatever answers it, is no-store
             send = _no_store(send)
+        elif retired := self._retired(scope):  # an old cookie name: cleared, never read
+            send = _clearing(send, retired)
         PATH.set(path)  # where the reader is, for the page that answers (templating.section)
         scope[BRAND] = self.brand  # what every page's frame names (templating.brand_of)
         walled = self.wall and not self.machine(scope)

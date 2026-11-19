@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 from cairn.server import SESSION_COOKIE, create_app
 from cairn.store import Store
 from cairn.store.memory import PROJECT_NAME
+from cairn.web.auth import HOST_ONLY
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.acme.example/pool-1"
@@ -136,14 +137,14 @@ def test_the_audit_page_shows_them_to_the_owner_and_not_to_the_admin(world):
     named_again(world)
     [gone] = refiled(world.ada.view.list_audit())
     with TestClient(create_app(world.store, public_url=BASE), base_url=BASE) as client:
-        client.cookies.set(SESSION_COOKIE, world.brook.token)
+        client.cookies.set(HOST_ONLY + SESSION_COOKIE, world.brook.token)
         seen = client.get("/audit")
         assert seen.status_code == 200
         assert "recruiting" in seen.text  # the new source's source.added
         assert gone not in seen.text and "source.synced" not in seen.text
         assert "ops" in seen.text
         client.cookies.clear()
-        client.cookies.set(SESSION_COOKIE, world.ada.token)
+        client.cookies.set(HOST_ONLY + SESSION_COOKIE, world.ada.token)
         seen = client.get("/audit")
         assert seen.status_code == 200
         assert gone in seen.text and "source.synced" in seen.text

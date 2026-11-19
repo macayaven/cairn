@@ -14,10 +14,10 @@ The contract
   are kept under way (a sixth start drops the oldest, and only the oldest), each for the ten
   minutes a sign-in has, each usable once. A finished, refused or cancelled sign-in takes
   only its own state out; the others stay and still work.
-- The state cookie keeps its name and its attributes: `cairn_signin` (Path=/auth) without a
-  brand, `__Host-signin` (Path=/) under a brand on https, `signin` (Path=/auth) under a brand
-  on plain http; HttpOnly, SameSite=Lax, Secure on https, Max-Age ten minutes. Only what the
-  server writes inside it changes, and that stays sealed: a state from another browser, a
+- The state cookie keeps its name and its attributes: `__Host-cairn_signin` (Path=/) without
+  a brand on https, `__Host-signin` (Path=/) under a brand on https, `signin` (Path=/auth)
+  under a brand on plain http; HttpOnly, SameSite=Lax, Secure on https, Max-Age ten minutes.
+  Only what the server writes inside it changes, and that stays sealed: a state from another browser, a
   tampered cookie and a return with no cookie are refused as before (400, nothing written,
   no call to the provider). The whole cookie stays under 4,000 bytes whatever the providers'
   names and the `next` addresses are: the oldest are dropped until it fits.
@@ -192,11 +192,11 @@ class World:
         self.base, settings = SETUPS[setup]
         self.secure = self.base.startswith("https://")
         branded = "brand_name" in settings
-        self.state_cookie = (
-            branded_cookie(BRANDED_STATE_COOKIE, self.secure) if branded else STATE_COOKIE
+        self.state_cookie = branded_cookie(
+            BRANDED_STATE_COOKIE if branded else STATE_COOKIE, self.secure
         )
-        self.session_cookie = (
-            branded_cookie(BRANDED_SESSION_COOKIE, self.secure) if branded else SESSION_COOKIE
+        self.session_cookie = branded_cookie(
+            BRANDED_SESSION_COOKIE if branded else SESSION_COOKIE, self.secure
         )
         self.state_path = "/" if self.state_cookie.startswith(HOST_ONLY) else STATE_PATH
         self.db = folder / "kb.db"
@@ -410,9 +410,9 @@ def test_the_state_cookie_keeps_its_name_and_attributes(make, setup):
             assert int(attributes["max-age"]) == STATE_TTL and value, attributes
 
     # The frozen tests' names (H4, B1).
-    names = {"plain": "cairn_signin", "branded": "__Host-signin", "branded-http": "signin"}
+    names = {"plain": "__Host-cairn_signin", "branded": "__Host-signin", "branded-http": "signin"}
     assert world.state_cookie == names[setup]
-    assert world.state_path == {"plain": "/auth", "branded": "/", "branded-http": "/auth"}[setup]
+    assert world.state_path == {"plain": "/", "branded": "/", "branded-http": "/auth"}[setup]
 
     started = []
     for n in range(6):

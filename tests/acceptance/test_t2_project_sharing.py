@@ -122,7 +122,7 @@ class World:
             id=signed.user.id,
             name=name,
             email=address(name),
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"__Host-cairn_session={signed.token}"},
             account=signed.account_id,
             view=self.store.for_account(signed.account_id, signed.user.id),
         )

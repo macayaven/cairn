@@ -158,7 +158,7 @@ def build(tmp_path, *, explorer: bool, pages: int = 3, notes: int = 3, name: str
         return SimpleNamespace(
             name=who,
             user=signed.user,
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"__Host-cairn_session={signed.token}"},
             view=store.for_account(signed.account_id, signed.user.id),
         )
 

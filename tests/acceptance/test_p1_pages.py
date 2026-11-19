@@ -153,7 +153,7 @@ def world(tmp_path):
         email = f"{name.lower()}@acme.example"
         signed = store.sign_in("sso", f"sub-{name}", email, name, issuer=ISSUER, join="default")
         view = store.for_account(signed.account_id, signed.user.id)
-        cookie = {"cookie": f"cairn_session={signed.token}"}
+        cookie = {"cookie": f"__Host-cairn_session={signed.token}"}
         return SimpleNamespace(name=name, cookie=cookie, view=view)
 
     ada, brook = person("Ada"), person("Brook")

@@ -268,7 +268,7 @@ class World:
         return SimpleNamespace(
             id=signed.user.id,
             name=name,
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"__Host-cairn_session={signed.token}"},
             view=self.store.for_account(signed.account_id, signed.user.id),
         )
 

@@ -118,7 +118,7 @@ class World:
             name=name,
             email=email,
             token=signed.token,
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"__Host-cairn_session={signed.token}"},
             account=signed.account_id,
             view=self.store.for_account(signed.account_id, signed.user.id),
         )
@@ -524,14 +524,14 @@ def test_people_are_managed_in_the_web_view(world):
         assert dump(world.db) == before  # looking at an invite writes nothing
         joined = post(newcomer, f"/join/{token}")
         assert joined.status_code == 303 and joined.headers["location"] == "/"
-        session = joined.cookies["cairn_session"]
+        session = joined.cookies["__Host-cairn_session"]
         client.cookies.clear()
         there = world.store.resolve_session(session)
         assert (there.account_id, there.user_id) == (world.account, newcomer.id)
         assert client.get(f"/join/{token}", headers=newcomer.cookie).status_code == 404
 
         # Eve is in two workspaces now and moves between them.
-        eve_here = {"cookie": f"cairn_session={session}"}
+        eve_here = {"cookie": f"__Host-cairn_session={session}"}
         places = client.get("/workspaces", headers=eve_here)
         assert places.status_code == 200 and f"/workspaces/{newcomer.account}/switch" in places.text
         back = client.post(
@@ -540,7 +540,7 @@ def test_people_are_managed_in_the_web_view(world):
             follow_redirects=False,
         )
         assert back.status_code == 303
-        home = world.store.resolve_session(back.cookies["cairn_session"])
+        home = world.store.resolve_session(back.cookies["__Host-cairn_session"])
         assert home.account_id == newcomer.account
         client.cookies.clear()
         elsewhere = client.post(

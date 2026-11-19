@@ -87,7 +87,7 @@ class World:
 
     def browser(self, person: dict) -> TestClient:
         client = TestClient(self.app, base_url=BASE)
-        client.cookies.set("cairn_session", person["token"], domain=HOST, path="/")
+        client.cookies.set("__Host-cairn_session", person["token"], domain=HOST, path="/")
         self.clients.append(client)
         return client
 

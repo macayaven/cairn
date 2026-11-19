@@ -320,7 +320,7 @@ def signin_routes(
     it says without it, and brand_signin.html does not change. Nobody's admission changes."""
     issuer, domains, emails = check(sign_in, public_url)
     secure = issuer.startswith("https://")
-    state_cookie = STATE_COOKIE if brand is None else branded_cookie(BRANDED_STATE_COOKIE, secure)
+    state_cookie = branded_cookie(BRANDED_STATE_COOKIE if brand else STATE_COOKIE, secure)
     state_path = "/" if state_cookie.startswith(HOST_ONLY) else STATE_PATH  # the prefix's rule
     replaced = _REPLACED.format(server=server_name(brand))
     lasts = _lasts(accounts.sessions)  # what signin.html says of the cookie it sets

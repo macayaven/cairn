@@ -343,7 +343,7 @@ def browser(world: World, person: k1.Person) -> TestClient:
     """A browser signed in as `person`."""
     token = world.store.for_account(world.account, person.id).create_session()
     signed_in = TestClient(world.app, base_url=BASE)
-    signed_in.cookies.set("cairn_session", token, domain="cairn.example.test", path="/")
+    signed_in.cookies.set("__Host-cairn_session", token, domain="cairn.example.test", path="/")
     return signed_in
 
 

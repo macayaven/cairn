@@ -123,10 +123,10 @@ def test_email_domains_are_compared_without_case(store, fake):
 # The sign-in round trip
 
 
-def test_the_state_cookie_is_scoped_to_the_sign_in_routes_and_cleared_after(client):
+def test_the_state_cookie_is_host_only_on_https_and_cleared_after(client):
     started = client.get("/auth/github", follow_redirects=False)
     cookie = next(c for c in started.headers.get_list("set-cookie") if "cairn_signin=" in c)
-    assert "path=/auth" in cookie.lower()
+    assert cookie.startswith("__Host-cairn_signin=") and "path=/;" in cookie.lower()
     state = query(started.headers["location"])["state"]
     done = client.get(f"/auth/github/callback?code=c&state={state}", follow_redirects=False)
     assert done.status_code == 200
@@ -173,7 +173,7 @@ def test_callbacks_without_a_code_settle_nothing_and_call_no_provider(store, fak
         async with at("198.18.0.1") as client:
             started = await client.get("/auth/github")
         state = query(started.headers["location"])["state"]
-        cookie = {"cookie": f"cairn_signin={started.cookies['cairn_signin']}"}
+        cookie = {"cookie": f"__Host-cairn_signin={started.cookies['__Host-cairn_signin']}"}
         each = SIGN_INS - 5  # under the per-address limit, from 400 addresses: 10,000 calls
         for n in range(10_000 // each):
             async with at(f"198.18.{1 + n // 200}.{1 + n % 200}") as client:
@@ -295,7 +295,7 @@ def test_a_signed_out_share_comes_back_with_its_text_after_a_provider_sign_in(st
     target = re.search(r'url=([^"]+)"', done.text).group(1).replace("&amp;", "&")
     assert target == f"/welcome?next={quote(SHARED, safe='')}"  # a new person: welcome first
     # (with no project yet the composer offers a new project instead: M1's rule)
-    account = store.resolve_session(client.cookies["cairn_session"]).account_id
+    account = store.resolve_session(client.cookies["__Host-cairn_session"]).account_id
     store.for_account(account).create_project("inbox")
     welcome = client.get(target).text
     onward = re.search(r"continue there", welcome) and re.search(r'href="(/new\?[^"]*)"', welcome)

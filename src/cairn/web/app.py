@@ -71,7 +71,7 @@ from cairn.web.members import member_routes
 from cairn.web.public import Public
 from cairn.web.ratelimit import CredentialFailures, RateLimiter
 from cairn.web.rest import rest_routes
-from cairn.web.signin import SignIn, signin_routes
+from cairn.web.signin import STATE_COOKIE, STATE_PATH, SignIn, signin_routes
 from cairn.web.slack import (
     Keeper,
     OneClient,
@@ -469,10 +469,12 @@ def create_app(
     issuer = oauth.issuer(public_url)  # None: OAuth is off
     secure = (public_url or "").lower().startswith("https://")
     sessions = Sessions(
-        cookie=branded_cookie(BRANDED_SESSION_COOKIE, secure) if brand else SESSION_COOKIE,
+        cookie=branded_cookie(BRANDED_SESSION_COOKIE if brand else SESSION_COOKIE, secure),
         seconds=session_days * 86_400 if session_days else SESSION_TTL,
         renews=session_days is not None,
         secure=secure,
+        # the names before the __Host- prefix, on https without a brand: cleared, never read
+        retired=((SESSION_COOKIE, "/"), (STATE_COOKIE, STATE_PATH)) if secure and not brand else (),
     )
     accounts = Accounts(
         store,

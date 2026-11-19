@@ -72,7 +72,7 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
 import re
 from collections.abc import Iterable, Mapping
 
-from cairn.compiler import CandidatePage, GateResult
+from cairn.candidate import CandidatePage, GateResult
 from cairn.lint import ClaimInput, PageInput, lint_pages
 from cairn.spans import Span, chunk
 from cairn.store import Claim

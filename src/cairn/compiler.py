@@ -84,8 +84,10 @@ import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
+from cairn.candidate import CandidatePage, GateResult
+from cairn.gate import verbatim_gate
 from cairn.spans import Span, claim_id
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
 from cairn.topics import topic_tag
@@ -99,21 +101,6 @@ _ADDRESS_BATCH = 8  # slugs looked up in one read when choosing a new page's add
 # A code fence, three or more backticks or tildes after any indentation and any list marker
 # (a fence may open on an item's marker line), and its info string.
 _FENCE = re.compile(r"([ \t]*)((?:[-*+]|\d{1,9}[.)])[ \t]+)?(`{3,}|~{3,})(.*)")
-
-
-class GateResult(BaseModel):
-    passed: bool
-    violations: list[str] = Field(default_factory=list)
-    metrics: dict[str, Any] = Field(default_factory=dict)
-
-
-class CandidatePage(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    slug: str
-    title: str
-    body: str
-    claims: tuple[Claim, ...]
 
 
 Gate = Callable[[CandidatePage, Mapping[str, Span]], GateResult]
@@ -481,8 +468,6 @@ def compile_note(
 
 
 def _verbatim_gate() -> Gate:
-    from cairn.gate import verbatim_gate  # cairn.gate builds on this module
-
     return verbatim_gate
 
 

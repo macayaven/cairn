@@ -89,7 +89,7 @@ def kept_claims(
     A kept claim whose id was made from a forgotten span (spans.claim_id: a span id is a
     digest of its text) takes the id of the first span it keeps, or, when another claim
     already has that one, an id made from its place and the spans it keeps."""
-    from cairn.gate import whole  # the gate builds on the compiler
+    from cairn.gate import whole  # the gate builds on the store
 
     kept = []
     for claim in claims:

@@ -10,9 +10,11 @@
 # leaves redistributing it inside a public image unclear. The official image is PSF and
 # Debian licensed.
 
-# Both are pinned by the digest of their multi-platform index (amd64 and arm64), so a
-# later build runs the same bytes as this one. To move either: change the tag, look up
-# the new index digest (docker buildx imagetools inspect IMAGE:TAG) and replace it here.
+# Both are pinned by the digest of their multi-platform index (amd64 and arm64). To move
+# either: change the tag, look up the new index digest (docker buildx imagetools inspect
+# IMAGE:TAG) and replace it here. The final stage upgrades the base image's Debian packages
+# from Debian's archive (its security fixes reach the archive before a new index of the base
+# image), so two builds of the same commit can differ in those packages.
 ARG PYTHON=python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 ARG UV=ghcr.io/astral-sh/uv:0.11.19@sha256:b46b03ddfcfbf8f547af7e9eaefdf8a39c8cebcba7c98858d3162bd28cf536f6
 
@@ -39,6 +41,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
 
 FROM ${PYTHON}
+# The base image's Debian packages, up to the fixed versions Debian has published; and no
+# package installer: cairn installs nothing at run time, and the base image's pip carries
+# copies of other packages (pip/_vendor) that a scan reports as the image's own.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes \
+ && rm -rf /var/lib/apt/lists/*
+RUN python -m pip uninstall --yes pip \
+ && rm -rf /usr/local/lib/python3.13/ensurepip/_bundled
 RUN groupadd --system --gid 10001 cairn \
  && useradd --system --uid 10001 --gid cairn --no-create-home --home-dir /nonexistent \
       --shell /usr/sbin/nologin cairn \

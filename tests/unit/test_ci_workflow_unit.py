@@ -65,7 +65,9 @@ def test_publish_waits_for_the_infrastructure_check_and_the_image_stack_and_host
 
 
 def test_gate_runner_uses_json_override_and_defaults_to_hosted():
-    for name in ("changes", "test", "infra", "image", "stack", "host", "release_check"):
+    # `package` runs the build backend, which the release runner must never run (decision 150:
+    # code a job runs could copy the runner's registration).
+    for name in ("changes", "test", "infra", "image", "stack", "host", "release_check", "package"):
         expression = JOBS[name]["runs-on"]
         match = re.fullmatch(
             r"\$\{\{ fromJSON\(vars\.CAIRN_GATE_RUNNER \|\| '([^']+)'\) \}\}", expression
@@ -276,7 +278,7 @@ def test_the_pull_with_no_login_is_the_one_the_run_guide_gives():
 
 
 def test_release_jobs_do_not_run_the_application_environment_or_rehearsals_on_the_host():
-    for name in ("publish", "verify", "deploy"):
+    for name in ("publish", "verify", "deploy", "release"):
         for step in JOBS[name]["steps"]:
             assert not step.get("uses", "").startswith("astral-sh/setup-uv"), name
             command = step.get("run", "")
@@ -700,8 +702,9 @@ CHEAP = {"test", "infra", "changes"}
 THE_GATE = CHEAP | {"image", "stack", "host"}
 EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "deploy"}
 # A v* tag runs the gate, checks the tag against the version, publishes, smoke-tests what it
-# published and makes the GitHub release; it never deploys.
-A_RELEASE = THE_GATE | {"release_check", "publish", "verify", "release"}
+# published, builds the wheel and the source archive and makes the GitHub release; it never
+# deploys.
+A_RELEASE = THE_GATE | {"release_check", "publish", "verify", "package", "release"}
 
 
 def test_which_jobs_run_for_each_event_when_changes_says_nothing():
@@ -1141,7 +1144,7 @@ def test_a_tag_pushed_to_a_private_copy_is_refused_and_publishes_and_releases_no
     )
     ran = jobs_that_run(TAG, failed=frozenset({"release_check"}))
     assert ran == THE_GATE
-    assert not ran & {"publish", "verify", "release", "deploy"}
+    assert not ran & {"publish", "verify", "package", "release", "deploy"}
 
 
 def test_a_tag_that_already_has_a_release_is_refused_by_the_check_step(tmp_path):
@@ -1194,7 +1197,8 @@ def test_a_tag_runs_the_gate_publishes_verifies_and_releases_but_never_deploys()
     assert "deploy" not in A_RELEASE
     # Nothing of a release runs from a pull request or a manual run.
     for event in (pull_request(draft=False), not_a_pull_request("workflow_dispatch", "x/y/z")):
-        assert not jobs_that_run(event) & {"release_check", "publish", "verify", "release"}
+        ran = jobs_that_run(event)
+        assert not ran & {"release_check", "publish", "verify", "package", "release"}
 
 
 def image_tags(context: dict) -> set[str]:
@@ -1259,7 +1263,8 @@ def test_latest_is_published_only_for_the_highest_version_and_never_from_main():
     # published, and X.Y never goes backwards.
     with pytest.raises(release_check.Refused):
         release_tags("v0.1.1", ["v0.1.0", "v0.1.2"])
-    assert not jobs_that_run(TAG, failed=frozenset({"release_check"})) & {"publish", "release"}
+    refused = jobs_that_run(TAG, failed=frozenset({"release_check"}))
+    assert not refused & {"publish", "package", "release"}
     # A push to main publishes main and the commit, never latest, whatever the output says.
     assert image_tags(MAIN_PUSH) == {"main", f"sha-{SHA[:7]}"}
     said_true = {"release_check": {"outputs": {"latest": "true"}}}
@@ -1271,74 +1276,227 @@ def test_latest_is_published_only_for_the_highest_version_and_never_from_main():
     assert build["with"]["provenance"] == "mode=max" and build["with"]["sbom"] is True
 
 
-def test_the_release_is_made_from_the_tag_with_the_changelog_and_the_built_files():
-    job = JOBS["release"]
-    assert needs(job) == {"publish", "verify"}
-    assert evaluate(job["if"], TAG) and not evaluate(job["if"], MAIN_PUSH)
-    assert job["permissions"] == {"contents": "write"}
-    runs = [step.get("run", "") for step in job["steps"]]
+def job_comment(name: str) -> str:
+    """The comment lines just above job NAME, flattened."""
+    lines = RAW_WORKFLOW[: RAW_WORKFLOW.index(f"\n  {name}:\n")].splitlines()
+    comment = []
+    for line in reversed(lines):
+        if not line.startswith("  #"):
+            break
+        comment.insert(0, line.strip().removeprefix("#").strip())
+    return " ".join(" ".join(comment).split())
+
+
+# --- the release's files: built by `package`, released by `release` ---------------------------
+
+# .get: until the job exists, its tests fail one by one rather than the module.
+PACKAGE = JOBS.get("package", {})
+RELEASE = JOBS["release"]
+CONSTRAINTS = REPO / "build-constraints.txt"
+
+
+def test_package_builds_on_a_tag_after_the_check_publish_and_verify():
+    assert needs(PACKAGE) == {"release_check", "publish", "verify"}
+    assert evaluate(PACKAGE["if"], TAG) and not evaluate(PACKAGE["if"], MAIN_PUSH)
+    assert "package" not in jobs_that_run(MAIN_PUSH)
+    # The check refused the tag, or publish or verify failed: nothing is built or released.
+    for failed in ("release_check", "publish", "verify"):
+        ran = jobs_that_run(TAG, failed=frozenset({failed}))
+        assert not ran & {"package", "release", "deploy"}, failed
+
+
+def test_package_holds_no_write_permission_and_no_secret():
+    assert PACKAGE["permissions"] == {"contents": "read"}
+    configuration = yaml.safe_dump(PACKAGE)
+    assert "secrets." not in configuration
+    assert "environment" not in PACKAGE
+    # The checkout fetches with the job's read token and keeps none; nothing after it has one.
+    assert [step["name"] for step in PACKAGE["steps"] if reaches_the_token(step)] == ["Check out"]
+    assert PACKAGE["steps"][0]["with"] == {"persist-credentials": False}
+    uv = next(s for s in PACKAGE["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))
+    # uv's version is pinned; no token, and no cache the gate's jobs wrote on this runner.
+    assert uv["with"] == {"version": "0.11.19", "enable-cache": False, "github-token": ""}
+
+
+def test_package_builds_with_hashed_build_requirements_and_keeps_the_files_briefly():
+    runs = [step.get("run", "") for step in PACKAGE["steps"]]
     notes = next(r for r in runs if "release_check.py" in r)
-    assert notes == (
-        'python3 scripts/release_check.py "$GITHUB_REF_NAME" --notes > "$RUNNER_TEMP/notes.md"'
-    )
+    assert notes.splitlines() == [
+        'mkdir "$RUNNER_TEMP/release"',
+        'python3 scripts/release_check.py "$GITHUB_REF_NAME" --notes'
+        ' > "$RUNNER_TEMP/release/notes.md"',
+    ]
     build = next(r for r in runs if "uv build" in r)
-    assert "uv build --out-dir dist" in build
-    # The release runner runs no test suite and no rehearsal (decision 150): `uv build` makes
-    # the two files, and nothing installs or runs the application's environment.
-    used = [w for r in runs for w in re.findall(r"\buv \w+|\bpytest\b|rehearse_\w+", r)]
-    assert used == ["uv build"], used
-    create = next(step for step in job["steps"] if "gh release create" in step.get("run", ""))
-    assert " ".join(create["run"].split()) == (
-        'gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME"'
-        ' --notes-file "$RUNNER_TEMP/notes.md" dist/*'
+    assert " ".join(build.split()) == (
+        "uv build --build-constraint build-constraints.txt --require-hashes"
+        ' --out-dir "$RUNNER_TEMP/release"'
     )
+    used = [w for r in runs for w in re.findall(r"\buv \w+|\bpip\b|\bpytest\b|rehearse_\w+", r)]
+    assert used == ["uv build"], used
+    upload = PACKAGE["steps"][-1]
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    # Hidden files stay out (the action's default): uv writes a .gitignore into the directory.
+    assert upload["with"] == {
+        "name": "release",
+        "path": "${{ runner.temp }}/release/",
+        "if-no-files-found": "error",
+        "retention-days": 5,
+    }
+
+
+def constraints() -> dict[str, list[str]]:
+    """build-constraints.txt as {name==version: [hashes]}."""
+    text = CONSTRAINTS.read_text(encoding="utf-8").replace("\\\n", " ")
+    found = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            requirement, *options = line.split()
+            found[requirement] = [o.removeprefix("--hash=") for o in options]
+            assert all(o.startswith("--hash=") for o in options), line
+    return found
+
+
+def test_every_build_requirement_is_pinned_with_its_hashes():
+    pinned = constraints()
+    assert len(pinned) > 1
+    for requirement, hashes in pinned.items():
+        assert re.fullmatch(r"[a-z0-9-]+==\d+(\.\d+)+", requirement), requirement
+        assert hashes and all(re.fullmatch(r"sha256:[0-9a-f]{64}", h) for h in hashes), requirement
+    # The backend is the version pyproject.toml asks for.
+    text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    (requires,) = re.findall(r'^requires = \["([^"]+)"\]$', text, re.M)
+    assert requires in pinned
+
+
+def test_release_builds_nothing_installs_nothing_and_checks_out_nothing():
+    assert needs(RELEASE) == {"package", "publish", "verify"}
+    assert RELEASE["if"] == PACKAGE["if"]
+    assert RELEASE["permissions"] == {"contents": "write"}
+    steps = RELEASE["steps"]
+    assert [s.get("uses", "run").split("@")[0] for s in steps] == [
+        "actions/download-artifact",
+        "run",
+        "run",
+    ]
+    configuration = yaml.safe_dump(RELEASE)
+    assert not re.search(r"\buv\b|setup-uv|\bpip\b|actions/checkout", configuration)
+    download = steps[0]
+    assert download["with"] == {"name": "release", "path": "${{ runner.temp }}/release"}
+
+
+def run_release_step(tmp_path, step: dict, files: list[str], tag: str = "v1.2.3"):
+    """A step of job `release` as the runner runs it (bash -e), with FILES in the directory
+    the download step fills, and a gh that prints its arguments, one a line."""
+    release, bin_ = tmp_path / "release", tmp_path / "bin"
+    release.mkdir()
+    bin_.mkdir()
+    for name in files:
+        (release / name).write_text(name)
+    (bin_ / "gh").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    (bin_ / "gh").chmod(0o755)
+    return subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env={"PATH": f"{bin_}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path), "GITHUB_REF_NAME": tag},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+THE_FILES = ["cairn_memory-1.2.3-py3-none-any.whl", "cairn_memory-1.2.3.tar.gz", "notes.md"]
+
+
+def test_the_check_passes_one_wheel_and_one_source_archive_of_the_version(tmp_path):
+    check = RELEASE["steps"][1]
+    done = run_release_step(tmp_path, check, THE_FILES)
+    assert (done.returncode, done.stderr) == (0, ""), done.stdout
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [*THE_FILES, "extra.txt"],
+        [*THE_FILES, "cairn_memory-1.2.3-py3-none-manylinux_2_17_x86_64.whl"],
+        ["cairn_memory-1.2.4-py3-none-any.whl", "cairn_memory-1.2.4.tar.gz", "notes.md"],
+        ["cairn_memory-1.2.3-py3-none-any.whl", "notes.md"],
+        ["cairn_memory-1.2.3-py3-none-any.whl", "cairn_memory-1.2.3.tar.gz"],
+        [*THE_FILES, ".hidden"],
+        [],
+    ],
+)
+def test_the_check_refuses_anything_else(tmp_path, files):
+    done = run_release_step(tmp_path, RELEASE["steps"][1], files)
+    assert done.returncode == 1
+    assert "::error::" in done.stdout
+
+
+def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
+    create = RELEASE["steps"][2]
+    assert create["name"] == "Create the release"
     assert create["env"] == {
         "GH_TOKEN": "${{ github.token }}",
         "GH_REPO": "${{ github.repository }}",
     }
-    uv = next(s for s in job["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))
-    assert uv["with"]["enable-cache"] is False
-    assert job["steps"][0]["with"] == {"persist-credentials": False}
+    done = run_release_step(tmp_path, create, THE_FILES)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.splitlines() == [
+        "release",
+        "create",
+        "v1.2.3",
+        "--verify-tag",
+        "--title",
+        "v1.2.3",
+        "--notes-file",
+        "notes.md",
+        "cairn_memory-1.2.3-py3-none-any.whl",
+        "cairn_memory-1.2.3.tar.gz",
+    ]
 
 
-# The inputs of each action the release job uses that default to the workflow's token, read
-# from the action's own action.yml at the pinned commit: actions/checkout@3d3c42e5 `token`,
+# The inputs of each action these jobs use that default to the workflow's token, read from the
+# action's own action.yml at the pinned commit: actions/checkout@3d3c42e5 `token`,
 # astral-sh/setup-uv@68559e99 `github-token` ("Used when downloading uv from GitHub releases").
-TOKEN_DEFAULTS = {"actions/checkout": "token", "astral-sh/setup-uv": "github-token"}
+# actions/upload-artifact@cf430e03 has no token input; actions/download-artifact@9000827c has
+# `github-token` with no default (needed only for another repository or run): None.
+TOKEN_DEFAULTS = {
+    "actions/checkout": "token",
+    "astral-sh/setup-uv": "github-token",
+    "actions/upload-artifact": None,
+    "actions/download-artifact": None,
+}
 
 
 def reaches_the_token(step: dict) -> bool:
     """Whether STEP is handed the job's token: written in one of its values, or left to an
     input of its action whose default is the token."""
     explicit = yaml.safe_dump({k: step.get(k) for k in ("with", "env", "run")})
-    if "github.token" in explicit or "secrets.GITHUB_TOKEN" in explicit:
+    if "github.token" in explicit or "secrets." in explicit:
         return True
     if "uses" not in step:
         return False
     action = step["uses"].split("@")[0]
     assert action in TOKEN_DEFAULTS, f"read {action}'s action.yml for inputs that default to it"
+    if TOKEN_DEFAULTS[action] is None:
+        return False
     return (step.get("with") or {}).get(TOKEN_DEFAULTS[action]) != ""
 
 
-def test_the_write_token_reaches_the_checkout_and_the_last_step_and_nothing_else():
-    steps = JOBS["release"]["steps"]
-    reached = [step["name"] for step in steps if reaches_the_token(step)]
-    # The checkout fetches with it and keeps none; setup-uv gets an empty input, as uv's
-    # version is pinned and the action uses the token only for GitHub Releases downloads.
-    assert reached == ["Check out", "Create the release"]
-    uv = next(s for s in steps if s.get("uses", "").startswith("astral-sh/setup-uv"))
-    assert uv["with"]["github-token"] == "" and uv["with"]["version"] == "0.11.19"
-    # The model sees an implicit default: the same job without the empty input gives setup-uv
-    # the token.
+def test_the_write_token_reaches_the_step_that_makes_the_release_and_nothing_else():
+    steps = RELEASE["steps"]
+    assert [step["name"] for step in steps if reaches_the_token(step)] == ["Create the release"]
+    # The model sees a token handed to the download explicitly, and setup-uv's implicit one.
+    download = steps[0]
+    given = {**download, "with": {**download["with"], "github-token": "${{ github.token }}"}}
+    assert reaches_the_token(given)
+    uv = next(s for s in PACKAGE["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))
     bare = {**uv, "with": {k: v for k, v in uv["with"].items() if k != "github-token"}}
     assert reaches_the_token(bare)
-    part = RAW_WORKFLOW[RAW_WORKFLOW.index("  # A v* tag whose image was published") :]
-    part = " ".join(part[: part.index("\n  release:\n")].replace("# ", "").split())
     assert (
-        "The only job that may write to the repository. Its token reaches two steps: the"
-        " checkout, which fetches with it and keeps none, and the last step, which makes the"
-        " release. setup-uv gets an empty github-token: uv's version is pinned, and the"
-        " action uses the token only to download from GitHub Releases." in part
+        "The only job that may write to the repository, so it builds nothing, installs"
+        " nothing and checks out nothing: its token reaches one step, the last, which makes"
+        " the release." in job_comment("release")
     )
 
 
@@ -1348,3 +1506,60 @@ def test_only_the_release_job_may_write_to_the_repository():
     }
     assert writers == {"release"}
     assert WORKFLOW["permissions"] == {"contents": "read"}
+
+
+def rerun(names: set[str], jobs: dict = JOBS) -> set[str]:
+    """The jobs GitHub runs again when NAMES are re-run: "When you re-run failed jobs or a
+    specific job, GitHub also re-runs the jobs that depend on them. Jobs that aren't included
+    keep their outputs from the previous attempt" (Re-running workflows and jobs)."""
+    return set(names) | {n for n in jobs if ancestors(n, jobs) & set(names)}
+
+
+def test_a_failed_tag_run_is_finished_without_publishing_again():
+    # Of the jobs a tag runs (deploy, which needs verify, is skipped on a tag by its own
+    # condition): verify failed: it, package and release run again; publish's digest is kept.
+    assert rerun({"verify"}) & A_RELEASE == {"verify", "package", "release"}
+    # package failed, or release found no files (an expired artifact): package and release.
+    assert rerun({"package"}) == {"package", "release"}
+    assert rerun({"release"}) == {"release"}
+    for names in ({"verify"}, {"package"}, {"release"}):
+        assert not rerun(names) & {"release_check", "publish"}
+    comment = job_comment("release_check")
+    assert (
+        "A run that failed after `publish` and before the release was made: re-run only its"
+        " failed jobs (\"Re-run failed jobs\"), which keeps this job's result and `publish`'s"
+        " digest." in comment
+    )
+    assert (
+        "If `release` finds no files from `package` (they are kept five days), re-run"
+        " `package` alone: GitHub re-runs `release` after it, and nothing that publishes."
+        in comment
+    )
+
+
+def test_the_comments_say_where_the_files_are_built_and_why():
+    package = job_comment("package")
+    for sentence in (
+        "a build backend or a dependency of it that turned hostile runs in a job that may only"
+        " read the repository and holds no secret, on the gate's runner",
+        "uv builds with the versions and hashes in build-constraints.txt (--build-constraint"
+        " with --require-hashes: a package not listed, or a file whose hash differs, stops the"
+        " build).",
+        "The files and the release's text are kept as an artifact of this run for five days.",
+    ):
+        assert sentence in package, sentence
+    header = " ".join(RAW_WORKFLOW.split("\nname:")[0].replace("# ", "").split())
+    for sentence in (
+        "On a tag, job `package` then builds the wheel and the source archive, with the build"
+        " backend and its dependencies pinned by hash in build-constraints.txt, in a job that"
+        " may only read the repository and holds no secret, and keeps them as an artifact of"
+        " the run for five days.",
+        "Job `release`, the only job that may write to the repository, builds and installs"
+        " nothing: it checks that the artifact holds one wheel and one source archive of the"
+        " tag's version, and makes the GitHub release with them and the version's section of"
+        " CHANGELOG.md.",
+        "CAIRN_GATE_RUNNER names the runner of the gate's jobs and of `package`, which runs the"
+        " build backend; CAIRN_RELEASE_RUNNER names the runner of publish, verify, release and"
+        " deploy, which no job of a pull request uses and which runs no build.",
+    ):
+        assert sentence in header, sentence

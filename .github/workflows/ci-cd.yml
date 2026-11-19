@@ -32,10 +32,15 @@
 # latest only when it is the highest version tagged; a push to main as main and sha-<commit>,
 # never latest. Job `verify` smoke-tests the published image on main and on tags; in a public
 # repository it first pulls the image with no login, as the run guide does (a tag's version,
-# or on main the commit's own tag), and checks its digest. A tag
-# then becomes a GitHub release (job `release`), with the version's section of CHANGELOG.md and
-# the wheel and source archive attached. A run that failed after `publish` and before the
-# release was made is finished by re-running only its failed jobs.
+# or on main the commit's own tag), and checks its digest.
+# On a tag, job `package` then builds the wheel and the source archive, with the build backend
+# and its dependencies pinned by hash in build-constraints.txt, in a job that may only read the
+# repository and holds no secret, and keeps them as an artifact of the run for five days. Job
+# `release`, the only job that may write to the repository, builds and installs nothing: it
+# checks that the artifact holds one wheel and one source archive of the tag's version, and
+# makes the GitHub release with them and the version's section of CHANGELOG.md. A run that
+# failed after `publish` and before the release was made is finished by re-running only its
+# failed jobs.
 # Nothing is published from a pull request or a manual run.
 # A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
 # gate runs as before, and nothing is published, verified, released or deployed. Unset, it
@@ -45,8 +50,9 @@
 # settings and the first-deploy checklist. A tag never deploys.
 # Where the jobs run: two repository variables, each a JSON value for runs-on, each
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
-# jobs; CAIRN_RELEASE_RUNNER names the runner of publish, verify, release and deploy, which no
-# job of a pull request uses. docs/decisions.md, decision 150, says why there are two.
+# jobs and of `package`, which runs the build backend; CAIRN_RELEASE_RUNNER names the runner
+# of publish, verify, release and deploy, which no job of a pull request uses and which runs
+# no build. docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
 # pinned (resolved with git ls-remote on 2026-11-10). Dependabot keeps them current.
@@ -341,7 +347,9 @@ jobs:
   # skips it as it skips publish.
   # A run that failed after `publish` and before the release was made: re-run only its failed
   # jobs ("Re-run failed jobs"), which keeps this job's result and `publish`'s digest. Re-running
-  # every job would publish the version again, since no release exists yet to refuse it.
+  # every job would publish the version again, since no release exists yet to refuse it. If
+  # `release` finds no files from `package` (they are kept five days), re-run `package` alone:
+  # GitHub re-runs `release` after it, and nothing that publishes.
   release_check:
     name: the tag is the version
     needs: changes
@@ -515,20 +523,24 @@ jobs:
           docker pull --quiet --platform linux/amd64 "$image"
           python3 scripts/smoke_container.py "$image"
 
-  # A v* tag whose image was published and smoke-tested becomes a GitHub release: the text is
-  # the version's section of CHANGELOG.md, and the wheel and source archive `uv build` makes
-  # are attached. The only job that may write to the repository. Its token reaches two steps:
-  # the checkout, which fetches with it and keeps none, and the last step, which makes the
-  # release. setup-uv gets an empty github-token: uv's version is pinned, and the action uses
-  # the token only to download from GitHub Releases. It needs the gh CLI on its runner, as
-  # GitHub's hosted runners have.
-  release:
-    name: GitHub release
-    needs: [publish, verify]
+  # On a v* tag whose image was published and smoke-tested, builds the wheel and the source
+  # archive, here and not in `release`: a build backend or a dependency of it that turned
+  # hostile runs in a job that may only read the repository and holds no secret, on the gate's
+  # runner (decision 150: code a job runs could copy its runner's registration, and the release
+  # runner runs no build). uv builds with the versions and hashes in build-constraints.txt
+  # (--build-constraint with --require-hashes: a package not listed, or a file whose hash
+  # differs, stops the build). The checkout fetches with the job's read token and keeps none;
+  # setup-uv gets an empty github-token, as uv's version is pinned, and no cache, which the
+  # gate's jobs write on that runner. upload-artifact has no token input: it reaches this run's
+  # artifacts with the runner's own runtime token. The files and the release's text are kept
+  # as an artifact of this run for five days.
+  package:
+    name: the wheel and the source archive
+    needs: [release_check, publish, verify]
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -538,25 +550,66 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.11.19"
-          # A release is built from the tag alone, never from a cache another run wrote.
           enable-cache: false
-          # Not the job's token, which may write: see the comment above the job.
           github-token: ""
       - name: The release's text
-        run: python3 scripts/release_check.py "$GITHUB_REF_NAME" --notes > "$RUNNER_TEMP/notes.md"
-      - name: Build the wheel and the source archive
         run: |
-          uv build --out-dir dist
+          mkdir "$RUNNER_TEMP/release"
+          python3 scripts/release_check.py "$GITHUB_REF_NAME" --notes > "$RUNNER_TEMP/release/notes.md"
+      - name: Build the wheel and the source archive
+        run: >-
+          uv build --build-constraint build-constraints.txt --require-hashes
+          --out-dir "$RUNNER_TEMP/release"
+      # Hidden files stay out (the action's default), so the .gitignore uv writes there does too.
+      - name: Keep them for the release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 5
+
+  # A v* tag whose files `package` built becomes a GitHub release: the wheel, the source archive
+  # and the version's section of CHANGELOG.md, all from that job's artifact. The only job that
+  # may write to the repository, so it builds nothing, installs nothing and checks out nothing:
+  # its token reaches one step, the last, which makes the release. download-artifact gets no
+  # token (its github-token has no default and is needed only for another repository or run);
+  # it reaches this run's artifacts with the runner's own runtime token and checks their digest.
+  # It needs the gh CLI on its runner, as GitHub's hosted runners have.
+  release:
+    name: GitHub release
+    needs: [package, publish, verify]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch what package built
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      # Exactly these three files, hidden ones counted: one wheel and one source archive of
+      # the tag's version, and the release's text.
+      - name: Check the files
+        run: |
+          cd "$RUNNER_TEMP/release"
           version="${GITHUB_REF_NAME#v}"
-          test -f "dist/cairn_memory-$version-py3-none-any.whl"
-          test -f "dist/cairn_memory-$version.tar.gz"
+          expected="$(printf '%s\n' "cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" notes.md | LC_ALL=C sort)"
+          found="$(ls -A | LC_ALL=C sort)"
+          if [ "$found" != "$expected" ]; then
+            echo "::error::package's artifact holds [$(printf '%s ' $found)], not one wheel, one source archive and the text of $version"
+            exit 1
+          fi
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: >-
+          cd "$RUNNER_TEMP/release" &&
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME"
-          --notes-file "$RUNNER_TEMP/notes.md" dist/*
+          --notes-file notes.md "cairn_memory-${GITHUB_REF_NAME#v}-py3-none-any.whl"
+          "cairn_memory-${GITHUB_REF_NAME#v}.tar.gz"
 
   # Moves the hosted VM to the image `publish` just pushed, by digest, and waits until the VM
   # reports it runs that digest healthy. Pushes to main only. Skipped, not failed, unless the

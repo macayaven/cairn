@@ -423,3 +423,17 @@ def test_reseal_needs_no_google_client_and_no_database_is_refused(tmp_path, monk
     assert reseal(monkeypatch, tmp_path / "none.db", "--google-connect", **env) == 1
     assert capsys.readouterr().err.strip() == f"no database at {tmp_path / 'none.db'}"
     assert not (tmp_path / "none.db").exists()
+
+
+def test_no_log_line_of_a_reseal_or_of_a_refusal_shows_a_key_or_a_secret(
+    world, monkeypatch, capsys, caplog
+):
+    connect(world, "ada.mail@example.test")
+    slack_ready(world)
+    caplog.set_level("DEBUG")
+    reseal(monkeypatch, world.db, "--google-connect", "--slack", **BOTH_ROTATED)
+    bad = {**BOTH_ROTATED, f"{GOOGLE}_PREVIOUS": b64(CURRENT)}
+    reseal(monkeypatch, world.db, "--google-connect", **bad)
+    capsys.readouterr()
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert leaks(logged) is False

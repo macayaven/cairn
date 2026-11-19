@@ -44,7 +44,7 @@ What a connect or a disconnect came to is said once on the Sources page, to the 
 
 When Google refuses to end a dropped account's permission (after the OAuth client was deleted, say), the server tries again less and less often, the wait doubling up to a day, and logs the refusal once. After 20 refusals it stops, keeps the sealed token, and logs `revoke_stopped` once. Then end the permission yourself: the person removes this server's access in their Google account's settings, or you delete the OAuth client's secret in the Cloud console, so that no token issued to it can be used with that secret again. The table of tokens waiting to be sent holds at most 10,000; past that, a dropped account's token is sent once and not kept, and the server logs `revocations_full`.
 
-Changing `CAIRN_GOOGLE_CONNECT_KEY` makes every connected account reconnect, and leaves the permissions Google gave for the old tokens in place, with nothing here able to end them. So disconnect every connected account first, wait until Google has answered each revocation (the log says when one was not ended), then change the key.
+Changing `CAIRN_GOOGLE_CONNECT_KEY` without keeping the old key in `CAIRN_GOOGLE_CONNECT_KEY_PREVIOUS` makes every connected account reconnect, and leaves the permissions Google gave for the old tokens in place, with nothing here able to end them. To change it with every account staying connected: put the new key in `CAIRN_GOOGLE_CONNECT_KEY` and the old one in `CAIRN_GOOGLE_CONNECT_KEY_PREVIOUS`; restart the server; run the `reseal` command with `--google-connect`, which seals every stored token again under the new key; then remove `CAIRN_GOOGLE_CONNECT_KEY_PREVIOUS` and restart. A sealed token does not say which key sealed it, so a copy of the database does not tell which tokens an earlier key sealed. When the old key may have been seen by someone else, changing it is not enough, since a copy of the database made before then still opens with it: disconnect every connected account first, wait until Google has answered each revocation (the log says when one was not ended), then change the key.
 
 ## Slack
 
@@ -56,7 +56,7 @@ A Slack user is linked to a person in two steps, once they have asked the bot fo
 
 Answers are private: the slash command's and the shortcut's are shown only to the person who asked, and a direct message is answered in that direct conversation. An answer is built from the asker's reach, as a search of theirs: a project they do not reach gives nothing, not even a count.
 
-The signing secret and the bot token are sealed under the operator's key, `CAIRN_SLACK_KEY`, so a copy of the database opens neither. {{name}}'s Slack client calls nothing at Slack that reads a conversation's history: it asks whose a token is and who a user is, posts the bot's answers, and answers through the address a signed request gave.
+The signing secret and the bot token are sealed under the operator's key, `CAIRN_SLACK_KEY`, so a copy of the database opens neither. To change it with every install staying set up: put the new key in `CAIRN_SLACK_KEY` and the old one in `CAIRN_SLACK_KEY_PREVIOUS`; restart the server; run the `reseal` command with `--slack`; then remove `CAIRN_SLACK_KEY_PREVIOUS` and restart. {{name}}'s Slack client calls nothing at Slack that reads a conversation's history: it asks whose a token is and who a user is, posts the bot's answers, and answers through the address a signed request gave.
 
 ## The note guard
 

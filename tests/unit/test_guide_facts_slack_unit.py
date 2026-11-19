@@ -221,7 +221,8 @@ def test_run_slack_not_tried_with_enterprise_grid_or_govslack():
 def test_run_slack_keep_the_key_apart_and_losing_it_means_setting_up_again(world):  # noqa: F811
     """run.md: "Keep the key apart from the database and its backups, as you keep the
     environment file: a copy of the database holds each workspace's signing secret and bot
-    token sealed, and without the key it opens neither. When the key is lost or changed, no
+    token sealed, and without the key it opens neither. When the key is lost, or changed
+    without the old one kept in `CAIRN_SLACK_KEY_PREVIOUS` ([below](#change-a-sealing-key)), no
     secret sealed with the old one opens, and Slack's requests to the server are refused: each
     workspace's owner removes Slack on the **Sources** page, sets it up again and pastes both
     secrets.\""""
@@ -230,9 +231,10 @@ def test_run_slack_keep_the_key_apart_and_losing_it_means_setting_up_again(world
         "Keep the key apart from the database and its backups, as you keep the environment"
         " file: a copy of the database holds each workspace's signing secret and bot token"
         " sealed, and without the key it opens neither.",
-        "When the key is lost or changed, no secret sealed with the old one opens, and Slack's"
-        " requests to the server are refused: each workspace's owner removes Slack on the"
-        " **Sources** page, sets it up again and pastes both secrets.",
+        "When the key is lost, or changed without the old one kept in"
+        " `CAIRN_SLACK_KEY_PREVIOUS` ([below](#change-a-sealing-key)), no secret sealed with the"
+        " old one opens, and Slack's requests to the server are refused: each workspace's owner"
+        " removes Slack on the **Sources** page, sets it up again and pastes both secrets.",
     )
     install = ready(world)
     held = "\n".join(sqlite3.connect(world.db).iterdump())

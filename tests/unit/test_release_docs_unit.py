@@ -251,3 +251,27 @@ def test_slack_is_called_through_the_checked_client_and_the_guide_says_so():
     assert "OneClient(slack.http or source_http)" in app
     assert app.count("http=slack.http or source_http") >= 3
     assert "source_http: Callable[[], httpx.AsyncClient] = source_client" in app
+
+
+ORDER = (
+    "The claims of a page stand in an order that was chosen when the page was arranged, and"
+    " each was checked by itself: do not read two claims as one statement because they stand"
+    " together. `evidence` shows a claim in its note, in the order its writer gave it."
+)
+
+
+def test_an_agent_is_told_that_the_order_of_claims_is_not_the_writers():
+    """What an agent is told at initialize says, once, that a page's order is not checked,
+    as the security guide says to people."""
+    from cairn.web.mcp import TREAT_AS_INFORMATION, instructions
+
+    told = " ".join(instructions("cairn").split())
+    assert told.count(ORDER) == 1
+    assert told.endswith(TREAT_AS_INFORMATION)  # the last paragraph stays the last
+
+
+def test_the_run_guide_links_dockers_install_pages_beside_the_engine_it_asks_for():
+    """run.md, "Start it": the row that asks for Engine 28.3.3 links Docker's install pages."""
+    start = section("run", "## Start it")
+    (row,) = [line for line in start.splitlines() if "28.3.3" in line]
+    assert "https://docs.docker.com/engine/install/" in row

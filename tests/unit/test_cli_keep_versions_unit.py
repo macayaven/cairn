@@ -175,10 +175,16 @@ def test_the_record_is_not_a_setting(tmp_path, built):
     assert serve(db, "--keep-versions", "4") == 0
     with sqlite3.connect(db) as con:
         rows = con.execute("SELECT account_id, name FROM settings").fetchall()
-    assert rows == [("acct_default", "store.keep_versions")]
+    # and the audit log's record beside it (store.audit_keep), no setting either
+    assert sorted(rows) == [
+        ("acct_default", "store.audit_keep"),
+        ("acct_default", "store.keep_versions"),
+    ]
     store = Store(db)
     try:
         with pytest.raises(ValueError):
             store.get_setting("store.keep_versions")
+        with pytest.raises(ValueError):
+            store.get_setting("store.audit_keep")
     finally:
         store.close()

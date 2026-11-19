@@ -630,7 +630,10 @@ def serve_says(tmp_path, listened, capsys):
 
     def says(*args: str) -> list[str]:
         assert main(["serve", "--db", str(tmp_path / "cairn.db"), *args]) == 0
-        return capsys.readouterr().err.splitlines()
+        # The lines on the proxy and the operator notes are another contract's
+        # (tests/unit/test_serve_start_lines_unit.py).
+        others = (cli.NO_TRUSTED_PROXY, cli.NO_OPERATOR_NOTES)
+        return [line for line in capsys.readouterr().err.splitlines() if line not in others]
 
     says.listened = listened
     return says

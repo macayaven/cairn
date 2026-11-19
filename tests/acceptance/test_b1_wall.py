@@ -558,7 +558,7 @@ def session_set(response: httpx.Response) -> tuple[str, str, dict]:
     found = [
         (name, value, attributes)
         for name, (value, attributes) in set_cookies(response).items()
-        if value and attributes.get("path") == "/"
+        if value and attributes.get("path") == "/" and not name.endswith("signin")
     ]
     said = response.headers.get_list("set-cookie")
     assert len(found) == 1, f"no single session cookie set: {said}"
@@ -1793,10 +1793,10 @@ def test_without_the_settings_every_byte_is_as_today(make):
     browser = world.browser(plain)
     signed_out = snapshot(fresh(plain))
     started = browser.get("/auth/github", follow_redirects=False)
-    assert f"{NAME}_signin" in set_cookies(started)  # today's names
+    assert f"__Host-{NAME}_signin" in set_cookies(started)  # today's names, on https
     r = sign_in(world, browser, ADA_GITHUB)
     cookie, token, made = session_set(r)
-    assert cookie == f"{NAME}_session" and int(made["max-age"]) == TWELVE_HOURS
+    assert cookie == f"__Host-{NAME}_session" and int(made["max-age"]) == TWELVE_HOURS
     signed = snapshot(browser)
 
     # An app with every setting, used in the same process, changes nothing for the others.

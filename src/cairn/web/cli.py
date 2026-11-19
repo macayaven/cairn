@@ -1729,6 +1729,33 @@ def clear_text(host: str, public_url: str | None) -> str | None:
     return CLEAR_TEXT.format(host=host)
 
 
+# What `serve` says at start, one line each on stderr, without stopping.
+NO_TRUSTED_PROXY = (
+    "serve answers at an https public URL with no --trusted-proxy: every caller reaches it"
+    " from the proxy in front, so all callers share one count in the per-client limits"
+    " (sign-ins, agent registrations, refused keys); name that proxy with --trusted-proxy"
+)
+NO_OPERATOR_NOTES = (
+    "serve has no --operator-notes: the privacy guide shows people no operator, no country"
+    " where the data is kept and no contact; write them in a file and pass --operator-notes"
+)
+
+
+def no_trusted_proxy(public_url: str | None, proxies: list[str]) -> str | None:
+    """NO_TRUSTED_PROXY when `public_url` is https and no proxy is trusted; None otherwise."""
+    if (public_url or "").lower().startswith("https://") and not proxies:
+        return NO_TRUSTED_PROXY
+    return None
+
+
+def no_operator_notes(sign_in: bool, public_url: str | None, notes: str | None) -> str | None:
+    """NO_OPERATOR_NOTES when people sign in or the server has a public URL, and no operator
+    notes were given; None otherwise."""
+    if (sign_in or public_url) and notes is None:
+        return NO_OPERATOR_NOTES
+    return None
+
+
 def _serve(args: argparse.Namespace) -> int:
     if (said := cli_arrange.refused(args)) is not None:  # before anything is opened
         print(said, file=sys.stderr)
@@ -1855,6 +1882,10 @@ def _serve(args: argparse.Namespace) -> int:
         if (says := cli_arrange.serve_says(args, arranger, send)) is not None:
             print(says, file=sys.stderr, flush=True)  # what the model is sent, at a glance
         if (says := clear_text(args.host, args.public_url)) is not None:  # H1
+            print(says, file=sys.stderr, flush=True)
+        if (says := no_trusted_proxy(args.public_url, proxies)) is not None:
+            print(says, file=sys.stderr, flush=True)
+        if (says := no_operator_notes(sign_in is not None, args.public_url, notes)) is not None:
             print(says, file=sys.stderr, flush=True)
         if (says := _history_at_start(store, plans, _kept(args, plans))) is not None:  # Q1
             print(says, file=sys.stderr, flush=True)

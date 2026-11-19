@@ -419,3 +419,144 @@ def test_the_docstring_names_the_job_that_writes_the_release_text():
     doc = " ".join(release_check.__doc__.split())
     assert "job `package` runs it with --notes for the text of the GitHub release." in doc
     assert "job `release` runs it" not in doc
+
+
+# --- a release candidate: vX.Y.Z-rc.N --------------------------------------------------------
+# A candidate runs the whole tag path, attestation included, before the release exists. Its
+# files carry the version X.Y.Z; pyproject.toml and the changelog are those of X.Y.Z.
+
+
+def test_a_candidate_of_the_version_passes_and_its_version_is_the_plain_one():
+    for tag in ("v1.2.3-rc.1", "v1.2.3-rc.2", "v1.2.3-rc.10", "v1.2.3-rc.123"):
+        assert release_check.check(tag, PYPROJECT, CHANGELOG) == "1.2.3", tag
+        assert release_check.candidate(tag) is True
+    assert release_check.candidate("v1.2.3") is False
+
+
+def test_a_candidate_of_another_shape_is_refused():
+    for tag in (
+        "v1.2.3-rc.0",
+        "v1.2.3-rc.01",
+        "v1.2.3-rc1",
+        "v1.2.3-rc.",
+        "v1.2.3-RC.1",
+        "v1.2.3-rc.1.1",
+        "v1.2.3-rc.-1",
+        "v1.2.3-beta.1",
+    ):
+        assert refused(tag) == (
+            f"the tag {tag!r} is not v1.2.3, the version in pyproject.toml,"
+            " nor a candidate of it (v1.2.3-rc.N, N from 1 with no leading zero)"
+        ), tag
+        assert release_check.candidate(tag) is False
+    # A candidate of another version, or one without its hyphen, is refused as before.
+    for tag in ("v1.2.4-rc.1", "v1.2.3rc.1"):
+        assert refused(tag) == f"the tag {tag!r} is not v1.2.3, the version in pyproject.toml"
+
+
+def test_a_candidate_needs_the_version_its_section_its_entry_and_a_date_not_in_the_future():
+    assert refused("v1.2.3-rc.1", changelog=CHANGELOG.replace("## 1.2.3 - ", "## 1.2.4 - ")) == (
+        "CHANGELOG.md has no section '## 1.2.3 - YYYY-MM-DD'"
+    )
+    empty = CHANGELOG.replace("- **One.** The first entry.\n- Two.\n", "")
+    assert refused("v1.2.3-rc.1", changelog=empty).endswith(
+        "has no entry (a line that starts with '- ')"
+    )
+    with pytest.raises(release_check.Refused) as caught:
+        release_check.check("v1.2.3-rc.1", PYPROJECT, CHANGELOG, today=date(2026, 1, 30))
+    assert "after today (2026-01-30, UTC)" in str(caught.value)
+    pyproject = '[project]\nversion = "1.2.3rc1"\n'
+    assert refused("v1.2.3-rc.1", pyproject).endswith("is not a plain MAJOR.MINOR.PATCH")
+
+
+def test_the_notes_of_a_candidate_begin_with_the_sentence_that_says_what_it_is(tmp_path, capsys):
+    said = (
+        "This is release candidate v1.2.3-rc.2: its files carry the version 1.2.3 and are"
+        " replaced by the release v1.2.3.\n\n"
+    )
+    assert release_check.notes("1.2.3", CHANGELOG, "v1.2.3-rc.2") == said + (
+        release_check.notes("1.2.3", CHANGELOG)
+    )
+    assert release_check.main(["v1.2.3-rc.2", "--notes", *files(tmp_path)]) == 0
+    assert capsys.readouterr().out == release_check.notes("1.2.3", CHANGELOG, "v1.2.3-rc.2")
+    assert release_check.main(["v1.2.3-rc.2", *files(tmp_path)]) == 0
+    assert capsys.readouterr().out == (
+        "v1.2.3-rc.2 may be released: it is a candidate of the version, and CHANGELOG.md has"
+        " its section\n"
+    )
+
+
+def test_a_candidate_is_never_latest_and_says_so_to_the_job(repo, tmp_path, capsys):
+    root, git = repo
+    head = git("rev-parse", "main")
+    outputs = tmp_path / "github_output"
+    argv = ["--root", str(root), "--commit", head, "--branch", "main"]
+    argv += ["--github-output", str(outputs)]
+    git("tag", "v1.2.3-rc.1", head)
+    assert release_check.main(["v1.2.3-rc.1", *argv]) == 0
+    assert outputs.read_text() == "latest=false\ncandidate=true\n"
+    assert capsys.readouterr().out == (
+        "v1.2.3-rc.1 may be released: it is a candidate of the version, CHANGELOG.md has its"
+        " section, its commit is on main, and it is a candidate, so latest stays where it is\n"
+    )
+
+
+def test_a_candidate_comes_before_its_release_and_never_after_it(repo, tmp_path, capsys):
+    root, git = repo
+    head = git("rev-parse", "main")
+    argv = ["--root", str(root), "--commit", head, "--branch", "main"]
+    git("tag", "v1.2.2", "main~1")
+    git("tag", "v1.2.3-rc.1", head)
+    assert release_check.main(["v1.2.3-rc.1", *argv]) == 0
+    capsys.readouterr()
+    git("tag", "v1.2.3", head)
+    git("tag", "v1.2.3-rc.2", head)
+    assert release_check.main(["v1.2.3-rc.2", *argv]) == 1
+    assert capsys.readouterr().err == (
+        "release refused: v1.2.3 is tagged already: a candidate comes before its release,"
+        " never after it\n"
+    )
+    # A higher version of its line: the release it stands for could never be made.
+    git("tag", "-d", "v1.2.3")
+    git("tag", "v1.2.4", head)
+    assert release_check.main(["v1.2.3-rc.2", *argv]) == 1
+    assert capsys.readouterr().err.startswith("release refused: v1.2.4 is a higher version of 1.2")
+
+
+def test_a_candidate_is_released_once_and_never_after_its_release(tmp_path, capsys):
+    argv = ["v1.2.3-rc.1", *files(tmp_path), "--not-released"]
+    assert release_check.main(argv, gh=FakeGh(out='[{"tagName": "v1.2.3-rc.2"}]')) == 0
+    capsys.readouterr()
+    assert release_check.main(argv, gh=FakeGh(out='[{"tagName": "v1.2.3-rc.1"}]')) == 1
+    assert capsys.readouterr().err == (
+        "release refused: v1.2.3-rc.1 already has a GitHub release:"
+        " a released version is published once\n"
+    )
+    assert release_check.main(argv, gh=FakeGh(out='[{"tagName": "v1.2.3"}]')) == 1
+    assert capsys.readouterr().err == (
+        "release refused: v1.2.3 already has a GitHub release: a candidate comes before its"
+        " release, never after it\n"
+    )
+
+
+def test_a_release_after_its_candidates_is_checked_as_before(repo, tmp_path, capsys):
+    """Candidates are not plain versions: the release that follows them ranks, writes its
+    output and says the same as it would without them."""
+    root, git = repo
+    head = git("rev-parse", "main")
+    outputs = tmp_path / "github_output"
+    argv = ["--root", str(root), "--commit", head, "--branch", "main"]
+    argv += ["--github-output", str(outputs), "--not-released"]
+    for tag in ("v1.2.3-rc.1", "v1.2.3-rc.2", "v1.3.0-rc.1"):
+        git("tag", tag, head)
+    git("tag", "v1.2.3", head)
+    gh = FakeGh(out='[{"tagName": "v1.2.3-rc.1"}, {"tagName": "v1.2.3-rc.2"}]')
+    assert release_check.main(["v1.2.3", *argv], gh=gh) == 0
+    assert outputs.read_text() == "latest=true\n"
+    assert capsys.readouterr().out == (
+        "v1.2.3 may be released: it is the version, CHANGELOG.md has its section,"
+        " its commit is on main, it has no GitHub release yet, and it is the highest version,"
+        " so it is also latest\n"
+    )
+    assert release_check.is_highest("v1.2.3", ["v1.2.3-rc.1", "v1.3.0-rc.1", "v1.2.3"]) is True
+    assert release_check.notes("1.2.3", CHANGELOG).startswith("The text of the release.")

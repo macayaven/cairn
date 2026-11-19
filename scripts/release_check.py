@@ -8,7 +8,9 @@ A tag passes only when, in this order:
    repository.private): a release is made only from a public repository;
 1. pyproject.toml's `[project] version` is a plain MAJOR.MINOR.PATCH (no pre-release, no
    local part, no leading zero);
-2. the tag is `v` followed by that version, exactly;
+2. the tag is `v` followed by that version, exactly, or a release candidate of it:
+   `v<version>-rc.N`, N a number from 1 with no leading zero. A candidate's files carry the
+   version itself, so pyproject.toml and CHANGELOG.md are those of the release it stands for;
 3. CHANGELOG.md has exactly one section headed `## <version> - <YYYY-MM-DD>`, the date a
    real date and not after today (UTC; --today gives another), and that section has at
    least one entry: a line that starts with `- `.
@@ -18,8 +20,11 @@ A tag passes only when, in this order:
    ancestors, and no tag of the same MAJOR.MINOR is a higher version. Of the repository's
    tags that are plain versions (`vMAJOR.MINOR.PATCH`, compared as numbers; other tags are
    ignored), the tag is `latest` only when it is the highest: --github-output gets
-   `latest=true` or `latest=false`;
-5. with --not-released, gh lists the repository's releases and none is the tag's.
+   `latest=true` or `latest=false`. A candidate is never latest; it is refused once its
+   release `v<version>` is tagged, and when a higher version of its MAJOR.MINOR is, since
+   that release could no longer be made. --github-output also gets `candidate=true` for one;
+5. with --not-released, gh lists the repository's releases and none is the tag's (a
+   candidate is released once too), nor, for a candidate, its release's.
 Otherwise it prints `release refused: ` and the first rule that failed, on one line, and exits
 1. Job `release_check` of .github/workflows/ci-cd.yml runs it on a tag with every flag before
 anything is published; job `package` runs it with --notes for the text of the GitHub release.
@@ -40,6 +45,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 PLAIN = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+# A release candidate's tag: v, a plain version, -rc. and a number from 1 with no leading zero.
+CANDIDATE = re.compile(r"v(?P<version>[0-9.]+)-rc\.[1-9][0-9]*")
 HEADING = re.compile(r"^## (?P<version>\S+) - (?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})[ \t]*$", re.M)
 NEXT_SECTION = re.compile(r"^#{1,2} ", re.M)
 COMMENT = re.compile(r"<!--.*?-->[ \t]*\n?", re.S)
@@ -98,13 +105,32 @@ def check(tag: str, pyproject: str, changelog: str, today: date | None = None) -
         raise Refused(
             f"the version in pyproject.toml, {version!r}, is not a plain MAJOR.MINOR.PATCH"
         )
-    if tag != f"v{version}":
-        raise Refused(f"the tag {tag!r} is not v{version}, the version in pyproject.toml")
+    if tag != f"v{version}" and not (candidate(tag) and tag.startswith(f"v{version}-")):
+        said = f"the tag {tag!r} is not v{version}, the version in pyproject.toml"
+        if tag.startswith(f"v{version}-"):
+            said += f", nor a candidate of it (v{version}-rc.N, N from 1 with no leading zero)"
+        raise Refused(said)
     if not ENTRY.search(_section(version, changelog, today or utc_today())):
         raise Refused(
             f"CHANGELOG.md's section for {version} has no entry (a line that starts with '- ')"
         )
     return version
+
+
+def candidate(tag: str) -> bool:
+    """Whether TAG has the shape of a release candidate: vMAJOR.MINOR.PATCH-rc.N."""
+    found = CANDIDATE.fullmatch(tag)
+    return bool(found and PLAIN.fullmatch(found["version"]))
+
+
+def before_its_release(tag: str, version: str, tags: list[str]) -> None:
+    """Refuses the candidate TAG once its release vVERSION is tagged, or once a higher version
+    of its MAJOR.MINOR is (that release could no longer be made)."""
+    if f"v{version}" in tags:
+        raise Refused(
+            f"v{version} is tagged already: a candidate comes before its release, never after it"
+        )
+    is_highest(f"v{version}", tags)
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -167,8 +193,9 @@ def run_gh(args: list[str]) -> tuple[int, str]:
     return done.returncode, done.stdout
 
 
-def not_released(tag: str, gh) -> None:
-    """Refuses TAG if the repository has a GitHub release for it, or if gh cannot say."""
+def not_released(tag: str, gh, version: str | None = None) -> None:
+    """Refuses TAG if the repository has a GitHub release for it, or if gh cannot say. For a
+    candidate, VERSION is its release's: refused too once that release exists."""
     code, out = gh(["release", "list", "--limit", str(RELEASES_ASKED), "--json", "tagName"])
     try:
         if code != 0:
@@ -183,6 +210,11 @@ def not_released(tag: str, gh) -> None:
         raise Refused("gh could not list the repository's releases")
     if tag in names:
         raise Refused(f"{tag} already has a GitHub release: a released version is published once")
+    if version is not None and f"v{version}" in names:
+        raise Refused(
+            f"v{version} already has a GitHub release: a candidate comes before its release,"
+            " never after it"
+        )
     if len(names) >= RELEASES_ASKED:
         raise Refused(
             f"gh listed {len(names)} releases, the most it asks for, so {tag} may have one"
@@ -198,9 +230,16 @@ def public(private: str) -> None:
         raise Refused(f"the repository's visibility is not known ({private!r}): {where}")
 
 
-def notes(version: str, changelog: str) -> str:
-    """VERSION's section of the changelog, for the release's text."""
-    return _section(version, changelog) + "\n"
+def notes(version: str, changelog: str, tag: str | None = None) -> str:
+    """VERSION's section of the changelog, for the release's text. For TAG a candidate, one
+    sentence that says what it is comes first."""
+    said = ""
+    if tag is not None and candidate(tag):
+        said = (
+            f"This is release candidate {tag}: its files carry the version {version} and are"
+            f" replaced by the release v{version}.\n\n"
+        )
+    return said + _section(version, changelog) + "\n"
 
 
 def main(argv: list[str] | None = None, gh=run_gh) -> int:
@@ -244,7 +283,9 @@ def main(argv: list[str] | None = None, gh=run_gh) -> int:
                 raise Refused(f"there is no {name}")
             texts.append(path.read_text(encoding="utf-8"))
         version = check(args.tag, *texts, today=args.today)
-        said = ["it is the version", "CHANGELOG.md has its section"]
+        rc = candidate(args.tag)
+        said = ["it is a candidate of the version" if rc else "it is the version"]
+        said.append("CHANGELOG.md has its section")
         latest = None
         if args.branch is not None:
             on_branch(args.root, args.commit, args.branch)
@@ -253,23 +294,32 @@ def main(argv: list[str] | None = None, gh=run_gh) -> int:
             if tags.returncode != 0:
                 raise Refused("git could not list the repository's tags")
             names = tags.stdout.split()
-            latest = is_highest(args.tag, names)
+            if rc:
+                before_its_release(args.tag, version, names)
+                latest = False
+            else:
+                latest = is_highest(args.tag, names)
         if args.not_released:
-            not_released(args.tag, gh)
+            not_released(args.tag, gh, version if rc else None)
             said.append("it has no GitHub release yet")
     except Refused as refusal:
         print(f"release refused: {refusal}", file=sys.stderr)
         return 1
     if latest is not None:
-        if latest:
+        if rc:
+            said.append("it is a candidate, so latest stays where it is")
+        elif latest:
             said.append("it is the highest version, so it is also latest")
         else:
             said.append(f"{_highest(names)} is higher, so latest stays where it is")
         if args.github_output is not None:
             with args.github_output.open("a", encoding="utf-8") as out:
                 out.write(f"latest={'true' if latest else 'false'}\n")
+    if rc and args.github_output is not None:
+        with args.github_output.open("a", encoding="utf-8") as out:
+            out.write("candidate=true\n")
     if args.notes:
-        sys.stdout.write(notes(version, texts[1]))
+        sys.stdout.write(notes(version, texts[1], args.tag))
     else:
         print(f"{args.tag} may be released: {', '.join(said[:-1])}, and {said[-1]}")
     return 0

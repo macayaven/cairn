@@ -166,6 +166,10 @@ class FakeStore:
         store."""
         return frozenset()
 
+    def models_choices(self, project_ids) -> dict[str, str]:
+        """M4: nobody here has chosen for a project (not decided)."""
+        return {}
+
     def record_note(self, project_id: str, outcome: str, detail: dict, filed=None) -> None:
         if project_id not in self.projects:
             raise KeyError(project_id)

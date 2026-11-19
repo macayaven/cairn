@@ -5,12 +5,15 @@ cairn.slack.verify; who answers is cairn.slack.dispatch.
 The switch (off unless the operator gives it; decision D11)
 - `serve --slack` needs --sign-in (a Slack user is linked to a person who signs in), an
   https:// --public-url (Slack calls this server there) and KEY_VARIABLE, 32 random bytes in
-  base64, the key every install's two secrets are sealed with. Without any of them `serve`
-  exits 2 before it opens the database, its last line the sentence that names what is
-  missing (NEEDS_SIGN_IN, NEEDS_HTTPS, NO_KEY, BAD_KEY), never a value; create_app raises
-  ValueError with the same sentence (`check`). Under a brand (`--brand-name`, B1) it is not
-  offered yet, as what the bot says, the shortcut's name and the command's name would name
-  the software: `serve` stops the same way and create_app raises, with UNDER_A_BRAND.
+  base64, the key every install's two secrets are sealed with; beside it, optionally,
+  KEY_VARIABLE_PREVIOUS, earlier keys that still open what they sealed
+  (cairn.store.hosted.previous_keys). Without any of them, or with an earlier key malformed
+  or equal to the current one, `serve` exits 2 before it opens the database, its last line
+  the sentence that names what is missing or wrong (NEEDS_SIGN_IN, NEEDS_HTTPS, NO_KEY,
+  BAD_KEY), never a value; create_app raises ValueError with the same sentence (`check`).
+  Under a brand (`--brand-name`, B1) it is not offered yet, as what the bot says, the
+  shortcut's name and the command's name would name the software: `serve` stops the same
+  way and create_app raises, with UNDER_A_BRAND.
 - Off (create_app without `slack`): none of the addresses exists (each is 404 as any address
   that is not a page), nothing is shown about Slack and no request reads its tables. The
   schema step is there all the same, and so are the store's duties: deleting a workspace,
@@ -113,7 +116,7 @@ from cairn.slack.verify import (
     read_body,
     verified,
 )
-from cairn.store.hosted import KEY_BYTES, Sealer
+from cairn.store.hosted import KEY_BYTES, Sealer, previous_keys
 from cairn.store.slack import ACCEPTING, ENDED
 from cairn.web.templating import NO_PAGE, _page, brand_of
 
@@ -164,9 +167,11 @@ class Slack:
     every: float = KEEP_EVERY
     api: str = API
     reply_hosts: frozenset[str] = REPLY_HOSTS
+    # earlier keys, from KEY_VARIABLE_PREVIOUS: what they sealed still opens (never in a repr)
+    previous: tuple[bytes, ...] = field(default=(), repr=False)
 
     def sealer(self) -> Sealer:
-        return Sealer(self.key)
+        return Sealer(self.key, self.previous)
 
 
 def check(
@@ -195,7 +200,7 @@ def read_switch(environ: Mapping[str, str]) -> Slack:
         key = b""
     if len(key) != KEY_BYTES:
         raise ValueError(BAD_KEY)
-    return Slack(key=key)
+    return Slack(key=key, previous=previous_keys(environ, KEY_VARIABLE, key))
 
 
 def add_options(serve: argparse.ArgumentParser) -> None:

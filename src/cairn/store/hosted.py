@@ -47,7 +47,7 @@ import os
 import re
 import secrets
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -146,6 +146,36 @@ class Sealer:
 
     def current(self, sealed: object, associated: bytes) -> bool:
         return _opened(self._aead, sealed, associated) is not None
+
+
+PREVIOUS = "_PREVIOUS"  # <VARIABLE>_PREVIOUS: the earlier keys beside the key <VARIABLE>
+PREVIOUS_SEPARATOR = ","  # between earlier keys: never in base64
+
+
+def previous_keys(environ: Mapping[str, str], variable: str, key: bytes) -> tuple[bytes, ...]:
+    """The earlier keys `variable`_PREVIOUS holds beside the key `key` of `variable`: none when
+    it is unset or blank, else KEY_BYTES-byte keys in base64 separated by commas (spaces around
+    each allowed). ValueError naming the variable, never a value: an item that is empty or not
+    such a key, or one equal to `key`."""
+    name = variable + PREVIOUS
+    raw = environ.get(name, "").strip()
+    if not raw:
+        return ()
+    found = []
+    for item in raw.split(PREVIOUS_SEPARATOR):
+        try:
+            earlier = base64.b64decode(item.strip(), validate=True)
+        except (binascii.Error, ValueError):
+            earlier = b""
+        if len(earlier) != KEY_BYTES:
+            raise ValueError(
+                f"{name} is not one or more keys of {KEY_BYTES} bytes in base64, separated by"
+                " commas"
+            )
+        if hmac.compare_digest(earlier, key):
+            raise ValueError(f"{name} holds the key {variable} holds: an earlier key is another")
+        found.append(earlier)
+    return tuple(found)
 
 
 def _opened(aead: AESGCM, sealed: object, associated: bytes) -> str | None:

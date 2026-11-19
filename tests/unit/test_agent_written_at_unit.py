@@ -89,21 +89,30 @@ def test_a_claim_whose_passages_are_gone_says_no_time(world):
 
 
 def statements(store: Store, call) -> tuple[int, int]:
-    """(the SELECTs, every statement) the store's connection runs during `call`."""
+    """(the SELECTs, every statement) the store's connections run during `call`: the writer
+    and the read-only connections reads run on (Store._observe watches them all)."""
     seen: list[str] = []
-    store._con.set_trace_callback(seen.append)
+    store._observe(trace=seen.append)
     try:
         call()
     finally:
-        store._con.set_trace_callback(None)
+        store._observe(trace=None)
     selects = [s for s in seen if s.lstrip().upper().startswith("SELECT")]
     return len(selects), len(seen)
 
 
 def test_saying_when_runs_no_statement_more_than_before(world):
     """The counts at 653a4d2d, before `written_at`: recall 8 SELECTs of 26 statements, page
-    6 of 16, evidence 5 of 15."""
+    6 of 16, evidence 5 of 15. `written_at` is read in the statement that already read who
+    wrote each note (Store.note_origins), so it adds none. Reads have run since on the
+    store's read-only connections (cairn.store.base.Readers): the first search on a
+    connection pays FTS5 loading the index's settings into it, one SELECT that SQLite also
+    reports once more as a nested statement (tests/unit/test_search_cost_unit.py's
+    SETTINGS); at 653a4d2d the writer had loaded them when the page was saved. A second
+    recall runs 8 of 25 now as at 653a4d2d (FTS5's own nested reads of its index, which
+    SQLite reports as statements, are one fewer once its structure is loaded)."""
     store, memory, _, _ = world
-    assert statements(store, lambda: memory.recall("deploy")) == (8, 26)
+    assert statements(store, lambda: memory.recall("deploy")) == (8 + 1, 26 + 2)
+    assert statements(store, lambda: memory.recall("deploy")) == (8, 25)
     assert statements(store, lambda: memory.page("ops", "deploy")) == (6, 16)
     assert statements(store, lambda: memory.evidence("ops", "deploy", "cl_000000000002")) == (5, 15)

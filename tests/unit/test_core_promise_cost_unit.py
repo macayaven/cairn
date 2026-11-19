@@ -1,6 +1,12 @@
 """What a note's write and a page's read cost in statements, pinned before the core-promise
 fixes (a page says only what its notes say) and held after them: none of the fixes reads or
-writes more. Counted with the connection's trace callback, never a clock. Made-up notes."""
+writes more. Counted with the trace callback of every connection of the store, never a
+clock: reads have run since on the store's read-only connections (cairn.store.base.Readers),
+and a callback on the writer alone no longer sees them (Store._observe watches them all).
+The counts are those of 653a4d2d: a page's read reads when each note was written
+(Store.note_origins) in the statement that already read who wrote it, and it reads no
+search index, so no reader pays FTS5's loading of an index's settings
+(tests/unit/test_search_cost_unit.py's SETTINGS). Made-up notes."""
 
 import pytest
 
@@ -22,11 +28,11 @@ def memory(tmp_path):
 
 def counted(memory, call):
     seen: list[str] = []
-    memory.store._con.set_trace_callback(seen.append)
+    memory.store._observe(trace=seen.append)
     try:
         answer = call()
     finally:
-        memory.store._con.set_trace_callback(None)
+        memory.store._observe(trace=None)
     return answer, len(seen)
 
 

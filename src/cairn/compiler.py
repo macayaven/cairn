@@ -262,16 +262,34 @@ def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) 
     found in `spans` (section_headings); a claim with no known span counts as having no
     heading path. The claims with no section come first, in their order; then the others in
     their order, each under its section's headings. One pass over `claims`."""
+    return _rendered(title, claims, spans, _closed)
+
+
+def render_body_with_fences_open(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before review 7.2, a claim that leaves a code fence
+    open left open. For the import's check alone (store.portable._as_rendered), so an
+    archive written then still imports; never shown."""
+    return _rendered(title, claims, spans, lambda text: text)
+
+
+def _rendered(
+    title: str,
+    claims: Sequence[Claim],
+    spans: Mapping[str, Span],
+    closed: Callable[[str], str],
+) -> str:
     top, rest = [f"# {title}"], []
     previous: tuple[str, ...] = ()
     for claim in claims:
         path = next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
         section, headings = section_headings(title, path, previous)
         if not section:
-            top.append(_closed(claim.text))
+            top.append(closed(claim.text))
             continue
         rest.extend(f"{'#' * level} {text}" for level, text in headings)
-        rest.append(_closed(claim.text))
+        rest.append(closed(claim.text))
         previous = section
     return "\n\n".join([*top, *rest]) + "\n"
 

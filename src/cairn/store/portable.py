@@ -1084,22 +1084,25 @@ def _collapsed(text: str) -> str:
 
 def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     """The version with the body cairn writes of its claims and the spans they cite
-    (cairn.compiler.render_body). The archive's must equal it, or the rendering cairn wrote
-    before fix H (previous_render_body), whitespace aside (ValueError otherwise, naming the
-    page and version, never the text): an import never brings a body cairn would not have
-    written, and the version is stored with the current rendering. A title longer than
-    cairn writes (a note's topic, FIELD_MAX) is cut to it, and the body is rendered with
-    the cut title."""
+    (cairn.compiler.render_body). The archive's must equal it, or a rendering cairn wrote
+    before, whitespace aside: before fix H (previous_render_body), or before review 7.2, with
+    a claim's open code fence left open (render_body_with_fences_open). ValueError otherwise,
+    naming the page and version, never the text: an import never brings a body cairn would
+    not have written, and the version is stored with the current rendering. A title longer
+    than cairn writes (a note's topic, FIELD_MAX) is cut to it, and the body is rendered
+    with the cut title."""
     from cairn.compiler import (  # the compiler builds on the store
         previous_render_body,
         render_body,
+        render_body_with_fences_open,
     )
 
     body = render_body(page.title, page.claims, spans)
-    # An archive written before fix H holds the previous rendering: accepted, stored as now.
+    # An archive written before holds an earlier rendering: accepted, stored as now.
     given = _collapsed(page.body)
-    if given != _collapsed(body) and (
-        given != _collapsed(previous_render_body(page.title, page.claims, spans))
+    if given != _collapsed(body) and all(
+        given != _collapsed(earlier(page.title, page.claims, spans))
+        for earlier in (previous_render_body, render_body_with_fences_open)
     ):
         raise ValueError(
             f"the body of {page.slug!r} version {page.version} in {root} is not what cairn"

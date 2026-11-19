@@ -209,15 +209,21 @@ def test_an_archive_of_a_page_with_an_open_fence_and_no_heading_imports(tmp_path
     assert body == "# Net\n\n```sh\nopen 80\n```\n"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="store.portable._as_rendered (not this change's file) must also accept the body"
-    " render_body wrote before review 7.2, its fences left open",
-)
 def test_an_archive_of_a_sectioned_page_with_an_open_fence_imports(tmp_path, store):
     text = "## Ports\n\n### TCP\n\n```sh\nopen 80"
     store.import_export(archive_of(tmp_path, text, "## Ports\n\n### TCP\n\n"))
-    assert store.get_page(store.get_project("alpha").id, "net").body.endswith("```\n")
+    body = store.get_page(store.get_project("alpha").id, "net").body
+    assert body == "# Net\n\n## Ports\n\n### TCP\n\n```sh\nopen 80\n```\n"  # stored as now
+
+
+@pytest.mark.parametrize("headings", ["", "## Ports\n\n### TCP\n\n"], ids=["top", "sectioned"])
+def test_an_open_fence_archive_with_a_sentence_no_claim_holds_is_refused(tmp_path, store, headings):
+    text = ("## Ports\n\n### TCP\n\n" if headings else "") + "```sh\nopen 80"
+    added = headings + "Port 22 is open too.\n\n"  # a sentence the page's claims do not hold
+    with pytest.raises(ValueError, match="not what cairn writes") as refused:
+        store.import_export(archive_of(tmp_path, text, added))
+    assert "Port 22" not in str(refused.value)
+    assert store.list_projects() == []
 
 
 # On the web page

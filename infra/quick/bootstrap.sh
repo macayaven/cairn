@@ -119,6 +119,10 @@ ACME_EMAIL=${ACME_EMAIL:?}
 CAIRN_IMAGE=${CAIRN_IMAGE:?}
 COMPOSE_FILE=compose.yaml:compose.backup.yaml:compose.quick.yaml
 EOF
+  # Compose splits the quoted arguments from .env into the serve command.
+  if [[ -n "${CAIRN_QUICK_SERVE_ARGS:-}" ]]; then
+    printf "CAIRN_EXTRA_ARGS='%s'\n" "$CAIRN_QUICK_SERVE_ARGS" >>"$staging/.env"
+  fi
   printf 'LITESTREAM_REPLICA_URL=%s\n' "${LITESTREAM_REPLICA_URL:?}" >"$staging/litestream.env"
   if [[ "$CAIRN_CLOUD" == aws ]]; then
     printf 'AWS_REGION=%s\n' "${AWS_REGION:?}" >>"$staging/litestream.env"

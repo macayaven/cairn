@@ -1,15 +1,21 @@
 """Run the VM's bootstrap with stand-ins. The tests never run a daemon or contact a cloud."""
 
+import asyncio
 import base64
 import json
+import os
+import shlex
+import shutil
 import stat
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
+from test_quick_infra_unit import QUICK, render_cloud_init
 
-BOOTSTRAP = Path(__file__).resolve().parents[2] / "infra" / "quick" / "bootstrap.sh"
+from cairn.web.cli import _parser, _sign_in
+
+BOOTSTRAP = QUICK / "bootstrap.sh"
 SETTINGS = b"CAIRN_TEST_SETTING='synthetic $value with spaces'\nOTHER=line\n\n"
 TOKEN = "synthetic-metadata-token"
 RULE = ["!", "-i", "br-cairn-backup", "-d", "169.254.169.254", "-p"]
@@ -98,7 +104,7 @@ def vm(tmp_path):
     return tmp_path
 
 
-def run(vm, cloud="aws", mode="with-version", action="start"):
+def run(vm, cloud="aws", mode="with-version", action="start", *, settings=SETTINGS, config=None):
     assert BOOTSTRAP.is_file(), "the shared quick bootstrap has not been written"
     script = vm / "bootstrap.sh"
     script.write_bytes(BOOTSTRAP.read_bytes())
@@ -114,8 +120,8 @@ def run(vm, cloud="aws", mode="with-version", action="start"):
             "HOME": str(vm),
             "STANDIN_STATE": str(vm),
             "STANDIN_MODE": mode,
-            "STANDIN_SECRET": SETTINGS.decode(),
-            "STANDIN_PAYLOAD": base64.b64encode(SETTINGS).decode(),
+            "STANDIN_SECRET": settings.decode(),
+            "STANDIN_PAYLOAD": base64.b64encode(settings).decode(),
             "STANDIN_TOKEN": TOKEN,
             "CAIRN_CLOUD": cloud,
             "CAIRN_DOMAIN": "cairn.example.net",
@@ -124,6 +130,7 @@ def run(vm, cloud="aws", mode="with-version", action="start"):
             "CAIRN_SETTINGS_SECRET": secret,
             "LITESTREAM_REPLICA_URL": replica,
             **({"AWS_REGION": "us-east-1"} if cloud == "aws" else {}),
+            **(config or {}),
         },
         capture_output=True,
         text=True,
@@ -133,6 +140,85 @@ def run(vm, cloud="aws", mode="with-version", action="start"):
 
 def calls(vm):
     return [json.loads(line) for line in (vm / "calls").read_text().splitlines()]
+
+
+def boot_environment(files):
+    return dict(
+        item.split("=", 1) for item in shlex.split(files["/opt/cairn/quick.env"]["content"])
+    )
+
+
+def compose_service(vm):
+    # A project render reads the .env and env_file itself and needs no Docker daemon.
+    standalone = shutil.which("docker-compose")
+    docker = shutil.which("docker")
+    if standalone is None and docker is None:
+        pytest.skip("Docker Compose is needed to render the service command")
+    compose = [standalone] if standalone else [docker, "compose"]
+    env = {"HOME": str(vm), "PATH": os.environ["PATH"], "DOCKER_HOST": f"unix://{vm}/no-daemon"}
+    version = subprocess.run([*compose, "version"], env=env, capture_output=True, timeout=20)
+    if version.returncode != 0:
+        pytest.skip("Docker Compose is needed to render the service command")
+    done = subprocess.run(
+        [*compose, "config", "--format", "json"],
+        cwd=vm / "deploy",
+        env=env,
+        capture_output=True,
+        timeout=20,
+    )
+    assert done.returncode == 0, "Compose could not render the quick project"
+    return json.loads(done.stdout)["services"]["cairn"]
+
+
+@pytest.mark.parametrize("cloud", ["aws", "gcp"])
+def test_google_settings_enable_provider_sign_in_in_the_compose_command(vm, cloud, monkeypatch):
+    extra_args = [
+        "--sign-in",
+        "google",
+        "--allowed-email-domain",
+        "example.net",
+        "--brand-name",
+        "Fable Works",
+    ]
+    cloud_init = render_cloud_init(vm, cloud, serve_extra_args=extra_args)
+    files = {file["path"]: file for file in cloud_init["write_files"]}
+    config = boot_environment(files)
+    done = run(
+        vm,
+        cloud,
+        config=config,
+        settings=(
+            b"CAIRN_GOOGLE_CLIENT_ID=synthetic-client\n"
+            b"CAIRN_GOOGLE_CLIENT_SECRET=synthetic-value\n"
+            b"CAIRN_ALLOWED_EMAILS=ada@example.net\n"
+        ),
+    )
+    assert done.returncode == 0, done.stderr
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    service = compose_service(vm)
+    args = _parser().parse_args(service["command"])
+    monkeypatch.setenv("no_proxy", "*")
+    sign_in = _sign_in(args, service["environment"])
+    assert sign_in is not None
+    try:
+        assert service["command"] == [
+            "serve",
+            "--db",
+            "/data/cairn.db",
+            "--host",
+            "0.0.0.0",
+            "--public-url",
+            "https://cairn.example.net",
+            "--trusted-proxy",
+            "10.213.47.0/24",
+            *extra_args,
+        ]
+        assert tuple(sign_in.allowed_email_domains) == ("example.net",)
+        assert tuple(provider.name for provider in sign_in.providers) == ("google",)
+    finally:
+        asyncio.run(sign_in.http.aclose())
 
 
 @pytest.mark.parametrize("cloud", ["aws", "gcp"])

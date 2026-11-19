@@ -12,7 +12,8 @@ data "aws_ami" "ubuntu" {
 
 locals {
   cloud_init = templatefile("${path.module}/../cloud-init.yaml.tftpl", {
-    quick_dir = "${path.module}/.."
+    quick_dir        = "${path.module}/.."
+    serve_extra_args = var.serve_extra_args
     config = {
       CAIRN_CLOUD            = "aws"
       CAIRN_DOMAIN           = var.domain

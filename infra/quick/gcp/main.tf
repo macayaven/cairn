@@ -1,7 +1,8 @@
 locals {
   region = substr(var.zone, 0, length(var.zone) - 2)
   cloud_init = templatefile("${path.module}/../cloud-init.yaml.tftpl", {
-    quick_dir = "${path.module}/.."
+    quick_dir        = "${path.module}/.."
+    serve_extra_args = var.serve_extra_args
     config = {
       CAIRN_CLOUD            = "gcp"
       CAIRN_DOMAIN           = var.domain

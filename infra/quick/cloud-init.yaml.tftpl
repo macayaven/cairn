@@ -20,7 +20,10 @@ ${yamlencode({
       path        = "/opt/cairn/quick.env"
       owner       = "root:root"
       permissions = "0600"
-      content     = join("", [for name, value in config : "${name}=${value}\n"])
+      content = join("", concat(
+        [for name, value in config : "${name}=${value}\n"],
+        [format("CAIRN_QUICK_SERVE_ARGS='%s'\n", join(" ", [for arg in serve_extra_args : "\"${arg}\""]))],
+      ))
     },
     {
       path = "/etc/systemd/system/docker.service.d/cairn-quick.conf"

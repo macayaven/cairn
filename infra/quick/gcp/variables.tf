@@ -54,3 +54,15 @@ variable "image" {
     error_message = "Enter a registry image reference without whitespace."
   }
 }
+
+variable "serve_extra_args" {
+  description = "Extra nonsecret arguments for cairn serve, one string per argument. Changing them replaces the VM."
+  type        = list(string)
+  default     = []
+  nullable    = false
+
+  validation {
+    condition     = alltrue([for arg in var.serve_extra_args : can(regex("^[-A-Za-z0-9_.:/@=,+%?& ]+$", arg))])
+    error_message = "Use nonempty serve arguments containing only letters, digits, spaces or -_.:/@=,+%?&."
+  }
+}

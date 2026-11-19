@@ -83,16 +83,16 @@ in your credential store.
 ### AWS settings
 
 The settings secret starts without a version, so you can sign in with API keys from the start.
-To configure sign-in providers or other settings, prepare a local `cairn.env` as described in
-[the Compose guide](../../deploy/README.md#settings). From the AWS stack directory, upload it without
-putting its value in your command line or OpenTofu state.
+Prepare a local `cairn.env` for the cairn container's environment. From the AWS stack directory,
+upload it without putting its value in your command line or OpenTofu state.
+Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
 aws secretsmanager put-secret-value --region "$(tofu output -raw region)" \
   --secret-id "$(tofu output -raw settings_secret)" --secret-string file://./cairn.env
 ```
 
-In the Session Manager shell, reload the settings from the secret store.
+For secret-only changes, reload the settings in the Session Manager shell.
 
 ```sh
 sudo systemctl restart cairn-quick.service
@@ -184,16 +184,16 @@ session and use the API key to sign in at your HTTPS URL. Keep the key in your c
 ### Google Cloud settings
 
 The settings secret starts without a version, so you can sign in with API keys from the start.
-To configure sign-in providers or other settings, prepare a local `cairn.env` as described in
-[the Compose guide](../../deploy/README.md#settings). From the Google Cloud stack directory, upload
-it without putting its value in your command line or OpenTofu state.
+Prepare a local `cairn.env` for the cairn container's environment. From the Google Cloud stack
+directory, upload it without putting its value in your command line or OpenTofu state.
+Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
 gcloud secrets versions add "$(tofu output -raw settings_secret)" \
   --project="$(tofu output -raw project_id)" --data-file=./cairn.env
 ```
 
-In the IAP SSH shell, reload the settings from the secret store.
+For secret-only changes, reload the settings in the IAP SSH shell.
 
 ```sh
 sudo systemctl restart cairn-quick.service
@@ -215,6 +215,36 @@ To remove a retained bucket too, empty it and retry the destroy. This deletes th
 gcloud storage rm --all-versions "gs://$bucket/**"
 tofu destroy
 ```
+
+## Provider sign-in
+
+This example uses Google sign-in at `cairn.example.net` and admits accounts from the
+`example.net` Google Workspace domain.
+
+1. Complete the quickstart through the HTTPS check. Create a Google OAuth web client for the
+   accounts you want to admit and register `https://cairn.example.net/auth/google/callback` as
+   its authorized redirect URI. Substitute your own public hostname and Workspace domain.
+2. Set these variables in your local `cairn.env` with the values from the client you created.
+   Upload it using [AWS settings](#aws-settings) or [Google Cloud settings](#google-cloud-settings).
+
+   ```dotenv
+   CAIRN_GOOGLE_CLIENT_ID=your-client-id
+   CAIRN_GOOGLE_CLIENT_SECRET=your-client-secret
+   ```
+
+3. Add `serve_extra_args` to `terraform.tfvars`, with one nonsecret argument per string.
+   Compose sets `--public-url` from `domain`. The arguments are visible in the plan and state.
+
+   ```hcl
+   serve_extra_args = ["--sign-in", "google", "--allowed-email-domain", "example.net"]
+   ```
+
+   Run `tofu apply`. Changing these arguments replaces the VM and keeps the address, bucket
+   and settings secret. If you have data on the VM, follow the backup steps in [Upgrade](#upgrade)
+   before applying.
+4. Check `/healthz` again. In a signed-out browser, open `https://cairn.example.net/login` and
+   choose **Continue with Google**. After signing in with an account from the allowed Workspace
+   domain, you return to cairn signed in. New users get a workspace of their own.
 
 ## Upgrade
 

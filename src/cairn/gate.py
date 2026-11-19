@@ -177,6 +177,13 @@ def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     )
 
 
+def whole(claim: Claim, spans: Mapping[str, Span]) -> bool:
+    """Whether the claim is the whole of every passage it cites that `spans` holds, by
+    verbatim_gate's own rule (and cites at least one): what a claim must still be to survive
+    a forgotten note (store.erasure.kept_claims, review 7.5)."""
+    return _not_verbatim(claim, spans) is None
+
+
 def _refusals(claims: Iterable[Claim], spans: Mapping[str, Span]) -> list[str]:
     """The grounding.not_verbatim violations of `claims`, in order, reading each passage once."""
     readings: dict[str, _Reading] = {}

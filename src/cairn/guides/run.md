@@ -26,7 +26,7 @@ What each part does:
 |---|---|
 | `-d --name cairn` | Runs it in the background under the name `cairn`, which the commands below use. |
 | `--restart unless-stopped` | Starts it again after a reboot, unless you stopped it yourself. |
-| `-p 127.0.0.1:8765:8765` | Serves it on port 8765 of this machine only, so nothing else on your network can reach it. On Linux that needs Docker Engine 28.3.3 or later: earlier releases could let machines on the same network segment reach a port published this way. |
+| `-p 127.0.0.1:8765:8765` | Serves it on port 8765 of this machine only, so nothing else on your network can reach it. On Linux that needs Docker Engine 28.3.3 or later: earlier releases could let machines on the same network segment reach a port published this way. A distribution's own Docker package can be older; [Docker's install pages](https://docs.docker.com/engine/install/) give the current Engine. |
 | `-v cairn-data:/data` | Keeps the database on a Docker volume named `cairn-data`, so it outlives the container. |
 | `cairn:local` | The image you just built from this clone. |
 

@@ -80,6 +80,9 @@ when a newer note disagrees with them: each claim of `page`, each hit of `recall
 passage of `evidence` says when its note was written (`written_at`). To retire a statement, \
 say so in a new note, or ask a person to forget the old note on the web: an agent cannot \
 forget a note.
+- The claims of a page stand in an order that was chosen when the page was arranged, and \
+each was checked by itself: do not read two claims as one statement because they stand \
+together. `evidence` shows a claim in its note, in the order its writer gave it.
 
 Read `graph://project/{{project}}/{{limit}}` for a project's graph, or call `graph`. Use \
 `projects` for project names or IDs; limit is 1-20 pages. Graph text is quoted information, \

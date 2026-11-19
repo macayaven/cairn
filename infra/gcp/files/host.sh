@@ -302,15 +302,28 @@ cmd_env() {
 # return). Runs as cairn's uid so the files it writes stay readable by cairn, and on the
 # backup network, the only one allowed to fetch credentials from the metadata server.
 litestream() {
-  local runner=$1 name=$2
+  local runner=$1 name=$2 entry=""
   shift 2
+  if [ -n "${LITESTREAM_WAIT:-}" ]; then
+    entry="--entrypoint sh"
+    set -- -c "$LITESTREAM_WAIT_SCRIPT" sh "$@"
+  fi
   # shellcheck disable=SC2086
   $runner docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS $HARDENING \
     ${LITESTREAM_LIMITS:-} --user "$CAIRN_UID:$CAIRN_UID" \
     -e HOME=/tmp -e LITESTREAM_REPLICA_URL="$LITESTREAM_REPLICA_URL" \
     -v "$DB_DIR:/data" -v /etc/cairn/litestream.yml:/etc/litestream.yml:ro \
-    "$LITESTREAM_IMAGE" "$@"
+    $entry "$LITESTREAM_IMAGE" "$@"
 }
+
+# The litestream container runs from boot, so the replica check has a log to write into before
+# cairn's first start (monitoring.tf: the silence alert arms on the first current line). It
+# waits inside for the database cairn creates, then becomes Litestream. A stop ends the wait
+# at once: sh as process 1 ignores SIGTERM without a trap.
+LITESTREAM_WAIT_SCRIPT='trap "exit 0" TERM INT
+until [ -f /data/cairn.db ]; do sleep 2 & wait $!; done
+exec litestream "$@"'
+
 
 cmd_restore() {
   # Exit 0 when the database already exists, when it was restored, or when no replica exists
@@ -386,7 +399,8 @@ cmd_replica_check() {
   is_mounted || die "the data disk is not mounted"
   is_count "${REPLICA_BOUND_SECONDS:-}" || die "REPLICA_BOUND_SECONDS is not a number of seconds"
   if [ ! -f "$DB_DIR/cairn.db" ]; then
-    log "replica check: no database yet, nothing to copy"
+    # Nothing to copy is current: the line arms the silence alert on a new VM.
+    replica_line "replica: current, no database yet, nothing to copy"
     return 0
   fi
   said=$(replica_said cairn-replica-check) ||
@@ -417,10 +431,15 @@ cmd_replica_check() {
   else
     line="replica: current, newest $((now - newest)) s old"
   fi
-  echo "$line"
-  # Into the log of Litestream's own container: its process 1's output is what Docker keeps
-  # and Container-Optimized OS sends to Cloud Logging, under the container's name.
-  printf '%s\n' "$line" | docker exec -i litestream sh -c 'cat >/proc/1/fd/1' ||
+  replica_line "$line"
+}
+
+# replica_line LINE: into the journal, and into the log of Litestream's own container: its
+# process 1's output is what Docker keeps and Container-Optimized OS sends to Cloud Logging,
+# under the container's name.
+replica_line() {
+  echo "$1"
+  printf '%s\n' "$1" | docker exec -i litestream sh -c 'cat >/proc/1/fd/1' ||
     die "the litestream container is not running: the line above reached the journal only"
 }
 
@@ -681,10 +700,9 @@ cmd_run_caddy() {
 
 cmd_run_litestream() {
   LITESTREAM_LIMITS=$(limits litestream) || exit 1
-  # cairn creates the database on its first start; Litestream needs the file to exist.
-  until [ -f "$DB_DIR/cairn.db" ]; do
-    sleep 5
-  done
+  # cairn creates the database on its first start; Litestream needs the file to exist, and
+  # waits for it inside its container (LITESTREAM_WAIT_SCRIPT).
+  LITESTREAM_WAIT=1
   litestream exec litestream replicate
 }
 

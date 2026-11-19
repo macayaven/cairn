@@ -1098,3 +1098,13 @@ def test_no_sentence_says_nothing_runs_the_compaction_by_itself():
     section = GUIDE[start : GUIDE.index("\n## ", start)]
     assert "cairn-compact" in section
     assert "03:00 UTC" in section
+
+
+def test_the_silence_alert_paragraph_says_it_arms_itself_on_a_new_vm():
+    start = GUIDE.index("**The silence alert**")
+    paragraph = flat(GUIDE[start : GUIDE.index("\n\n", start)])
+    assert "stays unarmed" not in paragraph
+    assert "`replica: current, no database yet, nothing to copy`" in paragraph
+    assert "within two minutes of boot" in paragraph
+    timer_start = TEMPLATE.index("  - path: /etc/systemd/system/cairn-replica-check.timer\n")
+    assert "OnBootSec=2min" in TEMPLATE[timer_start : TEMPLATE.index("\n  - path: ", timer_start)]

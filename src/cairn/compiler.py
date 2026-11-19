@@ -86,7 +86,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cairn.spans import Span
+from cairn.spans import Span, claim_id
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
 from cairn.topics import topic_tag
 
@@ -232,11 +232,6 @@ def lost_race(result: "CompileResult") -> bool:
         and gate is not None
         and any(violation.startswith(STALE_PAGE) for violation in gate.violations)
     )
-
-
-def claim_id(span_id: str) -> str:
-    """ "cl_" + the span id's hex part."""
-    return "cl_" + span_id.removeprefix("sp_")
 
 
 def section_headings(

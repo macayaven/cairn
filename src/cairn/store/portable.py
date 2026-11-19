@@ -811,7 +811,7 @@ METRIC_TEXT_MAX = 200
 # only (_cited_once), a note's text is stored on pages at most this many times per version.
 CLAIM_TEXT_FACTOR = 2
 # A claim's id in an archive is shaped as cairn makes one: "cl_" and 16 lowercase hex digits
-# (cairn.compiler.claim_id, cairn.llm_compiler, the erasure's new ids).
+# (cairn.spans.claim_id, cairn.llm_compiler, the erasure's new ids).
 CLAIM_ID = re.compile(r"cl_[0-9a-f]{16}")
 # The citations of one page version in an archive (its claims' span lists, added up) are at
 # most CITATION_FACTOR times its claims and the distinct spans it cites, added up. cairn's

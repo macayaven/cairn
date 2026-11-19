@@ -40,7 +40,7 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 
-from cairn.spans import Span
+from cairn.spans import Span, claim_id
 from cairn.store import ranking
 from cairn.store.access import MODELS_PREFIX
 from cairn.store.audit import DELETED_PROJECT
@@ -86,10 +86,9 @@ def kept_claims(
     while one whose text merely occurs inside a remaining passage ("Enable X." inside "Never
     enable X. in prod.") or that joined the forgotten note's words goes. One that cites only
     forgotten spans goes.
-    A kept claim whose id was made from a forgotten span (compiler.claim_id: a span id is a
+    A kept claim whose id was made from a forgotten span (spans.claim_id: a span id is a
     digest of its text) takes the id of the first span it keeps, or, when another claim
     already has that one, an id made from its place and the spans it keeps."""
-    from cairn.compiler import claim_id  # the compiler builds on the store
     from cairn.gate import whole  # the gate builds on the compiler
 
     kept = []

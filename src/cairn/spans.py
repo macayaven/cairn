@@ -278,3 +278,8 @@ def _span_id(source_id: str, heading_path: tuple[str, ...], text: str, occurrenc
     """Hash a JSON encoding of the fields: unlike joining with separators, it is injective."""
     key = json.dumps([source_id, heading_path, text, occurrence])
     return "sp_" + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def claim_id(span_id: str) -> str:
+    """ "cl_" + the span id's hex part."""
+    return "cl_" + span_id.removeprefix("sp_")

@@ -2,11 +2,13 @@
 without losing what it sealed: earlier keys beside the current one (`<VARIABLE>_PREVIOUS`),
 the `reseal` command, and what `serve` refuses.
 
-Every key, token and secret here is made up. No assertion compares a key, a token or a sealed
-value in a way that would print it when it fails: each comparison is made into a bool first.
+Every key, token and secret here is made up. No check prints a key, a token or a sealed value
+when it fails: `holds` fails with the line of the test that failed, never the values pytest's
+assertion rewriting would show.
 """
 
 import base64
+import inspect
 import json
 import sqlite3
 from datetime import UTC, datetime
@@ -39,6 +41,14 @@ SLACK = "CAIRN_SLACK_KEY"
 VARIABLES = (GOOGLE, f"{GOOGLE}_PREVIOUS", SLACK, f"{SLACK}_PREVIOUS")
 
 
+def holds(ok: object) -> None:
+    """Fail, when `ok` is not True, with the file, line and source text of the check only."""
+    if ok is not True:
+        caller = inspect.getframeinfo(inspect.stack()[1].frame)
+        line = (caller.code_context or [""])[0].strip()
+        pytest.fail(f"{caller.filename}:{caller.lineno}: {line}", pytrace=False)
+
+
 def b64(key: bytes) -> str:
     return base64.b64encode(key).decode()
 
@@ -50,18 +60,18 @@ def test_a_value_sealed_under_an_earlier_key_opens_beside_the_current_one():
     for earlier in (EARLIER, OLDEST):
         sealed = Sealer(earlier).seal(TOKEN, TIED)
         opened = Sealer(CURRENT, (EARLIER, OLDEST)).open(sealed, TIED)
-        assert (opened == TOKEN) is True
+        holds((opened == TOKEN) is True)
 
 
 def test_what_is_sealed_from_now_on_is_sealed_under_the_current_key():
     sealed = Sealer(CURRENT, (EARLIER,)).seal(TOKEN, TIED)
-    assert (Sealer(CURRENT).open(sealed, TIED) == TOKEN) is True
-    assert Sealer(EARLIER).open(sealed, TIED) is None
+    holds((Sealer(CURRENT).open(sealed, TIED) == TOKEN) is True)
+    holds(Sealer(EARLIER).open(sealed, TIED) is None)
 
 
 def test_a_value_of_no_key_given_does_not_open():
     sealed = Sealer(STRANGER).seal(TOKEN, TIED)
-    assert Sealer(CURRENT, (EARLIER, OLDEST)).open(sealed, TIED) is None
+    holds(Sealer(CURRENT, (EARLIER, OLDEST)).open(sealed, TIED) is None)
 
 
 def test_a_sealed_value_carries_nothing_that_says_which_key_sealed_it():
@@ -69,16 +79,16 @@ def test_a_sealed_value_carries_nothing_that_says_which_key_sealed_it():
     before earlier keys could be given (base64url of a 12-byte nonce and the sealed text)."""
     now = Sealer(CURRENT, (EARLIER,)).seal(TOKEN, TIED)
     before = Sealer(EARLIER).seal(TOKEN, TIED)
-    assert len(now) == len(before)
-    assert len(base64.urlsafe_b64decode(now)) == 12 + len(TOKEN.encode()) + 16
+    holds(len(now) == len(before))
+    holds(len(base64.urlsafe_b64decode(now)) == 12 + len(TOKEN.encode()) + 16)
 
 
 def test_the_sealer_says_whether_the_current_key_opens_a_value():
     sealer = Sealer(CURRENT, (EARLIER,))
-    assert sealer.current(sealer.seal(TOKEN, TIED), TIED) is True
-    assert sealer.current(Sealer(EARLIER).seal(TOKEN, TIED), TIED) is False
-    assert sealer.current(Sealer(STRANGER).seal(TOKEN, TIED), TIED) is False
-    assert sealer.current(None, TIED) is False
+    holds(sealer.current(sealer.seal(TOKEN, TIED), TIED) is True)
+    holds(sealer.current(Sealer(EARLIER).seal(TOKEN, TIED), TIED) is False)
+    holds(sealer.current(Sealer(STRANGER).seal(TOKEN, TIED), TIED) is False)
+    holds(sealer.current(None, TIED) is False)
 
 
 @pytest.mark.parametrize(
@@ -91,13 +101,13 @@ def test_an_earlier_key_equal_to_the_current_one_or_not_32_bytes_is_refused(prev
         Sealer(CURRENT, previous)
     said = str(refused.value)
     leaked = any(k.hex() in said or b64(k) in said for k in (CURRENT, *previous) if k)
-    assert leaked is False
+    holds(leaked is False)
 
 
 def test_no_repr_of_a_sealer_with_earlier_keys_shows_a_key():
     shown = repr(Sealer(CURRENT, (EARLIER, OLDEST)))
     leaked = any(k.hex() in shown or b64(k) in shown for k in (CURRENT, EARLIER, OLDEST))
-    assert leaked is False and shown == "Sealer()"
+    holds(leaked is False and shown == "Sealer()")
 
 
 # The variables, and what serve refuses
@@ -141,8 +151,8 @@ def test_earlier_keys_beside_each_key_open_what_they_sealed(given):
     slack = web_slack.read_switch(slack_env(**{f"{SLACK}_PREVIOUS": given}))
     earlier = (EARLIER, OLDEST) if "," in given else (EARLIER,)
     for sealer in (google.custody.sealer, slack.sealer()):
-        assert opens_earlier(sealer, *earlier) is True
-        assert (Sealer(CURRENT).open(sealer.seal(TOKEN, TIED), TIED) == TOKEN) is True
+        holds(opens_earlier(sealer, *earlier) is True)
+        holds((Sealer(CURRENT).open(sealer.seal(TOKEN, TIED), TIED) == TOKEN) is True)
 
 
 def test_with_no_earlier_key_or_a_blank_one_nothing_earlier_opens():
@@ -150,8 +160,8 @@ def test_with_no_earlier_key_or_a_blank_one_nothing_earlier_opens():
         google = google_connect.read_switch(google_env(**more))
         slack = web_slack.read_switch(slack_env(**more))
         for sealer in (google.custody.sealer, slack.sealer()):
-            assert opens_earlier(sealer, EARLIER) is False
-            assert opens_earlier(sealer, CURRENT) is True
+            holds(opens_earlier(sealer, EARLIER) is False)
+            holds(opens_earlier(sealer, CURRENT) is True)
 
 
 @pytest.mark.parametrize("switch", ["--google-connect", "--slack"])
@@ -163,7 +173,7 @@ def test_serve_starts_with_earlier_keys_and_says_none(tmp_path, monkeypatch, cap
     said = capsys.readouterr()
     shown = said.out + said.err
     leaked = any(b64(k) in shown or k.hex() in shown for k in (CURRENT, EARLIER, OLDEST))
-    assert code == 0 and len(apps) == 1 and leaked is False
+    holds(code == 0 and len(apps) == 1 and leaked is False)
 
 
 MALFORMED = {
@@ -187,12 +197,12 @@ def test_serve_stops_at_start_on_a_malformed_or_repeated_earlier_key(
     code, apps, db = serve(monkeypatch, tmp_path, switch, env)
     said = capsys.readouterr()
     lines = said.err.strip().splitlines()
-    assert code == 2 and apps == [] and not db.parent.exists() and len(lines) == 1
-    assert f"{variable}_PREVIOUS" in lines[0]
+    holds(code == 2 and apps == [] and not db.parent.exists() and len(lines) == 1)
+    holds(f"{variable}_PREVIOUS" in lines[0])
     shown = said.out + said.err
     leaked = any(part.strip() and part.strip() in shown for part in value.split(","))
     leaked = leaked or any(b64(k) in shown or k.hex() in shown for k in (CURRENT, EARLIER))
-    assert leaked is False
+    holds(leaked is False)
 
 
 # The stored values under a changed key, and re-sealing them
@@ -208,6 +218,14 @@ def dump(db) -> str:
     con = sqlite3.connect(db)
     try:
         return "\n".join(con.iterdump())
+    finally:
+        con.close()
+
+
+def one_row(db, sql: str, *params: object) -> tuple | None:
+    con = sqlite3.connect(db)
+    try:
+        return con.execute(sql, params).fetchone()
     finally:
         con.close()
 
@@ -265,13 +283,13 @@ def test_a_connected_account_and_a_slack_install_sealed_under_an_earlier_key_sti
     name = connect(world, "ada.mail@example.test")
     install = slack_ready(world)
     under(world.store, CURRENT, EARLIER)
-    assert google_opens(world) == {name: True}
+    holds(google_opens(world) == {name: True})
     secret = world.store.slack_inbound(install).signing_secret
-    assert (secret == SIGNING) is True
-    assert (world.view().slack_bot_token(install) == BOT) is True
+    holds((secret == SIGNING) is True)
+    holds((world.view().slack_bot_token(install) == BOT) is True)
     under(world.store, CURRENT)  # without the earlier key, as before: nothing opens
-    assert google_opens(world) == {name: False}
-    assert world.store.slack_inbound(install).signing_secret is None
+    holds(google_opens(world) == {name: False})
+    holds(world.store.slack_inbound(install).signing_secret is None)
 
 
 def test_reseal_seals_every_stored_value_under_the_current_key_and_counts_what_it_could_not_open(
@@ -287,19 +305,19 @@ def test_reseal_seals_every_stored_value_under_the_current_key_and_counts_what_i
     under(world.store, CURRENT, EARLIER)
     fresh = connect(world, "ada.new@example.test")
     shut = "SELECT sealed FROM credential_tokens WHERE credential = ?"
-    before = sqlite3.connect(world.db).execute(shut, (lost,)).fetchone()
+    before = one_row(world.db, shut, lost)
     google = reseal_google(world.store, world.store.google_custody.sealer)
     slack = reseal_slack(world.store, world.store.slack_sealer)
-    assert google == Resealed(resealed=2, unopened=1, current=1)
-    assert slack == Resealed(resealed=2, unopened=0, current=0)
-    after = sqlite3.connect(world.db).execute(shut, (lost,)).fetchone()
-    assert (after == before) is True  # what did not open is left as it was
+    holds(google == Resealed(resealed=2, unopened=1, current=1))
+    holds(slack == Resealed(resealed=2, unopened=0, current=0))
+    after = one_row(world.db, shut, lost)
+    holds((after == before) is True)  # what did not open is left as it was
     under(world.store, CURRENT)  # the earlier key removed
     opens = google_opens(world)
-    assert opens.pop(lost) is False and set(opens.values()) == {True}
-    assert {kept, fresh} <= set(opens) and len(opens) == 3  # the waiting token too
-    assert (world.store.slack_inbound(install).signing_secret == SIGNING) is True
-    assert (world.view().slack_bot_token(install) == BOT) is True
+    holds(opens.pop(lost) is False and set(opens.values()) == {True})
+    holds({kept, fresh} <= set(opens) and len(opens) == 3)  # the waiting token too
+    holds((world.store.slack_inbound(install).signing_secret == SIGNING) is True)
+    holds((world.view().slack_bot_token(install) == BOT) is True)
 
 
 def test_reseal_is_safe_to_run_twice_and_with_no_earlier_key_changes_nothing(world):
@@ -313,16 +331,16 @@ def test_reseal_is_safe_to_run_twice_and_with_no_earlier_key_changes_nothing(wor
         reseal_google(world.store, world.store.google_custody.sealer),
         reseal_slack(world.store, world.store.slack_sealer),
     )
-    assert again == (Resealed(0, 0, 1), Resealed(0, 0, 2))
-    assert (dump(world.db) == before) is True
+    holds(again == (Resealed(0, 0, 1), Resealed(0, 0, 2)))
+    holds((dump(world.db) == before) is True)
     under(world.store, CURRENT)
-    assert reseal_google(world.store, world.store.google_custody.sealer) == Resealed(0, 0, 1)
-    assert (dump(world.db) == before) is True
+    holds(reseal_google(world.store, world.store.google_custody.sealer) == Resealed(0, 0, 1))
+    holds((dump(world.db) == before) is True)
 
 
 def test_a_pending_slack_install_holds_no_secret_and_is_not_counted(world):
     world.view().make_slack_install()
-    assert reseal_slack(world.store, Sealer(CURRENT, (EARLIER,))) == Resealed(0, 0, 0)
+    holds(reseal_slack(world.store, Sealer(CURRENT, (EARLIER,))) == Resealed(0, 0, 0))
 
 
 # The command: reseal
@@ -356,7 +374,7 @@ def test_reseal_both_keys_says_what_it_did_for_each_and_shows_nothing_secret(
     connect(world, "ada.lost@example.test")
     code = reseal(monkeypatch, world.db, "--google-connect", "--slack", **BOTH_ROTATED)
     said = capsys.readouterr()
-    assert code == 0 and said.err == "" and leaks(said.out) is False
+    holds(code == 0 and said.err == "" and leaks(said.out) is False)
     assert said.out.splitlines() == [
         f"{GOOGLE}: 1 value sealed again under the current key, 1 that no key given opens left"
         " as it was, 0 already under it",
@@ -364,8 +382,8 @@ def test_reseal_both_keys_says_what_it_did_for_each_and_shows_nothing_secret(
         " as it was, 0 already under it",
     ]
     under(world.store, CURRENT)  # restarted without the earlier keys
-    assert (world.store.slack_inbound(install).signing_secret == SIGNING) is True
-    assert sorted(google_opens(world).values()) == [False, True]
+    holds((world.store.slack_inbound(install).signing_secret == SIGNING) is True)
+    holds(sorted(google_opens(world).values()) == [False, True])
 
 
 def test_reseal_one_key_leaves_the_other_and_a_second_run_writes_nothing(
@@ -374,22 +392,22 @@ def test_reseal_one_key_leaves_the_other_and_a_second_run_writes_nothing(
     connect(world, "ada.mail@example.test")
     slack_ready(world)
     before = dump(world.db)
-    assert reseal(monkeypatch, world.db, "--slack", **BOTH_ROTATED) == 0
-    assert capsys.readouterr().out.startswith(f"{SLACK}: 2 values sealed again")
+    holds(reseal(monkeypatch, world.db, "--slack", **BOTH_ROTATED) == 0)
+    holds(capsys.readouterr().out.startswith(f"{SLACK}: 2 values sealed again"))
     after = dump(world.db)
     google_rows = [line for line in after.splitlines() if "credential_tokens" in line]
-    assert all(line in before for line in google_rows) is True  # the Google token untouched
-    assert reseal(monkeypatch, world.db, "--slack", **BOTH_ROTATED) == 0
-    assert capsys.readouterr().out.startswith(f"{SLACK}: 0 values sealed again")
-    assert (dump(world.db) == after) is True
+    holds(all(line in before for line in google_rows) is True)  # the Google token untouched
+    holds(reseal(monkeypatch, world.db, "--slack", **BOTH_ROTATED) == 0)
+    holds(capsys.readouterr().out.startswith(f"{SLACK}: 0 values sealed again"))
+    holds((dump(world.db) == after) is True)
 
 
 def test_reseal_needs_a_key_to_name(world, monkeypatch, capsys):
     before = dump(world.db)
-    assert reseal(monkeypatch, world.db, **BOTH_ROTATED) == 2
+    holds(reseal(monkeypatch, world.db, **BOTH_ROTATED) == 2)
     said = capsys.readouterr()
-    assert "--google-connect" in said.err and "--slack" in said.err
-    assert len(said.err.strip().splitlines()) == 1 and (dump(world.db) == before) is True
+    holds("--google-connect" in said.err and "--slack" in said.err)
+    holds(len(said.err.strip().splitlines()) == 1 and (dump(world.db) == before) is True)
 
 
 @pytest.mark.parametrize("value", list(MALFORMED.values()), ids=list(MALFORMED))
@@ -404,25 +422,25 @@ def test_reseal_refuses_a_malformed_or_repeated_earlier_key_and_writes_nothing(
     code = reseal(monkeypatch, world.db, "--google-connect", "--slack", **env)
     said = capsys.readouterr()
     lines = said.err.strip().splitlines()
-    assert code == 2 and said.out == "" and len(lines) == 1
-    assert f"{variable}_PREVIOUS" in lines[0]
+    holds(code == 2 and said.out == "" and len(lines) == 1)
+    holds(f"{variable}_PREVIOUS" in lines[0])
     leaked = any(part.strip() and part.strip() in said.err for part in value.split(","))
-    assert (leaked or leaks(said.err)) is False
-    assert (dump(world.db) == before) is True
+    holds((leaked or leaks(said.err)) is False)
+    holds((dump(world.db) == before) is True)
 
 
 def test_reseal_without_the_current_key_says_which_variable(world, monkeypatch, capsys):
     env = {k: v for k, v in BOTH_ROTATED.items() if k != SLACK}
-    assert reseal(monkeypatch, world.db, "--slack", **env) == 2
+    holds(reseal(monkeypatch, world.db, "--slack", **env) == 2)
     err = capsys.readouterr().err
-    assert SLACK in err and len(err.strip().splitlines()) == 1 and leaks(err) is False
+    holds(SLACK in err and len(err.strip().splitlines()) == 1 and leaks(err) is False)
 
 
 def test_reseal_needs_no_google_client_and_no_database_is_refused(tmp_path, monkeypatch, capsys):
     env = {GOOGLE: b64(CURRENT)}
-    assert reseal(monkeypatch, tmp_path / "none.db", "--google-connect", **env) == 1
-    assert capsys.readouterr().err.strip() == f"no database at {tmp_path / 'none.db'}"
-    assert not (tmp_path / "none.db").exists()
+    holds(reseal(monkeypatch, tmp_path / "none.db", "--google-connect", **env) == 1)
+    holds(capsys.readouterr().err.strip() == f"no database at {tmp_path / 'none.db'}")
+    holds(not (tmp_path / "none.db").exists())
 
 
 def test_no_log_line_of_a_reseal_or_of_a_refusal_shows_a_key_or_a_secret(
@@ -436,4 +454,28 @@ def test_no_log_line_of_a_reseal_or_of_a_refusal_shows_a_key_or_a_secret(
     reseal(monkeypatch, world.db, "--google-connect", **bad)
     capsys.readouterr()
     logged = "\n".join(record.getMessage() for record in caplog.records)
-    assert leaks(logged) is False
+    holds(leaks(logged) is False)
+
+
+def test_no_repr_of_the_slack_switch_or_the_google_custody_shows_a_key():
+    slack = web_slack.read_switch(slack_env(**{f"{SLACK}_PREVIOUS": b64s(EARLIER, OLDEST)}))
+    google = google_connect.read_switch(google_env(**{f"{GOOGLE}_PREVIOUS": b64(EARLIER)}))
+    shown = repr(slack) + repr(google) + repr(google.custody)
+    leaked = any(repr(k) in shown or k.hex() in shown for k in (CURRENT, EARLIER, OLDEST))
+    holds(leaked is False and leaks(shown) is False)
+
+
+@pytest.mark.parametrize(
+    "previous",
+    [(CURRENT,), (EARLIER, CURRENT), (bytes(16),)],
+    ids=["the-current-key", "the-current-key-second", "16-bytes"],
+)
+def test_create_app_refuses_a_slack_switch_whose_earlier_key_is_wrong_naming_the_variable(
+    previous,
+):
+    switch = web_slack.Slack(key=CURRENT, previous=previous)
+    with pytest.raises(ValueError) as refused:
+        web_slack.check(switch, sign_in=object(), public_url=BASE)
+    said = str(refused.value)
+    leaked = any(k and (k.hex() in said or b64(k) in said) for k in (CURRENT, *previous))
+    holds(f"{SLACK}_PREVIOUS" in said and leaked is False)

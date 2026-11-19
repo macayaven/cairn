@@ -20,6 +20,7 @@ from test_key_rotation_unit import (  # noqa: F401
     connect,
     google_env,
     google_opens,
+    holds,
     opens_earlier,
     reseal,
     slack_env,
@@ -46,14 +47,14 @@ def test_run_either_key_can_be_changed_in_four_steps(world, monkeypatch, capsys)
         " browser, and `CAIRN_SLACK_KEY` seals each workspace's Slack signing secret and bot"
         " token. Either key can be changed without anyone connecting again, in four steps:",
     )
-    assert (google_connect.KEY_VARIABLE, web_slack.KEY_VARIABLE) == (GOOGLE, SLACK)
+    holds((google_connect.KEY_VARIABLE, web_slack.KEY_VARIABLE) == (GOOGLE, SLACK))
     connect(world, "ada.mail@example.test")
     install = slack_ready(world)  # sealed under EARLIER, the old key
-    assert reseal(monkeypatch, world.db, "--google-connect", "--slack", **BOTH_ROTATED) == 0
+    holds(reseal(monkeypatch, world.db, "--google-connect", "--slack", **BOTH_ROTATED) == 0)
     capsys.readouterr()
     under(world.store, CURRENT)  # step 4: the earlier key removed
-    assert google_opens(world) == {name: True for name in google_opens(world)}
-    assert (world.store.slack_inbound(install).signing_secret == SIGNING) is True
+    holds(google_opens(world) == {name: True for name in google_opens(world)})
+    holds((world.store.slack_inbound(install).signing_secret == SIGNING) is True)
 
 
 def test_run_step_one_the_old_key_beside_the_new_one():
@@ -66,11 +67,11 @@ def test_run_step_one_the_old_key_beside_the_new_one():
         " followed by `_PREVIOUS`: `CAIRN_GOOGLE_CONNECT_KEY_PREVIOUS` or"
         " `CAIRN_SLACK_KEY_PREVIOUS`.",
     )
-    assert PREVIOUS == "_PREVIOUS"
+    holds(PREVIOUS == "_PREVIOUS")
     google = google_connect.read_switch(google_env(**{GOOGLE + PREVIOUS: b64(EARLIER)}))
     slack = web_slack.read_switch(slack_env(**{SLACK + PREVIOUS: b64(EARLIER)}))
     for sealer in (google.custody.sealer, slack.sealer()):
-        assert opens_earlier(sealer, EARLIER) is True
+        holds(opens_earlier(sealer, EARLIER) is True)
 
 
 def test_run_step_two_restart_and_new_values_are_sealed_under_the_new_key():
@@ -83,7 +84,7 @@ def test_run_step_two_restart_and_new_values_are_sealed_under_the_new_key():
     )
     sealer = web_slack.read_switch(slack_env(**{SLACK + PREVIOUS: b64(EARLIER)})).sealer()
     sealed = sealer.seal("x", b"t")
-    assert Sealer(CURRENT).open(sealed, b"t") == "x" and Sealer(EARLIER).open(sealed, b"t") is None
+    holds(Sealer(CURRENT).open(sealed, b"t") == "x" and Sealer(EARLIER).open(sealed, b"t") is None)
 
 
 def test_run_step_three_reseal_and_what_it_prints(world, monkeypatch, capsys):  # noqa: F811
@@ -101,20 +102,20 @@ def test_run_step_three_reseal_and_what_it_prints(world, monkeypatch, capsys):  
         " were under the new key already. Running it again changes nothing.",
     )
     args = cli._parser().parse_args(["reseal", "--db", "/data/cairn.db", "--slack"])
-    assert isinstance(args, argparse.Namespace) and args.slack and not args.google_connect
+    holds(isinstance(args, argparse.Namespace) and args.slack and not args.google_connect)
     slack_ready(world)
     for again in (2, 0):
-        assert reseal(monkeypatch, world.db, "--slack", **BOTH_ROTATED) == 0
+        holds(reseal(monkeypatch, world.db, "--slack", **BOTH_ROTATED) == 0)
         (line,) = capsys.readouterr().out.splitlines()
-        assert line.startswith(f"{SLACK}: {again} values sealed again under the current key")
-        assert "that no key given opens left as it was" in line and "already under it" in line
+        holds(line.startswith(f"{SLACK}: {again} values sealed again under the current key"))
+        holds("that no key given opens left as it was" in line and "already under it" in line)
 
 
 def test_run_step_four_remove_the_previous_variable():
     """run.md: "Remove the `_PREVIOUS` variable and restart the server.\""""
     says(*CHANGE, "Remove the `_PREVIOUS` variable and restart the server.")
     google = google_connect.read_switch(google_env())
-    assert opens_earlier(google.custody.sealer, EARLIER) is False
+    holds(opens_earlier(google.custody.sealer, EARLIER) is False)
 
 
 def test_run_several_earlier_keys_and_what_serve_refuses():
@@ -127,9 +128,9 @@ def test_run_several_earlier_keys_and_what_serve_refuses():
         " is not 32 bytes in base64, or an earlier key equal to the current one, stops `serve` at"
         " start with one line that names the variable, never a key.",
     )
-    assert PREVIOUS_SEPARATOR == ","
+    holds(PREVIOUS_SEPARATOR == ",")
     sealer = web_slack.read_switch(slack_env(**{SLACK + PREVIOUS: b64s(EARLIER, OLDEST)})).sealer()
-    assert opens_earlier(sealer, EARLIER, OLDEST) is True
+    holds(opens_earlier(sealer, EARLIER, OLDEST) is True)
     # serve's refusals: test_key_rotation_unit.test_serve_stops_at_start_on_a_malformed_...
 
 
@@ -146,9 +147,9 @@ def test_run_a_backup_taken_before_reseal():
         " after step 4, give the old key as `_PREVIOUS` again, restart and run `reseal`.",
     )
     old = Sealer(EARLIER).seal("x", b"t")
-    assert len(old) == len(Sealer(CURRENT, (EARLIER,)).seal("x", b"t"))
-    assert Sealer(CURRENT).open(old, b"t") is None
-    assert Sealer(CURRENT, (EARLIER,)).open(old, b"t") == "x"
+    holds(len(old) == len(Sealer(CURRENT, (EARLIER,)).seal("x", b"t")))
+    holds(Sealer(CURRENT).open(old, b"t") is None)
+    holds(Sealer(CURRENT, (EARLIER,)).open(old, b"t") == "x")
 
 
 def test_run_slack_a_key_lost_or_changed_without_the_old_one():
@@ -165,7 +166,7 @@ def test_run_slack_a_key_lost_or_changed_without_the_old_one():
         " removes Slack on the **Sources** page, sets it up again and pastes both secrets.",
     )
     sealed = Sealer(EARLIER).seal(SIGNING, b"t")
-    assert web_slack.read_switch(slack_env()).sealer().open(sealed, b"t") is None
+    holds(web_slack.read_switch(slack_env()).sealer().open(sealed, b"t") is None)
 
 
 SECURITY_GOOGLE = ("security", "## Google accounts connected in the browser")
@@ -193,6 +194,13 @@ def test_security_google_how_the_key_is_changed_and_when_that_is_not_enough():
         " connected account first, wait until Google has answered each revocation (the log"
         " says when one was not ended), then change the key.",
     )
+    held = Sealer(EARLIER).seal("refresh", b"t")
+    custody = google_connect.read_switch(google_env(**{GOOGLE + PREVIOUS: b64(EARLIER)})).custody
+    holds(custody.sealer.open(held, b"t") == "refresh")
+    renewed = custody.sealer.seal("refresh", b"t")
+    holds(len(renewed) == len(held))  # nothing in a value names its key
+    without = google_connect.read_switch(google_env()).custody.sealer
+    holds(without.open(held, b"t") is None)  # without the old key: reconnect
 
 
 def test_security_slack_how_the_key_is_changed():
@@ -208,4 +216,4 @@ def test_security_slack_how_the_key_is_changed():
         " command with `--slack`; then remove `CAIRN_SLACK_KEY_PREVIOUS` and restart.",
     )
     args = cli._parser().parse_args(["reseal", "--db", "cairn.db", "--slack"])
-    assert args.command == "reseal" and args.slack is True
+    holds(args.command == "reseal" and args.slack is True)

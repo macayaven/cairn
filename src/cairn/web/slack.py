@@ -133,6 +133,9 @@ NO_KEY = (
     f" {KEY_BYTES}): the key every install's two secrets are sealed with"
 )
 BAD_KEY = f"{KEY_VARIABLE} is not {KEY_BYTES} bytes in base64"
+BAD_PREVIOUS = (
+    f"{KEY_VARIABLE}_PREVIOUS holds a key that is not {KEY_BYTES} bytes or is {KEY_VARIABLE}'s"
+)
 UNDER_A_BRAND = (
     "Slack is not offered under a brand yet: what the bot says, the shortcut's name and the"
     " command's name would name the software (leave out --slack or --brand-name)"
@@ -178,7 +181,8 @@ def check(
     slack: Slack, *, sign_in: object, public_url: str | None, brand_name: str | None = None
 ) -> None:
     """ValueError, with the sentence `serve` says, when the switch cannot work: a brand
-    (UNDER_A_BRAND), no sign-in, no https public URL, a key that is not KEY_BYTES bytes."""
+    (UNDER_A_BRAND), no sign-in, no https public URL, a key that is not KEY_BYTES bytes, an
+    earlier key that is not or that is the current one (BAD_PREVIOUS)."""
     if brand_name is not None:
         raise ValueError(UNDER_A_BRAND)
     if sign_in is None:
@@ -187,6 +191,10 @@ def check(
         raise ValueError(NEEDS_HTTPS)
     if not isinstance(slack.key, bytes) or len(slack.key) != KEY_BYTES:
         raise ValueError(BAD_KEY)
+    try:  # the earlier keys, as previous_keys reads them
+        slack.sealer()
+    except ValueError:
+        raise ValueError(BAD_PREVIOUS) from None
 
 
 def read_switch(environ: Mapping[str, str]) -> Slack:

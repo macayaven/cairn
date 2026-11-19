@@ -457,6 +457,48 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     assert meta["with"]["images"] == "ghcr.io/${{ github.repository }}"
 
 
+def test_the_deploy_guide_says_how_to_see_the_provenance_and_the_bill_of_materials():
+    """Docker's reference for `docker buildx imagetools inspect` gives `--raw` for the index
+    and `--format "{{json .Provenance}}"` and `"{{json .SBOM}}"` for the two attestations."""
+    update = DEPLOY_GUIDE[DEPLOY_GUIDE.index("## Update") :]
+    update = flat(update[: update.index("\n## ")])
+    assert (
+        "`docker buildx imagetools inspect --raw ghcr.io/<owner>/<repo>:X.Y.Z` prints the image"
+        " index, whose attestation manifests (platform `unknown/unknown`) hold each platform's"
+        " build provenance and bill of materials; `docker buildx imagetools inspect"
+        " ghcr.io/<owner>/<repo>:X.Y.Z --format '{{json .Provenance}}'`, and"
+        " `'{{json .SBOM}}'`, print them." in update
+    )
+
+
+def test_the_readme_says_what_a_change_of_documents_alone_still_runs_and_how_tags_move():
+    ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
+    for sentence in (
+        "One exception: a change that touches only paths no image job reads runs no image check"
+        " and no rehearsal, so a pull request runs items 1 and 2 alone and a push to `main`"
+        " publishes and deploys nothing; the server keeps the image it runs. Its image is still"
+        " built for both platforms and scanned, as item 1 says.",
+        "A tag is published as `X.Y.Z`, which never moves: if the registry already has that"
+        " version, the same digest is carried on and another digest stops the job.",
+        "After a release, job `aliases` points `latest` at the highest released version and each"
+        " `X.Y` at its newest `X.Y.z`, one such job at a time across all runs, deciding from the"
+        " releases and the registry as they are when it runs, so overlapping releases cannot"
+        " move either backwards.",
+        "re-running every job builds again, and `publish` then stops, since the registry holds"
+        " the version as another digest.",
+        "The job that may write to the registry builds nothing, checks out nothing and runs no"
+        " image.",
+    ):
+        assert sentence in ci, sentence
+    for gone in (
+        "builds no image",
+        "the image built for linux/amd64",
+        "re-running every job would publish the version again",
+        "as `latest` only when it is the highest version tagged",
+    ):
+        assert gone not in ci, gone
+
+
 def test_the_readme_says_in_two_sentences_what_a_candidate_is_for_and_what_it_publishes():
     ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
     assert (

@@ -79,14 +79,14 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
     for sentence in (
         "5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags"
         " publish one multi-arch image, with provenance and an SBOM, to"
-        " `ghcr.io/<owner>/<repo>`.",
+        " `ghcr.io/<owner>/<repo>`: the build items 1 and 3 checked, by its digest.",
         "A tag is published only from a public repository, when it is `v` and the version"
         " in `pyproject.toml`, `CHANGELOG.md` has a section for that version with an entry,"
         " dated no later than the day of the run, the tag's commit is on `main`, no tag of its"
         " `X.Y` is a higher version, and the version has no GitHub release yet:"
         " `scripts/release_check.py` checks it first.",
-        "A tag is published as `X.Y.Z` and `X.Y`, and as `latest` only when it is the highest"
-        " version tagged; a push to `main` as `main` and `sha-<commit>`, never `latest`.",
+        "A tag is published as `X.Y.Z`, which never moves",
+        "A push to `main` is published as `main` and `sha-<commit>`, never `latest`.",
         "the gate runs as before, and items 5 to 7 are skipped.",
         "6. **Verify and deploy:** on `main` and on tags, the published image is smoke-tested."
         " In a public repository the image is first pulled with no login, as the run guide"
@@ -102,8 +102,8 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         " nothing, checks that it got one wheel and one source archive of the tag's version,"
         " and makes the release. A tag never deploys.",
         "A run that failed after publishing and before the release was made is finished by"
-        " re-running only its failed jobs: re-running every job would publish the version"
-        " again.",
+        " re-running only its failed jobs: re-running every job builds again, and `publish`"
+        " then stops, since the registry holds the version as another digest.",
     ):
         assert sentence in ci, sentence
     assert "that `uv build` makes attached" not in ci
@@ -185,15 +185,21 @@ def test_the_run_guide_says_how_to_check_what_was_pulled():
         f"`docker buildx imagetools inspect --raw {IMAGE}` prints the release's image index:"
         " a manifest for each platform and, after them, attestation manifests listed with the"
         " platform `unknown/unknown`, each holding the attestations of one platform's image:"
-        " the provenance of the build that published it and its bill of materials.",
+        " the provenance of the build that made it, in the job that builds once for every"
+        " change before anything is published, and its bill of materials.",
         "The same command's `--format` option prints those two themselves, as Docker's"
         " reference for `docker buildx imagetools inspect` shows.",
     ):
         assert sentence in image, sentence
     assert "beside each, an attestation" not in image
-    publish = (ROOT / ".github" / "workflows" / "ci-cd.yml").read_text(encoding="utf-8")
-    assert "provenance: mode=max" in publish and "sbom: true" in publish
-    assert "linux/amd64,linux/arm64" in publish
+    assert "the build that published it" not in image
+    # image_build makes them; `publish` pushes its OCI layout whole, by the index's digest
+    # (oras copies an index with every manifest in it), so the attestation manifests survive.
+    workflow = (ROOT / ".github" / "workflows" / "ci-cd.yml").read_text(encoding="utf-8")
+    build = workflow.split("\n  image_build:\n", 1)[1].split("\n\n", 1)[0]
+    assert "provenance: mode=max" in build and "sbom: true" in build
+    assert "linux/amd64,linux/arm64" in build
+    assert 'oras cp --from-oci-layout "layout@$DIGEST"' in workflow
 
 
 def test_the_run_guide_upgrades_a_pulled_image_after_the_same_cold_backup():

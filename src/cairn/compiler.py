@@ -94,7 +94,7 @@ from cairn.candidate import CandidatePage, GateResult
 from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate
 from cairn.spans import Span, claim_id, fence_closes, fence_opener
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
-from cairn.topics import topic_tag
+from cairn.topics import one_line, topic_tag
 
 CONTENT_KINDS = frozenset({"paragraph", "bullet", "code", "table", "quote"})
 SLUG_MAX = 64
@@ -273,17 +273,12 @@ def _section_headings_before_review_two(
     return section, _headings(section, tuple(previous), lambda depth: min(depth + 2, 6))
 
 
-def heading_text(title: str) -> str:
-    """A page's title as the body writes it: one line of heading text (review blocker 1). A
-    title of one line is as it is; in any other, each line break (every one str.splitlines
-    knows, as cairn.spans splits a note: CR, LF, the line and paragraph separators and the
-    rest) with the blanks around it is one space, and blank lines are dropped. The one place
-    the rule lives: a body is rendered when it is read, so a title taken in, stored or
-    imported with a line break is written by it, never as given."""
-    lines = title.splitlines()
-    if lines == [title]:
-        return title
-    return " ".join(line.strip() for line in lines if line.strip())
+# A page's title as the body writes it: one line of heading text (review blocker 1). The one
+# rule, cairn.topics.one_line, which every other place that writes a title or a topic into
+# line-structured text (Slack, the export, the command line) calls too: a body is rendered
+# when it is read, so a title taken in, stored or imported with a line break is written by
+# it, never as given.
+heading_text = one_line
 
 
 def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) -> str:

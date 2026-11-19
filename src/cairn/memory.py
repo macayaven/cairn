@@ -46,8 +46,9 @@ Filing (N1): `Memory.note` stores a note, then files it on the page of its topic
 (cairn.compiler.page_for; the store says which page that is, nothing here makes an
 address). The same note sent again for another topic raises FiledOnce (409), naming its
 page only when that page's latest version cites it (Store.note_page, the Notes page's rule),
-else saying it waits (WAITS) or is on no page (NO_PAGE); nothing is stored. A note whose page moved under it more often than the compiler
-retries is compiled once more; if it loses again, nothing is recorded, the note stays
+else saying it waits (WAITS) or is on no page (NO_PAGE); nothing is stored. A note whose
+page moved under it more often than the compiler retries is compiled once more; if it
+loses again, nothing is recorded, the note stays
 waiting, and the answer is `status` WAITING with the sentence WAITS (REST 202, an MCP
 result that is not an error). `file_waiting(note_id)` files a waiting note as `note`
 does and records its outcome, for the filer `serve` runs (cairn.web.filing).

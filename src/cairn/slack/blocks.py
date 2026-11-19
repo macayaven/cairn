@@ -3,6 +3,8 @@ that names the product names it as the caller says (`product`; PRODUCT when not 
 
 from urllib.parse import quote, urlsplit
 
+from cairn.topics import one_line
+
 PRODUCT = "cairn"  # the name a message gives the product when the caller names none
 SHOWN = 5  # the claims a search answer shows; the rest are counted and linked
 OUTSIDE = "outside text"  # a hit whose note a source wrote: the search page's own mark
@@ -46,9 +48,15 @@ def _url(url: str) -> str | None:
     return encoded if len(encoded) <= 800 else None
 
 
+def _title(title: str, limit: int) -> str:
+    """A page's or note's title on one line (cairn.topics.one_line, as the page body writes
+    it), so a title with a line break never adds a line to the message; bounded and escaped."""
+    return _text(one_line(title or "Untitled"), limit)
+
+
 def _link(title: str, url: str) -> str:
     # A literal pipe separates Slack's URL from its label, even inside untrusted titles.
-    label = _text(title or "Untitled", 450).replace("|", "\N{FULLWIDTH VERTICAL LINE}")
+    label = _title(title, 450).replace("|", "\N{FULLWIDTH VERTICAL LINE}")
     target = _url(url)
     return f"<{target}|{label}>" if target else f"{label} (link unavailable)"
 
@@ -93,7 +101,7 @@ def found(hits: list[dict], *, query: str, base_url: str, asked: int | None = No
         evidence = _text(hit["text"], 1100) or "(Empty claim)"
         sections.append(f"{_link(title, url)}\n{metadata}\n{evidence}")
         fallback.append(
-            f"{_text(title or 'Untitled', 150)}\n"
+            f"{_title(title, 150)}\n"
             f"Project: {_text(project, 100)} · Version: {_text(hit['version'], 50)}"
             f"{f' · {OUTSIDE}' if hit.get('outside') else ''}\n"
             f"{_text(hit['text'], 300) or '(Empty claim)'}"
@@ -128,11 +136,11 @@ def filed(
             f"Note stored in {_link(project, project_url) if project_url else _text(project, 350)}"
         )
         return _message(
-            f"{status}\n{_text(title or 'Untitled', 450)}",
-            [f"{shown}. Its page will appear shortly.\n{_text(title or 'Untitled', 450)}"],
+            f"{status}\n{_title(title, 450)}",
+            [f"{shown}. Its page will appear shortly.\n{_title(title, 450)}"],
         )
     status = "Already filed" if already else "Filed"
-    fallback = f"{status}: {_text(title or 'Untitled', 450)}\nProject: {_text(project, 350)}"
+    fallback = f"{status}: {_title(title, 450)}\nProject: {_text(project, 350)}"
     return _message(
         fallback, [f"{status}: {_link(title, page_url)}\nProject: {_text(project, 350)}"]
     )

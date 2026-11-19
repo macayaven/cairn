@@ -22,7 +22,8 @@ The export format, version 1 (frozen by tests/acceptance/test_h5_data.py), is a 
                                    a page's versions run without a gap, from 1 or, when a
                                    plan's versions_per_page dropped the older ones, from
                                    the oldest kept
-    projects/<name>/pages/<slug>.md  each page's latest body
+    projects/<name>/pages/<slug>.md  each page's latest body (a body is as stored, but a
+                                   title with a line break is written on one line)
 
 Entries are written in that order, project by project (by name), with a fixed timestamp and
 mode, so two exports of the same data differ only in `exported_at`. Keys, sessions, grants,
@@ -132,7 +133,7 @@ import shutil
 import sqlite3
 import zipfile
 import zlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import IO, Any
@@ -191,7 +192,7 @@ from cairn.store.models import (
     stored_metrics,
 )
 from cairn.store.usage import charge_of
-from cairn.topics import topic_key
+from cairn.topics import one_line, topic_key
 
 FORMAT = "cairn-export"
 VERSION = 1
@@ -738,6 +739,7 @@ class _Held:
             notes.append((root + file, data))
         yield root + "notes.jsonl", _jsonl(lines)
         yield from notes
+        body_of = self._bodies()
         yield (
             root + "pages.jsonl",
             _jsonl(
@@ -745,7 +747,7 @@ class _Held:
                     "slug": page.slug,
                     "version": page.version,
                     "title": page.title,
-                    "body": page.body,
+                    "body": body_of(page),
                     "claims": [claim.shown() for claim in page.claims],
                     "metrics": shown_metrics(page.metrics),
                     "created_at": page.updated_at,
@@ -756,7 +758,26 @@ class _Held:
         )
         latest = {page.slug: page for page in self.pages}
         for slug in sorted(latest):
-            yield f"{root}pages/{slug}.md", latest[slug].body.encode()
+            yield f"{root}pages/{slug}.md", body_of(latest[slug]).encode()
+
+    def _bodies(self) -> Callable[[Page], str]:
+        """Each page version's body as the export writes it: as stored, except that a page
+        whose title holds a line break is rendered as it is read (Memory.page), so its title
+        is one line of heading text (cairn.topics.one_line): a version stored before that rule
+        wrote the title as given, and a line break in it would add lines to the file. The
+        project's notes are split once, and only for such a page. The import takes either."""
+        spans: dict[str, Span] = {}
+
+        def body_of(page: Page) -> str:
+            if one_line(page.title) == page.title:
+                return page.body
+            from cairn.compiler import render_body  # the compiler builds on the store
+
+            if not spans:
+                spans.update({s.id: s for note in self.notes for s in chunk(note.id, note.text)})
+            return render_body(page.title, page.claims, spans)
+
+        return body_of
 
 
 def _jsonl(lines: Any) -> bytes:

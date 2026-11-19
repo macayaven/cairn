@@ -52,6 +52,7 @@ from cairn.sources.url import (
 from cairn.store import SourceOff, Store
 from cairn.store.hosted import HOSTED_ENV, NOT_HERE, RECONNECT, TokenUnusable
 from cairn.store.sources import OwnerCannotWrite
+from cairn.topics import one_line
 
 SOURCE_LOGGER = "cairn.sources"
 MIN_SYNC_EVERY = 1.0  # seconds between the starts of two background passes, at least
@@ -617,7 +618,8 @@ class PreviewBusy(Exception):
 class Preview:
     """What a source would bring (preview_source). `read`: the service answered. `count`: the
     drafts a run would write, none of them written before and each for a project the viewer
-    reaches (or for none yet); `titles`: the first PREVIEW_TITLES of them, each cut to
+    reaches (or for none yet); `titles`: the first PREVIEW_TITLES of them, each on one line
+    (cairn.topics.one_line: the command line prints one a line) and cut to
     PREVIEW_TITLE_MAX characters, HELD_TITLE for one that holds a credential; `more`: the
     count past the titles shown. `written_before`: drafts whose item the source wrote already
     (only kinds that name items: GitHub, Linear and the connector). `out_of_reach`: drafts for
@@ -797,7 +799,7 @@ async def _preview(
         if len(titles) < PREVIEW_TITLES:
             held = any(holds_secret(value, secrets) for value in vars(draft).values())
             title = draft.title or draft.source_ref
-            titles.append(HELD_TITLE if held else title[:PREVIEW_TITLE_MAX])
+            titles.append(HELD_TITLE if held else one_line(title)[:PREVIEW_TITLE_MAX])
     return Preview(
         info.name, days, read=True, count=count, titles=titles, more=count - len(titles),
         written_before=before, out_of_reach=unreached,

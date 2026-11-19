@@ -2,7 +2,7 @@
 
 What changed for someone who runs cairn or connects an agent to it. The reasons are in [docs/decisions.md](docs/decisions.md).
 
-Each release has a section headed `## <version> - <date>`, and the tag `v<version>` publishes it: `scripts/release_check.py` refuses a tag that is not the version in `pyproject.toml` or has no dated section here with at least one entry, and the section is the GitHub release's text.
+Each release has a section headed `## <version> - <date>`, and the tag `v<version>`, pushed to the public repository on a commit of `main`, publishes it: `scripts/release_check.py` refuses a tag that is not the version in `pyproject.toml`, whose section here is missing, has no entry or is dated after the day the check runs (UTC), or whose version already has a release. The section is the GitHub release's text.
 
 ## Unreleased
 

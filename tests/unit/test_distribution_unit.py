@@ -58,10 +58,12 @@ def test_the_changelog_dates_the_version_and_says_what_slack_was_tested_against(
     assert changes.index("## Unreleased") < changes.index(f"## {VERSION} - ")
     # What the top of the changelog says about releases is what release_check.py does.
     assert (
-        "Each release has a section headed `## <version> - <date>`, and the tag `v<version>`"
-        " publishes it: `scripts/release_check.py` refuses a tag that is not the version in"
-        " `pyproject.toml` or has no dated section here with at least one entry, and the"
-        " section is the GitHub release's text." in flat(changes)
+        "Each release has a section headed `## <version> - <date>`, and the tag `v<version>`,"
+        " pushed to the public repository on a commit of `main`, publishes it:"
+        " `scripts/release_check.py` refuses a tag that is not the version in `pyproject.toml`,"
+        " whose section here is missing, has no entry or is dated after the day the check runs"
+        " (UTC), or whose version already has a release. The section is the GitHub release's"
+        " text." in flat(changes)
     )
 
 
@@ -78,20 +80,28 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         "5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags"
         " publish one multi-arch image, with provenance and an SBOM, to"
         " `ghcr.io/<owner>/<repo>`.",
-        "A tag is published only when it is `v` and the version in `pyproject.toml` and"
-        " `CHANGELOG.md` has a dated section for that version: `scripts/release_check.py`"
-        " checks it first.",
-        "A tag is published as `X.Y.Z`, `X.Y` and `latest`; a push to `main` as `main` and"
-        " `sha-<commit>`, never `latest`.",
+        "A tag is published only from the public repository, when it is `v` and the version"
+        " in `pyproject.toml`, `CHANGELOG.md` has a section for that version with an entry,"
+        " dated no later than the day of the run, the tag's commit is on `main`, no tag of its"
+        " `X.Y` is a higher version, and the version has no GitHub release yet:"
+        " `scripts/release_check.py` checks it first.",
+        "A tag is published as `X.Y.Z` and `X.Y`, and as `latest` only when it is the highest"
+        " version tagged; a push to `main` as `main` and `sha-<commit>`, never `latest`.",
         "the gate runs as before, and items 5 to 7 are skipped.",
         "6. **Verify and deploy:** on `main` and on tags, the published image is smoke-tested."
-        " On `main`, a `deploy` job that waits for approval moves the production VM to it",
+        " On a tag, the version is first pulled with no login, as the run guide does, and must"
+        " be the digest just published. On `main`, a `deploy` job that waits for approval"
+        " moves the production VM to it",
         "7. **Release:** a tag whose published image passed becomes a GitHub release, with the"
         " version's section of `CHANGELOG.md` as its text and the wheel and source archive"
         " that `uv build` makes attached. A tag never deploys.",
+        "A run that failed after publishing and before the release was made is finished by"
+        " re-running only its failed jobs: re-running every job would publish the version"
+        " again.",
     ):
         assert sentence in ci, sentence
     assert "Tags are the version, `major.minor`, the branch and the commit." not in ci
+    assert "A tag is published as `X.Y.Z`, `X.Y` and `latest`" not in ci
 
 
 # --- the guides offer the released image beside the source build ----------------------------
@@ -140,7 +150,10 @@ def test_the_run_guide_builds_the_source_first_and_offers_the_image_second():
     for sentence in (
         "Each release of cairn is also published as an image for linux/amd64 and linux/arm64,"
         " built by the repository's workflow from the release's tag.",
-        f"A version such as `{VERSION}` names one release, and is never moved to newer code.",
+        f"A version such as `{VERSION}` names one release: it is published once and never"
+        " moved to newer code.",
+        "Pulling it needs no login: the workflow pulls each release this way, logged out,"
+        " before it makes the release.",
         "Instead of the clone and the build above:",
         "The second line gives the pulled image the name this guide's commands use, so run"
         " them as written, starting with the `docker run` above.",
@@ -150,17 +163,27 @@ def test_the_run_guide_builds_the_source_first_and_offers_the_image_second():
 
 def test_the_run_guide_says_how_to_check_what_was_pulled():
     """True of what job `publish` pushes: a multi-arch index by digest, with the provenance
-    (mode=max) and the bill of materials BuildKit attaches beside each platform's image."""
+    (mode=max) and the bill of materials BuildKit attaches to each platform's image. Docker's
+    documentation: attestation manifests sit in the image index after the runnable manifests,
+    each applying to one platform's manifest, with the platform `unknown/unknown`
+    (https://docs.docker.com/build/metadata/attestations/attestation-storage/); `--raw`
+    prints the index, and `--format "{{json .Provenance}}"` and `"{{json .SBOM}}"` print the
+    provenance and the SBOM
+    (https://docs.docker.com/reference/cli/docker/buildx/imagetools/inspect/)."""
     image = flat(guide_section(RUN_GUIDE, "### Or pull a released image"))
     for sentence in (
         f"`docker inspect --format '{{{{index .RepoDigests 0}}}}' {IMAGE}` prints the digest"
         " you pulled; it must be the digest the repository's package page on GitHub shows"
         f" for `{VERSION}`.",
-        f"`docker buildx imagetools inspect {IMAGE}` lists the image for each platform and,"
-        " beside each, an attestation that holds the provenance of the build that published"
-        " it and its bill of materials.",
+        f"`docker buildx imagetools inspect --raw {IMAGE}` prints the release's image index:"
+        " a manifest for each platform and, after them, attestation manifests listed with the"
+        " platform `unknown/unknown`, each holding the attestations of one platform's image:"
+        " the provenance of the build that published it and its bill of materials.",
+        "The same command's `--format` option prints those two themselves, as Docker's"
+        " reference for `docker buildx imagetools inspect` shows.",
     ):
         assert sentence in image, sentence
+    assert "beside each, an attestation" not in image
     publish = (ROOT / ".github" / "workflows" / "ci-cd.yml").read_text(encoding="utf-8")
     assert "provenance: mode=max" in publish and "sbom: true" in publish
     assert "linux/amd64,linux/arm64" in publish

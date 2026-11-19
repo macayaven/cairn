@@ -23,11 +23,18 @@
 # once every job of the gate has passed: the tests, the infrastructure checks, the image
 # check, the stack rehearsal and the host rehearsal. A failed infrastructure check stops
 # the publication too.
-# A v* tag is first checked against the version: job `release_check` runs
-# scripts/release_check.py, and `publish` needs it. A tag is published as X.Y.Z, X.Y and
-# latest; a push to main as main and sha-<commit>, never latest. Job `verify` smoke-tests the
-# published image on main and on tags. A tag then becomes a GitHub release (job `release`),
-# with the version's section of CHANGELOG.md and the wheel and source archive attached.
+# A v* tag is first checked by job `release_check` (scripts/release_check.py), and `publish`
+# needs it. It refuses, in one line, a tag pushed to a private repository (a private copy of
+# this one runs the same workflow), a tag that is not `v` and the version in pyproject.toml, a
+# version whose section of CHANGELOG.md is missing, has no entry or is dated after the day of
+# the run, a tag whose commit is not on main, a tag lower than another of its X.Y, and a
+# version that already has a GitHub release. A tag is published as X.Y.Z and X.Y, and as
+# latest only when it is the highest version tagged; a push to main as main and sha-<commit>,
+# never latest. Job `verify` smoke-tests the published image on main and on tags; on a tag it
+# first pulls the version with no login, as the run guide does, and checks its digest. A tag
+# then becomes a GitHub release (job `release`), with the version's section of CHANGELOG.md and
+# the wheel and source archive attached. A run that failed after `publish` and before the
+# release was made is finished by re-running only its failed jobs.
 # Nothing is published from a pull request or a manual run.
 # A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
 # gate runs as before, and nothing is published, verified, released or deployed. Unset, it

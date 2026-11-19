@@ -1127,6 +1127,28 @@ def test_no_shell_line_holds_an_expression():
         assert "${{" not in run, run
 
 
+def test_the_header_says_what_a_tag_must_be_and_what_it_publishes():
+    header = RAW_WORKFLOW.split("\nname:")[0]
+    flat = " ".join(header.replace("# ", "").split())
+    for sentence in (
+        "A v* tag is first checked by job `release_check` (scripts/release_check.py), and"
+        " `publish` needs it.",
+        "It refuses, in one line, a tag pushed to a private repository (a private copy of this"
+        " one runs the same workflow), a tag that is not `v` and the version in pyproject.toml,"
+        " a version whose section of CHANGELOG.md is missing, has no entry or is dated after"
+        " the day of the run, a tag whose commit is not on main, a tag lower than another of"
+        " its X.Y, and a version that already has a GitHub release.",
+        "A tag is published as X.Y.Z and X.Y, and as latest only when it is the highest"
+        " version tagged; a push to main as main and sha-<commit>, never latest.",
+        "Job `verify` smoke-tests the published image on main and on tags; on a tag it first"
+        " pulls the version with no login, as the run guide does, and checks its digest.",
+        "A run that failed after `publish` and before the release was made is finished by"
+        " re-running only its failed jobs.",
+    ):
+        assert sentence in flat, sentence
+    assert "A tag is published as X.Y.Z, X.Y and latest" not in flat
+
+
 def test_a_push_to_main_still_publishes_verifies_and_deploys_and_makes_no_release():
     assert jobs_that_run(MAIN_PUSH) == EVERYTHING
     assert "release" not in jobs_that_run(MAIN_PUSH)

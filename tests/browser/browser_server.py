@@ -107,8 +107,11 @@ class Visit:
         self.page.wait_for_url(self.server.base + "/")
 
 
-def open_visit(browser: Browser, server: Server) -> Visit:
-    context = browser.new_context(viewport={"width": 1280, "height": 900}, color_scheme="light")
+def open_visit(browser: Browser, server: Server, **options: object) -> Visit:
+    """A new context at 1280 by 900 in the light scheme (`options` may change that), whose
+    requests to any address but the server's are refused and kept."""
+    settings: dict = {"viewport": {"width": 1280, "height": 900}, "color_scheme": "light"}
+    context = browser.new_context(**{**settings, **options})
     context.set_default_timeout(15_000)
     page = context.new_page()
     visit = Visit(server, context, page)

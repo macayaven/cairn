@@ -44,7 +44,13 @@ from cairn.spans import Span
 from cairn.store import ranking
 from cairn.store.access import MODELS_PREFIX
 from cairn.store.audit import DELETED_PROJECT
-from cairn.store.base import COMPACT_DUE, DEFAULT_ACCOUNT_ID, StoreBase, _has_table
+from cairn.store.base import (
+    COMPACT_DUE,
+    DEFAULT_ACCOUNT_ID,
+    RECORD_DELETION,
+    StoreBase,
+    _has_table,
+)
 from cairn.store.memory import _SPAN_COLUMNS, _span, _write_page_version
 from cairn.store.models import Claim, Forgotten
 
@@ -434,10 +440,8 @@ def _unname_sources(con: sqlite3.Connection, account_id: str, name: str, project
 
 
 def _compaction_due(con: sqlite3.Connection, now: str) -> None:
-    """Mark a compaction due, unless one already is (cairn.store.portable.compaction_state):
-    what was removed can leave short index keys behind until it runs."""
-    con.execute(
-        "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, ?, ?)"
-        " ON CONFLICT (account_id, name) DO NOTHING",
-        (DEFAULT_ACCOUNT_ID, COMPACT_DUE, now, now),
-    )
+    """Mark a compaction due (cairn.store.portable.compaction_state): its time unless one
+    already is, and in every case this deletion's time as the record's `updated_at`, so a
+    rewrite that ran before it is not taken to cover it. What was removed can leave short
+    index keys behind until a rewrite runs."""
+    con.execute(RECORD_DELETION, (DEFAULT_ACCOUNT_ID, COMPACT_DUE, now, now))

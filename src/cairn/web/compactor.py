@@ -23,6 +23,7 @@ from cairn.memory import access_log
 from cairn.store import CompactIncomplete, NoRoom, Store
 
 POLL_SECONDS = 600.0  # how often the decision is taken, at most
+ONLY_LOG = "no rewrite: only the write-ahead log was due"
 # Who each line of the access log names: the server itself, compacting.
 SYSTEM = {"actor_kind": "system", "actor": None, "actor_id": None, "action": "compact",
           "project": None}  # fmt: skip
@@ -55,6 +56,8 @@ class Compactor:
         state = self._store.compaction_state()
         if state.deleted_at is None:
             return False
+        if state.rewritten:  # only the log is left, which costs no rewrite
+            return True
         if state.compacted_at is None:
             return True
         return self._clock() - datetime.fromisoformat(state.compacted_at) >= self.every
@@ -67,9 +70,15 @@ class Compactor:
             start = time.perf_counter()
             status = 200
             began = self._clock()
+            only_log = False
             try:
-                self._store.compact()
-                outcome = "done"
+                only_log = self._store.compaction_state().rewritten
+                if only_log:
+                    self._store.empty_log()
+                    outcome = f"done ({ONLY_LOG})"
+                else:
+                    self._store.compact()
+                    outcome = "done"
             except NoRoom as room:  # nothing was changed; the next poll checks again
                 with contextlib.suppress(Exception):
                     access_log.info(
@@ -80,8 +89,12 @@ class Compactor:
                         extra={**SYSTEM, "status": 507},
                     )
                 return False
-            except CompactIncomplete:
+            except CompactIncomplete as error:
                 outcome, status = "not finished: another connection held the file", 503
+                if only_log:
+                    outcome += f" ({ONLY_LOG})"
+                elif error.rewrote:
+                    outcome += " (rewritten; the write-ahead log was not emptied)"
                 self._tried = began  # the next try waits the interval, not the next poll
             except Exception as error:  # its type only: a message can quote the database
                 outcome, status = f"failed: {type(error).__name__}", 500

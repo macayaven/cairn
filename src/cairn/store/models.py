@@ -538,13 +538,16 @@ class Forgotten(BaseModel):
 
 
 class CompactionState(BaseModel):
-    """When a workspace was first deleted since the last compaction (None: none since), and
-    when the last compaction began (None: never). ISO 8601 UTC."""
+    """When a workspace was first deleted since the last compaction that finished (None:
+    none since), whether a rewrite covered every deletion recorded so that only emptying
+    the write-ahead log is left (`rewritten`), and when the last rewrite began (None:
+    never). ISO 8601 UTC, wall-clock times, as stored."""
 
     model_config = ConfigDict(frozen=True)
 
     deleted_at: str | None = None
     compacted_at: str | None = None
+    rewritten: bool = False
 
 
 class AccountSummary(BaseModel):

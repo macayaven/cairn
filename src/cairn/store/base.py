@@ -91,6 +91,16 @@ _KEEP = "how many events a workspace keeps is a whole number, 1 or more, or None
 # deleted since the last compaction, and when the last compaction began.
 COMPACT_DUE = "store.compact_due"
 COMPACTED_AT = "store.compacted_at"
+# The `updated_at` of the COMPACT_DUE row once a rewrite covered every deletion it records:
+# only emptying the write-ahead log is left (cairn.store.portable). Each deletion sets it to
+# its own time, so a deletion after the rewrite is never taken for one it covered.
+REWRITTEN = "rewritten"
+# How a deletion records itself: its time when none is recorded; its time as `updated_at`
+# in every case (cairn.store.accounts, cairn.store.erasure).
+RECORD_DELETION = (
+    "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, ?, ?)"
+    " ON CONFLICT (account_id, name) DO UPDATE SET updated_at = excluded.updated_at"
+)
 # Q1: what the last `serve` was told to keep of each page's history, a row of the same kind
 # (cairn.store.history): JSON, {"keep": N or null} or {"plans": {name: N or null}, "default"}.
 KEEP_VERSIONS = "store.keep_versions"

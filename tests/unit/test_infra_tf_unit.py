@@ -982,17 +982,26 @@ def compact_filter() -> list:
 
 
 class _Held:
-    """A store whose compaction meets another connection, or another failure, or none."""
+    """A store whose compaction meets another connection, or another failure, or none;
+    `only_log`: a rewrite already done, so only emptying the log is due."""
 
-    def __init__(self, error: Exception | None) -> None:
+    def __init__(self, error: Exception | None, only_log: bool = False) -> None:
         self.error = error
+        self.only_log = only_log
+
+    def compaction_state(self):
+        from cairn.store import CompactionState
+
+        return CompactionState(deleted_at="2026-11-19T09:00:00+00:00", rewritten=self.only_log)
 
     def compact(self) -> None:
         if self.error is not None:
             raise self.error
 
+    empty_log = compact
 
-def serve_line(error: Exception | None, capsys) -> str:
+
+def serve_line(error: Exception | None, capsys, only_log: bool = False) -> str:
     """The line `serve` writes to stderr for one compaction, by the compactor and the handler
     serve itself installs."""
     from cairn.web.cli import _access_log_on_stderr
@@ -1000,7 +1009,7 @@ def serve_line(error: Exception | None, capsys) -> str:
 
     capsys.readouterr()
     with _access_log_on_stderr():
-        Compactor(_Held(error), 24).run_once()
+        Compactor(_Held(error, only_log), 24).run_once()
     (line,) = capsys.readouterr().err.splitlines()
     return line
 
@@ -1037,6 +1046,38 @@ def test_the_line_serve_writes_for_an_unfinished_compaction_is_counted(capsys):
     line = serve_line(CompactIncomplete("held"), capsys)
     assert line.startswith("cairn.access: compact not finished: another connection held the file")
     assert stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
+
+
+def test_a_rewrite_whose_log_was_held_and_a_held_log_alone_are_counted(capsys):
+    """Each still says another connection held the file; what follows says whether the file
+    was rewritten, so the runbook can tell the two apart."""
+    from cairn.store import CompactIncomplete
+
+    rewrote = CompactIncomplete("held")
+    rewrote.rewrote = True
+    line = serve_line(rewrote, capsys)
+    assert line.startswith(
+        "cairn.access: compact not finished: another connection held the file"
+        " (rewritten; the write-ahead log was not emptied) in "
+    )
+    assert stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
+    line = serve_line(CompactIncomplete("held"), capsys, only_log=True)
+    assert line.startswith(
+        "cairn.access: compact not finished: another connection held the file"
+        " (no rewrite: only the write-ahead log was due) in "
+    )
+    assert stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
+
+
+def test_a_compaction_that_did_not_start_for_want_of_room_is_not_counted(capsys):
+    from cairn.store import NoRoom
+
+    line = serve_line(NoRoom(10, 20), capsys)
+    assert line.startswith("cairn.access: compact not started: ")
+    assert not stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
+    line = serve_line(None, capsys, only_log=True)
+    assert line.startswith("cairn.access: compact done (no rewrite")
+    assert not stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
 
 
 def test_a_finished_or_otherwise_failed_compaction_and_other_containers_are_not_counted(capsys):

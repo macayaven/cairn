@@ -157,6 +157,7 @@ MANAGEMENT = frozenset(
         "export",  # everything the workspace holds: a reach limited in any way takes nothing
         "import_export",  # makes projects
         "compact",  # the operator's: it rewrites every workspace's file (and only the root may)
+        "empty_log",  # the operator's: what a rewrite left due
         "compaction_state",  # the operator's: whether any workspace was deleted
         "bound_history",  # the operator's (Q1): how many versions every page keeps
         "record_history_bound",
@@ -608,6 +609,7 @@ OTHER_WORKSPACES = frozenset(
         "identify_token",
         "session_key",
         "compact",
+        "empty_log",
         "compaction_state",
         "bound_history",
         "record_history_bound",

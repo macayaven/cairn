@@ -10,6 +10,7 @@ from cairn.store.base import (
     _ACCOUNT_SELECT,
     COMPACT_DUE,
     DEFAULT_ACCOUNT_ID,
+    RECORD_DELETION,
     StoreBase,
     _account,
     _find_account,
@@ -126,8 +127,7 @@ class AccountMethods(StoreBase):
             ):
                 con.execute(statement, (account.id,) * statement.count("?"))
             con.execute(  # a compaction is due (cairn.store.portable.compaction_state)
-                "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, ?, ?)"
-                " ON CONFLICT (account_id, name) DO NOTHING",
+                RECORD_DELETION,
                 (DEFAULT_ACCOUNT_ID, COMPACT_DUE, self._stamp(), self._stamp()),
             )
         self._queue_revocations(dropped)  # type: ignore[attr-defined]  # Google, by the rule

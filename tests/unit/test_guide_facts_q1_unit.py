@@ -189,6 +189,7 @@ def test_stats_prints_the_numbers_and_only_reads(tmp_path, monkeypatch, capsys):
     assert cli.main(["stats", "--db", str(db), "--json"]) == 0
     found = json.loads(capsys.readouterr().out)
     named = {"schema", "db_bytes", "wal_bytes", "free_bytes", "low_disk", "workspaces"}
+    named |= {"compaction"}  # Privacy 1: the install's record of compaction, no workspace's
     counted = {*stats.COUNTS, "newest_note", "sources"}
     assert set(found) == named | counted
     assert all(set(mine) == counted for mine in found["workspaces"].values())

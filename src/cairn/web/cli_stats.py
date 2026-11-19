@@ -19,7 +19,9 @@ an older schema is refused too, on purpose (OLDER_DATABASE): the other commands 
 and a command that only reads must not; starting the server once upgrades it.
 
 `--json` prints one object (cairn.web.stats.numbers); without it, one line per number of
-the install, then one line per workspace, by its id. Counts, sizes and times only.
+the install, then one line per workspace, by its id. Counts, sizes and times only. The
+install's record of compaction is one line of its own (`compaction:`, Privacy 1), in words an
+operator can act on, with the command that finishes the job; it names no workspace.
 """
 
 import argparse
@@ -106,16 +108,39 @@ def run(args: argparse.Namespace) -> int:
             return 1
     finally:
         con.close()
-    print(json.dumps(found, indent=2) if args.json else _plain(found))
+    print(json.dumps(found, indent=2) if args.json else _plain(found, db))
     return 0
 
 
-def _plain(found: dict[str, Any]) -> str:
+def compaction_line(state: dict[str, Any], db: Path | str) -> str:
+    """The install's record of compaction (stats.numbers' `compaction`) as one line: whether
+    something was deleted since the last compaction finished and since when, whether only the
+    write-ahead log is left to empty, when the last rewrite began, and the command that
+    finishes the job. Times only: no workspace, no name."""
+    began = f"the last rewrite began {state['compacted_at'] or 'never'}"
+    deleted = state["deleted_at"]
+    if deleted is None:
+        return f"compaction: nothing deleted since the last compaction finished; {began}"
+    if state["rewritten"]:
+        return (
+            f"compaction: the file was rewritten after what was deleted since {deleted}; only"
+            f" its write-ahead log is left to empty; {began}; `compact --db {db}` empties it"
+            " once nothing else holds the log, such as a replica"
+        )
+    return (
+        f"compaction: what was deleted since {deleted} is still in the database file; {began};"
+        f" `compact --db {db}` rewrites it (serve does it by itself after --compact-every"
+        " hours)"
+    )
+
+
+def _plain(found: dict[str, Any], db: Path) -> str:
     lines = [
         f"schema {found['schema']}",
         f"database {found['db_bytes']} bytes, write-ahead log {found['wal_bytes']} bytes",
         f"free on its disk {found['free_bytes']} bytes"
         + (" (low: under twice the database's size)" if found["low_disk"] else ""),
+        compaction_line(found["compaction"], db),
         _counts("install", found),
     ]
     for account, mine in found["workspaces"].items():

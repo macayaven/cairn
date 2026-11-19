@@ -307,7 +307,7 @@ fieldset.reach legend { padding: 0 var(--space-1); font-size: 13px; line-height:
 .option.said { flex-wrap: nowrap; align-items: flex-start; padding: var(--space-2) 0; }
 .option.said input { flex: none; margin-top: 2px; }
 .ticks { display: grid; padding-left: 26px; }
-/* A long list of projects narrowed by name (cairn.web.narrowing): the field and its button on
+/* A long list of projects narrowed by name (cairn.narrowing): the field and its button on
    one row, the count under them */
 .narrow { margin: var(--space-1) 0 var(--space-2); }
 .narrow-row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }

@@ -113,6 +113,7 @@ from starlette.routing import Route
 
 from cairn.holding import Holding, refusing_until
 from cairn.memory import BadRequest, choose_reach
+from cairn.narrowing import narrowed
 from cairn.store import (
     CLIENT_NAME_MAX,
     REDIRECT_URI_MAX,
@@ -123,7 +124,6 @@ from cairn.store import (
     TokenPair,
 )
 from cairn.store.grants import ROTATION_WINDOW, TooManyRotations
-from cairn.web.narrowing import narrowed
 
 SCOPE = "cairn"  # the one thing a grant gives: this account's memory over /mcp
 BRANDED_SCOPE = "memory"  # its other name, said under a brand (B1); the same for every brand
@@ -808,7 +808,7 @@ def routes(
         view = account(request)
         sealed = request.query_params.get("request")
         pending = requests.open(sealed, "authorize")
-        if pending is None:  # sent again by the form's filter button (cairn.web.narrowing)
+        if pending is None:  # sent again by the form's filter button (cairn.narrowing)
             pending = requests.open(sealed, "consent")
             if pending is not None and pending.get("account") != view.account_id:
                 pending = None

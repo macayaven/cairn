@@ -1,4 +1,4 @@
-{# A filter for a long list of projects (cairn.web.narrowing): its button sends the form it is in with GET to `action`, so the boxes ticked on it come back ticked. `which`: the value the button sends as `filtering`, for a page with more than one such form. #}
+{# A filter for a long list of projects (cairn.narrowing): its button sends the form it is in with GET to `action`, so the boxes ticked on it come back ticked. `which`: the value the button sends as `filtering`, for a page with more than one such form. #}
 {% macro project_filter(narrow, id, action, which=None) %}
 <div class="narrow">
   <label for="{{ id }}">Filter projects</label>

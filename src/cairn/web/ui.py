@@ -104,6 +104,7 @@ from cairn.memory import (
     choose_reach,
     is_outside,
 )
+from cairn.narrowing import narrowed
 from cairn.plans import limit_sentences
 from cairn.sources import CHOOSING, KINDS
 from cairn.sources import connector as _connector
@@ -134,7 +135,6 @@ from cairn.web.auth import SESSION_COOKIES, SESSION_TTL, Accounts, _memory, may_
 from cairn.web.brand import product_of
 from cairn.web.components import UNREACHED_DESTINATION, destination_of, numbered_lines
 from cairn.web.compose import compose_routes
-from cairn.web.narrowing import narrowed
 from cairn.web.ratelimit import TOO_MANY_FAILURES, CredentialFailures
 from cairn.web.rest import (
     _held_said,
@@ -1111,7 +1111,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
     ) -> dict[str, Any]:
         """What keys.html shows: the keys with their reach by name, what a new key's reach
         can be chosen from (narrowed by `params`, the address the page was asked with, when
-        the list is long: cairn.web.narrowing), and the address an app is given with a new
+        the list is long: cairn.narrowing), and the address an app is given with a new
         key."""
         projects = memory.store.list_projects()
         return {
@@ -1194,7 +1194,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
     def sets(request: Request) -> Response:
         """The workspace's sets with their projects by name; the forms only for a caller who
         may manage them (the same rule as keys). A long list of projects can be narrowed on
-        each form (cairn.web.narrowing): `filtering` in the address says which form sent it,
+        each form (cairn.narrowing): `filtering` in the address says which form sent it,
         "new" or a set's id, and only that form reads its ticks and filter from there."""
         memory = _memory(request)
         groups = memory.store.list_sets()

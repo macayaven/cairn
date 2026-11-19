@@ -16,9 +16,9 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import pytest
 from starlette.testclient import TestClient
 
+from cairn.narrowing import FILTER_FROM
 from cairn.server import create_app
 from cairn.store import Store
-from cairn.web.narrowing import FILTER_FROM
 
 BASE = "http://127.0.0.1:8765"
 REDIRECT = "http://127.0.0.1:33418/callback"

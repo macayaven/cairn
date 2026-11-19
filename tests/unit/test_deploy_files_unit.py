@@ -324,3 +324,13 @@ def test_the_guide_says_serve_tidies_by_default_and_how_to_switch_it_off():
     command = _load("compose.yaml")["services"]["cairn"]["command"]
     assert command.startswith("serve ") and command.endswith("${CAIRN_EXTRA_ARGS:-}")
     assert "--tidy" not in command  # the default command needs nothing for the default
+
+
+def test_the_compose_comment_says_writes_wait_for_a_compaction_and_reads_do_not():
+    """Reads have connections of their own (cairn.store.base's Readers): a compaction holds
+    the writer alone, as Store.compact's docstring says."""
+    text = (DEPLOY / "compose.yaml").read_text(encoding="utf-8")
+    flat = " ".join(line.strip().lstrip("# ") for line in text.splitlines())
+    assert "every request waits" not in flat
+    assert "every write waits while it runs, about as long as copying the database file" in flat
+    assert "takes; reads do not wait." in flat

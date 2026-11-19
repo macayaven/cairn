@@ -40,6 +40,8 @@ def test_the_sequence_stops_compacts_starts_and_waits_for_a_new_copy(host):
     done = host.compact([CURRENT, OLD_COPY, OLD_COPY, NEW_COPY], compact_does=truncate + shrink)
     assert done.rc == 0, done.text
     assert host.events() == SEQUENCE
+    # By hand it is the whole compaction: no --if-due (the nightly run's, its own tests).
+    assert host.compact_args() == ["exec cairn python -m cairn.server compact --db /data/cairn.db"]
     said = lines(done)
     assert said[0] == "compact: step 1/6: cairn answers /healthz"
     assert said[1] == "compact: step 2/6: replica: current, newest 100 s old"

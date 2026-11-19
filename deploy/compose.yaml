@@ -38,8 +38,8 @@ services:
     # Arguments replace the image's default command, so the whole command is spelled out.
     # Exactly one cairn container may use the database: never scale this service.
     # After a workspace is deleted, serve compacts the database (VACUUM) at most once a day
-    # (--compact-every 24, the default; 0: never); every request waits while it runs, about
-    # as long as copying the database file takes.
+    # (--compact-every 24, the default; 0: never); every write waits while it runs, about
+    # as long as copying the database file takes; reads do not wait.
     # Without --plans nothing is capped. To cap each workspace by its plan, copy a plans file
     # into the volume and add `--plans /data/plans.yaml` to CAIRN_EXTRA_ARGS (deploy/README.md,
     # "Plans"); the caps in plans.example.yaml are placeholders.

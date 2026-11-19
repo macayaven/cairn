@@ -102,6 +102,10 @@ def test_with_a_deletion_waiting_it_compacts_as_by_hand_and_logs_one_line_of_siz
         " write-ahead log 14045112 -> 0 bytes"
     ]
     assert said[-1] == summary[0]
+    # One rewrite per deletion: the nightly run asks cairn only for what is still due.
+    assert host.compact_args() == [
+        "exec cairn python -m cairn.server compact --if-due --db /data/cairn.db"
+    ]
     # Step 2's replica check writes its own current line there; nothing else is written.
     assert [x for x in host.litestream_log() if not x.startswith("replica: current, ")] == []
 
@@ -197,3 +201,22 @@ def test_every_nightly_line_the_runbook_quotes_is_one_compact_if_due_prints(tmp_
         holes = {"N": r"\d+", "...": r".*"}
         pattern = re.compile("".join(holes.get(p, re.escape(p)) for p in parts))
         assert any(pattern.fullmatch(x) for x in printed), line
+
+
+NIGHT_SAYS = (
+    "At step 4 the nightly run asks cairn for `compact --if-due`, not `compact`: `serve` has"
+    " usually rewritten the file after the deletion already and left only the write-ahead log,"
+    " so the night empties the log alone, and a deletion costs one rewrite, not two. A"
+    " deletion no rewrite has covered yet gets the whole compaction, and `host.sh compact` by"
+    " hand is always the whole compaction."
+)
+
+
+def test_the_runbook_says_the_night_asks_only_for_what_is_due():
+    readme = (INFRA / "README.md").read_text(encoding="utf-8")
+    night = next(p for p in readme.split("\n\n") if p.startswith("**Every night.**"))
+    flat = " ".join(night.split())
+    assert " ".join(NIGHT_SAYS.split()) in flat
+    assert flat.endswith(" ".join(NIGHT_SAYS.split()))
+    text = (INFRA / "files" / "host.sh").read_text(encoding="utf-8")
+    assert "compact ${COMPACT_IF_DUE:+--if-due} --db /data/cairn.db" in text

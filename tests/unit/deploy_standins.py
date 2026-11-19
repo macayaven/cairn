@@ -198,6 +198,7 @@ case "$1" in
         ;;
       *"cairn.server compact"*)
         echo "compact" >>"$S/events"
+        printf '%s\n' "$*" >>"$S/compact-args"
         cat "$S/docker-compact-out" 2>/dev/null
         cat "$S/docker-compact-err" >&2 2>/dev/null
         # shellcheck disable=SC1091
@@ -616,6 +617,11 @@ class HostReport:
     def events(self) -> list[str]:
         """What the stand-ins saw happen, in order: stop and start of litestream, compact."""
         path = self.s.state / "events"
+        return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+    def compact_args(self) -> list[str]:
+        """The arguments of each `docker exec` that ran cairn's compact, in order."""
+        path = self.s.state / "compact-args"
         return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
     def compact(

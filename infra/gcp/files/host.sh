@@ -16,7 +16,8 @@
 #   litestream ARGS run one Litestream command with the replica's settings (for the runbooks)
 #   replica-check   say how old the newest copy in the replica is, in Litestream's own log
 #                   (cairn-replica-check.timer, every 5 minutes; the replica alerts read it)
-#   compact-if-due  compact, when a deletion waits for one (cairn-compact.timer, nightly)
+#   compact-if-due  compact, when a deletion waits for one, asking cairn for only what is
+#                   still due (compact --if-due; cairn-compact.timer, nightly)
 #   host-check      disks, memory kills, restart loops, certificates (cairn-host-check.timer)
 #   compact         by hand, after a workspace is deleted: check that cairn answers and the
 #                   replica is current, stop Litestream, run cairn's compact, start Litestream
@@ -551,10 +552,14 @@ host-check: certificate: Caddy logged $errors errors obtaining or renewing a cer
 # running Litestream a compaction cannot truncate the write-ahead log. 1 /healthz and 2 the
 # replica check, or nothing changes; 3 stop litestream.service; 4 cairn's compact; 5 start it
 # again, by a trap on any exit (not SIGKILL); 6 at most COMPACT_CHECKS checks, 5 s apart, for
-# a copy made after the stop. The record is store.compact_due, read-only.
+# a copy made after the stop. The record is store.compact_due, read-only. COMPACT_IF_DUE set
+# (compact-if-due's) runs step 4 as `compact --if-due`: serve's own compactor has usually
+# rewritten the file already, so only the write-ahead log is left, and that is all it empties;
+# by hand it is the whole compaction.
 COMPACT_CHECKS=24
 COMPACT_STOPPED=""
 COMPACT_STEP=""
+COMPACT_IF_DUE=""
 
 # The record store.compact_due, read-only: its time, "" when no deletion waits, "?" when it
 # could not be read.
@@ -617,7 +622,7 @@ cmd_compact() {
   since=$(date -u +%s)
 
   COMPACT_STEP="4/6 (compact)"
-  docker exec cairn python -m cairn.server compact --db /data/cairn.db || rc=$?
+  docker exec cairn python -m cairn.server compact ${COMPACT_IF_DUE:+--if-due} --db /data/cairn.db || rc=$?
   if [ "$rc" -eq 0 ]; then
     log "compact: step 4/6: compact finished"
   else
@@ -651,7 +656,8 @@ cmd_compact() {
 }
 
 # compact-if-due, from cairn-compact.timer once a night: `compact` when, and only when, a
-# deletion waits for a compaction. On success one line with the sizes before and after. On
+# deletion waits for a compaction, with cairn's `compact --if-due` at step 4, so a deletion
+# serve already rewrote the file for costs no second rewrite. On success one line with the sizes before and after. On
 # failure Litestream runs again (compact's trap) and an "Error: compact: ..." line goes into
 # the litestream container's log, which the replica alert matches (monitoring.tf), and into
 # the journal.
@@ -674,7 +680,7 @@ cmd_compact_if_due() {
       return 0
       ;;
   esac
-  said=$( (cmd_compact) 2>&1) || rc=$?
+  said=$( (COMPACT_IF_DUE=yes cmd_compact) 2>&1) || rc=$?
   printf '%s\n' "$said"
   if [ "$rc" -ne 0 ]; then
     failed=$(printf '%s\n' "$said" | sed -n 's/^.*cairn-host: ERROR: compact: //p' | tail -n 1)

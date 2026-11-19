@@ -10,7 +10,7 @@ import re
 import pytest
 
 from cairn import sources
-from cairn.arrange import Arranger, arrange_page
+from cairn.arrange import UNDECIDED, Arranger, arrange_page
 from cairn.compiler import compile_note
 from cairn.gate import lint_gate
 from cairn.llm import Reply
@@ -103,3 +103,145 @@ def test_arrange_page_withholds_each_kind_once_sent_by_default(store, name):
     model = Recorder()
     said = arrange_page(store, project_id, SLUG, model, withhold=sources.withheld_via())
     assert said.status == "withheld" and model.requests == []
+
+
+# 2. What lifts the hold is unchanged
+
+
+def test_send_sends_every_kind_s_page_but_not_slack_s_and_never_a_kept_project_s(store):
+    by_kind = {name: page(store, f"from-{name}", via=KINDS[name].via) for name in sorted(KINDS)}
+    slack = page(store, "from-slack", via="slack")
+    kept = page(store, "kept", via=KINDS["granola"].via)
+    store.set_project_models(kept, "never")
+    model = Recorder()
+    arranger = Arranger(model, price=None, view_for=store.for_account, withhold=())
+    for project_id in (*by_kind.values(), slack, kept):
+        arranger.queue(store.account_id, project_id, SLUG)
+    done = {d.project_id: d.status for d in asyncio.run(arranger.run_once(limit=20))}
+    assert {pid for pid, status in done.items() if status == "arranged"} == set(by_kind.values())
+    assert done[slack] == "withheld" and done[kept] == "kept from models"
+    assert len(model.requests) == len(by_kind)
+
+
+# 3. Projects opt in
+
+
+class Chosen:
+    """A view whose page_for_model also says whether the project's people chose "allowed"
+    (the third item the store is asked to add): True for the ids in `chosen`."""
+
+    def __init__(self, view, chosen: set[str]) -> None:
+        self._view, self._chosen = view, chosen
+
+    def __getattr__(self, name):
+        return getattr(self._view, name)
+
+    def page_for_model(self, project_id, slug):
+        found = self._view.page_for_model(project_id, slug)
+        return None if found is None else (*found[:2], project_id in self._chosen)
+
+
+def test_opt_in_sends_only_a_project_whose_people_chose_allowed(store):
+    chosen = page(store, "chosen")
+    undecided = page(store, "undecided")
+    model = Recorder()
+
+    def view_for(account_id):
+        return Chosen(store.for_account(account_id), {chosen})
+
+    arranger = Arranger(model, price=None, view_for=view_for, opt_in=True)
+    for project_id in (chosen, undecided):
+        arranger.queue(store.account_id, project_id, SLUG)
+    done = {d.project_id: d for d in asyncio.run(arranger.run_once())}
+    assert done[chosen].status == "arranged"
+    assert done[undecided].status == "undecided" and done[undecided].draft is None
+    assert len(model.requests) == 1
+    assert store.get_page(undecided, SLUG).metrics["arranged_by"] == "cairn"  # tidied instead
+
+
+def test_opt_in_with_a_store_that_cannot_say_who_chose_sends_nothing(store):
+    project_id = page(store, "plain")
+    model = Recorder()
+    said = arrange_page(store, project_id, SLUG, model, opt_in=True)
+    assert said.status == "undecided" and model.requests == []
+    assert said.problem == UNDECIDED and said.version == said.previous
+
+
+def test_opt_in_never_sends_a_kept_project_and_still_holds_the_sources(store):
+    kept = page(store, "kept")
+    store.set_project_models(kept, "never")
+    mailed = page(store, "mailed", via="gmail")
+    view = Chosen(store, {kept, mailed})
+    model = Recorder()
+    assert arrange_page(view, kept, SLUG, model, opt_in=True).status == "kept from models"
+    held = arrange_page(view, mailed, SLUG, model, opt_in=True, withhold=sources.withheld_via())
+    assert held.status == "withheld" and model.requests == []
+
+
+def test_without_opt_in_an_undecided_project_is_sent_as_today(store):
+    project_id = page(store, "plain")
+    model = Recorder()
+    assert arrange_page(store, project_id, SLUG, model).status == "arranged"
+    assert len(model.requests) == 1
+
+
+def test_opt_in_leaves_a_page_a_model_ordered_as_it_is(store):
+    project_id = page(store, "ordered")
+    assert arrange_page(store, project_id, SLUG, Recorder()).status == "arranged"
+    before = store.get_page(project_id, SLUG)
+    model = Recorder()
+    arranger = Arranger(model, price=None, view_for=store.for_account, opt_in=True)
+    arranger.queue(store.account_id, project_id, SLUG)
+    (done,) = asyncio.run(arranger.run_once())
+    assert (done.status, done.previous, done.version) == (
+        "undecided",
+        before.version,
+        before.version,
+    )
+    assert store.get_page(project_id, SLUG) == before and model.requests == []
+
+
+# 7. Cost: deciding the hold for a page stays the number of statements it is today
+
+QUIET = {"BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE"}
+
+
+def statements(store, call) -> int:
+    seen: list[str] = []
+
+    def traced(statement: str) -> None:
+        text = statement.lstrip()
+        if text and not text.startswith("--") and text.split(None, 1)[0].upper() not in QUIET:
+            seen.append(text)
+
+    store._con.set_trace_callback(traced)
+    try:
+        call()
+    finally:
+        store._con.set_trace_callback(None)
+    return len(seen)
+
+
+def test_a_granola_page_costs_what_a_gmail_page_costs_to_hold(store):
+    mailed = page(store, "mailed", via="gmail")
+    granola = page(store, "granola", via=KINDS["granola"].via)
+    held = sources.withheld_via()
+
+    def judge(project_id, **more):
+        def call():
+            said = arrange_page(store, project_id, SLUG, Recorder(), withhold=held, **more)
+            assert said.status == "withheld"
+
+        return call
+
+    gmail_cost = statements(store, judge(mailed))
+    assert statements(store, judge(granola)) == gmail_cost
+    assert statements(store, judge(granola, opt_in=False)) == gmail_cost
+    chosen = Chosen(store, {granola})
+    assert (
+        statements(
+            store,
+            lambda: arrange_page(chosen, granola, SLUG, Recorder(), opt_in=True, withhold=held),
+        )
+        == gmail_cost
+    )

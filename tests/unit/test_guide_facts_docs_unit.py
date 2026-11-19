@@ -145,7 +145,7 @@ def test_the_shipped_backup_settings_are_the_ones_the_privacy_guide_states():
         "disk snapshot days in cycle": 1,  # "snapshots the machine's data disk daily"
         "disk snapshot kept days": 14,  # "keeps each snapshot 14 days"
         "bucket soft delete": "retention_duration_seconds = var.replica_soft_delete_days * 86400",
-        "bucket soft delete days": 30,  # "restorable for 30 more days"
+        "bucket soft delete days": 7,  # "restorable for 7 more days"
     }
     privacy = " ".join(guide_text("privacy").split())
     for said in (
@@ -153,7 +153,9 @@ def test_the_shipped_backup_settings_are_the_ones_the_privacy_guide_states():
         " for eight days; the shipped Google Cloud configuration also snapshots the machine's"
         " data disk daily and keeps each snapshot 14 days.",
         "Eight days in the bucket; on Google Cloud, the bucket keeps what is removed from it"
-        " restorable for 30 more days, and disk snapshots are kept 14 days",
+        " restorable for 7 more days, and disk snapshots are kept 14 days",
         "With the shipped configuration that is eight days for the copies in the storage bucket.",
+        "its bucket keeps what it removes restorable for 7 more days, and it takes a daily"
+        " snapshot of the machine's data disk, kept 14 days.",
     ):
         assert said in privacy, said

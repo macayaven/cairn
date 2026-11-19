@@ -103,7 +103,7 @@ def _shipped():
 
 def test_the_shipped_template_installs_its_files_byte_for_byte():
     files = {f.path: f for f in rehearse.write_files(_shipped())}
-    assert files["/etc/cairn/host.sh"].content == (REPO / "infra/gcp/files/host.sh").read_text()
+    assert files["/etc/cairn/host.sh"].content == (REPO / "infra/gcp/files/host.sh").read_bytes()
     assert files["/etc/cairn/host.sh"].permissions == 0o755
     assert files["/etc/cairn/Caddyfile"].content == (REPO / "deploy/Caddyfile").read_text()
     assert (
@@ -297,6 +297,8 @@ def test_runcmd_reloads_systemd_and_starts_the_services():
         "litestream.service",
         "cairn-update.timer",
         "cairn-replica-check.timer",
+        "cairn-compact.timer",
+        "cairn-host-check.timer",
     ]
 
 
@@ -332,7 +334,12 @@ def test_the_replica_check_runs_once_the_database_is_restored_and_before_the_upd
 
 def test_the_rehearsal_starts_neither_timer_with_the_boot_units():
     """Every run of the updater and of the replica check is one the rehearsal starts itself."""
-    assert rehearse.TIMERS == ("cairn-update.timer", "cairn-replica-check.timer")
+    assert rehearse.TIMERS == (
+        "cairn-update.timer",
+        "cairn-replica-check.timer",
+        "cairn-compact.timer",
+        "cairn-host-check.timer",
+    )
     units = rehearse.started_units(rehearse.runcmd(_shipped()))
     assert [u for u in units if u not in rehearse.TIMERS] == [
         "caddy.service",
@@ -341,6 +348,10 @@ def test_the_rehearsal_starts_neither_timer_with_the_boot_units():
     ]
     assert "cairn-replica-check.timer" in rehearse.STOP_ORDER
     assert "cairn-replica-check.service" in rehearse.STOP_ORDER
+    assert "cairn-compact.timer" in rehearse.STOP_ORDER
+    assert "cairn-compact.service" in rehearse.STOP_ORDER
+    assert "cairn-host-check.timer" in rehearse.STOP_ORDER
+    assert "cairn-host-check.service" in rehearse.STOP_ORDER
     assert "cairn-replica-check" in rehearse.CONTAINERS
 
 

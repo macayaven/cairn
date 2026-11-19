@@ -16,6 +16,8 @@
 #   litestream ARGS run one Litestream command with the replica's settings (for the runbooks)
 #   replica-check   say how old the newest copy in the replica is, in Litestream's own log
 #                   (cairn-replica-check.timer, every 5 minutes; the replica alerts read it)
+#   compact-if-due  compact, when a deletion waits for one (cairn-compact.timer, nightly)
+#   host-check      disks, memory kills, restart loops, certificates (cairn-host-check.timer)
 #   compact         by hand, after a workspace is deleted: check that cairn answers and the
 #                   replica is current, stop Litestream, run cairn's compact, start Litestream
 #                   again whatever happened, and wait until the replica has copied it
@@ -80,6 +82,11 @@ METADATA_IP=169.254.169.254 # metadata.google.internal resolves to this address
 CAIRN_UID=10001
 HEALTH_SECONDS=60
 LOG_OPTS="--log-driver json-file --log-opt max-size=10m --log-opt max-file=5"
+# What deploy/compose.yaml gives cairn and Caddy and compose.backup.yaml gives Litestream: no
+# Linux capability, and none gained by exec. Caddy alone gets one back (CADDY_CAPS), to bind
+# ports 80 and 443. Every container this script starts gets them.
+HARDENING="--cap-drop ALL --security-opt no-new-privileges:true"
+CADDY_CAPS="--cap-add NET_BIND_SERVICE"
 
 log() { echo "cairn-host: $*"; }
 # "<3>" makes journald record the line at priority err, which the COS logging agent exports.
@@ -94,6 +101,36 @@ err() {
 die() {
   err "$*"
   exit 1
+}
+
+is_count() {
+  case "$1" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# limits NAME: the memory limit (with no swap on top of it) and the process limit of the
+# long-running container NAME, from config.env (OpenTofu's container_limits), so that one
+# container cannot take the VM down. Without a whole number above 0 the container does not
+# start: `limits` fails, and its caller stops.
+limits() {
+  local prefix memory pids
+  case "$1" in
+    cairn) prefix=CAIRN memory=${CAIRN_MEMORY_MB:-} pids=${CAIRN_PIDS_LIMIT:-} ;;
+    caddy) prefix=CADDY memory=${CADDY_MEMORY_MB:-} pids=${CADDY_PIDS_LIMIT:-} ;;
+    litestream) prefix=LITESTREAM memory=${LITESTREAM_MEMORY_MB:-} pids=${LITESTREAM_PIDS_LIMIT:-} ;;
+    *) return 1 ;;
+  esac
+  if ! is_count "$memory" || [ "$memory" -eq 0 ]; then
+    err "${prefix}_MEMORY_MB is not a whole number above 0 in config.env"
+    return 1
+  fi
+  if ! is_count "$pids" || [ "$pids" -eq 0 ]; then
+    err "${prefix}_PIDS_LIMIT is not a whole number above 0 in config.env"
+    return 1
+  fi
+  printf -- '--memory %sm --memory-swap %sm --pids-limit %s' "$memory" "$memory" "$pids"
 }
 
 # --- disk -----------------------------------------------------------------------------------
@@ -196,8 +233,28 @@ access_token() {
     sed -n 's/.*"access_token" *: *"\([^"]*\)".*/\1/p'
 }
 
+# crc32c_file FILE: the CRC-32C (Castagnoli) of FILE's bytes, as a decimal number, the form of
+# Secret Manager's dataCrc32c. COS has no tool for it, so it is computed here, a table first.
+crc32c_file() {
+  local crc=4294967295 byte i k c table=()
+  for ((i = 0; i < 256; i++)); do
+    c=$i
+    for ((k = 0; k < 8; k++)); do
+      if ((c & 1)); then c=$(((c >> 1) ^ 0x82F63B78)); else c=$((c >> 1)); fi
+    done
+    table[i]=$c
+  done
+  for byte in $(od -An -v -tu1 "$1"); do
+    crc=$((table[(crc ^ byte) & 255] ^ (crc >> 8)))
+  done
+  echo $((crc ^ 4294967295))
+}
+
+# Returns 1 when the secret cannot be read (the caller tries again) and 2 when it was read and
+# its data does not match its checksum (the caller stops). Nothing of the data, its size or
+# either checksum is printed.
 fetch_env() {
-  local token body data
+  local token body flat data sum
   token=$(access_token) || return 1
   [ -n "$token" ] || return 1
   # The header goes to curl on stdin (printf is a builtin), so the token is never in argv.
@@ -205,19 +262,35 @@ fetch_env() {
     curl -fsS --max-time 20 -K - \
       "https://secretmanager.googleapis.com/v1/$CAIRN_ENV_SECRET/versions/latest:access") ||
     return 1
-  # {"name": "...", "payload": {"data": "<base64>", "dataCrc32c": "..."}}
-  data=$(printf '%s' "$body" | tr -d ' \n\r\t' | sed -n 's/.*"data":"\([^"]*\)".*/\1/p')
+  # {"name": "...", "payload": {"data": "<base64>", "dataCrc32c": "<digits>"}}
+  flat=$(printf '%s' "$body" | tr -d ' \n\r\t')
+  data=$(printf '%s' "$flat" | sed -n 's/.*"data":"\([^"]*\)".*/\1/p')
+  sum=$(printf '%s' "$flat" | sed -n 's/.*"dataCrc32c":"\{0,1\}\([0-9]*\).*/\1/p')
   [ -n "$data" ] || return 1
   printf '%s' "$data" | base64 -d >"$ENV_FILE.new" || return 1
+  if [ -z "$sum" ]; then
+    log "the answer for $CAIRN_ENV_SECRET carries no checksum (dataCrc32c); not checked"
+  elif [ "$(crc32c_file "$ENV_FILE.new")" != "$sum" ]; then
+    rm -f "$ENV_FILE.new"
+    return 2
+  fi
   chmod 0600 "$ENV_FILE.new" && mv -f "$ENV_FILE.new" "$ENV_FILE"
 }
 
 cmd_env() {
+  local rc
   umask 077
   mkdir -p "$ENV_DIR"
   chmod 0700 "$ENV_DIR"
-  # Fail closed: cairn must never start without its settings, so keep trying instead.
-  until fetch_env; do
+  # Fail closed: cairn must never start without its settings, so keep trying instead; but
+  # data that does not match its checksum is not tried again: it stops the start.
+  while :; do
+    rc=0
+    fetch_env || rc=$?
+    [ "$rc" -ne 0 ] || break
+    if [ "$rc" -eq 2 ]; then
+      die "the secret $CAIRN_ENV_SECRET's data does not match its checksum (dataCrc32c); not writing the env file. cairn does not start until a version that matches is read: restart cairn-env.service"
+    fi
     err "could not read the latest version of $CAIRN_ENV_SECRET; retrying in 15 s"
     sleep 15
   done
@@ -230,15 +303,29 @@ cmd_env() {
 # return). Runs as cairn's uid so the files it writes stay readable by cairn, and on the
 # backup network, the only one allowed to fetch credentials from the metadata server.
 litestream() {
-  local runner=$1 name=$2
+  local runner=$1 name=$2 entry=""
   shift 2
+  if [ -n "${LITESTREAM_WAIT:-}" ]; then
+    entry="--entrypoint sh"
+    set -- -c "$LITESTREAM_WAIT_SCRIPT" sh "$@"
+  fi
   # shellcheck disable=SC2086
-  $runner docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS \
-    --user "$CAIRN_UID:$CAIRN_UID" \
+  $runner docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS $HARDENING \
+    ${LITESTREAM_LIMITS:-} --user "$CAIRN_UID:$CAIRN_UID" \
     -e HOME=/tmp -e LITESTREAM_REPLICA_URL="$LITESTREAM_REPLICA_URL" \
     -v "$DB_DIR:/data" -v /etc/cairn/litestream.yml:/etc/litestream.yml:ro \
-    "$LITESTREAM_IMAGE" "$@"
+    $entry "$LITESTREAM_IMAGE" "$@"
 }
+
+# The litestream container runs from boot, so the replica check has a log to write into before
+# cairn's first start (monitoring.tf: the silence alert arms on the first current line). It
+# waits inside for the database cairn creates, then becomes Litestream. A stop ends the wait
+# at once: sh as process 1 ignores SIGTERM without a trap.
+# shellcheck disable=SC2016 # expanded by sh inside the container
+LITESTREAM_WAIT_SCRIPT='trap "exit 0" TERM INT
+until [ -f /data/cairn.db ]; do sleep 2 & wait $!; done
+exec litestream "$@"'
+
 
 cmd_restore() {
   # Exit 0 when the database already exists, when it was restored, or when no replica exists
@@ -294,13 +381,6 @@ echo "$newest $changed $started $(date -u +%s)"
 PROBE
 }
 
-is_count() {
-  case "$1" in
-    '' | *[!0-9]*) return 1 ;;
-  esac
-  return 0
-}
-
 # replica_said NAME: the probe's four numbers, from a container named NAME. On the backup
 # network, the only one that gets storage credentials; the data read-only.
 replica_said() {
@@ -308,7 +388,7 @@ replica_said() {
   docker rm -f "$name" >/dev/null 2>&1 || true
   started=$(docker inspect -f '{{.State.StartedAt}}' litestream 2>/dev/null) || started=""
   # shellcheck disable=SC2086
-  docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS \
+  docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS $HARDENING \
     --user "$CAIRN_UID:$CAIRN_UID" \
     -e HOME=/tmp -e LITESTREAM_REPLICA_URL="$LITESTREAM_REPLICA_URL" \
     -e LITESTREAM_STARTED="$started" \
@@ -321,7 +401,11 @@ cmd_replica_check() {
   is_mounted || die "the data disk is not mounted"
   is_count "${REPLICA_BOUND_SECONDS:-}" || die "REPLICA_BOUND_SECONDS is not a number of seconds"
   if [ ! -f "$DB_DIR/cairn.db" ]; then
-    log "replica check: no database yet, nothing to copy"
+    # Before the first deployment nothing to copy is current: the line arms the silence alert
+    # on a new VM. After one, a missing database is not, and no line lets that alert fire.
+    [ -z "$(proven_image)" ] ||
+      die "replica check: no database, though a deployment was proven: no line written"
+    replica_line "replica: current, no database yet, nothing to copy"
     return 0
   fi
   said=$(replica_said cairn-replica-check) ||
@@ -352,11 +436,113 @@ cmd_replica_check() {
   else
     line="replica: current, newest $((now - newest)) s old"
   fi
-  echo "$line"
-  # Into the log of Litestream's own container: its process 1's output is what Docker keeps
-  # and Container-Optimized OS sends to Cloud Logging, under the container's name.
-  printf '%s\n' "$line" | docker exec -i litestream sh -c 'cat >/proc/1/fd/1' ||
+  replica_line "$line"
+}
+
+# replica_line LINE: into the journal, and into the log of Litestream's own container: its
+# process 1's output is what Docker keeps and Container-Optimized OS sends to Cloud Logging,
+# under the container's name.
+replica_line() {
+  echo "$1"
+  printf '%s\n' "$1" | docker exec -i litestream sh -c 'cat >/proc/1/fd/1' ||
     die "the litestream container is not running: the line above reached the journal only"
+}
+
+# --- host check -----------------------------------------------------------------------------
+#
+# Every five minutes (cairn-host-check.timer): what can take the server down without cairn
+# saying so. One line for each finding, into the log of a running container (litestream, else
+# cairn, else caddy), which Cloud Logging receives; monitoring.tf has one alert for each kind:
+#   host-check: disk: the data disk (PATH) is NN% full, over 80%
+#   host-check: memory: the container NAME was killed for memory
+#   host-check: restarts: systemd restarted UNIT N times since the last check
+#   host-check: certificate: Caddy logged N errors obtaining or renewing a certificate ...
+# State lives on tmpfs: restart counts start again with the boot, as systemd's do.
+HOST_CHECK_DIR=/run/cairn-host-check
+HOST_CHECK_DISK_PERCENT=80
+HOST_CHECK_RESTARTS=3
+HOST_CHECK_UNITS="cairn.service caddy.service litestream.service"
+
+disk_percent() { df -P "$1" | awk 'NR == 2 { sub("%", "", $5); print $5 }'; }
+
+# host_line LINE: into the journal, and into the log of the first container that takes it.
+host_line() {
+  local name
+  echo "$1"
+  for name in litestream cairn caddy; do
+    printf '%s\n' "$1" | docker exec -i "$name" sh -c 'cat >/proc/1/fd/1' 2>/dev/null &&
+      return 0
+  done
+  err "host check: no container runs to write into: the line above reached the journal only"
+  return 1
+}
+
+cmd_host_check() {
+  local now since failed=0 lines="" label path percent name names unit count previous errors line
+  now=$(date +%s)
+  mkdir -p "$HOST_CHECK_DIR"
+  since=$(first_line "$HOST_CHECK_DIR/since")
+  is_count "$since" || since=$((now - 300))
+
+  for label in data boot; do
+    if [ "$label" = data ]; then
+      is_mounted || continue
+      path=$DATA_MOUNT
+    else
+      path=/var/lib/docker
+    fi
+    percent=$(disk_percent "$path") || percent=""
+    if ! is_count "$percent"; then
+      err "host check: could not read how full $path is"
+      failed=1
+    elif [ "$percent" -gt "$HOST_CHECK_DISK_PERCENT" ]; then
+      lines="$lines
+host-check: disk: the $label disk ($path) is $percent% full, over $HOST_CHECK_DISK_PERCENT%"
+    fi
+  done
+
+  if names=$(docker events --since "$since" --until "$now" --filter event=oom \
+    --format '{{.Actor.Attributes.name}}'); then
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      lines="$lines
+host-check: memory: the container $name was killed for memory"
+    done <<<"$names"
+  else
+    err "host check: could not read Docker's events"
+    failed=1
+  fi
+
+  for unit in $HOST_CHECK_UNITS; do
+    count=$(systemctl show -p NRestarts --value "$unit") || count=""
+    is_count "$count" || continue
+    previous=$(first_line "$HOST_CHECK_DIR/restarts.$unit")
+    is_count "$previous" || previous=0
+    [ "$count" -ge "$previous" ] || previous=0
+    if [ $((count - previous)) -ge "$HOST_CHECK_RESTARTS" ]; then
+      lines="$lines
+host-check: restarts: systemd restarted $unit $((count - previous)) times since the last check"
+    fi
+    write_state "$HOST_CHECK_DIR/restarts.$unit" "$count"
+  done
+
+  errors=$(docker logs --since "$since" --until "$now" caddy 2>&1 |
+    grep '"level":"error"' | grep -c -E '"logger":"tls[.](obtain|renew)"' || true)
+  if is_count "$errors" && [ "$errors" -gt 0 ]; then
+    lines="$lines
+host-check: certificate: Caddy logged $errors errors obtaining or renewing a certificate since the last check"
+  fi
+
+  write_state "$HOST_CHECK_DIR/since" "$now"
+  if [ -z "$lines" ]; then
+    log "host check: nothing found"
+  else
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      host_line "$line" || failed=1
+    done <<<"$lines"
+  fi
+  [ "$failed" = 0 ] || exit 1
 }
 
 # --- compact --------------------------------------------------------------------------------
@@ -370,9 +556,17 @@ COMPACT_CHECKS=24
 COMPACT_STOPPED=""
 COMPACT_STEP=""
 
+# The record store.compact_due, read-only: its time, "" when no deletion waits, "?" when it
+# could not be read.
+compact_due() {
+  local due
+  due=$(docker exec cairn python -c 'import sqlite3; r = sqlite3.connect("file:/data/cairn.db?mode=ro", uri=True).execute("SELECT value FROM settings WHERE name = ?", ("store.compact_due",)).fetchone(); print(r[0] if r else "")') || due="?"
+  printf '%s' "$due"
+}
+
 compact_sizes() {
   local due db wal
-  due=$(docker exec cairn python -c 'import sqlite3; r = sqlite3.connect("file:/data/cairn.db?mode=ro", uri=True).execute("SELECT value FROM settings WHERE name = ?", ("store.compact_due",)).fetchone(); print(r[0] if r else "")') || due="?"
+  due=$(compact_due)
   case "$due" in
     "?") due="unknown, the record could not be read" ;;
     "") due=no ;;
@@ -456,6 +650,42 @@ cmd_compact() {
   log "compact: done"
 }
 
+# compact-if-due, from cairn-compact.timer once a night: `compact` when, and only when, a
+# deletion waits for a compaction. On success one line with the sizes before and after. On
+# failure Litestream runs again (compact's trap) and an "Error: compact: ..." line goes into
+# the litestream container's log, which the replica alert matches (monitoring.tf), and into
+# the journal.
+nightly_failed() {
+  local line="compact: the nightly compaction failed: $1"
+  err "$line"
+  printf 'Error: %s\n' "$line" | docker exec -i litestream sh -c 'cat >/proc/1/fd/1' ||
+    err "the litestream container is not running: the line above reached the journal only"
+  exit 1
+}
+
+cmd_compact_if_due() {
+  local due said rc=0 failed before after
+  is_mounted || nightly_failed "the data disk is not mounted"
+  due=$(compact_due)
+  case "$due" in
+    "?") nightly_failed "whether a deletion waits could not be read (is cairn running?)" ;;
+    "")
+      log "compact: nightly: no deletion waits for a compaction; nothing to do"
+      return 0
+      ;;
+  esac
+  said=$( (cmd_compact) 2>&1) || rc=$?
+  printf '%s\n' "$said"
+  if [ "$rc" -ne 0 ]; then
+    failed=$(printf '%s\n' "$said" | sed -n 's/^.*cairn-host: ERROR: compact: //p' | tail -n 1)
+    nightly_failed "${failed:-exit $rc}"
+  fi
+  # "compact: before: database N bytes, write-ahead log N bytes; ..." and its "after:" twin.
+  before=$(printf '%s\n' "$said" | sed -n 's/^cairn-host: compact: before: database \([0-9]*\) bytes, write-ahead log \([0-9]*\) bytes;.*/\1 \2/p')
+  after=$(printf '%s\n' "$said" | sed -n 's/^cairn-host: compact: after: database \([0-9]*\) bytes, write-ahead log \([0-9]*\) bytes;.*/\1 \2/p')
+  log "compact: nightly: database ${before% *} -> ${after% *} bytes, write-ahead log ${before#* } -> ${after#* } bytes"
+}
+
 # --- deployment state -----------------------------------------------------------------------
 
 boot_id() { cat /proc/sys/kernel/random/boot_id; }
@@ -501,7 +731,8 @@ registry_login() {
 }
 
 cmd_run_cairn() {
-  local image
+  local image limited
+  limited=$(limits cairn) || exit 1
   metadata_block || die "the metadata server is not blocked for containers; not starting cairn"
   image=$(image_to_run)
   [ -n "$image" ] || die "nothing to run: no proven image and no deployment in progress"
@@ -546,7 +777,7 @@ cmd_run_cairn() {
   # Arguments replace the image's default command, so the whole command is spelled out.
   # CAIRN_EXTRA_ARGS is split on spaces on purpose; OpenTofu validates its characters.
   # shellcheck disable=SC2086
-  exec docker run --rm --name cairn --network "$NETWORK" $LOG_OPTS \
+  exec docker run --rm --name cairn --network "$NETWORK" $LOG_OPTS $HARDENING $limited \
     --env-file "$ENV_FILE" \
     -v "$DB_DIR:/data" ${plans_mount[@]+"${plans_mount[@]}"} \
     ${brand_mount[@]+"${brand_mount[@]}"} \
@@ -557,10 +788,12 @@ cmd_run_cairn() {
 }
 
 cmd_run_caddy() {
+  local limited
+  limited=$(limits caddy) || exit 1
   metadata_block || die "the metadata server is not blocked for containers; not starting Caddy"
   # shellcheck disable=SC2086
-  exec docker run --rm --name caddy --network "$NETWORK" $LOG_OPTS \
-    -p 80:80 -p 443:443 \
+  exec docker run --rm --name caddy --network "$NETWORK" $LOG_OPTS $HARDENING $CADDY_CAPS \
+    $limited -p 80:80 -p 443:443 \
     -e CAIRN_DOMAIN="$CAIRN_DOMAIN" -e ACME_EMAIL="$ACME_EMAIL" \
     -v /etc/cairn/Caddyfile:/etc/caddy/Caddyfile:ro \
     -v "$CADDY_DIR/data:/data" -v "$CADDY_DIR/config:/config" \
@@ -568,10 +801,10 @@ cmd_run_caddy() {
 }
 
 cmd_run_litestream() {
-  # cairn creates the database on its first start; Litestream needs the file to exist.
-  until [ -f "$DB_DIR/cairn.db" ]; do
-    sleep 5
-  done
+  LITESTREAM_LIMITS=$(limits litestream) || exit 1
+  # cairn creates the database on its first start; Litestream needs the file to exist, and
+  # waits for it inside its container (LITESTREAM_WAIT_SCRIPT).
+  LITESTREAM_WAIT=1
   litestream exec litestream replicate
 }
 
@@ -622,11 +855,23 @@ wait_healthy() {
 
 # The image is written first: if this is cut off before the record is removed, the leftover
 # record names the proven image and settle only has to remove it.
+#
+# Then the boot disk, which holds every pulled image: `docker image prune -a` removes each
+# image no container uses and that was built more than three days ago. The running image is
+# in use; the image before it is kept for a rollback by a container made from it and never
+# started, cairn-previous. When settle finishes a promotion cut short, the candidate is
+# already the proven image and the container from the first call stays as it is.
 promote() {
+  local previous
+  previous=$(proven_image)
   write_state "$IMAGE_FILE" "$1"
   rm -f "$PENDING_FILE" "$FAILED_FILE" "$INTERRUPTED_FILE"
   log "now running $1"
-  docker image prune -af --filter until=720h >/dev/null 2>&1 || true
+  if [ -n "$previous" ] && [ "$previous" != "$1" ]; then
+    docker rm -f cairn-previous >/dev/null 2>&1 || true
+    docker create --name cairn-previous "$previous" >/dev/null 2>&1 || true
+  fi
+  docker image prune -af --filter until=72h >/dev/null 2>&1 || true
 }
 
 roll_back() {
@@ -941,6 +1186,8 @@ case "${1:-}" in
     ;;
   replica-check) cmd_replica_check ;;
   compact) cmd_compact ;;
+  compact-if-due) cmd_compact_if_due ;;
+  host-check) cmd_host_check ;;
   update) cmd_update ;;
   hold) cmd_hold ;;
   pin)
@@ -953,7 +1200,7 @@ case "${1:-}" in
     ;;
   state) cmd_state ;;
   *)
-    echo "usage: host.sh disk|boot-settle|network|env|restore|run-cairn|run-caddy|run-litestream|litestream ARGS|replica-check|compact|update|hold|pin DIGEST|release [--force]|state" >&2
+    echo "usage: host.sh disk|boot-settle|network|env|restore|run-cairn|run-caddy|run-litestream|litestream ARGS|replica-check|compact|compact-if-due|host-check|update|hold|pin DIGEST|release [--force]|state" >&2
     exit 2
     ;;
 esac

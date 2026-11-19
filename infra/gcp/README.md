@@ -2,7 +2,7 @@
 
 One VM runs the same image self-hosted users run. OpenTofu builds everything around it.
 
-**Status: written from the current official docs, not yet applied.** CI formats, validates and plans it with OpenTofu (`tofu test`, against a mock provider and without a cloud project) and rehearses the VM's files and units on a runner; no `tofu plan` against a project, no apply and no boot on Google Cloud has been run. [What was checked](#what-was-checked-and-what-was-not) is at the end. Expect to fix something on the first apply.
+**Status: applied once to a real project, on 2026-11-14, and only what that run showed is verified there.** One `e2-small` VM in `europe-west1` booted, served the domain over TLS, deployed by digest, replicated to the bucket and reported through guest attributes; the replica alert was applied the day after. Everything added since (the later alerts, the container limits, the registry cleanup, the audit and key settings among them) has not been applied, and the end of this file lists what is still unverified. CI formats, validates and plans it with OpenTofu (`tofu test`, against a mock provider and without a cloud project) and rehearses the VM's files and units on a runner. [What was checked](#what-was-checked-and-what-was-not) is at the end. Expect to fix something on the next apply.
 
 ## What it builds
 
@@ -11,22 +11,22 @@ One VM runs the same image self-hosted users run. OpenTofu builds everything aro
 | VM | `e2-small`, Container-Optimized OS (stable), Shielded VM, in its own network |
 | Data disk | 20 GB `pd-balanced`, separate from the boot disk, protected from destroy, mounted at `/mnt/disks/data` |
 | Address | one static IPv4; ports 80 and 443 open; SSH only from Identity-Aware Proxy, with OS Login |
-| Registry | one Artifact Registry Docker repository; the VM follows the tag `cairn:production` in it |
+| Registry | one Artifact Registry Docker repository; the VM follows the tag `cairn:production` in it; a cleanup policy deletes old images ([Rollback](#rollback)) |
 | Secret | one Secret Manager secret that holds cairn's env file |
-| Replica | one bucket (uniform access, public access prevented, soft delete: whatever is deleted stays restorable for 30 days) |
+| Replica | one bucket (uniform access, public access prevented, soft delete: whatever is deleted stays restorable for 7 days) |
 | Snapshots | a daily snapshot of the data disk, kept 14 days |
-| Monitoring | an uptime check on `https://DOMAIN/healthz` and an email alert; a second email alert when Litestream logs an error; a third when the replica check stops saying the replica is current; a fourth when a compaction keeps not finishing ([Alerts](#alerts)) |
+| Monitoring | an uptime check on `https://DOMAIN/healthz` and an email alert; a second email alert when Litestream logs an error; a third when the replica check stops saying the replica is current; a fourth when a compaction keeps not finishing; four more on the host itself: a disk above 80 percent, a container killed for memory, a unit restarting in a loop, and Caddy failing to obtain or renew a certificate ([Alerts](#alerts)) |
 | Identities | a VM service account, and a deployer service account that one GitHub Actions workflow reaches through Workload Identity Federation. The deployer can push images and read the VM's deploy status, nothing else. No keys. |
 
-On the VM, cloud-init writes eleven systemd units on every boot (COS keeps `/etc` on tmpfs). Three of them run containers:
+On the VM, cloud-init writes fifteen systemd units on every boot (COS keeps `/etc` on tmpfs). Three of them run containers:
 
 - **`cairn`**: the image recorded on the data disk, always by digest, with its environment from the secret.
 - **`caddy`** (2.11.9): TLS for the domain, HSTS, a 4 MiB body cap, logs without query strings. Certificates live on the data disk.
-- **`litestream`** (0.5.18): replicates `/data/cairn.db` to the bucket every 10 seconds.
+- **`litestream`** (0.5.18): replicates `/data/cairn.db` to the bucket every 10 seconds. The container runs from boot and waits inside for the database cairn creates on its first start.
 
 cairn and Caddy share one Docker network that cannot reach the VM's metadata server; Litestream is alone on a second one that can ([why and how](#containers-and-the-metadata-server)).
 
-The others prepare the ground: `cairn-disk` mounts the data disk and drops the record of a deployment that a reboot interrupted, `cairn-network` creates the two Docker networks and the firewall rules between containers and the metadata server, `cairn-env` fetches the secret into `/run/cairn/cairn.env` (tmpfs, mode 0600), `cairn-restore` restores the database from the replica when the file is missing, `cairn-update` (a timer, every minute) follows the deploy tag in the registry, and `cairn-replica-check` (a timer, every five minutes) says in Litestream's log how old the newest copy in the replica is ([Alerts](#alerts)). cairn does not start until the secret is read and the restore step has succeeded.
+The others prepare the ground: `cairn-disk` mounts the data disk and drops the record of a deployment that a reboot interrupted, `cairn-network` creates the two Docker networks and the firewall rules between containers and the metadata server, `cairn-env` fetches the secret into `/run/cairn/cairn.env` (tmpfs, mode 0600), `cairn-restore` restores the database from the replica when the file is missing, `cairn-update` (a timer, every minute) follows the deploy tag in the registry, and `cairn-replica-check` (a timer, every five minutes) says in Litestream's log how old the newest copy in the replica is ([Alerts](#alerts)), and `cairn-compact` (a timer, every night at 03:00 UTC) finishes the compaction after a deletion when one waits ([After a workspace is deleted](#after-a-workspace-is-deleted)), and `cairn-host-check` (a timer, every five minutes) checks the disks, containers killed for memory, units restarting in a loop and Caddy's certificate errors ([Alerts](#alerts)). cairn does not start until the secret is read and the restore step has succeeded.
 
 `deploy/Caddyfile` and `deploy/litestream.yml` are used unchanged, so the VM and a self-hosted compose stack run the same configuration. The host logic is one script, [`files/host.sh`](files/host.sh).
 
@@ -99,6 +99,23 @@ gcloud compute ssh cairn --zone ZONE --tunnel-through-iap
 ```
 
 Project owners can connect as they are. Anyone else needs `roles/iap.tunnelResourceAccessor` and `roles/compute.osAdminLogin`, plus `roles/iam.serviceAccountUser` on the VM's service account.
+
+**A second factor for SSH** is off by default. With `os_login_2fa = true`, OS Login asks everyone who connects for a second factor (a security key, an authenticator code or a phone prompt) at every connection, and their Google account must have 2-Step Verification on. A script or a scheduled job can then no longer connect by SSH. Whether to turn it on is the operator's decision. A change of it changes the instance's metadata, not the VM.
+
+**Remove what every new project starts with.** The VM runs in its own network with its own service account, so it uses neither the `default` network (whose rules let SSH and RDP in from anywhere) nor the default Compute Engine service account (which holds `roles/editor` on the whole project). Remove both, once, by hand; OpenTofu does not own them:
+
+```bash
+gcloud compute firewall-rules list --filter=network=default --format='value(name)' \
+  | xargs -r -n 1 gcloud compute firewall-rules delete --quiet
+gcloud compute networks delete default --quiet
+NUMBER=$(gcloud projects describe PROJECT_ID --format="value(projectNumber)")
+gcloud projects remove-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:${NUMBER}-compute@developer.gserviceaccount.com" --role=roles/editor
+```
+
+Anything else in the project that uses the default network or the default service account stops working; in a project that holds only cairn there is nothing else.
+
+**Customer-managed keys** and the settings a reviewer expects are in [Audit, keys and network](#audit-keys-and-network).
 
 The alert fires until `https://DOMAIN/healthz` answers 200. That is expected during bootstrap. Later it fires while cairn is down or answers 503: it cannot read its database, the database holds a schema version this cairn does not know, or a write failed and could not be undone (cairn then stays out of service until it is restarted: `sudo systemctl restart cairn.service` on the VM, after `sudo journalctl -u cairn` says why).
 
@@ -233,6 +250,8 @@ gcloud artifacts docker images list "${IMAGE%:*}" --include-tags --sort-by=~CREA
 gcloud artifacts docker tags add "${IMAGE%:*}@sha256:OLDER_DIGEST" "$IMAGE"
 ```
 
+The registry keeps the newest 50 versions of the image (`registry_keep_versions`) and whatever the deploy tag names, and deletes every other image once it is 14 days old (`registry_delete_after_days`). A deploy pushes an index and its children, about five versions, so that is about the last ten deploys; an older digest is gone, and rolling back to that code means building and pushing it again. Whether the cleanup spares the children of an index it keeps has not been checked against Artifact Registry ([What was checked](#what-was-checked-and-what-was-not)).
+
 `"${IMAGE%:*}:sha-COMMIT"` works as the source too: the deploy job copies every image it deploys under the full commit SHA. `tofu output -raw rollback_command` prints the last line with this project's names filled in; its placeholder is `DIGEST`, the whole digest (`sha256:` and the hex). The deploy job's log names the digest each deploy replaced (`cairn:production moved from sha256:... to sha256:...`; `from none` on the first deploy, and `already names` with no `moved` line when the tag was there already). To wait for the VM the way the job does, with your own `gcloud` credentials:
 
 ```bash
@@ -355,11 +374,11 @@ If the restore undoes a schema migration, follow the held procedure in [Rollback
 
 ### The replica was deleted or tampered with
 
-The VM's identity can delete replica files, because Litestream's own retention has to. What it cannot do is delete them for good. The bucket has soft delete set to 30 days (`replica_soft_delete_days`): everything deleted or overwritten in it stays restorable for that long, and Cloud Storage's documentation says it cannot be permanently deleted during that time. The VM's identity has no permission on the bucket itself, so it cannot shorten the window, and a shorter window would not apply to what is already deleted anyway. This is the backstop behind a compromised VM or a mistake.
+The VM's identity can delete replica files, because Litestream's own retention has to. What it cannot do is delete them for good. The bucket has soft delete set to 7 days (`replica_soft_delete_days`, the least Cloud Storage allows): everything deleted or overwritten in it stays restorable for that long, and Cloud Storage's documentation says it cannot be permanently deleted during that time. The VM's identity has no permission on the bucket itself, so it cannot shorten the window, and a shorter window would not apply to what is already deleted anyway. This is the backstop behind a compromised VM or a mistake.
 
 If the database on the data disk is intact and trusted, you do not need the old replica at all: set a new `replica_path`, `tofu apply`, restart the VM, and Litestream starts a fresh replica from the live database.
 
-If the database is gone or not trusted either, you have 30 days from the deletion to bring the replica back:
+If the database is gone or not trusted either, you have 7 days from the deletion to bring the replica back:
 
 1. **Stop the writers**, so nothing new lands in the path. On the VM: `bash /etc/cairn/host.sh hold`, then `systemctl stop cairn.service litestream.service`, as the first lines of [The database is lost or damaged](#the-database-is-lost-or-damaged) do. The VM stays up: the restore needs it. If the VM itself is suspect, stop it instead (`gcloud compute instances stop cairn --zone ZONE`), disable its service account (`gcloud iam service-accounts disable "$(tofu output -raw vm_service_account)"`), and replace it while the account is still disabled.
 2. **See what is there.** `tofu output -raw replica_url` is `gs://BUCKET/PATH`.
@@ -380,7 +399,20 @@ If the database is gone or not trusted either, you have 30 days from the deletio
 
    If you stopped or replaced the VM in step 1, do not start it with its account enabled. At boot it would restore the newest state in the path if the database is missing, serve it, and let Litestream write into the path you just recovered, where its retention can delete again the older files the bulk restore brought back. Start it with the account still disabled: without credentials neither the settings step nor the restore step can finish, so cairn and Litestream do not start. Then, on the VM, take the hold, stop the waiting steps and the services (`systemctl stop cairn-env.service cairn-restore.service cairn.service litestream.service`), enable the account again, and restore by hand as above. This order is read from the units; it has not been run on a VM.
 
-Past the 30 days the files are gone, and the daily disk snapshots (14 days, below) are what is left.
+Past the 7 days the files are gone, and the daily disk snapshots (14 days, below) are what is left. A longer `replica_soft_delete_days` (up to 90) buys more time here, and keeps what a person deleted in cairn that much longer ([below](#how-long-a-deletion-stays-in-the-backups)).
+
+### How long a deletion stays in the backups
+
+What a person deletes in cairn leaves the database at once ([After a workspace is deleted](#after-a-workspace-is-deleted) says what is left in the log file and when it goes), but not the backups made before. With the shipped settings:
+
+| Where | How long it keeps a deleted note |
+|---|---|
+| Litestream's files in the bucket | up to 8 days (`retention: 192h` in `deploy/litestream.yml`) |
+| Then soft delete in the bucket | 7 more days (`replica_soft_delete_days`) |
+| The replica bucket in all | up to 15 days |
+| The daily disk snapshots | up to 14 days (`google_compute_resource_policy.data_daily`) |
+
+Seven days is the least soft delete Cloud Storage allows. A longer window keeps more time to bring back a replica that was deleted or tampered with ([above](#the-replica-was-deleted-or-tampered-with)) and keeps deleted notes in the bucket for as long; that is the operator's trade.
 
 ### The data disk is lost
 
@@ -401,6 +433,8 @@ gcloud secrets versions destroy OLD_VERSION --secret="$(tofu output -raw env_sec
 
 The VM always reads the latest version, at boot and when `cairn-env.service` is restarted. Destroy the old version only after `/healthz` answers with the new one.
 
+The VM checks the data it reads against the checksum Secret Manager sends with it (`dataCrc32c`); when they differ it writes nothing, and `cairn-env.service` fails with one line in its journal, so cairn does not start. Restart `cairn-env.service` to read the secret again. An answer without a checksum is written as before, with a line that says it was not checked.
+
 ## Changing the configuration
 
 `tofu apply` updates the VM's `user-data`, and cloud-init reads it at boot. Changes to the domain, the extra arguments, the plans file, the Caddy or Litestream versions, or anything under `deploy/` and `files/` therefore need a restart of the VM after the apply:
@@ -411,15 +445,58 @@ gcloud compute instances stop cairn --zone ZONE && gcloud compute instances star
 
 Growing the data disk needs the same restart: raise `data_disk_size_gb`, apply, restart. The file system grows at boot. Disks cannot shrink.
 
+Changing `boot_disk_size_gb` replaces the VM: the boot disk is made with it. That is the step of [The VM is broken, the data disk is fine](#the-vm-is-broken-the-data-disk-is-fine), and `tofu plan` says so. The boot disk holds the pulled images and the containers' logs; after each promotion the updater removes every image older than three days, except the running image and the one before it, which a rollback needs.
+
 **Plans.** To hold workspaces to plans, set `cairn_plans_file` in `terraform.tfvars` to a plans file on your machine (a copy of `deploy/plans.example.yaml`), relative to `infra/gcp` or absolute. `tofu apply` puts its content in the user-data. At boot cloud-init writes it to `/etc/cairn/plans.yaml`, owned by root with mode 0644, and cairn starts with that file mounted read-only and `--plans /etc/cairn/plans.yaml`: cairn's user can read it and cannot change it. Plans are not secret (a workspace's **Usage** page shows its plan's limits), so the user-data, which anyone who can read the instance's metadata can read, is an acceptable place for them. `tofu plan` refuses a file that is missing, empty, larger than 16 KiB, or not printable ASCII text that ends in exactly one line break, and says which. It also refuses `--plans` in `cairn_extra_args` while `cairn_plans_file` is set. After an edit of the file: `tofu apply`, then stop and start the VM as above. Without `cairn_plans_file` the file is empty, and cairn starts without plans.
 
 **Brand.** To show your own name in place of cairn's, set `cairn_brand_name` in `terraform.tfvars`, and with it, if you want a logo, `cairn_brand_logo_file`, an SVG or a PNG on your machine (relative to `infra/gcp` or absolute), and `cairn_brand_logo_alt`, its alt text. `tofu apply` puts each value that is set in the user-data, base64. At boot cloud-init writes them to `/etc/cairn/brand/name`, `/etc/cairn/brand/logo` and `/etc/cairn/brand/logo-alt`, owned by root with mode 0644, and cairn starts with `--brand-name=NAME`, the logo mounted read-only with `--brand-logo /etc/cairn/brand/logo`, and `--brand-logo-alt=TEXT`. Each value reaches `serve` as one argument, as you wrote it: no shell expands it and nothing splits it, so a space, a quote, a backslash or a `$` arrives as it is. The brand is not secret (the sign-in page shows it), so the user-data, which anyone who can read the instance's metadata can read, is an acceptable place for it. `tofu plan` refuses what `serve` would refuse at start: a name that is not 1 to 60 characters or an alt text that is not 1 to 200, one that is only spaces, or one that holds a control character, a character that is not seen (a zero-width space, a direction mark), `<` or `>`; and a logo without a name, an alt text without a logo, and a name without `--sign-in` in `cairn_extra_args`. It also refuses `--brand-name`, `--brand-logo` and `--brand-logo-alt` in `cairn_extra_args`. Of the logo file it refuses one that is missing, empty or larger than 60 KiB (61,440 bytes), and it checks only how the file starts: the 16 bytes every PNG starts with, or an SVG whose first element is `<svg` with `xmlns="http://www.w3.org/2000/svg"`, after at most an XML declaration, white space and comments. It refuses an SVG with a document type declaration (`<!DOCTYPE`), which `serve` refuses so that reading a logo fetches nothing and expands nothing. `serve` reads the whole file at start and may still refuse one the plan took, such as an SVG that is not well-formed XML; on the VM that is a container that does not come up. `serve` itself takes a logo of up to 256 KB; the VM takes at most 60 KiB because the logo travels in the user-data next to the plans file, and Compute Engine takes at most 256 KB in one metadata value, which `tofu plan` also checks for the whole user-data. `--wall` and `--session-days` stay in `cairn_extra_args`, and `tofu plan` refuses either without `--sign-in`. It also refuses a `--session-days` that is not followed by a whole number from 1 to 365, written `--session-days 30` or `--session-days=30`, and a `--wall` with a value (`--wall=yes`): `--wall` takes none. A change of the brand goes as a change of the plans file does: `tofu apply`, then stop and start the VM as above. Unlike the plans file, which is written empty when unset, a brand value that is not set is not written at all; `/etc` is on tmpfs, so a value you remove is gone after the restart and cairn starts without its option.
+
+## Audit, keys and network
+
+**Audit logs.** Data Access audit logs for Cloud Storage and Secret Manager are on (`data_access_audit_logs`): who read, wrote or deleted the replica's objects, and who read the secret, with the identity that did it. Litestream's uploads and the replica check's listings each make an entry, so expect thousands a day; they are billed as log volume past the free allowance. The setting replaces any audit configuration set elsewhere for those two services.
+
+**Retention.** The project's `_Default` log bucket keeps logs 30 days (`log_retention_days`, Google's own default); the audit logs above, the containers' logs and the system's go there. A longer retention is billed. This sets the existing bucket and does not delete it on `tofu destroy`.
+
+**Network.** The subnet has Private Google Access on. Firewall rule logging (`firewall_logging`) and VPC flow logs (`vpc_flow_logs`) are off by default, because both are billed by volume.
+
+### Customer-managed keys
+
+For an operator who must hold the keys. Set `kms_key_name` to a Cloud KMS key in the same region as everything else, and the data disk, the boot disk, the replica bucket and the environment secret use it. Unset, Google manages the keys, as before. `tofu plan` refuses a key in another region.
+
+The key needs `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key for three of Google's service agents of this project: Compute Engine's for the disks, Cloud Storage's for the bucket, Secret Manager's for the secret.
+
+```bash
+NUMBER=$(gcloud projects describe PROJECT_ID --format="value(projectNumber)")
+gcloud beta services identity create --service=secretmanager.googleapis.com --project=PROJECT_ID
+for agent in \
+  service-PROJECT_NUMBER@compute-system.iam.gserviceaccount.com \
+  service-PROJECT_NUMBER@gs-project-accounts.iam.gserviceaccount.com \
+  service-PROJECT_NUMBER@gcp-sa-secretmanager.iam.gserviceaccount.com; do
+  gcloud kms keys add-iam-policy-binding KEY --keyring=RING --location=REGION \
+    --member="serviceAccount:${agent/PROJECT_NUMBER/$NUMBER}" \
+    --role=roles/cloudkms.cryptoKeyEncrypterDecrypter
+done
+```
+
+Grant it before the apply: a disk, a bucket or a secret that cannot use its key is not made. Disabling or destroying the key makes all four unreadable, the database and its replica included.
+
+Not covered: the disk snapshots, the registry, the logs and the state bucket. On an existing deployment, setting it replaces the data disk, the VM and the secret, as far as can be read without a project: read `tofu plan` before `apply`. The data disk is protected from destroy, so the plan stops there; move the database to a new disk by the steps of [The data disk is lost](#the-data-disk-is-lost), and add the secret's version again ([Secret rotation](#secret-rotation)). None of this has been applied.
+
+## What a regulated customer adds
+
+These definitions are not ready as they stand for health or education records, or other data a law governs, even inside the customer's own Google Cloud account. What they do not do, and such a customer adds:
+
+- **a signed agreement with Google** (for health data in the United States, Google's Business Associate Agreement), with the deployment kept to the products and regions it covers;
+- **organisation policies** that hold the project to what this file sets by hand: resource locations, uniform bucket access, no public access, no serial port, allowed members;
+- **VPC Service Controls** around Cloud Storage, Secret Manager and Artifact Registry, so that a stolen credential cannot copy the data out of the perimeter;
+- **a locked log sink**: the audit logs routed to a bucket with a retention lock, for the years a law asks, where nobody with project access can delete them;
+- customer-managed keys ([above](#customer-managed-keys)) on what they do not cover here, and a record of reads inside cairn itself, which cairn's own audit page does not keep.
 
 ## Teardown
 
 1. Take a last copy if you want one: run the restore drill, or `gcloud storage cp -r` the replica path.
 2. In `main.tf`, remove `prevent_destroy = true` from `google_compute_disk.data`.
-3. Empty the replica bucket: `gcloud storage rm "gs://BUCKET/**"`. What you delete stays in soft delete, billed, for another 30 days. To skip that, turn soft delete off first (`gcloud storage buckets update gs://BUCKET --soft-delete-duration=0`); it only affects what is deleted afterwards.
+3. Empty the replica bucket: `gcloud storage rm "gs://BUCKET/**"`. What you delete stays in soft delete, billed, for another 7 days. To skip that, turn soft delete off first (`gcloud storage buckets update gs://BUCKET --soft-delete-duration=0`); it only affects what is deleted afterwards.
 4. `tofu destroy`.
 5. Clean up what OpenTofu does not own: the scheduled disk snapshots (kept on purpose when the disk is deleted), the state bucket, and the DNS record.
 
@@ -495,12 +572,12 @@ And from your own machine, that container logs still arrive: `gcloud logging rea
 ## Logs
 
 - **Cloud Logging**: container output is under log name `cos_containers` for the instance. The COS agent also exports journal entries logged at error priority, which is how the updater's errors are meant to arrive; that path is not confirmed on a live VM yet.
-- **On the VM**: `sudo journalctl -u cairn -u caddy -u litestream -u cairn-update -u cairn-restore -u cairn-env -u cairn-replica-check`, and `sudo docker ps`.
+- **On the VM**: `sudo journalctl -u cairn -u caddy -u litestream -u cairn-update -u cairn-restore -u cairn-env -u cairn-replica-check -u cairn-compact -u cairn-host-check`, and `sudo docker ps`.
 - **Query strings and invitation links**: Caddy's logs cut every query string and the token of an invitation link out of the logged address, and drop the `x-api-key`, `Referer` and `Location` headers. cairn's own container log holds no request line at all: `serve` starts uvicorn with its access log off and writes its own line per request (who called, what, which project, the status), so neither a sign-in code nor a key reaches Cloud Logging through the `cairn` container's output.
 
 ## Alerts
 
-All four alerts send email to `alert_email`.
+All eight alerts send email to `alert_email`.
 
 **The uptime alert** fires while `https://DOMAIN/healthz` fails from more than one region for three minutes. [Bootstrap](#bootstrap-once-by-a-person) says when that is expected and what `/healthz` checks. It is also the alert for a VM that is off or cannot boot: nothing answers.
 
@@ -510,9 +587,20 @@ What the replica alert does not see. It fires on a failure Litestream reports. I
 
 **The replica check.** Every five minutes `cairn-replica-check` (`host.sh replica-check`) asks the replica how old its newest copy is and writes one line into the `litestream` container's log, which Cloud Logging receives as it receives Litestream's own: `replica: current, newest NN s old`, or `Error: replica: newest NN s old, over the bound` when a change to the database has waited more than 15 minutes for its copy. NN is the age of the newest transaction the replica holds, the largest timestamp `litestream ltx -json` lists (Litestream stamps each file with the time of the newest transaction in it, and a file compacted to a higher level keeps that time). An old copy is not stale by itself: while nothing writes to the database there is nothing to copy. The check tells the two apart by the database's own files: while Litestream copies, the last change to `cairn.db` and `cairn.db-wal` is never more than a few seconds newer than the newest copy. A later change is not copied yet, unless it is older than the start of the `litestream` container: a Litestream that stops checkpoints the database as it closes it, which moves the file's time with nothing new to copy, and a Litestream that starts copies what changed while it was down. A change not copied yet the check remembers it (in `/mnt/disks/data/replica-unconfirmed`) and says `Error:` once it is older than the bound with no copy at or after it. So an idle database stays current, a write seconds before a check is not an error, and a write Litestream does not copy is one 15 to 25 minutes after it was made. The check reads the replica as Litestream's restore would (a container of the pinned image on Litestream's network, the database mounted read-only): one `ltx` listing for each level it reads, levels 0, 1 and 9 in turn until one holds a file. When it cannot list the replica, or Litestream's container is not running, it writes no line to Cloud Logging, and its run fails in the journal (`sudo journalctl -u cairn-replica-check`).
 
-**The silence alert** fires when no `replica: current` line has been counted for 20 minutes: a log-based metric counts those lines, and an absence condition watches it. That covers Litestream gone (no container to write into), the check's timer gone, the VM's logging gone, and a check that cannot list the replica. It emails once when an incident opens; Google's rate limit applies to log-match conditions only, so a second email needs a current line first and then 20 more minutes without one. The incident closes, without an email, once a current line is counted again. Google arms an absence condition only after the metric has had a point since the policy was made or changed, so on a new VM it is armed by the first current line, and before cairn's first start, when there is no database to copy, the check writes no line and the alert stays unarmed.
+**The silence alert** fires when no `replica: current` line has been counted for 20 minutes: a log-based metric counts those lines, and an absence condition watches it. That covers Litestream gone (no container to write into), the check's timer gone, the VM's logging gone, and a check that cannot list the replica. It emails once when an incident opens; Google's rate limit applies to log-match conditions only, so a second email needs a current line first and then 20 more minutes without one. The incident closes, without an email, once a current line is counted again. Google arms an absence condition only after the metric has had a point since the policy was made or changed, so on a new VM it is armed by the first current line. That line comes within two minutes of boot (the check's timer runs two minutes after boot, then every five minutes), also before cairn's first start: the `litestream` container runs from boot and waits inside for the database cairn creates, and with no database and no deployment yet the check writes `replica: current, no database yet, nothing to copy`, since there is nothing to copy. Once a deployment has been proven, a missing database is not current: the check writes no line, its run fails in the journal, and the alert fires after 20 minutes. Whether Google arms the condition on that first point has been read in its documentation, not seen on a VM.
 
 **The compaction alert** fires when cairn logs `compact not finished` more than twice within an hour. It reads the lines that already reach Cloud Logging (log `cos_containers`, this VM's instance, container `cairn`); nothing on the VM changes for it. After a workspace is deleted, `serve` compacts the database, and beside Litestream the last step of a compaction does not finish ([When a compaction keeps not finishing](#when-a-compaction-keeps-not-finishing)). One such line a day, or one after each restart of cairn, is what a server beside Litestream writes since decision 143, and does not fire it. Three within an hour is a server that tries again at every poll (an image older than that fix) or one that keeps restarting. A log-based metric counts the lines, and the policy fires when their sum over the last hour is above 2. It emails once when an incident opens; the incident closes, without an email, once no more than two lines fall within the last hour, so within an hour of the last line.
+
+**The host alerts** are four, one for each kind of line `cairn-host-check` (`host.sh host-check`) writes every five minutes, and only when it finds something:
+
+| Alert | The line | When |
+|---|---|---|
+| disk | `host-check: disk: the data disk (/mnt/disks/data) is NN% full, over 80%` | the data disk, or the boot disk (`/var/lib/docker`), is more than 80 percent full (`df`) |
+| memory | `host-check: memory: the container NAME was killed for memory` | Docker reported an `oom` event for a container since the last run: it reached its limit (`container_limits`) |
+| restarts | `host-check: restarts: systemd restarted UNIT N times since the last check` | systemd restarted `cairn`, `caddy` or `litestream` three times or more since the last run (its `NRestarts`, which starts again at boot) |
+| certificate | `host-check: certificate: Caddy logged N errors obtaining or renewing a certificate since the last check` | Caddy's log since the last run holds a line at level `error` from its `tls.obtain` or `tls.renew` logger |
+
+The line goes into the log of the first container that runs, `litestream`, else `cairn`, else `caddy`, as the replica check's does, so the filters name the log, the instance and the line's start but no container. With none of the three running the line reaches the journal only, the run fails (`sudo journalctl -u cairn-host-check`), and the uptime alert is the one that fires. Each alert sends at most one email an hour while its lines go on, and closes the incident 30 minutes after the last one, without an email. No line starts with `Error:` or `replica: current, `, so neither replica alert reads them. Caddy renews a certificate 30 days before it expires and tries again after a failure, so the certificate alert comes weeks before the certificate stops working.
 
 ### When the replica alert fires
 
@@ -588,9 +676,26 @@ The compaction alert says that cairn logged `cairn.access: compact not finished:
    The deploy job tags each image it copies `sha-COMMIT`, with the commit it was built from. In a checkout of the repository, `git merge-base --is-ancestor f14b49b COMMIT && echo has-the-fix` says whether that commit holds the fix. An image pushed by hand carries whatever tag its pusher gave it.
 4. **What to do.** An image without the fix: deploy one from `main` ([Deploy](#deploy)); the lines then come once a day at most. An image with the fix and a restart loop: fix what restarts cairn; each start tries one compaction while one is due. Either way the incident closes by itself within an hour of the last line. To finish the compaction itself, and remove what the deleted workspace left in the log file, run the next runbook.
 
+### When a host alert fires
+
+The email names the kind; the line says what and where. To read the lines, from your machine:
+
+```bash
+gcloud logging read 'logName:cos_containers AND jsonPayload.message:"host-check: "' --freshness=1d --limit=30 --format='value(timestamp,jsonPayload.message)'
+```
+
+- **disk**: on the VM, `sudo df -h /mnt/disks/data /var/lib/docker`. The boot disk holds the images: `sudo docker image ls` and `sudo docker image prune -af --filter until=72h` (what a promotion runs, keeping the running image and the one before it). The data disk holds the database: compact after a deletion ([After a workspace is deleted](#after-a-workspace-is-deleted)), or grow it (`data_disk_size_gb`, then `tofu apply`; the file system grows at the next boot).
+- **memory**: `sudo journalctl -u cairn -u caddy -u litestream --since -1h`. One kill is a request or a source larger than the limit; raise that container's `memory_mb` in `container_limits` (the three must fit the machine: `machine_type`), `tofu apply`, and restart the VM. Kills that come back are a leak or a load the machine is too small for.
+- **restarts**: `sudo systemctl status cairn caddy litestream --no-pager` and `sudo journalctl -u UNIT -n 50 --no-pager` say why the unit exits. A cairn that exits on start after a deploy: roll back ([Rollback](#rollback)).
+- **certificate**: `sudo docker logs --since 1h caddy 2>&1 | grep '"logger":"tls'`. Most often the domain's DNS no longer points at the VM's address, or port 80 or 443 is not reachable from outside; fix that and Caddy tries again by itself.
+
+The alert closes by itself 30 minutes after the last line.
+
 ### After a workspace is deleted
 
-Beside Litestream a compaction rewrites the database but never truncates the write-ahead log, so what a deleted workspace left in the log file stays there until later writes reach it: 5 to more than 8 minutes on a laptop, with no bound found ([docs/compaction-beside-a-replica.md](../../docs/compaction-beside-a-replica.md)). `host.sh compact` finishes it by stopping Litestream for the seconds a compaction takes. Nothing runs it by itself.
+Beside Litestream a compaction rewrites the database but never truncates the write-ahead log, so what a deleted workspace left in the log file stays there until later writes reach it: 5 to more than 8 minutes on a laptop, with no bound found ([docs/compaction-beside-a-replica.md](../../docs/compaction-beside-a-replica.md)). `host.sh compact` finishes it by stopping Litestream for the seconds a compaction takes.
+
+**Every night.** `cairn-compact` (a timer, at 03:00 UTC, an hour before the daily snapshot of the data disk) runs `host.sh compact-if-due`. It reads the compaction record (`store.compact_due`) and runs `host.sh compact` when, and only when, a deletion waits for a compaction; otherwise it logs `compact: nightly: no deletion waits for a compaction; nothing to do`. After a compaction it logs one line of sizes, `compact: nightly: database N -> N bytes, write-ahead log N -> N bytes` (`sudo journalctl -u cairn-compact`). When it fails, or cannot read the record, it writes `Error: compact: the nightly compaction failed: ...` with the step that failed into the `litestream` container's log, where the replica alert reads it ([Alerts](#alerts)); Litestream is started again as by hand. So a deletion leaves the log file within a day without a person. The steps below are for a deletion whose data must leave the disk now.
 
 **When.** After a workspace is deleted, once the compaction alert has fired or cairn has logged `compact not finished` ([When a compaction keeps not finishing](#when-a-compaction-keeps-not-finishing), step 1): the truncating step did not happen. Beside Litestream that is every deletion, so it is worth running after any deletion whose data must leave the disk now, and not only after the alert. On the VM:
 
@@ -630,18 +735,18 @@ List prices for `europe-west1`, read on 2026-11-10 from Google's pricing pages (
 | Item | Scales with | Price |
 |---|---|---|
 | VM, `e2-small` | fixed | $13.45 a month |
-| Boot disk, 10 GB `pd-balanced` | fixed | $1.00 a month |
+| Boot disk, 20 GB `pd-balanced` | fixed | $2.00 a month |
 | Data disk, 20 GB `pd-balanced` | disk size | $2.00 a month |
 | Static IPv4 address | fixed | $3.65 a month |
-| Replica bucket: storage and write requests | database size, write rate; everything Litestream deletes is billed for 30 more days (soft delete) | $1.40 a month for 5 GiB and about 260,000 writes at a 10 s sync interval |
+| Replica bucket: storage and write requests | database size, write rate; everything Litestream deletes is billed for 7 more days (soft delete) | $1.40 a month for 5 GiB and about 260,000 writes at a 10 s sync interval |
 | Network egress | traffic | $0.60 a month for 5 GiB |
 | Disk snapshots, 14 daily | changed blocks | not priced yet |
-| Artifact Registry storage | images pushed (no cleanup policy is set) | not priced yet |
+| Artifact Registry storage | images pushed (older than 14 days deleted, except the newest 50 versions and what the deploy tag names) | not priced yet |
 | Secret Manager: one secret, its versions, one read per boot | versions kept | not priced yet |
-| Cloud Logging and Monitoring: container logs, one uptime check, four alert policies (one of them log-based, two on log-based metrics), two log-based metrics | log volume | not priced yet beyond the free allowance |
+| Cloud Logging and Monitoring: container logs, one uptime check, eight alert policies (five of them log-based, two on log-based metrics), two log-based metrics | log volume | not priced yet beyond the free allowance |
 | Domain and DNS | outside Google Cloud | not priced yet |
 
-The priced rows come to about $22 a month.
+The priced rows come to about $23 a month.
 
 The replica alert reads log lines that already arrive, so it adds no log volume. Google's pricing examples count a log-based alerting policy as one metric reference at $0.35 a month, with no charge for points returned, because it returns none ([example 7](https://cloud.google.com/stackdriver/observability-pricing-examples), read on 2026-11-15; the pricing page, not the example, is what bills).
 
@@ -649,7 +754,9 @@ The replica check and the silence alert are not priced yet: on 2026-11-16 neithe
 
 The compaction alert is not priced either. It adds no log line (it counts lines cairn already writes, one a day at most while a deletion waits), one log-based metric with one time series that gets a point when such a line arrives, and one alert condition on it.
 
-The replica bucket's price was read when the bucket kept 30 days of old object versions and Litestream kept seven days of snapshots; the bucket now keeps 30 days of soft-deleted files and Litestream keeps eight days, which is the same order of storage but not the same number.
+The four host alerts are log-based alerting policies too: by the same example, $1.40 a month together. `host-check` adds a log line only when it finds something, none on a healthy host.
+
+The replica bucket's price was read when the bucket kept 30 days of old object versions and Litestream kept seven days of snapshots; the bucket now keeps 7 days of soft-deleted files and Litestream keeps eight days, which is less storage, by a number not measured.
 
 ## What was checked, and what was not
 
@@ -681,7 +788,7 @@ Checked on 2026-11-10, without a cloud project, OpenTofu or a running Docker dae
 - The replica it had written, copied from the bucket and restored on another machine with the pinned Litestream image, passed `scripts/restore_drill.py --db-file` (6 of 6 checks) and opened in cairn's store. The database held no note at that point. Later the same day, after a person had signed in through Google and an agent connected by URL had written a note, the replica was restored the same way and the drill found the note (`--min-notes 1`).
 - The brand's three settings reached `serve`: the sign-in page showed the name and served the logo.
 
-It did not show: the metadata block seen from inside a container, a rollback, a restore on the VM, a restart of Docker, the alert's email, or the deploy job from GitHub Actions (the image was pushed by hand, as [Deploy](#deploy) describes). The replica alert was added after that run and applied on 2026-11-15: one resource added, nothing else changed. Seen on the real project that day: its filter matched no entry of the last 24 hours, and the same filter with `INFO` in place of `ERROR` selected Litestream's own lines, so the log's name, the instance, the container's name and the regular expression read as the rehearsal assumed. Its email has not been seen. The replica check and the silence alert came after that and have not been applied: no current line has reached Cloud Logging, the metric has counted nothing, and the silence alert has never fired or sent an email. The compaction alert came after that and has not been applied: its metric has counted nothing and it has never fired.
+It did not show: the metadata block seen from inside a container, a rollback, a restore on the VM, a restart of Docker, the alert's email, or the deploy job from GitHub Actions (the image was pushed by hand, as [Deploy](#deploy) describes). The replica alert was added after that run and applied on 2026-11-15: one resource added, nothing else changed. Seen on the real project that day: its filter matched no entry of the last 24 hours, and the same filter with `INFO` in place of `ERROR` selected Litestream's own lines, so the log's name, the instance, the container's name and the regular expression read as the rehearsal assumed. Its email has not been seen. The replica check and the silence alert came after that and have not been applied: no current line has reached Cloud Logging, the metric has counted nothing, and the silence alert has never fired or sent an email. The compaction alert came after that and has not been applied: its metric has counted nothing and it has never fired. The audit configuration, the log bucket's retention and the other settings of [Audit, keys and network](#audit-keys-and-network) came after that too, two resources more, and have not been applied. The host alerts came after that too, one resource more (one block, four policies), and have not been applied.
 
 Not checked, most likely to be wrong first:
 
@@ -698,3 +805,6 @@ Not checked, most likely to be wrong first:
 11. The replica alert on Google Cloud: that the `Error:` line of a Litestream that exits at start reaches Cloud Logging, and its email. On the real project its filter has matched entries only with `INFO` in place of `ERROR`: no error line has occurred there.
 12. The replica check on Google Cloud: that a line written into the container's `/proc/1/fd/1` reaches Cloud Logging under the container's name on Container-Optimized OS, as Litestream's own lines do; `ltx` listing a bucket from the check's container, and what that costs; the log-based metric counting the lines; the absence condition firing after 20 minutes and closing when a line returns, and its email. The check judges by file times and the replica's timestamps, which come from the same clock; it trusts that Litestream makes a file within ten seconds of a write while it copies (seen on a laptop, not on the VM).
 13. The compaction alert on Google Cloud: that cairn's line reaches Cloud Logging as one entry with the line in `jsonPayload.message`, as Litestream's do; the metric counting it; what a log-based counter reports for an hour with no matching line, and so whether the incident closes as written; the alert firing on the third line, and its email. The `gcloud artifacts docker images list` command of the runbook has not been run.
+14. The host check on Google Cloud: that Docker on Container-Optimized OS (cgroup v2) reports an `oom` event when a container reaches its memory limit; `docker events --since` still holding five minutes of events; `NRestarts` counting `Restart=always` restarts as written; `df` on `/var/lib/docker` naming the boot disk's stateful partition; that a line written into Caddy's `/proc/1/fd/1` is accepted (Caddy's binary carries a file capability, which may make its process not dumpable); the four filters on real entries, and their emails. Caddy's error line was written here from its documented JSON form (`"level":"error"`, `"logger":"tls.renew"`), not seen.
+15. The `litestream` container waiting inside for the database (`sh` as its process 1 until cairn's first start), and the silence alert arming on the first `replica: current, no database yet` line: read in Google's documentation, not seen.
+16. The nightly compaction (`cairn-compact`) on the VM: it runs `host.sh compact`, which has not been run there either ([After a workspace is deleted](#after-a-workspace-is-deleted)).

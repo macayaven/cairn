@@ -7,6 +7,7 @@ import importlib.util
 import re
 from pathlib import Path
 
+import deploy_standins
 import pytest
 import yaml
 from deploy_standins import EXTRA_ARGS, IMAGE, NEW, PUBLIC_URL, SUBNET, Standins
@@ -197,12 +198,32 @@ def test_the_tfvars_example_shows_the_plans_file_commented_out():
 # --- host.sh run-cairn, with and without a plans file ---------------------------------------
 
 
+# config.env as cloud-init writes it carries cairn's limits (container_limits); run-cairn does
+# not start without them. Made-up values, appended to every stand-in host made here.
+CAIRN_LIMITS = 'CAIRN_MEMORY_MB="900"\nCAIRN_PIDS_LIMIT="400"\n'
+
+
+@pytest.fixture(autouse=True)
+def _cairn_limits(monkeypatch):
+    made = deploy_standins.HostReport.__init__
+
+    def with_limits(self, standins):
+        made(self, standins)
+        config = self.root / "config.env"
+        config.write_text(config.read_text(encoding="utf-8") + CAIRN_LIMITS, encoding="utf-8")
+
+    monkeypatch.setattr(deploy_standins.HostReport, "__init__", with_limits)
+
+
 def docker_run(host, mount: tuple[str, ...] = (), option: tuple[str, ...] = ()) -> list[str]:
     """What cmd_run_cairn gives `docker run`, as it did before plans files existed, with the
-    plans file's mount and option where they go."""
+    plans file's mount and option where they go, and the flags and limits of
+    tests/unit/test_host_hardening_unit.py."""
     return [
         "run", "--rm", "--name", "cairn", "--network", "cairn",
         "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+        "--memory", "900m", "--memory-swap", "900m", "--pids-limit", "400",
         "--env-file", "/run/cairn/cairn.env",
         "-v", f"{host.data}/cairn:/data", *mount,
         f"{IMAGE}@{NEW}", "serve", "--db", "/data/cairn.db", "--host", "0.0.0.0",

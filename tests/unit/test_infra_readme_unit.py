@@ -1119,3 +1119,24 @@ def test_the_host_alerts_price_is_four_log_based_policies_at_the_examples_price(
     assert count == 4
     assert "$0.35 a month" in GUIDE
     assert f"${count * 0.35:.2f} a month together" in GUIDE
+
+
+def test_the_logs_section_says_how_to_keep_a_copy_of_the_audit_log_nobody_can_change():
+    """The audit log in the database is rewritten by a forget and pruned past --audit-keep;
+    "## Logs" says where its unchangeable copy comes from, by the logger's real name and the
+    real option, and that keeping it is the operator's step (no definition here makes it)."""
+    from cairn.store.audit import AUDIT_LOGGER
+    from cairn.web import cli
+
+    logs = GUIDE[GUIDE.index("\n## Logs\n") : GUIDE.index("\n## Alerts\n")]
+    said = " ".join(logs.split())
+    assert (
+        "The audit log has a copy the server cannot change: each stored event is one JSON line"
+        f" from the logger `{AUDIT_LOGGER}` in the container's output. Route those lines with a"
+        " Cloud Logging sink to a Cloud Storage bucket with a locked retention policy (Bucket"
+        " Lock), so that nobody, the server included, can edit or delete them before the"
+        " retention ends. The log in the database is rewritten when a note is forgotten or a"
+        " project deleted, and pruned past `--audit-keep`." in said
+    )
+    parsed = cli._parser().parse_args(["serve", "--db", "x.db", "--audit-keep", "12"])
+    assert parsed.audit_keep == 12

@@ -40,13 +40,14 @@ Who
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import secrets
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -106,18 +107,29 @@ class TokenUnusable(Exception):
 
 
 class Sealer:
-    """AES-GCM under one 32-byte key. `seal` gives base64url of the nonce and the sealed text;
-    `open` gives the text back, or None when it does not open (another key, other associated
-    data, a value changed or not one of these)."""
+    """AES-GCM under one 32-byte key, the current one, and any earlier keys beside it
+    (`previous`, from <VARIABLE>_PREVIOUS: `previous_keys`). `seal` gives base64url of the nonce
+    and the sealed text, always under the current key; `open` gives the text back, or None
+    when it does not open (no key given, other associated data, a value changed or not one of
+    these). A value names no key: `open` tries the current key, then each earlier one in the
+    order given, so a copy of the database tells no one which key sealed which value, and a
+    value sealed before earlier keys could be given opens as any other. `current`: whether the
+    current key opens a value (what `reseal` leaves as it is)."""
 
-    __slots__ = ("_aead",)
+    __slots__ = ("_aead", "_previous")
 
-    def __init__(self, key: bytes) -> None:
+    def __init__(self, key: bytes, previous: Sequence[bytes] = ()) -> None:
         if not isinstance(key, bytes) or len(key) != KEY_BYTES:
             raise ValueError(f"the sealing key is {KEY_BYTES} bytes")
+        for earlier in previous:
+            if not isinstance(earlier, bytes) or len(earlier) != KEY_BYTES:
+                raise ValueError(f"an earlier sealing key is {KEY_BYTES} bytes")
+            if hmac.compare_digest(earlier, key):
+                raise ValueError("an earlier sealing key is the current one")
         self._aead = AESGCM(key)
+        self._previous = tuple(AESGCM(earlier) for earlier in previous)
 
-    def __repr__(self) -> str:  # never the key
+    def __repr__(self) -> str:  # never a key
         return "Sealer()"
 
     def seal(self, plain: str, associated: bytes) -> str:
@@ -126,19 +138,30 @@ class Sealer:
         return base64.urlsafe_b64encode(nonce + sealed).decode("ascii")
 
     def open(self, sealed: object, associated: bytes) -> str | None:
-        if not isinstance(sealed, str):
-            return None
-        try:
-            raw = base64.urlsafe_b64decode(sealed.encode("ascii"))
-        except (binascii.Error, ValueError, UnicodeError):
-            return None
-        if len(raw) <= NONCE_BYTES + 16:
-            return None
-        try:
-            plain = self._aead.decrypt(raw[:NONCE_BYTES], raw[NONCE_BYTES:], associated)
-        except InvalidTag:
-            return None
-        return plain.decode("utf-8")
+        for aead in (self._aead, *self._previous):
+            plain = _opened(aead, sealed, associated)
+            if plain is not None:
+                return plain
+        return None
+
+    def current(self, sealed: object, associated: bytes) -> bool:
+        return _opened(self._aead, sealed, associated) is not None
+
+
+def _opened(aead: AESGCM, sealed: object, associated: bytes) -> str | None:
+    if not isinstance(sealed, str):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(sealed.encode("ascii"))
+    except (binascii.Error, ValueError, UnicodeError):
+        return None
+    if len(raw) <= NONCE_BYTES + 16:
+        return None
+    try:
+        plain = aead.decrypt(raw[:NONCE_BYTES], raw[NONCE_BYTES:], associated)
+    except InvalidTag:
+        return None
+    return plain.decode("utf-8")
 
 
 def associated(account_id: str, credential: str, owner: str | None) -> bytes:

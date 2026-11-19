@@ -375,6 +375,8 @@ Everything but `token_env` and `repo` is optional: `items` (`["pulls", "issues",
 
 **The secret.** The config names the environment variable that holds the secret (`secret_env`), never the secret itself. The server sends the secret only as the request's Bearer, and only to the connector's `url`, which is `https`, or `http` only to `127.0.0.1` or `localhost`.
 
+For a self-hosted tool on this machine or your network, set `CAIRN_SOURCE_PRIVATE_ADDRESSES=allow` in the server's environment.
+
 **Off until switched on.** A connector source is added off, and reads only what happens from its switch-on on: an item dated before then is not written. For a connector source that names no project yet, the Sources page proposes a project named like the source itself.
 
 **Its notes and the model.** cairn cannot know whose words a connector brings, so a page that holds its notes is not sent to the model the operator connects to arrange pages unless the operator allows it, as for the Google sources ([Sources the server reads](#sources-the-server-reads)).

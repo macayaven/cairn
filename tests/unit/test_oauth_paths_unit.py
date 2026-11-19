@@ -7,9 +7,6 @@ test_oauth_unit); the store tests that need a waiting write hold the database's 
 from a second connection.
 """
 
-import sqlite3
-import threading
-import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
@@ -39,6 +36,7 @@ from test_oauth_unit import (
 import cairn.store
 from cairn import oauth
 from cairn.store import Store
+from wait_helpers import while_database_locked
 
 MAX_BODY = 64 * 1024
 CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
@@ -510,25 +508,6 @@ def test_the_wrong_method_is_405(world):
 # Expiry is judged when the write happens: the store's other OAuth writes
 
 
-def while_the_database_is_locked(db, call, then):
-    """Start `call` on a thread while another connection holds the write lock, run `then`
-    half a second into its wait, release the lock, and return what `call` returned."""
-    blocker = sqlite3.connect(db, isolation_level=None)
-    result: list[object] = []
-    try:
-        blocker.execute("BEGIN IMMEDIATE")
-        thread = threading.Thread(target=lambda: result.append(call()))
-        thread.start()
-        time.sleep(0.5)
-        then()
-        blocker.execute("COMMIT")
-        thread.join(timeout=30)
-    finally:
-        blocker.close()
-    assert len(result) == 1, "the call did not return"
-    return result[0]
-
-
 @pytest.fixture
 def late(tmp_path):
     """A store whose clock the test moves forward: (store, view of an account, shift)."""
@@ -543,8 +522,9 @@ def late(tmp_path):
 def test_a_code_made_while_its_write_waits_lasts_two_minutes_from_the_write(tmp_path, late):
     store, view, shift = late
     client = store.register_client("agent", [REDIRECT])
-    code = while_the_database_is_locked(
+    code = while_database_locked(
         tmp_path / "cairn.db",
+        store,
         lambda: view.create_code(client.id, REDIRECT, CHALLENGE, audience=RESOURCE),
         lambda: shift.__setitem__(0, timedelta(minutes=10)),
     )
@@ -558,8 +538,9 @@ def test_a_token_that_expires_while_its_revocation_waits_is_not_revoked(tmp_path
     client = store.register_client("agent", [REDIRECT])
     code = view.create_code(client.id, REDIRECT, CHALLENGE, audience=RESOURCE)
     pair = store.redeem_code(code, client.id, audience=RESOURCE)
-    revoked = while_the_database_is_locked(
+    revoked = while_database_locked(
         tmp_path / "cairn.db",
+        store,
         lambda: store.revoke_token(pair.access_token, client.id),
         lambda: shift.__setitem__(0, timedelta(hours=2)),  # an access token lives an hour
     )
@@ -569,8 +550,9 @@ def test_a_token_that_expires_while_its_revocation_waits_is_not_revoked(tmp_path
 
 def test_a_client_registered_while_its_write_waits_is_stamped_at_the_write(tmp_path, late):
     store, _, shift = late
-    client = while_the_database_is_locked(
+    client = while_database_locked(
         tmp_path / "cairn.db",
+        store,
         lambda: store.register_client("agent", [REDIRECT]),
         lambda: shift.__setitem__(0, timedelta(days=3)),
     )

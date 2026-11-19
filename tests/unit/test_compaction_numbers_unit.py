@@ -18,6 +18,7 @@ from cairn.server import create_app
 from cairn.store import SCHEMA_VERSION, Store
 from cairn.store.base import COMPACT_DUE, COMPACTED_AT, DEFAULT_ACCOUNT_ID, REWRITTEN
 from cairn.web import cli, stats
+from cookie_names import session_cookie
 
 START = datetime(2099, 10, 1, 9, 0, tzinfo=UTC)
 Usage = namedtuple("Usage", "total used free")
@@ -173,7 +174,7 @@ def test_no_page_a_signed_in_person_reaches_shows_the_record(tmp_path):
         store.delete_project(theirs.id)
         deleted_at = store.compaction_state().deleted_at
         assert deleted_at is not None
-        cookie = {"cookie": f"__Host-cairn_session={signed.token}"}
+        cookie = {"cookie": f"{session_cookie('https')}={signed.token}"}
         pages = (
             "/", "/b/north", "/b/north/notes", "/workspace", "/keys", "/agents", "/sets",
             "/members", "/audit", "/usage", "/sources", "/account", "/setup", "/search?q=pier",

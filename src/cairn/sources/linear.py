@@ -180,12 +180,13 @@ from cairn.sources import (
     SourceError,
     SourceKind,
     fit,
-    holds_secret,
     names,
 )
 from cairn.sources import url as source_url
+from cairn.sources.config import check_projects
+from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
-from cairn.store.memory import FIELD_MAX, is_project_name
+from cairn.store.memory import FIELD_MAX
 
 DEFAULT_BASE_URL = "https://api.linear.app/graphql"
 VIA = LABEL = "linear"
@@ -266,7 +267,12 @@ def check_config(config: object) -> dict[str, Any]:
             "key_env names an environment variable (capitals, digits and _, at most 128),"
             " which holds the Linear API key: the key itself never goes in a config"
         )
-    checked: dict[str, Any] = {"key_env": key_env, "projects": _check_projects(config)}
+    checked: dict[str, Any] = {
+        "key_env": key_env,
+        "projects": check_projects(
+            config.get("projects", []), kind="linear", looks_like=_looks_like_a_credential
+        ),
+    }
     checked["base_url"] = _check_base_url(config.get("base_url", DEFAULT_BASE_URL))
     teams, linear_project = config.get("teams"), config.get("linear_project")
     if teams is not None and linear_project is not None:
@@ -289,20 +295,6 @@ def check_config(config: object) -> dict[str, Any]:
     checked["lookback_days"] = _whole(config, "lookback_days", LOOKBACK_DAYS)
     checked["backfill_days"] = _whole(config, "backfill_days", BACKFILL_DAYS)
     return checked
-
-
-def _check_projects(config: Mapping[str, Any]) -> list[str]:
-    projects = config.get("projects", [])
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError("projects names at most one project: a linear source writes into one")
-    for project in projects:
-        if isinstance(project, str) and _looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
 
 
 def _check_teams(teams: object) -> list[str]:
@@ -956,7 +948,11 @@ def said_by_linear(errors: list[Any], secrets: tuple[str, ...]) -> str:
         if not isinstance(message, str):
             continue
         line = _one_line(message)[:MESSAGE_MAX]
-        if not line or holds_secret(message, secrets) or names.holds_an_address(message):
+        if (
+            not line
+            or names.holds_an_address(message)
+            or not safe_error_text(message, secrets, looks_like=_looks_like_a_credential)
+        ):
             return ""
         return f': Linear said "{line}"'
     return ""
@@ -1165,11 +1161,16 @@ class LinearSource:
                 ) as response,
             ):
                 status = response.status_code
-                raw = await (_bounded(response, op) if status == 200 else _error_body(response))
+                most = MAX_RESPONSE_BYTES if status == 200 else MAX_ERROR_BYTES
+                raw = await read_bounded(response, most)
+                if status == 200 and raw is None:
+                    raise _TooLarge(
+                        f"Linear's answer to {op} is larger than this server reads ({most} bytes)"
+                    )
         except TimeoutError:
             raise _Spent("its deadline, which an answer still arriving passed") from None
         except httpx.HTTPError as error:
-            raise SourceError(f"cannot reach Linear for {op}: {type(error).__name__}") from None
+            raise SourceError(request_failure(error, f"cannot reach Linear for {op}")) from None
         errors = _errors_of(raw)
         kinds = _kinds(errors)
         if status in (401, 403) or kinds & AUTH_ERRORS:
@@ -1237,29 +1238,3 @@ def _connection(holder: dict[str, Any], name: str) -> tuple[list[Any], str | Non
     if more and (not isinstance(after, str) or not after):
         raise _Shape(f"its {name}' next page")
     return nodes, after if more else None
-
-
-async def _bounded(response: httpx.Response, op: str) -> bytes:
-    """A 200's body, at most MAX_RESPONSE_BYTES; _TooLarge past it."""
-    declared = response.headers.get("content-length", "")
-    too_large = _TooLarge(
-        f"Linear's answer to {op} is larger than this server reads ({MAX_RESPONSE_BYTES} bytes)"
-    )
-    if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
-        raise too_large
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) > MAX_RESPONSE_BYTES:
-            raise too_large
-    return bytes(body)
-
-
-async def _error_body(response: httpx.Response) -> bytes | None:
-    """An error's body, read only for its codes and message: None past MAX_ERROR_BYTES."""
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) > MAX_ERROR_BYTES:
-            return None
-    return bytes(body)

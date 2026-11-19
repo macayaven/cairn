@@ -20,6 +20,7 @@ from cairn.identity import OIDC, GitHub
 from cairn.server import SignIn, create_app
 from cairn.store import Store
 from cairn.web.signin import PROVIDER_CALLS, SIGN_INS, Continuations
+from cookie_names import session_cookie, signin_cookie
 
 BASE = "https://cairn.example.test"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -173,7 +174,7 @@ def test_callbacks_without_a_code_settle_nothing_and_call_no_provider(store, fak
         async with at("198.18.0.1") as client:
             started = await client.get("/auth/github")
         state = query(started.headers["location"])["state"]
-        cookie = {"cookie": f"__Host-cairn_signin={started.cookies['__Host-cairn_signin']}"}
+        cookie = {"cookie": f"{signin_cookie('https')}={started.cookies[signin_cookie('https')]}"}
         each = SIGN_INS - 5  # under the per-address limit, from 400 addresses: 10,000 calls
         for n in range(10_000 // each):
             async with at(f"198.18.{1 + n // 200}.{1 + n % 200}") as client:
@@ -186,7 +187,7 @@ def test_callbacks_without_a_code_settle_nothing_and_call_no_provider(store, fak
         async with at("198.18.9.9") as client:
             page = await client.get(f"/auth/github/callback?state={state}", headers=cookie)
         assert 'role="alert"' in page.text and "<h1>" in page.text  # the sign-in page, with why
-        cleared = next(c for c in page.headers.get_list("set-cookie") if "cairn_signin=" in c)
+        cleared = next(c for c in page.headers.get_list("set-cookie") if f"{signin_cookie()}=" in c)
         assert "max-age=0" in cleared.lower() or "expires=" in cleared.lower()
 
     asyncio.run(flood())
@@ -295,7 +296,7 @@ def test_a_signed_out_share_comes_back_with_its_text_after_a_provider_sign_in(st
     target = re.search(r'url=([^"]+)"', done.text).group(1).replace("&amp;", "&")
     assert target == f"/welcome?next={quote(SHARED, safe='')}"  # a new person: welcome first
     # (with no project yet the composer offers a new project instead: M1's rule)
-    account = store.resolve_session(client.cookies["__Host-cairn_session"]).account_id
+    account = store.resolve_session(client.cookies[session_cookie("https")]).account_id
     store.for_account(account).create_project("inbox")
     welcome = client.get(target).text
     onward = re.search(r"continue there", welcome) and re.search(r'href="(/new\?[^"]*)"', welcome)
@@ -334,7 +335,7 @@ def test_a_signed_out_share_comes_back_after_a_key_login(tmp_path):
 def test_a_way_back_too_long_for_the_state_cookie_is_held_whole_on_the_server(client, tmp_path):
     long_share = "/new?text=" + "x" * 3000
     started = client.get(f"/auth/github?next={quote(long_share, safe='')}", follow_redirects=False)
-    cookie = next(c for c in started.headers.get_list("set-cookie") if "cairn_signin=" in c)
+    cookie = next(c for c in started.headers.get_list("set-cookie") if f"{signin_cookie()}=" in c)
     assert len(cookie) < 1500  # the cookie carries a handle, not the way back
     state = query(started.headers["location"])["state"]
     done = client.get(f"/auth/github/callback?code=c&state={state}", follow_redirects=False)
@@ -541,7 +542,7 @@ def test_a_provider_replaced_under_the_same_name_cannot_take_over_its_people(sto
     replaced = OIDC("sso", "SSO", new, "acme-id", "acme-secret")
     with TestClient(app_with(store, second, providers=(replaced,)), base_url=BASE) as client:
         r = oidc_sign_in(client, second)
-        assert r.status_code == 403 and "cairn_session" not in client.cookies
+        assert r.status_code == 403 and session_cookie() not in client.cookies
         assert "provider" in r.text and "operator" in r.text
     assert dump(tmp_path / "cairn.db") == before
 

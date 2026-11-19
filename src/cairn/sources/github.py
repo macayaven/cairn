@@ -190,13 +190,14 @@ from cairn.sources import (
     SourceError,
     SourceKind,
     fit,
-    holds_secret,
     names,
 )
 from cairn.sources import url as source_url
+from cairn.sources.config import check_projects
 from cairn.sources.fit import cut, fenced  # noqa: F401 (the cuts this kind makes, by name)
+from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
-from cairn.store.memory import FIELD_MAX, is_project_name
+from cairn.store.memory import FIELD_MAX
 from cairn.store.usage import PASSAGE_KINDS, path_bytes  # noqa: F401 (named in its guide)
 
 DEFAULT_BASE_URL = "https://api.github.com"
@@ -266,7 +267,9 @@ def check_config(config: object) -> dict[str, Any]:
     checked: dict[str, Any] = {
         "token_env": _check_token_env(config),
         "repo": _check_repo(config),
-        "projects": _check_projects(config),
+        "projects": check_projects(
+            config.get("projects", []), kind="github", looks_like=_looks_like_a_credential
+        ),
         "items": _check_items(config),
     }
     comments = config.get("comments", True)
@@ -321,20 +324,6 @@ def _check_repo(config: Mapping[str, Any]) -> str:
             "repo is owner/name, as in github.com/owner/name: no address, no .git, nothing more"
         )
     return repo
-
-
-def _check_projects(config: Mapping[str, Any]) -> list[str]:
-    projects = config.get("projects", [])
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError("projects names at most one project: a github source writes into one")
-    for project in projects:
-        if isinstance(project, str) and _looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
 
 
 def _check_items(config: Mapping[str, Any]) -> list[str]:
@@ -1006,22 +995,9 @@ def shown_message(message: object, secrets: tuple[str, ...]) -> str | None:
     message = message.strip()
     if not message or len(message) > MESSAGE_MAX or any(c in message for c in "\r\n"):
         return None
-    if holds_secret(message, secrets) or _looks_like_a_credential(message):
+    if not safe_error_text(message, secrets, looks_like=_looks_like_a_credential):
         return None
     return message
-
-
-async def _bounded(response: httpx.Response, most: int) -> bytes | None:
-    """The body, or None past `most` bytes."""
-    declared = response.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > most:
-        return None
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) > most:
-            return None
-    return bytes(body)
 
 
 def _limited(status: int, headers: httpx.Headers) -> bool:
@@ -1491,7 +1467,7 @@ class GitHubSource:
             ):
                 status = response.status_code
                 if status == 200:
-                    body = await _bounded(response, MAX_RESPONSE_BYTES)
+                    body = await read_bounded(response, MAX_RESPONSE_BYTES)
                     if body is None:
                         raise SourceError(
                             f"GitHub's answer to {self._what(endpoint, number)} is larger than"
@@ -1506,12 +1482,12 @@ class GitHubSource:
                     return Reply(200, parsed, _next_page(response.headers.get("link")))
                 if _limited(status, response.headers):
                     raise _Stopped(limited=True)
-                error = await _bounded(response, MAX_ERROR_BYTES)
+                error = await read_bounded(response, MAX_ERROR_BYTES)
         except TimeoutError:
             raise _Stopped(limited=False) from None
         except httpx.HTTPError as failed:
             raise SourceError(
-                f"cannot reach GitHub for {self._what(endpoint, number)}: {type(failed).__name__}"
+                request_failure(failed, f"cannot reach GitHub for {self._what(endpoint, number)}")
             ) from None
         message = None
         try:

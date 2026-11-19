@@ -15,6 +15,7 @@ from cairn.compiler import compile_note
 from cairn.gate import lint_gate
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.example.test/pool-graph"
@@ -49,7 +50,7 @@ def world(tmp_path):
             ada=ada,
             alpha=alpha,
             beta=beta,
-            cookie={"cookie": f"__Host-cairn_session={signed.token}"},
+            cookie={"cookie": f"{session_cookie('https')}={signed.token}"},
         )
     store.close()
 

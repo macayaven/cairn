@@ -100,6 +100,7 @@ from cairn.gate import lint_gate
 from cairn.llm import Reply
 from cairn.server import create_app
 from cairn.store import SCHEMA_VERSION, Limits, Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.example.test/pool-m4"
@@ -269,7 +270,7 @@ class World:
         return SimpleNamespace(
             id=signed.user.id,
             name=name,
-            cookie={"cookie": f"__Host-cairn_session={signed.token}"},
+            cookie={"cookie": f"{session_cookie('https')}={signed.token}"},
             view=self.store.for_account(signed.account_id, signed.user.id),
         )
 

@@ -145,6 +145,7 @@ from typing import Any
 import httpx
 
 from cairn.sources import Clock, NoteDraft, Pulled, Skip, SourceError, SourceKind, fit, names
+from cairn.sources.config import check_projects
 from cairn.sources.google_api import (
     EMAIL,
     ENV_NAME,
@@ -168,7 +169,6 @@ from cairn.sources.google_auth import (
     load_credential,
 )
 from cairn.sources.timing import limit
-from cairn.store.memory import is_project_name
 
 DEFAULT_BASE_URL = "https://meet.googleapis.com/v2"
 SCOPE = "https://www.googleapis.com/auth/meetings.space.readonly"
@@ -306,7 +306,9 @@ def check_config(config: object) -> dict[str, Any]:
                 "subject is one email address: the person whose meetings a service account reads"
             )
         checked["subject"] = subject
-    checked["projects"] = _check_projects(config)
+    checked["projects"] = check_projects(
+        config.get("projects", []), kind="google_meet", looks_like=_looks_like_a_credential
+    )
     checked["base_url"] = _check_base_url(config.get("base_url", DEFAULT_BASE_URL))
     default, least, most = WAIT_HOURS
     hours = config.get("wait_hours", default)
@@ -332,20 +334,6 @@ def _check_code(value: object) -> str:
         if len(code) <= CODE_MAX and CODE.fullmatch(code):
             return code
     raise ValueError(CODE_REFUSED)
-
-
-def _check_projects(config: Mapping[str, Any]) -> list[str]:
-    projects = config.get("projects", [])
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError("projects names at most one project: a google_meet source writes into one")
-    for project in projects:
-        if isinstance(project, str) and _looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
 
 
 def _check_base_url(value: object) -> str:

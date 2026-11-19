@@ -53,6 +53,7 @@ from cairn.store import (
     ranking,
 )
 from cairn.web.stats import STATS_LOGGER
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
@@ -485,9 +486,9 @@ def test_the_session_cookie_is_secure_only_behind_https(store, public_url, secur
 
 def test_logout_ends_the_session_on_the_server(env):
     r = env.client.post("/login", data={"key": env.key}, follow_redirects=False)
-    token = r.cookies["cairn_session"]
+    token = r.cookies[session_cookie()]
     env.client.post("/logout", follow_redirects=False)
-    env.client.cookies.set("cairn_session", token)
+    env.client.cookies.set(session_cookie(), token)
     assert env.client.get("/", follow_redirects=False).status_code == 303
 
 
@@ -924,7 +925,7 @@ def test_setup_shows_placeholders_until_a_public_url_is_set(store):
     key = store.create_key("test")
     with serve(store) as client:
         token = client.post("/login", data={"key": key}, follow_redirects=False).cookies[
-            "cairn_session"
+            session_cookie()
         ]
         text = client.get("/setup").text
     assert "https://&lt;your-host&gt;/mcp" in text

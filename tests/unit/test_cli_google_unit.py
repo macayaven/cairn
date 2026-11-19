@@ -587,6 +587,7 @@ class Dripper:
             for byte in self.data:
                 self.sock.sendall(bytes([byte]))
                 self.sent += 1
+                # The real TCP peer drips a bounded byte stream to exercise the read deadline.
                 time.sleep(self.every)
         except OSError:
             pass  # the listener cut it
@@ -1189,6 +1190,7 @@ def test_the_whole_exchange_is_bounded_and_running_out_of_time_is_said_in_words(
 
     async def drip():
         for _ in range(100):
+            # The endpoint must send some bytes before the total deadline expires.
             await asyncio.sleep(0.05)
             yield b" "
 

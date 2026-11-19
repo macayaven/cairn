@@ -258,6 +258,7 @@ from cairn.sources.runner import (
     source_client,
     sync_all,
 )
+from cairn.sources.url import private_addresses_allowed
 from cairn.store import JOINS, CannotOpen, SchemaTooNew, SourceInfo, Store, UnknownSchema
 from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
@@ -2018,6 +2019,15 @@ def _history_at_start(store: Store, plans: Plans | None, keep: int | None) -> st
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command in (
+        "serve", "source-add", "source-sync", "source-preview", "credential-add",
+        connector_check.COMMAND, cli_google.COMMAND,
+    ):  # fmt: skip
+        try:
+            private_addresses_allowed(os.environ)
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 2
     if args.command == "serve":
         docs = (args.docs_artifact, args.docs_release, args.docs_reader_env)
         if any(value is not None for value in docs):

@@ -13,6 +13,7 @@ from cairn.server import create_app
 from cairn.store import Store
 from cairn.web.brand import Brand
 from cairn.web.templating import _page
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -192,7 +193,7 @@ def team(tmp_path):
 
 
 def as_(team, who: str) -> dict[str, str]:
-    return {"cookie": f"cairn_session={team.sessions[who]}"}
+    return {"cookie": f"{session_cookie()}={team.sessions[who]}"}
 
 
 def endings(team) -> list[dict]:

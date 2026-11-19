@@ -17,6 +17,7 @@ from cairn.identity import OIDC, GitHub, Google
 from cairn.server import SignIn, create_app
 from cairn.store import Store
 from cairn.web.signin import NO_SECOND_FACTOR
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.fable.example/pool-1"
@@ -83,7 +84,7 @@ def rows(store, table: str) -> int:
 
 
 def session_cookies(response) -> list[str]:
-    return [c for c in response.headers.get_list("set-cookie") if "cairn_session=" in c]
+    return [c for c in response.headers.get_list("set-cookie") if f"{session_cookie()}=" in c]
 
 
 @pytest.mark.parametrize(

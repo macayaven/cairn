@@ -40,6 +40,10 @@ services:
   data-init:
     <<: *cairn-image
     restart: "no"
+    # The hosted limits floor is enough to initialize the volume.
+    mem_limit: ${CAIRN_DATA_INIT_MEMORY_MB:-64}m
+    memswap_limit: ${CAIRN_DATA_INIT_MEMORY_MB:-64}m
+    pids_limit: ${CAIRN_DATA_INIT_PIDS_LIMIT:-32}
     entrypoint: ["python", "-c", "pass"]
     volumes:
       - cairn-data:/data
@@ -53,6 +57,10 @@ services:
   litestream-restore:
     image: litestream/litestream:0.5.18@sha256:513bff62a88fc0c86c73d27333c41c54c89fe890a7c32a551600adff9309b11b
     restart: "no"
+    # The hosted replica defaults give the restore room to unpack its snapshot.
+    mem_limit: ${LITESTREAM_RESTORE_MEMORY_MB:-256}m
+    memswap_limit: ${LITESTREAM_RESTORE_MEMORY_MB:-256}m
+    pids_limit: ${LITESTREAM_RESTORE_PIDS_LIMIT:-256}
     user: "10001:10001"
     command: ["restore", "-if-db-not-exists", "-if-replica-exists", "/data/cairn.db"]
     environment: &litestream-environment
@@ -73,6 +81,10 @@ services:
   litestream:
     image: litestream/litestream:0.5.18@sha256:513bff62a88fc0c86c73d27333c41c54c89fe890a7c32a551600adff9309b11b
     restart: unless-stopped
+    # Hosted defaults bound continuous replication.
+    mem_limit: ${LITESTREAM_MEMORY_MB:-256}m
+    memswap_limit: ${LITESTREAM_MEMORY_MB:-256}m
+    pids_limit: ${LITESTREAM_PIDS_LIMIT:-256}
     user: "10001:10001"
     command: ["replicate"]
     environment: *litestream-environment

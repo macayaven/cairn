@@ -14,6 +14,7 @@ from cairn.gate import lint_gate
 from cairn.memory import READ_EVENTS
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -111,7 +112,7 @@ def test_a_member_who_may_not_forget_sees_no_forget_link(store):
         )  # fmt: skip
     project = store.create_project("ops")  # the workspace's: Cy reaches it and did not make it
     add(store, project, 1)
-    cookie = {"cookie": f"__Host-cairn_session={signed.token}"}
+    cookie = {"cookie": f"{session_cookie('https')}={signed.token}"}
     with TestClient(create_app(store, public_url=BASE), base_url=BASE) as c:
         shown = c.get("/b/ops/notes", headers=cookie)
     assert shown.status_code == 200 and "Topic 1" in visible(shown.text)

@@ -17,6 +17,7 @@ from cairn.plans import Plan, Plans
 from cairn.server import create_app, main
 from cairn.store import Store
 from cairn.web.ratelimit import RateLimiter
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -208,10 +209,10 @@ def test_an_owner_sees_the_usage_page_and_a_member_does_not(env):
     ]  # fmt: skip
     owner, member = signed
     assert env.store.for_account(member.account_id, member.user.id).role() == "member"
-    env.client.cookies.set("cairn_session", owner.token)
+    env.client.cookies.set(session_cookie(), owner.token)
     page = env.client.get("/usage")
     assert page.status_code == 200 and "Tiny" in page.text
-    env.client.cookies.set("cairn_session", member.token)
+    env.client.cookies.set(session_cookie(), member.token)
     assert env.client.get("/usage").status_code == 403
 
 

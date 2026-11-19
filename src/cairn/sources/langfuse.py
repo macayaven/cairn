@@ -151,8 +151,9 @@ from cairn.sources import (
     holds_secret,
 )
 from cairn.sources import url as source_url
+from cairn.sources.config import check_projects
+from cairn.sources.http_policy import read_bounded, request_failure
 from cairn.sources.timing import limit
-from cairn.store.memory import is_project_name
 
 SCORES_PATH = "/api/public/v3/scores"
 OBSERVATIONS_PATH = "/api/public/v2/observations"
@@ -238,15 +239,7 @@ def check_config(config: object) -> dict[str, Any]:
         if key not in config:
             raise ValueError(f"a langfuse source needs {key}")
     checked: dict[str, Any] = {"base_url": _check_base_url(config["base_url"])}
-    projects = config["projects"]
-    if not isinstance(projects, list | tuple) or not projects:
-        raise ValueError("projects lists the names of the projects the source may write to")
-    kept: dict[str, str] = {}
-    for project in projects:
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds project names (not ids)")
-        kept.setdefault(project.casefold(), project)
-    checked["projects"] = list(kept.values())
+    checked["projects"] = check_projects(config["projects"], kind="langfuse", many=True)
     for key in ("public_key_env", "secret_key_env"):
         if not isinstance(config[key], str) or not ENV_NAME.fullmatch(config[key]):
             raise ValueError(
@@ -832,7 +825,7 @@ class LangfuseSource:
                 ):
                     status = response.status_code
                     if status == 200:
-                        body = await _bounded(response, path, self._late)
+                        body = await _read_answer(response, path, self._late)
                         self._bytes += len(body)
                         return _parsed(body, path)
                     wait = _retry_after(response.headers.get("retry-after"))
@@ -840,7 +833,7 @@ class LangfuseSource:
                 raise _Spent("its deadline, which an answer still arriving passed") from None
             except httpx.HTTPError as error:
                 raise SourceError(
-                    f"cannot reach Langfuse for GET {path}: {type(error).__name__}"
+                    request_failure(error, f"cannot reach Langfuse for GET {path}")
                 ) from None
             if status == 429 and attempt < RETRIES:
                 if (
@@ -854,22 +847,15 @@ class LangfuseSource:
         raise AssertionError("unreachable")  # pragma: no cover
 
 
-async def _bounded(
-    response: httpx.Response, path: str, late: Callable[[], bool] = lambda: False
-) -> bytes:
-    """The body, at most MAX_RESPONSE_BYTES; `late()` is asked after every chunk, so a body
-    that drips in cannot outlast the pull's deadline."""
-    declared = response.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
-        raise SourceError(f"Langfuse's answer to GET {path} is larger than this server reads")
-    body = bytearray()
-    async for part in response.aiter_bytes():
+async def _read_answer(response: httpx.Response, path: str, late: Callable[[], bool]) -> bytes:
+    def check_deadline() -> None:
         if late():
             raise _Spent("its deadline, which an answer still arriving passed")
-        body += part
-        if len(body) > MAX_RESPONSE_BYTES:
-            raise SourceError(f"Langfuse's answer to GET {path} is larger than this server reads")
-    return bytes(body)
+
+    body = await read_bounded(response, MAX_RESPONSE_BYTES, check_deadline=check_deadline)
+    if body is None:
+        raise SourceError(f"Langfuse's answer to GET {path} is larger than this server reads")
+    return body
 
 
 def _parsed(body: bytes, path: str) -> dict[str, Any]:

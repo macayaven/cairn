@@ -41,6 +41,8 @@ from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
 from pydantic import AnyUrl
 
 from cairn.store import SCHEMA_VERSION, Store
+from cookie_names import session_cookie
+from wait_helpers import poll_until, poll_until_async
 
 REDIRECT = "http://127.0.0.1:33418/callback"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -87,16 +89,21 @@ class Server:
             [*command, *self.options], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1", **self.env},
         )  # fmt: skip
-        deadline = time.monotonic() + 30  # a hang guard on the real process, nothing else
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                raise AssertionError(f"the server stopped at once:\n{self.process.stdout.read()}")
+
+        def ready():
+            assert self.process.poll() is None, "the server stopped before listening"
             try:
                 with socket.create_connection(("127.0.0.1", self.port), timeout=0.2):
-                    return self
+                    return True
             except OSError:
-                time.sleep(0.1)
-        raise AssertionError("the server did not start listening within 30 s")
+                return False
+
+        try:
+            poll_until(ready, "the server did not start listening", 30, every=0.1)
+        except BaseException:
+            self.stop()
+            raise
+        return self
 
     def stop(self) -> str:
         if self.process is not None:
@@ -708,7 +715,7 @@ def test_a_team_signs_in_through_its_identity_provider(tmp_path):
             back = await anyone.get(to_provider.headers["location"])
             turned_away = await anyone.get(back.headers["location"])
             assert turned_away.status_code == 403 and "email domains" in turned_away.text
-            assert "cairn_session" not in anyone.cookies
+            assert session_cookie() not in anyone.cookies
             assert (await anyone.get("/keys")).status_code == 303
 
             # Signing out ends the session.
@@ -1038,7 +1045,11 @@ class Langfuse:
 def test_an_operator_syncs_traces_marked_in_langfuse(install):
     server, key = install
     langfuse = Langfuse()
-    env = {"CAIRN_TEST_LF_PUBLIC": langfuse.PUBLIC, "CAIRN_TEST_LF_SECRET": langfuse.SECRET}
+    env = {
+        "CAIRN_TEST_LF_PUBLIC": langfuse.PUBLIC,
+        "CAIRN_TEST_LF_SECRET": langfuse.SECRET,
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
+    }
     config = {
         "base_url": langfuse.url,
         "projects": ["payments-api"],
@@ -1111,10 +1122,10 @@ def test_an_operator_syncs_traces_marked_in_langfuse(install):
         # page with the same "Why it was kept" line, and the default tidy would fold it in
         # the background; this test is about the sync, not the tidy.
         restarted = Server(server.db, "--sync-every", "1", "--no-tidy", env=env).start()
-        deadline = time.monotonic() + 30  # a hang guard on the real process, nothing else
-        while not (found := asyncio.run(recall(restarted.url, "payouts manual review"))):
-            assert time.monotonic() < deadline, "the background sync wrote nothing in 30 s"
-            time.sleep(0.2)
+        found = poll_until(
+            lambda: asyncio.run(recall(restarted.url, "payouts manual review")),
+            "the background sync wrote nothing", 30, every=0.2,
+        )  # fmt: skip
         assert found[0]["project"] == "payments-api"
     finally:
         output = server.stop() + (restarted.stop() if restarted else "")
@@ -1310,10 +1321,12 @@ def test_a_model_arranges_a_page_and_writes_none_of_it(tmp_path):
                 assert wrote.status_code == 201 and wrote.json()["status"] == "saved", wrote.text
             page_path = "/api/projects/ops/pages/drift-sync"
             before = (await person.get(page_path, headers=headers, params={"version": 2})).json()
-            deadline = time.monotonic() + 30  # a hang guard on the real process, nothing else
-            while (latest := (await person.get(page_path, headers=headers)).json())["version"] < 3:
-                assert time.monotonic() < deadline, "no arranged version in 30 s"
-                await asyncio.sleep(0.2)
+
+            async def arranged():
+                latest = (await person.get(page_path, headers=headers)).json()
+                return latest if latest["version"] >= 3 else None
+
+            latest = await until("no arranged version", arranged)
             assert latest["version"] == 3
             texts = [claim["text"] for claim in latest["claims"]]
             answer = [claim["text"] for claim in before["claims"]][::-1]  # the model reverses
@@ -1380,12 +1393,12 @@ def test_serve_tidies_a_page_by_default_with_no_model(tmp_path):
                 )
                 assert wrote.status_code == 201 and wrote.json()["status"] == "saved", wrote.text
             noted = wrote.json()["version"]  # the version the second note made
-            deadline = time.monotonic() + 30  # a hang guard on the real process, nothing else
-            while (latest := (await person.get(page_path, headers=headers)).json())["metrics"].get(
-                "arranged_by"
-            ) != "cairn":
-                assert time.monotonic() < deadline, "no version arranged by cairn in 30 s"
-                await asyncio.sleep(0.1)
+
+            async def arranged():
+                latest = (await person.get(page_path, headers=headers)).json()
+                return latest if latest["metrics"].get("arranged_by") == "cairn" else None
+
+            latest = await until("no version arranged by cairn", arranged)
             assert latest["version"] == noted + 1
             texts = [claim["text"] for claim in latest["claims"]]
             assert texts.count(repeated) == 1  # folded
@@ -1464,7 +1477,7 @@ def test_a_private_pre_release_admits_the_listed_and_the_operator_sets_the_plan(
             refused = await other.get(back.headers["location"])
             assert refused.status_code == 403, refused.text
             assert "oscar@example.test" not in refused.text.lower()
-            assert "cairn_session" not in other.cookies
+            assert session_cookie() not in other.cookies
 
             # The listed person signs in and gets a workspace of their own, on the free plan.
             assert await sign_in(person, idp, ada) == "/welcome"
@@ -1685,6 +1698,7 @@ class Granola:
         self.failures = 0
         self.released = threading.Event()
         self.released.set()
+        self._requests = threading.Condition()
         stand_in = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -1700,7 +1714,9 @@ class Granola:
                 self.wfile.write(raw)
 
             def do_GET(self) -> None:
-                stand_in.heard.append((time.monotonic(), self.path))
+                with stand_in._requests:
+                    stand_in.heard.append((time.monotonic(), self.path))
+                    stand_in._requests.notify_all()
                 stand_in.asked.append(self.path)
                 if self.headers.get("authorization") != f"Bearer {stand_in.KEY}":
                     stand_in.refused += 1
@@ -1776,6 +1792,10 @@ class Granola:
         heard = list(self.heard)
         return [at for at, path in heard if urlsplit(path).path == "/v1/notes" and at > after]
 
+    def wait_for_listing(self, after: float, seconds: float) -> bool:
+        with self._requests:
+            return bool(self._requests.wait_for(lambda: self.listings(after), timeout=seconds))
+
     def fail_once(self) -> None:
         self.failures = 1
 
@@ -1801,6 +1821,7 @@ def test_a_teams_meetings_arrive_by_themselves_and_are_shared_with_a_list(tmp_pa
         "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
         "CAIRN_OIDC_CLIENT_SECRET": idp.CLIENT_SECRET,
         "CAIRN_OIDC_LABEL": "Acme SSO",
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
         key_env: granola.KEY,  # the server's environment holds the key, never cairn
     }
     options = ("--sign-in", "oidc", "--join", "default", "--allowed-email-domain", "example.test")
@@ -1821,7 +1842,12 @@ def test_a_teams_meetings_arrive_by_themselves_and_are_shared_with_a_list(tmp_pa
 
     def run(*args: str) -> subprocess.CompletedProcess:
         """The operator's command, with the key in its environment as the server has it."""
-        done = cairn(*args, "--db", str(db), env={key_env: granola.KEY})
+        done = cairn(
+            *args,
+            "--db",
+            str(db),
+            env={key_env: granola.KEY, "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow"},
+        )
         printed.extend((done.stdout, done.stderr))
         return done
 
@@ -2223,6 +2249,7 @@ def test_a_companys_calendar_is_read_by_the_server_signed_in_as_a_service_accoun
         "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
         "CAIRN_OIDC_CLIENT_SECRET": idp.CLIENT_SECRET,
         "CAIRN_OIDC_LABEL": "Acme SSO",
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
         credential_env: google.credential(),
     }
     options = ("--sign-in", "oidc", "--join", "default", "--allowed-email-domain", "example.test")
@@ -2243,7 +2270,12 @@ def test_a_companys_calendar_is_read_by_the_server_signed_in_as_a_service_accoun
 
     def run(*args: str) -> subprocess.CompletedProcess:
         """The operator's command, with the credential in its environment."""
-        done = cairn(*args, "--db", str(db), env={credential_env: google.credential()})
+        done = cairn(
+            *args,
+            "--db",
+            str(db),
+            env={credential_env: google.credential(), "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow"},
+        )
         printed.extend((done.stdout, done.stderr))
         return done
 
@@ -2427,17 +2459,7 @@ def last_run(section: str) -> datetime | None:
 
 
 async def until(what: str, check, seconds: float = 30.0):
-    """`check()` awaited every tenth of a second until it gives something true, which is
-    returned; AssertionError naming `what` once `seconds` have passed without: a hang guard
-    on the real process and nothing else, so it is generous."""
-    deadline = time.monotonic() + seconds
-    while True:
-        found = await check()
-        if found:
-            return found
-        if time.monotonic() > deadline:
-            raise AssertionError(f"{what}: not within {seconds:g} s")
-        await asyncio.sleep(0.1)
+    return await poll_until_async(check, what, seconds, every=0.1)
 
 
 def test_meetings_arrive_by_themselves_while_the_server_runs(tmp_path):
@@ -2456,6 +2478,7 @@ def test_meetings_arrive_by_themselves_while_the_server_runs(tmp_path):
         "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
         "CAIRN_OIDC_CLIENT_SECRET": idp.CLIENT_SECRET,
         "CAIRN_OIDC_LABEL": "Acme SSO",
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
         key_env: granola.KEY,  # only the server's environment holds the key: it syncs
     }
     every = 1.0  # seconds between two passes' starts: the least --sync-every takes
@@ -2473,11 +2496,8 @@ def test_meetings_arrive_by_themselves_while_the_server_runs(tmp_path):
     made_ids: dict[str, str] = {}
 
     async def quiet(seconds: float, after: float) -> None:
-        """Watch for `seconds`, a tenth at a time, failing at once if Granola is listed."""
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            assert granola.listings(after) == [], "Granola was listed while the source was off"
-            await asyncio.sleep(0.1)
+        listed = await asyncio.to_thread(granola.wait_for_listing, after, seconds)
+        assert not listed, "Granola was listed while the source was off"
 
     async def journey() -> None:
         async with httpx2.AsyncClient(base_url=url, timeout=30) as owner:
@@ -2720,7 +2740,10 @@ def test_an_install_under_its_own_name_shows_only_the_sign_in_and_remembers_it(t
 
             # The person signs in; the session cookie has its neutral name and lasts 30 days.
             assert await sign_in(person, idp, ada) == "/welcome"
-            assert "cairn_session" not in person.cookies and "session" in person.cookies
+            assert (
+                session_cookie() not in person.cookies
+                and session_cookie(branded=True) in person.cookies
+            )
             (kept,) = [c for c in person.cookies.jar if c.name == "session"]
             assert 29 * 86_400 < kept.expires - time.time() <= 30 * 86_400  # not 12 hours
             welcome = await person.get("/welcome")
@@ -2739,7 +2762,7 @@ def test_an_install_under_its_own_name_shows_only_the_sign_in_and_remembers_it(t
 
             slug, storage = await connect_by_url(url, person, "", "ada-laptop", agent)
             secrets_seen.extend([storage.tokens.access_token, storage.tokens.refresh_token])
-            secrets_seen.append(person.cookies["session"])
+            secrets_seen.append(person.cookies[session_cookie(branded=True)])
 
             # The server starts again on the same database.
             server.stop()

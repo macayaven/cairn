@@ -46,6 +46,7 @@ from cairn.sources.runner import (
 from cairn.store import Store
 from cairn.store.hosted import RECONNECT, UNOPENED
 from cairn.web.google_connect import read_switch
+from wait_helpers import wait_for_event
 
 BASE = "https://cairn.example.test"
 CLIENT_ID = "g2-web-client.apps.example.test"
@@ -1292,26 +1293,35 @@ def test_a_failure_outside_the_pass_is_logged_and_the_loop_goes_on(world, monkey
     assert "ada@" not in caplog.text
 
 
-def test_a_drop_wakes_the_loop(world):
+def test_a_drop_wakes_the_loop(world, monkeypatch):
     _ada, _bob, bob_id, _name, token = bob_connected_in_adas_workspace(world)
     custody = world.store.google_custody
     make = lambda: source_client(httpx.MockTransport(world.google.handler))  # noqa: E731
 
+    ready, revoked = asyncio.Event(), asyncio.Event()
+    drain = gc.drain
+
     async def never(seconds):
+        ready.set()
         await asyncio.Event().wait()
 
+    async def observed(*args):
+        await drain(*args)
+        if world.google.revoked and not waiting(world):
+            revoked.set()
+
+    monkeypatch.setattr(gc, "drain", observed)
     revoker = gc.Revoker(world.store, custody, make, wait=never)
 
     async def go():
         looping = asyncio.create_task(revoker.loop())
-        while custody.waiting.wake is None:
-            await asyncio.sleep(0)
-        view = world.store.for_account(*owned(world, ADA))
-        await asyncio.to_thread(view.remove_member, bob_id)
-        async with asyncio.timeout(5):
-            while waiting(world) or not world.google.revoked:
-                await asyncio.sleep(0.01)
-        await revoker.stopped(looping)
+        try:
+            await wait_for_event(ready, "revocation loop did not start waiting")
+            view = world.store.for_account(*owned(world, ADA))
+            await asyncio.to_thread(view.remove_member, bob_id)
+            await wait_for_event(revoked, "dropping the member did not wake revocation")
+        finally:
+            await revoker.stopped(looping)
 
     asyncio.run(go())
     assert world.google.revoked == [token]

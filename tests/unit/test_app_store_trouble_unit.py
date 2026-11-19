@@ -15,6 +15,7 @@ from cairn.identity import GitHub
 from cairn.memory import OUT_OF_SERVICE, UNWRITABLE
 from cairn.server import SignIn, create_app
 from cairn.store import CannotWrite, Store, StoreUnusable
+from cookie_names import session_cookie
 
 BASE = "https://kb.example.test"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -163,7 +164,7 @@ def test_an_unusable_store_behind_the_wall_tells_a_visitor_nothing_more(store, m
         raise StoreUnusable()
 
     monkeypatch.setattr(store, "identify_session", unusable)
-    browser.cookies.set("__Host-cairn_session", "made-up-token")
+    browser.cookies.set(session_cookie("https"), "made-up-token")
     r = browser.get("/projects", follow_redirects=False)
     assert (r.status_code, r.text) == (503, "Service Unavailable")
 

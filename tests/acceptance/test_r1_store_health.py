@@ -37,7 +37,6 @@ import sqlite3
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -48,6 +47,7 @@ from starlette.testclient import TestClient
 from cairn.identity import GitHub
 from cairn.server import SignIn, create_app, main
 from cairn.store import SCHEMA_VERSION, Store
+from wait_helpers import poll_until
 
 BASE = "http://127.0.0.1:8765"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
@@ -432,14 +432,12 @@ class Running:
             return None
 
     def up(self) -> "Running":
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                raise AssertionError(f"serve stopped at once: {self.process.stdout.read()!r}")
-            if self.healthz() == 200:
-                return self
-            time.sleep(0.1)
-        raise AssertionError("serve did not answer /healthz within 60 s")
+        def ready():
+            assert self.process.poll() is None, "serve stopped before /healthz was ready"
+            return self.healthz() == 200
+
+        poll_until(ready, "serve did not answer /healthz", 60, every=0.1)
+        return self
 
     def stop(self, sig: int = signal.SIGTERM) -> None:
         if self.process.poll() is None:

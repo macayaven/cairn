@@ -113,6 +113,7 @@ from cairn.slack import dispatch
 from cairn.store import Claim, Store
 from cairn.web import slack as web_slack
 from cairn.web.slack import KEY_VARIABLE, Keeper, Slack
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 KEY = bytes(range(32))
@@ -352,7 +353,7 @@ def test_off_none_of_the_addresses_exists(off):
 
 
 def test_off_the_sources_page_shows_nothing_about_slack(off):
-    page = off.client.get("/sources", headers={"cookie": f"cairn_session={off.ada.token}"})
+    page = off.client.get("/sources", headers={"cookie": f"{session_cookie()}={off.ada.token}"})
     assert page.status_code == 200 and "slack" not in page.text.lower()
 
 
@@ -360,7 +361,7 @@ def test_off_no_request_reads_the_slack_tables(off):
     asked: list[str] = []
     off.store._observe(trace=asked.append)
     try:
-        cookie = {"cookie": f"cairn_session={off.ada.token}"}
+        cookie = {"cookie": f"{session_cookie()}={off.ada.token}"}
         for path in ("/sources", "/", "/b/library", "/healthz"):
             off.client.get(path, headers=cookie)
         off.post("sl_0123456789ab", "commands", command())

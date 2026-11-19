@@ -26,6 +26,7 @@ from cairn.plans import Plan, Plans, load
 from cairn.server import SignIn, create_app
 from cairn.store import AccountSummary, OverLimit, Store
 from cairn.web import cli
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 ROOT = Path(__file__).resolve().parents[2]
@@ -116,7 +117,7 @@ def _as(client: TestClient, session: str | None) -> TestClient:
     """`client` as a browser with that session, or with none."""
     client.cookies.clear()
     if session:
-        client.cookies.set("cairn_session", session)
+        client.cookies.set(session_cookie(), session)
     return client
 
 
@@ -177,7 +178,7 @@ def test_an_address_that_never_existed_answers_as_pinned(install):
 def test_no_page_links_to_a_selling_address(install):
     app, session, _, _ = install
     with TestClient(app, base_url=BASE) as client:
-        client.cookies.set("cairn_session", session)
+        client.cookies.set(session_cookie(), session)
         for path in ("/", "/workspace", "/account", "/usage", "/docs", "/docs/privacy"):
             page = client.get(path).text
             for address in ('href="/billing', 'href="/pricing', 'action="/billing'):

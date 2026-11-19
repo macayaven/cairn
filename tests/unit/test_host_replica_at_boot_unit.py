@@ -14,11 +14,12 @@ import re
 import signal
 import stat
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
 from deploy_standins import BASH, Standins
+
+from wait_helpers import poll_until
 
 REPO = Path(__file__).resolve().parents[2]
 INFRA = REPO / "infra" / "gcp"
@@ -113,7 +114,11 @@ def wait(tmp_path, host):
     stub = bin_dir / "litestream"
     stub.write_text('#!/bin/sh\necho "litestream $*"\n', encoding="utf-8")
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+    entered = tmp_path / "wait-entered"
+    sleeper = bin_dir / "sleep"
+    sleeper.write_text('#!/bin/sh\n: > "$WAIT_ENTERED"\nexec /bin/sleep "$@"\n', encoding="utf-8")
+    sleeper.chmod(sleeper.stat().st_mode | stat.S_IXUSR)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "WAIT_ENTERED": str(entered)}
 
     def start() -> subprocess.Popen:
         return subprocess.Popen(
@@ -124,27 +129,35 @@ def wait(tmp_path, host):
             text=True,
         )
 
-    return start, tmp_path / "data" / "cairn.db"
+    return start, tmp_path / "data" / "cairn.db", entered
 
 
 def test_the_wait_runs_litestream_once_the_database_appears(wait):
-    start, db = wait
-    proc = start()
-    time.sleep(1)
-    assert proc.poll() is None  # still waiting
-    db.write_bytes(b"")
-    out, _ = proc.communicate(timeout=20)
-    assert proc.returncode == 0
+    start, db, entered = wait
+    with start() as proc:
+        try:
+            poll_until(entered.exists, "replica did not start waiting for the database")
+            assert proc.poll() is None
+            db.write_bytes(b"")
+            out, _ = proc.communicate(timeout=20)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        assert proc.returncode == 0
     assert out.splitlines() == ["litestream replicate"]
 
 
 def test_the_wait_ends_at_once_on_a_stop(wait):
-    start, _ = wait
-    proc = start()
-    time.sleep(1)
-    os.kill(proc.pid, signal.SIGTERM)
-    out, _ = proc.communicate(timeout=15)
-    assert proc.returncode == 0
+    start, _, entered = wait
+    with start() as proc:
+        try:
+            poll_until(entered.exists, "replica did not start waiting for the database")
+            os.kill(proc.pid, signal.SIGTERM)
+            out, _ = proc.communicate(timeout=15)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        assert proc.returncode == 0
     assert "litestream" not in out
 
 

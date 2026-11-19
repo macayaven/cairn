@@ -35,6 +35,10 @@ services:
   cairn:
     <<: *cairn-image
     restart: unless-stopped
+    # Hosted defaults leave room for compaction and large imports.
+    mem_limit: ${CAIRN_MEMORY_MB:-1024}m
+    memswap_limit: ${CAIRN_MEMORY_MB:-1024}m
+    pids_limit: ${CAIRN_PIDS_LIMIT:-512}
     # Arguments replace the image's default command, so the whole command is spelled out.
     # Exactly one cairn container may use the database: never scale this service.
     # After a workspace is deleted, serve compacts the database (VACUUM) at most once a day
@@ -65,6 +69,10 @@ services:
   caddy:
     image: caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0
     restart: unless-stopped
+    # Hosted defaults bound TLS and proxy work.
+    mem_limit: ${CADDY_MEMORY_MB:-256}m
+    memswap_limit: ${CADDY_MEMORY_MB:-256}m
+    pids_limit: ${CADDY_PIDS_LIMIT:-256}
     ports:
       - "80:80"
       - "443:443"

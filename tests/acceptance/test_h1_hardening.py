@@ -53,7 +53,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -73,6 +72,7 @@ from cairn.plans import Plan, Plans
 from cairn.server import create_app, main
 from cairn.store import Store
 from cairn.web import cli, ratelimit
+from wait_helpers import poll_until
 
 
 def mode(path: Path | str) -> int:
@@ -150,16 +150,15 @@ def test_serve_makes_a_private_database(tmp_path):
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )  # fmt: skip
     try:
-        deadline = time.monotonic() + 60
-        while True:
-            assert process.poll() is None, process.stdout.read()
-            assert time.monotonic() < deadline, "serve did not answer /healthz within 60 s"
+
+        def ready():
+            assert process.poll() is None, "serve exited before /healthz was ready"
             try:
-                if httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=5).status_code == 200:
-                    break
+                return httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=5).status_code == 200
             except httpx.HTTPError:
-                pass
-            time.sleep(0.1)
+                return False
+
+        poll_until(ready, "serve did not answer /healthz", 60, every=0.1)
         assert mode(db.parent) == 0o700 and mode(db) == 0o600
         assert mode(f"{db}-wal") == 0o600 and mode(f"{db}-shm") == 0o600
     finally:

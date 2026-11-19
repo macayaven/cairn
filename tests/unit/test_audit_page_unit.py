@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 import cairn
 from cairn.server import create_app
 from cairn.store import Claim, Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 ISSUER = "https://github.com"
@@ -31,7 +32,7 @@ def person(store, n: int, name: str) -> SimpleNamespace:
     return SimpleNamespace(
         id=signed.user.id,
         view=store.for_account(signed.account_id, signed.user.id),
-        cookie={"cookie": f"cairn_session={signed.token}"},
+        cookie={"cookie": f"{session_cookie()}={signed.token}"},
     )
 
 

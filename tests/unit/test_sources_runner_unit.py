@@ -37,6 +37,7 @@ from cairn.sources import (
 )
 from cairn.store import SOURCE_CLAIM_TTL, Store
 from cairn.store.usage import Limits
+from wait_helpers import next_loop_turn
 
 NOTE = "# Retries\n\nQuill retries a failed charge 3 times.\n"
 
@@ -397,8 +398,7 @@ def test_a_stopped_run_lets_the_note_it_is_writing_finish_first(store):
         )  # fmt: skip
         assert await asyncio.to_thread(entered.wait, 10)
         task.cancel()
-        for _ in range(5):
-            await asyncio.sleep(0)  # yields only: the loop turns, no time passes
+        await next_loop_turn()  # the running task observes cancellation before release
         held = not task.done()
         release.set()
         with pytest.raises(asyncio.CancelledError):
@@ -468,8 +468,7 @@ def test_a_run_stopped_while_claiming_does_not_keep_the_claim(store, monkeypatch
         )
         assert await asyncio.to_thread(entered.wait, 10)
         task.cancel()
-        for _ in range(5):
-            await asyncio.sleep(0)  # yields only
+        await next_loop_turn()  # the running task observes cancellation before release
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await task

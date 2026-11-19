@@ -22,6 +22,7 @@ import pytest
 
 from cairn.sources import run_source
 from cairn.store import Store
+from cookie_names import session_cookie
 
 ISSUER = "https://id.example.test/pool-r3"
 NOW = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
@@ -763,7 +764,7 @@ def test_the_sources_page_says_why_a_pair_made_before_wrote_nothing(world, made_
     )
     base = "http://127.0.0.1:8765"
     with TestClient(create_app(world.store, public_url=base), base_url=base) as client:
-        page = client.get("/sources", headers={"cookie": f"cairn_session={signed.token}"})
+        page = client.get("/sources", headers={"cookie": f"{session_cookie()}={signed.token}"})
     assert page.status_code == 200
     assert OVERLAP_ON.format("second") in html.unescape(page.text)
 

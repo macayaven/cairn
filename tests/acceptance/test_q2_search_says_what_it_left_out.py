@@ -66,6 +66,7 @@ from starlette.testclient import TestClient
 
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
@@ -110,7 +111,7 @@ class World:
         self.client.__enter__()
         opened = self.client.post("/login", data={"key": self.key}, follow_redirects=False)
         assert opened.status_code == 303
-        self.cookie = {"cookie": f"cairn_session={opened.cookies['cairn_session']}"}
+        self.cookie = {"cookie": f"{session_cookie()}={opened.cookies[session_cookie()]}"}
         self.client.cookies.clear()
 
     def close(self) -> None:

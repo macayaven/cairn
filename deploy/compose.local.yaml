@@ -21,6 +21,10 @@ services:
     build:
       context: ..
     restart: unless-stopped
+    # Hosted defaults leave room for compaction and large imports.
+    mem_limit: ${CAIRN_MEMORY_MB:-1024}m
+    memswap_limit: ${CAIRN_MEMORY_MB:-1024}m
+    pids_limit: ${CAIRN_PIDS_LIMIT:-512}
     # The image's default command, with room for more arguments. Never scale this service.
     command: >-
       serve --db /data/cairn.db --host 0.0.0.0

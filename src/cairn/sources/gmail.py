@@ -185,6 +185,7 @@ from cairn.sources import (
     fit,
     names,
 )
+from cairn.sources.config import check_projects
 from cairn.sources.google_api import (
     EMAIL,
     ENV_NAME,
@@ -209,7 +210,7 @@ from cairn.sources.google_auth import (
 from cairn.sources.markup import html_to_text
 from cairn.sources.timing import limit
 from cairn.spans import Span, chunk
-from cairn.store.memory import FIELD_MAX, is_project_name
+from cairn.store.memory import FIELD_MAX
 from cairn.store.usage import PASSAGE_KINDS, path_bytes
 
 DEFAULT_BASE_URL = "https://gmail.googleapis.com/gmail/v1"
@@ -364,7 +365,9 @@ def check_config(config: object) -> dict[str, Any]:
             " message arrived its label is still noticed"
         )
     checked["lookback_days"] = days
-    checked["projects"] = _check_projects(config.get("projects", []))
+    checked["projects"] = check_projects(
+        config.get("projects", []), kind="gmail", looks_like=looks_like_a_credential
+    )
     checked["base_url"] = check_base_url(config.get("base_url", DEFAULT_BASE_URL), API)
     return checked
 
@@ -413,21 +416,6 @@ def _check_label(label: object) -> str:
             " label of your own in Gmail and name it here"
         )
     return label
-
-
-def _check_projects(projects: object) -> list[str]:
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError(
-            f"projects names at most one project: a {KIND_NAME} source writes into one"
-        )
-    for project in projects:
-        if isinstance(project, str) and looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
 
 
 def describe(config: Mapping[str, Any]) -> str:

@@ -235,8 +235,9 @@ the memory use cases)
   shown). A source that cannot be read answers `read` False and why; one whose credential
   variable is unset fails in `open`, before any request.
 - `source_client(transport=None, resolve=None)` is the HTTP client sources read through: a
-  30 s timeout, redirects never followed, and no request to an address inside this
-  machine's network plumbing, written out or resolved (cairn.sources.url). Making one
+  30 s timeout and redirects never followed. Each connection uses a checked IP. A
+  non-global address needs CAIRN_SOURCE_PRIVATE_ADDRESSES=allow, and link-local and
+  metadata addresses are always refused (cairn.sources.url). Making one
   holds the "httpx" and "httpcore" loggers at WARNING or above, so no caller's log gets
   httpx's request lines, which carry the query string, or httpcore's DEBUG trace of a
   response's headers, where a provider may echo a credential.

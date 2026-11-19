@@ -108,6 +108,7 @@ from cairn.server import create_app, main
 from cairn.sources import KINDS, NoteDraft, Pulled, SourceKind, SyncReport, run_source, sync_all
 from cairn.store import DEFAULT_ACCOUNT_ID, Store
 from cairn.store.sources import NOT_A_SOURCE_MANAGER
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -248,7 +249,7 @@ def person(world, name: str, role: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         id=signed.user.id,
         name=name,
-        cookie={"cookie": f"cairn_session={signed.token}"},
+        cookie={"cookie": f"{session_cookie()}={signed.token}"},
         view=view.acting_as("session", name, signed.user.id),
     )
 

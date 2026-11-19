@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from cairn.slack.client import API, REPLY_HOSTS, SlackClient, SlackError
+from wait_helpers import wait_for_event
 
 TOKEN = "xoxb-made-up-for-this-test"
 
@@ -107,7 +108,7 @@ def test_within_a_limit_nothing_is_waited_for_and_a_slow_slack_is_a_timeout():
     assert refused.value.code == "rate_limited" and slept == []
 
     async def slow(request):
-        await asyncio.sleep(0.2)
+        await wait_for_event(asyncio.Event(), "the client did not cancel its request")
         return httpx.Response(200, json={"ok": True, "user": {"id": "U0ADA"}})
 
     with pytest.raises(SlackError) as late:

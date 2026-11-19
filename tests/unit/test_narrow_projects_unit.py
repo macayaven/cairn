@@ -19,6 +19,7 @@ from starlette.testclient import TestClient
 from cairn.narrowing import FILTER_FROM
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 REDIRECT = "http://127.0.0.1:33418/callback"
@@ -207,7 +208,7 @@ def test_a_consent_request_sealed_for_another_workspace_is_not_shown(many):
     )  # fmt: skip
     assert signed.account_id != many.store.account_id
     many.client.cookies.clear()
-    many.client.cookies.set("cairn_session", signed.token)
+    many.client.cookies.set(session_cookie(), signed.token)
     query = urlencode([("request", pending.request), ("filter", "quill")])
     assert many.client.get(f"/oauth/consent?{query}").status_code == 400
 

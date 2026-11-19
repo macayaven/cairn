@@ -43,7 +43,6 @@ Expiry is judged when the write happens
 
 import sqlite3
 import threading
-import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
@@ -64,6 +63,7 @@ from test_h3_oauth import (
 )
 
 from cairn.store import Store
+from wait_helpers import while_database_locked
 
 UNRESERVED_64 = "aB3-._~" + "k" * 57
 
@@ -325,25 +325,6 @@ def test_two_refreshes_of_one_token_at_once_end_the_grant(tmp_path):
 # Expiry is judged when the write happens
 
 
-def while_the_database_is_locked(db, call, then):
-    """Start `call` on a thread while another connection holds the write lock, run `then`
-    half a second into its wait, release the lock, and return what `call` returned."""
-    blocker = sqlite3.connect(db, isolation_level=None)
-    result: list[object] = []
-    try:
-        blocker.execute("BEGIN IMMEDIATE")
-        thread = threading.Thread(target=lambda: result.append(call()))
-        thread.start()
-        time.sleep(0.5)  # the call has started and is waiting for the lock
-        then()
-        blocker.execute("COMMIT")
-        thread.join(timeout=30)
-    finally:
-        blocker.close()
-    assert len(result) == 1, "the call did not return"
-    return result[0]
-
-
 def test_a_code_that_expires_while_its_redemption_waits_is_not_redeemed(tmp_path):
     async def scenario(world, transport, raw):
         _, challenge = pkce()
@@ -353,8 +334,9 @@ def test_a_code_that_expires_while_its_redemption_waits_is_not_redeemed(tmp_path
     later = [timedelta(0)]
     store = Store(tmp_path / "cairn.db", clock=lambda: datetime.now(UTC) + later[0])
     try:
-        pair = while_the_database_is_locked(
+        pair = while_database_locked(
             tmp_path / "cairn.db",
+            store,
             lambda: store.redeem_code(code, client_id, audience=RESOURCE),
             lambda: later.__setitem__(0, timedelta(minutes=10)),  # a code lives 2 minutes
         )
@@ -376,8 +358,9 @@ def test_a_refresh_token_that_expires_while_its_rotation_waits_is_not_rotated(tm
     later = [timedelta(0)]
     store = Store(tmp_path / "cairn.db", clock=lambda: datetime.now(UTC) + later[0])
     try:
-        pair = while_the_database_is_locked(
+        pair = while_database_locked(
             tmp_path / "cairn.db",
+            store,
             lambda: store.rotate_refresh_token(grant.refresh, grant.client_id, audience=RESOURCE),
             lambda: later.__setitem__(0, timedelta(days=400)),  # past any refresh token's life
         )

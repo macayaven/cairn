@@ -31,7 +31,7 @@ REDIRECT = "http://127.0.0.1:33418/callback"
 CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 ISSUER = "https://id.example.test"
 NOW = datetime(2026, 11, 10, 12, tzinfo=UTC)
-TOOLS = {"projects", "new_project", "note", "recall", "page", "evidence", "overview"}
+TOOLS = {"projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph"}
 
 
 def dump(db: Path) -> str:

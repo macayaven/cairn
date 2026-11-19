@@ -129,6 +129,15 @@ class FakeStore:
     def note_writers(self, note_ids) -> dict:
         return {i: ("unknown", None, self.notes[i].via) for i in note_ids if i in self.notes}
 
+    def note_origins(self, note_ids) -> dict:  # 8.1: note_writers', with when and no Slack
+        from cairn.store.memory import NoteOrigin
+
+        return {
+            i: NoteOrigin("unknown", None, self.notes[i].via, self.notes[i].created_at, False)
+            for i in note_ids
+            if i in self.notes
+        }
+
     def get_setting(self, name: str, default: str | None = None) -> str | None:
         return default
 
@@ -596,6 +605,7 @@ def test_read_tools_say_they_are_read_only(env):
         "overview": True,
         "note": False,
         "new_project": False,
+        "graph": True,  # 8.3
     }
     assert all(t["description"] for t in tools)
 
@@ -1344,4 +1354,5 @@ def test_no_tool_takes_the_request_context_as_an_argument(env):
             {"project", "slug", "claim_id"},
         ),
         "overview": ({"project", "limit", "after"}, {"project"}),  # Q1
+        "graph": ({"project", "limit"}, {"project"}),  # 8.3
     }

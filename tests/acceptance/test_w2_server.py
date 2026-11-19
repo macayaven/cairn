@@ -23,7 +23,7 @@ FOLLOWUP = "# Quill and Lumen runbook\n\nQuill retries 3 times before failing.\n
 SLUG = "quill-and-lumen-runbook"
 BASE = "http://127.0.0.1:8765"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
-TOOLS = {"projects", "new_project", "note", "recall", "page", "evidence", "overview"}
+TOOLS = {"projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph"}
 
 
 def dump(db: Path) -> str:

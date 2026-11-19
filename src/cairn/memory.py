@@ -1020,8 +1020,8 @@ class Memory:
     def nearest_pages(self, project: Project, name: str) -> str:
         """The sentence naming the NEAREST_SHOWN page names of `project` nearest to `name`,
         a slug or a title: those whose slug sorts at or after `name` made a slug, then the
-        project's first ones; or that the project has no pages. Bounded: at most
-        NEAREST_SHOWN page heads, in three statements."""
+        project's first ones; or that the project has no pages. Bounded: at most twice
+        NEAREST_SHOWN page heads, in four statements (Store.page_heads, twice at most)."""
         key = slugify(name)  # never empty; slugs hold [a-z0-9-], all below "\x7f"
         below = key[:-1] + chr(ord(key[-1]) - 1) + "\x7f"  # the slugs after it are key's and on
         heads, total = self.store.page_heads(project.id, NEAREST_SHOWN, below)
@@ -1029,7 +1029,7 @@ class Memory:
             return f"Project {project.name!r} has no pages yet."
         if len(heads) < NEAREST_SHOWN:
             held = {head.slug for head in heads}
-            first = self.store.first_page_heads(project.id, NEAREST_SHOWN)
+            first, _ = self.store.page_heads(project.id, NEAREST_SHOWN)
             heads += [head for head in first if head.slug not in held]
         shown = ", ".join(f"{head.slug!r} ({head.title})" for head in heads[:NEAREST_SHOWN])
         return (

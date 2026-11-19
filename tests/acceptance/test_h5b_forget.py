@@ -68,7 +68,8 @@ BASE = "https://cairn.example.test"
 ISSUER = "https://id.acme.example/pool-1"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
-TOOLS = ["projects", "new_project", "note", "recall", "page", "evidence", "overview"]
+# 8.3 added `graph`, a read: still no tool deletes or forgets
+TOOLS = ["projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph"]
 
 # Three notes on one topic and one on another. Each body has a word no other text has.
 FIRST = (

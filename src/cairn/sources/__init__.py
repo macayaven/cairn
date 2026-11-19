@@ -98,6 +98,10 @@ The seam
   `withheld_via()` is the `via` of every withheld kind in KINDS, read when called.
   The rule is applied in one place, cairn.arrange, by a note's `via`: a note a person or
   an agent stored with a withheld kind's `via` is withheld too.
+  `HELD_VIA` is the `via` of notes held back the same way that no kind writes: Slack's
+  ("slack", cairn.slack). Slack is not a kind, so it is not in KINDS or withheld_via(); the
+  arranger holds it apart, by `via` alone, and only the operator's choice that names Slack
+  (<PREFIX>_SLACK_NOTES=send) sends it.
 - Notes that name a source (M3, tests/acceptance/test_m3_notes_that_name_a_source.py). The
   sources guide's recipes have an agent read a meeting, a mail thread, a calendar, a document
   or a to-do list with a connector of its own and write a note whose `source_ref` has a form:
@@ -779,6 +783,14 @@ def withheld_via() -> frozenset[str]:
     return frozenset(kind.via for kind in KINDS.values() if kind.withheld)
 
 
+# The `via` of notes held back from a model that no kind in KINDS writes: Slack's
+# (cairn.slack.people.written, for a filed message, a note typed with the command and a direct
+# message alike). Slack is not a kind: it cannot be added, listed or switched on as a source.
+# Held by `via` alone, never by `source_ref`, and sent only when the operator names it
+# (<PREFIX>_SLACK_NOTES=send, cairn.web.cli_arrange): <PREFIX>_SOURCE_NOTES=send does not.
+HELD_VIA = frozenset({"slack"})
+
+
 # M3: the forms of `source_ref` the sources guide's recipes give an agent that reads a meeting,
 # a mail thread, a calendar, a document or a to-do list with a connector of its own: the word
 # before the first ":". The guide's table is held against this set
@@ -865,6 +877,7 @@ def near_miss(source_ref: str | None) -> str | None:
 __all__ = [
     "CHOOSING",
     "HELD_CREDENTIALS",
+    "HELD_VIA",
     "ITEM_MAX",
     "KINDS",
     "OVERLAP",

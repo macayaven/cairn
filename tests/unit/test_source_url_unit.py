@@ -286,14 +286,21 @@ def test_the_security_guide_says_where_a_source_connects():
     """In the security guide: the sources guide is at its bound (70,000 bytes)."""
     from guide_source import guide_source
 
-    sentence = (
+    sentences = (
         "- A source sends its credential only over `https`, or `http` on this machine, and"
-        " never to a link-local address, a cloud's metadata service, or a multicast,"
-        " unspecified or broadcast address, whether the address is written out or a name"
-        " leads to it; a private address and this machine itself stay allowed, since a"
-        " self-hoster's own services live there."
+        " never to an address written out that is a link-local address, a cloud's metadata"
+        " service, or a multicast, unspecified or broadcast address. Before each request that"
+        " carries a credential, a name is resolved and the request refused when any address"
+        " it resolves to is one of those. This does not protect against a name that changes"
+        " its answer between that check and the connection, which resolves the name again:"
+        " an operator who needs the guarantee blocks those addresses at the network, with an"
+        " egress rule. A private address and this machine itself stay allowed, since a"
+        " self-hoster's own services live there.",
     )
-    assert flat(sentence) in flat(guide_source("security"))
+    text = flat(guide_source("security"))
+    for sentence in sentences:
+        assert flat(sentence) in text, sentence
+    assert "whether the address is written out or a name leads to it" not in text
     assert connector.check_url("https://10.0.0.5/items") and github._check_base_url(
         "https://192.168.1.4/api/v3"
     )
@@ -312,3 +319,19 @@ def test_the_systems_resolver_gives_back_an_address_written_out():
     production, without touching DNS."""
     assert asyncio.run(u.system_resolve("127.0.0.1", 443)) == ["127.0.0.1"]
     assert "::1" in asyncio.run(u.system_resolve("::1", 443))
+
+
+def test_the_check_resolves_once_and_the_connection_is_left_to_resolve_again():
+    """What the guide admits: the hook asks the resolver once, before the request; it does
+    not hand the connection the address it checked, so a name whose second answer differs
+    is not caught here (an egress rule is the operator's guarantee)."""
+    sent, transport = recording()
+    answers = iter([["10.0.0.5"], ["169.254.169.254"]])
+
+    async def changing(host: str, port: int) -> list[str]:
+        return next(answers)
+
+    response = get(source_client(transport=transport, resolve=changing), "https://r.fable.test/")
+    assert response.status_code == 200 and len(sent) == 1
+    assert sent[0].url.host == "r.fable.test"  # the name, for the transport to resolve
+    assert next(answers) == ["169.254.169.254"]  # asked once: the second answer unused

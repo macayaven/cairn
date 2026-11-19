@@ -29,7 +29,7 @@ targetRules = ["private-key"]
 paths = ['''^tests/unit/test_guard_unit\.py$''']
 
 [[allowlists]]
-description = "Example token responses quoted from Google's public OAuth documentation"
+description = "Example token responses quoted from a vendor's public OAuth documentation"
 targetRules = ["generic-api-key"]
 paths = ['''^docs/google-auth\.md$''', '''^docs/google-oauth-installed\.md$''']
 

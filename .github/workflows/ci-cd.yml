@@ -71,7 +71,8 @@
 # which runs no build. docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
-# pinned (resolved with git ls-remote on 2026-11-10). Dependabot keeps them current.
+# pinned (resolved with git ls-remote on 2026-11-10; actions/attest read with gh api on
+# 2026-11-19). Dependabot keeps them current.
 name: cairn-ci-cd
 
 on:
@@ -889,6 +890,9 @@ jobs:
           fi
           echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - name: Attest the wheel, the source archive and SHA256SUMS
+        env:
+          # As actions/attest-build-provenance v4.2.2, its wrapper, sets it.
+          NODE_OPTIONS: "--max-http-header-size=32768"
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
@@ -896,6 +900,9 @@ jobs:
             ${{ runner.temp }}/release/*.tar.gz
             ${{ runner.temp }}/release/SHA256SUMS
       - name: Attest the image
+        env:
+          # As actions/attest-build-provenance v4.2.2, its wrapper, sets it.
+          NODE_OPTIONS: "--max-http-header-size=32768"
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.image.outputs.name }}

@@ -254,8 +254,9 @@ class AuditMethods(StoreBase):
         when None or empty: `action`, an action ("note.saved") or a family of them, the part
         before the dot ("note"); `project`, the project's name as the event names it, ignoring
         case (a deleted project's events: DELETED_PROJECT); `who`, the actor's name ignoring
-        case, or its id. A filter never widens what the viewer sees, which is decided first,
-        by the rules below, for the events, the counts and every part alike.
+        case, or its id ("system" also finds the events of no actor). A filter never widens
+        what the viewer sees, which is decided first, by the rules below, for the events, the
+        counts and every part alike.
 
         For a view acting for a person who does not reach every project (StoreBase._reach), an
         event of a project they do not reach is left out before the limit is applied (events
@@ -324,8 +325,12 @@ class AuditMethods(StoreBase):
                 seen += " AND project = ? COLLATE NOCASE"
                 params.append(project)
             if who:
-                seen += " AND (actor = ? COLLATE NOCASE OR actor_id = ?)"
-                params += [who, who]
+                # "system", as the page names an event of no actor, finds those events
+                seen += (
+                    " AND (actor = ? COLLATE NOCASE OR actor_id = ?"
+                    " OR (actor_kind = 'system' AND actor IS NULL AND lower(?) = 'system'))"
+                )
+                params += [who, who, who]
             older = " AND n < ?" if before is not None else ""
             rows = con.execute(
                 f"SELECT {_EVENT_COLUMNS}, n FROM audit_events WHERE {seen}{older}"

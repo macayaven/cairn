@@ -229,3 +229,52 @@ def test_the_line_holds_no_note_text(store, caplog):
         store.add_note(ops.id, text, title="Deploy")
     said = "\n".join(r.getMessage() for r in caplog.records if r.name == "cairn.audit")
     assert "zebrafinch" not in said
+
+
+def test_the_number_kept_holds_for_another_process_on_the_same_file(db, monkeypatch):
+    """A command-line write through its own Store, while a server keeps every event, prunes
+    nothing: the number the server was told is recorded in the file."""
+    monkeypatch.setattr(cairn.store.base, "AUDIT_KEEP", 10)
+    server = Store(db, clock=lambda: NOW)
+    try:
+        server.audit_keep = None
+        ops = server.create_project("ops")
+        for n in range(30):
+            server.record_note(ops.id, "unchanged", {"page": f"p{n}"})
+        command_line = Store(db, clock=lambda: NOW)
+        try:
+            assert command_line.audit_keep is None
+            command_line.record_note(ops.id, "unchanged", {"page": "late"})
+        finally:
+            command_line.close()
+        assert count_events(db, server.account_id) == 32
+        server.audit_keep = 12
+        later = Store(db, clock=lambda: NOW)
+        try:
+            later.record_note(ops.id, "unchanged", {"page": "later"})
+            assert count_events(db, server.account_id) <= 12
+        finally:
+            later.close()
+    finally:
+        server.close()
+
+
+def test_a_bound_view_cannot_change_how_many_events_are_kept_or_whether_reads_are(store):
+    ops = store.create_project("ops")
+    people = store.sign_in("github", "1", "p1@example.test", "Ada", issuer=ISSUER, join="default")
+    for view in (
+        store.narrow(projects=(ops.id,)),
+        store.narrow(access="read"),
+        store.for_account(people.account_id, people.user.id),
+    ):
+        with pytest.raises(PermissionError):
+            view.audit_keep = 1
+        with pytest.raises(PermissionError):
+            view.reads_audited = True
+    assert store.audit_keep == 100_000 and store.reads_audited is False
+
+
+def test_who_system_finds_the_events_of_no_actor(store):
+    store.create_project("ops")
+    store.acting_as("key", "laptop", "key_1").create_project("web")
+    assert [e.project for e in store.list_audit(who="System")] == ["ops"]

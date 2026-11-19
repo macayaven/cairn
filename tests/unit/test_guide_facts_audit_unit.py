@@ -96,7 +96,7 @@ def test_security_reads_are_events_when_the_operator_says(store):
 
 
 SECURITY_COPY = (
-    "Each event, as it is stored, is also one line on the server's output: a JSON object with"
+    "Each event the running server stores is also one line on its output: a JSON object with"
     " the same fields as the stored event, on a logger of its own, and never a note's text."
     " Keeping those lines where nobody can change them, such as a bucket locked against"
     " deletion, is the operator's set-up: the log in the database is rewritten when a note is"

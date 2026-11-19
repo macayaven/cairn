@@ -76,7 +76,13 @@ DEFAULT_ACCOUNT_ID = "acct_default"
 # oldest, a batch of AUDIT_PRUNE_BATCH at a time, so most inserts delete nothing.
 AUDIT_KEEP = 100_000
 AUDIT_PRUNE_BATCH = 1_000
-UNSET = object()  # ConnectionState.audit_keep before the server sets it
+UNSET = object()  # ConnectionState.audit_keep before it is set or read from the file
+ABSENT = object()  # ConnectionState.audit_keep when the file records no number: AUDIT_KEEP
+# The number of events the last `serve` was told to keep, a row of the default workspace's
+# settings no setting call reads or changes (as KEEP_VERSIONS): {"keep": N or null}. Every
+# connection to the file prunes by it, a command-line write's too.
+AUDIT_KEEP_ROW = "store.audit_keep"
+NOT_THE_OPERATOR = "only the server sets how the audit log is kept: a bound view cannot"
 _KEEP = "how many events a workspace keeps is a whole number, 1 or more, or None for every event"
 # The store's own record of compaction, two rows of the default workspace's settings that
 # no setting call can read or change (they are not in audit.SETTINGS): when a workspace was
@@ -135,8 +141,9 @@ class ConnectionState:
     def __init__(self) -> None:
         self.unusable = False
         self.keep_versions: int | None = None
-        # How many events each workspace keeps (StoreBase.audit_keep): UNSET for AUDIT_KEEP,
-        # read when an event is stored; None for every event.
+        # How many events each workspace keeps (StoreBase.audit_keep): UNSET until set or
+        # read from the file (AUDIT_KEEP_ROW), ABSENT when the file records none (AUDIT_KEEP,
+        # read when an event is stored); None for every event.
         self.audit_keep: int | object | None = UNSET
         # The events stored by the write under way, sent to the "cairn.audit" logger once it
         # commits and dropped if it does not (StoreBase._write).
@@ -184,27 +191,53 @@ class StoreBase:
 
     @property
     def audit_keep(self) -> int | None:
-        """How many of its newest events each workspace keeps: AUDIT_KEEP (100,000) until the
-        server sets it for every view of this connection (`serve --audit-keep`); None: every
-        event. Held in memory for this connection only. ValueError: not None or a whole
+        """How many of its newest events each workspace keeps: what the server last set for
+        the file (`serve --audit-keep`; AUDIT_KEEP_ROW, so a command-line write on the same
+        file prunes by it too), else AUDIT_KEEP (100,000); None: every event. Setting it
+        records it in the file and holds it for every view of this connection; a view bound
+        to a person or narrowed is refused (PermissionError). ValueError: not None or a whole
         number of at least 1."""
-        keep = self._state.audit_keep
-        return AUDIT_KEEP if keep is UNSET else keep  # type: ignore[return-value]
+        with self._read() as con:
+            return self._kept(con)
 
     @audit_keep.setter
     def audit_keep(self, keep: int | None) -> None:
+        if self._bound():
+            raise PermissionError(NOT_THE_OPERATOR)
         if keep is not None and (type(keep) is not int or keep < 1):
             raise ValueError(_KEEP)
+        with self._write() as con:
+            con.execute(
+                "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT (account_id, name)"
+                " DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (DEFAULT_ACCOUNT_ID, AUDIT_KEEP_ROW, json.dumps({"keep": keep}), self._stamp()),
+            )
         self._state.audit_keep = keep
+
+    def _kept(self, con: sqlite3.Connection) -> int | None:
+        """audit_keep, read on `con`: the file's record is read once per connection."""
+        keep = self._state.audit_keep
+        if keep is UNSET:
+            row = con.execute(
+                "SELECT value FROM settings WHERE account_id = ? AND name = ?",
+                (DEFAULT_ACCOUNT_ID, AUDIT_KEEP_ROW),
+            ).fetchone()
+            keep = ABSENT if row is None else json.loads(row[0]).get("keep")
+            self._state.audit_keep = keep
+        return AUDIT_KEEP if keep is ABSENT else keep  # type: ignore[return-value]
 
     @property
     def reads_audited(self) -> bool:
         """Whether a read is an event of the workspace (`serve --audit-reads`; cairn.memory),
-        for every view of this connection. False until the server says so."""
+        for every view of this connection. False until the server says so; a view bound to
+        a person or narrowed cannot change it (PermissionError)."""
         return self._state.reads_audited
 
     @reads_audited.setter
     def reads_audited(self, on: bool) -> None:
+        if self._bound():
+            raise PermissionError(NOT_THE_OPERATOR)
         if type(on) is not bool:
             raise ValueError("reads_audited is True or False")
         self._state.reads_audited = on
@@ -249,7 +282,7 @@ class StoreBase:
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (account_id, number, stamp, *actor, actor_id, action, project, stored),
         )
-        keep = self.audit_keep
+        keep = self._kept(con)
         if keep is not None and number - (oldest or number) + 1 > keep:  # one too many
             batch = min(AUDIT_PRUNE_BATCH, max(1, keep // 2))
             con.execute(

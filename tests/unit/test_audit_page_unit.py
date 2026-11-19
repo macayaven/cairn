@@ -7,6 +7,7 @@ import html
 import io
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from cairn.store import Claim, Store
 BASE = "http://127.0.0.1:8765"
 ISSUER = "https://github.com"
 CLAIM = "cl_000000000001"
+NOW = datetime(2026, 11, 2, 9, 30, tzinfo=UTC)
 
 
 def person(store, n: int, name: str) -> SimpleNamespace:
@@ -36,7 +38,7 @@ def person(store, n: int, name: str) -> SimpleNamespace:
 def build(tmp_path, **options) -> SimpleNamespace:
     folder = tmp_path / ("reads" if options.get("audit_reads") else "plain")
     folder.mkdir(exist_ok=True)
-    store = Store(folder / "cairn.db")
+    store = Store(folder / "cairn.db", clock=lambda: NOW)
     ada, brook, cy = (person(store, n, name) for n, name in enumerate(("Ada", "Brook", "Cy")))
     ada.view.set_role(brook.id, "admin")
     ops = store.create_project("ops")

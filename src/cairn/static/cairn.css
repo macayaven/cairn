@@ -395,6 +395,8 @@ p.empty-state { color: var(--ink); }
 .arranged { max-width: var(--measure); font-size: 15px; line-height: 22px; color: var(--ink-soft); }
 /* A section of a page: a heading over a 2px ink rule. */
 h2.section { margin: var(--space-8) 0 0; padding-bottom: var(--space-2); border-bottom: 2px solid var(--ink); }
+/* A section inside one (h3 to h6): a subheading, the deeper ones the same size as h3. */
+h4.section, h5.section, h6.section { font-size: 17px; line-height: 24px; font-weight: 700; margin: var(--space-6) 0 var(--space-2); overflow-wrap: anywhere; }
 
 /* The numbered margin, shared by a claim and a source */
 

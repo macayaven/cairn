@@ -413,3 +413,9 @@ def test_a_private_repository_or_one_whose_visibility_is_not_known_is_refused_fi
     assert gh.calls == []
     argv = ["v1.2.3", *files(tmp_path), "--repository-private", "false"]
     assert release_check.main(argv) == 0
+
+
+def test_the_docstring_names_the_job_that_writes_the_release_text():
+    doc = " ".join(release_check.__doc__.split())
+    assert "job `package` runs it with --notes for the text of the GitHub release." in doc
+    assert "job `release` runs it" not in doc

@@ -907,13 +907,11 @@ background, on a worker thread and never two at once, when Store.compaction_stat
 workspace was deleted since the last compaction and HOURS have passed since that one began
 (at once when there was none), and Store.empty_log alone when a rewrite already covered
 every deletion and only the write-ahead log is left (cairn.web.compactor); each run is one
-access-log line: "compact done in N ms" when it finished, "compact done (no rewrite: only
-the write-ahead log was due) in N ms", "compact not finished: another connection held the
-file in N ms" when another connection kept the rewrite from happening, with "(rewritten;
-the write-ahead log was not emptied)" or "(no rewrite: only the write-ahead log was due)"
-before " in" when only the log was held, "compact not started: the database's disk has N
-bytes free, a rewrite needs N" when there was no room, or "compact failed: <the error's
-class> in N ms".
+access-log line: "compact done in N ms" when it finished, "compact not finished: another
+connection held the file in N ms" when another connection kept it from finishing, or
+"compact failed: <the error's class> in N ms"; a rewrite whose log was held, and a run that
+only empties the log, say so in parentheses before " in", and a run without room on the
+disk says "compact not started: the database's disk has N bytes free, a rewrite needs N".
 `serve --sweep-every SECONDS` (600 by default; 0: never, otherwise at least 1; create_app's
 `sweep_every`) runs
 Store.sweep_expired in the background, at start and then every SECONDS, on a worker thread and

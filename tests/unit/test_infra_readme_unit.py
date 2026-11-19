@@ -1112,3 +1112,10 @@ def test_the_silence_alert_paragraph_says_it_arms_itself_on_a_new_vm():
     assert "within two minutes of boot" in paragraph
     timer_start = TEMPLATE.index("  - path: /etc/systemd/system/cairn-replica-check.timer\n")
     assert "OnBootSec=2min" in TEMPLATE[timer_start : TEMPLATE.index("\n  - path: ", timer_start)]
+
+
+def test_the_host_alerts_price_is_four_log_based_policies_at_the_examples_price():
+    count = len(re.findall(r'^    "(\w+)" = \{$', (INFRA / "monitoring.tf").read_text(), re.M))
+    assert count == 4
+    assert "$0.35 a month" in GUIDE
+    assert f"${count * 0.35:.2f} a month together" in GUIDE

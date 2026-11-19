@@ -1066,6 +1066,7 @@ from cairn.store.base import (
     UNUSABLE,
     CannotWrite,
     ConnectionState,
+    Readers,
     StoreUnusable,
     _transaction,
 )
@@ -1393,7 +1394,8 @@ class Store(
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
             _upgrade(self._con, self._stamp)
             if str(path) != ":memory:":
-                self._con.execute("PRAGMA journal_mode = WAL")
+                (journal,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
+                self._state.readers = _readers_for(self._con, journal)
         except sqlite3.Error as error:
             self._con.close()
             _refuse(path, error)  # CannotOpen when the file is no database or may not be written
@@ -1454,3 +1456,13 @@ class Store(
         finally:
             con.execute(f"PRAGMA busy_timeout = {int(waited)}")
         return "ok" if version == SCHEMA_VERSION and found else "unavailable"
+
+
+def _readers_for(con: sqlite3.Connection, journal: str) -> Readers | None:
+    """The pool of read-only connections for the database `con` opened, asked of SQLite: a
+    file in WAL has one; a temporary database (no file a second connection could open) or one
+    SQLite keeps out of WAL has none, and its reads stay on the writer (StoreBase._read)."""
+    file = next(row[2] for row in con.execute("PRAGMA database_list") if row[1] == "main")
+    if journal.lower() != "wal" or not file:
+        return None
+    return Readers(Path(file).as_uri() + "?mode=ro")

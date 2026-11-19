@@ -19,10 +19,13 @@ A tag passes only when, in this order:
 4. with --commit and --branch, git says the commit is the branch's head or one of its
    ancestors, and no tag of the same MAJOR.MINOR is a higher version. Of the repository's
    tags that are plain versions (`vMAJOR.MINOR.PATCH`, compared as numbers; other tags are
-   ignored), the tag is `latest` only when it is the highest: --github-output gets
-   `latest=true` or `latest=false`. A candidate is never latest; it is refused once its
-   release `v<version>` is tagged, and when a higher version of its MAJOR.MINOR is, since
-   that release could no longer be made. --github-output also gets `candidate=true` for one;
+   ignored), --github-output gets `latest=true` when the tag is the highest and
+   `latest=false` otherwise, for the run's record only: no job moves an alias from it, since
+   job `aliases` decides `latest` and each `X.Y` after the release, from the releases and the
+   registry's tags as they are then (`aliases` below). A candidate is never latest; it is
+   refused once its release `v<version>` is tagged, and when a higher version of its
+   MAJOR.MINOR is, since that release could no longer be made. --github-output also gets
+   `candidate=true` for one;
 5. with --not-released, gh lists the repository's releases and none is the tag's (a
    candidate is released once too), nor, for a candidate, its release's.
 Otherwise it prints `release refused: ` and the first rule that failed, on one line, and exits
@@ -162,8 +165,8 @@ def _number(tag: str) -> tuple[int, int, int] | None:
 
 def is_highest(tag: str, tags: list[str]) -> bool:
     """Whether TAG is the highest of TAGS that are plain versions (`vMAJOR.MINOR.PATCH`,
-    compared as numbers; other tags are ignored), and so is also published as `latest`.
-    A tag lower than another of its own MAJOR.MINOR is refused."""
+    compared as numbers; other tags are ignored). A tag lower than another of its own
+    MAJOR.MINOR is refused."""
     mine = _number(tag)
     versions = {number: name for name in tags if (number := _number(name))}
     for number, name in sorted(versions.items(), reverse=True):

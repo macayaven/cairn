@@ -73,14 +73,24 @@ print(json.dumps({"expression": dist.metadata["License-Expression"],
                   "metadata": metadata, "plain": plain}))
 """
 
-# Run inside the container with `python -I`: whether pip or setuptools can be imported, the
-# pip commands on the path, and the wheels ensurepip would install. Prints one JSON line.
+# Run inside the container with `python -I`: whether pip or setuptools is installed, in the
+# application's environment (/app) or in the base interpreter's site-packages beside it (which
+# /app's python does not import from, and where the base image keeps its pip), the pip
+# commands on the path, and the wheels ensurepip would install. Prints one JSON line.
 INSTALLER_PROBE = """
-import importlib.util, json, pathlib, shutil, sysconfig
+import json, pathlib, shutil, sys, sysconfig
+places = {
+    pathlib.Path(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))
+    for prefix in (sys.prefix, sys.base_prefix)
+}
+def installed(name):
+    return any(
+        (place / name).is_dir() or any(place.glob(name + "-*.dist-info")) for place in places
+    )
 bundled = pathlib.Path(sysconfig.get_paths()["stdlib"]) / "ensurepip" / "_bundled"
 print(json.dumps({
-    "pip": importlib.util.find_spec("pip") is not None,
-    "setuptools": importlib.util.find_spec("setuptools") is not None,
+    "pip": installed("pip"),
+    "setuptools": installed("setuptools"),
     "commands": [found for name in ("pip", "pip3", "pip3.13") if (found := shutil.which(name))],
     "bundled": sorted(p.name for p in bundled.glob("*.whl")) if bundled.is_dir() else [],
 }))

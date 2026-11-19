@@ -56,7 +56,7 @@ printf '%s\n' "$*" >> "$CALLS"
 by_digest() {
   for f in "$REG"/*; do
     [ -e "$f" ] || continue
-    sum="$(shasum -a 256 < "$f")"
+    sum="$(sha256sum < "$f")"
     if [ "sha256:${sum%% *}" = "$1" ]; then printf '%s\n' "$f"; return 0; fi
   done
   return 1
@@ -244,11 +244,14 @@ def test_the_rehearsal_pushes_the_build_and_reads_back_its_digest(tmp_path):
     runner = Runner(tmp_path)
     done = runner.run(step("image_scan", RECEIVE)["run"])
     assert done.returncode == 0, done.stdout + done.stderr
-    assert runner.tags() == {"ci": digest(runner.built)}
+    built = digest(runner.built)
+    assert runner.tags() == {"ci": built, "rehearsed": built}
     assert runner.oras_calls() == [
-        "cp --to-plain-http --from-oci-layout"
-        f" layout@{digest(runner.built)} localhost:5000/cairn:ci",
+        f"cp --to-plain-http --from-oci-layout layout@{built} localhost:5000/cairn:ci",
+        "repo tags --plain-http localhost:5000/cairn",
+        f"tag --plain-http localhost:5000/cairn@{built} rehearsed",
         "manifest fetch --plain-http localhost:5000/cairn:ci",
+        "manifest fetch --plain-http localhost:5000/cairn:rehearsed",
     ]
 
 
@@ -261,8 +264,9 @@ def test_an_archive_that_is_not_the_build_s_is_never_pushed(tmp_path):
 def test_a_push_that_reads_back_another_digest_stops_the_job(tmp_path):
     runner = Runner(tmp_path)
     done = runner.run(step("image_scan", RECEIVE)["run"], DIGEST="sha256:" + "a" * 64)
-    assert done.returncode == 1
-    assert "::error::localhost:5000/cairn:ci is sha256:" in done.stdout
+    # oras cannot tag a digest the registry does not hold, and the job stops there.
+    assert done.returncode != 0
+    assert not any(call.startswith("manifest fetch") for call in runner.oras_calls())
 
 
 # --- publish: promote, never build --------------------------------------------------------------
@@ -339,6 +343,20 @@ def test_a_full_version_already_published_as_another_digest_stops_the_job_in_one
         f" {digest(runner.built)}: a full version is published once; to finish the run that"
         " published it, re-run only its failed jobs"
     ]
+
+
+def test_a_long_listing_with_the_version_first_still_finds_it(tmp_path):
+    """Every push to main adds a tag; a listing longer than a pipe's buffer, the version at its
+    top, must still read as "there", never as absent (which would push the version again)."""
+    runner = Runner(tmp_path)
+    runner.put("1.2.3", b"the build an earlier attempt published")
+    listing = tmp_path / "listing"
+    listing.write_text("1.2.3\n" + "".join(f"sha-{n:07x}\n" for n in range(20000)))
+    oras = runner.bin / "oras"
+    oras.write_text(oras.read_text().replace('    ls "$REG" ;;', f'    cat "{listing}" ;;'))
+    done = publish(runner, ["1.2.3"])
+    assert done.returncode == 1 and "a full version is published once" in done.stdout
+    assert not any(call.startswith("cp ") for call in runner.oras_calls())
 
 
 def test_tags_that_cannot_be_listed_push_nothing(tmp_path):

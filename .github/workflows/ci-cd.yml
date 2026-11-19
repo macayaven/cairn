@@ -505,11 +505,20 @@ jobs:
           done
           image=localhost:5000/cairn
           oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
-          pushed="$(oras manifest fetch --plain-http "$image:ci" | sha256sum)"
-          if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
-            echo "::error::$image:ci is sha256:${pushed%% *}, not the build's $DIGEST"
+          # Every oras verb the jobs that write use: the listing, a tag by digest, a read back.
+          oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+          grep -Fxq ci "$RUNNER_TEMP/published" || {
+            echo "::error::the registry's tags do not list ci after the push"
             exit 1
-          fi
+          }
+          oras tag --plain-http "$image@$DIGEST" rehearsed
+          for name in ci rehearsed; do
+            pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
       # This leg's platform of that index, by its digest, into the engine as LOCAL.
       - name: Pull this platform of the build
         env:
@@ -683,11 +692,20 @@ jobs:
           done
           image=localhost:5000/cairn
           oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
-          pushed="$(oras manifest fetch --plain-http "$image:ci" | sha256sum)"
-          if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
-            echo "::error::$image:ci is sha256:${pushed%% *}, not the build's $DIGEST"
+          # Every oras verb the jobs that write use: the listing, a tag by digest, a read back.
+          oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+          grep -Fxq ci "$RUNNER_TEMP/published" || {
+            echo "::error::the registry's tags do not list ci after the push"
             exit 1
-          fi
+          }
+          oras tag --plain-http "$image@$DIGEST" rehearsed
+          for name in ci rehearsed; do
+            pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
       # This leg's platform of that index, by its digest, into the engine as LOCAL.
       - name: Pull this platform of the build
         env:
@@ -925,12 +943,12 @@ jobs:
           first="$1"
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             first="${GITHUB_REF_NAME#v}"
-            published="$(oras repo tags "$image")" || {
+            oras repo tags "$image" > "$RUNNER_TEMP/published" || {
               echo "::error::the tags of $image could not be listed, so $first is not pushed: a full version is published once"
               exit 1
             }
           fi
-          if [ "$GITHUB_REF_TYPE" = "tag" ] && printf '%s\n' "$published" | grep -Fxq "$first"; then
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && grep -Fxq "$first" "$RUNNER_TEMP/published"; then
             have="$(oras manifest fetch "$image:$first" | sha256sum)"
             if [ "sha256:${have%% *}" != "$DIGEST" ]; then
               echo "::error::$image:$first is sha256:${have%% *} already, not this run's build $DIGEST: a full version is published once; to finish the run that published it, re-run only its failed jobs"

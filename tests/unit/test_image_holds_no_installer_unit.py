@@ -127,6 +127,27 @@ def test_the_probe_runs_as_a_program_of_its_own():
     assert isinstance(report["pip"], bool) and isinstance(report["commands"], list)
 
 
+def test_the_probe_looks_in_the_base_interpreter_beside_a_virtual_environment(tmp_path):
+    """The image's `python` is /app's, a virtual environment that does not import from the
+    base interpreter's site-packages, where the base image keeps its pip: run from a bare
+    environment, the probe reports what the base's site-packages hold, not what imports."""
+    import subprocess
+    import sys
+    import sysconfig
+    import venv
+
+    venv.create(tmp_path / "app", with_pip=False)
+    python = str(tmp_path / "app" / "bin" / "python")
+    probe = [python, "-I", "-c", smoke.INSTALLER_PROBE]
+    report = json.loads(subprocess.run(probe, capture_output=True, text=True, check=True).stdout)
+    base = Path(
+        sysconfig.get_path("purelib", vars={"base": sys.base_prefix, "platbase": sys.base_prefix})
+    )
+    for name in ("pip", "setuptools"):
+        held = (base / name).is_dir() or any(base.glob(name + "-*.dist-info"))
+        assert report[name] is held, name
+
+
 def test_the_smoke_run_includes_the_check():
     source = Path(smoke.__file__).read_text(encoding="utf-8")
     start = "checks: list[Callable[[], str]] = ["

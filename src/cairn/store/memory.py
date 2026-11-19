@@ -726,13 +726,28 @@ class MemoryMethods(StoreBase):
         next part starts: the last note's id when the part is full, else None (a full last
         part's next is empty). Scoped as list_notes: nothing for a project out of reach, and
         a `before` that is no note of the project starts nothing. One statement, which reads
-        at most `limit` rows whatever the project holds."""
+        at most `limit` rows whatever the project holds.
+
+        A note's page is its topic's page only when that page's latest version cites a
+        passage of the note (a claim whose span_ids hold one of its spans): a note refused a
+        place (a page filled before it saved, or rejected) waits no more and is on no page,
+        whatever its topic. For each row the statement reads the claims of one page version
+        at most, bounded as a page is (PAGE_CLAIMS_MAX)."""
         with self._read() as con:
             rows = con.execute(
                 "SELECT notes.id, notes.title, notes.created_at, notes.source_ref, notes.via,"
                 " COALESCE(note_writers.kind, ?), note_writers.name,"
                 " waiting.note_id IS NOT NULL,"
-                " CASE WHEN waiting.note_id IS NULL THEN page_keys.slug END"
+                " CASE WHEN waiting.note_id IS NULL AND EXISTS (SELECT 1 FROM page_heads"
+                "  JOIN page_versions ON page_versions.project_id = page_heads.project_id"
+                "   AND page_versions.slug = page_heads.slug"
+                "   AND page_versions.version = page_heads.version,"
+                "  json_each(page_versions.claims) AS claim,"
+                "  json_each(claim.value, '$.span_ids') AS cited"
+                "  JOIN spans ON spans.id = cited.value"
+                "  WHERE page_heads.project_id = notes.project_id"
+                "   AND page_heads.slug = page_keys.slug AND spans.note_id = notes.id)"
+                "  THEN page_keys.slug END"
                 " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
                 " LEFT JOIN waiting ON waiting.note_id = notes.id"
                 " LEFT JOIN page_keys ON page_keys.project_id = notes.project_id"

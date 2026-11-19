@@ -393,7 +393,8 @@ class NoteHead(BaseModel):
     """A note as a project's list of notes shows it (UI and UX, note 8): never its text. Who
     wrote it by kind and name (cairn.store.audit.WRITER_KINDS, or "unknown" for a note stored
     before writers were recorded), whether it is still waiting for its page, and the slug of
-    the page its topic is filed under once it is not (None when its topic has no page)."""
+    the page its topic is filed under once it is not, when that page cites a passage of it
+    (None otherwise: its topic has no page, or the note was refused a place on it)."""
 
     model_config = ConfigDict(frozen=True)
 

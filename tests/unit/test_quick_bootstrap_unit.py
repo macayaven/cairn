@@ -32,6 +32,8 @@ mode = os.environ["STANDIN_MODE"]
 with (state / "calls").open("a") as log:
     log.write(json.dumps([cmd, *args]) + "\n")
 if cmd == "docker":
+    if mode == "fail-first-index":
+        assert (state / "docker-installed").is_file()
     if args == ["version", "--format", "{{.Server.Version}}"]:
         print("28.3.2" if mode == "old-engine" else "28.3.3")
     elif args == ["compose", "exec", "-T", "cairn", "sh", "-eu"]:
@@ -40,8 +42,30 @@ if cmd == "docker":
     elif args not in (["compose", "pull"], ["compose", "up", "-d"]):
         sys.exit(2)
 elif cmd == "dpkg":
+    if args == ["--print-architecture"]:
+        print("amd64")
+        sys.exit()
     assert args[0] == "--compare-versions" and args[2:] == ["ge", "28.3.3"]
     sys.exit(args[1] == "28.3.2")
+elif cmd == "apt-get":
+    failed = state / "index-download-failed"
+    if (args[-1] == "update" and mode == "fail-first-index" and not failed.exists()
+            and (state / "etc/apt/sources.list.d/docker.sources").is_file()):
+        failed.touch()
+        print("Docker package index download failed", file=sys.stderr)
+        sys.exit(100)
+    if "docker-ce" in args:
+        (state / "docker-installed").touch()
+elif cmd == "snap":
+    installed = state / args[1]
+    if args[0] == "list":
+        sys.exit(not installed.exists())
+    if args[0] == "install":
+        installed.touch(exist_ok=False)
+    else:
+        assert args[0] == "start" and installed.exists()
+elif cmd == "systemctl":
+    assert args == ["daemon-reload"] or (args[0] == "enable" and "--now" in args)
 elif cmd == "iptables":
     assert args[0] == "-w" and args[2] == "DOCKER-USER"
     chain = state / "chain"
@@ -65,6 +89,9 @@ elif cmd in ("aws", "curl"):
         else:
             sys.exit(2)
     else:
+        if "https://download.docker.com/linux/ubuntu/gpg" in args:
+            Path(args[args.index("-o") + 1]).write_text("synthetic package signing data\n")
+            sys.exit()
         url = args[-1]
         if url.endswith("/service-accounts/default/token"):
             assert "Metadata-Flavor: Google" in args
@@ -96,7 +123,7 @@ else:
 def vm(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name in ("aws", "curl", "docker", "dpkg", "iptables"):
+    for name in ("apt-get", "aws", "curl", "docker", "dpkg", "iptables", "snap", "systemctl"):
         stub = bin_dir / name
         stub.write_text(f"#!{sys.executable}\n{STANDIN}", encoding="utf-8")
         stub.chmod(0o755)
@@ -104,37 +131,48 @@ def vm(tmp_path):
     return tmp_path
 
 
-def run(vm, cloud="aws", mode="with-version", action="start", *, settings=SETTINGS, config=None):
-    assert BOOTSTRAP.is_file(), "the shared quick bootstrap has not been written"
-    script = vm / "bootstrap.sh"
-    script.write_bytes(BOOTSTRAP.read_bytes())
+def vm_environment(vm, cloud, mode, settings=SETTINGS, config=None):
     replica = "s3://example-replica/cairn" if cloud == "aws" else "gs://example-replica/cairn"
     secret = {
         "aws": "arn:aws:secretsmanager:us-east-1:000000000000:secret:cairn-quick-example",
         "gcp": "projects/example-project/secrets/cairn-quick-env",
     }[cloud]
+    return {
+        "PATH": f"{vm / 'bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOME": str(vm),
+        "STANDIN_STATE": str(vm),
+        "STANDIN_MODE": mode,
+        "STANDIN_SECRET": settings.decode(),
+        "STANDIN_PAYLOAD": base64.b64encode(settings).decode(),
+        "STANDIN_TOKEN": TOKEN,
+        "CAIRN_CLOUD": cloud,
+        "CAIRN_DOMAIN": "cairn.example.net",
+        "ACME_EMAIL": "ops@example.net",
+        "CAIRN_IMAGE": "ghcr.io/macayaven/cairn:0.1.0",
+        "CAIRN_SETTINGS_SECRET": secret,
+        "LITESTREAM_REPLICA_URL": replica,
+        **({"AWS_REGION": "us-east-1"} if cloud == "aws" else {}),
+        **(config or {}),
+    }
+
+
+def vm_command(vm, args, env):
     return subprocess.run(
-        ["/bin/bash", str(script), action],
-        env={
-            "PATH": f"{vm / 'bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
-            "HOME": str(vm),
-            "STANDIN_STATE": str(vm),
-            "STANDIN_MODE": mode,
-            "STANDIN_SECRET": settings.decode(),
-            "STANDIN_PAYLOAD": base64.b64encode(settings).decode(),
-            "STANDIN_TOKEN": TOKEN,
-            "CAIRN_CLOUD": cloud,
-            "CAIRN_DOMAIN": "cairn.example.net",
-            "ACME_EMAIL": "ops@example.net",
-            "CAIRN_IMAGE": "ghcr.io/macayaven/cairn:0.1.0",
-            "CAIRN_SETTINGS_SECRET": secret,
-            "LITESTREAM_REPLICA_URL": replica,
-            **({"AWS_REGION": "us-east-1"} if cloud == "aws" else {}),
-            **(config or {}),
-        },
+        [arg.replace("/opt/cairn", str(vm)) for arg in args],
+        cwd=vm,
+        env=env,
         capture_output=True,
         text=True,
         timeout=20,
+    )
+
+
+def run(vm, cloud="aws", mode="with-version", action="start", *, settings=SETTINGS, config=None):
+    assert BOOTSTRAP.is_file(), "the shared quick bootstrap has not been written"
+    script = vm / "bootstrap.sh"
+    script.write_bytes(BOOTSTRAP.read_bytes())
+    return vm_command(
+        vm, ["/bin/bash", str(script), action], vm_environment(vm, cloud, mode, settings, config)
     )
 
 
@@ -146,6 +184,50 @@ def boot_environment(files):
     return dict(
         item.split("=", 1) for item in shlex.split(files["/opt/cairn/quick.env"]["content"])
     )
+
+
+def run_queued_units(vm, env, files):
+    """Run the requested oneshots, advancing one on-failure retry without waiting."""
+    seen = set()
+    while pending := [
+        call[-1]
+        for call in calls(vm)
+        if call[:2] == ["systemctl", "enable"] and call[-1] not in seen
+    ]:
+        for name in pending:
+            seen.add(name)
+            lines = files[f"/etc/systemd/system/{name}"]["content"].splitlines()
+            commands = [
+                shlex.split(line.split("=", 1)[1])
+                for line in lines
+                if line.startswith(("ExecStart=", "ExecStartPost="))
+            ]
+            commands = [
+                [env[arg[1:]] if arg.startswith("$") else arg for arg in argv] for argv in commands
+            ]
+            for _ in range(2 if "Restart=on-failure" in lines else 1):
+                if all(vm_command(vm, argv, env).returncode == 0 for argv in commands):
+                    break
+
+
+@pytest.mark.parametrize("cloud", ["aws", "gcp"])
+def test_first_boot_recovers_after_a_docker_package_index_download_fails(vm, cloud):
+    cloud_init = render_cloud_init(vm, cloud)
+    files = {file["path"]: file for file in cloud_init["write_files"]}
+    script = base64.b64decode(files["/opt/cairn/bootstrap.sh"]["content"]).decode()
+    (vm / "bootstrap.sh").write_text(script.replace("/etc/", "etc/"))
+    (vm / "bootstrap.sh").chmod(0o755)
+    (vm / "etc/apt/sources.list.d").mkdir(parents=True)
+    (vm / "etc/os-release").write_text("VERSION_CODENAME=noble\n")
+    env = vm_environment(vm, cloud, "fail-first-index", config=boot_environment(files))
+
+    for argv in cloud_init["runcmd"]:
+        vm_command(vm, argv, env)
+    run_queued_units(vm, env, files)
+
+    assert (vm / "index-download-failed").is_file()
+    assert calls(vm).count(["docker", "compose", "up", "-d"]) == 1
+    assert (vm / ".host-provisioned").is_file()
 
 
 def compose_service(vm):

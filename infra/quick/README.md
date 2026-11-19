@@ -62,7 +62,8 @@ and billable transfer.
    tofu output -raw public_ipv4
    ```
 
-6. Wait for DNS and for this check to answer over HTTPS.
+6. Wait for DNS and for this check to answer over HTTPS. If it stays down after DNS resolves,
+   use the Session Manager command in step 7 to check [first-boot recovery](#first-boot-recovery).
 
    ```sh
    curl -fsS "$(tofu output -raw url)/healthz"
@@ -164,7 +165,8 @@ and [active secret versions and access operations](https://cloud.google.com/secr
    tofu output -raw public_ipv4
    ```
 
-6. Wait for DNS and for this check to answer over HTTPS.
+6. Wait for DNS and for this check to answer over HTTPS. If it stays down after DNS resolves,
+   use the IAP SSH command in step 7 to check [first-boot recovery](#first-boot-recovery).
 
    ```sh
    curl -fsS "$(tofu output -raw url)/healthz"
@@ -215,6 +217,26 @@ To remove a retained bucket too, empty it and retry the destroy. This deletes th
 gcloud storage rm --all-versions "gs://$bucket/**"
 tofu destroy
 ```
+
+## First-boot recovery
+
+On either VM, `cairn-quick-provision.service` installs the packages and retries failures every
+20 seconds. When installation succeeds, it enables and starts `cairn-quick.service`, which
+loads the settings and starts Compose. Check both units and their logs from the VM session.
+
+```sh
+sudo systemctl status cairn-quick-provision.service cairn-quick.service
+sudo journalctl -b -u cairn-quick-provision.service -u cairn-quick.service -u docker.service --no-pager
+```
+
+After fixing a package problem, trigger an immediate retry.
+
+```sh
+sudo systemctl restart cairn-quick-provision.service
+```
+
+After the packages are installed, use `sudo systemctl restart cairn-quick.service` to retry
+starting Compose.
 
 ## Provider sign-in
 

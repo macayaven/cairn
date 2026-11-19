@@ -72,6 +72,7 @@ def test_quickstart_commands_match_stack_outputs_and_the_release_tag(cloud):
     assert all(f"`{name}`" in section for name in [INPUTS[cloud], "domain", "acme_email"])
     assert "sudo systemctl restart cairn-quick.service" in section
     assert "[provider sign-in steps](#provider-sign-in)" in section
+    assert "[first-boot recovery](#first-boot-recovery)" in section
     assert "tofu destroy" in section
     assert ("put-secret-value" if cloud == "aws" else "secrets versions add") in section
 
@@ -125,7 +126,14 @@ def test_the_payload_copies_the_four_deploy_files_as_bytes(tmp_path, cloud):
         item = files[f"/opt/cairn/deploy/{name}"]
         assert item["encoding"] == "b64"
         assert base64.b64decode(item["content"]) == (REPO / "deploy" / name).read_bytes()
-    assert any("cairn-quick.service" in " ".join(command) for command in cloud_init["runcmd"])
+    assert cloud_init["runcmd"] == [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", "--no-block", "cairn-quick-provision.service"],
+    ]
+    provision = files["/etc/systemd/system/cairn-quick-provision.service"]["content"]
+    assert "StartLimitIntervalSec=0" in provision
+    assert "RestartSec=20s" in provision
+    assert "ConditionPathExists=!/opt/cairn/.host-provisioned" in provision
     assert (
         "/opt/cairn/bootstrap.sh firewall"
         in files["/etc/systemd/system/docker.service.d/cairn-quick.conf"]["content"]
@@ -170,6 +178,15 @@ def test_provider_sign_in_guide_shows_what_to_configure_and_what_the_user_sees()
     ]
     positions = [section.index(step) for step in steps]
     assert positions == sorted(positions)
+
+
+def test_first_boot_guide_names_the_services_to_check_and_restart():
+    section = (QUICK / "README.md").read_text().split("## First-boot recovery\n")[1].split("## ")[0]
+    assert "20 seconds" in section
+    assert "sudo systemctl status cairn-quick-provision.service cairn-quick.service" in section
+    assert "sudo journalctl -b -u cairn-quick-provision.service -u cairn-quick.service" in section
+    assert "sudo systemctl restart cairn-quick-provision.service" in section
+    assert "sudo systemctl restart cairn-quick.service" in section
 
 
 def test_the_compose_override_only_grants_the_replica_tasks_metadata_access():

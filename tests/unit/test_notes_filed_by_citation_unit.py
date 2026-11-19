@@ -127,3 +127,33 @@ def test_the_part_stays_one_statement_and_limit_rows_with_pages_that_cite(store)
     selects = [s for s in seen if s.lstrip().upper().startswith("SELECT")]
     assert len(selects) == 1 and rows[0] == 5
     assert all(head.page == f"topic-{head.title[-1]}" for head in part)
+
+
+def test_a_note_whose_filing_ended_unchanged_is_still_on_its_page(store):
+    """The page already cites the note: compiled again it is "unchanged", recorded as such,
+    and the list still names the page."""
+    project = store.create_project("ops")
+    made, _ = store.add_note(project.id, FIRST)
+    assert compile_note(store, made, gate=lint_gate).status == "saved"
+    again = compile_note(store, made, gate=lint_gate)
+    assert again.status == "unchanged"
+    store.record_note(project.id, "unchanged", {"page": again.slug}, filed=made.id)
+    (head,) = store.notes_part(project.id, 10)[0]
+    assert (head.waiting, head.page) == (False, "relay")
+
+
+def test_a_filed_note_is_still_on_its_page_after_export_and_import(store, tmp_path):
+    import io
+
+    project = store.create_project("ops")
+    made, _ = store.add_note(project.id, FIRST)
+    assert compile_note(store, made, gate=lint_gate).status == "saved"
+    archive = io.BytesIO()
+    store.export(archive)
+    fresh = Store(tmp_path / "fresh.db")
+    try:
+        fresh.import_export(io.BytesIO(archive.getvalue()))
+        (head,) = fresh.notes_part(fresh.get_project("ops").id, 10)[0]
+    finally:
+        fresh.close()
+    assert (head.waiting, head.page) == (False, "relay")

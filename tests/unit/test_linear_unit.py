@@ -44,7 +44,7 @@ def test_the_kind_is_registered_starts_off_and_writes_with_its_own_via():
     kind = KINDS["linear"]
     assert kind is lin.KIND and kind.starts_off and kind.via == "linear"
     assert kind.check is lin.check_config and kind.open is lin.open_source
-    assert kind.default_project == "linear" and kind.withheld is False
+    assert kind.default_project == "linear" and kind.withheld is True
 
 
 def test_the_defaults_are_filled_in_and_what_is_stored_checks_the_same():

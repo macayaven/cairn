@@ -8,8 +8,8 @@ from cairn import sources
 from cairn.sources import KINDS, SourceKind
 
 GOOGLE = ("google_meet", "google_calendar", "google_drive", "gmail")
-# Every withheld kind: the Google ones, and those whose writer cairn cannot know (C9).
-WITHHELD = (*GOOGLE, "connector")
+# Every withheld kind: since Privacy 4, every kind the server reads.
+WITHHELD = (*GOOGLE, "connector", "langfuse", "granola", "linear", "github")
 
 
 def test_a_kind_is_not_withheld_unless_it_says_so():
@@ -17,7 +17,7 @@ def test_a_kind_is_not_withheld_unless_it_says_so():
     assert SourceKind(check=dict, open=dict, via="held", withheld=True).withheld is True
 
 
-def test_exactly_the_kinds_that_read_google_workspace_data_are_withheld():
+def test_every_kind_the_server_reads_is_withheld():
     assert sorted(name for name, kind in KINDS.items() if kind.withheld) == sorted(WITHHELD)
 
 
@@ -25,7 +25,7 @@ def test_withheld_via_are_the_withheld_kinds_via_values_and_nothing_else():
     said = sources.withheld_via()
     assert isinstance(said, frozenset)
     assert said == frozenset(KINDS[name].via for name in WITHHELD)
-    assert "gmail" in said and "langfuse" not in said and "granola" not in said
+    assert "gmail" in said and "langfuse" in said and "granola" in said
 
 
 def test_withheld_via_reads_kinds_when_called(monkeypatch):

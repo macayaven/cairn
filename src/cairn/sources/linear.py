@@ -441,6 +441,7 @@ KIND = SourceKind(
     default_project=DEFAULT_PROJECT,
     settings=SETTINGS_HELP,
     switch_on_with=switch_on_with,
+    withheld=True,
 )
 
 

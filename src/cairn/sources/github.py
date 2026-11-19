@@ -1595,4 +1595,5 @@ KIND = SourceKind(
     switch_on_with=switch_on_with,
     default_project=DEFAULT_PROJECT,
     settings=SETTINGS_HELP,
+    withheld=True,
 )

@@ -71,6 +71,8 @@ A key made from a web session opened with another key records that key, and so d
 
 The audit log records `session.opened` when a person signs in or a key opens a web session, with how (the provider's name, or `key`), and `agent.approved` when a person or a key approves an agent, whether or not the agent then connects.
 
+`serve --audit-reads` records reads in the audit log; `--audit-keep N` or `all` sets how many events each workspace keeps; each stored event is one JSON line on the `cairn.audit` logger.
+
 cairn counts the wrong keys and tokens each client address presents, to the REST API, to MCP and to the sign-in form. Once an address has presented 30 in a minute, a wrong key or token from it is answered 429 in place of 401 until the minute has passed. A correct one is never refused by this limit, from any address, so a script that keeps retrying a revoked key does not lock out the people and agents behind the same address. A request that carries no key at all never counts. Behind a reverse proxy, the address is the one `--trusted-proxy` lets cairn read.
 
 ## Sign in

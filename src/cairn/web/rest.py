@@ -98,14 +98,22 @@ AUDIT_LIMIT = f"'limit' is a whole number, 1 to {AUDIT_LIMIT_MAX}"
 
 def _logged(action: str, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
     """`handler` as one access-log record named `action`, whatever it answers. A sync
-    handler still runs on a worker thread, as Starlette runs one: it reads the database.
-    `__wrapped__` is the handler, so a test can read what it reads (inspect.unwrap)."""
+    handler still runs on a worker thread, as Starlette runs one: it reads the database. The
+    access runs on that thread with it, so a read's audit event (`serve --audit-reads`),
+    written behind the store's lock, never holds up the event loop. `__wrapped__` is the
+    handler, so a test can read what it reads (inspect.unwrap)."""
 
     async def endpoint(request: Request) -> Response:
-        with _memory(request).access(action):
-            if inspect.iscoroutinefunction(handler):
+        memory = _memory(request)
+        if inspect.iscoroutinefunction(handler):
+            with memory.access(action):
                 return await handler(request)
-            return await run_in_threadpool(handler, request)  # type: ignore[arg-type]
+
+        def accessed() -> Response:
+            with memory.access(action):
+                return handler(request)  # type: ignore[return-value]
+
+        return await run_in_threadpool(accessed)
 
     endpoint.__wrapped__ = handler  # type: ignore[attr-defined]
     return endpoint

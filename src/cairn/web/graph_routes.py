@@ -149,6 +149,7 @@ def graph_routes(explorer: bool = False) -> list[Route]:
                 return _restart(request, project, UNREADABLE, 400)
             raise NotFound("Not Found") from None
         memory._touched = detail["project"]
+        memory._read = {"note": request.path_params["note"]}  # the audit event's (READ_EVENTS)
         return render_note(detail["project"], detail, brand=brand_of(request), person=memory.person)
 
     if not explorer:

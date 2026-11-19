@@ -290,6 +290,41 @@ def test_with_reads_audited_each_read_over_the_web_rest_and_a_key_is_an_event(re
     assert "zebrafinch" not in stored
 
 
+def test_the_graph_page_of_one_note_names_the_note(tmp_path):
+    world = build(tmp_path, audit_reads=True, graph_explorer=True)
+    try:
+        with TestClient(world.app, base_url=BASE) as client:
+            r = client.get(f"/b/ops/graph/notes/{world.note.id}", headers=world.ada.cookie)
+            assert r.status_code == 200, r.text
+        assert reads(world) == [("read.graph", "Ada", "ops", {"note": world.note.id})]
+    finally:
+        world.store.close()
+
+
+def test_a_read_of_a_synchronous_handler_is_recorded_off_the_event_loop(reading, monkeypatch):
+    """The event is written behind the store's lock: on the worker thread that runs the
+    handler, never on the event loop, where it would hold up every other request."""
+    import asyncio
+
+    on_the_loop = []
+    record = Store._record_read
+
+    def watched(self, *args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            on_the_loop.append(True)
+        except RuntimeError:
+            on_the_loop.append(False)
+        return record(self, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "_record_read", watched)
+    w = reading
+    assert w.client.get("/b/ops/p/deploy", headers=w.ada.cookie).status_code == 200
+    key = {"x-api-key": w.key}
+    assert w.client.get("/api/graph?project=ops", headers=key).status_code == 200
+    assert on_the_loop == [False, False]
+
+
 def test_without_it_reads_are_no_events(env):
     env.client.get("/b/ops/p/deploy", headers=env.ada.cookie)
     env.client.get("/api/search?q=zebrafinch", headers={"x-api-key": env.key})

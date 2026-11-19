@@ -167,3 +167,23 @@ def test_the_guides_name_no_product_in_these_sentences():
                      PRIVACY_LOG, PRIVACY_NOT_KEPT, PRIVACY_LINES, PRIVACY_ERASED, PRIVACY_TABLE,
                      PRIVACY_EXPORT):  # fmt: skip
         assert "cairn" not in sentence.lower()
+
+
+RUN_OPTIONS = (
+    "`serve --audit-reads` records reads in the audit log; `--audit-keep N` or `all` sets how"
+    " many events each workspace keeps; each stored event is one JSON line on the `cairn.audit`"
+    " logger."
+)
+
+
+def test_run_names_the_audit_options_and_the_logger(store, caplog):
+    assert RUN_OPTIONS in guide("run")
+    args = cli._parser().parse_args(["serve", "--db", "x.db", "--audit-reads"])
+    assert args.audit_reads is True
+    args = cli._parser().parse_args(["serve", "--db", "x.db", "--audit-keep", "all"])
+    assert cli._audit_kept(args) is None
+    assert AUDIT_LOGGER == "cairn.audit"
+    with caplog.at_level(logging.INFO, logger=AUDIT_LOGGER):
+        store.create_project("ops")
+    (line,) = [r.getMessage() for r in caplog.records if r.name == AUDIT_LOGGER]
+    assert json.loads(line)["action"] == store.list_audit(1)[0].action

@@ -409,10 +409,14 @@ The note guard and the logs (frozen by tests/acceptance/test_g1_guard.py; cairn/
   caller, log or audit event holds what matched. It is recorded as `note.refused` with
   the rules; a caller that may not write gets 403 whatever its note holds, and nothing is
   recorded.
-- The audit log (Store.list_audit): the workspace's writes and security events, newest
-  first, at most the newest 100,000 kept (store.AUDIT_KEEP; older ones are deleted, as the page
-  says). GET /audit ("Audit", listed on /workspace) shows the latest 200 to whoever
-  `may_manage_credentials` admits; a member gets 403. An admin who does not reach every
+- The audit log (Store.list_audit): the workspace's writes and security events, and with
+  `serve --audit-reads` its reads, newest first; each workspace keeps its newest 100,000
+  (store.AUDIT_KEEP) unless `serve --audit-keep N` or `all` says otherwise (Store.audit_keep;
+  older ones are deleted, as the page says), and each stored event is also one JSON line on
+  the logger "cairn.audit". GET /audit ("Audit", listed on /workspace) shows 200 events at a
+  time (`before` gives older ones; `action`, `project` and `who` filter; CSV and JSON
+  downloads at /audit/download) to whoever `may_manage_credentials` admits; a member gets
+  403. An admin who does not reach every
   project sees none of the events of a project out of their reach, and no such project's id in
   an event's reach (Store.list_audit), nor workspace.imported, which counts the whole
   workspace's content; an admin who reaches every project still sees no event of a removed
@@ -428,8 +432,9 @@ The note guard and the logs (frozen by tests/acceptance/test_g1_guard.py; cairn/
   "cairn.access" (Memory.access) with `actor_kind`, `actor`, `actor_id`, `action` (the MCP
   tool's name; REST GET /api/search is "recall"), `project` (the name the call resolved, else
   None) and `status` (200, or the RequestError's status, or 500). Never a query, note text, a
-  credential or a project the caller named that does not resolve. Reads are recorded only
-  there, the web view's too: each GET of a page that shows memory is one record, named as
+  credential or a project the caller named that does not resolve. Reads are recorded there,
+  the web view's too, and with `serve --audit-reads` also in the audit log (read.page,
+  read.evidence, read.search, read.graph, read.note; Memory.access): each GET of a page that shows memory is one record, named as
   the MCP tool that reads the same (/ "projects", /b/<project> "overview", /b/<project>/p/<slug>
   "page", /search "recall") or after what it asks (/b/<project>/access "project_access",
   /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The pages of the

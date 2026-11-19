@@ -10,7 +10,9 @@ a bind mount written as the caller's own user, an SQLite new enough to overwrite
 search index drops, that export imported into a fresh install by the run guide's own steps,
 the two typefaces and a licence served by the image as files of their real size and
 type, and the project's own licence, MIT, in the package's metadata and at /app/LICENSE, the
-same bytes as the repository's LICENSE. Standard library only, so it runs on a CI
+same bytes as the repository's LICENSE, and no package installer: the image's own Python finds no
+pip and no setuptools, no pip command is on its path, and ensurepip has no wheel to put pip
+back. Standard library only, so it runs on a CI
 runner or any host with Docker and Python 3.10 or later. Exit code 0 when every check passes.
 
 Isolation, resources and cleanup: every container is named cairn-smoke-<pid>-<n> and labelled
@@ -69,6 +71,29 @@ if pathlib.Path("/app/LICENSE").is_file():
     plain["LICENSE"] = hashlib.sha256(pathlib.Path("/app/LICENSE").read_bytes()).hexdigest()
 print(json.dumps({"expression": dist.metadata["License-Expression"],
                   "metadata": metadata, "plain": plain}))
+"""
+
+# Run inside the container with `python -I`: whether pip or setuptools is installed, in the
+# application's environment (/app) or in the base interpreter's site-packages beside it (which
+# /app's python does not import from, and where the base image keeps its pip), the pip
+# commands on the path, and the wheels ensurepip would install. Prints one JSON line.
+INSTALLER_PROBE = """
+import json, pathlib, shutil, sys, sysconfig
+places = {
+    pathlib.Path(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))
+    for prefix in (sys.prefix, sys.base_prefix)
+}
+def installed(name):
+    return any(
+        (place / name).is_dir() or any(place.glob(name + "-*.dist-info")) for place in places
+    )
+bundled = pathlib.Path(sysconfig.get_paths()["stdlib"]) / "ensurepip" / "_bundled"
+print(json.dumps({
+    "pip": installed("pip"),
+    "setuptools": installed("setuptools"),
+    "commands": [found for name in ("pip", "pip3", "pip3.13") if (found := shutil.which(name))],
+    "bundled": sorted(p.name for p in bundled.glob("*.whl")) if bundled.is_dir() else [],
+}))
 """
 
 
@@ -483,6 +508,20 @@ class Smoke:
             expect(not extra, f"{where} holds another licence file: {', '.join(extra)}")
         return "License-Expression MIT; LICENSE in the metadata and at /app, same bytes"
 
+    def carries_no_installer(self) -> str:
+        """cairn installs nothing at run time; an installer in the image would carry code a
+        scan reports as the image's own (pip's vendored packages)."""
+        out = docker("exec", self.names[-1], "python", "-I", "-c", INSTALLER_PROBE)
+        try:
+            found = json.loads(out)
+        except ValueError:
+            raise Failed(f"the installer probe printed no JSON: {out[:200]!r}") from None
+        left = [name for name in ("pip", "setuptools") if found.get(name)]
+        left += found.get("commands") or []
+        left += [f"ensurepip's {name}" for name in found.get("bundled") or []]
+        expect(not left, f"the image still holds a package installer: {', '.join(left)}.")
+        return "no pip, no setuptools, no pip command and no bundled wheel"
+
     def cleanup(self) -> str:
         for name in self.names:
             docker("rm", "-f", name, check=False)
@@ -517,6 +556,7 @@ def main(argv: list[str]) -> int:
         smoke.imports_an_export_as_the_run_guide_says,
         smoke.serves_the_typefaces,
         smoke.carries_the_licence,
+        smoke.carries_no_installer,
     ]
     passed = 0
     try:

@@ -26,7 +26,7 @@ _spec.loader.exec_module(ci_changes)
 
 WORKFLOW = yaml.safe_load((REPO / ".github" / "workflows" / "ci-cd.yml").read_text())
 # The jobs that build, rehearse, publish, verify or deploy the image: all skipped together.
-GATED_JOBS = ("image", "stack", "host", "publish", "verify", "deploy")
+GATED_JOBS = ("image", "stack", "host", "publish", "verify", "aliases", "deploy")
 
 
 # --- the verdict -----------------------------------------------------------------------------
@@ -1438,18 +1438,21 @@ def test_the_publishing_job_is_found_by_the_display_name_this_workflow_gives_it(
     assert [n for n, job in jobs.items() if job.get("name") == ci_changes.PUBLISH_JOB] == [
         "publish"
     ]
-    # And it is the job that pushes the image: the only one that may write packages.
+    # And it is the job that pushes the image: the only one that copies the build into the
+    # registry. `aliases`, after the release, may write packages too: it moves tags only.
     pushes = [
         name
         for name, job in jobs.items()
         for step in job["steps"]
         if (step.get("with") or {}).get("push") is True
+        or re.search(r"\boras cp\b(?!.*--to-plain-http)", step.get("run", ""))
     ]
     assert pushes == ["publish"]
     writers = [
         n for n, job in jobs.items() if job.get("permissions", {}).get("packages") == "write"
     ]
-    assert writers == ["publish"]
+    assert writers == ["publish", "aliases"]
+    assert not re.search(r"\boras cp\b", yaml.safe_dump(jobs["aliases"]))
 
 
 def test_the_files_for_people_who_contribute_need_no_image_work():
@@ -1543,9 +1546,17 @@ def test_main_writes_quick_beside_image(tmp_path):
 def test_the_scans_are_on_for_every_change():
     """A secret can arrive in a document: the four scans read no output of this script, so a
     change of documents only, or a draft, runs them all."""
-    assert ci_changes.ALWAYS == ("dependencies", "static_analysis", "secrets", "image_scan")
+    assert ci_changes.ALWAYS == (
+        "dependencies",
+        "static_analysis",
+        "secrets",
+        "image_build",
+        "image_scan",
+    )
     for name in ci_changes.ALWAYS:
         job = WORKFLOW["jobs"][name]
         assert "if" not in job, name
-        assert "needs" not in job, name
+        # The scan needs the build it scans, which is on the list too, and nothing else.
+        needed = job.get("needs", [])
+        assert set([needed] if isinstance(needed, str) else needed) <= {"image_build"}, name
         assert "needs.changes" not in yaml.safe_dump(job), name

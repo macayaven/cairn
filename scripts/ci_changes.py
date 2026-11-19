@@ -8,8 +8,9 @@ writes `image=true` and the whole gate runs, as before this script: a path not o
 an empty list, a manual run, a tag, a first or forced push, a lookup that fails, anything
 unexpected. Being wrong costs runner minutes, never a skipped check. `test` and `infra` do
 not depend on it, and neither do the four scans named in ALWAYS (the locked dependencies,
-the image, static analysis of src/, and secrets in the history): a change of documents only
-runs them too, since a secret can arrive in a document.
+the image, static analysis of src/, and secrets in the history) nor the one build of the image
+they scan, image_build: a change of documents only runs them too, since a secret can arrive in
+a document.
 
 It also writes `quick=false` when the changed paths are known and none of them is on
 QUICK_WORK, what the quick deploy's OpenTofu definitions (infra/quick/) define, read or are
@@ -51,9 +52,9 @@ before image= is written, and say() prints every line without ever raising.
 
 Standard library only; it runs on the runner's own python3, before anything is installed.
 To add a path to the list, first read every step of `image`, `stack`, `host`, `publish`,
-`verify` and `deploy`, the Dockerfile, .dockerignore and every script those steps run, and
-make sure none of them reads it. tests/unit/test_ci_changes_unit.py checks the steps and the
-scripts for the names on the list.
+`verify`, `aliases` and `deploy`, the Dockerfile, .dockerignore and every script those steps
+run, and make sure none of them reads it. tests/unit/test_ci_changes_unit.py checks the steps
+and the scripts for the names on the list.
 """
 
 from __future__ import annotations
@@ -105,7 +106,7 @@ QUICK_WORK = (
 )
 
 # The jobs of the gate that read no output of this script and so run for every change.
-ALWAYS = ("dependencies", "static_analysis", "secrets", "image_scan")
+ALWAYS = ("dependencies", "static_analysis", "secrets", "image_build", "image_scan")
 
 # The display name of job `publish` in ci-cd.yml: the API names a job by it. A test pins the
 # two together. Were they to drift apart, no run would count as published and the whole gate

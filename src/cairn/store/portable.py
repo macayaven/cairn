@@ -1220,8 +1220,10 @@ def _collapsed(text: str) -> str:
 def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     """The version with the body cairn writes of its claims and the spans they cite
     (cairn.compiler.render_body). The archive's must equal it, or a rendering cairn wrote
-    before, whitespace aside: before fix H (previous_render_body), or before review 7.2, with
-    a claim's open code fence left open (render_body_with_fences_open). ValueError otherwise,
+    before, whitespace aside: before fix H (previous_render_body), before review 7.2, with
+    a claim's open code fence left open (render_body_with_fences_open), or before the second
+    review (render_body_before_review_two: a title as given, deep headings at level 6, a
+    fence closed at any indentation). ValueError otherwise,
     naming the page and version, never the text: an import never brings a body cairn would
     not have written, and the version is stored with the current rendering. A title longer
     than cairn writes (a note's topic, FIELD_MAX) is cut to it, and the body is rendered
@@ -1229,6 +1231,7 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     from cairn.compiler import (  # the compiler builds on the store
         previous_render_body,
         render_body,
+        render_body_before_review_two,
         render_body_with_fences_open,
     )
 
@@ -1237,7 +1240,11 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     given = _collapsed(page.body)
     if given != _collapsed(body) and all(
         given != _collapsed(earlier(page.title, page.claims, spans))
-        for earlier in (previous_render_body, render_body_with_fences_open)
+        for earlier in (
+            previous_render_body,
+            render_body_with_fences_open,
+            render_body_before_review_two,
+        )
     ):
         raise ValueError(
             f"the body of {page.slug!r} version {page.version} in {root} is not what cairn"

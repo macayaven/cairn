@@ -251,3 +251,111 @@ def test_the_web_page_shows_the_next_claim_as_text_and_the_body_closed(tmp_path)
     assert claims[-1].strip() == f"<p>{CRITICAL}</p>"
     (body,) = re.findall(r"<pre>([^<]*)</pre>", shown)
     assert html.unescape(body) == f"# Runbook\n\n{OPEN}\n```\n\n{CRITICAL}\n"
+
+
+# Should-fix 8: a line that is no closer in Markdown does not close the fence for the body
+
+
+def blocks(body: str) -> list[tuple[str, str]]:
+    """The body's top-level blocks as CommonMark parses it: (token type, content), the title
+    left out; a fence's content is its code."""
+    from markdown_it import MarkdownIt
+
+    tokens = MarkdownIt("commonmark").parse(body)
+    out = []
+    for n, token in enumerate(tokens):
+        if token.level != 0 or token.type.endswith("_close"):
+            continue
+        if token.type == "paragraph_open":
+            out.append(("paragraph", tokens[n + 1].content))
+        elif token.type in ("fence", "code_block"):
+            out.append((token.type, token.content))
+    return out
+
+
+FALSE_CLOSER = "~~~\nsample text\n    ~~~"
+
+
+def test_a_fence_closed_too_deep_does_not_swallow_the_next_note(memory):
+    """The reviewer's two notes: the first one's closer is indented four spaces, which closes
+    nothing in Markdown, so the body closes the fence and the second note is a paragraph."""
+    first = memory.note("alpha", FALSE_CLOSER, title="Runbook")
+    second = memory.note("alpha", CRITICAL, title="Runbook", topic="Runbook")
+    assert first["status"] == second["status"] == "saved"
+    body = memory.page("alpha", first["page"])["body"]
+    assert blocks(body) == [("fence", "sample text\n    ~~~\n"), ("paragraph", CRITICAL)]
+    assert ("paragraph", CRITICAL) in after_the_claims(body)
+
+
+@pytest.mark.parametrize(
+    "opened",
+    [
+        FALSE_CLOSER,
+        "  ```\nsample\n     ```",  # five spaces: three past the opener, four past the margin
+    ],
+)
+def test_a_closer_markdown_does_not_read_as_one_gets_a_closer_after_it(opened):
+    spans = chunk("n1", opened) + chunk("n2", CRITICAL)
+    claims = [Claim(id=f"cl_{n}", text=s.text, span_ids=(s.id,)) for n, s in enumerate(spans)]
+    body = render_body("Runbook", claims, {s.id: s for s in spans})
+    assert blocks(body)[-1] == ("paragraph", CRITICAL)
+    assert body.startswith(f"# Runbook\n\n{opened}\n")  # the claim's own text, untouched
+
+
+@pytest.mark.parametrize(
+    "closed",
+    [
+        "~~~\nsample\n   ~~~",  # three spaces close it
+        "- ~~~\n  sample\n     ~~~",  # three past the item's text close it inside the item
+        "Text\n\n    ```\n    not a fence",  # indented four: indented code, no fence
+    ],
+)
+def test_a_fence_markdown_closes_gets_no_closer(closed):
+    spans = [s for s in chunk("n1", closed)]
+    claims = [Claim(id=f"cl_{n}", text=s.text, span_ids=(s.id,)) for n, s in enumerate(spans)]
+    body = render_body("T", claims, {s.id: s for s in spans})
+    assert body == "# T\n\n" + "\n\n".join(c.text for c in claims) + "\n"
+
+
+def archive_written_before_review_two(tmp_path, texts: list[str]) -> io.BytesIO:
+    """An archive of one page of these notes, its body as render_body wrote it before
+    should-fix 8 (a closer at any indentation closed the fence)."""
+    from cairn.compiler import render_body_before_review_two
+
+    source = Store(tmp_path / "before.db")
+    try:
+        project = source.create_project("alpha")
+        claims, spans = [], {}
+        for text in texts:
+            note, _ = source.add_note(project.id, text, title="Net", topic="Net")
+            for span in source.note_spans(note.id):
+                spans[span.id] = span
+                if span.kind != "heading":
+                    claims.append(
+                        Claim(id="cl_" + span.id[3:], text=span.text, span_ids=(span.id,))
+                    )
+        body = render_body_before_review_two("Net", claims, spans)
+        assert body != render_body("Net", claims, spans)
+        source.save_page(project.id, "net", "Net", body, claims, expected_version=0)
+        archive = io.BytesIO()
+        source.export(archive)
+        archive.seek(0)
+        return archive
+    finally:
+        source.close()
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        [FALSE_CLOSER, CRITICAL],
+        ["```sh\nopen 80", FALSE_CLOSER, CRITICAL],  # one fence honestly open, one falsely shut
+    ],
+    ids=["false-closer", "mixed"],
+)
+def test_an_archive_written_before_the_closer_rule_imports_and_is_stored_as_now(
+    tmp_path, store, texts
+):
+    store.import_export(archive_written_before_review_two(tmp_path, texts))
+    body = store.get_page(store.get_project("alpha").id, "net").body
+    assert blocks(body)[-1] == ("paragraph", CRITICAL)

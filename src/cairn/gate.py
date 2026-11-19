@@ -4,7 +4,10 @@ Contract (frozen by tests/acceptance/test_w3_gate.py):
 - `lint_gate(page, spans)` lints the candidate as one cairn-format page (claims as given,
   body = page.body) against exactly the spans its claims cite, via `lint.lint_pages` with no
   entities and no unassigned spans. It passes when the report has no violations.
-- violations: one string per lint violation, "<code>: <claim_id or ->: <message>".
+- violations: one string per lint violation, "<code>: <claim_id or ->: <message>", and
+  provenance.unclaimed_line when a line of the body is no claim's, nor a heading or fence the
+  body writes (`unclaimed_line`, review blocker 1: the reverse of the claim-in-body check;
+  no statement, as the gate reads nothing from the store).
 - metrics: {"claims": claim count, "spans_cited": distinct cited span count,
   "retention": plain retention overall, "code_line_retention": plain code-line retention,
   "span_coverage": cairn span coverage, "omission_rate": cairn omission rate}.
@@ -118,9 +121,13 @@ def lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
         [spans[span_id] for span_id in cited if span_id in spans],
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
+    unclaimed = unclaimed_violations(page, spans)
     return GateResult(
-        passed=not report.violations,
-        violations=[f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations],
+        passed=not report.violations and not unclaimed,
+        violations=[
+            *(f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations),
+            *unclaimed,
+        ],
         metrics={
             "claims": len(page.claims),
             "spans_cited": len(cited),
@@ -141,9 +148,13 @@ def strict_lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResu
         [PageInput(slug=page.slug, text=page.body, claims=claims)], list(spans.values())
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
+    unclaimed = unclaimed_violations(page, spans)
     return GateResult(
-        passed=not report.violations,
-        violations=[f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations],
+        passed=not report.violations and not unclaimed,
+        violations=[
+            *(f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations),
+            *unclaimed,
+        ],
         metrics={
             "claims": len(page.claims),
             "spans_cited": len(cited),
@@ -416,3 +427,115 @@ def _structure(lines: Iterable[str]) -> int | None:
 
 def _refusal(claim: Claim, message: str) -> str:
     return f"grounding.not_verbatim: {claim.id}: {message}"
+
+
+# The reverse of provenance.claim_not_in_body (review blocker 1): every line of a body the
+# compiler wrote is a line of a claim, a heading it wrote, a fence it wrote or blank.
+
+_HEADING_LINE = re.compile(r"(#{1,6}) (.*)")
+_FENCE_LINE = re.compile(r"[ \t]*(?:`{3,}|~{3,})")
+BREADCRUMB = " > "  # between the headings past the sixth level, in its one heading
+
+
+def unclaimed_violations(page: CandidatePage, spans: Mapping[str, Span]) -> list[str]:
+    """provenance.unclaimed_line, once, for the first line of the body no claim holds
+    (`unclaimed_line`), naming its number, never its text; [] when there is none."""
+    at = unclaimed_line(page, spans)
+    if at is None:
+        return []
+    return [
+        f"provenance.unclaimed_line: -: line {at} of the body is not in a claim, nor a heading"
+        " or fence the body writes"
+    ]
+
+
+def unclaimed_line(page: CandidatePage, spans: Mapping[str, Span]) -> int | None:
+    """The number of the first line of `page.body` that is none of: blank; the title, as the
+    first line ("# " and the title's words); a heading of level 2 to 6 whose words are those
+    of a heading on the path of a passage the claims cite, or of the headings past the
+    sixth level joined by BREADCRUMB; the lines of a claim, whole and in order, each claim
+    once; a line of a fence's run alone, right after a claim (the closer the body writes).
+    None when every line is one of those. It reads the body, never renders one: a rule kept
+    apart from compiler.render_body, so a fault in the rendering is found by it. Pure, no
+    statement; linear in the body, the claims and the cited heading paths."""
+    lines = page.body.split("\n")
+    if not lines or not _same_words(lines[0], "# " + page.title):
+        return 1
+    headings: set[str] = set()
+    for claim in page.claims:
+        for span_id in claim.span_ids:
+            if span_id in spans:
+                path = spans[span_id].heading_path
+                headings.update(_words(text) for text in path)
+                headings.update(_words(BREADCRUMB.join(path[n:])) for n in range(len(path)))
+    texts = [_words(claim.text) for claim in page.claims]  # each claim's words
+    by_line: dict[str, list[int]] = {}  # the words of a claim's first line: those claims
+    by_word: dict[str, list[int]] = {}  # a claim's first word: those claims
+    for place, claim in enumerate(page.claims):
+        if texts[place]:
+            first = next(row for row in claim.text.split("\n") if row.strip())
+            by_line.setdefault(_words(first), []).append(place)
+            by_word.setdefault(texts[place].split(" ", 1)[0], []).append(place)
+    left = set(range(len(texts)))  # the claims not yet found, each found once
+    n, after_claim = 1, False
+    while n < len(lines):
+        line = lines[n]
+        if not line.strip():
+            n, after_claim = n + 1, False
+            continue
+        said = _words(line)
+        taken = _claim_at(lines, n, texts, by_line.get(said, ()), left) or _claim_at(
+            lines, n, texts, by_word.get(said.split(" ", 1)[0], ()), left
+        )  # a claim as written, else one whose words are wrapped otherwise
+        if taken is not None:
+            n, after_claim = taken, True
+            continue
+        if after_claim and _FENCE_LINE.fullmatch(line.rstrip(" \t")):
+            n, after_claim = n + 1, False
+            continue
+        heading = _HEADING_LINE.fullmatch(line)
+        if heading and len(heading[1]) > 1 and _words(heading[2]) in headings:
+            n, after_claim = n + 1, False
+            continue
+        return n + 1
+    return None
+
+
+def _claim_at(
+    lines: list[str], n: int, texts: list[str], places: Iterable[int], left: set[int]
+) -> int | None:
+    """The line after the longest claim among `places` still `left` (its words, white space
+    collapsed, as provenance.claim_not_in_body compares them, in `texts`) that the lines from
+    `n` hold whole, from its first word to its last; that claim leaves `left`. None when none
+    of them is there."""
+    best: tuple[int, int] | None = None  # (the line after it, the claim's place)
+    for place in places:
+        if place not in left:
+            continue
+        words, at, end = texts[place], 0, n
+        while end < len(lines) and at < len(words):
+            more = _words(lines[end])
+            end += 1
+            if not more:
+                continue
+            if at:
+                if words[at] != " ":
+                    break
+                at += 1
+            if not words.startswith(more, at):
+                break
+            at += len(more)
+        if at == len(words) and (best is None or len(words) > len(texts[best[1]])):
+            best = (end, place)
+    if best is None:
+        return None
+    left.discard(best[1])
+    return best[0]
+
+
+def _words(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _same_words(line: str, title_line: str) -> bool:
+    return _words(line) == _words(title_line)

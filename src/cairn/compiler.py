@@ -8,11 +8,15 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
 - A later note with the same topic updates the page: the new version keeps every existing
   claim in order and appends claims for spans it does not cite yet. Nothing new: "unchanged".
 - The body is "# <title>" followed by the claim texts in claim order, separated by blank
-  lines. A claim whose span's heading path differs from the previous claim's is preceded by
-  "## <last heading path segment>" (skipped when that segment equals the title). A claim
-  whose text opens a code fence it never closes (it copies a note that never closes one) is
-  followed by a line that closes it, the opener's own indentation and run, so the claim after
-  it is never read as code (review 7.2); the claim's text is never changed.
+  lines. The title is one line of heading text (heading_text: each line break and the blanks
+  around it one space, review blocker 1). A claim is preceded by the headings of its span's
+  path that differ from the previous claim's (section_headings; past level 6 the rest of the
+  path is one breadcrumb heading, should-fix 9). A claim whose text leaves a code fence open
+  as Markdown reads it (it copies a note that never closes one, or closes it deeper than
+  Markdown's limit) is followed by a line that closes it, the opener's own indentation and
+  run, so the claim after it is never read as code (review 7.2, should-fix 8); the claim's
+  text is never changed. Every line of the body is a claim's, a heading or fence it wrote, or
+  blank: each gate checks that (gate.unclaimed_line).
 - Before saving, the candidate page and the spans its claims cite go through a gate. A
   failing gate saves nothing and returns status "rejected" with the gate's result. The gate's
   metrics are saved with the page version.
@@ -87,8 +91,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from cairn.candidate import CandidatePage, GateResult
-from cairn.gate import verbatim_gate
-from cairn.spans import Span, claim_id
+from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate
+from cairn.spans import Span, claim_id, fence_closes, fence_opener
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
 from cairn.topics import topic_tag
 
@@ -101,6 +105,7 @@ _ADDRESS_BATCH = 8  # slugs looked up in one read when choosing a new page's add
 # A code fence, three or more backticks or tildes after any indentation and any list marker
 # (a fence may open on an item's marker line), and its info string.
 _FENCE = re.compile(r"([ \t]*)((?:[-*+]|\d{1,9}[.)])[ \t]+)?(`{3,}|~{3,})(.*)")
+_ITEM_MARK = re.compile(r"(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")  # a list item's marker
 
 
 Gate = Callable[[CandidatePage, Mapping[str, Span]], GateResult]
@@ -226,25 +231,68 @@ def section_headings(
 ) -> tuple[tuple[str, ...], list[tuple[int, str]]]:
     """A claim's section and the headings to write before it, as (level, text), when the
     claim shown before it had the section `previous`. The section is `path` (its heading
-    path) less a first heading that is the page's `title`; empty, the claim has no section.
-    Each heading is written at its depth, the first at level 2, deeper ones at 6 at most:
-    from the first that differs from `previous`, or, when the section is `previous` cut
-    short, its last, so no claim reads as under a heading off its path."""
+    path) less a first heading that is the page's title; empty, the claim has no section.
+    Each heading is written at its depth, the first at level 2; in a section deeper than
+    levels 2 to 6 hold, its fifth heading and every one after it are one heading at level 6,
+    joined by BREADCRUMB (should-fix 9), so its whole ancestry is shown and no heading of it
+    reads as a sibling of its parent. They are written from the first that differs from
+    `previous`'s, or, when the section is `previous` cut short, its last, so no claim reads
+    as under a heading off its path."""
     section = tuple(path[1:] if path[:1] == (title,) else path)
+    return section, _headings(_shown(section), _shown(tuple(previous)), lambda depth: depth + 2)
+
+
+def _shown(section: tuple[str, ...]) -> tuple[str, ...]:
+    """The headings a section is written as: its own while levels 2 to 6 hold them, else its
+    first four and the rest as one breadcrumb."""
+    deepest = 6 - 2  # the index of the heading written at level 6
+    if len(section) <= deepest + 1:
+        return section
+    return (*section[:deepest], BREADCRUMB.join(section[deepest:]))
+
+
+def _headings(
+    shown: tuple[str, ...], before: tuple[str, ...], level: Callable[[int], int]
+) -> list[tuple[int, str]]:
+    """The headings of `shown` to write after a claim under `before`: from the first that
+    differs, or, when `shown` is `before` cut short, its last (it is written again)."""
     same = 0
-    while same < min(len(section), len(previous)) and section[same] == previous[same]:
+    while same < min(len(shown), len(before)) and shown[same] == before[same]:
         same += 1
-    if section and same == len(section) < len(previous):
+    if shown and same == len(shown) < len(before):
         same -= 1  # back up to a parent: it is written again
-    return section, [(min(depth + 2, 6), section[depth]) for depth in range(same, len(section))]
+    return [(level(depth), shown[depth]) for depth in range(same, len(shown))]
+
+
+def _section_headings_before_review_two(
+    title: str, path: Sequence[str], previous: Sequence[str]
+) -> tuple[tuple[str, ...], list[tuple[int, str]]]:
+    """section_headings as it was before should-fix 9: past level 6 every heading was written
+    at level 6. For the import's check alone (render_body_before_review_two)."""
+    section = tuple(path[1:] if path[:1] == (title,) else path)
+    return section, _headings(section, tuple(previous), lambda depth: min(depth + 2, 6))
+
+
+def heading_text(title: str) -> str:
+    """A page's title as the body writes it: one line of heading text (review blocker 1). A
+    title of one line is as it is; in any other, each line break (every one str.splitlines
+    knows, as cairn.spans splits a note: CR, LF, the line and paragraph separators and the
+    rest) with the blanks around it is one space, and blank lines are dropped. The one place
+    the rule lives: a body is rendered when it is read, so a title taken in, stored or
+    imported with a line break is written by it, never as given."""
+    lines = title.splitlines()
+    if lines == [title]:
+        return title
+    return " ".join(line.strip() for line in lines if line.strip())
 
 
 def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) -> str:
     """Render the extractive body. A claim's section is the heading path of its first span
     found in `spans` (section_headings); a claim with no known span counts as having no
     heading path. The claims with no section come first, in their order; then the others in
-    their order, each under its section's headings. One pass over `claims`."""
-    return _rendered(title, claims, spans, _closed)
+    their order, each under its section's headings. The title is written as heading_text.
+    One pass over `claims`."""
+    return _rendered(title, claims, spans, _closed, section_headings, heading_text)
 
 
 def render_body_with_fences_open(
@@ -253,7 +301,21 @@ def render_body_with_fences_open(
     """The body as render_body wrote it before review 7.2, a claim that leaves a code fence
     open left open. For the import's check alone (store.portable._as_rendered), so an
     archive written then still imports; never shown."""
-    return _rendered(title, claims, spans, lambda text: text)
+    return _rendered(
+        title, claims, spans, lambda text: text, _section_headings_before_review_two, str
+    )
+
+
+def render_body_before_review_two(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before the second review: the title as given
+    (blocker 1), every heading past level 6 at level 6 (should-fix 9), and a fence closed by
+    any line of its run at any indentation (should-fix 8). For the import's check alone
+    (store.portable._as_rendered), so an archive written then still imports; never shown."""
+    return _rendered(
+        title, claims, spans, _closed_before_review_two, _section_headings_before_review_two, str
+    )
 
 
 def _rendered(
@@ -261,12 +323,16 @@ def _rendered(
     claims: Sequence[Claim],
     spans: Mapping[str, Span],
     closed: Callable[[str], str],
+    headings_of: Callable[
+        [str, Sequence[str], Sequence[str]], tuple[tuple[str, ...], list[tuple[int, str]]]
+    ],
+    written: Callable[[str], str],
 ) -> str:
-    top, rest = [f"# {title}"], []
+    top, rest = [f"# {written(title)}"], []
     previous: tuple[str, ...] = ()
     for claim in claims:
         path = next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
-        section, headings = section_headings(title, path, previous)
+        section, headings = headings_of(title, path, previous)
         if not section:
             top.append(closed(claim.text))
             continue
@@ -277,11 +343,54 @@ def _rendered(
 
 
 def _closed(text: str) -> str:
-    """`text`, and when it leaves a code fence open, a line that closes it: the opener's own
-    indentation (past a list marker it opens after) and run, so it closes inside a list item
-    too. A fence is three or more
-    backticks or tildes at a line's start ("```a```" is inline code), and only a run of the
-    same character at least as long, with nothing after it, closes it (CommonMark)."""
+    """`text`, and when it leaves a code fence open as Markdown reads it, a line that closes
+    it: the opener's own indentation (past a list marker it opens after) and run, so it closes
+    inside a list item too. Openers and closers are cairn.spans' rules (fence_opener,
+    fence_closes: one rule for splitting and for the body, should-fix 8), held to Markdown's
+    limit: a fence opens, and a closer closes it, indented at most 3 columns past the text of
+    the list item it sits in, or past the margin. A closer indented deeper is the code's text
+    ("    ~~~" under "~~~"), so the fence is still open and the body closes it; a line
+    indented 4 past its item opens no fence (it is indented code), so nothing is added."""
+    opened: tuple[str, str, int] | None = None  # (indentation to write, run, deepest closer)
+    items: list[int] = []  # the text column of each list item a line may sit in
+    for line in text.split("\n"):
+        if opened is not None:
+            if fence_closes(line, opened[1], opened[2]):
+                opened = None
+            continue
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        while items and indent < items[-1] and _ITEM_MARK.match(line.lstrip()):
+            items.pop()  # a marker less indented starts an item of a list further out
+        container = next((column for column in reversed(items) if column <= indent), 0)
+        if indent - container > 3:
+            continue  # indented code, or text that goes on: no marker, no fence
+        found = fence_opener(line)
+        if _ITEM_MARK.match(line.lstrip()):
+            column = found[0] if found else _text_column(line)
+            items.append(column)
+            container = column
+        if found:
+            column, run = found
+            written = "".join(c if c == "\t" else " " for c in line[:column])
+            opened = (written, run, container + 3)
+    return text if opened is None else f"{text}\n{opened[0]}{opened[1]}"
+
+
+def _text_column(line: str) -> int:
+    """Where a list item's text starts on its marker line: past its indentation, the marker
+    and the blanks after it."""
+    body = line.lstrip()
+    marker = _ITEM_MARK.match(body)
+    rest = body[marker.end() :] if marker else body
+    return len(line) - len(rest.lstrip())
+
+
+def _closed_before_review_two(text: str) -> str:
+    """`_closed` as it was before should-fix 8: any line of the opener's run closed it, at any
+    indentation, and a line of any indentation opened one. For the import's check alone
+    (render_body_before_review_two)."""
     opened: tuple[str, str] | None = None  # (indentation, run)
     for line in text.split("\n"):
         fence = _FENCE.fullmatch(line.rstrip(" \t\r"))
@@ -346,8 +455,9 @@ def extractive(title: str, spans: Sequence[Span]) -> Draft:
 
 def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     """The default gate. Violations: a claim with no span ids, a span id missing from `spans`,
-    a claim text (whitespace-collapsed) missing from the body. Metrics: {"claims": n,
-    "spans_cited": distinct cited span count}.
+    a claim text (whitespace-collapsed) missing from the body, and the reverse: a line of the
+    body that is no claim's, nor a heading or fence the body writes (gate.unclaimed_line,
+    review blocker 1). Metrics: {"claims": n, "spans_cited": distinct cited span count}.
 
     Each violation reads "<code>: <claim id>: <message>", like cairn.gate.lint_gate's."""
     violations = []
@@ -366,6 +476,7 @@ def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResul
             violations.append(
                 f"provenance.claim_not_in_body: {claim.id}: the claim text is not in the body"
             )
+    violations.extend(unclaimed_violations(page, spans))  # the reverse (review blocker 1)
     cited = {span_id for claim in page.claims for span_id in claim.span_ids}
     return GateResult(
         passed=not violations,

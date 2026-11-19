@@ -92,8 +92,10 @@ def test_step_29_adds_the_five_empty_tables_and_changes_nothing_else(tmp_path):
         cairn.store.schema._MIGRATIONS[28](con)
         con.execute("PRAGMA user_version = 28")
     before = set(statements(db))
-    assert cairn.store.schema._SLACK == 29 == SCHEMA_VERSION
-    Store(db).close()
+    assert cairn.store.schema._SLACK == 29 <= SCHEMA_VERSION
+    with sqlite3.connect(db) as con:  # step 29 alone, whatever steps come after it
+        cairn.store.schema._MIGRATIONS[29](con)
+        con.execute("PRAGMA user_version = 29")
     assert user_version(db) == 29
     added = [line for line in statements(db) if line not in before]
     assert added and all("slack_" in line for line in added), added

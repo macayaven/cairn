@@ -185,7 +185,7 @@ GCP_PROJECT_ID=PROJECT_ID GCP_ZONE=ZONE GCP_INSTANCE=cairn bash scripts/deploy_p
 | `GCP_DEPLOYER_SERVICE_ACCOUNT` | `production` environment secret | `tofu output -raw deployer_service_account` |
 | `GCP_ARTIFACT_REGISTRY_REPOSITORY` | `production` environment secret | `tofu output -raw artifact_registry_repository` |
 
-The job's other safeguards: every action pinned to a commit, `id-token: write` on the `deploy` job only, which runs nothing but pinned actions, two shell steps written in the workflow and the deploy script, and a concurrency group so that two deploys never run at once. A running deploy is never cancelled; a deploy still waiting for its turn is replaced by a newer one, so the newest push wins.
+The job's other safeguards: every action pinned to a commit, `id-token: write` on two jobs only: `deploy`, which uses it to sign in to Google Cloud and runs nothing but pinned actions, two shell steps written in the workflow and the deploy script, and `attest`, on a tag, which uses it to sign the release's build provenance and runs no code from the repository; and a concurrency group so that two deploys never run at once. A running deploy is never cancelled; a deploy still waiting for its turn is replaced by a newer one, so the newest push wins.
 
 ### First deploy (once, in order)
 

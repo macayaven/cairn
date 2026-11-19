@@ -5,6 +5,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -506,14 +507,17 @@ def evaluate(expression: str, context: dict, functions: dict | None = None) -> b
 STATUS_FUNCTIONS = ("success()", "always()", "failure()", "cancelled()")
 
 
-def jobs_that_run(context: dict, outputs: dict | None = None, jobs: dict = JOBS) -> set[str]:
+def jobs_that_run(
+    context: dict, outputs: dict | None = None, jobs: dict = JOBS, failed: frozenset = frozenset()
+) -> set[str]:
     """Which jobs run, as GitHub documents `needs` and `if` (workflow syntax, jobs.<id>.needs;
     expressions, status check functions): a job's `if` without a status function means
     `success() && (if)`, and "a failure or skip applies to all jobs in the dependency chain
     from the point of failure or skip onwards", so success() is false when any job before it
     in its chain was skipped, unless that job's own condition says otherwise (always()). The
     `needs` context holds the jobs a job lists, with their result and, when they ran, their
-    OUTPUTS. Nothing fails or is cancelled here: every job that runs succeeds."""
+    OUTPUTS. Nothing is cancelled here; a job that runs succeeds unless it is in FAILED, and
+    a failed job is not in the set returned."""
     results: dict[str, str] = {}
     chain: dict[str, set[str]] = {}  # every job before this one, through needs
     while len(results) < len(jobs):
@@ -540,7 +544,7 @@ def jobs_that_run(context: dict, outputs: dict | None = None, jobs: dict = JOBS)
             if not any(function in condition for function in STATUS_FUNCTIONS):
                 condition = f"success() && ({condition})"
             runs = evaluate(condition, {**context, "needs": seen}, status)
-            results[name] = "success" if runs else "skipped"
+            results[name] = ("failure" if name in failed else "success") if runs else "skipped"
     return {name for name, result in results.items() if result == "success"}
 
 
@@ -915,16 +919,135 @@ def test_every_action_names_its_version_in_a_comment():
         assert re.fullmatch(r"(- )?uses: [\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*", line), line
 
 
+CHECK_COMMAND = (
+    'python3 scripts/release_check.py "$GITHUB_REF_NAME" --repository-private'
+    ' "$REPOSITORY_PRIVATE" --commit "$GITHUB_SHA" --branch origin/main --not-released'
+    ' --github-output "$GITHUB_OUTPUT"'
+)
+
+
 def test_the_release_check_runs_on_a_tag_before_publish_and_needs_nothing_installed():
     job = JOBS["release_check"]
     assert needs(job) == {"changes"}
     assert "release_check" in needs(JOBS["publish"])
+    # Read-only: gh lists releases with the job's token, which may read and nothing more.
     assert job["permissions"] == {"contents": "read"}
     checkout, check = job["steps"]
-    assert checkout["with"] == {"persist-credentials": False}
-    assert check["run"] == 'python3 scripts/release_check.py "$GITHUB_REF_NAME"'
+    # The whole history: git needs main's commits and every tag to place the tag among them.
+    assert checkout["with"] == {"persist-credentials": False, "fetch-depth": 0}
+    assert " ".join(check["run"].split()) == CHECK_COMMAND
+    # Every value from the event or the repository reaches the shell through env:, as text.
+    assert check["env"] == {
+        "REPOSITORY_PRIVATE": "${{ github.event.repository.private }}",
+        "GH_TOKEN": "${{ github.token }}",
+        "GH_REPO": "${{ github.repository }}",
+    }
+    assert job["outputs"] == {"latest": "${{ steps." + check["id"] + ".outputs.latest }}"}
     # The check itself runs on a tag; on main the job passes without it and publish goes on.
     assert evaluate(check["if"], TAG) and not evaluate(check["if"], MAIN_PUSH)
+    part = RAW_WORKFLOW[RAW_WORKFLOW.index("  release_check:") :]
+    part = " ".join(part[: part.index("  publish:")].replace("# ", "").split())
+    assert (
+        "The whole history (fetch-depth: 0): git places the tag's commit on main and among"
+        " the repository's tags." in part
+    )
+
+
+def run_the_check_step(tmp_path, private: str, released: str = "[]") -> tuple[int, str, str]:
+    """Job `release_check`'s step as the runner runs it (bash -e), in a repository made here:
+    the real script, a tag v1.2.3 on main's head, origin/main, and a gh that prints
+    RELEASED. Returns the exit code, stderr and what the step wrote to GITHUB_OUTPUT."""
+    root, bin_ = tmp_path / "repo", tmp_path / "bin"
+    (root / "scripts").mkdir(parents=True)
+    bin_.mkdir()
+    (root / "scripts" / "release_check.py").write_text(
+        (REPO / "scripts" / "release_check.py").read_text(encoding="utf-8")
+    )
+    (root / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n')
+    (root / "CHANGELOG.md").write_text("## 1.2.3 - 2026-01-31\n\n- One.\n")
+    (bin_ / "python3").symlink_to(sys.executable)
+    (bin_ / "gh").write_text(f"#!/bin/sh\ncat <<'EOF'\n{released}\nEOF\n")
+    (bin_ / "gh").chmod(0o755)
+    env = {
+        "PATH": f"{bin_}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.test",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.test",
+    }
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["add", "."],
+        ["commit", "-q", "-m", "one"],
+        ["tag", "v1.2.3"],
+        ["update-ref", "refs/remotes/origin/main", "HEAD"],
+    ):
+        subprocess.run(["git", "-C", str(root), *args], env=env, check=True)
+    sha = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        env=env,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    output = tmp_path / "github_output"
+    output.write_text("")
+    step = JOBS["release_check"]["steps"][1]
+    done = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+        cwd=root,
+        env={
+            **env,
+            "GITHUB_REF_NAME": "v1.2.3",
+            "GITHUB_SHA": sha,
+            "GITHUB_OUTPUT": str(output),
+            "REPOSITORY_PRIVATE": private,
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    return done.returncode, done.stderr, output.read_text()
+
+
+def test_the_check_step_passes_a_tag_of_the_public_repository_and_says_latest(tmp_path):
+    code, err, output = run_the_check_step(tmp_path, private="false")
+    assert (code, err, output) == (0, "", "latest=true\n")
+
+
+def test_a_tag_pushed_to_a_private_copy_is_refused_and_publishes_and_releases_nothing(tmp_path):
+    """The same workflow runs in a private copy of this repository; a tag pushed there by
+    habit is refused by `release_check` in one line, and nothing after it runs."""
+    code, err, output = run_the_check_step(tmp_path, private="true")
+    assert code == 1 and output == ""
+    assert err == (
+        "release refused: the repository is private: a release is made only where the"
+        " public reads it\n"
+    )
+    ran = jobs_that_run(TAG, failed=frozenset({"release_check"}))
+    assert ran == THE_GATE
+    assert not ran & {"publish", "verify", "release", "deploy"}
+
+
+def test_a_tag_that_already_has_a_release_is_refused_by_the_check_step(tmp_path):
+    code, err, _ = run_the_check_step(tmp_path, private="false", released='[{"tagName":"v1.2.3"}]')
+    assert code == 1
+    assert err == (
+        "release refused: v1.2.3 already has a GitHub release: a released version is"
+        " published once\n"
+    )
+
+
+def test_no_shell_line_holds_an_expression():
+    """Event text and other values reach a `run:` through env:, never `${{ }}` in the line."""
+    runs = [step["run"] for job in JOBS.values() for step in job["steps"] if "run" in step]
+    assert len(runs) > 20
+    for run in runs:
+        assert "${{" not in run, run
 
 
 def test_a_push_to_main_still_publishes_verifies_and_deploys_and_makes_no_release():

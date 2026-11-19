@@ -320,11 +320,20 @@ jobs:
       - name: Rehearse the VM's host setup
         run: sudo env "PATH=$PATH" "DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM" python3 scripts/ci_metadata_fixture.py -- python3 scripts/rehearse_host.py cairn:ci --on-this-throwaway-machine
 
-  # On a v* tag, refuses the tag unless it is `v` + the version in pyproject.toml and
-  # CHANGELOG.md has a dated section for that version with an entry (scripts/release_check.py
-  # says how); `publish` needs this job, so nothing is published for a tag it refuses. On main
-  # its one check is skipped and the job passes. It runs where `publish` would, so a change
-  # that ships nothing, or a repository that publishes nothing, skips it as it skips publish.
+  # On a v* tag, refuses the tag, in one line and before anything is published, unless: the
+  # repository is public (the same workflow runs in a private copy, where a tag pushed by habit
+  # must publish and release nothing); the tag is `v` + the version in pyproject.toml, and
+  # CHANGELOG.md has a section for that version, dated no later than today (UTC), with an
+  # entry; its commit is main's head or one of its ancestors; no tag of its MAJOR.MINOR is a
+  # higher version; and it has no GitHub release yet, so a released version is published once
+  # and the digest people pulled stays the one the package page shows. scripts/release_check.py
+  # says how. Output `latest` is 'true' only when the tag is the highest plain version tag.
+  # `publish` needs this job. On main its one check is skipped and the job passes. It runs where
+  # `publish` would, so a change that ships nothing, or a repository that publishes nothing,
+  # skips it as it skips publish.
+  # A run that failed after `publish` and before the release was made: re-run only its failed
+  # jobs ("Re-run failed jobs"), which keeps this job's result and `publish`'s digest. Re-running
+  # every job would publish the version again, since no release exists yet to refuse it.
   release_check:
     name: the tag is the version
     needs: changes
@@ -332,16 +341,31 @@ jobs:
       github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false' &&
       needs.changes.outputs.image != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    # gh lists the releases with this token, which may read and nothing more.
     permissions:
       contents: read
+    outputs:
+      latest: ${{ steps.check.outputs.latest }}
     steps:
+      # The whole history (fetch-depth: 0): git places the tag's commit on main and among the
+      # repository's tags. No token is kept.
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check the tag against pyproject.toml and CHANGELOG.md
+          fetch-depth: 0
+      - name: Check the tag
+        id: check
         if: github.ref_type == 'tag'
-        run: python3 scripts/release_check.py "$GITHUB_REF_NAME"
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          python3 scripts/release_check.py "$GITHUB_REF_NAME"
+          --repository-private "$REPOSITORY_PRIVATE"
+          --commit "$GITHUB_SHA" --branch origin/main
+          --not-released --github-output "$GITHUB_OUTPUT"
 
   publish:
     name: publish to GHCR

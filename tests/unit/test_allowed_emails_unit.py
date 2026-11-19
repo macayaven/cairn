@@ -184,5 +184,5 @@ def test_a_providers_groups_and_the_list_both_apply(store, email, groups, status
         sent["nonce"] = asked["nonce"]
         r = client.get(f"/auth/sso/callback?code=c&state={asked['state']}", follow_redirects=False)
     assert r.status_code == status
-    assert ("cairn_session" in client.cookies) is (status == 200)
+    assert ("__Host-cairn_session" in client.cookies) is (status == 200)
     assert email not in r.text

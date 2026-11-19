@@ -30,7 +30,7 @@ def world(tmp_path):
         note, _ = view.add_note(project.id, text, source_ref="mail:1")
         assert compile_note(view, note).status == "saved"
         notes.append(note)
-    headers = {"cookie": f"cairn_session={signed.token}", **SAME_ORIGIN}
+    headers = {"cookie": f"__Host-cairn_session={signed.token}", **SAME_ORIGIN}
     with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
         yield store, view, client, headers, notes
     store.close()

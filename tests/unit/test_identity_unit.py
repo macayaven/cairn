@@ -250,7 +250,7 @@ def test_oidc_fetches_discovery_once_when_first_used_and_sends_a_nonce():
     sent = query(run(provider, handler, "start"))
     assert sent["nonce"] == "the-nonce" and sent["scope"] == "openid email profile"
     profile = run(provider, handler)
-    assert profile == Profile(subject="u-1", email="c@acme.example", name="C")
+    assert profile == Profile(subject="u-1", email="c@acme.example", name="C", second_factor=False)
     run(provider, handler)
     assert handler.calls.count(f"{ISSUER}/.well-known/openid-configuration") == 1
     assert "acme-secret" not in repr(provider)

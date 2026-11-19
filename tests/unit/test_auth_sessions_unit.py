@@ -242,7 +242,7 @@ def the_session_cookie(response) -> tuple[str, str, dict]:
         jar = SimpleCookie()
         jar.load(header)
         for name, morsel in jar.items():
-            if morsel["path"] == "/":
+            if morsel["path"] == "/" and "signin" not in name:  # not the state cookie
                 found.append((name, morsel.value, {k: v for k, v in morsel.items() if v}))
     assert len(found) == 1, response.headers.get_list("set-cookie")
     return found[0]
@@ -360,19 +360,20 @@ def sign_in_as(browser) -> tuple[str, str]:
 def test_signing_out_ends_and_clears_every_name_the_session_cookie_has_had(store, clock):
     """A browser signed in before a brand was switched on, or off, still holds the cookie of
     the other name, and its session is stored. Signing out ends and clears every name the
-    server has used for the session cookie (cairn_session, session, __Host-session) that the
-    browser sends, wherever its session is, so none comes back when the brand is switched."""
+    server has used for the session cookie (cairn_session, session, __Host-session,
+    __Host-cairn_session) that the browser sends, wherever its session is, so none comes back
+    when the brand is switched."""
     plain = TestClient(app(store, clock), base_url=BASE)
     _, old = sign_in_as(plain)
     branded = TestClient(app(store, clock, brand_name="Knowledge Base"), base_url=BASE)
     name, new = sign_in_as(branded)
     _, older = sign_in_as(TestClient(app(store, clock), base_url=BASE))
-    branded.cookies.set("cairn_session", old)
+    branded.cookies.set("__Host-cairn_session", old)
     branded.cookies.set("session", older)  # the name over http, or before __Host-
     out = branded.post("/logout", headers=SAME_ORIGIN, follow_redirects=False)
     assert out.status_code == 303
     cleared = cookies_set(out)
-    assert cleared == {n: ("", "0", "/") for n in (name, "cairn_session", "session")}
+    assert cleared == {n: ("", "0", "/") for n in (name, "__Host-cairn_session", "session")}
     for token in (new, old, older):
         assert store.resolve_session(token) is None
 
@@ -381,18 +382,18 @@ def test_signing_out_ends_and_clears_every_name_the_session_cookie_has_had(store
     _, plain_token = sign_in_as(plain)
     plain.cookies.set(name, under_brand)
     out = plain.post("/logout", headers=SAME_ORIGIN, follow_redirects=False)
-    assert out.status_code == 303 and set(cookies_set(out)) == {"cairn_session", name}
+    assert out.status_code == 303 and set(cookies_set(out)) == {"__Host-cairn_session", name}
     assert store.resolve_session(plain_token) is None
     assert store.resolve_session(under_brand) is None
 
 
 def test_signing_out_with_only_the_current_cookie_clears_only_that_one(store, clock):
     """What the browser does not send is not cleared: a sign-out without a brand, from a
-    browser holding only cairn_session, answers as it did before."""
+    browser holding only __Host-cairn_session, answers as it did before."""
     browser = TestClient(app(store, clock), base_url=BASE)
     sign_in_as(browser)
     out = browser.post("/logout", headers=SAME_ORIGIN, follow_redirects=False)
-    assert list(cookies_set(out)) == ["cairn_session"]
+    assert list(cookies_set(out)) == ["__Host-cairn_session"]
 
 
 # Lowering --session-days: serve caps what is stored when it starts

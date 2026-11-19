@@ -72,7 +72,7 @@ from cairn.web.members import member_routes
 from cairn.web.public import Public
 from cairn.web.ratelimit import CredentialFailures, RateLimiter
 from cairn.web.rest import rest_routes
-from cairn.web.signin import SignIn, signin_routes
+from cairn.web.signin import STATE_COOKIE, STATE_PATH, SignIn, allowed, signin_routes
 from cairn.web.slack import (
     Keeper,
     OneClient,
@@ -317,6 +317,7 @@ def create_app(
     brand_logo: "str | os.PathLike[str] | Logo | None" = None,
     brand_logo_alt: str | None = None,
     session_days: int | None = None,
+    idle_minutes: int | None = None,
     file_every: float | None = None,
     compiles: int = COMPILES,
     keep_versions: int | None = None,
@@ -372,8 +373,9 @@ def create_app(
     `brand_name`, `brand_logo` (a file's path, or a cairn.web.brand.Logo already read) and
     `brand_logo_alt`: the operator's name in place of cairn's (cairn.web.brand). `session_days`
     (a whole number from 1 to 365): a sign-in lasts that many days and use renews it
-    (auth.Sessions). Each needs `sign_in` (ValueError otherwise, as for a value that cannot be
-    used); left out, nothing changes.
+    (auth.Sessions). `idle_minutes` (a whole number from 1 to 1440): a session not used for
+    that many minutes is over (auth.Sessions.idle). Each needs `sign_in` (ValueError
+    otherwise, as for a value that cannot be used); left out, nothing changes.
     `file_every` (N1; `serve` sets it, cairn.web.filing.FILE_EVERY): the notes waiting for
     their page are filed in the background, those of the start once the app runs, then a
     look every that many seconds (cairn.web.filing); shutdown waits for the note in hand.
@@ -460,6 +462,7 @@ def create_app(
             ("--test-instance", test_instance),
             ("--brand-name", brand_name is not None),
             ("--session-days", session_days is not None),
+            ("--idle-minutes", idle_minutes is not None),
         ):
             if given:
                 raise ValueError(f"{option} needs --sign-in")
@@ -470,6 +473,10 @@ def create_app(
         )
     if session_days is not None and (type(session_days) is not int or not 1 <= session_days <= 365):
         raise ValueError("--session-days is a whole number from 1 to 365")
+    if idle_minutes is not None and (
+        type(idle_minutes) is not int or not 1 <= idle_minutes <= 1440
+    ):
+        raise ValueError("--idle-minutes is a whole number from 1 to 1440")
     brand = make_brand(brand_name, brand_logo, brand_logo_alt)  # ValueError naming the option
     turns = Compiles(compiles)  # ValueError naming the option
     if sync_every is not None and not sync_every >= MIN_SYNC_EVERY:
@@ -482,10 +489,13 @@ def create_app(
     issuer = oauth.issuer(public_url)  # None: OAuth is off
     secure = (public_url or "").lower().startswith("https://")
     sessions = Sessions(
-        cookie=branded_cookie(BRANDED_SESSION_COOKIE, secure) if brand else SESSION_COOKIE,
+        cookie=branded_cookie(BRANDED_SESSION_COOKIE if brand else SESSION_COOKIE, secure),
         seconds=session_days * 86_400 if session_days else SESSION_TTL,
         renews=session_days is not None,
         secure=secure,
+        # the names before the __Host- prefix, on https without a brand: cleared, never read
+        retired=((SESSION_COOKIE, "/"), (STATE_COOKIE, STATE_PATH)) if secure and not brand else (),
+        idle=idle_minutes * 60 if idle_minutes else None,
     )
     accounts = Accounts(
         store,
@@ -496,6 +506,8 @@ def create_app(
         saved=arranger.queue if arranger is not None else None,
         sessions=sessions,
         compiles=turns,
+        # who may stay signed in, on every request (ValueError as signin.check's)
+        allowed=allowed(sign_in, public_url) if sign_in else None,
     )
     if arranger is not None and guard is not None:  # what it screens a page with, too
         arranger.guard = guard

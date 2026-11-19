@@ -335,7 +335,7 @@ def sign_in(env, provider: str, profile: dict, *, next_path: str | None = None, 
 
 def session_of(env):
     """Who the browser's current session belongs to."""
-    principal = env.store.resolve_session(env.client.cookies["cairn_session"])
+    principal = env.store.resolve_session(env.client.cookies["__Host-cairn_session"])
     assert principal is not None and principal.kind == "session" and principal.user_id
     return principal
 
@@ -382,7 +382,7 @@ def test_starting_a_sign_in_sets_a_state_cookie_and_writes_nothing(env):
     r = env.client.get("/auth/github?next=/keys", follow_redirects=False)
     assert r.status_code == 302
     cookies = [c.lower() for c in r.headers.get_list("set-cookie")]
-    state_cookie = next(c for c in cookies if "cairn_session=" not in c)
+    state_cookie = next(c for c in cookies if "__Host-cairn_session=" not in c)
     assert "httponly" in state_cookie and "samesite=lax" in state_cookie
     assert "secure" in state_cookie
     max_age = int(re.search(r"max-age=(\d+)", state_cookie).group(1))
@@ -426,7 +426,9 @@ def test_first_sign_in_creates_a_user_a_workspace_and_a_session(env):
     r = sign_in(env, "github", ADA_GITHUB)
     assert r.status_code == 200
     assert refresh_target(r.text) == "/welcome"
-    session = next(c for c in r.headers.get_list("set-cookie") if "cairn_session=" in c).lower()
+    session = next(
+        c for c in r.headers.get_list("set-cookie") if "__Host-cairn_session=" in c
+    ).lower()
     assert "httponly" in session and "samesite=strict" in session and "secure" in session
 
     accounts = [a for a in env.store.list_accounts() if a.id != "acct_default"]
@@ -497,8 +499,8 @@ def test_an_unverified_email_is_refused_and_creates_nothing(env):
     for provider, profile in (("github", ADA_GITHUB), ("google", ADA_GOOGLE), ("acme", CLARA_ACME)):
         r = sign_in(env, provider, profile, verified=False)
         assert r.status_code == 403, provider
-        assert "cairn_session" not in env.client.cookies
-        assert not any("cairn_session=" in c for c in r.headers.get_list("set-cookie"))
+        assert "__Host-cairn_session" not in env.client.cookies
+        assert not any("__Host-cairn_session=" in c for c in r.headers.get_list("set-cookie"))
     assert dump(env.db) == before
     # A verified sign-in later does not join anything left over from the refused ones.
     sign_in(env, "github", ADA_GITHUB)
@@ -558,7 +560,7 @@ def test_a_cancelled_or_failed_sign_in_goes_back_to_login(env):
 
     state = start(env, "github")["state"]  # the provider rejects the code
     failed = env.client.get(f"/auth/github/callback?code=made-up&state={state}")
-    assert failed.status_code in (400, 502) and "cairn_session" not in env.client.cookies
+    assert failed.status_code in (400, 502) and "__Host-cairn_session" not in env.client.cookies
     assert dump(env.db) == before
 
 
@@ -613,7 +615,7 @@ def test_an_oidc_provider_signs_people_into_the_shared_workspace(org):
 def test_an_install_can_be_limited_to_its_own_email_domains(org):
     before = dump(org.db)
     r = sign_in(org, "acme", GUEST_ACME)
-    assert r.status_code == 403 and "cairn_session" not in org.client.cookies
+    assert r.status_code == 403 and "__Host-cairn_session" not in org.client.cookies
     r = sign_in(org, "github", ADA_GITHUB)  # verified, but not the organisation's domain
     assert r.status_code == 403
     assert dump(org.db) == before
@@ -682,7 +684,7 @@ def test_an_oidc_provider_can_admit_only_named_groups(tmp_path):
             student = {**DEV_ACME, "groups": ["students"]}
             assert sign_in(w, "acme", student).status_code == 403
             assert sign_in(w, "acme", GUEST_ACME).status_code == 403  # no groups at all
-            assert "cairn_session" not in client.cookies and dump(w.db) == before
+            assert "__Host-cairn_session" not in client.cookies and dump(w.db) == before
 
             staff = {**CLARA_ACME, "groups": ["therapists", "staff"]}
             assert sign_in(w, "acme", staff).status_code == 200
@@ -705,7 +707,7 @@ def test_an_id_token_must_be_this_sign_ins_own(org):
         try:
             r = sign_in(org, "acme", CLARA_ACME)
             assert r.status_code == 400, field
-            assert "cairn_session" not in org.client.cookies, field
+            assert "__Host-cairn_session" not in org.client.cookies, field
         finally:
             setattr(org.fake, field, original)
     assert dump(org.db) == before

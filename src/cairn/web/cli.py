@@ -601,6 +601,20 @@ def _wall_options(serve: argparse.ArgumentParser) -> None:
         " name when not given)",
     )
     serve.add_argument(
+        "--idle-minutes",
+        type=_idle_minutes,
+        metavar="N",
+        help="with --sign-in: a sign-in not used for N minutes (1 to 1440) ends, up to a minute"
+        " late, whatever its length; without it, use is not recorded and nothing ends for it",
+    )
+    serve.add_argument(
+        "--require-mfa",
+        action="store_true",
+        help="with --sign-in through oidc only: a sign-in is refused unless the provider's ID"
+        " token shows a second factor (amr holding mfa, or a multi-factor acr); github and"
+        " google do not say, so serve refuses to start with them",
+    )
+    serve.add_argument(
         "--session-days",
         type=_days,
         metavar="N",
@@ -609,6 +623,16 @@ def _wall_options(serve: argparse.ArgumentParser) -> None:
         " without it, 12 hours and no renewal. At start, a sign-in made under a longer length"
         " is cut to end at most this length from then",
     )
+
+
+def _idle_minutes(text: str) -> int:
+    try:
+        minutes = int(text)
+    except ValueError:
+        minutes = 0
+    if not 1 <= minutes <= 1440:
+        raise argparse.ArgumentTypeError("a whole number of minutes from 1 to 1440")
+    return minutes
 
 
 def _days(text: str) -> int:
@@ -629,6 +653,8 @@ def _would_do_nothing(args: argparse.Namespace) -> str | None:
             ("--test-instance", args.test_instance),
             ("--brand-name", args.brand_name is not None),
             ("--session-days", args.session_days is not None),
+            ("--require-mfa", args.require_mfa),
+            ("--idle-minutes", args.idle_minutes is not None),
         ):
             if given:
                 return f"{option} needs --sign-in: without it nobody signs in through a provider"
@@ -1606,6 +1632,7 @@ def _sign_in(args: argparse.Namespace, environ: Mapping[str, str]) -> SignIn | N
         join=args.join,
         allowed_email_domains=args.domains,
         allowed_emails=emails,
+        require_mfa=args.require_mfa,
     )
 
 
@@ -1756,6 +1783,33 @@ def clear_text(host: str, public_url: str | None) -> str | None:
     return CLEAR_TEXT.format(host=host)
 
 
+# What `serve` says at start, one line each on stderr, without stopping.
+NO_TRUSTED_PROXY = (
+    "serve answers at an https public URL with no --trusted-proxy: every caller reaches it"
+    " from the proxy in front, so all callers share one count in the per-client limits"
+    " (sign-ins, agent registrations, refused keys); name that proxy with --trusted-proxy"
+)
+NO_OPERATOR_NOTES = (
+    "serve has no --operator-notes: the privacy guide shows people no operator, no country"
+    " where the data is kept and no contact; write them in a file and pass --operator-notes"
+)
+
+
+def no_trusted_proxy(public_url: str | None, proxies: list[str]) -> str | None:
+    """NO_TRUSTED_PROXY when `public_url` is https and no proxy is trusted; None otherwise."""
+    if (public_url or "").lower().startswith("https://") and not proxies:
+        return NO_TRUSTED_PROXY
+    return None
+
+
+def no_operator_notes(sign_in: bool, public_url: str | None, notes: str | None) -> str | None:
+    """NO_OPERATOR_NOTES when people sign in or the server has a public URL, and no operator
+    notes were given; None otherwise."""
+    if (sign_in or public_url) and notes is None:
+        return NO_OPERATOR_NOTES
+    return None
+
+
 def _serve(args: argparse.Namespace) -> int:
     if (said := cli_arrange.refused(args)) is not None:  # before anything is opened
         print(said, file=sys.stderr)
@@ -1868,6 +1922,7 @@ def _serve(args: argparse.Namespace) -> int:
                 brand_logo=brand.logo if brand else None,
                 brand_logo_alt=args.brand_logo_alt,
                 session_days=args.session_days,
+                idle_minutes=args.idle_minutes,
                 file_every=FILE_EVERY,  # N1: the notes waiting for their page are filed
                 compiles=args.compiles,  # G1: notes compiled at once
                 keep_versions=_kept(args, plans),  # Q1: a page's history bound
@@ -1891,6 +1946,10 @@ def _serve(args: argparse.Namespace) -> int:
         if (says := cli_arrange.serve_says(args, arranger, send, opt_in)) is not None:
             print(says, file=sys.stderr, flush=True)  # what the model is sent, at a glance
         if (says := clear_text(args.host, args.public_url)) is not None:  # H1
+            print(says, file=sys.stderr, flush=True)
+        if (says := no_trusted_proxy(args.public_url, proxies)) is not None:
+            print(says, file=sys.stderr, flush=True)
+        if (says := no_operator_notes(sign_in is not None, args.public_url, notes)) is not None:
             print(says, file=sys.stderr, flush=True)
         if (says := _history_at_start(store, plans, _kept(args, plans))) is not None:  # Q1
             print(says, file=sys.stderr, flush=True)

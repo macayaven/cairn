@@ -65,7 +65,7 @@ class World:
             team_domain="fable-works", bot_user_id=BOT,
         )  # fmt: skip
         self.client = TestClient(self.app, base_url=BASE)
-        self.client.cookies.set("cairn_session", made.token, domain=HOST, path="/")
+        self.client.cookies.set("__Host-cairn_session", made.token, domain=HOST, path="/")
 
     def offer(self) -> str:
         return self.view.offer_slack_link(self.install, GUS)

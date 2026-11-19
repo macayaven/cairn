@@ -4,7 +4,7 @@ test_page_heads_unit's version 25, then step 26, as cairn wrote them."""
 
 import pytest
 from test_page_heads_unit import v25_database
-from test_store_unit import connect, rows, statements, user_version
+from test_store_unit import before_step_30, connect, rows, statements, user_version
 
 import cairn.store.schema
 from cairn.store import SCHEMA_VERSION, Store
@@ -34,10 +34,13 @@ def test_step_27_adds_the_empty_checkouts_table_and_changes_nothing_else(tmp_pat
     before = set(v26["statements"])
     added = [line for line in statements(db) if line not in before]
     later = ("credential_tokens", "google_revocations", "slack_")  # 28, 29: empty tables
+    later += ("sessions",)  # 30: sessions rebuilt with their last use
     assert added and all(
         "checkouts" in line or any(name in line for name in later) for line in added
     ), added
-    assert set(v26["statements"]) <= set(statements(db))  # every row there was is kept
+    rebuilt = {line for line in v26["statements"] if line.startswith("CREATE TABLE sessions")}
+    kept = set(before_step_30(statements(db)))
+    assert set(v26["statements"]) - rebuilt <= kept  # every row there was is kept
 
 
 def test_a_database_migrated_from_version_26_has_the_fresh_schema(tmp_path):

@@ -3583,12 +3583,25 @@ def test_a_failed_step_to_the_source_switch_leaves_the_version_20_database_as_it
 V21_SESSION = hashlib.sha256(b"token-v21").hexdigest()
 
 
+def before_step_30(lines: list[str]) -> list[str]:
+    """Statements of a database migrated past step 30, as step 29 left them: step 30 gives
+    each session its last use (its last column), NULL on every session that existed."""
+    out = []
+    for line in lines:
+        if line.startswith('INSERT INTO "sessions"'):
+            assert line.endswith(",NULL);"), line
+            line = line.removesuffix(",NULL);") + ");"
+        out.append(line)
+    return out
+
+
 def before_step_22(lines: list[str]) -> list[str]:
     """Statements of a database migrated past step 22, as step 21 left them: step 22 gives
     each session a vouched address (its last column), NULL on every session that existed.
-    Anything else step 22 changed stays, and fails the comparison."""
+    Anything else step 22 changed stays, and fails the comparison. Every database here that
+    is past step 22 is past step 30 too, whose column comes last: it goes first."""
     out = []
-    for line in lines:
+    for line in before_step_30(lines):
         if line.startswith('INSERT INTO "sessions"'):
             assert line.endswith(",NULL);"), line
             line = line.removesuffix(",NULL);") + ");"
@@ -3646,7 +3659,8 @@ def test_a_version_21_database_keeps_every_session_with_no_vouched_address(db):
     s = Store(db, clock=lambda: datetime(2026, 12, 1, tzinfo=UTC))
     try:
         assert user_version(db) == SCHEMA_VERSION > cairn.store.schema._VOUCHED_EMAIL == 22
-        assert rows(db, "SELECT * FROM sessions ORDER BY rowid") == [(*r, None) for r in held]
+        # step 22's vouched address, then step 30's last use: NULL on each
+        assert rows(db, "SELECT * FROM sessions ORDER BY rowid") == [(*r, None, None) for r in held]
         inserted = [line for line in v21["statements"] if line.startswith("INSERT")]
         after = [
             line

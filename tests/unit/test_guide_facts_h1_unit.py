@@ -378,5 +378,6 @@ def test_a_listener_in_clear_text_says_so_and_starts(tmp_path, listened, capsys)
     assert "unless a proxy in front of it ends TLS" in line
     url = "https://cairn.example.test"
     assert cli.main(["serve", "--db", db, "--host", "0.0.0.0", "--public-url", url]) == 0
-    assert capsys.readouterr().err == ""
+    others = (cli.NO_TRUSTED_PROXY, cli.NO_OPERATOR_NOTES)  # another contract's lines
+    assert [x for x in capsys.readouterr().err.splitlines() if x not in others] == []
     assert len(listened) == 2

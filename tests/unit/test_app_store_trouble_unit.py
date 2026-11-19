@@ -163,7 +163,7 @@ def test_an_unusable_store_behind_the_wall_tells_a_visitor_nothing_more(store, m
         raise StoreUnusable()
 
     monkeypatch.setattr(store, "identify_session", unusable)
-    browser.cookies.set("cairn_session", "made-up-token")
+    browser.cookies.set("__Host-cairn_session", "made-up-token")
     r = browser.get("/projects", follow_redirects=False)
     assert (r.status_code, r.text) == (503, "Service Unavailable")
 

@@ -558,7 +558,7 @@ def session_set(response: httpx.Response) -> tuple[str, str, dict]:
     found = [
         (name, value, attributes)
         for name, (value, attributes) in set_cookies(response).items()
-        if value and attributes.get("path") == "/"
+        if value and attributes.get("path") == "/" and not name.endswith("signin")
     ]
     said = response.headers.get_list("set-cookie")
     assert len(found) == 1, f"no single session cookie set: {said}"
@@ -1471,7 +1471,7 @@ def test_an_agent_outlives_the_brand_being_set_or_removed(make, branded_first):
         assert projects_over_mcp(after, got["access_token"], heard) == ["core"]
 
 
-# 7. The list still decides who signs in, and nothing else
+# 7. The list decides who signs in, and is checked on every request
 
 
 def test_the_list_still_gates_sign_in_under_the_wall_and_the_brand(make):
@@ -1484,10 +1484,11 @@ def test_the_list_still_gates_sign_in_under_the_wall_and_the_brand(make):
     later = world.app(listed=(ADA,), **settings)
     again = world.browser(later)
     again.cookies.set(cookie, token)
-    home = again.get("/", follow_redirects=False)
-    assert home.status_code == 200 and "Brook Ng" in home.text  # still open, still Brook
-    stranger = fresh(later)
     before = dump(world.db)
+    home = again.get("/", follow_redirects=False)
+    assert home.status_code == 303 and "Brook Ng" not in home.text  # ended: checked per request
+    assert dump(world.db) == before  # nothing deleted
+    stranger = fresh(later)
     r = sign_in(world, stranger, BROOK_GITHUB)
     assert r.status_code == 403 and dump(world.db) == before
     assert not [c for c, (value, a) in set_cookies(r).items() if value and a.get("path") == "/"]
@@ -1793,10 +1794,10 @@ def test_without_the_settings_every_byte_is_as_today(make):
     browser = world.browser(plain)
     signed_out = snapshot(fresh(plain))
     started = browser.get("/auth/github", follow_redirects=False)
-    assert f"{NAME}_signin" in set_cookies(started)  # today's names
+    assert f"__Host-{NAME}_signin" in set_cookies(started)  # today's names, on https
     r = sign_in(world, browser, ADA_GITHUB)
     cookie, token, made = session_set(r)
-    assert cookie == f"{NAME}_session" and int(made["max-age"]) == TWELVE_HOURS
+    assert cookie == f"__Host-{NAME}_session" and int(made["max-age"]) == TWELVE_HOURS
     signed = snapshot(browser)
 
     # An app with every setting, used in the same process, changes nothing for the others.

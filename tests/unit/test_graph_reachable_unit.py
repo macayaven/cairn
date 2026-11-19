@@ -49,7 +49,7 @@ def world(tmp_path):
             ada=ada,
             alpha=alpha,
             beta=beta,
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"__Host-cairn_session={signed.token}"},
         )
     store.close()
 

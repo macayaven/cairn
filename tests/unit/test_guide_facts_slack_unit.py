@@ -23,7 +23,11 @@ from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, 
 from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
 
 import cairn.store.slack as store_slack
-from cairn import server
+from cairn import server, sources
+from cairn.arrange import Arranger
+from cairn.compiler import compile_note, extractive
+from cairn.llm import FakeModel
+from cairn.memory import Memory
 from cairn.server import create_app
 from cairn.slack import (
     blocks,
@@ -50,6 +54,7 @@ from cairn.store.slack import (
     OFFER_TTL,
     TRIES,
 )
+from cairn.web import cli_arrange
 from cairn.web import slack as web_slack
 from cairn.web.brand import product_of
 
@@ -875,6 +880,56 @@ def test_privacy_the_slack_secrets_are_credentials_the_database_can_hold():
     )
     assert raw.count(sentence) == 1
     assert "is the one credential of another service" not in raw
+
+
+def test_privacy_where_a_note_from_slack_can_go(bench, monkeypatch):
+    """privacy.md: "cairn compiles a note that came through Slack itself, with no model. A
+    page that holds one is not sent to a model the operator connects to arrange pages unless
+    the operator sets `<PREFIX>_SLACK_NOTES=send`, the one setting that names Slack, and then
+    not in a project its people keep from every model; cairn tidies that page itself
+    instead.\""""
+    name = PRODUCT.name
+    says(
+        *PRIVACY,
+        f"{name} compiles a note that came through Slack itself, with no model.",
+        "A page that holds one is not sent to a model the operator connects to arrange pages"
+        " unless the operator sets `<PREFIX>_SLACK_NOTES=send`, the one setting that names"
+        " Slack, and then not in a project its people keep from every model;"
+        f" {name} tidies that page itself instead.",
+    )
+    # compiled with no model: Memory compiles with compile_note's own default, the extractive
+    assert inspect.signature(compile_note).parameters["compose"].default is extractive
+    assert "compose" not in inspect.getsource(Memory.note)
+    # held unless the setting that names Slack says send; SOURCE_NOTES=send does not
+    environ = {"ARRANGER_SOURCE_NOTES": "send"}
+    assert not cli_arrange.sends_slack_notes("ARRANGER", environ)
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SLACK_NOTES": "send"})
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    ask(bench, "note Kiln log\n\nThe kiln is fired on Tuesdays.")
+    model = FakeModel([])
+    arranger = Arranger(model, price=None, view_for=bench.store.for_account, withhold=())
+    arranger.queue(bench.account, bench.library.id, "kiln-log")
+    (done,) = asyncio.run(arranger.run_once())
+    assert done.status == "withheld" and model.requests == []
+
+
+def test_privacy_the_list_of_what_a_model_is_not_sent_names_slack():
+    """privacy.md, **Models.**: "A page that holds a note read from Google Meet, Google
+    Calendar, Gmail or Google Drive, from a connector of your own, or through Slack, is not
+    sent unless the operator allows it" and "A page that holds a note that came through Slack
+    is sent only with `<PREFIX>_SLACK_NOTES=send`, except in such a project.\""""
+    (line,) = [line for line in guide_source("privacy").splitlines() if "**Models.**" in line]
+    assert (
+        "A page that holds a note read from Google Meet, Google Calendar, Gmail or Google Drive,"
+        " from a connector of your own, or through Slack, is not sent unless the operator allows"
+        " it;"
+    ) in flat(line)
+    assert (
+        "A page that holds a note that came through Slack is sent only with"
+        " `<PREFIX>_SLACK_NOTES=send`, except in such a project."
+    ) in flat(line)
+    assert frozenset({"slack"}) == sources.HELD_VIA
+    assert "slack" not in sources.withheld_via() and "slack" not in sources.KINDS
 
 
 # The security guide, "Slack"

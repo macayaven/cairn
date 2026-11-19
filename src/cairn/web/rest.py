@@ -83,12 +83,16 @@ from cairn.memory import (
 from cairn.sources import CHOOSING, KINDS
 from cairn.sources.runner import PreviewBusy, preview_days, preview_new_source, preview_source
 from cairn.store import CredentialInfo, SourceInfo
+from cairn.store.audit import AUDIT_LIMIT_MAX
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.store.usage import OverLimit
-from cairn.web.auth import _memory
+from cairn.web.auth import _memory, may_manage_credentials
 from cairn.web.turns import compile_turn
 
 Handler = Callable[[Request], Response | Awaitable[Response]]
+AUDIT_AT_ONCE = 100  # the events GET /api/audit answers when no `limit` is given
+NOT_AUDITOR = "only a key that manages the workspace reads its audit log"
+AUDIT_LIMIT = f"'limit' is a whole number, 1 to {AUDIT_LIMIT_MAX}"
 
 
 def _logged(action: str, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
@@ -256,6 +260,34 @@ def rest_routes() -> list[Route]:
         limit = _whole_number(query, "limit", HITS_RANGE)  # the range, as for 0 or 51
         return JSONResponse(_memory(request).recall(words, project, 8 if limit is None else limit))
 
+    def audit(request: Request) -> Response:
+        """GET /api/audit: the audit log as the web page reads it (Store.list_audit), newest
+        first, for a caller that manages the workspace (403 otherwise, a narrowed key
+        included). `before` (an event's number, as `events_next` gives it), `limit` (1 to
+        AUDIT_LIMIT_MAX; AUDIT_AT_ONCE when left out), `action` and `project`. Answers
+        {"events", "events_total"} and, while older events match, `events_next`."""
+        query = _query(request, "before", "limit", "action", "project")
+        limit = _whole_number(query, "limit", AUDIT_LIMIT)
+        if limit is not None and not 1 <= limit <= AUDIT_LIMIT_MAX:
+            raise BadRequest(AUDIT_LIMIT)
+        before = _whole_number(query, "before")
+        memory = _memory(request)
+        if not may_manage_credentials(memory):
+            raise Forbidden(NOT_AUDITOR)
+        part = memory.store.list_audit(
+            AUDIT_AT_ONCE if limit is None else limit,
+            before=before,
+            action=query.get("action") or None,
+            project=query.get("project") or None,
+        )
+        answer: dict[str, Any] = {
+            "events": [event.model_dump() for event in part],
+            "events_total": part.total,
+        }
+        if part and part.newer + len(part) < part.total:
+            answer["events_next"] = part[-1].n
+        return JSONResponse(answer)
+
     def credentials(request: Request) -> Response:
         """GET /api/credentials (R2): the credentials the caller may see."""
         _query(request)
@@ -391,6 +423,7 @@ def rest_routes() -> list[Route]:
             _logged("source_preview", source_preview),
             methods=["POST"],
         ),
+        Route("/api/audit", _logged("audit", audit), methods=["GET"]),
         Route("/api/credentials", _logged("credentials", credentials), methods=["GET"]),
         Route(
             "/api/credentials/{name}",

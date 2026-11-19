@@ -43,6 +43,7 @@ from cairn.slack.setup import block as slack_block
 from cairn.slack.setup import office_of, setup_routes
 from cairn.sources.runner import MIN_SYNC_EVERY, source_client
 from cairn.store import CannotWrite, Principal, Store, StoreUnusable
+from cairn.store.base import AUDIT_KEEP
 from cairn.web.account import account_routes
 from cairn.web.auth import (
     BRANDED_SESSION_COOKIE,
@@ -327,6 +328,8 @@ def create_app(
     google_connect: GoogleConnect | None = None,
     graph_explorer: bool = False,
     slack: Slack | None = None,
+    audit_reads: bool = False,
+    audit_keep: int | None = AUDIT_KEEP,
 ) -> Starlette:
     """The store goes to `Accounts` and nowhere else: no handler is defined where it is in reach.
     `sign_in`: people sign in through identity providers instead of with an API key
@@ -387,6 +390,12 @@ def create_app(
     removes none. None, the default: every version is kept. With `plans` a plan's own
     versions_per_page rules, so `keep_versions` beside them is a ValueError, as is anything
     but None or a whole number of at least 1.
+    `audit_reads` (`serve --audit-reads`; Store.reads_audited): reading a page, a note, a
+    claim's evidence, a search and a graph are each an event of the workspace's audit log
+    (cairn.memory.READ_EVENTS), each read one more write; False, the default: they are on the
+    access log alone. `audit_keep` (`serve --audit-keep`; Store.audit_keep): how many of its
+    newest events each workspace keeps, AUDIT_KEEP (100,000) unless given; None: every one.
+    Anything else for either is a ValueError.
     `docs_artifact`, `docs_release` and `docs_reader_env` configure a dedicated read-only
     documentation release (docs/documentation-helper.md): /help and the footer's Help link exist
     only when one of the three is given. `clock` also times its VERIFY_EVERY. The helper
@@ -424,6 +433,10 @@ def create_app(
     route, no block, no table read."""
     if type(graph_explorer) is not bool:
         raise ValueError("graph_explorer is True or False")
+    if type(audit_reads) is not bool:
+        raise ValueError("audit_reads is True or False")
+    if audit_keep is not None and (type(audit_keep) is not int or audit_keep < 1):
+        raise ValueError("--audit-keep is a whole number, 1 or more, or all")
     if slack is not None:
         # ValueError, serve's sentence; under a brand too, for now (UNDER_A_BRAND)
         check_slack(slack, sign_in=sign_in, public_url=public_url, brand_name=brand_name)
@@ -723,4 +736,6 @@ def create_app(
     if slack is not None:  # K1: the installs' secrets, for every view made from now on
         store.slack_sealer = slack.sealer()
     store.bound_history(keep_versions)  # last: an app refused above changes nothing
+    store.audit_keep = audit_keep  # how many events each workspace keeps (None: every one)
+    store.reads_audited = audit_reads  # whether a read is an event of its workspace
     return app

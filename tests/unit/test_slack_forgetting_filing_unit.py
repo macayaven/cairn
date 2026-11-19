@@ -94,6 +94,24 @@ def test_a_claim_taken_over_and_filed_meanwhile_stores_nothing_and_says_filed_al
     assert rows(bench) == [(first, CONVERSATION, TIME)]
 
 
+def test_a_message_whose_text_the_project_already_held_is_not_made_slacks_to_forget(bench):
+    """The project already holds a note with exactly this text, and it is not one Slack
+    created. Filing the message stores nothing new, answers with that note, and records
+    nothing: removing Slack must never forget a note Slack did not create."""
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    handle(bench)
+    ((held, *_),) = bench.notes()
+    bench.store._con.execute("DELETE FROM slack_notes")  # an ordinary note, as if typed here
+    bench.store._con.commit()
+    bench.calls.clear()
+    assert replied(bench, handle(bench)).startswith("Filed: ")
+    assert [note_id for note_id, *_ in bench.notes()] == [held]  # nothing new stored
+    assert rows(bench) == []  # no record, and the claim was released
+    bench.owner.remove_slack_install(bench.install.id)
+    assert bench.owner.slack_notes_to_forget() is None
+    assert bench.owner.get_note(held) is not None
+
+
 def refused_then_filed(bench: Bench, response, reason: str) -> None:
     assert reason in replied(bench, response)
     assert bench.notes() == [] and rows(bench) == []  # released

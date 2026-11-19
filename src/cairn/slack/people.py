@@ -22,8 +22,8 @@ A search and a note, as the person's
   stored, then compiled into its page (extractive, no model) before this returns, so when
   Slack is answered the note is in the store (D8); a page that kept moving leaves it stored
   and waiting for `serve` (N1), and the answer still links its page. Then
-  Store.record_slack_note records it as having come through the install: filed, always, with
-  its conversation and message time; typed, only when the note is new (a text the project
+  Store.record_slack_note records it as having come through the install, only when the
+  note is new: filed, with its conversation and message time, or typed (a text the project
   held already came in some other way, stores nothing and is not forgotten with the install,
   D10). The record is written inside the note's own write, before it is compiled
   (Memory.note's `within`): the note and its record are kept together or not at all, so a
@@ -280,14 +280,20 @@ def write(
         """Run inside the note's write (Memory.note's `within`): the note and its record are
         kept together or not at all."""
         install, by = context.install.id, asker.person.user_id
-        if message is not None:  # a filed message is recorded always: it is its key (D9)
+        if not created:
+            # The project held this text already, so the note is not one Slack created:
+            # nothing is recorded, and removing Slack never forgets it. A message filed
+            # before is answered from its record without coming here (the claim).
+            kept.append(note.id)
+            return
+        if message is not None:  # a filed message's record is also its key (D9)
             filed = context.view.record_slack_note(
                 install, note.id, how="filed", brought_by=by, conversation_id=message[0],
                 message_time=message[1], con=con, team_id=context.install.team_id,
             )  # fmt: skip
             if filed != note.id:  # the claim was taken over and the message filed meanwhile
                 raise FiledAlready(filed)
-        elif created:  # a typed text the project held already did not come through here
+        else:
             context.view.record_slack_note(
                 install, note.id, how="typed", brought_by=by, con=con,
                 team_id=context.install.team_id,

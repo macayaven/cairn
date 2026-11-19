@@ -832,12 +832,13 @@ def test_privacy_when_the_app_is_removed(world):  # noqa: F811
 
 
 def test_privacy_what_was_there_before_slack_is_not_slacks_to_forget(bench):
-    """privacy.md: "A note typed in Slack whose text the project already held stores nothing
-    new and records nothing: what was there before Slack is not Slack's to forget.\""""
+    """privacy.md: "A note typed in Slack, or a message filed, whose text the project already
+    held stores nothing new and records nothing: what was there before Slack is not Slack's to
+    forget.\""""
     says(
         *PRIVACY,
-        "A note typed in Slack whose text the project already held stores nothing new and"
-        " records nothing: what was there before Slack is not Slack's to forget.",
+        "A note typed in Slack, or a message filed, whose text the project already held stores"
+        " nothing new and records nothing: what was there before Slack is not Slack's to forget.",
     )
     bench.link(ADA_SLACK, bench.ada, bench.library)
     bench.owner.add_note(bench.library.id, "Row 4 holds the quince jars.", via="web")

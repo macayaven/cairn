@@ -17,6 +17,11 @@ _spec = importlib.util.spec_from_file_location(
 )
 ci_changes = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ci_changes)
+_spec = importlib.util.spec_from_file_location(
+    "release_check_for_workflow", REPO / "scripts" / "release_check.py"
+)
+release_check = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(release_check)
 WORKFLOW = yaml.safe_load((REPO / ".github" / "workflows" / "ci-cd.yml").read_text())
 JOBS = WORKFLOW["jobs"]
 DEPLOY = JOBS["deploy"]
@@ -1103,9 +1108,35 @@ def image_tags(context: dict) -> set[str]:
     return made
 
 
-def test_a_tag_publishes_the_version_its_minor_and_latest_and_main_never_latest():
-    assert image_tags(TAG) == {"0.1.0", "0.1", "latest"}
+def release_tags(tag: str, tagged_before: list[str]) -> set[str]:
+    """The image tags a push of TAG publishes when TAGGED_BEFORE are the repository's tags:
+    job `release_check` ranks it with the script's own function and says `latest`, and
+    `publish` reads that output."""
+    latest = release_check.is_highest(tag, [*tagged_before, tag])
+    context = not_a_pull_request("push", f"refs/tags/{tag}")
+    outputs = {"release_check": {"outputs": {"latest": "true" if latest else "false"}}}
+    return image_tags({**context, "needs": outputs})
+
+
+def test_latest_is_published_only_for_the_highest_version_and_never_from_main():
+    # The first tag.
+    assert release_tags("v0.1.0", []) == {"0.1.0", "0.1", "latest"}
+    # A patch on an older line while a higher version exists: 0.1 moves to the newest 0.1.z,
+    # and latest stays on 0.2.0.
+    assert release_tags("v0.1.1", ["v0.1.0", "v0.2.0"]) == {"0.1.1", "0.1"}
+    # A higher version.
+    assert release_tags("v0.2.0", ["v0.1.0", "v0.1.1"]) == {"0.2.0", "0.2", "latest"}
+    # A tag lower than another of its line is refused: release_check fails, nothing is
+    # published, and X.Y never goes backwards.
+    with pytest.raises(release_check.Refused):
+        release_tags("v0.1.1", ["v0.1.0", "v0.1.2"])
+    assert not jobs_that_run(TAG, failed=frozenset({"release_check"})) & {"publish", "release"}
+    # A push to main publishes main and the commit, never latest, whatever the output says.
     assert image_tags(MAIN_PUSH) == {"main", f"sha-{SHA[:7]}"}
+    said_true = {"release_check": {"outputs": {"latest": "true"}}}
+    assert image_tags({**MAIN_PUSH, "needs": said_true}) == {"main", f"sha-{SHA[:7]}"}
+    # On main the check is skipped, so the output is empty, and empty is not 'true'.
+    assert image_tags(TAG) == {"0.1.0", "0.1"}
     build = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "build")
     assert build["with"]["tags"] == "${{ steps.meta.outputs.tags }}"
     assert build["with"]["provenance"] == "mode=max" and build["with"]["sbom"] is True

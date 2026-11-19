@@ -396,8 +396,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # A v* tag gives X.Y.Z, X.Y and latest; a push to main gives main and sha-<commit>, never
-      # latest. `latest` is written out, not left to the action's latest=auto.
+      # A v* tag gives X.Y.Z and X.Y, and latest only when `release_check` says the tag is the
+      # highest version: a patch on an older line moves its X.Y and leaves latest where it is.
+      # A push to main gives main and sha-<commit>, never latest. `latest` is written out, not
+      # left to the action's latest=auto.
       - name: Image tags and labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -408,7 +410,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && needs.release_check.outputs.latest == 'true' }}
             type=ref,event=branch
             type=sha,enable=${{ github.ref_type == 'branch' }}
       - name: Build and push linux/amd64 and linux/arm64

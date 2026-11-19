@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from cairn import lint
-from cairn.facts import extract_facts
+from cairn.facts import extract_facts, normalize
 from cairn.lint import ClaimInput, PageInput
 from cairn.spans import Span, chunk
 
@@ -106,6 +106,13 @@ def test_extracting_numbers_a_comma_joins_is_near_linear():
 
 def test_extracting_one_passage_of_inline_code_is_near_linear():
     assert_near_linear(extraction(lambda n: "`a` " * n), 400)
+
+
+def test_inline_code_that_keeps_its_white_space_is_near_linear():
+    """Each fact with white space inside its code reads where the code is (review blocker 3):
+    found once a passage, and looked up, never copied, for each fact."""
+    assert_near_linear(extraction(lambda n: "`a  b` " * n), 400)
+    assert_near_linear(lambda n: (lambda text="`a  b` " * n: normalize(text)), 4_000)
 
 
 def test_a_long_run_of_scheme_characters_is_near_linear():

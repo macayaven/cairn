@@ -384,9 +384,10 @@ def piece_shape(text: str, fact: dict, ends_at: dict[int, dict]) -> str:
 # code's own, as the gate reads prose: normalize() keeps it, and an inline_code fact inside a
 # code span keeps it in its norm, so `a  b.txt` and `a b.txt` are two facts. Everything else
 # is collapsed as the reference collapses it. Inline code is found here the slow way, apart
-# from cairn.spans.code_spans: between fenced blocks (the reference's own `_fenced`), a run of
-# backticks not escaped by a backslash opens, and the first later run of exactly as many
-# before a blank line closes it.
+# from cairn.spans.code_spans: between fenced blocks (the reference's own `_fenced`, with a
+# tab before a fence moved to the next stop of four, as Markdown and the renderer read it), a
+# run of backticks not escaped by a backslash opens, and the first later run of exactly as
+# many before a blank line closes it.
 DIFFERED_CODE = collections.Counter()  # inputs whose reading the rule changed, by what
 
 
@@ -394,10 +395,30 @@ def code_places(text: str) -> set[int]:
     """The places of every character of inline code in `text`, its backticks included."""
     inside: set[int] = set()
     pos = 0
-    for start, end, _, _ in [*old_facts._fenced(text), (len(text), len(text), 0, 0)]:
+    for start, end in [*markdown_fenced(text), (len(text), len(text))]:
         inside.update(pos + n for n in _paired_slowly(text[pos:start]))
         pos = end
     return inside
+
+
+def markdown_fenced(text: str):
+    """(start, end) of each fenced block as the reference's `_fenced` reads them, except that
+    a tab before a fence counts to the next stop of four columns."""
+
+    def closes(line, opener) -> bool:
+        return (
+            line["fence"].startswith(opener["fence"])
+            and not line["info"].strip()
+            and line["prefix"].count(">") == opener["prefix"].count(">")
+            and len(line["prefix"].expandtabs(4)) <= len(opener["prefix"].expandtabs(4)) + 3
+        )
+
+    pos = 0
+    while opener := old_facts._FENCE.search(text, pos):
+        found = old_facts._FENCE.finditer(text, opener.end())
+        closer = next((line for line in found if closes(line, opener)), None)
+        pos = closer.end() if closer else len(text)
+        yield opener.start(), pos
 
 
 def _paired_slowly(text: str) -> set[int]:

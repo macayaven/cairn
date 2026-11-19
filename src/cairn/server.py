@@ -539,7 +539,8 @@ REST (JSON; project = id or name; unknown project or page, or another account's 
   topic key, made once from its topic, else its title, when it is stored; a key no page has
   makes a new page. The same text and source_ref sent again for another topic is refused
   and nothing is stored: 409 over REST (cairn.memory.FiledOnce, naming the project and the
-  page, never the text), an error from the `note` tool, the composer's form again (409), and
+  page when that page cites the note, else saying it waits or is on no page; never the
+  text), an error from the `note` tool, the composer's form again (409), and
   a source's draft is skipped with reason "filed under another topic". A note whose page
   moved under it more often than the compiler retries, twice over, is stored and waiting:
   202 over REST with status "waiting" and a sentence, a result (not an error) from the

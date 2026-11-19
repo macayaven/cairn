@@ -169,18 +169,18 @@ def normalize(value: str) -> str:
     return _read(text, _code(text), 0, len(text))
 
 
-def _code(
-    text: str, fences: list[tuple[int, int, int, int]] | None = None
-) -> list[tuple[int, int]]:
+def _code(text: str) -> list[tuple[int, int]]:
     """Where inline code is in `text`: cairn.spans.code_spans, the gate's finder, read between
-    fenced blocks (`_fenced`, or `fences` when already read), whose lines are code lines
-    matched one by one (Fact.lines), not a span."""
+    fenced blocks, whose lines are code lines matched one by one (Fact.lines), not a span.
+    The fences are read with Markdown's tab stops, as the renderer closes them
+    (compiler._closed): after a closer written as a tab then backticks, which Markdown leaves
+    open, a body holds the renderer's own closer, and what follows it is prose here too. A
+    passage ends at such a line (cairn.spans), so its fence runs to its end either way."""
     if "`" not in text:
         return []
     found: list[tuple[int, int]] = []
     pos = 0
-    blocks = _fenced(text) if fences is None else fences
-    for start, end, _, _ in [*blocks, (len(text), len(text), 0, 0)]:
+    for start, end, _, _ in [*_fenced(text, tab_stops=True), (len(text), len(text), 0, 0)]:
         found += [(pos + left, pos + right) for left, right in code_spans(text[pos:start])]
         pos = end
     return found
@@ -194,7 +194,8 @@ def _read(text: str, code: list[tuple[int, int]], start: int, end: int) -> str:
         return _plain(text[start:end])
     pieces: list[tuple[bool, str]] = []  # (inside code, text)
     pos = start
-    for left, right in code[bisect.bisect_right(code, start, key=lambda c: c[1]) :]:
+    for n in range(bisect.bisect_right(code, start, key=lambda c: c[1]), len(code)):
+        left, right = code[n]  # by index: a slice would copy the rest of `code` for each fact
         if left >= end:
             break
         if left > pos:
@@ -221,9 +222,8 @@ def extract_facts(span: Span) -> list[Fact]:
     # The span's text with each underscore of emphasis by a fact as "*", one for one: facts are
     # found and normalized in it, as normalize() reads the whole span, and valued in the span.
     text = _emphasis(span.text)
-    fences = list(_fenced(span.text))
     code: list[tuple[int, int]] | None = None  # inline code, read once a fact asks for it
-    for start, end, body_start, body_end in fences:  # a code span is one such block
+    for start, end, body_start, body_end in _fenced(span.text):  # a code span is one such block
         claimed.add(start, end)
         facts.append(_fact(span, text, "code_block", body_start, body_end))
     for m in _ORDERED_MARKER.finditer(span.text):
@@ -237,7 +237,7 @@ def extract_facts(span: Span) -> list[Fact]:
             claimed.add(*m.span())
             start, end = m.span(group)
             if kind == "inline_code" and _SPACE_RUN.search(text, start, end):
-                code = _code(text, fences) if code is None else code  # its white space is kept
+                code = _code(text) if code is None else code  # its white space is kept
                 facts.append(_fact(span, text, kind, start, end, code))
             else:
                 facts.append(_fact(span, text, kind, start, end))
@@ -385,12 +385,19 @@ _FAST = {"inline_code": _inline_codes, "url": _urls}
 _FINDERS = {kind: _whole_runs(_FAST.get(kind, pattern.finditer)) for kind, pattern in _PATTERNS}
 
 
-def _fenced(text: str) -> Iterator[tuple[int, int, int, int]]:
-    """Yield (start, end, body_start, body_end) per fenced block; unclosed ones run to the end."""
+def _fenced(text: str, tab_stops: bool = False) -> Iterator[tuple[int, int, int, int]]:
+    """Yield (start, end, body_start, body_end) per fenced block; unclosed ones run to the end.
+    With `tab_stops`, a tab before a fence moves to the next stop of four columns, as in
+    Markdown; else it is one column, as cairn.spans splits a note."""
     pos = 0
     while opener := _FENCE.search(text, pos):
         closer = next(
-            (line for line in _FENCE.finditer(text, opener.end()) if _closes(line, opener)), None
+            (
+                line
+                for line in _FENCE.finditer(text, opener.end())
+                if _closes(line, opener, tab_stops)
+            ),
+            None,
         )
         body_start = min(opener.end() + 1, len(text))
         body_end = closer.start() - 1 if closer else len(text)
@@ -398,19 +405,31 @@ def _fenced(text: str) -> Iterator[tuple[int, int, int, int]]:
         yield opener.start(), pos, body_start, max(body_start, body_end)
 
 
-def _closes(line: re.Match[str], opener: re.Match[str]) -> bool:
+def _closes(line: re.Match[str], opener: re.Match[str], tab_stops: bool = False) -> bool:
     """Whether a fence line closes the opener: cairn.spans.fence_closes, the one closer rule
     (a run of the opener's character at least as long, alone, indented at most 3 more than
     the opener, a character a column), read past the block-quote markers, at the same
-    block-quote depth. The markers count as indentation, one column each, as they did."""
+    block-quote depth. The markers count as indentation, one column each, as they did; with
+    `tab_stops` a tab moves to the next stop of four (`_fenced`)."""
+
+    def columns(prefix: str) -> int:
+        return len(prefix.expandtabs(4)) if tab_stops else len(prefix)
+
     return line["prefix"].count(">") == opener["prefix"].count(">") and fence_closes(
-        " " * len(line["prefix"]) + line["fence"] + line["info"],
+        " " * columns(line["prefix"]) + line["fence"] + line["info"],
         opener["fence"],
-        len(opener["prefix"]) + 3,
+        columns(opener["prefix"]) + 3,
     )
 
 
-def _fact(span: Span, read: str, kind: FactKind, start: int, end: int, code: tuple = ()) -> Fact:
+def _fact(
+    span: Span,
+    read: str,
+    kind: FactKind,
+    start: int,
+    end: int,
+    code: list[tuple[int, int]] | None = None,
+) -> Fact:
     """One fact. Its norm is its text as normalize reads it in the span, `code` being where
     inline code is in it: an inline_code fact's white space inside a code span is kept, so it
     is found in the span's own text. With no `code`, every run of white space is one space."""
@@ -419,7 +438,7 @@ def _fact(span: Span, read: str, kind: FactKind, start: int, end: int, code: tup
     return Fact(
         kind=kind,
         value=value,
-        norm=_read(read, list(code), start, end),
+        norm=_read(read, code or [], start, end),
         span_id=span.id,
         start=start,
         end=end,

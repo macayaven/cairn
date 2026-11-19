@@ -93,5 +93,25 @@ def test_the_page_of_a_held_note_is_read_in_one_statement(store):
     project = store.list_projects()[0]
     held = {n.text: n for n in store.list_notes(project.id)}
     waiting = store.add_note(project.id, "- Tessera waits.\n", topic="Queue")[0]
+    store.notes_part(project.id, 1)  # a reader opened before the observers are attached
     for note in (held[FIRST], held[SECOND], waiting):
         assert statements(store, lambda n=note: memory._page_of(n)) == 1
+
+
+def test_a_note_sent_again_for_another_topic_costs_seven_statements_whatever_its_page(store):
+    """The whole refusal, from `note` to FiledOnce: seven statements for a note on its page,
+    one its page refused and one that waits. Before the Notes page's rule it was seven, seven
+    and eight (a waiting note's page was looked for among free addresses)."""
+    memory = Memory(store, refusing_after(1))
+    memory.note("ops", FIRST, topic="Retry policy", source_ref="a")
+    memory.note("ops", SECOND, topic="Retry policy", source_ref="b")
+    project = store.list_projects()[0]
+    store.add_note(project.id, "- Tessera waits.\n", topic="Queue", source_ref="c")
+    store.notes_part(project.id, 1)  # a reader opened before the observers are attached
+    for text, ref in ((FIRST, "a"), (SECOND, "b"), ("- Tessera waits.\n", "c")):
+
+        def resend(text=text, ref=ref):
+            with pytest.raises(FiledOnce):
+                memory.note("ops", text, topic="Backoff", source_ref=ref)
+
+        assert statements(store, resend) == 7, ref

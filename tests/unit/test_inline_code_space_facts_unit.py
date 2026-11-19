@@ -6,7 +6,7 @@ normalize. It pairs backticks within a block, as CommonMark does, so a stray bac
 paragraph never moves the code of the next, and a fenced block is code lines, not a span."""
 
 from cairn import facts, gate, spans
-from cairn.compiler import CandidatePage
+from cairn.compiler import CONTENT_KINDS, CandidatePage, extractive, render_body
 from cairn.facts import extract_facts, normalize
 from cairn.gate import lint_gate
 from cairn.spans import Span, chunk
@@ -83,3 +83,18 @@ def test_a_fenced_block_with_aligned_spaces_still_keeps_its_code_lines():
     result = lint_gate(page(*verbatim(held)), held)
     assert (result.passed, result.violations) == (True, [])
     assert result.metrics["code_line_retention"] == 1.0
+
+
+def test_a_body_after_a_tab_closer_reads_its_code_as_its_passages_do():
+    # The renderer closes a fence Markdown leaves open after a tab then backticks; the fact
+    # check reads the body's fences with Markdown's tab stops too, so what follows is prose.
+    texts = ["```\nsample text\n\t```", SPACED, "```\nx  = 1   # one\n```", "Then `c  d` too."]
+    held, claims = {}, []
+    for n, text in enumerate(texts):
+        found = chunk(f"cap_{n:012x}", text)
+        held.update({s.id: s for s in found})
+        claims.extend(extractive("Files", [s for s in found if s.kind in CONTENT_KINDS]).claims)
+    body = render_body("Files", claims, held)
+    assert "\t```\n```\n" in body  # the renderer's own closer
+    result = lint_gate(CandidatePage(slug="f", title="Files", body=body, claims=claims), held)
+    assert (result.passed, result.violations) == (True, [])

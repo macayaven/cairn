@@ -1,8 +1,9 @@
 """A workspace's settings and its audit log, and who a view acts as.
 
 The audit log holds a workspace's writes and security events, one row each, written by the
-store method that makes the write, in the same transaction (StoreBase._audit). Reads are
-never recorded here: reads never write. Each row names the view's actor, set with
+store method that makes the write, in the same transaction (StoreBase._audit). A read is
+recorded here only when the server is told to (`reads_audited`; cairn.memory records it,
+through `_record_read`, as the read ends), and an export and a download of this log always. Each row names the view's actor, set with
 `acting_as` (a bare view acts as "system"). A row holds names, ids and counts, never note
 text, a secret or a digest.
 """
@@ -368,6 +369,18 @@ class AuditMethods(StoreBase):
             total=total,
             newer=newer,
         )
+
+    def _record_read(
+        self, action: str, project: str | None, detail: dict[str, Any] | None = None
+    ) -> None:
+        """One event of what the view read or took (cairn.memory: READ_EVENTS, and an export
+        or a download of this log), under the view's actor, in a transaction of its own.
+        `project` is the name the read resolved, None for none. Private, so the narrowing
+        (cairn.store.reach) leaves it alone: a read-only key, or one limited to some projects,
+        is recorded as anyone else; the read itself was already held to its reach. Never a
+        query or any text of a note or page: `detail` holds ids and a page's slug only."""
+        with self._write() as con:
+            self._audit(con, action, project=project, detail=detail)
 
     def record_note(
         self, project_id: str, outcome: str, detail: dict[str, Any], filed: str | None = None

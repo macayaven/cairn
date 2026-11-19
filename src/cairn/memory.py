@@ -14,8 +14,11 @@ which writes one INFO record on the logger "cairn.access" when it ends, with the
 `actor_kind`, `actor`, `actor_id` (the key's, grant's or person's id: names repeat),
 `action`, `project` (the name of the project the call resolved, or None) and `status`. It never
 holds a query, note text, a credential or what the caller typed as a project: only names and
-ids the store resolved. Reads are recorded only here (reads never write);
-writes are recorded here and in the workspace's audit log. Two records come from outside a
+ids the store resolved. Reads are recorded only here, unless the server audits reads
+(`serve --audit-reads`, Store.reads_audited): then a read of READ_EVENTS that ends well is
+also an event of the workspace (`access`), naming who, the kind of read, the project and
+the page, claim or note read, never a query or any text. An export is always an event
+(EXPORTED_EVENT). Writes are recorded here and in the workspace's audit log. Two records come from outside a
 call, with the same attributes and fixed values (`record_access`): a request to /api or
 /mcp refused before its route for want of a valid credential is ("none", None, None,
 DENIED, None, 401), never with what it presented; an MCP call whose arguments fail the
@@ -166,6 +169,19 @@ CHECKED_FIELDS = {
 }
 _VIOLATION_CODE = re.compile(r"[a-z_]+\.[a-z_]+")  # "provenance.missing_passages: ..." -> code
 COMPILE_ERROR = "compile.error"  # the code note.rejected records when the compile raised
+
+
+# Reads as audit events (`serve --audit-reads`; Store.reads_audited): each access-log action
+# that reads what a workspace holds, and the event it is recorded as when it ends well. An
+# export is not among them: it is always an event of its own (EXPORTED_EVENT).
+READ_EVENTS = {
+    "page": "read.page",
+    "evidence": "read.evidence",
+    "recall": "read.search",
+    "graph": "read.graph",
+    "ask_forget": "read.note",  # the page that shows a note before it is forgotten
+}
+EXPORTED_EVENT = "workspace.exported"  # an export of the workspace's notes and pages
 
 
 DENIED = "denied"  # the action of a request refused before its route: no valid credential
@@ -813,6 +829,9 @@ class Memory:
         # inside its transaction, which may be another than the one `plan` was admitted on.
         self.plans = plans
         self._touched: str | None = None  # the project the current call resolved, by name
+        # What the current call read, as its audit event's detail (READ_EVENTS): a page's
+        # slug, a claim's id, a note's id. None: nothing was read yet.
+        self._read: dict[str, str] | None = None
         # Called with (project id, slug) after a note saves a page (T4b: the app queues the
         # page for its arranger). None: nothing is called. Its failure never fails a note.
         self.saved: Callable[[str, str], None] | None = None
@@ -890,10 +909,23 @@ class Memory:
         """One call of an MCP tool or a REST route: when it ends, one INFO record on the
         access log, with who called (the store's actor), the action, the project it resolved
         and the status it ended with (a RequestError's, 500 for anything else). The store's
-        own trouble goes on as Unavailable (503; the module's docstring)."""
-        self._touched, status = None, 200
+        own trouble goes on as Unavailable (503; the module's docstring).
+
+        With reads audited (Store.reads_audited), a call of READ_EVENTS that ends well and
+        read something is also one event of the workspace, written before the record: who,
+        the kind of read, the project it resolved, and what `_read` says it read (a graph is
+        one whatever it showed). If the event cannot be written, the call fails with it (an
+        unrecorded read is not answered)."""
+        self._touched, self._read, status = None, None, 200
         try:
             yield
+            event = READ_EVENTS.get(action)
+            if (
+                event
+                and self.store.reads_audited
+                and (self._read is not None or event == "read.graph")
+            ):
+                self.store._record_read(event, self._touched, self._read or {})
         except RequestError as error:
             status = error.status
             raise
@@ -916,6 +948,8 @@ class Memory:
 
     def find_page(self, project: Project, slug: str, version: int | None = None) -> Page:
         page = self.store.get_page(project.id, slug, version)
+        if page is not None:
+            self._read = {"page": page.slug}  # the audit event's detail (READ_EVENTS)
         if page is None:
             if version is not None and 0 < version < min(
                 self.store.page_versions(project.id, slug), default=0
@@ -1216,6 +1250,7 @@ class Memory:
             raise BadRequest(HITS_RANGE)
         project_ids = [self.project(project).id] if project else None
         found = self.store.find(query, project_ids, limit)
+        self._read = {}  # a search: never its words (READ_EVENTS)
         hits = found.hits
         answers = []
         for hit, entries in zip(hits, self.written_by(h.span_ids for h in hits), strict=True):
@@ -1299,6 +1334,7 @@ class Memory:
         if claim is None:
             which = "page" if version is None else f"version {page.version} of page"
             raise NotFound(f"no claim {claim_id!r} on {which} {slug!r} in project {target.name!r}")
+        self._read = {"page": page.slug, "claim": claim.id}
         sources = self.sources(target, claim.span_ids)
         writers = self.store.note_writers(note.id for _, note in sources.values())
         passages = []
@@ -1347,11 +1383,14 @@ class Memory:
     def export(self, out: IO[bytes]) -> ExportSummary:
         """The workspace as a format-1 zip (Store.export) written to `out`. A connection
         limited to some projects or to reading, or a person who does not own the workspace,
-        cannot take everything: Forbidden."""
+        cannot take everything: Forbidden. An export taken is one event of the workspace,
+        EXPORTED_EVENT, whoever took it and whether reads are audited or not: who and when."""
         try:
-            return self.store.export(out)
+            summary = self.store.export(out)
         except PermissionError as refused:
             raise Forbidden(str(refused)) from None
+        self.store._record_read(EXPORTED_EVENT, None, {})
+        return summary
 
     # Erasure (H5b): a person's act, or a key's over REST; never an MCP tool.
 
@@ -1377,6 +1416,7 @@ class Memory:
         note = self.store.get_note(note_id)
         if note is None or note.project_id != project.id:
             raise NotFound(f"no note {note_id!r} in project {project.name!r}")
+        self._read = {"note": note.id}
         return note
 
     def delete_project(self, ref: str, confirm: object) -> dict[str, Any]:

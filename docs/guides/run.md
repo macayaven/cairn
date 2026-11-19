@@ -216,6 +216,8 @@ A source (Langfuse, Granola, Google Meet, Google Drive, Google Calendar, Gmail, 
 
 Slack cannot reach a local install that listens on 127.0.0.1, as the commands above start it, so this version is for an install with a public address, behind a reverse proxy that ends TLS. This version was not tried with an Enterprise Grid organisation or with GovSlack.
 
+With a model connected to arrange pages, a page that holds a note that came through Slack is sent to it only if the environment also says `ARRANGER_SLACK_NOTES=send`; `ARRANGER_SOURCE_NOTES=send` does not send it.
+
 Keep the key apart from the database and its backups, as you keep the environment file: a copy of the database holds each workspace's signing secret and bot token sealed, and without the key it opens neither. When the key is lost or changed, no secret sealed with the old one opens, and Slack's requests to the server are refused: each workspace's owner removes Slack on the **Sources** page, sets it up again and pastes both secrets. A backup taken before Slack is removed still holds what came through it: its notes, for as long as the backup is kept, and both secrets, sealed, which the key still opens.
 
 ## Notes compiled at once

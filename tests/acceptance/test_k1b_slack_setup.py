@@ -810,6 +810,39 @@ def test_forget_now_is_offered_only_while_the_install_is_removed(world):
     assert "1 note came through Slack" in page and "Forget them now" not in page
 
 
+def test_notes_of_a_removed_slack_workspace_stay_due_once_another_is_set_up_and_the_page_says_so(
+    world,
+):
+    """Fable Works' Slack is removed and Quill Yard's set up in its place: Fable Works' note
+    keeps its day, and the page no longer says that setting the same Slack workspace up again
+    keeps it, since that stopped being true when another one was set up."""
+    install = world.readied()
+    typed_note(world, install, "first")
+    ada = world.browser(world.ada)
+    name = world.store.get_account(world.workspace).name
+    page = block(
+        said(ada, ada.post(setup.DISCONNECT_PATH, data={"confirm": name}, follow_redirects=False))
+    )
+    assert "unless the same Slack workspace is set up again before then" in page
+    said(ada, ada.post(setup.SETUP_PATH, follow_redirects=False))
+    page = block(said(ada, secrets(ada, secret=QUILL_SECRET, token=QUILL_TOKEN)))
+    assert setup.STATES["ready"] in page
+    assert "1 note came through Slack" in page and "will be forgotten on" in page
+    assert "unless the same Slack workspace" not in page
+    assert "It came from a Slack workspace that was removed here." in page
+
+
+def test_pasting_secrets_again_says_they_must_be_of_the_same_slack_workspace(world):
+    install = world.readied()
+    world.store.slack_install_verified(install)
+    page = shown(world.browser(world.ada))
+    assert setup.CHANGED_AT_SLACK in page
+    assert (
+        "They must be of the same Slack workspace: to connect another one, remove Slack first."
+        in setup.CHANGED_AT_SLACK
+    )
+
+
 def test_an_admin_removes_too(world):
     world.readied()
     brook = world.browser(world.brook)

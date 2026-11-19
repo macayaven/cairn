@@ -73,7 +73,7 @@
   </form>
   {% endif %}
   {% if slack.due %}
-  <p>{{ slack.due.notes }} {{ "note" if slack.due.notes == 1 else "notes" }} came through Slack: {{ "it" if slack.due.notes == 1 else "they" }} will be forgotten on <time datetime="{{ slack.due.at }}">{{ slack.due.at|when }}</time>, unless the same Slack workspace is set up again before then.</p>
+  <p>{{ slack.due.notes }} {{ "note" if slack.due.notes == 1 else "notes" }} came through Slack: {{ "it" if slack.due.notes == 1 else "they" }} will be forgotten on <time datetime="{{ slack.due.at }}">{{ slack.due.at|when }}</time>{% if slack.state in ("removed", "pending") %}, unless the same Slack workspace is set up again before then.{% else %}. {{ "It" if slack.due.notes == 1 else "They" }} came from a Slack workspace that was removed here.{% endif %}</p>
   {% if slack.forgets %}
   <form method="post" action="/integrations/slack/forget" class="ending">
     <button type="submit" class="quiet danger">Forget them now</button>

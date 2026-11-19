@@ -127,7 +127,8 @@ PERMISSIONS = {  # what each scope of the manifest (cairn.slack.manifest.SCOPES)
     ),
 }
 CHANGED_AT_SLACK = (  # said with the secrets form while Slack is on or off
-    "If the signing secret or the bot token was changed at Slack, paste both here again. A"
+    "If the signing secret or the bot token was changed at Slack, paste both here again."
+    " They must be of the same Slack workspace: to connect another one, remove Slack first. A"
     " signing secret other than the one kept has to be proven anew: Slack is then ready, and"
     " on once Slack verifies the events address again. Pasted while Slack is off, they"
     " switch it on again."

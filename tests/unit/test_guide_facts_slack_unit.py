@@ -1159,3 +1159,18 @@ def test_security_the_one_credential_sentences_name_slack_too():
         " operator switches either on",
     ):
         assert raw.count(sentence) == 1, sentence
+
+
+def test_run_says_which_setting_sends_slacks_notes_to_the_arranging_model():
+    """run.md: "With a model connected to arrange pages, a page that holds a note that came
+    through Slack is sent to it only if the environment also says
+    `ARRANGER_SLACK_NOTES=send`; `ARRANGER_SOURCE_NOTES=send` does not send it.\""""
+    says(
+        *RUN,
+        "With a model connected to arrange pages, a page that holds a note that came through"
+        " Slack is sent to it only if the environment also says `ARRANGER_SLACK_NOTES=send`;"
+        " `ARRANGER_SOURCE_NOTES=send` does not send it.",
+    )
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SLACK_NOTES": "send"}) is True
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SOURCE_NOTES": "send"}) is False
+    assert cli_arrange.sends_slack_notes("ARRANGER", {}) is False

@@ -33,6 +33,11 @@ SHOWN = {
     "Google Drive": "google_drive",
     "Drive": "google_drive",
     "a connector of your own": "connector",  # C9: withheld, not Google's
+    # Privacy 4: every kind the server reads is withheld, so the sentences name these too.
+    "Langfuse": "langfuse",
+    "Granola": "granola",
+    "Linear": "linear",
+    "GitHub": "github",
 }
 NOTES = ("google-meet-api.md", "google-calendar-api.md", "google-drive-api.md", "gmail-api.md")
 FIRST = (
@@ -297,15 +302,16 @@ def test_the_checks_see_a_doctored_guide(monkeypatch):
     """The checks are not vacuous: a source left out, another setting, or other words fail."""
     sentence = sentence_with(run_section(), "is not sent unless the file also says")
     with pytest.raises(AssertionError):
-        check_names_every_withheld_kind(sentence.replace("Gmail or ", ""))
+        check_names_every_withheld_kind(sentence.replace("Gmail, ", ""))
     with pytest.raises(AssertionError):
         check_send_is_the_setting(sentence.replace("=send", "=withhold"), "ARRANGER")
     with pytest.raises(AssertionError):
         check_send_is_the_setting(sentence, "CAIRN")
     with pytest.raises(AssertionError):
         check_the_rule_s_words(run_section().replace("lower case", "any case"))
-    monkeypatch.setitem(KINDS, "granola", dataclasses.replace(KINDS["granola"], withheld=True))
-    assert "granola" in sources.withheld_via()
+    added = dataclasses.replace(KINDS["granola"], via="unit-new", withheld=True)
+    monkeypatch.setitem(KINDS, "unit_new", added)  # Privacy 4: every kind is withheld already
+    assert "unit-new" in sources.withheld_via()
     with pytest.raises(AssertionError):  # a kind withheld that the guide does not name
         check_names_every_withheld_kind(sentence)
 
@@ -314,15 +320,18 @@ def test_sources_md_says_the_rule_is_about_cairn_s_own_model_not_a_connected_age
     """sources.md: "**cairn's own model reads them only if the operator allows it.** ...
     This is about the model the operator connects to arrange pages. An agent a person
     connects reads what that person reaches, these notes included, and hands what it reads
-    to the model it runs on: that is the agent's doing, and this setting does not change it.\""""
+    to the model it runs on: that is the agent's doing, and neither this setting,
+    `<PREFIX>_SLACK_NOTES`, `<PREFIX>_UNDECIDED_PROJECTS` nor a project's **Models** changes
+    it.\" (Privacy 4: connected assistants are outside all three.)"""
     text = flat(sources_section())
     assert "**cairn's own model reads them only if the operator allows it.**" in text
     assert "A model reads them only if the operator allows it" not in text
     assert (
         "This is about the model the operator connects to arrange pages. An agent a person"
         " connects reads what that person reaches, these notes included, and hands what it"
-        " reads to the model it runs on: that is the agent's doing, and this setting does not"
-        " change it."
+        " reads to the model it runs on: that is the agent's doing, and neither this setting,"
+        " `<PREFIX>_SLACK_NOTES`, `<PREFIX>_UNDECIDED_PROJECTS` nor a project's **Models**"
+        " changes it."
     ) in text
     # a note from a withheld source is found by search like any other
     mail_page(store)  # a page of two notes read from Gmail

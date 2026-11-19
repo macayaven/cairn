@@ -939,15 +939,15 @@ def test_privacy_where_a_note_from_slack_can_go(bench, monkeypatch):
 
 
 def test_privacy_the_list_of_what_a_model_is_not_sent_names_slack():
-    """privacy.md, **Models.**: "A page that holds a note read from Google Meet, Google
-    Calendar, Gmail or Google Drive, from a connector of your own, or through Slack, is not
-    sent unless the operator allows it" and "A page that holds a note that came through Slack
-    is sent only with `<PREFIX>_SLACK_NOTES=send`, except in such a project.\""""
+    """privacy.md, **Models.**: "A page that holds a note any source the server reads brought
+    (...), or a note that came through Slack, is not sent unless the operator allows it"
+    (Privacy 4: every source's notes, and Slack's) and "A page that holds a note that came
+    through Slack is sent only with `<PREFIX>_SLACK_NOTES=send`, except in such a project.\""""
     (line,) = [line for line in guide_source("privacy").splitlines() if "**Models.**" in line]
     assert (
-        "A page that holds a note read from Google Meet, Google Calendar, Gmail or Google Drive,"
-        " from a connector of your own, or through Slack, is not sent unless the operator allows"
-        " it;"
+        "A page that holds a note any source the server reads brought (Langfuse, Granola, Google"
+        " Meet, Google Calendar, Gmail, Google Drive, Linear, GitHub or a connector of your own),"
+        " or a note that came through Slack, is not sent unless the operator allows it;"
     ) in flat(line)
     assert (
         "A page that holds a note that came through Slack is sent only with"

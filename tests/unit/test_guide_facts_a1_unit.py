@@ -168,7 +168,9 @@ def test_what_an_operator_can_do(store):
     with pytest.raises(PermissionError):
         reader.narrow(projects=(ops.id,), access="read").add_note(ops.id, "# A\n\nB.\n")
     withheld = {name for name, kind in KINDS.items() if kind.withheld}
-    assert withheld == {"google_meet", "google_drive", "google_calendar", "gmail", "connector"}
+    assert withheld == set(
+        KINDS
+    )  # Privacy 4: every kind, the Google ones and connectors among them
 
 
 # security.md and run.md: what a key made

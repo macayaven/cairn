@@ -649,6 +649,11 @@ def test_on_off_and_off_because_revoked_say_their_state(world):
     page = shown(ada)
     assert setup.STATES["revoked"] in page
     assert 'name="bot_token"' in page and 'name="signing_secret"' not in page
+    # one field is asked for, so the words speak of one; and the warning is announced
+    assert "It is checked with Slack, kept sealed, and never shown again." in page
+    assert "Both are checked with Slack" not in page
+    assert ">Keep it</button>" in page and ">Keep them</button>" not in page
+    assert '<p class="alert" role="alert">Slack no longer accepts' in page
 
 
 def test_a_revoked_token_is_asked_for_again_and_the_signing_secret_is_not(world):
@@ -793,7 +798,19 @@ def test_remove_says_how_many_notes_and_the_day_and_offers_only_the_owner_forget
     assert "2 notes came through Slack" in seen and "Forget them now" not in seen
     refused = brook.post(setup.FORGET_PATH, follow_redirects=False)
     assert refused.status_code == 403 and len(world.slack_rows()["slack_notes"]) == 2
+    # one click forgets nothing: the workspace's name is typed first, as to remove Slack
     page = block(said(ada, ada.post(setup.FORGET_PATH, follow_redirects=False)))
+    assert setup.REFUSALS["confirm_forget"] in page
+    assert len(world.slack_rows()["slack_notes"]) == 2
+    page = block(
+        said(ada, ada.post(setup.FORGET_PATH, data={"confirm": "wrong"}, follow_redirects=False))
+    )
+    assert setup.REFUSALS["confirm_forget"] in page
+    assert len(world.slack_rows()["slack_notes"]) == 2
+    assert 'name="confirm"' in page and "to forget them now" in page
+    page = block(
+        said(ada, ada.post(setup.FORGET_PATH, data={"confirm": name}, follow_redirects=False))
+    )
     assert world.slack_rows()["slack_notes"] == [] and "Forget them now" not in page
     for note in kept:
         assert world.view(world.ada).get_note(note) is None
@@ -883,7 +900,8 @@ def test_each_is_one_audit_record_and_one_access_record_naming_who_the_install_a
             typed = typed_note(world, world.install(), "first")
     # Forgetting now is the store's forgetting of each note (H5b), with its own audit records
     records_before = len(logged(caplog))
-    assert ada.post(setup.FORGET_PATH, follow_redirects=False).status_code == 303
+    typed_name = {"confirm": world.store.get_account(world.workspace).name}
+    assert ada.post(setup.FORGET_PATH, data=typed_name, follow_redirects=False).status_code == 303
     (forgot,) = [r for r in logged(caplog)[records_before:] if r.action == "slack_setup"]
     assert (forgot.install, forgot.outcome, forgot.actor_id) == (
         world.install(),

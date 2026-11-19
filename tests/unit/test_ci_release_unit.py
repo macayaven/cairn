@@ -1,0 +1,439 @@
+"""The tag path of .github/workflows/ci-cd.yml: release_check -> publish -> verify -> package
+-> attest -> release.
+
+- `package` (no permission at all) builds the wheel and the source archive and writes
+  SHA256SUMS over what it made; `attest` and `release` each check every file against it.
+- `attest` holds only what a build provenance attestation needs (an identity token and the
+  right to store attestations), runs nothing from the repository or from the files, and
+  attests the wheel, the source archive, SHA256SUMS and the image's digest.
+- A release candidate vX.Y.Z-rc.N runs all of it, and publishes the image as X.Y.Z-rc.N and
+  sha-<commit> only, and a GitHub pre-release that is not marked latest. It never deploys."""
+
+import hashlib
+import re
+import subprocess
+from itertools import pairwise
+from pathlib import Path
+
+import pytest
+import yaml
+from test_ci_workflow_unit import (
+    JOBS,
+    SHA,
+    THE_GATE,
+    ancestors,
+    evaluate,
+    image_tags,
+    job_comment,
+    jobs_that_run,
+    needs,
+    not_a_pull_request,
+    reaches_the_token,
+    release_check,
+    release_tags,
+)
+
+PACKAGE, ATTEST, RELEASE = JOBS["package"], JOBS["attest"], JOBS["release"]
+TAG_PATH = ("release_check", "publish", "verify", "package", "attest", "release")
+CANDIDATE = not_a_pull_request("push", "refs/tags/v1.2.3-rc.1")
+ATTEST_ACTION = "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6"  # v4.2.2
+
+
+# --- the order, and what each job may do -------------------------------------------------------
+
+
+def test_the_tag_path_runs_in_its_order():
+    for before, after in pairwise(TAG_PATH):
+        assert before in ancestors(after), (before, after)
+    assert needs(ATTEST) == {"publish", "package"}
+    assert needs(RELEASE) == {"release_check", "publish", "verify", "package", "attest"}
+
+
+def test_the_permissions_of_every_job_on_the_tag_path():
+    assert {name: JOBS[name].get("permissions") for name in TAG_PATH} == {
+        "release_check": {"contents": "read"},
+        "publish": {"contents": "read", "packages": "write"},
+        "verify": {"contents": "read", "packages": "read"},
+        "package": {},
+        "attest": {"id-token": "write", "attestations": "write"},
+        "release": {"contents": "write"},
+    }
+
+
+BUILDS_OR_RUNS_THE_CHECKOUT = re.compile(
+    r"\buv\s+(build|sync|pip|run|tool)\b|\bpip3?\b|\bpython3?\b|\bscripts/|\./"
+)
+
+
+def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_the_checkout():
+    holders = [
+        name
+        for name in TAG_PATH
+        if any(level == "write" for level in (JOBS[name].get("permissions") or {}).values())
+    ]
+    assert holders == ["publish", "attest", "release"]
+    for name in holders:
+        job = JOBS[name]
+        for step in job["steps"]:
+            assert not BUILDS_OR_RUNS_THE_CHECKOUT.search(step.get("run", "")), (name, step)
+            assert not step.get("uses", "").startswith("astral-sh/setup-uv"), name
+    # Neither `attest` nor `release` checks out the repository at all.
+    for job in (ATTEST, RELEASE):
+        assert not any("actions/checkout" in s.get("uses", "") for s in job["steps"])
+    # The model sees a build where one is.
+    assert BUILDS_OR_RUNS_THE_CHECKOUT.search("uv build --out-dir dist")
+    assert BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 scripts/release_check.py v1")
+    assert BUILDS_OR_RUNS_THE_CHECKOUT.search("pip install x")
+
+
+def test_only_attest_and_deploy_hold_an_identity_token_and_attest_runs_where_nothing_is_built():
+    holders = {name for name, job in JOBS.items() if "id-token" in job.get("permissions", {})}
+    assert holders == {"deploy", "attest"}
+    assert ATTEST["runs-on"] == JOBS["publish"]["runs-on"]
+    assert ATTEST["if"] == PACKAGE["if"] == RELEASE["if"]
+    assert "environment" not in ATTEST and "secrets." not in yaml.safe_dump(ATTEST)
+
+
+# --- package: the checksums -------------------------------------------------------------------
+
+
+def shim(bin_) -> None:
+    """sha256sum as a runner has it; on this machine, shasum standing in."""
+    bin_.mkdir(exist_ok=True)
+    (bin_ / "sha256sum").write_text(
+        '#!/bin/sh\nif [ -x /usr/bin/sha256sum ]; then exec /usr/bin/sha256sum "$@"; fi\n'
+        'exec shasum -a 256 "$@"\n'
+    )
+    (bin_ / "sha256sum").chmod(0o755)
+
+
+def bash(run: str, cwd, env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_package_writes_the_checksums_of_what_it_made_before_it_uploads_them(tmp_path):
+    names = [step.get("name") for step in PACKAGE["steps"]]
+    (step,) = [s for s in PACKAGE["steps"] if "SHA256SUMS" in s.get("run", "")]
+    assert names.index(step["name"]) == len(names) - 2  # just before the upload
+    release = tmp_path / "release"
+    release.mkdir()
+    made = ["cairn_memory-1.2.3-py3-none-any.whl", "cairn_memory-1.2.3.tar.gz", "notes.md"]
+    for name in [*made, ".gitignore"]:
+        (release / name).write_text(f"the bytes of {name}")
+    shim(tmp_path / "bin")
+    env = {"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path)}
+    done = bash(step["run"], tmp_path, env)
+    assert done.returncode == 0, done.stderr
+    lines = (release / "SHA256SUMS").read_text().splitlines()
+    assert lines == [
+        f"{hashlib.sha256(f'the bytes of {name}'.encode()).hexdigest()}  {name}"
+        for name in sorted(made)
+    ]
+
+
+def test_package_holds_no_permission_and_says_what_to_do_if_the_checkout_needs_one():
+    assert PACKAGE["permissions"] == {}
+    assert (
+        "If the checkout ever fails for want of one, give the job `contents: read` again, and"
+        " nothing more." in job_comment("package")
+    )
+    assert "SHA256SUMS, their checksums, which `attest` and `release` each check every file" in (
+        job_comment("package")
+    )
+    assert JOBS["package_check"]["permissions"] == {"contents": "read"}
+
+
+# --- attest and release: every file checked against SHA256SUMS ---------------------------------
+
+THE_FILES = [
+    "cairn_memory-1.2.3-py3-none-any.whl",
+    "cairn_memory-1.2.3.tar.gz",
+    "notes.md",
+]
+
+
+def artifact(tmp_path, files=THE_FILES, sums=None, tamper=None):
+    """The directory `download-artifact` fills: FILES, and SHA256SUMS over SUMS (FILES)."""
+    release = tmp_path / "release"
+    release.mkdir()
+    for name in files:
+        (release / name).write_text(f"the bytes of {name}")
+    lines = [
+        f"{hashlib.sha256((release / n).read_bytes()).hexdigest()}  {n}"
+        for n in sorted(files if sums is None else sums)
+        if (release / n).exists()
+    ]
+    (release / "SHA256SUMS").write_text("".join(f"{line}\n" for line in lines))
+    if tamper:
+        (release / tamper).write_text("other bytes")
+    return release
+
+
+def check_step(job: dict) -> dict:
+    (step,) = [s for s in job["steps"] if s.get("name") == "Check the files"]
+    return step
+
+
+def run_check(tmp_path, job: dict, tag: str = "v1.2.3"):
+    shim(tmp_path / "bin")
+    env = {
+        "PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin",
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_REF_NAME": tag,
+    }
+    return bash(check_step(job)["run"], tmp_path, env)
+
+
+@pytest.mark.parametrize("job", [ATTEST, RELEASE], ids=["attest", "release"])
+def test_the_files_pass_when_each_matches_its_checksum(tmp_path, job):
+    artifact(tmp_path)
+    done = run_check(tmp_path, job)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+@pytest.mark.parametrize("job", [ATTEST, RELEASE], ids=["attest", "release"])
+@pytest.mark.parametrize(
+    "case",
+    ["a changed wheel", "a changed text", "a file left out of the sums", "another file listed"],
+)
+def test_a_file_that_does_not_match_its_checksum_stops_the_job(tmp_path, job, case):
+    if case == "a changed wheel":
+        artifact(tmp_path, tamper=THE_FILES[0])
+    elif case == "a changed text":
+        artifact(tmp_path, tamper="notes.md")
+    elif case == "a file left out of the sums":
+        artifact(tmp_path, sums=THE_FILES[:2])
+    else:
+        release = artifact(tmp_path)
+        with (release / "SHA256SUMS").open("a") as sums:
+            sums.write(f"{'0' * 64}  ../elsewhere.whl\n")
+    done = run_check(tmp_path, job)
+    assert done.returncode != 0
+
+
+def test_the_two_jobs_check_with_the_same_step():
+    assert check_step(ATTEST)["run"] == check_step(RELEASE)["run"]
+
+
+@pytest.mark.parametrize("job", [ATTEST, RELEASE], ids=["attest", "release"])
+def test_a_candidate_s_files_carry_the_version_of_its_release(tmp_path, job):
+    artifact(tmp_path)
+    assert run_check(tmp_path, job, tag="v1.2.3-rc.4").returncode == 0
+
+
+# --- attest: what is attested, and with what ----------------------------------------------------
+
+
+def test_attest_fetches_checks_and_attests_and_nothing_more():
+    steps = ATTEST["steps"]
+    kinds = [s.get("uses", "run").split("@")[0] for s in steps]
+    assert kinds == ["actions/download-artifact", "run", "run", "actions/attest", "actions/attest"]
+    assert steps[0]["with"] == {"name": "release", "path": "${{ runner.temp }}/release"}
+    files, image = steps[3], steps[4]
+    assert files["uses"].startswith(ATTEST_ACTION) and image["uses"].startswith(ATTEST_ACTION)
+    assert files["with"] == {
+        "subject-path": "${{ runner.temp }}/release/*.whl\n"
+        "${{ runner.temp }}/release/*.tar.gz\n"
+        "${{ runner.temp }}/release/SHA256SUMS\n"
+    }
+    named = steps[2]
+    assert image["with"] == {
+        "subject-name": "${{ steps." + named["id"] + ".outputs.name }}",
+        "subject-digest": "${{ needs.publish.outputs.digest }}",
+    }
+    # The attestation stays with GitHub (gh attestation verify reads it from there): nothing
+    # is pushed to the registry, so the job needs no packages permission.
+    assert "push-to-registry" not in image["with"]
+    # The token reaches the two attest steps and nothing else.
+    assert [s["name"] for s in steps if reaches_the_token(s)] == [files["name"], image["name"]]
+
+
+def test_the_image_is_named_in_lower_case_after_its_digest_is_checked(tmp_path):
+    named = ATTEST["steps"][2]
+    assert named["env"] == {"DIGEST": "${{ needs.publish.outputs.digest }}"}
+    output = tmp_path / "out"
+    env = {"PATH": "/usr/bin:/bin", "GITHUB_REPOSITORY": "Owner/Repo", "GITHUB_OUTPUT": str(output)}
+    # bash 4's ${x,,} is what the runner has; the step must say exactly that.
+    assert 'echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"' in named["run"]
+    for digest, code in (("sha256:" + "a" * 64, 0), ("", 1), ("sha256:abc", 1)):
+        run = named["run"].replace("${GITHUB_REPOSITORY,,}", "owner/repo")
+        done = bash(run, tmp_path, {**env, "DIGEST": digest})
+        assert done.returncode == code, digest
+    assert output.read_text() == "name=ghcr.io/owner/repo\n"
+
+
+# --- release: the checksums published, a candidate as a pre-release ----------------------------
+
+
+def run_create(tmp_path, tag: str, candidate: str):
+    (step,) = [s for s in RELEASE["steps"] if s.get("name") == "Create the release"]
+    assert step["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "GH_REPO": "${{ github.repository }}",
+        "CANDIDATE": "${{ needs.release_check.outputs.candidate }}",
+    }
+    (tmp_path / "release").mkdir()
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "gh").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    (bin_ / "gh").chmod(0o755)
+    env = {
+        "PATH": f"{bin_}:/usr/bin:/bin",
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_REF_NAME": tag,
+        "CANDIDATE": candidate,
+    }
+    done = bash(step["run"], tmp_path, env)
+    assert done.returncode == 0, done.stderr
+    return done.stdout.splitlines()
+
+
+def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_path):
+    assert run_create(tmp_path, "v1.2.3", "") == [
+        "release",
+        "create",
+        "v1.2.3",
+        "--verify-tag",
+        "--title",
+        "v1.2.3",
+        "--notes-file",
+        "notes.md",
+        "cairn_memory-1.2.3-py3-none-any.whl",
+        "cairn_memory-1.2.3.tar.gz",
+        "SHA256SUMS",
+    ]
+
+
+def test_a_candidate_is_a_pre_release_never_marked_latest(tmp_path):
+    assert run_create(tmp_path, "v1.2.3-rc.2", "true") == [
+        "release",
+        "create",
+        "v1.2.3-rc.2",
+        "--verify-tag",
+        "--title",
+        "v1.2.3-rc.2",
+        "--notes-file",
+        "notes.md",
+        "--prerelease",
+        "--latest=false",
+        "cairn_memory-1.2.3-py3-none-any.whl",
+        "cairn_memory-1.2.3.tar.gz",
+        "SHA256SUMS",
+    ]
+
+
+def test_release_check_tells_the_jobs_after_it_that_a_tag_is_a_candidate():
+    (check,) = [s for s in JOBS["release_check"]["steps"] if s.get("id")]
+    assert JOBS["release_check"]["outputs"] == {
+        "latest": "${{ steps." + check["id"] + ".outputs.latest }}",
+        "candidate": "${{ steps." + check["id"] + ".outputs.candidate }}",
+    }
+
+
+# --- a candidate's image tags, and where it does not go ----------------------------------------
+
+
+def candidate_tags(tag: str) -> set[str]:
+    context = not_a_pull_request("push", f"refs/tags/{tag}")
+    outputs = {"release_check": {"outputs": {"latest": "false", "candidate": "true"}}}
+    return image_tags({**context, "needs": outputs})
+
+
+def test_a_candidate_is_published_as_its_own_tag_and_its_commit_only():
+    assert candidate_tags("v1.2.3-rc.1") == {"1.2.3-rc.1", f"sha-{SHA[:7]}"}
+    assert candidate_tags("v0.1.0-rc.12") == {"0.1.0-rc.12", f"sha-{SHA[:7]}"}
+
+
+def test_a_release_after_its_candidates_publishes_what_it_did_before():
+    assert release_tags("v0.1.0", ["v0.1.0-rc.1", "v0.1.0-rc.2"]) == {"0.1.0", "0.1", "latest"}
+    assert release_tags("v0.1.1", ["v0.1.0", "v0.2.0-rc.1", "v0.2.0"]) == {"0.1.1", "0.1"}
+    assert release_check.is_highest("v0.2.0", ["v0.2.0-rc.1", "v0.3.0-rc.1", "v0.2.0"])
+
+
+def test_a_candidate_runs_the_whole_tag_path_and_never_deploys():
+    ran = jobs_that_run(CANDIDATE)
+    assert ran == THE_GATE | set(TAG_PATH)
+    assert "deploy" not in ran
+    assert not evaluate(JOBS["deploy"]["if"], CANDIDATE)
+
+
+# --- what the header and the guides say ---------------------------------------------------------
+
+REPO = Path(__file__).resolve().parents[2]
+README = (REPO / "README.md").read_text(encoding="utf-8")
+DEPLOY_GUIDE = (REPO / "deploy" / "README.md").read_text(encoding="utf-8")
+VERIFY = re.compile(r"^gh attestation verify .+$", re.M)
+
+
+def flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_the_header_says_what_the_tag_path_does_for_a_release_and_a_candidate():
+    raw = (REPO / ".github" / "workflows" / "ci-cd.yml").read_text(encoding="utf-8")
+    header = flat(raw.split("\nname:")[0].replace("# ", ""))
+    for sentence in (
+        "`package` writes SHA256SUMS over the files it built, and the release publishes it with"
+        " them.",
+        "job `attest`, which holds an identity token and nothing that writes to the repository,"
+        " checks every file against SHA256SUMS, as `release` does, and gives the wheel, the"
+        " source archive, SHA256SUMS and the image's digest each a build provenance"
+        " attestation.",
+        "Its image is published as X.Y.Z-rc.N and sha-<commit> only, never X.Y, X.Y.Z or"
+        " latest, and its GitHub release is a pre-release, not marked latest.",
+        "A tag never deploys.",
+    ):
+        assert sentence in header, sentence
+
+
+def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves():
+    owner = "<owner>/<repo>"
+    workflow = f"--repo {owner} --signer-workflow {owner}/.github/workflows/ci-cd.yml"
+    expected = {
+        f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}",
+        f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow}",
+    }
+    ci = README[README.index("## CI/CD") : README.index("## Planned")]
+    update = DEPLOY_GUIDE[DEPLOY_GUIDE.index("## Update") :]
+    update = update[: update.index("\n## ")]
+    proof = (
+        "A pass proves that these bytes are the ones this repository's `ci-cd.yml` built and"
+        " attested in GitHub Actions, unchanged since; it does not prove that the code or its"
+        " dependencies are free of flaws"
+    )
+    for guide in (ci, update):
+        assert set(VERIFY.findall(guide)) == expected
+        assert proof in flat(guide)
+    # The image the guide names is the one `publish` tags and `attest` attests by digest.
+    meta = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "meta")
+    assert meta["with"]["images"] == "ghcr.io/${{ github.repository }}"
+
+
+def test_the_readme_says_in_two_sentences_what_a_candidate_is_for_and_what_it_publishes():
+    ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
+    assert (
+        "A release candidate tag `vX.Y.Z-rc.N` (N from 1) rehearses the release of `X.Y.Z`"
+        " before it is made: it needs the version `X.Y.Z` in `pyproject.toml` and its section"
+        " in `CHANGELOG.md`, runs every job a release runs, attestation included, and is"
+        " refused once `vX.Y.Z` is tagged or released. It publishes the image as `X.Y.Z-rc.N`"
+        " and `sha-<commit>` only, never `X.Y`, `X.Y.Z` or `latest`, and a GitHub"
+        " pre-release, not marked latest, whose files carry the version `X.Y.Z` and are"
+        " replaced by the release's." in ci
+    )
+
+
+def test_the_readme_lists_the_scans_and_the_quick_checks_in_items_1_and_2():
+    ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
+    item_1 = ci.split("1. **")[1].split("2. **")[0]
+    for tool in ("pip-audit", "Trivy", "Bandit", "gitleaks"):
+        assert tool in item_1, tool
+    assert "`build-constraints.txt`" in item_1 and "redacted" in item_1
+    item_2 = ci.split("2. **")[1].split("3. **")[0]
+    assert "`infra/quick/aws`, `infra/quick/gcp`" in item_2 and "job `quick`" in item_2

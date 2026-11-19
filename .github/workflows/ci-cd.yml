@@ -45,6 +45,13 @@
 # makes the GitHub release with them and the version's section of CHANGELOG.md. A run that
 # failed after `publish` and before the release was made is finished by re-running only its
 # failed jobs.
+# `package` writes SHA256SUMS over the files it built, and the release publishes it with them.
+# Between the two, job `attest`, which holds an identity token and nothing that writes to the
+# repository, checks every file against SHA256SUMS, as `release` does, and gives the wheel, the
+# source archive, SHA256SUMS and the image's digest each a build provenance attestation.
+# A release candidate vX.Y.Z-rc.N (scripts/release_check.py says when one is taken) runs the
+# same jobs, attestation included. Its image is published as X.Y.Z-rc.N and sha-<commit> only,
+# never X.Y, X.Y.Z or latest, and its GitHub release is a pre-release, not marked latest.
 # Four scans run on every pull request and every push, drafts and changes of documents only
 # included, and `publish` needs each: the locked dependencies (pip-audit), the image built for
 # linux/amd64 (Trivy), src/ (Bandit) and the whole history checked out (gitleaks, redacted).
@@ -60,8 +67,8 @@
 # Where the jobs run: two repository variables, each a JSON value for runs-on, each
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
 # jobs and of `package`, which runs the build backend; CAIRN_RELEASE_RUNNER names the runner
-# of publish, verify, release and deploy, which no job of a pull request uses and which runs
-# no build. docs/decisions.md, decision 150, says why there are two.
+# of publish, verify, attest, release and deploy, which no job of a pull request uses and
+# which runs no build. docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
 # pinned (resolved with git ls-remote on 2026-11-10). Dependabot keeps them current.
@@ -595,8 +602,11 @@ jobs:
     # gh lists the releases with this token, which may read and nothing more.
     permissions:
       contents: read
+    # `latest` is 'true' for the highest version tagged; `candidate` is 'true' for a release
+    # candidate vX.Y.Z-rc.N. Each is compared with == 'true', so an empty one means no.
     outputs:
       latest: ${{ steps.check.outputs.latest }}
+      candidate: ${{ steps.check.outputs.candidate }}
     steps:
       # The whole history (fetch-depth: 0): git places the tag's commit on main and among the
       # repository's tags. No token is kept.
@@ -661,7 +671,9 @@ jobs:
       # A v* tag gives X.Y.Z and X.Y, and latest only when `release_check` says the tag is the
       # highest version: a patch on an older line moves its X.Y and leaves latest where it is.
       # A push to main gives main and sha-<commit>, never latest. `latest` is written out, not
-      # left to the action's latest=auto.
+      # left to the action's latest=auto. A release candidate vX.Y.Z-rc.N gives X.Y.Z-rc.N (on a
+      # pre-release the action makes the whole version of {{major}}.{{minor}} too) and
+      # sha-<commit>, never X.Y, X.Y.Z or latest.
       - name: Image tags and labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -674,7 +686,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' && needs.release_check.outputs.latest == 'true' }}
             type=ref,event=branch
-            type=sha,enable=${{ github.ref_type == 'branch' }}
+            type=sha,enable=${{ github.ref_type == 'branch' || needs.release_check.outputs.candidate == 'true' }}
       - name: Build and push linux/amd64 and linux/arm64
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -775,18 +787,21 @@ jobs:
   # runner (decision 150: code a job runs could copy its runner's registration, and the release
   # runner runs no build). uv builds with the versions and hashes in build-constraints.txt
   # (--build-constraint with --require-hashes: a package not listed, or a file whose hash
-  # differs, stops the build). The checkout fetches with the job's read token and keeps none;
+  # differs, stops the build). The checkout fetches with the job's token and keeps none;
   # setup-uv gets an empty github-token, as uv's version is pinned, and no cache, which the
   # gate's jobs write on that runner. upload-artifact has no token input: it reaches this run's
   # artifacts with the runner's own runtime token. The files and the release's text are kept
-  # as an artifact of this run for five days.
+  # as an artifact of this run for five days. So is SHA256SUMS, their checksums, which `attest`
+  # and `release` each check every file against.
+  # The job holds no permission at all: the checkout of a public repository needs none, and
+  # `release_check` refuses a tag in a private one. If the checkout ever fails for want of
+  # one, give the job `contents: read` again, and nothing more.
   package:
     name: the wheel and the source archive
     needs: [release_check, publish, verify]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
-    permissions:
-      contents: read
+    permissions: {}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -806,6 +821,10 @@ jobs:
         run: >-
           uv build --build-constraint build-constraints.txt --require-hashes
           --out-dir "$RUNNER_TEMP/release"
+      - name: Their checksums
+        run: |
+          cd "$RUNNER_TEMP/release"
+          sha256sum cairn_memory-*.whl cairn_memory-*.tar.gz notes.md > SHA256SUMS
       # Hidden files stay out (the action's default), so the .gitignore uv writes there does too.
       - name: Keep them for the release
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -815,16 +834,84 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-  # A v* tag whose files `package` built becomes a GitHub release: the wheel, the source archive
-  # and the version's section of CHANGELOG.md, all from that job's artifact. The only job that
-  # may write to the repository, so it builds nothing, installs nothing and checks out nothing:
-  # its token reaches one step, the last, which makes the release. download-artifact gets no
-  # token (its github-token has no default and is needed only for another repository or run);
-  # it reaches this run's artifacts with the runner's own runtime token and checks their digest.
-  # It needs the gh CLI on its runner, as GitHub's hosted runners have.
+  # A build provenance attestation, signed with this run's identity, for each file `package`
+  # built (the wheel, the source archive and SHA256SUMS) and for the image `publish` pushed, by
+  # its digest. `gh attestation verify` checks them (README.md, "Releases"). The job holds the
+  # identity token and the right to store attestations, so it checks out nothing and runs no
+  # code from the repository or from the files: it fetches the artifact, checks every file
+  # against SHA256SUMS, as `release` does, and hands them to the pinned action. The attestations
+  # stay with GitHub: nothing is pushed to the registry, so it needs no packages permission.
+  attest:
+    name: build provenance of the files and the image
+    needs: [publish, package]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: Fetch what package built
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      # Exactly these four files, hidden ones counted: one wheel and one source archive of
+      # the tag's version (a candidate vX.Y.Z-rc.N's files carry X.Y.Z), the release's text,
+      # and SHA256SUMS, which lists the other three and nothing else, each with its checksum.
+      - name: Check the files
+        run: |
+          cd "$RUNNER_TEMP/release"
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%-rc.*}"
+          files="$(printf '%s\n' "cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" notes.md | LC_ALL=C sort)"
+          expected="$(printf '%s\n' $files SHA256SUMS | LC_ALL=C sort)"
+          found="$(ls -A | LC_ALL=C sort)"
+          if [ "$found" != "$expected" ]; then
+            echo "::error::package's artifact holds [$(printf '%s ' $found)], not one wheel, one source archive, the text and SHA256SUMS of $version"
+            exit 1
+          fi
+          if [ "$(cut -c67- SHA256SUMS | LC_ALL=C sort)" != "$files" ]; then
+            echo "::error::SHA256SUMS does not list exactly the wheel, the source archive and the text of $version"
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS || {
+            echo "::error::a file of package's artifact does not match its checksum in SHA256SUMS"
+            exit 1
+          }
+      - name: The image's name
+        id: image
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          if [[ ! $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The publish job reported no image digest"
+            exit 1
+          fi
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Attest the wheel, the source archive and SHA256SUMS
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/*.whl
+            ${{ runner.temp }}/release/*.tar.gz
+            ${{ runner.temp }}/release/SHA256SUMS
+      - name: Attest the image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ needs.publish.outputs.digest }}
+
+  # A v* tag whose files `package` built and `attest` attested becomes a GitHub release: the
+  # wheel, the source archive, SHA256SUMS and the version's section of CHANGELOG.md, all from
+  # that job's artifact. The only job that may write to the repository, so it builds nothing,
+  # installs nothing and checks out nothing: its token reaches one step, the last, which makes
+  # the release. download-artifact gets no token (its github-token has no default and is needed
+  # only for another repository or run); it reaches this run's artifacts with the runner's own
+  # runtime token and checks their digest. A release candidate becomes a pre-release, never
+  # marked latest. It needs the gh CLI on its runner, as GitHub's hosted runners have.
   release:
     name: GitHub release
-    needs: [package, publish, verify]
+    needs: [release_check, publish, verify, package, attest]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:
@@ -835,27 +922,43 @@ jobs:
         with:
           name: release
           path: ${{ runner.temp }}/release
-      # Exactly these three files, hidden ones counted: one wheel and one source archive of
-      # the tag's version, and the release's text.
+      # The same check as in `attest`.
       - name: Check the files
         run: |
           cd "$RUNNER_TEMP/release"
           version="${GITHUB_REF_NAME#v}"
-          expected="$(printf '%s\n' "cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" notes.md | LC_ALL=C sort)"
+          version="${version%-rc.*}"
+          files="$(printf '%s\n' "cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" notes.md | LC_ALL=C sort)"
+          expected="$(printf '%s\n' $files SHA256SUMS | LC_ALL=C sort)"
           found="$(ls -A | LC_ALL=C sort)"
           if [ "$found" != "$expected" ]; then
-            echo "::error::package's artifact holds [$(printf '%s ' $found)], not one wheel, one source archive and the text of $version"
+            echo "::error::package's artifact holds [$(printf '%s ' $found)], not one wheel, one source archive, the text and SHA256SUMS of $version"
             exit 1
           fi
+          if [ "$(cut -c67- SHA256SUMS | LC_ALL=C sort)" != "$files" ]; then
+            echo "::error::SHA256SUMS does not list exactly the wheel, the source archive and the text of $version"
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS || {
+            echo "::error::a file of package's artifact does not match its checksum in SHA256SUMS"
+            exit 1
+          }
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: >-
-          cd "$RUNNER_TEMP/release" &&
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME"
-          --notes-file notes.md "cairn_memory-${GITHUB_REF_NAME#v}-py3-none-any.whl"
-          "cairn_memory-${GITHUB_REF_NAME#v}.tar.gz"
+          CANDIDATE: ${{ needs.release_check.outputs.candidate }}
+        run: |
+          cd "$RUNNER_TEMP/release"
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%-rc.*}"
+          candidate=()
+          if [ "$CANDIDATE" = "true" ]; then
+            candidate=(--prerelease --latest=false)
+          fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md "${candidate[@]}" \
+            "cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS
 
   # Moves the hosted VM to the image `publish` just pushed, by digest, and waits until the VM
   # reports it runs that digest healthy. Pushes to main only. Skipped, not failed, unless the

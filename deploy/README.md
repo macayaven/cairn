@@ -219,6 +219,15 @@ docker compose up -d
 
 Both use the backup file whenever `.env` has the `COMPOSE_FILE` line.
 
+Before you move to a new release, you can check that its image is the one this repository's workflow built, with the GitHub CLI (it reads the digest from the registry, so log in to `ghcr.io` first if it asks); a wheel or source archive from the release is checked the same way, by its path:
+
+```bash
+gh attestation verify oci://ghcr.io/<owner>/<repo>:X.Y.Z --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/ci-cd.yml
+gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/ci-cd.yml
+```
+
+A pass proves that these bytes are the ones this repository's `ci-cd.yml` built and attested in GitHub Actions, unchanged since; it does not prove that the code or its dependencies are free of flaws. A tag `X.Y.Z-rc.N` is a release candidate, published to be tried before `X.Y.Z`: do not run one in production.
+
 Once only, the first update to a `compose.yaml` that gives the network a fixed subnet: run `docker compose down`, then `docker compose up -d`, so that the network is made again with that subnet. `down` keeps the volumes, so the database and Caddy's certificates stay. Then check that `docker network inspect cairn_default -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'` prints `10.213.47.0/24` (or your `CAIRN_SUBNET`): cairn trusts only that subnet to name the client, so on a network with another subnet every client shares one count in the limits on sign-in and agent registration.
 
 The update to schema 18 counts the headings stored with each passage toward a workspace's passages, so an existing workspace's count rises and can pass its plan's cap; until some of its notes are removed or its plan changes, its new notes are refused.

@@ -807,6 +807,7 @@ _V29_SLACK_NOTES = """CREATE TABLE slack_notes (
     brought_by TEXT,  -- the person
     brought_at TEXT NOT NULL,
     forget_at TEXT,  -- NULL until its install is removed
+    owns INTEGER NOT NULL DEFAULT 1,  -- 0: the project held this text already; a tie, no more
     UNIQUE (install_id, conversation_id, message_time)
 )"""
 _V29_SLACK_NOTES_DUE = "CREATE INDEX slack_notes_due ON slack_notes (forget_at)"

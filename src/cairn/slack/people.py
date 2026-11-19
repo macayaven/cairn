@@ -281,9 +281,17 @@ def write(
         kept together or not at all."""
         install, by = context.install.id, asker.person.user_id
         if not created:
-            # The project held this text already, so the note is not one Slack created:
-            # nothing is recorded, and removing Slack never forgets it. A message filed
-            # before is answered from its record without coming here (the claim).
+            # The project held this text already, so the note is not one Slack created and
+            # removing Slack never forgets it. A filed message is still tied to it, so that
+            # it is filed once whatever project is chosen next (D9); a typed text needs no tie.
+            if message is not None:
+                tied = context.view.record_slack_note(
+                    install, note.id, how="filed", brought_by=by, conversation_id=message[0],
+                    message_time=message[1], con=con, team_id=context.install.team_id,
+                    owns=False,
+                )  # fmt: skip
+                if tied != note.id:  # the message was filed meanwhile as another note
+                    raise FiledAlready(tied)
             kept.append(note.id)
             return
         if message is not None:  # a filed message's record is also its key (D9)

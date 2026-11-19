@@ -540,6 +540,8 @@ class SlackMethods(StoreBase):
         )
         con.execute("DELETE FROM slack_people WHERE install_id = ?", (install_id,))
         con.execute("DELETE FROM slack_link_offers WHERE install_id = ?", (install_id,))
+        # a message tied to a note the project held already: the tie goes, the note is not Slack's
+        con.execute("DELETE FROM slack_notes WHERE install_id = ? AND owns = 0", (install_id,))
         return con.execute(
             "UPDATE slack_notes SET forget_at = ? WHERE install_id = ? AND forget_at IS NULL",
             (_iso(stamp + FORGET_AFTER), install_id),
@@ -611,6 +613,7 @@ class SlackMethods(StoreBase):
         message_time: str | None = None,
         con: sqlite3.Connection | None = None,
         team_id: str | None = None,
+        owns: bool = True,
     ) -> str:
         """Record that the install created the note `note_id`: `how` one of HOWS, a filed
         message with its conversation and time (D9), a typed note with neither. A filed
@@ -619,17 +622,21 @@ class SlackMethods(StoreBase):
         An install removed meanwhile: the note is due when its other notes are. KeyError: no
         such install or note here; ValueError otherwise. `con`: the connection of a write
         already open (Store.add_note's `within`), so the record is in the note's transaction;
-        else it is a write of its own. `team_id`: the Slack team the request was verified
-        for; when the install holds another by now, TeamChanged and nothing is written (an
+        else it is a write of its own. `owns` False, for a filed message alone: the project held
+        the note already, so the row only ties the message to it (D9: a message is filed once)
+        and the note is never due to be forgotten. `team_id`: the Slack team the request was
+        verified for; when the install holds another by now, TeamChanged and nothing is written (an
         install removed meanwhile, or set up again with no team chosen yet, still holds
         it)."""
         _recordable(how, conversation_id, message_time)
+        if not owns and how != "filed":
+            raise ValueError("only a filed message is tied to a note it did not create")
         if con is not None:
             return self._record(con, install_id, note_id, how, brought_by, conversation_id,
-                                message_time, team_id)  # fmt: skip
+                                message_time, team_id, owns)  # fmt: skip
         with self._write() as opened:
             return self._record(opened, install_id, note_id, how, brought_by, conversation_id,
-                                message_time, team_id)  # fmt: skip
+                                message_time, team_id, owns)  # fmt: skip
 
     def _record(
         self,
@@ -641,6 +648,7 @@ class SlackMethods(StoreBase):
         conversation_id: str | None,
         message_time: str | None,
         team_id: str | None = None,
+        owns: bool = True,
     ) -> str:
         row = self._slack_row(con, install_id)
         if team_id is not None and row[3] != team_id:
@@ -662,7 +670,7 @@ class SlackMethods(StoreBase):
             raise KeyError(note_id)
         # removed, or set up again with no team chosen yet: the removal's day, as its other notes
         gone = row[2] in ("removed", "pending") and row[10] is not None
-        due = _iso(_when(row[10]) + FORGET_AFTER) if gone else None
+        due = _iso(_when(row[10]) + FORGET_AFTER) if gone and owns else None
         if how == "filed":  # the claim, made again when it was swept
             con.execute(
                 "INSERT INTO slack_notes (install_id, how, team_id, conversation_id,"
@@ -672,11 +680,11 @@ class SlackMethods(StoreBase):
                  self._stamp()),
             )  # fmt: skip
             con.execute(
-                "UPDATE slack_notes SET note_id = ?, forget_at = COALESCE(forget_at, ?)"
+                "UPDATE slack_notes SET note_id = ?, forget_at = COALESCE(forget_at, ?), owns = ?"
                 " WHERE install_id = ? AND conversation_id = ? AND message_time = ?"
                 " AND note_id IS NULL AND NOT EXISTS"
                 " (SELECT 1 FROM slack_notes WHERE note_id = ?)",
-                (note_id, due, install_id, conversation_id, message_time, note_id),
+                (note_id, due, int(owns), install_id, conversation_id, message_time, note_id),
             )
             return note_id
         con.execute(

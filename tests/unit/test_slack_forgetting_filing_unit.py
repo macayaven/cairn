@@ -96,8 +96,9 @@ def test_a_claim_taken_over_and_filed_meanwhile_stores_nothing_and_says_filed_al
 
 def test_a_message_whose_text_the_project_already_held_is_not_made_slacks_to_forget(bench):
     """The project already holds a note with exactly this text, and it is not one Slack
-    created. Filing the message stores nothing new, answers with that note, and records
-    nothing: removing Slack must never forget a note Slack did not create."""
+    created. Filing the message stores nothing new and answers with that note. The message
+    is tied to the note, so that it is filed once whatever project is chosen next (D9), but
+    the note is not Slack's: removing Slack never forgets a note Slack did not create."""
     bench.link(ADA_SLACK, bench.ada, bench.library)
     handle(bench)
     ((held, *_),) = bench.notes()
@@ -106,10 +107,20 @@ def test_a_message_whose_text_the_project_already_held_is_not_made_slacks_to_for
     bench.calls.clear()
     assert replied(bench, handle(bench)).startswith("Filed: ")
     assert [note_id for note_id, *_ in bench.notes()] == [held]  # nothing new stored
-    assert rows(bench) == []  # no record, and the claim was released
+    tied = bench.store._con.execute(
+        "SELECT note_id, conversation_id, message_time, owns, forget_at FROM slack_notes"
+    ).fetchall()
+    assert tied == [(held, CONVERSATION, TIME, 0, None)]  # tied to the message, not owned
+    # the same message again, with another project chosen: answered from the tie, no new note
+    other = bench.owner.create_project("inbox")
+    bench.link(BROOK_SLACK, bench.brook, other)
+    bench.calls.clear()
+    assert replied(bench, handle(bench, user=BROOK_SLACK)).startswith("Already filed")
+    assert [note_id for note_id, *_ in bench.notes()] == [held]
     bench.owner.remove_slack_install(bench.install.id)
-    assert bench.owner.slack_notes_to_forget() is None
+    assert bench.owner.slack_notes_to_forget() is None  # nothing of Slack's to forget
     assert bench.owner.get_note(held) is not None
+    assert rows(bench) == []  # the tie went with the install
 
 
 def refused_then_filed(bench: Bench, response, reason: str) -> None:

@@ -53,7 +53,7 @@ def section(markup: str, ident: str) -> str:
 
 def main(markup: str) -> str:
     """The page's own part: what <main> holds, without the frame's sign-out form."""
-    return markup.partition("<main>")[2].partition("</main>")[0]
+    return markup.partition('<main id="main">')[2].partition("</main>")[0]
 
 
 def form_to(markup: str, action: str) -> tuple[str, str]:

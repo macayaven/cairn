@@ -23,6 +23,11 @@ class Clock:
     def __call__(self) -> datetime:
         return self.now
 
+    def ticks(self) -> float:
+        """A monotonic clock that moves with this one (cairn.web.compactor measures every
+        interval on it): seconds since T0."""
+        return (self.now - T0).total_seconds()
+
 
 @pytest.fixture
 def db(tmp_path) -> Path:
@@ -79,7 +84,7 @@ def test_an_unknown_account_or_a_view_records_nothing(store):
 def test_one_is_due_after_a_deletion_once_the_interval_has_passed(store, monkeypatch):
     clock = Clock(T0)
     monkeypatch.setattr(base, "_clock", clock)  # the store records compactions by it too
-    compactor = Compactor(store, hours=24, clock=clock)
+    compactor = Compactor(store, hours=24, clock=clock, ticks=clock.ticks)
     assert not compactor.due()  # nothing deleted yet
     store.delete_account(store.create_account("Gone").id)
     assert compactor.due()  # never compacted: at once
@@ -307,7 +312,7 @@ def test_a_compaction_that_cannot_finish_is_tried_again_after_the_interval_not_a
     recorded, so nothing is forgotten."""
     clock = Clock(T0)
     monkeypatch.setattr(base, "_clock", clock)
-    compactor = Compactor(store, hours=24, clock=clock)
+    compactor = Compactor(store, hours=24, clock=clock, ticks=clock.ticks)
     store.delete_account(store.create_account("Gone").id)
     reader = sqlite3.connect(db)  # as the replica service: a read that does not end
     try:
@@ -338,8 +343,8 @@ def test_a_restart_tries_once_again_at_once(store, db, monkeypatch):
     try:
         reader.execute("BEGIN")
         reader.execute("SELECT COUNT(*) FROM settings").fetchone()
-        first = Compactor(store, hours=24, clock=clock)
+        first = Compactor(store, hours=24, clock=clock, ticks=clock.ticks)
         assert first.run_once() is False and not first.due()
-        assert Compactor(store, hours=24, clock=clock).due()  # another process's compactor
+        assert Compactor(store, hours=24, clock=clock, ticks=clock.ticks).due()  # another process's
     finally:
         reader.close()

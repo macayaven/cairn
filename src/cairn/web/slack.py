@@ -75,7 +75,10 @@ every install whose bot token Slack ended more than 3 days ago removed as an own
 it (Store.remove_gone_slack_installs), and every note whose day to be forgotten came
 (Store.slack_notes_due) forgotten with cairn's own forgetting (Store.forget_note, H5b) by a
 view of its workspace acting for no person. A check, a note or a pass that fails is logged by
-its error's class and the next one is done."""
+its error's class and the next one is done. Clocks: the one interval the loop keeps in memory
+is its wait between passes (asyncio.sleep, which the event loop measures on a monotonic
+clock); when an install was last checked, and the days before removal and forgetting, are
+stored in the database as wall-clock times."""
 
 import argparse
 import asyncio

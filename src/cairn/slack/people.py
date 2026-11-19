@@ -44,9 +44,9 @@ A search and a note, as the person's
 - `already(context, asker, note_id)`: the answer for a message filed already, linking its
   note, or, when that note is out of the person's reach, ELSEWHERE, naming nothing of it.
   BEING_FILED: the answer for a message someone else is filing right now.
-- Two seams, each the one place its message is built: `filed_message` (a note written, or
-  stored and waiting for its page: today both are said as filed) and `unlinked` (after
-  `unlink`: today the one-time address again).
+- Two seams, each the one place its message is built: `filed_message` distinguishes a
+  note filed from one stored and waiting for its page. `unlinked` confirms the link is undone
+  and says how to link again.
 
 The author of a message (D7)
 - `author(context, message)`: the name of the message's author, once Slack shows the author
@@ -192,10 +192,9 @@ def linked(asker: Asker) -> dict:
 
 
 async def unlinked(context: Context, slack_user: str | None) -> dict:
-    """What a person is told once `unlink` undid their link: the one seam for it. Today the
-    one-time address again, as anyone not linked is offered (link_prompt)."""
-    # Replaced by blocks.unlinked(context.install.command) once blocks.py has it.
-    return await link_prompt(context, slack_user)
+    """What a person is told once `unlink` undid their link, and how to link again with this
+    install's command."""
+    return blocks.unlinked(context.install.command)
 
 
 def help_message(context: Context) -> dict:
@@ -316,11 +315,8 @@ def write(
 
 def filed_message(*, title: str, page_url: str, project: str, waiting: bool) -> dict:
     """What a person is told of a note written: the one seam for it. `waiting`: the note is
-    stored and waits for its page (Memory.note's status WAITING, N1). Today both are said as
-    a note filed."""
-    # Replaced by blocks.filed(title=..., page_url=..., project=..., waiting=waiting) once
-    # blocks.py takes `waiting`.
-    return blocks.filed(title=title, page_url=page_url, project=project)
+    stored and waits for its page (Memory.note's status WAITING, N1)."""
+    return blocks.filed(title=title, page_url=page_url, project=project, waiting=waiting)
 
 
 async def written(context: Context, asker: Asker, text: str, **fields: Any) -> dict:

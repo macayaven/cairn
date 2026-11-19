@@ -250,7 +250,7 @@ The slash command is `/{{slug}}`, unless the owner named it otherwise in the app
 | `note <text>` | Writes a note in your Slack project, with `via` `slack`, and links its page. |
 | `project` | Says which project is your Slack project and which projects you can write to. `project <name>` makes another of those your Slack project. |
 | `link` | Says who your Slack user is linked to; if it is linked to nobody, gives a new address to link it. `link <code>` links it with the code that address showed you. |
-| `unlink` | Undoes your link, and offers a new address to link again. |
+| `unlink` | Undoes your link, and says to use `link` to link again. |
 | `help`, or no word | Lists what there is. |
 
 A direct message to the bot works the same way: plain words are a search, `note:` and text writes a note, and `help` lists what there is. The message shortcut **File in {{name}}**, used on a message, files it as a note in your Slack project: its text, a heading with who wrote it and when, and the message's own link as its `source_ref`. A message is filed once: filing it again answers with the note it already is.

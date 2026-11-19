@@ -535,7 +535,7 @@ def test_connect_the_slash_commands_words(bench):
         "| `link` | Says who your Slack user is linked to; if it is linked to nobody, gives a"
         " new address to link it. `link <code>` links it with the code that address showed"
         " you. |",
-        "| `unlink` | Undoes your link, and offers a new address to link again. |",
+        "| `unlink` | Undoes your link, and says to use `link` to link again. |",
         "| `help`, or no word | Lists what there is. |",
     )
     made = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab", command="/notes")
@@ -553,8 +553,16 @@ def test_connect_the_slash_commands_words(bench):
     assert [via for *_, via in bench.notes()] == ["slack"]
     assert said(ask(bench, "project")) == said(blocks.project_is("library", writable=["library"]))
     assert said(ask(bench, "link")) == said(blocks.linked("Ada"))
-    assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "unlink"))
+    unlinked = said(ask(bench, "unlink"))
+    assert "You are unlinked. The bot no longer acts as you here." in unlinked
+    assert "`/cairn link`" in unlinked
+    assert "/integrations/slack/link?t=" not in unlinked
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK) is None
+    assert bench.store._con.execute("SELECT * FROM slack_link_offers").fetchall() == []
     assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "link"))  # linked to nobody
+    assert bench.store._con.execute("SELECT slack_user_id FROM slack_link_offers").fetchall() == [
+        (ADA_SLACK,)
+    ]
     for word in ("help", ""):
         assert said(ask(bench, word)) == said(blocks.help_text("/cairn"))
 

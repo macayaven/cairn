@@ -15,11 +15,11 @@ with `response_type` "ephemeral": for the person who asked alone, never the conv
   links them to that person, and the answer says to whom. Anything else, a wrong code, one
   run out, one not given yet, another Slack user's, or a person no longer a member, links
   nothing and is answered with one sentence (NO_LINK), whichever it was.
-- `unlink` undoes the link and offers the one-time address again, as to anyone not linked.
+- `unlink` undoes the link and says how to link again with `link`.
 - `help`, and no word: what there is.
 - A Slack user who is not linked (people.asker) is answered with the one-time address alone,
-  whatever they ask but `link <code>`; `help` and no word are answered without it, and
-  write nothing."""
+  except for `link <code>`, `unlink`, `help` and no word. `unlink` confirms the link is undone
+  without making an offer. `help` and no word show help and write nothing."""
 
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse

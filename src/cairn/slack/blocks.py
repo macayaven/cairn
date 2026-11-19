@@ -94,7 +94,15 @@ def nothing_found(query: str) -> dict:
     return _one(f"Nothing found for: {query}" if query else "Nothing found.")
 
 
-def filed(*, title: str, page_url: str, project: str, already: bool = False) -> dict:
+def filed(
+    *, title: str, page_url: str, project: str, already: bool = False, waiting: bool = False
+) -> dict:
+    if waiting and not already:
+        status = f"Note stored in {_text(project, 350)}. It will appear shortly."
+        return _message(
+            f"{status}\n{_text(title or 'Untitled', 450)}",
+            [f"{status}\n{_link(title, page_url)}"],
+        )
     status = "Already filed" if already else "Filed"
     fallback = f"{status}: {_text(title or 'Untitled', 450)}\nProject: {_text(project, 350)}"
     return _message(
@@ -122,6 +130,12 @@ def link_prompt(url: str, command: str = "/cairn") -> dict:
 
 def linked(person: str) -> dict:
     return _one(f"Linked to {person or 'your cairn account'}.")
+
+
+def unlinked(command: str = "/cairn") -> dict:
+    name = _text(command or "/cairn", 200)
+    text = f"You are unlinked. The bot no longer acts as you here. Link again with `{name} link`."
+    return _message(text, [text])
 
 
 def project_is(project: str | None, *, writable: list[str]) -> dict:

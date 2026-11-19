@@ -1083,14 +1083,23 @@ def _collapsed(text: str) -> str:
 
 def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     """The version with the body cairn writes of its claims and the spans they cite
-    (cairn.compiler.render_body), which the archive's must equal, whitespace aside
-    (ValueError otherwise, naming the page and version, never the text): an import never
-    brings a body cairn would not have written. A title longer than cairn writes (a note's
-    topic, FIELD_MAX) is cut to it, and the body is rendered with the cut title."""
-    from cairn.compiler import render_body  # the compiler builds on the store
+    (cairn.compiler.render_body). The archive's must equal it, or the rendering cairn wrote
+    before fix H (previous_render_body), whitespace aside (ValueError otherwise, naming the
+    page and version, never the text): an import never brings a body cairn would not have
+    written, and the version is stored with the current rendering. A title longer than
+    cairn writes (a note's topic, FIELD_MAX) is cut to it, and the body is rendered with
+    the cut title."""
+    from cairn.compiler import (  # the compiler builds on the store
+        previous_render_body,
+        render_body,
+    )
 
     body = render_body(page.title, page.claims, spans)
-    if _collapsed(body) != _collapsed(page.body):
+    # An archive written before fix H holds the previous rendering: accepted, stored as now.
+    given = _collapsed(page.body)
+    if given != _collapsed(body) and (
+        given != _collapsed(previous_render_body(page.title, page.claims, spans))
+    ):
         raise ValueError(
             f"the body of {page.slug!r} version {page.version} in {root} is not what cairn"
             " writes of its claims"

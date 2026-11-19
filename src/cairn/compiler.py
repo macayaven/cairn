@@ -270,6 +270,21 @@ def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) 
     return "\n\n".join([*top, *rest]) + "\n"
 
 
+def previous_render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) -> str:
+    """The body as cairn wrote it before fix H (one "##" of a path's last heading wherever
+    the path changed, nothing for a claim with no section). For the import's check alone
+    (store.portable._as_rendered), so an archive written then still imports; never shown."""
+    blocks = [f"# {title}"]
+    previous: tuple[str, ...] | None = None
+    for claim in claims:
+        path = next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
+        if path != previous and path and path[-1] != title:
+            blocks.append(f"## {path[-1]}")
+        blocks.append(claim.text)
+        previous = path
+    return "\n\n".join(blocks) + "\n"
+
+
 def candidate_page(
     slug: str,
     title: str,

@@ -61,8 +61,16 @@ def test_a_note_with_no_passage_is_refused_and_nothing_is_stored(memory, store, 
 def test_the_refused_note_binds_no_topic(memory, store):
     with pytest.raises(NoPassage):
         memory.note("alpha", HEADINGS, title="Checklist", topic="Deploy")
-    written = memory.note("alpha", f"{HEADINGS}\n\nAlways watch the canary.\n", topic="Release")
-    assert written["status"] == "saved" and written["page"] == "release"
+    written = memory.note("alpha", f"{HEADINGS}\n\nAlways watch the canary.\n", topic="Deploy")
+    assert (written["status"], written["page"], written["version"]) == ("saved", "deploy", 1)
+    assert len(store.list_notes(store.get_project("alpha").id)) == 1
+
+
+@pytest.mark.parametrize("text", ["", "\n\n  \n"])
+def test_blank_text_is_refused_as_before_and_nothing_is_stored(memory, store, text):
+    with pytest.raises(Malformed):
+        memory.note("alpha", text, title="Checklist")
+    assert store.list_notes(store.get_project("alpha").id) == []
 
 
 def test_a_note_with_one_passage_under_headings_is_unaffected(memory):

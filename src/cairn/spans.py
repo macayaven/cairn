@@ -16,13 +16,15 @@ start on a line indented at most 3 spaces.
   as metadata (review 7.4): each line is a key and its value (a key is one word of letters,
   digits, "_", "." and "-", or a quoted string, then ":" and a blank or the line's end), a
   line that continues the value of a key above it (indented, or a list item "- "), a comment
-  ("#"), or blank; no lines at all count too. Anything else is content: the first `---` is a
-  thematic break and every line of the block, both `---` lines included, is one paragraph
-  span, so the spans after it are the spans they were (same lines, same ids) when the block
-  was read as front matter, and a page that cites them still does. It is told by the lines'
-  shape, not by parsing YAML: "Production rule: never drop it." is a YAML mapping, but its
-  key is two words, so it is prose; and metadata that is not valid YAML ("title: [x") stays
-  front matter, for the reader of front matter to report.
+  ("#"), or blank, with at least one key; no lines, or blank lines only, count too. Anything
+  else is content: the first `---` is a thematic break and every line of the block, both
+  `---` lines included, is one paragraph span, so the spans after it are the spans they were
+  (same lines, same ids) when the block was read as front matter, and a page that cites them
+  still does. It is told by the lines' shape, not by parsing YAML: "Production rule: never
+  drop it." is a YAML mapping, but its key is two words, so it is prose; and metadata that
+  is not valid YAML ("title: [x") stays front matter, for the reader of front matter to
+  report. Its limit: a one-word label and its sentence ("Note: never drop it.") reads as a
+  key and its value, so it stays front matter, as before.
 - ATX headings: 1 to 6 `#`, a space or tab, then the text; a closing `#` run is dropped.
 - Fenced code, backtick or tilde: atomic, fence lines included, never split. A closing fence
   is a run of the opening character, at least as long, alone on its line, and indented at
@@ -149,7 +151,8 @@ def _frontmatter_end(lines: list[str]) -> int:
 
 def _metadata(lines: list[str]) -> bool:
     """Whether lines read as metadata: every one a key and its value, a continuation of a key
-    above it (indented, or a list item), a comment or blank (see the module)."""
+    above it (indented, or a list item), a comment or blank, with at least one key unless
+    every line is blank (see the module)."""
     keyed = False
     for line in lines:
         if not line.strip() or line.startswith("#"):
@@ -158,7 +161,7 @@ def _metadata(lines: list[str]) -> bool:
             keyed = True
         elif not (keyed and (line[0] in " \t" or line == "-" or line.startswith("- "))):
             return False
-    return True
+    return keyed or not any(line.strip() for line in lines)
 
 
 def _kind(line: str) -> SpanKind | None:

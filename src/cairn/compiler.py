@@ -96,8 +96,9 @@ SAVE_TRIES = 3  # reads of a page that keeps moving before a compile gives up
 STALE_PAGE = "compile.stale_page"  # the code of a compile that lost its page SAVE_TRIES times
 TAG_SIZES = (8, 12, 16)  # hex characters of the tag a colliding topic's slug ends with
 _ADDRESS_BATCH = 8  # slugs looked up in one read when choosing a new page's address
-# A code fence, three or more backticks or tildes after any indentation, and its info string.
-_FENCE = re.compile(r"([ \t]*)(`{3,}|~{3,})(.*)")
+# A code fence, three or more backticks or tildes after any indentation and any list marker
+# (a fence may open on an item's marker line), and its info string.
+_FENCE = re.compile(r"([ \t]*)((?:[-*+]|\d{1,9}[.)])[ \t]+)?(`{3,}|~{3,})(.*)")
 
 
 class GateResult(BaseModel):
@@ -277,7 +278,8 @@ def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) 
 
 def _closed(text: str) -> str:
     """`text`, and when it leaves a code fence open, a line that closes it: the opener's own
-    indentation and run, so it closes inside a list item too. A fence is three or more
+    indentation (past a list marker it opens after) and run, so it closes inside a list item
+    too. A fence is three or more
     backticks or tildes at a line's start ("```a```" is inline code), and only a run of the
     same character at least as long, with nothing after it, closes it (CommonMark)."""
     opened: tuple[str, str] | None = None  # (indentation, run)
@@ -285,11 +287,16 @@ def _closed(text: str) -> str:
         fence = _FENCE.fullmatch(line.rstrip(" \t\r"))
         if not fence:
             continue
-        indent, run, rest = fence.groups()
+        indent, marker, run, rest = fence.groups()
         if opened is None:
             if not (run[0] == "`" and "`" in rest):
-                opened = (indent, run)
-        elif run[0] == opened[1][0] and len(run) >= len(opened[1]) and not rest.strip(" \t"):
+                opened = (indent + " " * len(marker or ""), run)
+        elif (
+            not marker
+            and run[0] == opened[1][0]
+            and len(run) >= len(opened[1])
+            and not rest.strip(" \t")
+        ):
             opened = None
     return text if opened is None else f"{text}\n{opened[0]}{opened[1]}"
 

@@ -68,6 +68,7 @@ def test_prose_between_two_rules_is_content_every_line():
         "key_with-dots.and_more: v",
         "empty:",
         "",  # nothing between the two lines: no content either way
+        "\n",  # blank lines only: no content either
     ],
 )
 def test_metadata_is_front_matter(inside):
@@ -86,6 +87,8 @@ def test_metadata_is_front_matter(inside):
         "  indented: before any key",
         "A sentence: with a colon, and words after it.",
         "url:https://example.test",  # no space after the colon: not a key
+        "# Deploy",  # a heading, with no key: not a mapping
+        "# a comment\n# and another",  # comments alone, with no key
     ],
 )
 def test_anything_else_is_content(inside):
@@ -93,6 +96,13 @@ def test_anything_else_is_content(inside):
     assert "frontmatter" not in [kind for kind, _, _ in kinds(text)]
     lines = {n for _, start, end in kinds(text) for n in range(start, end + 1)}
     assert lines == set(range(1, len(text.splitlines()) + 1))
+
+
+def test_the_rules_limit_a_one_word_label_reads_as_a_key():
+    """The shape cannot tell "Note: ..." from "title: ...": a one-word label and its sentence
+    between two rule lines read as metadata, as they did before (the rule's stated limit)."""
+    text = "---\nNote: never drop the users table.\n---\nFooter.\n"
+    assert kinds(text)[0][0] == "frontmatter"
 
 
 # What was stored before keeps its citations

@@ -94,8 +94,15 @@ def test_the_body_closes_a_claims_open_fence_where_the_claim_ends(opened):
     assert body.startswith(f"# Runbook\n\n{opened}\n")  # the claim's own text, untouched
 
 
-def test_a_fence_left_open_in_a_list_item_is_closed_inside_the_item():
-    item = "- Steps:\n\n  ```sh\n  make deploy"
+@pytest.mark.parametrize(
+    "item",
+    [
+        "- Steps:\n\n  ```sh\n  make deploy",
+        "- ```sh\n  make deploy",  # opened on the item's marker line
+        "12. ~~~\n    make deploy",
+    ],
+)
+def test_a_fence_left_open_in_a_list_item_is_closed_inside_the_item(item):
     spans = chunk("n1", item) + chunk("n2", CRITICAL)
     claims = [Claim(id=f"cl_{n}", text=s.text, span_ids=(s.id,)) for n, s in enumerate(spans)]
     body = render_body("Runbook", claims, {s.id: s for s in spans})

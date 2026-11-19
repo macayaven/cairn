@@ -475,7 +475,8 @@ def test_the_readme_says_what_a_change_of_documents_alone_still_runs_and_how_tag
     ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
     for sentence in (
         "One exception: a change that touches only paths no image job reads runs no image check"
-        " and no rehearsal, so a pull request runs items 1 and 2 alone and a push to `main`"
+        " (item 3) and no stack or host rehearsal (item 4), so a pull request runs items 1 and"
+        " 2 alone and a push to `main`"
         " publishes and deploys nothing; the server keeps the image it runs. Its image is still"
         " built for both platforms and scanned, as item 1 says.",
         "A tag is published as `X.Y.Z`, which never moves: if the registry already has that"

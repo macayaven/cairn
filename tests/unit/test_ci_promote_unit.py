@@ -72,6 +72,7 @@ case "${args[0]} ${args[1]}" in
   "manifest fetch")
     ref="${args[2]}"
     if [[ $ref == *@* ]]; then f="$(by_digest "${ref#*@}")" || exit 1; cat "$f"
+    elif [ -n "$FETCH_OTHER" ]; then printf 'other bytes'
     else [ -e "$REG/${ref##*:}" ] || exit 1; cat "$REG/${ref##*:}"; fi ;;
   "cp "*)
     printf '%s' "$BUILT" > "$REG/${args[2]##*:}" ;;
@@ -269,6 +270,17 @@ def test_a_push_that_reads_back_another_digest_stops_the_job(tmp_path):
     assert not any(call.startswith("manifest fetch") for call in runner.oras_calls())
 
 
+def test_a_tag_that_reads_back_other_bytes_stops_the_rehearsal_in_one_line(tmp_path):
+    runner = Runner(tmp_path)
+    done = runner.run(step("image_scan", RECEIVE)["run"], FETCH_OTHER="1")
+    assert done.returncode == 1
+    other = digest(b"other bytes")
+    built = digest(runner.built)
+    assert done.stdout.strip().splitlines()[-1] == (
+        f"::error::localhost:5000/cairn:ci is {other}, not the build's {built}"
+    )
+
+
 # --- publish: promote, never build --------------------------------------------------------------
 
 
@@ -357,6 +369,17 @@ def test_a_long_listing_with_the_version_first_still_finds_it(tmp_path):
     done = publish(runner, ["1.2.3"])
     assert done.returncode == 1 and "a full version is published once" in done.stdout
     assert not any(call.startswith("cp ") for call in runner.oras_calls())
+
+
+def test_a_version_that_reads_back_other_bytes_stops_publish_in_one_line(tmp_path):
+    runner = Runner(tmp_path)
+    done = publish(runner, ["1.2.3"], FETCH_OTHER="1")
+    assert done.returncode == 1
+    other = digest(b"other bytes")
+    assert done.stdout.strip().splitlines()[-1] == (
+        f"::error::ghcr.io/owner/repo:1.2.3 is {other}, not the build's {digest(runner.built)}"
+    )
+    assert (tmp_path / "github_output").read_text() == ""
 
 
 def test_tags_that_cannot_be_listed_push_nothing(tmp_path):

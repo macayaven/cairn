@@ -139,7 +139,7 @@ def test_the_probe_looks_in_the_base_interpreter_beside_a_virtual_environment(tm
     venv.create(tmp_path / "app", with_pip=False)
     python = str(tmp_path / "app" / "bin" / "python")
     probe = [python, "-I", "-c", smoke.INSTALLER_PROBE]
-    report = json.loads(subprocess.run(probe, capture_output=True, text=True, check=True).stdout)
+    report = json.loads(subprocess.run(probe, stdout=subprocess.PIPE, text=True, check=True).stdout)
     base = Path(
         sysconfig.get_path("purelib", vars={"base": sys.base_prefix, "platbase": sys.base_prefix})
     )

@@ -102,7 +102,14 @@ import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import IO, Any
 
-from cairn.compiler import CompileResult, Gate, compile_note, lost_race, page_for
+from cairn.compiler import (
+    CompileResult,
+    Gate,
+    compile_note,
+    lost_race,
+    page_for,
+    render_body,
+)
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
 from cairn.plans import Plan, Plans, limit_sentence
@@ -1199,6 +1206,12 @@ class Memory:
         """For each claim's span ids, one `written_by` entry per note it cites, in the order
         it first cites each (module docstring, A1); every entry, none cut. Two reads, for
         all the claims at once."""
+        return self._written_by(claims)[0]
+
+    def _written_by(
+        self, claims: Iterable[Iterable[str]]
+    ) -> tuple[list[list[dict[str, Any]]], dict[str, Span]]:
+        """written_by's answer, and the spans it read to make it."""
         cited = [list(span_ids) for span_ids in claims]
         spans = self.store.get_spans(i for span_ids in cited for i in span_ids)
         writers = self.store.note_writers(span.source_id for span in spans.values())
@@ -1206,7 +1219,7 @@ class Memory:
         for span_ids in cited:
             notes = dict.fromkeys(spans[i].source_id for i in span_ids if i in spans)
             answers.append([_written(note, writers[note]) for note in notes if note in writers])
-        return answers
+        return answers, spans
 
     def recall(self, query: str, project: str | None = None, limit: int = 8) -> dict[str, Any]:
         """The best hits for `query`, each with who wrote what its claim cites (A1), and what
@@ -1246,10 +1259,12 @@ class Memory:
         before: int | None = None,
     ) -> dict[str, Any]:
         """A page as stored, each claim marked `outside` when a note it cites is (A1), with a
-        part of its version numbers read from their end (Q1: versions_of)."""
+        part of its version numbers read from their end (Q1: versions_of). Its body is
+        rendered when read (compiler.render_body of its claims and the spans they cite, read
+        once with the writers), so a version stored under an earlier rendering reads as now."""
         target = self.project(project)
         page = self.find_page(target, slug, version)
-        writers = self.written_by(claim.span_ids for claim in page.claims)
+        writers, spans = self._written_by(claim.span_ids for claim in page.claims)
         versions, total, _, following = self.versions_of(target, page.slug, limit, before)
         answer = {
             "project": target.name,
@@ -1257,7 +1272,7 @@ class Memory:
             "title": page.title,
             "version": page.version,
             "versions": versions,
-            "body": page.body,
+            "body": render_body(page.title, page.claims, spans),
             "claims": [
                 {**_claim(claim), "outside": any(entry["outside"] for entry in entries)}
                 for claim, entries in zip(page.claims, writers, strict=True)

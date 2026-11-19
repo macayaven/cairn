@@ -87,7 +87,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
 from cairn import oauth
-from cairn.compiler import section_headings
+from cairn.compiler import render_body, section_headings
 from cairn.kinds import GENERAL
 from cairn.memory import (
     BadRequest,
@@ -800,6 +800,8 @@ def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
     ]
     return {
         "items": items,
+        # The Markdown body as REST and MCP give it: rendered when read, never the stored text.
+        "body": render_body(page.title, page.claims, {i: span for i, (span, _) in found.items()}),
         "sources": sources,
         "metrics": metrics,
         "lines_cited": sum(source["cited"] for source in sources),

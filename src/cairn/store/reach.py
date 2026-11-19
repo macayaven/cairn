@@ -251,6 +251,7 @@ LIMITED_READS = frozenset(
         "get_spans",
         "spans_within",  # get_spans without the long ones (Help)
         "note_writers",  # who wrote the notes (A1): none out of reach
+        "note_origins",  # note_writers, with when and whether a filed Slack message (8.1, 8.5)
         "get_page",
         "page_claims",  # a page without its body (Help)
         "page_for_model",  # M4: the page, and whether its project goes to no model

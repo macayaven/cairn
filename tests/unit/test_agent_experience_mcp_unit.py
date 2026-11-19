@@ -10,7 +10,17 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
-from cairn.memory import NOTHING_LEFT_OUT, FiledOnce, Memory, searched
+from cairn.gate import GateResult
+from cairn.memory import (
+    NO_PAGE,
+    NOTHING_LEFT_OUT,
+    WAITING,
+    WAITS,
+    FiledOnce,
+    Memory,
+    searched,
+    without_missing_page,
+)
 from cairn.server import create_app
 from cairn.store import Store
 from cairn.store.models import Searched
@@ -152,19 +162,19 @@ def test_a_page_asked_for_by_its_title_names_the_nearest_pages(env):
     said = refusal(env.client, env.key, "page", project="ops", slug="Deploy")
     assert said.endswith(
         "no page 'Deploy' in project 'ops'. A page is named by its slug, as note, recall and"
-        " overview give it; the nearest: 'deploy' (Deploy), 'rollback' (Rollback)."
+        " overview give it; the nearest: 'deploy', 'rollback'."
     )
     rest = env.client.get("/api/projects/ops/pages/Deploy", headers=env.h)
-    assert rest.status_code == 404 and "the nearest: 'deploy' (Deploy)" in rest.text
+    assert rest.status_code == 404 and "the nearest: 'deploy', 'rollback'." in rest.text
 
 
 def test_an_unknown_name_names_the_nearest_slugs_in_their_order(env):
     for name in ("Alpha", "Beta", "Gamma", "Delta", "Epsilon"):
         call(env, "note", project="ops", text=f"# {name}\n\n{name} holds a quill.\n")
     said = refusal(env.client, env.key, "page", project="ops", slug="dalta")
-    assert said.endswith("the nearest: 'delta' (Delta), 'epsilon' (Epsilon), 'gamma' (Gamma).")
+    assert said.endswith("the nearest: 'delta', 'epsilon', 'gamma'.")
     said = refusal(env.client, env.key, "evidence", project="ops", slug="zz", claim_id="cl_x")
-    assert said.endswith("the nearest: 'alpha' (Alpha), 'beta' (Beta), 'delta' (Delta).")
+    assert said.endswith("the nearest: 'alpha', 'beta', 'delta'.")
 
 
 def test_a_project_with_no_pages_says_there_are_none(env):
@@ -186,19 +196,44 @@ def test_the_nearest_pages_cost_a_bounded_read(env, monkeypatch):
     assert len([s for s in seen if s.lstrip().upper().startswith("SELECT")]) <= 6
 
 
-def test_a_note_that_made_no_page_says_so_and_names_no_page(env):
-    """A note whose gate refused its first page: no page is made, and the answer names none."""
-    noted = call(env, "note", project="ops", text="---\ntitle: x\n---\n# Only a heading\n")
-    assert noted["version"] is None and noted["page"] is None
-    assert noted["message"] == (
-        "No page was made from this note: it is stored, but no page holds it, so there is no"
-        " page to read."
-    )
-    rest = env.client.post(
-        "/api/projects/ops/notes", headers=env.h, json={"text": "# Another heading only\n"}
-    )
-    assert rest.status_code == 201
-    assert rest.json()["page"] is None and rest.json()["message"].startswith("No page was made")
+def test_a_note_that_made_no_page_says_so_and_names_no_page(tmp_path):
+    """A note whose gate refused its first page: it is stored, no page is made, and the answer
+    over MCP and REST names none."""
+
+    def refuse(page, spans):
+        return GateResult(passed=False, violations=("retention.fact_dropped: 1 time",))
+
+    store = Store(tmp_path / "cairn.db", clock=lambda: WRITTEN)
+    store.create_project("ops")
+    key = store.create_key("owner")
+    try:
+        with TestClient(create_app(store, public_url=BASE, gate=refuse), base_url=BASE) as client:
+            noted = answer(client, key, "note", project="ops", text="# Draft\n\nQuill waits.\n")
+            assert noted["status"] == "rejected" and noted["version"] is None
+            assert noted["page"] is None and noted["message"] == NO_PAGE
+            assert NO_PAGE == (
+                "No page was made from this note: it is stored, but no page holds it, so there"
+                " is no page to read."
+            )
+            rest = client.post(
+                "/api/projects/ops/notes",
+                headers={"x-api-key": key},
+                json={"text": "# Other\n\nQuill rests.\n"},
+            )
+            assert rest.status_code == 201
+            assert rest.json()["page"] is None and rest.json()["message"] == NO_PAGE
+    finally:
+        store.close()
+
+
+def test_only_an_answer_on_no_page_and_not_waiting_loses_its_page_name():
+    made = {"page": "deploy", "status": "saved", "version": 2}
+    held = {"page": "deploy", "status": "unchanged", "version": 2}
+    waits = {"page": "deploy", "status": WAITING, "version": None, "message": WAITS}
+    assert without_missing_page(made) == made and without_missing_page(held) == held
+    assert without_missing_page(waits) == waits  # it will be filed on that page by itself
+    none = {"page": "draft", "status": "rejected", "version": None}
+    assert without_missing_page(none) == {**none, "page": None, "message": NO_PAGE}
 
 
 def test_a_note_that_made_a_page_answers_as_before(env):
@@ -309,3 +344,29 @@ def test_no_refusal_an_agent_can_get_tells_it_to_forget_or_delete(env):
         for act in ("forget", "delete", "erase", "remove it"):
             if act in folded:
                 assert "a person" in folded, said
+
+
+def test_the_nearest_pages_name_no_title(env):
+    """A title is a note's words (its first heading or line); the refusal names slugs only."""
+    call(env, "note", project="ops", text="# Fable Works canary title\n\nQuill holds.\n")
+    said = refusal(env.client, env.key, "page", project="ops", slug="Canary")
+    assert said.endswith("the nearest: 'fable-works-canary-title'.")
+    assert "Fable Works canary title" not in said
+
+
+def test_a_narrowed_key_and_a_read_only_key_are_told_when_too(env):
+    noted = call(env, "note", project="ops", text="# Deploy\n\nThe deploy runs at noon.\n")
+    when = env.store.get_note(noted["note_id"]).created_at
+    ops = env.store.get_project("ops").id
+    env.store.create_project("other")
+    for key in (
+        env.store.create_key("narrow", projects=[ops]),
+        env.store.create_key("reader", access="read"),
+    ):
+        (hit,) = answer(env.client, key, "recall", query="deploy noon")["hits"]
+        (claim,) = answer(env.client, key, "page", project="ops", slug=noted["page"])["claims"]
+        found = answer(
+            env.client, key, "evidence", project="ops", slug=noted["page"], claim_id=claim["id"]
+        )
+        assert hit["written_at"] == claim["written_at"] == when
+        assert [p["written_at"] for p in found["passages"]] == [when]

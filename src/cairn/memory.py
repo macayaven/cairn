@@ -1031,7 +1031,8 @@ class Memory:
             held = {head.slug for head in heads}
             first, _ = self.store.page_heads(project.id, NEAREST_SHOWN)
             heads += [head for head in first if head.slug not in held]
-        shown = ", ".join(f"{head.slug!r} ({head.title})" for head in heads[:NEAREST_SHOWN])
+        # slugs only: a title is a note's words, and this sentence goes onto logs too
+        shown = ", ".join(repr(head.slug) for head in heads[:NEAREST_SHOWN])
         return (
             "A page is named by its slug, as note, recall and overview give it; the nearest:"
             f" {shown}."

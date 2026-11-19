@@ -1675,6 +1675,27 @@ def _access_log_on_stderr() -> Iterator[None]:
 
 
 @contextlib.contextmanager
+def _audit_lines_on_stderr() -> Iterator[None]:
+    """For every command but `serve`: each audit event it stores is one line on stderr,
+    "cairn.audit: {...}", as `serve` writes it (_access_log_on_stderr), once the event's write
+    has committed, so an operator who keeps the commands' output keeps those lines too.
+    stdout, which scripts read, is unchanged. The logger is put back afterwards."""
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    logger = logging.getLogger(AUDIT_LOGGER)
+    level, propagate = logger.level, logger.propagate
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = propagate
+        logger.setLevel(level)  # through setLevel, which clears logging's level cache
+
+
+@contextlib.contextmanager
 def _no_client_request_lines() -> Iterator[None]:
     """httpx logs every request it sends at INFO, the full URL with its query string, and
     httpcore traces every response's headers at DEBUG, where a provider may echo a
@@ -2055,7 +2076,10 @@ def main(argv: list[str] | None = None) -> int:
     if (said := cli_data.readable(db)) is not None:  # the command goes on
         print(said, file=sys.stderr, flush=True)
     try:
-        return _run(args)
+        if args.command == "serve":  # serve puts the line on stderr with its access log
+            return _run(args)
+        with _audit_lines_on_stderr():
+            return _run(args)
     except SchemaTooNew as error:  # raised by Store(...) before it reads or writes anything
         print(NEWER_DATABASE.format(refusal=error), file=sys.stderr)
         return 1

@@ -416,7 +416,8 @@ The note guard and the logs (frozen by tests/acceptance/test_g1_guard.py; cairn/
   `serve --audit-reads` its reads, newest first; each workspace keeps its newest 100,000
   (store.AUDIT_KEEP) unless `serve --audit-keep N` or `all` says otherwise (Store.audit_keep;
   older ones are deleted, as the page says), and each stored event is also one JSON line on
-  the logger "cairn.audit". GET /audit ("Audit", listed on /workspace) shows 200 events at a
+  the logger "cairn.audit" once its write commits (on stderr; one committed just before the
+  process dies has none). GET /audit ("Audit", listed on /workspace) shows 200 events at a
   time (`before` gives older ones; `action`, `project` and `who` filter; CSV and JSON
   downloads at /audit/download) to whoever `may_manage_credentials` admits; a member gets
   403. An admin who does not reach every

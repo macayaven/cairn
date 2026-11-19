@@ -1175,9 +1175,10 @@ def test_the_logs_section_says_how_to_keep_a_copy_of_the_audit_log_nobody_can_ch
         " the event's write has committed. Route those lines with a Cloud Logging sink to a"
         " Cloud Storage bucket with a locked retention policy (Bucket Lock), so that nobody, the"
         " server included, can edit or delete them before the retention ends. The bucket keeps"
-        " what it received: an event committed just before the server's process dies, and one"
-        " a command of the command line writes, such as `key-create` or `import`, have no line"
-        " there. The log in the database is rewritten when a note is forgotten or a"
+        " what it received: an event committed just before the server's process dies has no"
+        " line there, and one a command of the command line stores, such as `key-create` or"
+        " `import`, has its line on that command's standard error, not in the container's"
+        " output. The log in the database is rewritten when a note is forgotten or a"
         " project deleted, and pruned past `--audit-keep`." in said
     )
     parsed = cli._parser().parse_args(["serve", "--db", "x.db", "--audit-keep", "12"])

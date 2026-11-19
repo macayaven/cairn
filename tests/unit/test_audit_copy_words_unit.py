@@ -1,8 +1,9 @@
 """What the copy of the audit trail on the `cairn.audit` logger is, as the guides now say it
 (second review, should-fix 15): `serve` writes each event it stores as one line once the
 event's write has committed, so an event committed just before the process dies has no
-line; and a command of the command line, such as `key-create` or `import`, stores its
-events and writes no such line. Made-up data; nothing sleeps."""
+line; and a command of the command line, such as `key-create` or `import`, writes its lines
+on its own stderr, as serve does, and leaves stdout, which scripts read, as it was. Made-up
+data; nothing sleeps."""
 
 import io
 import json
@@ -87,7 +88,7 @@ def test_an_event_committed_just_before_the_process_dies_has_no_line(db, monkeyp
 
 
 @pytest.mark.parametrize("command", ["key-create", "import"])
-def test_a_command_of_the_command_line_stores_its_events_and_writes_no_line(
+def test_a_command_of_the_command_line_writes_its_audit_lines_on_its_stderr(
     db, tmp_path, capsys, command
 ):
     if command == "key-create":
@@ -110,4 +111,37 @@ def test_a_command_of_the_command_line_stores_its_events_and_writes_no_line(
     assert cli.main(argv) == 0
     printed = capsys.readouterr()
     assert expected in stored_actions(db)
-    assert AUDIT_LOGGER not in printed.out + printed.err
+    assert AUDIT_LOGGER not in printed.out  # stdout as it was
+    lines = [
+        json.loads(line.removeprefix(f"{AUDIT_LOGGER}: "))
+        for line in printed.err.splitlines()
+        if line.startswith(f"{AUDIT_LOGGER}: ")
+    ]
+    assert expected in [line["action"] for line in lines]
+    # as serve writes them: the stored event's own fields
+    assert {"account_id", "n", "action", "chain"} <= set(lines[-1])
+
+
+def test_the_logger_is_put_back_after_a_command(db, tmp_path, capsys):
+    logger = logging.getLogger(AUDIT_LOGGER)
+    before = (list(logger.handlers), logger.level, logger.propagate)
+    argv = ["key-create", "--db", str(db), "--label", "laptop", "--out", str(tmp_path / "k.env")]
+    assert cli.main(argv) == 0
+    assert (list(logger.handlers), logger.level, logger.propagate) == before
+
+
+SECURITY_CHAIN = (
+    "Someone who can write the database file can rewrite the whole chain, which is why the"
+    " server writes a copy of the events it stores on its output (above, with the events that"
+    " copy can miss)."
+)
+SECURITY_AGAINST = "Against the copy, a change shows only for an event the copy holds."
+
+
+def test_the_security_guide_says_the_copy_is_of_the_events_it_holds():
+    from guide_source import guide_source
+
+    text = " ".join(guide_source("security").split())
+    for sentence in (SECURITY_CHAIN, SECURITY_AGAINST):
+        assert text.count(sentence) == 1, sentence
+    assert "the copy of each event on the server's output" not in text

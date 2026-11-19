@@ -658,7 +658,8 @@ def test_without_a_model_the_setting_is_not_read(db, endpoint, monkeypatch, caps
     tidied = ["arrange", "--db", str(path), "--account", "acct_default", "--tidy"]
     assert server.main(tidied) == 0
     printed = capsys.readouterr()
-    assert printed.err == "" and "alpha/offer-letter: " in printed.out
+    others = [line for line in printed.err.splitlines() if not line.startswith("cairn.audit: ")]
+    assert others == [] and "alpha/offer-letter: " in printed.out  # stderr: audit lines only
     assert endpoint == []
 
 

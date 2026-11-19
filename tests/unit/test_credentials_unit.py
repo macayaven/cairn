@@ -245,7 +245,8 @@ def test_credential_add_list_and_remove_on_the_command_line(world, capsys, monke
         "--config", '{"credentials_env": "R2_GOOGLE", "subject": "ada@example.test"}',
         "--for", "ada@example.test",
     )  # fmt: skip
-    assert (code, err) == (0, ""), err
+    (line,) = err.splitlines()  # the audit event, as serve writes one
+    assert code == 0 and line.startswith("cairn.audit: ") and "credential_added" in line, err
     assert "ada-mail" in out and "reads nothing" in out
     code, out, err = cli(
         capsys, "credential-add", "--db", db, "--name", "feed", "--kind", "connector",

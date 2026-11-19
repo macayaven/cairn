@@ -13,9 +13,9 @@ workspace, how many events it checked and whether every value follows from the o
 or the first event whose value does not (its number and time only). What the chain does not
 show: someone who can write the database file can rewrite the whole chain (the copy `serve`
 writes on the "cairn.audit" logger is for that; it is written after each commit, so an event
-committed just before the process dies, or stored by a command-line command, which installs
-no handler, is not on it), and `project` and `detail` are outside it, since
-forgetting a note must be able to take a page's name out of them.
+committed just before the process dies is not on it, and a command-line command writes its
+lines on its own stderr, kept only where the operator keeps that output), and `project` and
+`detail` are outside it, since forgetting a note must be able to take a page's name out of them.
 """
 
 import copy

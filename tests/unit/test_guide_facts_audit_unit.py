@@ -100,8 +100,9 @@ SECURITY_COPY = (
     "The running server writes each event it stores as one line on its output, once the"
     " event's write has committed: a JSON object with the same fields as the stored event, on"
     " a logger of its own, and never a note's text. The copy can miss an event: one committed"
-    " just before the server's process dies, and one a command of the command line writes,"
-    " such as `key-create` or `import`, which writes no such line. Keeping those lines where"
+    " just before the server's process dies, and one a command of the command line stores,"
+    " such as `key-create` or `import`, which writes its line on its own standard error"
+    " instead, kept only where the operator keeps that output. Keeping those lines where"
     " nobody can change them, such as a bucket locked against deletion, is the operator's"
     " set-up, and such a place keeps what it received: the log in the database is rewritten"
     " when a note is forgotten or a project deleted, which takes out the page names made from"
@@ -134,8 +135,9 @@ PRIVACY_NOT_KEPT = (
 )
 PRIVACY_LINES = (
     "Each audit event the server stores is also one line there, written once it is stored; an"
-    " event a command of the command line stores, or one stored just before the server's"
-    " process dies, has none. Those lines are not"
+    " event stored just before the server's process dies has none, and one a command of the"
+    " command line stores is a line on that command's standard error instead. Those lines are"
+    " not"
     " rewritten when a note is forgotten or a project deleted, and the oldest are not deleted"
     " with the database's: they keep the names of pages made from a note's title for as long as"
     " the operator keeps them."
@@ -180,7 +182,8 @@ RUN_OPTIONS = (
     " many events each workspace keeps; `serve` writes each event it stores as one JSON line on"
     " the `cairn.audit` logger, once the event's write has committed. That copy can miss an"
     " event: one committed just before the server's process dies, and one a command of the"
-    " command line writes, such as `key-create` or `import`, which writes no such line."
+    " command line stores, such as `key-create` or `import`, which writes its line on its own"
+    " standard error instead, kept only where the operator keeps that output."
 )
 
 

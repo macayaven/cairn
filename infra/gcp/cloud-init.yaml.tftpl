@@ -3,8 +3,8 @@
 # user-data. COS keeps /etc on tmpfs and runs write_files and runcmd on every boot, so this
 # file is the whole host configuration: nothing here needs to survive a reboot.
 #
-# Template rules: only config.env takes OpenTofu values. The script, the two shared config
-# files and the plans file arrive as whole values, and the units are literal text with no
+# Template rules: only config.env takes OpenTofu values. The script (gzip, base64), the two
+# shared config files and the plans file arrive as whole values, and the units are literal text with no
 # dollar-brace or percent-brace sequences.
 
 users:
@@ -31,12 +31,20 @@ write_files:
       LITESTREAM_IMAGE="${litestream_image}"
       DATA_DEVICE="${data_device}"
       REPLICA_BOUND_SECONDS="${replica_bound_seconds}"
+      CAIRN_MEMORY_MB="${cairn_memory_mb}"
+      CAIRN_PIDS_LIMIT="${cairn_pids_limit}"
+      CADDY_MEMORY_MB="${caddy_memory_mb}"
+      CADDY_PIDS_LIMIT="${caddy_pids_limit}"
+      LITESTREAM_MEMORY_MB="${litestream_memory_mb}"
+      LITESTREAM_PIDS_LIMIT="${litestream_pids_limit}"
 
+  # Compressed: the whole user-data must stay under Compute Engine's 256 KB for one metadata
+  # value (main.tf). cloud-init decompresses it and writes the script byte for byte.
   - path: /etc/cairn/host.sh
     permissions: "0755"
     owner: root
-    content: |
-      ${indent(6, chomp(host_sh))}
+    encoding: gz+b64
+    content: "${host_sh}"
 
   # The same two files deploy/compose.yaml uses.
   - path: /etc/cairn/Caddyfile

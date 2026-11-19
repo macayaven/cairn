@@ -40,11 +40,18 @@ locals {
     caddy_image      = var.caddy_image
     litestream_image = var.litestream_image
     data_device      = "/dev/disk/by-id/google-${local.data_device_name}"
-    host_sh          = file("${path.module}/files/host.sh")
+    host_sh          = base64gzip(file("${path.module}/files/host.sh"))
     caddyfile        = file("${path.module}/../../deploy/Caddyfile")
     litestream_yml   = file("${path.module}/../../deploy/litestream.yml")
     plans_yaml       = var.cairn_plans_file == "" ? "" : file(var.cairn_plans_file)
     brand_files      = local.brand_files
+
+    cairn_memory_mb       = var.container_limits.cairn.memory_mb
+    cairn_pids_limit      = var.container_limits.cairn.pids
+    caddy_memory_mb       = var.container_limits.caddy.memory_mb
+    caddy_pids_limit      = var.container_limits.caddy.pids
+    litestream_memory_mb  = var.container_limits.litestream.memory_mb
+    litestream_pids_limit = var.container_limits.litestream.pids
 
     # How long a change may wait for its copy before the replica check says Error: 15
     # minutes. A fixed value, not a variable; the host rehearsal renders a shorter one.

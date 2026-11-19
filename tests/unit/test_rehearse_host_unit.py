@@ -103,7 +103,7 @@ def _shipped():
 
 def test_the_shipped_template_installs_its_files_byte_for_byte():
     files = {f.path: f for f in rehearse.write_files(_shipped())}
-    assert files["/etc/cairn/host.sh"].content == (REPO / "infra/gcp/files/host.sh").read_text()
+    assert files["/etc/cairn/host.sh"].content == (REPO / "infra/gcp/files/host.sh").read_bytes()
     assert files["/etc/cairn/host.sh"].permissions == 0o755
     assert files["/etc/cairn/Caddyfile"].content == (REPO / "deploy/Caddyfile").read_text()
     assert (

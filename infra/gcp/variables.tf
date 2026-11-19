@@ -137,6 +137,31 @@ variable "machine_type" {
     condition     = can(regex("^[a-z][a-z0-9]*-[a-z0-9-]+$", var.machine_type))
     error_message = "machine_type must look like e2-small."
   }
+
+  # container_limits' defaults are sized for e2-small's 2 GiB; these three have less.
+  validation {
+    condition     = !contains(["e2-micro", "f1-micro", "g1-small"], var.machine_type)
+    error_message = "machine_type must have at least the 2 GiB of e2-small: e2-micro, f1-micro and g1-small have less than the containers' memory limits (container_limits) and the host need."
+  }
+}
+
+variable "container_limits" {
+  description = "Memory (MiB, with no swap on top) and process limits of the three containers the VM runs, so that one of them cannot take the VM down. The defaults sum to 1.5 GiB and leave 512 MiB of e2-small's 2 GiB, the smallest machine machine_type takes, for the OS, Docker and the host's own short containers. Raise them with the machine. A change needs a restart of the VM (README, \"Changing the configuration\")."
+  type = object({
+    cairn      = object({ memory_mb = number, pids = number })
+    caddy      = object({ memory_mb = number, pids = number })
+    litestream = object({ memory_mb = number, pids = number })
+  })
+  default = {
+    cairn      = { memory_mb = 1024, pids = 512 }
+    caddy      = { memory_mb = 256, pids = 256 }
+    litestream = { memory_mb = 256, pids = 256 }
+  }
+
+  validation {
+    condition     = alltrue([for c in values(var.container_limits) : c.memory_mb >= 64 && floor(c.memory_mb) == c.memory_mb && c.pids >= 32 && floor(c.pids) == c.pids])
+    error_message = "container_limits: each memory_mb must be a whole number of at least 64 and each pids a whole number of at least 32."
+  }
 }
 
 variable "boot_disk_size_gb" {

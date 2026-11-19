@@ -80,6 +80,11 @@ METADATA_IP=169.254.169.254 # metadata.google.internal resolves to this address
 CAIRN_UID=10001
 HEALTH_SECONDS=60
 LOG_OPTS="--log-driver json-file --log-opt max-size=10m --log-opt max-file=5"
+# What deploy/compose.yaml gives cairn and Caddy and compose.backup.yaml gives Litestream: no
+# Linux capability, and none gained by exec. Caddy alone gets one back (CADDY_CAPS), to bind
+# ports 80 and 443. Every container this script starts gets them.
+HARDENING="--cap-drop ALL --security-opt no-new-privileges:true"
+CADDY_CAPS="--cap-add NET_BIND_SERVICE"
 
 log() { echo "cairn-host: $*"; }
 # "<3>" makes journald record the line at priority err, which the COS logging agent exports.
@@ -94,6 +99,36 @@ err() {
 die() {
   err "$*"
   exit 1
+}
+
+is_count() {
+  case "$1" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# limits NAME: the memory limit (with no swap on top of it) and the process limit of the
+# long-running container NAME, from config.env (OpenTofu's container_limits), so that one
+# container cannot take the VM down. Without a whole number above 0 the container does not
+# start: `limits` fails, and its caller stops.
+limits() {
+  local prefix memory pids
+  case "$1" in
+    cairn) prefix=CAIRN memory=${CAIRN_MEMORY_MB:-} pids=${CAIRN_PIDS_LIMIT:-} ;;
+    caddy) prefix=CADDY memory=${CADDY_MEMORY_MB:-} pids=${CADDY_PIDS_LIMIT:-} ;;
+    litestream) prefix=LITESTREAM memory=${LITESTREAM_MEMORY_MB:-} pids=${LITESTREAM_PIDS_LIMIT:-} ;;
+    *) return 1 ;;
+  esac
+  if ! is_count "$memory" || [ "$memory" -eq 0 ]; then
+    err "${prefix}_MEMORY_MB is not a whole number above 0 in config.env"
+    return 1
+  fi
+  if ! is_count "$pids" || [ "$pids" -eq 0 ]; then
+    err "${prefix}_PIDS_LIMIT is not a whole number above 0 in config.env"
+    return 1
+  fi
+  printf -- '--memory %sm --memory-swap %sm --pids-limit %s' "$memory" "$memory" "$pids"
 }
 
 # --- disk -----------------------------------------------------------------------------------
@@ -233,8 +268,8 @@ litestream() {
   local runner=$1 name=$2
   shift 2
   # shellcheck disable=SC2086
-  $runner docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS \
-    --user "$CAIRN_UID:$CAIRN_UID" \
+  $runner docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS $HARDENING \
+    ${LITESTREAM_LIMITS:-} --user "$CAIRN_UID:$CAIRN_UID" \
     -e HOME=/tmp -e LITESTREAM_REPLICA_URL="$LITESTREAM_REPLICA_URL" \
     -v "$DB_DIR:/data" -v /etc/cairn/litestream.yml:/etc/litestream.yml:ro \
     "$LITESTREAM_IMAGE" "$@"
@@ -294,13 +329,6 @@ echo "$newest $changed $started $(date -u +%s)"
 PROBE
 }
 
-is_count() {
-  case "$1" in
-    '' | *[!0-9]*) return 1 ;;
-  esac
-  return 0
-}
-
 # replica_said NAME: the probe's four numbers, from a container named NAME. On the backup
 # network, the only one that gets storage credentials; the data read-only.
 replica_said() {
@@ -308,7 +336,7 @@ replica_said() {
   docker rm -f "$name" >/dev/null 2>&1 || true
   started=$(docker inspect -f '{{.State.StartedAt}}' litestream 2>/dev/null) || started=""
   # shellcheck disable=SC2086
-  docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS \
+  docker run --rm --name "$name" --network "$BACKUP_NETWORK" $LOG_OPTS $HARDENING \
     --user "$CAIRN_UID:$CAIRN_UID" \
     -e HOME=/tmp -e LITESTREAM_REPLICA_URL="$LITESTREAM_REPLICA_URL" \
     -e LITESTREAM_STARTED="$started" \
@@ -501,7 +529,8 @@ registry_login() {
 }
 
 cmd_run_cairn() {
-  local image
+  local image limited
+  limited=$(limits cairn) || exit 1
   metadata_block || die "the metadata server is not blocked for containers; not starting cairn"
   image=$(image_to_run)
   [ -n "$image" ] || die "nothing to run: no proven image and no deployment in progress"
@@ -546,7 +575,7 @@ cmd_run_cairn() {
   # Arguments replace the image's default command, so the whole command is spelled out.
   # CAIRN_EXTRA_ARGS is split on spaces on purpose; OpenTofu validates its characters.
   # shellcheck disable=SC2086
-  exec docker run --rm --name cairn --network "$NETWORK" $LOG_OPTS \
+  exec docker run --rm --name cairn --network "$NETWORK" $LOG_OPTS $HARDENING $limited \
     --env-file "$ENV_FILE" \
     -v "$DB_DIR:/data" ${plans_mount[@]+"${plans_mount[@]}"} \
     ${brand_mount[@]+"${brand_mount[@]}"} \
@@ -557,10 +586,12 @@ cmd_run_cairn() {
 }
 
 cmd_run_caddy() {
+  local limited
+  limited=$(limits caddy) || exit 1
   metadata_block || die "the metadata server is not blocked for containers; not starting Caddy"
   # shellcheck disable=SC2086
-  exec docker run --rm --name caddy --network "$NETWORK" $LOG_OPTS \
-    -p 80:80 -p 443:443 \
+  exec docker run --rm --name caddy --network "$NETWORK" $LOG_OPTS $HARDENING $CADDY_CAPS \
+    $limited -p 80:80 -p 443:443 \
     -e CAIRN_DOMAIN="$CAIRN_DOMAIN" -e ACME_EMAIL="$ACME_EMAIL" \
     -v /etc/cairn/Caddyfile:/etc/caddy/Caddyfile:ro \
     -v "$CADDY_DIR/data:/data" -v "$CADDY_DIR/config:/config" \
@@ -568,6 +599,7 @@ cmd_run_caddy() {
 }
 
 cmd_run_litestream() {
+  LITESTREAM_LIMITS=$(limits litestream) || exit 1
   # cairn creates the database on its first start; Litestream needs the file to exist.
   until [ -f "$DB_DIR/cairn.db" ]; do
     sleep 5

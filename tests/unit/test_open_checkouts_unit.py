@@ -33,7 +33,7 @@ def test_step_27_adds_the_empty_checkouts_table_and_changes_nothing_else(tmp_pat
     assert rows(db, "SELECT COUNT(*) FROM checkouts") == [(0,)]
     before = set(v26["statements"])
     added = [line for line in statements(db) if line not in before]
-    later = ("credential_tokens", "google_revocations")  # step 28: two empty tables
+    later = ("credential_tokens", "google_revocations", "slack_")  # 28, 29: empty tables
     assert added and all(
         "checkouts" in line or any(name in line for name in later) for line in added
     ), added

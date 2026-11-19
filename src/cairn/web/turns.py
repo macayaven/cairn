@@ -4,7 +4,8 @@ A note's compile holds the processor and memory for as long as it takes, so eigh
 at once each hold their own. `Compiles` gives out N turns; a note that finds them all taken
 waits on the event loop, in arrival order, and goes on when one ends. It is taken by every way
 a note reaches a compile in the app: a REST note, the MCP `note` tool, the composer's form, a
-source's run and the filer (cairn.web.filing), each for one note at a time and in one place
+source's run, the filer (cairn.web.filing) and a note written from Slack
+(cairn.slack.people.written), each for one note at a time and in one place
 only, so a turn is never asked for twice by one note.
 
 A waiting note holds no thread, no connection to the store and no lock of the store: it is

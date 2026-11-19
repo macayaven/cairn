@@ -20,6 +20,15 @@ from cairn.store.models import Account
 from cairn.store.people import _FORGET_MEMBERS
 
 ACCOUNT_NAME_MAX = 80
+# A workspace's Slack rows (K1): what each of its install's tables holds, then the install.
+_INSTALLS = "(SELECT id FROM slack_installs WHERE account_id = ?)"
+_SLACK_ROWS = (
+    *(
+        f"DELETE FROM {table} WHERE install_id IN {_INSTALLS}"
+        for table in ("slack_notes", "slack_people", "slack_link_offers", "slack_events")
+    ),
+    "DELETE FROM slack_installs WHERE account_id = ?",
+)
 NOT_AN_OWNER = "only an owner of a workspace can delete it"
 NOT_YOUR_WORKSPACE = "a view acting for a person deletes no workspace but its own"
 store_log = logging.getLogger("cairn.store")
@@ -100,6 +109,7 @@ class AccountMethods(StoreBase):
                 "DELETE FROM made_with WHERE account_id = ?",  # A1
                 "DELETE FROM settings WHERE account_id = ?",
                 "DELETE FROM credential_tokens WHERE account_id = ?",  # connected Google accounts
+                *_SLACK_ROWS,  # its Slack install and all it holds (cairn.store.slack)
                 "DELETE FROM audit_events WHERE account_id = ?",
                 "DELETE FROM source_items WHERE source IN"  # before the sources they name
                 " (SELECT seq FROM sources WHERE account_id = ?)",

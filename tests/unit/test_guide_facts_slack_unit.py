@@ -1,0 +1,1177 @@
+"""Sentences of the guides about Slack (K1: tests/acceptance/test_k1_slack.py,
+test_k1b_slack_setup.py and test_k1c_slack_use.py), each pinned here so the guides cannot go
+false unnoticed: the sentence is in the test's docstring and in the guide as a person reads it
+(guide_source: the product's name filled in), and the test asks the running code for it. Every
+call to Slack goes to an httpx.MockTransport (test_slack_commands_unit.Bench); nothing leaves
+the process. Every name, id and secret is made up."""
+
+import argparse
+import asyncio
+import base64
+import inspect
+import re
+import shutil
+import sqlite3
+from datetime import timedelta
+from importlib.resources import files
+
+import pytest
+import uvicorn
+from guide_source import guide_source
+from starlette.testclient import TestClient
+from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, ask, said
+from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
+
+import cairn.store.slack as store_slack
+from cairn import server, sources
+from cairn.arrange import Arranger
+from cairn.compiler import compile_note, extractive
+from cairn.llm import FakeModel
+from cairn.memory import Memory
+from cairn.server import create_app
+from cairn.slack import (
+    blocks,
+    commands,
+    dispatch,
+    link,
+    manifest,
+    messages,
+    people,
+    setup,
+    shortcuts,
+)
+from cairn.slack.client import SlackClient
+from cairn.slack.text import note_from_message
+from cairn.slack.verify import BODY_MAX, SKEW, OtherTeam, envelope, signature, verified
+from cairn.store import Store
+from cairn.store.hosted import Sealer
+from cairn.store.slack import (
+    ACCEPTING,
+    CHECK_EVERY,
+    COMMAND,
+    FORGET_AFTER,
+    GONE_AFTER,
+    OFFER_TTL,
+    TRIES,
+)
+from cairn.web import cli_arrange
+from cairn.web import slack as web_slack
+from cairn.web.brand import product_of
+
+PRODUCT = product_of(None)
+RULE = "github_token"  # the note guard's rule, as cairn names it
+SIGN_IN_ENV = {"CAIRN_GITHUB_CLIENT_ID": "gh-id", "CAIRN_GITHUB_CLIENT_SECRET": "gh-secret"}
+KEY_B64 = base64.b64encode(KEY).decode()
+
+
+def flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def section(guide: str, heading: str) -> str:
+    """The section `heading` of the guide as a person reads it, to the next section."""
+    raw = guide_source(guide)
+    start = raw.index(f"\n{heading}\n")
+    end = raw.find("\n## ", start + len(heading) + 2)
+    return raw[start : end if end != -1 else None]
+
+
+def says(guide: str, heading: str, *sentences: str) -> None:
+    """Each sentence is in that section of the guide, as a person reads it, once."""
+    text = flat(section(guide, heading))
+    for sentence in sentences:
+        assert flat(sentence) in text, sentence
+        assert flat(guide_source(guide)).count(flat(sentence)) == 1, sentence
+
+
+def serve(monkeypatch, tmp_path, argv, env):
+    """`serve` as the command line runs it, with uvicorn kept from listening."""
+    for name in (web_slack.KEY_VARIABLE, *SIGN_IN_ENV):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    apps = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **options: apps.append(app))
+    db = tmp_path / "data" / "cairn.db"
+    return server.main(["serve", "--db", str(db), *argv]), apps, db
+
+
+@pytest.fixture
+def bench(tmp_path):
+    made = Bench(tmp_path)
+    yield made
+    made.store.close()
+
+
+# The run guide, "Slack": for the operator
+
+RUN = ("run", "## Slack")
+
+
+def test_run_slack_lets_each_workspace_set_up_an_app_of_its_own():
+    """run.md: "`serve --slack` lets each workspace set up a Slack app of its own: people then
+    file a Slack message as a note, write a note, and ask a bot to find something, each as the
+    person of the workspace they linked their Slack user to. The [connect
+    guide](connect.md#from-slack) says how an owner sets it up and what people do, and the
+    [privacy guide](privacy.md#slack) says what it keeps.\""""
+    says(
+        *RUN,
+        "`serve --slack` lets each workspace set up a Slack app of its own: people then file a"
+        " Slack message as a note, write a note, and ask a bot to find something, each as the"
+        " person of the workspace they linked their Slack user to. The [connect"
+        " guide](connect.md#from-slack) says how an owner sets it up and what people do, and the"
+        " [privacy guide](privacy.md#slack) says what it keeps.",
+    )
+    assert "\n## From Slack\n" in guide_source("connect")
+    assert "\n## Slack\n" in guide_source("privacy")
+    assert set(dispatch.COMMANDS) >= {"find", "note"}
+    assert dispatch.ACTIONS["file_in_cairn"] is shortcuts.file_in_cairn
+    assert "message" in dispatch.EVENTS
+
+
+def test_run_slack_needs_sign_in_an_https_public_url_and_the_key(tmp_path, monkeypatch, capsys):
+    """run.md: "`--slack` needs `--sign-in`, since a Slack user is linked to a person who signs
+    in, and an `https://` `--public-url`, since Slack calls the server at `<public
+    url>/integrations/slack/<install>/events`, `/commands` and `/actions`. It also needs
+    `CAIRN_SLACK_KEY`, 32 random bytes in base64, the key every workspace's Slack secrets are
+    sealed with: make it with `openssl rand -base64 32`. Without one of the three, `serve`
+    stops at start, before it opens the database, and the last line it prints names what is
+    missing, never the key.\""""
+    says(
+        *RUN,
+        "`--slack` needs `--sign-in`, since a Slack user is linked to a person who signs in, and"
+        " an `https://` `--public-url`, since Slack calls the server at `<public"
+        " url>/integrations/slack/<install>/events`, `/commands` and `/actions`.",
+        "It also needs `CAIRN_SLACK_KEY`, 32 random bytes in base64, the key every workspace's"
+        " Slack secrets are sealed with: make it with `openssl rand -base64 32`.",
+        "Without one of the three, `serve` stops at start, before it opens the database, and the"
+        " last line it prints names what is missing, never the key.",
+    )
+    assert web_slack.KEY_VARIABLE == "CAIRN_SLACK_KEY"
+    assert "openssl rand -base64 32" in web_slack.NO_KEY and "32 random bytes" in web_slack.NO_KEY
+    assert "/integrations/slack/<install>/events, /commands and /actions" in web_slack.NEEDS_HTTPS
+    made = base64.b64encode(bytes(range(32, 64))).decode() + "\n"  # as openssl prints it
+    assert web_slack.read_switch({"CAIRN_SLACK_KEY": made}).key == bytes(range(32, 64))
+    cases = [
+        (["--public-url", BASE], {"CAIRN_SLACK_KEY": KEY_B64}, "--sign-in"),
+        (
+            ["--public-url", "http://cairn.example.test", "--sign-in", "github"],
+            {**SIGN_IN_ENV, "CAIRN_SLACK_KEY": KEY_B64},
+            "https://",
+        ),
+        (["--public-url", BASE, "--sign-in", "github"], SIGN_IN_ENV, "CAIRN_SLACK_KEY"),
+    ]
+    for n, (argv, env, named) in enumerate(cases):
+        code, apps, db = serve(monkeypatch, tmp_path / str(n), [*argv, "--slack"], env)
+        assert code == 2 and apps == [] and not db.parent.exists()
+        last = capsys.readouterr().err.strip().splitlines()[-1]
+        assert named in last and KEY_B64 not in last
+    argv = ["--public-url", BASE, "--sign-in", "github", "--slack"]
+    env = {**SIGN_IN_ENV, "CAIRN_SLACK_KEY": KEY_B64}
+    code, apps, _ = serve(monkeypatch, tmp_path / "on", argv, env)
+    assert code == 0 and len(apps) == 1
+
+
+def test_run_slack_is_not_offered_under_a_brand(tmp_path, monkeypatch, capsys):
+    """run.md: "It is not offered under a brand yet: with `--brand-name`, `serve` stops the
+    same way, since what the bot says, the shortcut's name and the command's name would name
+    the software.\""""
+    says(
+        *RUN,
+        "It is not offered under a brand yet: with `--brand-name`, `serve` stops the same way,"
+        " since what the bot says, the shortcut's name and the command's name would name the"
+        " software.",
+    )
+    argv = ["--public-url", BASE, "--sign-in", "github", "--brand-name", "Fable Notes", "--slack"]
+    code, apps, db = serve(monkeypatch, tmp_path, argv, {**SIGN_IN_ENV, "CAIRN_SLACK_KEY": KEY_B64})
+    assert code == 2 and apps == [] and not db.parent.exists()
+    assert web_slack.UNDER_A_BRAND in capsys.readouterr().err.strip().splitlines()[-1]
+    assert "the shortcut's name and the command's name" in web_slack.UNDER_A_BRAND
+
+
+def test_run_slack_needs_a_public_address():
+    """run.md: "Slack cannot reach a local install that listens on 127.0.0.1, as the commands
+    above start it, so this version is for an install with a public address, behind a reverse
+    proxy that ends TLS.\""""
+    says(
+        *RUN,
+        "Slack cannot reach a local install that listens on 127.0.0.1, as the commands above"
+        " start it, so this version is for an install with a public address, behind a reverse"
+        " proxy that ends TLS.",
+    )
+    assert "-p 127.0.0.1:8765:8765" in section("run", "## Start it")
+    for local in ("http://127.0.0.1:8765", "http://localhost:8765"):
+        options = argparse.Namespace(
+            slack=True, brand_name=None, sign_in="github", public_url=local
+        )
+        with pytest.raises(ValueError) as refused:
+            web_slack.serve_switch(options, {"CAIRN_SLACK_KEY": KEY_B64})
+        assert str(refused.value) == web_slack.NEEDS_HTTPS
+
+
+def test_run_slack_not_tried_with_enterprise_grid_or_govslack():
+    """run.md: "This version was not tried with an Enterprise Grid organisation or with
+    GovSlack.\""""
+    says(
+        *RUN,
+        "This version was not tried with an Enterprise Grid organisation or with GovSlack.",
+    )
+
+
+def test_run_slack_keep_the_key_apart_and_losing_it_means_setting_up_again(world):  # noqa: F811
+    """run.md: "Keep the key apart from the database and its backups, as you keep the
+    environment file: a copy of the database holds each workspace's signing secret and bot
+    token sealed, and without the key it opens neither. When the key is lost or changed, no
+    secret sealed with the old one opens, and Slack's requests to the server are refused: each
+    workspace's owner removes Slack on the **Sources** page, sets it up again and pastes both
+    secrets.\""""
+    says(
+        *RUN,
+        "Keep the key apart from the database and its backups, as you keep the environment"
+        " file: a copy of the database holds each workspace's signing secret and bot token"
+        " sealed, and without the key it opens neither.",
+        "When the key is lost or changed, no secret sealed with the old one opens, and Slack's"
+        " requests to the server are refused: each workspace's owner removes Slack on the"
+        " **Sources** page, sets it up again and pastes both secrets.",
+    )
+    install = ready(world)
+    held = "\n".join(sqlite3.connect(world.db).iterdump())
+    assert SECRET not in held and TOKEN not in held
+    assert world.store.slack_inbound(install.id).signing_secret == SECRET
+    world.store.slack_sealer = Sealer(bytes(range(1, 33)))  # another key
+    assert world.store.slack_inbound(install.id).signing_secret is None
+    assert "secret is None or not verified(" in inspect.getsource(web_slack.slack_routes)  # 401
+    assert "remove Slack and set it up again" in setup.REFUSALS["unopened"]
+    view = world.store.for_account(world.account, world.owner)  # a view under the new key
+    view.remove_slack_install(install.id)
+    again = ready(world, view=view)  # set up again, both secrets pasted
+    assert again.id == install.id and world.store.slack_inbound(install.id).signing_secret == SECRET
+
+
+def test_run_slack_a_backup_taken_before_a_removal_still_holds_what_came_through(world):  # noqa: F811
+    """run.md: "A backup taken before Slack is removed still holds what came through it: its
+    notes, for as long as the backup is kept, and both secrets, sealed, which the key still
+    opens.\""""
+    says(
+        *RUN,
+        "A backup taken before Slack is removed still holds what came through it: its notes,"
+        " for as long as the backup is kept, and both secrets, sealed, which the key still"
+        " opens.",
+    )
+    install = ready(world)
+    note = a_note(world, "# Tides\n\nThe tide turns at nine.\n")
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    backup = world.db.with_name("backup.db")
+    world.store._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    shutil.copy(world.db, backup)
+    world.view.remove_slack_install(install.id)
+    world.view.forget_slack_notes_now(install.id)
+    assert world.view.get_note(note) is None
+    copy = Store(backup)
+    try:
+        copy.slack_sealer = Sealer(KEY)
+        assert copy.slack_inbound(install.id).signing_secret == SECRET
+        assert "The tide turns at nine." in copy.for_account(world.account).get_note(note).text
+    finally:
+        copy.close()
+
+
+# The connect guide, "From Slack": for a workspace's owner and its people
+
+CONNECT = ("connect", "## From Slack")
+
+
+def test_connect_the_table_points_at_the_section():
+    """connect.md: "| Slack, once the operator switched it on | [From Slack](#from-slack) |\""""
+    raw = guide_source("connect")
+    table = raw[: raw.index("\n## ")]
+    assert "| Slack, once the operator switched it on | [From Slack](#from-slack) |" in table
+
+
+def test_connect_slack_is_there_only_with_the_switch(tmp_path):
+    """connect.md: "Slack is there only when the operator started cairn with `serve --slack`.
+    One Slack app serves one workspace, and an owner or an admin of the workspace sets it up
+    under **Workspace**, then **Sources**:\""""
+    says(
+        *CONNECT,
+        f"Slack is there only when the operator started {PRODUCT.name} with `serve --slack`."
+        " One Slack app serves one workspace, and an owner or an admin of the workspace sets it"
+        " up under **Workspace**, then **Sources**:",
+    )
+    store = Store(tmp_path / "cairn.db")
+    key = store.create_key("desk")
+    try:
+        with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+            assert client.post("/login", data={"key": key}).status_code in (200, 303)
+            for path in (setup.SETUP_PATH, link.LINK_PATH):
+                assert client.post(path).status_code == 404, path
+            assert "Slack" not in client.get("/sources").text
+    finally:
+        store.close()
+    assert "Only an owner or an admin of this workspace can set Slack up" in setup.NOT_A_MANAGER
+    assert setup.ANCHOR == "/sources#slack"
+
+
+def test_connect_set_up_gives_the_link_the_manifest_and_what_each_permission_is_for():
+    """connect.md: "1. Press **Set up Slack**. The page then gives a link that opens Slack's
+    page for creating an app with the app's manifest filled in, and the same manifest as text
+    to paste at Slack instead. It says what each of the app's four permissions is for.\""""
+    says(
+        *CONNECT,
+        "1. Press **Set up Slack**. The page then gives a link that opens Slack's page for"
+        " creating an app with the app's manifest filled in, and the same manifest as text to"
+        " paste at Slack instead. It says what each of the app's four permissions is for.",
+    )
+    page = (files("cairn") / "templates" / "_slack.html").read_text(encoding="utf-8")
+    assert ">Set up Slack</button>" in page
+    assert "Create the app at Slack, with its manifest filled in" in page
+    assert "Or create it from a manifest at Slack and paste this" in page
+    made = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab")
+    assert manifest.manifest_link(made).startswith("https://api.slack.com/apps?new_app=1&")
+    assert tuple(setup.PERMISSIONS) == manifest.SCOPES and len(manifest.SCOPES) == 4
+
+
+def test_connect_the_two_secrets_are_copied_from_slack_and_kept_sealed():
+    """connect.md: "2. At Slack, create the app and install it to your Slack workspace. Copy its
+    signing secret, from the app's Basic Information, and its bot token, from its OAuth &
+    Permissions page once it is installed, into the two fields, and press **Keep them**.
+    3. cairn asks Slack whose token it is, and keeps both secrets sealed: neither is shown
+    again. A token Slack does not accept, a Slack that does not answer, and a Slack workspace
+    that another workspace on this server set up already are each refused in one sentence, and
+    nothing is kept.\""""
+    says(
+        *CONNECT,
+        "2. At Slack, create the app and install it to your Slack workspace. Copy its signing"
+        " secret, from the app's Basic Information, and its bot token, from its OAuth &"
+        " Permissions page once it is installed, into the two fields, and press **Keep them**.",
+        f"3. {PRODUCT.name} asks Slack whose token it is, and keeps both secrets sealed: neither"
+        " is shown again. A token Slack does not accept, a Slack that does not answer, and a"
+        " Slack workspace that another workspace on this server set up already are each refused"
+        " in one sentence, and nothing is kept.",
+    )
+    page = (files("cairn") / "templates" / "_slack.html").read_text(encoding="utf-8")
+    assert "At Slack, in the app's Basic Information." in page
+    assert "At Slack, in the app's OAuth &amp; Permissions, once it is installed" in page
+    assert ">Keep them</button>" in page
+    fields = re.findall(r'<input type="password"[^>]*>', page)
+    assert len(fields) == 2 and not any("value=" in field for field in fields)
+    assert "auth.test" in inspect.getsource(setup.setup_routes)
+    for code, words in (
+        ("not_accepted", "Slack did not accept this bot token"),
+        ("unreachable", "Slack could not be reached"),
+        ("taken", "Another workspace on this server has Slack set up for this Slack workspace"),
+    ):
+        assert setup.REFUSALS[code].startswith(words) and "nothing was kept" in setup.REFUSALS[code]
+
+
+def test_connect_ready_says_the_signing_secret_is_not_proven_until_slack_verifies_the_address(
+    world,  # noqa: F811
+):
+    """connect.md: "4. Slack is then ready: Slack accepted the bot token, but nothing proves
+    the signing secret yet; only a request that Slack signed can. At Slack, have Slack verify
+    the events address the page shows, on the page where Slack lists events. If Slack reports
+    that the address did not answer, either Slack cannot reach this server or the signing
+    secret you pasted is not this app's: check the address, then paste the secret again.
+    Once Slack has verified the address, Slack is on: a request signed with this app's
+    signing secret was verified, and the slash command, the message shortcut and direct
+    messages to the bot are answered.\""""
+    says(
+        *CONNECT,
+        "4. Slack is then ready: Slack accepted the bot token, but nothing proves the signing"
+        " secret yet; only a request that Slack signed can. At Slack, have Slack verify the"
+        " events address the page shows, on the page where Slack lists events. If Slack reports"
+        " that the address did not answer, either Slack cannot reach this server or the signing"
+        " secret you pasted is not this app's: check the address, then paste the secret again."
+        " Once Slack has verified the address, Slack is on: a request signed with this app's"
+        " signing secret was verified, and the slash command, the message shortcut and direct"
+        " messages to the bot are answered.",
+    )
+    ready_says = setup.STATES["ready"]
+    assert ready_says.startswith("Ready: Slack accepted the bot token.")
+    assert "The signing secret is not proven yet" in ready_says
+    assert "only a request that Slack signed can prove it" in ready_says
+    assert "have Slack verify the events address below" in ready_says
+    assert "If Slack reports that the address did not answer" in ready_says
+    assert "either Slack cannot reach this server" in ready_says
+    assert "the signing secret pasted here is not this app's" in ready_says
+    assert "check the address, then paste the secret again" in ready_says
+    assert "are answered" not in ready_says and "shortcut" not in ready_says
+    assert "a request signed with this app's signing secret was verified" in setup.STATES["on"]
+    assert "direct messages to the bot are answered" in setup.STATES["on"]
+    for text in (ready_says, setup.STATES["on"]):
+        assert not set(text) & set('&<>"')  # shown as it is, in the page
+    assert ACCEPTING == ("ready", "on")
+    # the state machine: ready becomes on only when Slack's signed challenge was verified
+    install = ready(world)
+    assert install.state == "ready"
+    # a signing secret pasted again while ready is the one requests are verified with
+    again = "9a" + "c0ffee11" * 3 + "b2c3d4"
+    assert ready(world, secret=again).state == "ready"
+    assert world.store.slack_inbound(install.id).signing_secret == again
+    assert world.store.slack_install_verified(install.id).state == "on"
+    made = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab")
+    events = made["settings"]["event_subscriptions"]["request_url"]
+    assert events == f"{BASE}/integrations/slack/sl_0123456789ab/events"
+
+
+def test_connect_the_page_says_the_state_switch_off_and_on():
+    """connect.md: "The page says which state Slack is in and what is left to do: set up
+    started, ready, on, off, or off because Slack revoked the bot's token. **Switch off** stops
+    the bot and deletes nothing: the slash command and the shortcut are refused, and a direct
+    message is not answered. **Switch on** needs nothing pasted, unless Slack revoked the bot's
+    token: then the page asks for a new one, and keeps the signing secret. When the signing
+    secret or the bot token is changed at Slack, paste both on the page again, whatever state
+    Slack is in: a signing secret other than the one kept makes Slack ready again, until Slack
+    verifies the events address.\""""
+    says(
+        *CONNECT,
+        "When the signing secret or the bot token is changed at Slack, paste both on the page"
+        " again, whatever state Slack is in: a signing secret other than the one kept makes"
+        " Slack ready again, until Slack verifies the events address.",
+        "The page says which state Slack is in and what is left to do: set up started, ready,"
+        " on, off, or off because Slack revoked the bot's token.",
+        "**Switch off** stops the bot and deletes nothing: the slash command and the shortcut"
+        " are refused, and a direct message is not answered. **Switch on** needs nothing pasted,"
+        " unless Slack revoked the bot's token: then the page asks for a new one, and keeps the"
+        " signing secret.",
+    )
+    assert set(setup.STATES) == {"pending", "ready", "on", "off", "revoked", "removed"}
+    assert setup.STATES["pending"].startswith("Set up started.")
+    assert (
+        "nothing is deleted" in setup.STATES["off"]
+        and "nothing needs to be pasted" in (setup.STATES["off"])
+    )
+    assert "the signing secret is kept" in setup.STATES["revoked"]
+    assert "off" not in ACCEPTING  # its commands and actions addresses are refused
+    assert web_slack.OFF_EVENTS == ("app_uninstalled", "tokens_revoked")  # no message
+
+
+def test_connect_secrets_pasted_again_are_of_the_same_slack_workspace(world):  # noqa: F811
+    """connect.md: "Secrets pasted again must be of the same Slack workspace: to connect
+    another Slack workspace, remove Slack first, and the first workspace's notes are then
+    forgotten on their day, even once the other one is set up.\""""
+    says(
+        *CONNECT,
+        "Secrets pasted again must be of the same Slack workspace: to connect another Slack"
+        " workspace, remove Slack first, and the first workspace's notes are then forgotten on"
+        " their day, even once the other one is set up.",
+    )
+    assert "remove Slack first" in setup.REFUSALS["other_team"]
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    with pytest.raises(store_slack.NotItsTeam):
+        ready(world, team="T0QUILL01")
+    assert world.view.get_slack_install().team_id == TEAM
+    world.view.remove_slack_install(install.id)
+    ready(world, team="T0QUILL01")
+    ready(world, team="T0QUILL01")  # its secrets pasted again
+    world.clock.now += FORGET_AFTER
+    assert world.store.slack_notes_due() == [(world.account, note)]
+
+
+def test_connect_remove_deletes_the_secrets_and_links_and_forgets_10_days_later(world):  # noqa: F811
+    """connect.md: "**Remove Slack**, once you type the workspace's name, deletes both secrets
+    and every link between a Slack user and a person at once, and every note Slack created is
+    forgotten 10 days later. Removing the app at Slack does the same. Until then the
+    page says how many notes and on which day, and offers an owner **Forget them now**; setting
+    Slack up again for the same Slack workspace before that day keeps them.\""""
+    says(
+        *CONNECT,
+        "**Remove Slack**, once you type the workspace's name, deletes both secrets and every"
+        " link between a Slack user and a person at once, and every note Slack created is"
+        " forgotten 10 days later. Removing the app at Slack does the same. Until then the"
+        " page says how many notes and on which day, and offers an owner **Forget them now**;"
+        " setting Slack up again for the same Slack workspace before that day keeps them.",
+    )
+    assert timedelta(days=10) == FORGET_AFTER
+    assert "Type the workspace's name to remove Slack" in setup.REFUSALS["confirm"]
+    assert dispatch.EVENTS["app_uninstalled"] is web_slack._uninstalled
+    assert "remove_slack_install" in inspect.getsource(web_slack._uninstalled)
+    install = ready(world)
+    world.view.link_slack_user(install.id, "U0ADA0001", world.owner)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    world.view.remove_slack_install(install.id)
+    assert world.store.slack_inbound(install.id).signing_secret is None
+    assert world.view.slack_person(install.id, "U0ADA0001") is None
+    due = world.view.slack_notes_to_forget()
+    assert due.notes == 1 and due.at == world.clock.now + FORGET_AFTER
+    ready(world)  # the same Slack workspace, set up again before the day
+    assert world.view.slack_notes_to_forget() is None and world.view.get_note(note) is not None
+
+
+def yes_and_code(bench, slack_user: str, user_id: str) -> str:
+    """The Slack user asks for the address with `/cairn link`; the person `user_id` opens it
+    signed in and says yes. The code they are shown."""
+    (value,) = set(re.findall(r"link\?t=([A-Za-z0-9_-]+)", said(ask(bench, "link", slack_user))))
+    return bench.store.for_account(bench.account, user_id).claim_slack_offer(value)
+
+
+LINK_PAGE = (files("cairn") / "templates" / "slack_link.html").read_text(encoding="utf-8")
+CODE_PAGE = (files("cairn") / "templates" / "slack_link_code.html").read_text(encoding="utf-8")
+
+
+def test_connect_a_person_links_once_in_two_steps(bench):
+    """connect.md: "Each person links their Slack user to themselves once, in two steps within
+    10 minutes. The first time they use the bot, or with `/cairn link`, the bot answers them
+    alone with an address that works once. Opened signed in to cairn, it shows the Slack
+    user's id and the Slack workspace first, then the name that Slack user set themself, and
+    asks for a yes; if someone sent you the address, close the page. The yes shows a code,
+    once, and links nothing yet. The same Slack user then types `/cairn link <code>` in
+    Slack, and is linked. From then on, what they do through the bot acts as them, with what
+    they reach.\""""
+    says(
+        *CONNECT,
+        "Each person links their Slack user to themselves once, in two steps within 10"
+        f" minutes. The first time they use the bot, or with `/{PRODUCT.slug} link`, the bot"
+        " answers them alone with an address that works once. Opened signed in to"
+        f" {PRODUCT.name}, it shows the Slack user's id and the Slack workspace first, then the"
+        " name that Slack user set themself, and asks for a yes; if someone sent you the"
+        " address, close the page. The yes shows a code, once, and links nothing yet. The same"
+        f" Slack user then types `/{PRODUCT.slug} link <code>` in Slack, and is linked. From"
+        " then on, what they do through the bot acts as them, with what they reach.",
+    )
+    assert timedelta(minutes=10) == OFFER_TTL and f"/{PRODUCT.slug}" == COMMAND
+    for text in ("find jars", "link"):
+        assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, text))  # ephemeral
+    assert "<h1>Link this Slack user to you?</h1>" in LINK_PAGE
+    assert LINK_PAGE.index("{{ slack_user }}") < LINK_PAGE.index("{{ slack_name }}")
+    assert LINK_PAGE.index("{{ team_domain }}") < LINK_PAGE.index("{{ slack_name }}")
+    assert "a name this Slack user set themself" in LINK_PAGE
+    assert "If someone sent you this address, close this page." in LINK_PAGE
+    assert "with what you reach" in LINK_PAGE and "{{ code" not in LINK_PAGE
+    assert "{{ command }} link {{ code }}" in CODE_PAGE
+    code = yes_and_code(bench, ADA_SLACK, bench.ada)
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK) is None  # nothing yet
+    assert said(ask(bench, f"link {code}")) == said(blocks.linked("Ada"))
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK).user_id == bench.ada
+
+
+def test_connect_the_slash_commands_words(bench):
+    """connect.md: the table of the command's words, and "The slash command is `/cairn`, unless
+    the owner named it otherwise in the app's manifest:\""""
+    says(
+        *CONNECT,
+        f"The slash command is `/{PRODUCT.slug}`, unless the owner named it otherwise in the"
+        " app's manifest:",
+        "| `find <words>` | Up to 5 claims that match, each with its page's title as a link to"
+        " the claim, its project and the page's version; or Nothing found. |",
+        "| `note <text>` | Writes a note in your Slack project, with `via` `slack`, and links its"
+        " page. |",
+        "| `project` | Says which project is your Slack project and which projects you can write"
+        " to. `project <name>` makes another of those your Slack project. |",
+        "| `link` | Says who your Slack user is linked to; if it is linked to nobody, gives a"
+        " new address to link it. `link <code>` links it with the code that address showed"
+        " you. |",
+        "| `unlink` | Undoes your link, and says to use `link` to link again. |",
+        "| `help`, or no word | Lists what there is. |",
+    )
+    made = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab", command="/notes")
+    assert made["features"]["slash_commands"][0]["command"] == "/notes"
+    assert people.FOUND_AT_ONCE == 5
+    hit = {"project": "library", "page": "jars", "title": "Jars", "claim_id": "cl_jar0001",
+           "text": "Row 4 holds the quince jars.", "version": 3}  # fmt: skip
+    shown = said(blocks.found([hit] * 7, query="quince", base_url=BASE))
+    assert shown.count(f"<{BASE}/b/library/p/jars#cl_jar0001|Jars>") == 5
+    assert "Project: library · Version: 3" in shown
+    assert said(blocks.nothing_found("quince")).startswith("Nothing found")
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    written = said(ask(bench, "note Row 4 holds the quince jars."))
+    assert written.startswith("Filed: ") and f"{BASE}/b/library/p/" in written
+    assert [via for *_, via in bench.notes()] == ["slack"]
+    assert said(ask(bench, "project")) == said(blocks.project_is("library", writable=["library"]))
+    assert said(ask(bench, "link")) == said(blocks.linked("Ada"))
+    unlinked = said(ask(bench, "unlink"))
+    assert "You are unlinked. The bot no longer acts as you here." in unlinked
+    assert "`/cairn link`" in unlinked
+    assert "/integrations/slack/link?t=" not in unlinked
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK) is None
+    assert bench.store._con.execute("SELECT * FROM slack_link_offers").fetchall() == []
+    assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "link"))  # linked to nobody
+    assert bench.store._con.execute("SELECT slack_user_id FROM slack_link_offers").fetchall() == [
+        (ADA_SLACK,)
+    ]
+    for word in ("help", ""):
+        assert said(ask(bench, word)) == said(blocks.help_text("/cairn"))
+
+
+def test_connect_a_direct_message_works_the_same_way():
+    """connect.md: "A direct message to the bot works the same way: plain words are a search,
+    `note:` and text writes a note, and `help` lists what there is.\""""
+    says(
+        *CONNECT,
+        "A direct message to the bot works the same way: plain words are a search, `note:` and"
+        " text writes a note, and `help` lists what there is.",
+    )
+    assert messages.NOTE == "note:"
+    source = inspect.getsource(messages._answer)
+    assert "people.search" in source and "people.written" in source and '"help"' in source
+
+
+def test_connect_the_message_shortcut_files_a_message_once():
+    """connect.md: "The message shortcut **File in cairn**, used on a message, files it as a note
+    in your Slack project: its text, a heading with who wrote it and when, and the message's
+    own link as its `source_ref`. A message is filed once: filing it again answers with the
+    note it already is.\""""
+    says(
+        *CONNECT,
+        f"The message shortcut **File in {PRODUCT.name}**, used on a message, files it as a note"
+        " in your Slack project: its text, a heading with who wrote it and when, and the"
+        " message's own link as its `source_ref`. A message is filed once: filing it again"
+        " answers with the note it already is.",
+    )
+    (shortcut,) = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab")["features"][
+        "shortcuts"
+    ]
+    assert shortcut["name"] == f"File in {PRODUCT.name}" and shortcut["type"] == "message"
+    message = {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": "Row 4."}
+    draft = note_from_message(
+        message, team_id=TEAM, team_domain="fable-works", conversation_id="C0LIBRARY1",
+        author="Cedar Quill", names={},
+    )  # fmt: skip
+    assert draft.text.startswith("## Cedar Quill · 2030-03-17 17:46:40 UTC\n\nRow 4.")
+    assert draft.source_ref == "https://fable-works.slack.com/archives/C0LIBRARY1/p1900000000000100"
+    assert said(blocks.filed(title="T", page_url=BASE, project="p", already=True)).startswith(
+        "Already filed"
+    )
+
+
+def test_connect_every_answer_is_for_you_alone():
+    """connect.md: "Every answer is for you alone: the slash command's and the shortcut's are
+    shown only to you, and the bot answers a direct message in that direct conversation.\""""
+    says(
+        *CONNECT,
+        "Every answer is for you alone: the slash command's and the shortcut's are shown only to"
+        " you, and the bot answers a direct message in that direct conversation.",
+    )
+    assert '"response_type": "ephemeral"' in inspect.getsource(commands._answer)
+    assert inspect.signature(SlackClient.reply).parameters["private"].default is True
+    assert "private=" not in inspect.getsource(people)  # every reply private
+    assert 'event["channel"]' in inspect.getsource(messages.direct_message)
+
+
+def test_connect_each_refusal_says_why(bench):
+    """connect.md: "When the bot refuses, it says why, to you alone, and stores nothing:" and
+    its list."""
+    name = PRODUCT.name
+    says(
+        *CONNECT,
+        "When the bot refuses, it says why, to you alone, and stores nothing:",
+        "- no project is chosen for your notes, or yours is out of your reach or gone: choose"
+        " one with `project <name>`;",
+        "- the note guard refused the note, and the answer names its rule;",
+        "- the workspace is over its cap, or the page is full;",
+        "- the message's author is not of this Slack workspace: only a message written there is"
+        " filed;",
+        "- an app, a bot or a deactivated account wrote the message, so it has no person as its"
+        " author;",
+        f"- Slack did not say in time who wrote the message, or is limiting how often {name}"
+        " asks: try again;",
+        "- the message has no text;",
+        f"- {name} is compiling as many notes as it can at once: try again in a moment.",
+    )
+    assert "No project is chosen" in people.NO_PROJECT and "project <name>" in people.NO_PROJECT
+    assert "out of your reach or no longer exists" in people.OUT_OF_REACH
+    assert "is not of this Slack workspace" in people.OTHER_ORGANISATION
+    assert "an app, a bot or a deactivated account" in people.NO_PERSON
+    assert "did not say in time" in people.NOT_IN_TIME and "Try again" in people.NOT_IN_TIME
+    assert "limiting how often cairn asks" in people.RATE_LIMITED
+    assert "no text to file" in people.NO_TEXT
+    assert "compiling as many notes as it can at once" in people.BUSY
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    leaked = "ghp_" + "Zq7xR2" * 6  # a made-up token in a token's shape
+    refused = said(ask(bench, f"note The deploy token is {leaked} today."))
+    assert refused.startswith("Cannot do that:") and RULE in refused and leaked not in refused
+    assert bench.notes() == []
+
+
+def test_connect_what_the_bot_cannot_do_in_this_version():
+    """connect.md: "In this version the bot reads no thread and no whole conversation, does not
+    answer a mention, and cannot share an answer with a conversation.\""""
+    says(
+        *CONNECT,
+        "In this version the bot reads no thread and no whole conversation, does not answer a"
+        " mention, and cannot share an answer with a conversation.",
+    )
+    assert manifest.SCOPES == ("chat:write", "commands", "im:history", "users:read")
+    assert manifest.BOT_EVENTS == ("app_uninstalled", "message.im", "tokens_revoked")
+    assert "app_mention" not in dispatch.EVENTS
+    calls = {name for name, _ in inspect.getmembers(SlackClient) if not name.startswith("_")}
+    assert calls == {"auth_test", "call", "post", "reply", "user"}
+    assert "in_channel" not in inspect.getsource(commands) + inspect.getsource(people)
+
+
+# The privacy guide, "Slack"
+
+PRIVACY = ("privacy", "## Slack")
+
+
+def test_privacy_slack_sends_only_what_a_person_hands_over():
+    """privacy.md: "Only when the operator starts cairn with `serve --slack` and an owner or an
+    admin of the workspace sets up its Slack app. Slack then sends cairn only what a person
+    hands it, when they hand it: the words they type after the slash command, the one message
+    they file with the message shortcut, and the direct messages people send the bot. Nothing is
+    read from a conversation among people: the app has no permission that would let it, and
+    Slack tells the bot of no message but those sent to it directly.\""""
+    name = PRODUCT.name
+    says(
+        *PRIVACY,
+        f"Only when the operator starts {name} with `serve --slack` and an owner or an admin of"
+        f" the workspace sets up its Slack app. Slack then sends {name} only what a person hands"
+        " it, when they hand it: the words they type after the slash command, the one message"
+        " they file with the message shortcut, and the direct messages people send the bot.",
+        "Nothing is read from a conversation among people: the app has no permission that would"
+        " let it, and Slack tells the bot of no message but those sent to it directly.",
+    )
+    assert [scope for scope in manifest.SCOPES if "history" in scope] == ["im:history"]
+    assert [event for event in manifest.BOT_EVENTS if event.startswith("message")] == ["message.im"]
+    assert '"im"' in inspect.getsource(messages._acted_on)
+
+
+def test_privacy_what_cairn_keeps_of_slack(world):  # noqa: F811
+    """privacy.md: "cairn keeps the note, as any note, with who brought it and that it came
+    through Slack; for a filed message, also its conversation's id and its time, so that it is
+    filed once. It keeps each link between a Slack user and a person, with the project their
+    notes go to, and the install's Slack workspace, with its signing secret and bot token
+    sealed under the operator's key.\""""
+    says(
+        *PRIVACY,
+        f"{PRODUCT.name} keeps the note, as any note, with who brought it and that it came"
+        " through Slack; for a filed message, also its conversation's id and its time, so that"
+        " it is filed once. It keeps each link between a Slack user and a person, with the"
+        " project their notes go to, and the install's Slack workspace, with its signing secret"
+        " and bot token sealed under the operator's key.",
+    )
+
+    def columns(table: str) -> set[str]:
+        return {row[1] for row in world.store._con.execute(f"PRAGMA table_info({table})")}
+
+    assert {"install_id", "how", "brought_by", "conversation_id", "message_time"} <= columns(
+        "slack_notes"
+    )
+    assert {"install_id", "slack_user_id", "user_id", "project_id"} <= columns("slack_people")
+    assert {"team_id", "team_domain", "signing_secret", "bot_token"} <= columns("slack_installs")
+    install = ready(world)
+    note = a_note(world)
+    kept = world.view.record_slack_note(
+        install.id, note, how="filed", brought_by=world.owner, conversation_id="C0TIDES01",
+        message_time="1900000000.000100",
+    )  # fmt: skip
+    other = a_note(world, "# Moon\n\nThe moon is full.\n")
+    again = world.view.record_slack_note(
+        install.id, other, how="filed", brought_by=world.owner, conversation_id="C0TIDES01",
+        message_time="1900000000.000100",
+    )  # fmt: skip
+    assert kept == note and again == note  # the same message: the note it already is
+
+
+def test_privacy_only_an_author_of_the_same_slack_workspace_is_filed(bench):
+    """privacy.md: "Only a message whose author Slack shows to be of the same Slack workspace is
+    filed: cairn asks Slack who wrote it, and files nothing when the author is of another
+    organisation, is a stranger to the workspace, is an app or a bot, or when Slack does not
+    say.\""""
+    says(
+        *PRIVACY,
+        "Only a message whose author Slack shows to be of the same Slack workspace is filed:"
+        f" {PRODUCT.name} asks Slack who wrote it, and files nothing when the author is of"
+        " another organisation, is a stranger to the workspace, is an app or a bot, or when"
+        " Slack does not say.",
+    )
+    base = {"team_id": TEAM, "real_name": "Cedar Quill", "is_bot": False}
+    cases = {
+        "U0OUTSIDE1": ({**base, "team_id": "T0OTHER01"}, people.OTHER_ORGANISATION),
+        "U0STRANGE1": ({**base, "is_stranger": True}, people.OTHER_ORGANISATION),
+        "U0BOTUSER1": ({**base, "is_bot": True}, people.NO_PERSON),
+        "U0UNKNOWN1": (None, people.SLACK_SAID.format(code="user_not_found")),
+    }
+    for user, (found, reason) in cases.items():
+        if found is not None:
+            bench.users[user] = {"id": user, **found}
+        with pytest.raises(people.NotFiled) as refused:
+            asyncio.run(people.author(bench.context, {"user": user, "text": "Row 4."}))
+        assert str(refused.value) == reason
+    with pytest.raises(people.NotFiled):
+        asyncio.run(people.author(bench.context, {"bot_id": "B0APP0001", "text": "Row 4."}))
+    bench.users["U0CEDAR01"] = {"id": "U0CEDAR01", **base}
+    assert asyncio.run(people.author(bench.context, {"user": "U0CEDAR01"})) == "Cedar Quill"
+
+
+def test_privacy_when_the_app_is_removed(world):  # noqa: F811
+    """privacy.md: "When the app is removed, at Slack or on the **Sources** page, both secrets
+    and every link are deleted at once, and every note Slack created, typed or filed, is
+    forgotten 10 days later, as a note is forgotten (below). Until then the **Sources** page
+    says how many notes will go and when, and an owner can forget them at once with **Forget
+    them now**; setting Slack up again for the same Slack workspace before that day keeps
+    them.\""""
+    says(
+        *PRIVACY,
+        "When the app is removed, at Slack or on the **Sources** page, both secrets and every"
+        " link are deleted at once, and every note Slack created, typed or filed, is forgotten"
+        " 10 days later, as a note is forgotten (below). Until then the **Sources** page says"
+        " how many notes will go and when, and an owner can forget them at once with **Forget"
+        " them now**; setting Slack up again for the same Slack workspace before that day keeps"
+        " them.",
+    )
+    install = ready(world)
+    typed, filed = a_note(world), a_note(world, "# Moon\n\nThe moon is full.\n")
+    world.view.record_slack_note(install.id, typed, how="typed", brought_by=world.owner)
+    world.view.record_slack_note(
+        install.id, filed, how="filed", brought_by=world.owner, conversation_id="C0TIDES01",
+        message_time="1900000000.000100",
+    )  # fmt: skip
+    system = world.store.for_account(world.account).acting_as("system", None)
+    system.remove_slack_install(install.id)  # Slack's app_uninstalled
+    assert world.view.slack_notes_to_forget().notes == 2
+    world.clock.now += FORGET_AFTER - timedelta(minutes=1)
+    assert world.store.slack_notes_due() == []
+    world.clock.now += timedelta(minutes=2)
+    assert sorted(note for _, note in world.store.slack_notes_due()) == sorted([typed, filed])
+    world.view.forget_slack_notes_now(install.id)
+    assert world.view.get_note(typed) is None and world.view.get_note(filed) is None
+
+
+def test_privacy_what_was_there_before_slack_is_not_slacks_to_forget(bench):
+    """privacy.md: "A note typed in Slack, or a message filed, whose text the project already
+    held stores nothing new and records nothing: what was there before Slack is not Slack's to
+    forget.\""""
+    says(
+        *PRIVACY,
+        "A note typed in Slack, or a message filed, whose text the project already held stores"
+        " nothing new and records nothing: what was there before Slack is not Slack's to forget.",
+    )
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    bench.owner.add_note(bench.library.id, "Row 4 holds the quince jars.", via="web")
+    assert said(ask(bench, "note Row 4 holds the quince jars.")).startswith("Filed: ")
+    assert len(bench.notes()) == 1
+    assert bench.store._con.execute("SELECT COUNT(*) FROM slack_notes").fetchone() == (0,)
+
+
+def test_privacy_a_token_slack_ended_is_removed_three_days_later(world):  # noqa: F811
+    """privacy.md: "When Slack revokes the bot's token, or no longer accepts it, Slack is
+    switched off and the token deleted; unless a new bot token is pasted on the **Sources**
+    page within 3 days, Slack is then removed here as above. A removal Slack did not tell this
+    server about is noticed within 12 hours, acted on 3 days later, and the notes are
+    forgotten 10 days after that.\""""
+    says(
+        *PRIVACY,
+        "When Slack revokes the bot's token, or no longer accepts it, Slack is switched off and"
+        " the token deleted; unless a new bot token is pasted on the **Sources** page within 3"
+        " days, Slack is then removed here as above.",
+        "A removal Slack did not tell this server about is noticed within 12 hours, acted on 3"
+        " days later, and the notes are forgotten 10 days after that.",
+    )
+    assert timedelta(hours=12) == 2 * CHECK_EVERY and timedelta(days=3) == GONE_AFTER
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    removed_at_slack = world.clock.now  # and Slack said nothing
+    ended = 0
+    while ended < 2:  # a check is due at most CHECK_EVERY after the last
+        world.clock.now += CHECK_EVERY
+        for check in world.store.take_slack_checks():
+            found = world.store.slack_token_checked(check, "ended")
+            ended += 1
+    assert found.state == "off" and not found.holds_bot_token
+    assert world.clock.now - removed_at_slack <= timedelta(hours=12)
+    world.clock.now += GONE_AFTER + timedelta(minutes=1)  # the loop's next pass
+    assert world.store.remove_gone_slack_installs() == [install.id]
+    assert world.view.slack_notes_to_forget().at == world.clock.now + FORGET_AFTER
+
+
+def test_privacy_backups_hold_the_notes_until_they_expire():
+    """privacy.md: "Backups made before the forgetting hold those notes until they expire, as
+    they hold every forgotten note.\""""
+    says(
+        *PRIVACY,
+        "Backups made before the forgetting hold those notes until they expire, as they hold"
+        " every forgotten note.",
+    )
+    deletion = flat(section("privacy", "## Deletion"))
+    assert "**Backups** made before the deletion keep what was deleted until they expire." in (
+        deletion
+    )
+
+
+def test_privacy_the_slack_secrets_are_credentials_the_database_can_hold():
+    """privacy.md: "A connected Google account's refresh token, and a Slack app's signing secret
+    and bot token, each stored sealed (above), are the only credentials of other services the
+    database can hold.\""""
+    raw = flat(guide_source("privacy"))
+    sentence = (
+        "A connected Google account's refresh token, and a Slack app's signing secret and bot"
+        " token, each stored sealed (above), are the only credentials of other services the"
+        " database can hold."
+    )
+    assert raw.count(sentence) == 1
+    assert "is the one credential of another service" not in raw
+
+
+def test_privacy_where_a_note_from_slack_can_go(bench, monkeypatch):
+    """privacy.md: "cairn compiles a note that came through Slack itself, with no model. A
+    page that holds one is not sent to a model the operator connects to arrange pages unless
+    the operator sets `<PREFIX>_SLACK_NOTES=send`, the one setting that names Slack, and then
+    not in a project its people keep from every model; cairn tidies that page itself
+    instead.\""""
+    name = PRODUCT.name
+    says(
+        *PRIVACY,
+        f"{name} compiles a note that came through Slack itself, with no model.",
+        "A page that holds one is not sent to a model the operator connects to arrange pages"
+        " unless the operator sets `<PREFIX>_SLACK_NOTES=send`, the one setting that names"
+        " Slack, and then not in a project its people keep from every model;"
+        f" {name} tidies that page itself instead.",
+    )
+    # compiled with no model: Memory compiles with compile_note's own default, the extractive
+    assert inspect.signature(compile_note).parameters["compose"].default is extractive
+    assert "compose" not in inspect.getsource(Memory.note)
+    # held unless the setting that names Slack says send; SOURCE_NOTES=send does not
+    environ = {"ARRANGER_SOURCE_NOTES": "send"}
+    assert not cli_arrange.sends_slack_notes("ARRANGER", environ)
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SLACK_NOTES": "send"})
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    ask(bench, "note Kiln log\n\nThe kiln is fired on Tuesdays.")
+    model = FakeModel([])
+    arranger = Arranger(model, price=None, view_for=bench.store.for_account, withhold=())
+    arranger.queue(bench.account, bench.library.id, "kiln-log")
+    (done,) = asyncio.run(arranger.run_once())
+    assert done.status == "withheld" and model.requests == []
+
+
+def test_privacy_the_list_of_what_a_model_is_not_sent_names_slack():
+    """privacy.md, **Models.**: "A page that holds a note read from Google Meet, Google
+    Calendar, Gmail or Google Drive, from a connector of your own, or through Slack, is not
+    sent unless the operator allows it" and "A page that holds a note that came through Slack
+    is sent only with `<PREFIX>_SLACK_NOTES=send`, except in such a project.\""""
+    (line,) = [line for line in guide_source("privacy").splitlines() if "**Models.**" in line]
+    assert (
+        "A page that holds a note read from Google Meet, Google Calendar, Gmail or Google Drive,"
+        " from a connector of your own, or through Slack, is not sent unless the operator allows"
+        " it;"
+    ) in flat(line)
+    assert (
+        "A page that holds a note that came through Slack is sent only with"
+        " `<PREFIX>_SLACK_NOTES=send`, except in such a project."
+    ) in flat(line)
+    assert frozenset({"slack"}) == sources.HELD_VIA
+    assert "slack" not in sources.withheld_via() and "slack" not in sources.KINDS
+
+
+# The security guide, "Slack"
+
+SECURITY = ("security", "## Slack")
+
+
+def test_security_the_three_addresses_slack_calls_and_their_signature(bench):
+    """security.md: "Off unless the operator starts the server with `--slack`. Slack calls
+    three addresses of each workspace's install: `/integrations/slack/<install>/events`,
+    `/commands` and `/actions`. They take no session and no key. A request is acted on only
+    when its signature holds: an HMAC-SHA256 of its timestamp and its body under that install's
+    signing secret, compared in constant time, with a timestamp within 5 minutes of the
+    server's clock.\""""
+    says(
+        *SECURITY,
+        "Off unless the operator starts the server with `--slack`. Slack calls three addresses"
+        " of each workspace's install: `/integrations/slack/<install>/events`, `/commands` and"
+        " `/actions`. They take no session and no key.",
+        "A request is acted on only when its signature holds: an HMAC-SHA256 of its timestamp"
+        " and its body under that install's signing secret, compared in constant time, with a"
+        " timestamp within 5 minutes of the server's clock.",
+    )
+    assert web_slack.OPEN_PATH.pattern.endswith("/(?:events|commands|actions)")
+    assert SKEW == 300 and "compare_digest" in inspect.getsource(verified)
+    secret, body, now = "8f" + "e1c0ffee" * 3, b"token=unused", 1_900_000_000
+    sign = {"x-slack-request-timestamp": str(now),
+            "x-slack-signature": signature(secret, str(now), body).decode()}  # fmt: skip
+    assert verified(secret, sign, body, now + SKEW)
+    assert not verified(secret, sign, body, now + SKEW + 1)
+    assert not verified("another-" + secret, sign, body, now)
+
+
+def test_security_what_is_refused_before_and_after_the_signature(bench):
+    """security.md: "Before the signature is checked, a body over 1 MiB is refused, and so is
+    an install that does not exist or is not set up. After it, a request of another Slack
+    workspace is refused. The signature is computed for every request that gets this far, and
+    a request whose signature holds is never refused because of requests whose signature did
+    not. Those that fail it are counted for each install and client address: after 20 in a
+    minute, a further one from that address to that install is refused until the oldest of
+    them is a minute old. An event is acted on once, whatever Slack's retries say.\""""
+    says(
+        *SECURITY,
+        "Before the signature is checked, a body over 1 MiB is refused, and so is an install"
+        " that does not exist or is not set up. After it, a request of another Slack workspace"
+        " is refused. The signature is computed for every request that gets this far, and a"
+        " request whose signature holds is never refused because of requests whose signature"
+        " did not. Those that fail it are counted for each install and client address: after"
+        " 20 in a minute, a further one from that address to that install is refused until the"
+        " oldest of them is a minute old. An event is acted on once, whatever Slack's retries"
+        " say.",
+    )
+    assert BODY_MAX == 1024 * 1024 and "pending" not in ACCEPTING
+    assert (web_slack.SIGNATURE_FAILURES, web_slack.SIGNATURE_WINDOW) == (20, 60)
+    now = [1_900_000_000.0]
+    failures = web_slack.signature_failures(lambda: now[0])
+    here, fable, quill = "203.0.113.5", "sl_0123456789ab", "sl_ba9876543210"
+    assert [failures.failed(fable, here) for _ in range(20)] == [0] * 20
+    assert failures.failed(fable, here) > 0  # refused
+    assert failures.failed(quill, here) == 0 and failures.failed(fable, "198.51.100.7") == 0
+    now[0] += 60
+    assert failures.failed(fable, here) == 0
+    receive = inspect.getsource(web_slack.slack_routes)
+    assert receive.index("verified(") < receive.index("failures.failed(")
+    other = b'{"type": "event_callback", "team_id": "T0OTHER01", "event": {"type": "x"}}'
+    with pytest.raises(OtherTeam):
+        envelope("events", bench.install, other, {})
+    assert bench.store.slack_event_seen(bench.install.id, "Ev0RETRY01") is True
+    assert bench.store.slack_event_seen(bench.install.id, "Ev0RETRY01") is False
+
+
+def test_security_the_four_permissions():
+    """security.md: "The app asks Slack for four permissions: `chat:write`, to post the bot's
+    answers; `commands`, for the slash command and the message shortcut; `users:read`, to know a
+    Slack user's name and whether a message's author is of this Slack workspace; and
+    `im:history`, which lets the bot read the direct messages people send it, and nothing among
+    people.\""""
+    says(
+        *SECURITY,
+        "The app asks Slack for four permissions: `chat:write`, to post the bot's answers;"
+        " `commands`, for the slash command and the message shortcut; `users:read`, to know a"
+        " Slack user's name and whether a message's author is of this Slack workspace; and"
+        " `im:history`, which lets the bot read the direct messages people send it, and nothing"
+        " among people.",
+    )
+    assert sorted(manifest.SCOPES) == sorted(setup.PERMISSIONS)
+    assert setup.PERMISSIONS["chat:write"].startswith("Post the bot's answers")
+    assert "slash command and the message shortcut" in setup.PERMISSIONS["commands"]
+    assert (
+        "whether a message's author is of this Slack workspace" in (setup.PERMISSIONS["users:read"])
+    )
+    assert "the direct messages people send the bot" in setup.PERMISSIONS["im:history"]
+    assert "nothing among people" in setup.PERMISSIONS["im:history"]
+
+
+def test_security_answers_are_private_and_built_from_the_askers_reach(bench):
+    """security.md: "Answers are private: the slash command's and the shortcut's are shown only
+    to the person who asked, and a direct message is answered in that direct conversation. An
+    answer is built from the asker's reach, as a search of theirs: a project they do not reach
+    gives nothing, not even a count.\""""
+    says(
+        *SECURITY,
+        "Answers are private: the slash command's and the shortcut's are shown only to the"
+        " person who asked, and a direct message is answered in that direct conversation. An"
+        " answer is built from the asker's reach, as a search of theirs: a project they do not"
+        " reach gives nothing, not even a count.",
+    )
+    cellar = bench.owner.create_project("cellar", everyone="none")
+    bench.owner.add_note(cellar.id, "# Cellar\n\nThe quince jars are in the cellar.\n")
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    bench.link(BROOK_SLACK, bench.brook, bench.library)
+    assert "quince" in said(ask(bench, "find quince"))  # Ada reaches the cellar
+    brooks = said(ask(bench, "find quince", BROOK_SLACK))  # ephemeral, checked by ask
+    assert brooks == said(blocks.nothing_found("quince")) and "cellar" not in brooks
+
+
+def test_security_what_links_a_slack_user_to_a_person(bench, monkeypatch):
+    """security.md: "A Slack user is linked to a person in two steps, once they have asked the
+    bot for an address, which is theirs alone. The person opens it signed in and says
+    yes, and is shown a code, once. The same Slack user types that code with the command
+    within 10 minutes. So a Slack user is linked to a person only when that Slack user knew a
+    code shown only to that person: someone who sends their address to another person gains
+    nothing from that person's yes. A wrong code counts against the Slack user's offer, and
+    the fifth deletes it; a code typed by any other Slack user is dead.\""""
+    says(
+        *SECURITY,
+        "A Slack user is linked to a person in two steps, once they have asked the bot for an"
+        " address, which is theirs alone. The person opens it signed in and says yes, and is"
+        " shown a code, once. The same Slack user types that code with the command within 10"
+        " minutes. So a Slack user is linked to a person only when that Slack user knew a code"
+        " shown only to that person: someone who sends their address to another person gains"
+        " nothing from that person's yes. A wrong code counts against the Slack user's offer,"
+        " and the fifth deletes it; a code typed by any other Slack user is dead.",
+    )
+    monkeypatch.setattr(store_slack, "_new_code", lambda: "KM7QR2XZ")  # never AAAA-AAAA
+    assert timedelta(minutes=10) == OFFER_TTL and TRIES == 5
+    code = yes_and_code(bench, BROOK_SLACK, bench.ada)  # Brook's Slack user's address, Ada's yes
+    assert bench.owner.slack_person(bench.install.id, BROOK_SLACK) is None
+    assert "link?t=" in said(ask(bench, "find jars", BROOK_SLACK))  # still nobody's
+    code = yes_and_code(bench, BROOK_SLACK, bench.ada)
+    said(ask(bench, "link", ADA_SLACK))
+    assert "links nothing" in said(ask(bench, f"link {code}", ADA_SLACK))  # another's: dead
+    assert "links nothing" in said(ask(bench, f"link {code}", BROOK_SLACK))
+    code = yes_and_code(bench, BROOK_SLACK, bench.brook)
+    for _ in range(TRIES):
+        assert "links nothing" in said(ask(bench, "link AAAA-AAAA", BROOK_SLACK))
+    assert "links nothing" in said(ask(bench, f"link {code}", BROOK_SLACK))  # deleted
+    assert bench.owner.slack_person(bench.install.id, BROOK_SLACK) is None
+
+
+def test_security_a_link_is_never_moved_and_the_limit_of_the_code(bench):
+    """security.md: "A link is never moved to another person: a Slack user linked to someone
+    stays linked to them until it is undone. The limit is said plainly: someone who talks you
+    into sending them your code acts as you, which is why the page that shows it says to give
+    it to no one.\""""
+    says(
+        *SECURITY,
+        "A link is never moved to another person: a Slack user linked to someone stays linked"
+        " to them until it is undone. The limit is said plainly: someone who talks you into"
+        " sending them your code acts as you, which is why the page that shows it says to give"
+        " it to no one.",
+    )
+    bench.link(ADA_SLACK, bench.ada)
+    with pytest.raises(ValueError):
+        bench.owner.link_slack_user(bench.install.id, ADA_SLACK, bench.brook)
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK).user_id == bench.ada
+    assert "Give this code to no one: whoever types it in Slack acts as you here." in CODE_PAGE
+
+
+def test_security_the_client_reads_no_conversations_history():
+    """security.md: "The signing secret and the bot token are sealed under the operator's key,
+    `CAIRN_SLACK_KEY`, so a copy of the database opens neither. cairn's Slack client calls
+    nothing at Slack that reads a conversation's history: it asks whose a token is and who a
+    user is, posts the bot's answers, and answers through the address a signed request gave.\""""
+    says(
+        *SECURITY,
+        "The signing secret and the bot token are sealed under the operator's key,"
+        " `CAIRN_SLACK_KEY`, so a copy of the database opens neither.",
+        f"{PRODUCT.name}'s Slack client calls nothing at Slack that reads a conversation's"
+        " history: it asks whose a token is and who a user is, posts the bot's answers, and"
+        " answers through the address a signed request gave.",
+    )
+    source = inspect.getsource(SlackClient)
+    for method in ("auth.test", "users.info", "chat.postMessage"):
+        assert f'"{method}"' in source
+    assert "history" not in source.replace("reads a conversation's history", "")
+    assert "conversations." not in source
+
+
+def test_security_the_one_credential_sentences_name_slack_too():
+    """security.md: "The credentials of other services it can hold, a connected Google
+    account's refresh token and a Slack app's signing secret and bot token, are sealed: see
+    [below](#google-accounts-connected-in-the-browser) and [Slack](#slack)." and "The database
+    never holds a third party's key, except the sealed tokens of Google accounts connected in
+    the browser and the sealed secrets of a Slack app, when the operator switches either on.\""""
+    raw = flat(guide_source("security"))
+    for sentence in (
+        "The credentials of other services it can hold, a connected Google account's refresh"
+        " token and a Slack app's signing secret and bot token, are sealed: see"
+        " [below](#google-accounts-connected-in-the-browser) and [Slack](#slack).",
+        "The database never holds a third party's key, except the sealed tokens of Google"
+        " accounts connected in the browser and the sealed secrets of a Slack app, when the"
+        " operator switches either on",
+    ):
+        assert raw.count(sentence) == 1, sentence
+
+
+def test_run_says_which_setting_sends_slacks_notes_to_the_arranging_model():
+    """run.md: "With a model connected to arrange pages, a page that holds a note that came
+    through Slack is sent to it only if the environment also says
+    `ARRANGER_SLACK_NOTES=send`; `ARRANGER_SOURCE_NOTES=send` does not send it.\""""
+    says(
+        *RUN,
+        "With a model connected to arrange pages, a page that holds a note that came through"
+        " Slack is sent to it only if the environment also says `ARRANGER_SLACK_NOTES=send`;"
+        " `ARRANGER_SOURCE_NOTES=send` does not send it.",
+    )
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SLACK_NOTES": "send"}) is True
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SOURCE_NOTES": "send"}) is False
+    assert cli_arrange.sends_slack_notes("ARRANGER", {}) is False

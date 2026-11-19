@@ -31,7 +31,14 @@ given (sends_source_notes); `serve` reads it at the top of its run, before its s
 `serve --tidy`, `serve --no-tidy`, `arrange --tidy`) nothing reads it. When `serve` starts
 with a model it prints one line on stderr (serve_says): the model's name, the prefix, and
 whether those pages are withheld or sent, with the setting's value, so an operator sees the
-state without reading the environment. `--model-price IN,OUT` is the model's
+state without reading the environment.
+<PREFIX>_SLACK_NOTES (sends_slack_notes), in the same two words, read by the same rule at the
+same moments and refused the same way, says whether pages that hold a note that came through
+Slack (`via` "slack", cairn.sources.HELD_VIA) go to the model: "withhold", the default,
+keeps them from it and has the worker tidy them; "send" sends them, except in a project its
+people keep from every model. It is the only choice that sends them: <PREFIX>_SOURCE_NOTES=send,
+which was chosen before Slack existed, does not, and the start-up line is unchanged by it.
+`--model-price IN,OUT` is the model's
 price in US dollars per million tokens in and out ("0.15,0.6"); without it the tokens are
 recorded at no cost, so a plan's model budget is never spent.
 
@@ -131,6 +138,7 @@ ARRANGE_EVERY = 1.0  # seconds between the background worker's passes
 # claim ids (measured 2026-11-12); an answer in claim numbers is several times shorter.
 MODEL_DEADLINE = 300.0
 SOURCE_NOTES = "SOURCE_NOTES"  # <PREFIX>_SOURCE_NOTES: "withhold" (the default) or "send"
+SLACK_NOTES = "SLACK_NOTES"  # <PREFIX>_SLACK_NOTES: "withhold" (the default) or "send"
 _model_options: dict[str, Any] = {}  # extra options for the model (a test gives a transport)
 
 
@@ -192,7 +200,9 @@ def add_options(serve: argparse.ArgumentParser, *, required: bool = False) -> No
         " mail thread, a calendar, a document or a to-do list, is not sent to the model, and"
         " is tidied without it) or send (such pages are sent too, except in a project its"
         " people keep from every model);"
-        " the two words in lower case",
+        " the two words in lower case. PREFIX_SLACK_NOTES, in the same two words, does the"
+        " same for a page that holds a note that came through Slack, which"
+        " PREFIX_SOURCE_NOTES=send does not send",
     )
     tidy.add_argument("--tidy", action="store_true", help=TIDY_HELP)
     if not required:
@@ -268,8 +278,18 @@ def sends_source_notes(prefix: str, environ: Mapping[str, str] | None = None) ->
     """Whether <PREFIX>_SOURCE_NOTES says "send": False for "withhold", unset or blank. White
     space around the word is dropped; the word is matched exactly, in lower case. ValueError
     for anything else, naming the variable and both words, never the value given."""
+    return _sends(f"{prefix}_{SOURCE_NOTES}", environ)
+
+
+def sends_slack_notes(prefix: str, environ: Mapping[str, str] | None = None) -> bool:
+    """Whether <PREFIX>_SLACK_NOTES says "send", read by sends_source_notes' rule: the one
+    choice that sends a page holding a note that came through Slack (cairn.sources.HELD_VIA).
+    <PREFIX>_SOURCE_NOTES=send does not."""
+    return _sends(f"{prefix}_{SLACK_NOTES}", environ)
+
+
+def _sends(name: str, environ: Mapping[str, str] | None) -> bool:
     env = os.environ if environ is None else environ
-    name = f"{prefix}_{SOURCE_NOTES}"
     value = env.get(name, "").strip()
     if value in ("", "withhold"):
         return False
@@ -323,11 +343,13 @@ def serve_arranger(
     plans: Plans | None,
     *,
     send_source_notes: bool = False,
+    send_slack_notes: bool = False,
 ) -> "Arranger | None":
     """The background worker `serve` runs: with --model-env, the model's (`refused` has turned
     down --tidy with it, and --no-tidy changes nothing), withholding the withheld kinds'
     notes and the notes whose source_ref names a source unless `send_source_notes`
-    (sends_source_notes, read by `serve` before anything is opened); else, with --tidy or by
+    (sends_source_notes, read by `serve` before anything is opened), and the notes that came
+    through Slack unless `send_slack_notes` (sends_slack_notes); else, with --tidy or by
     default (TIDY_BY_DEFAULT, read here), the worker without a model; with --no-tidy, None,
     and nothing of cairn.arrange is imported. ValueError (a cairn.llm.LLMConfigError among
     them) says what is wrong, naming settings only."""
@@ -347,6 +369,7 @@ def serve_arranger(
         view_for=worker_views(store, plans),
         every=ARRANGE_EVERY,
         withhold=() if send_source_notes else None,
+        held_via=() if send_slack_notes else None,
     )
 
 
@@ -371,10 +394,11 @@ def run(args: argparse.Namespace) -> int:
     from cairn.llm import LLMConfigError
 
     model = None  # --tidy: the worker without a model
-    send = False  # read with the model's settings, and only then
+    send = slack = False  # read with the model's settings, and only then
     if not args.tidy:
         try:
             send = sends_source_notes(args.model_env)
+            slack = sends_slack_notes(args.model_env)
         except ValueError as error:  # names the setting, never its value
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2
@@ -421,6 +445,7 @@ def run(args: argparse.Namespace) -> int:
             view_for=worker_views(store, plans),
             capacity=max(1, len(pages)),
             withhold=() if send else None,
+            held_via=() if slack else None,
         )
         for project_id, slug in pages:
             arranger.queue(view.account_id, project_id, slug)

@@ -102,6 +102,21 @@ class AccessMethods(StoreBase):
         reached = frozenset(project_id for project_id, level in levels if level != "none")
         return None if len(reached) == len(levels) else reached
 
+    def _writable(self, con: sqlite3.Connection) -> frozenset[str] | None:
+        """StoreBase._writable: the projects the view's person writes to (as `_level` reads
+        "write", "manage" included), in two statements whatever the workspace holds; None
+        when that is every project (no person, or an owner); nothing for a person who is no
+        longer a member."""
+        if self._user_id is None:
+            return None
+        role = self._role_in(con)
+        if role is None:
+            return frozenset()
+        if role == "owner":
+            return None
+        levels = con.execute(_LEVELS, (self._user_id, self._account_id)).fetchall()
+        return frozenset(project_id for project_id, level in levels if level == "write")
+
     def _level(self, con: sqlite3.Connection, project_id: str) -> str:
         """What the view's person may do in a project of the account: "write" (for "manage"
         too), "read" or "none" (also for a project that is not the account's)."""

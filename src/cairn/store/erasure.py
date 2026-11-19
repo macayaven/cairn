@@ -154,6 +154,9 @@ class ErasureMethods(StoreBase):
                 "DELETE FROM waiting WHERE project_id = ?",  # N1: its notes not yet filed
                 "DELETE FROM note_writers WHERE note_id IN"  # A1: who wrote its notes
                 " (SELECT id FROM notes WHERE project_id = ?)",
+                "DELETE FROM slack_notes WHERE note_id IN"  # K1: which came through Slack
+                " (SELECT id FROM notes WHERE project_id = ?)",
+                "UPDATE slack_people SET project_id = NULL WHERE project_id = ?",  # K1
                 "DELETE FROM spans WHERE note_id IN (SELECT id FROM notes WHERE project_id = ?)",
                 "DELETE FROM notes WHERE project_id = ?",
                 "DELETE FROM project_people WHERE project_id = ?",
@@ -209,6 +212,7 @@ class ErasureMethods(StoreBase):
             con.execute("DELETE FROM notes WHERE id = ?", (note_id,))
             con.execute("DELETE FROM waiting WHERE note_id = ?", (note_id,))  # N1
             con.execute("DELETE FROM note_writers WHERE note_id = ?", (note_id,))  # A1
+            con.execute("DELETE FROM slack_notes WHERE note_id = ?", (note_id,))  # K1
             for slug, version, title, kept, spans in plan:
                 if kept:
                     cited = {i for claim in kept for i in claim.span_ids}

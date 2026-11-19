@@ -295,7 +295,7 @@ def test_the_store_has_no_billing_and_the_schema_keeps_its_steps():
         assert not hasattr(cairn.store, name), name
     assert not (ROOT / "src/cairn/store/billing.py").exists()
     assert "subscription" not in AccountSummary.model_fields
-    assert cairn.store.SCHEMA_VERSION == 28
+    assert cairn.store.SCHEMA_VERSION == 29
     for step in (12, cairn.store.schema._SUBSCRIPTION_TIMES, cairn.store.schema._CHECKOUTS):
         assert step in cairn.store.schema._MIGRATIONS, step
 

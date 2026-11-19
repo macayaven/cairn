@@ -320,6 +320,12 @@ class StoreBase:
         override that intersects with what `super()._reach(con)` answers."""
         return None
 
+    def _writable(self, con: sqlite3.Connection) -> frozenset[str] | None:
+        """Of the projects in reach, those the view's person may write to: their ids, or None
+        for every one. This view writes wherever it reaches; a person's own access answers
+        otherwise (cairn.store.access)."""
+        return None
+
     @contextmanager
     def _locked(self) -> Iterator[sqlite3.Connection]:
         """The connection, under the lock: every use of it goes through here. StoreUnusable

@@ -5,7 +5,7 @@ import json
 import re
 import secrets
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -501,6 +501,19 @@ class MemoryMethods(StoreBase):
             ).fetchall()
         return [_project(row) for row in rows]
 
+    def writable_projects(self) -> list[Project]:
+        """The projects in reach the view's person may write to, sorted as list_projects: in
+        one section, the same few statements whatever the workspace or the server holds."""
+        with self._read() as con:
+            rows = con.execute(
+                f"SELECT {_PROJECT_COLUMNS} FROM projects"
+                f" WHERE account_id = ? AND {_IN_REACH.format('id')} ORDER BY name",
+                self._scope(con),
+            ).fetchall()
+            writable = self._writable(con)
+        projects = [_project(row) for row in rows]
+        return [p for p in projects if writable is None or p.id in writable]
+
     def get_project(self, ref: str) -> Project | None:
         """An id match wins over a (case-insensitive) name match."""
         with self._read() as con:
@@ -523,10 +536,16 @@ class MemoryMethods(StoreBase):
         label: str | None = None,
         source_ref: str | None = None,
         via: str | None = None,
+        within: Callable[[sqlite3.Connection, Note, bool], None] | None = None,
     ) -> tuple[Note, bool]:
         """Store a note and its spans; returns (note, created). KeyError: unknown project.
         FieldTooLong (a ValueError): a field longer than FIELD_MAX allows; nothing is stored
         or recorded.
+
+        `within(con, note, created)`: run inside the write, once the note is stored (or the
+        one the project held already is found), on its connection, before the commit; what a
+        caller writes there is kept with the note or not at all, and whatever it raises rolls
+        the whole write back and goes on to the caller. It opens no read or write of its own.
 
         The note guard is enforced here, the one place a note is written: every field
         is screened under the workspace's policy (or the view's own guard, `with_guard`),
@@ -565,7 +584,10 @@ class MemoryMethods(StoreBase):
                 raise ForgottenNote
             found = self._in_force(con, found)  # type: ignore[attr-defined]
             if not found:
-                return self._insert_note(con, project_id, fields, self._instant(), key)
+                note, created = self._insert_note(con, project_id, fields, self._instant(), key)
+                if within is not None:
+                    within(con, note, created)
+                return note, created
             (name,) = con.execute(
                 "SELECT name FROM projects WHERE id = ?", (project_id,)
             ).fetchone()

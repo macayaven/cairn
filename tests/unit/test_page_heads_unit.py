@@ -65,7 +65,7 @@ def test_step_26_adds_page_heads_filled_from_every_pages_latest_version(tmp_path
     assert ("br_aaaaaaaaaaaa", "c", 2, "C#") in [row[:4] for row in held]
     before = set(v25["statements"])
     added = [line for line in statements(db) if line not in before]
-    later = ("checkouts", "credential_tokens", "google_revocations")  # 27 (R3), 28: empty
+    later = ("checkouts", "credential_tokens", "google_revocations", "slack_")  # 27-29: empty
     assert added and all(
         "page_heads" in line or any(name in line for name in later) for line in added
     ), added

@@ -65,9 +65,11 @@ Each seam is a small interface with more than one possible implementation. New b
 ```
 cairn/
   store/        models, schema and migrations, and the Store view by area; erasure.py
-                deletes one project and forgets one note
+                deletes one project and forgets one note; schema/ holds the upgrade
+                loop in __init__.py and one module per step (v02_accounts to v31_...)
   memory.py     the use cases MCP, REST, the web view and sources share
-  web/          app factory, auth, MCP tools, REST, UI, CLI; markdown.py renders a claim's
+  web/          app factory, auth, MCP tools, REST, UI (ui/: routes in __init__.py,
+                handlers by subject), CLI; markdown.py renders a claim's
                 own Markdown safely and formats dates; workspace.py the /workspace page;
                 public.py the landing page and /docs; erasure.py the pages
                 that ask before deleting a project or forgetting a note

@@ -1396,7 +1396,7 @@ __all__ = [
 # on base.StoreBase: the connection, the lock, the clock, the account binding and the actor.
 # ReachMethods (reach.py) comes first, so that a narrowed view sees each call before the
 # area that serves it. Opening the database lives here because it runs the schema upgrade
-# (schema.py), which itself builds on base.py.
+# (the schema package, one module per step), which itself builds on base.py.
 class Store(
     ReachMethods,
     AccessMethods,

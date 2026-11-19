@@ -225,13 +225,17 @@ async def _never(seconds: float) -> None:
 class _Warned(logging.Handler):
     """Counts the warnings that reach a logger and says when `count` of them have come. The
     first stats pass runs off the event loop, so a test must wait for its lines: on a slow
-    machine a request is answered before the pass has logged."""
+    machine a request is answered before the pass has logged. It keeps the messages
+    itself: a handler on the stats logger runs before the record reaches the root's (pytest's
+    caplog), so reading caplog when `came` is set races the pass's thread."""
 
     def __init__(self, count: int) -> None:
         super().__init__(level=logging.WARNING)
         self.left, self.came = count, threading.Event()
+        self.messages: list[str] = []
 
     def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
         self.left -= 1
         if self.left <= 0:
             self.came.set()
@@ -256,7 +260,7 @@ def test_low_disk_warns_and_names_what_stops_working(tmp_path, monkeypatch, capl
         with caplog.at_level(logging.INFO, logger=stats.STATS_LOGGER), TestClient(app) as client:
             assert client.get("/healthz").json() == {"status": "ok"}
             assert both.came.wait(60), "no warning at start"  # a hang guard, not a bound
-            warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+            warned = list(both.messages)
     finally:
         logging.getLogger(stats.STATS_LOGGER).removeHandler(both)
         store.close()

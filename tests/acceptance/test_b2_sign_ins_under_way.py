@@ -17,9 +17,9 @@ The contract
 - The state cookie keeps its name and its attributes: `__Host-cairn_signin` (Path=/) without
   a brand on https, `__Host-signin` (Path=/) under a brand on https, `signin` (Path=/auth)
   under a brand on plain http; HttpOnly, SameSite=Lax, Secure on https, Max-Age ten minutes.
-  Only what the server writes inside it changes, and that stays sealed: a state from another browser, a
-  tampered cookie and a return with no cookie are refused as before (400, nothing written,
-  no call to the provider). The whole cookie stays under 4,000 bytes whatever the providers'
+  Only what the server writes inside it changes, and that stays sealed: a state from another
+  browser, a tampered cookie and a return with no cookie are refused as before (400, nothing
+  written, no call to the provider). The whole cookie stays under 4,000 bytes whatever the providers'
   names and the `next` addresses are: the oldest are dropped until it fits.
 - A return whose state is unknown, used or expired is refused as before: 400, the sign-in
   page with the sentence "This sign-in is not valid any more", no call to the provider,

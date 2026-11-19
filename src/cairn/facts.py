@@ -29,17 +29,19 @@ Contract (frozen by tests/acceptance/test_t2_facts.py and tests/gold/t2_facts_sy
   every other kind.
 """
 
+import bisect
 import re
 from collections.abc import Callable, Iterator
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from cairn.spans import Span, fence_closes
+from cairn.spans import Span, code_spans, fence_closes
 
 FactKind = Literal["code_block", "inline_code", "url", "path", "date", "version", "flag", "number"]
 
 _THOUSANDS_SEPARATOR = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+_SPACE_RUN = re.compile(r"\s+")  # the white space str.split() splits at
 # A fence line as spans.py opens one; it may also be indented or inside a block quote. The
 # backtick run is possessive (`{3,}+): a shorter run is followed by a backtick, so it always
 # failed "(?!.*`)", and trying each one read the rest of the line again.
@@ -160,8 +162,53 @@ class Fact(BaseModel):
 
 def normalize(value: str) -> str:
     """Normalise text for fact matching (an underscore of emphasis next to a fact reads as
-    "*", as in extract_facts)."""
-    return _plain(_emphasis(value))
+    "*", as in extract_facts): case folded, each run of white space one space and the ends
+    dropped, except that white space inside inline code is the code's own and kept as it is,
+    as the gate reads prose (review blocker 3): `a  b.txt` and `a b.txt` are two facts."""
+    text = _emphasis(value)
+    return _read(text, _code(text), 0, len(text))
+
+
+def _code(
+    text: str, fences: list[tuple[int, int, int, int]] | None = None
+) -> list[tuple[int, int]]:
+    """Where inline code is in `text`: cairn.spans.code_spans, the gate's finder, read between
+    fenced blocks (`_fenced`, or `fences` when already read), whose lines are code lines
+    matched one by one (Fact.lines), not a span."""
+    if "`" not in text:
+        return []
+    found: list[tuple[int, int]] = []
+    pos = 0
+    blocks = _fenced(text) if fences is None else fences
+    for start, end, _, _ in [*blocks, (len(text), len(text), 0, 0)]:
+        found += [(pos + left, pos + right) for left, right in code_spans(text[pos:start])]
+        pos = end
+    return found
+
+
+def _read(text: str, code: list[tuple[int, int]], start: int, end: int) -> str:
+    """text[start:end] as normalize reads it, `code` being where inline code is in `text`:
+    white space inside code as it is, each other run of it one space, the ends outside code
+    dropped, then case folded and the thousands separators taken out."""
+    if not code:
+        return _plain(text[start:end])
+    pieces: list[tuple[bool, str]] = []  # (inside code, text)
+    pos = start
+    for left, right in code[bisect.bisect_right(code, start, key=lambda c: c[1]) :]:
+        if left >= end:
+            break
+        if left > pos:
+            pieces.append((False, text[pos:left]))
+        pieces.append((True, text[max(left, pos) : min(right, end)]))
+        pos = min(right, end)
+    if pos < end:
+        pieces.append((False, text[pos:end]))
+    read = [(kept, piece if kept else _SPACE_RUN.sub(" ", piece)) for kept, piece in pieces]
+    if read and not read[0][0]:
+        read[0] = (False, read[0][1].lstrip(" "))
+    if read and not read[-1][0]:
+        read[-1] = (False, read[-1][1].rstrip(" "))
+    return _THOUSANDS_SEPARATOR.sub("", "".join(piece for _, piece in read).casefold())
 
 
 def _plain(value: str) -> str:
@@ -174,7 +221,9 @@ def extract_facts(span: Span) -> list[Fact]:
     # The span's text with each underscore of emphasis by a fact as "*", one for one: facts are
     # found and normalized in it, as normalize() reads the whole span, and valued in the span.
     text = _emphasis(span.text)
-    for start, end, body_start, body_end in _fenced(span.text):  # a code span is one such block
+    fences = list(_fenced(span.text))
+    code: list[tuple[int, int]] | None = None  # inline code, read once a fact asks for it
+    for start, end, body_start, body_end in fences:  # a code span is one such block
         claimed.add(start, end)
         facts.append(_fact(span, text, "code_block", body_start, body_end))
     for m in _ORDERED_MARKER.finditer(span.text):
@@ -186,7 +235,12 @@ def extract_facts(span: Span) -> list[Fact]:
             if claimed.overlaps(*m.span()):
                 continue  # an earlier kind already owns these characters
             claimed.add(*m.span())
-            facts.append(_fact(span, text, kind, *m.span(group)))
+            start, end = m.span(group)
+            if kind == "inline_code" and _SPACE_RUN.search(text, start, end):
+                code = _code(text, fences) if code is None else code  # its white space is kept
+                facts.append(_fact(span, text, kind, start, end, code))
+            else:
+                facts.append(_fact(span, text, kind, start, end))
     return sorted(facts, key=lambda f: (f.start, f.end))
 
 
@@ -356,13 +410,16 @@ def _closes(line: re.Match[str], opener: re.Match[str]) -> bool:
     )
 
 
-def _fact(span: Span, read: str, kind: FactKind, start: int, end: int) -> Fact:
+def _fact(span: Span, read: str, kind: FactKind, start: int, end: int, code: tuple = ()) -> Fact:
+    """One fact. Its norm is its text as normalize reads it in the span, `code` being where
+    inline code is in it: an inline_code fact's white space inside a code span is kept, so it
+    is found in the span's own text. With no `code`, every run of white space is one space."""
     value, as_read = span.text[start:end], read[start:end]
     lines = _code_lines(as_read) if kind == "code_block" else ()
     return Fact(
         kind=kind,
         value=value,
-        norm=_plain(as_read),
+        norm=_read(read, list(code), start, end),
         span_id=span.id,
         start=start,
         end=end,

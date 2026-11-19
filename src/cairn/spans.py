@@ -55,6 +55,7 @@ Known limits:
 - Tabs count as one column of indentation.
 """
 
+import bisect
 import hashlib
 import json
 import re
@@ -296,3 +297,51 @@ def _span_id(source_id: str, heading_path: tuple[str, ...], text: str, occurrenc
 def claim_id(span_id: str) -> str:
     """ "cl_" + the span id's hex part."""
     return "cl_" + span_id.removeprefix("sp_")
+
+
+_TICKS = re.compile(r"`+")  # a run of backticks, which opens or closes inline code
+_BLANK_LINE = re.compile(r"\n[ \t\r]*(?=\n)")  # a blank line, which ends a block
+
+
+def code_spans(text: str) -> list[tuple[int, int]]:
+    """Where inline code is in Markdown text, as CommonMark reads it: (start, end) of each code
+    span, its backtick runs included, in order. The one finder of inline code: the gate's
+    reading of prose (cairn.gate) and the fact check's normalize (cairn.facts) both call it.
+
+    A run of n backticks opens one, unless a backslash escapes its first backtick, and the next
+    run of exactly n backticks in the same block closes it, across a line break too; a run
+    with no such run after it is text. A blank line ends a block, so a stray backtick in one
+    paragraph never pairs with the code of the next. Inside a span a backslash is text. Each
+    run is looked at once, and its closer found by bisection: linear in the text, whatever its
+    backticks."""
+    if "`" not in text:
+        return []
+    ends = [m.start() for m in _BLANK_LINE.finditer(text)]  # where each block but the last ends
+    blocks: dict[int, list[tuple[int, int]]] = {}
+    for m in _TICKS.finditer(text):
+        blocks.setdefault(bisect.bisect_left(ends, m.start()), []).append(m.span())
+    return [span for runs in blocks.values() for span in _paired(text, runs)]
+
+
+def _paired(text: str, runs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The code spans that the backtick runs of one block make, in order (see code_spans)."""
+    by_size: dict[int, list[int]] = {}  # each run's size, and the runs of that size in order
+    for n, (left, right) in enumerate(runs):
+        by_size.setdefault(right - left, []).append(n)
+    spans: list[tuple[int, int]] = []
+    n = 0
+    while n < len(runs):
+        left, right = runs[n]
+        slashes = 0  # the backslashes right before the run: each run of them read once
+        while left - slashes > 0 and text[left - slashes - 1] == "\\":
+            slashes += 1
+        if slashes % 2:  # an escaped backtick is text; the rest of the run may open
+            left += 1
+        same = by_size.get(right - left, [])
+        closer = bisect.bisect_right(same, n)
+        if left == right or closer == len(same):
+            n += 1
+            continue
+        spans.append((left, runs[same[closer]][1]))
+        n = same[closer] + 1
+    return spans

@@ -5,6 +5,8 @@ and tests/acceptance/test_t3_multisource.py (spans from several sources). `lint_
 in-memory core; `lint` loads one source document and a directory of pages, then calls it.
 
 Matching
+- normalize() keeps white space inside inline code as written, as the gate reads prose, and
+  so does an inline_code fact's norm: `a  b.txt` and `a b.txt` are two facts.
 - A fact occurs in a text when its norm is a whole token of normalize(text): the characters
   around it are not [0-9a-z_], so "--json" is not in "--jsonl" and "5" is not in "15". An
   empty norm always occurs.
@@ -716,11 +718,11 @@ def _grounded(
     Grounding asked `_occurs` about each fact of a claim in each span the claim cites: facts
     times spans. A claim citing one span (every claim cairn.compiler writes) is grouped with
     the others citing that span, so the span is read once for all of them. A claim citing
-    several spans reads them once, joined by line breaks. That gives the same answer: neither
-    a norm nor a normalised span holds a line break (normalising collapses all whitespace to
-    single spaces, and a code line is one line), so no occurrence crosses a joint, and a line
-    break is a non-token character, as the edge of a span is. So a norm occurs as a whole token
-    in the joined text exactly when it does in one of the spans."""
+    several spans reads them once, joined by line breaks. That gives the same answer: no norm
+    holds a line break (an inline_code fact is one line, its other white space aside, and a
+    code line is one line), so no occurrence crosses a joint, and a line break is a non-token
+    character, as the edge of a span is. So a norm occurs as a whole token in the joined text
+    exactly when it does in one of the spans."""
     norms = [{norm for fact in facts for norm, _ in _units(fact)} for facts in claim_facts]
     known = [[s for s in dict.fromkeys(c.span_ids) if s in source.by_id] for c in claims]
     by_span: dict[str, set[str]] = {}

@@ -238,7 +238,8 @@ def _flat(tokens: list[tuple[str, str]]) -> list[str]:
 def _in_code(text: str) -> set[int]:
     """The places of every character of inline code, its backticks included, found the slow
     way: each run of backticks not escaped by a backslash (outside code) is tried, and the
-    first later run of exactly as many closes it; a run with none is text."""
+    first later run of exactly as many before a blank line closes it; a run with none is
+    text."""
     inside: set[int] = set()
     n = 0
     while n < len(text):
@@ -256,6 +257,10 @@ def _in_code(text: str) -> set[int]:
         close = end
         found = None
         while size and close < len(text):
+            if text[close] == "\n":
+                after = text.find("\n", close + 1)
+                if after != -1 and not text[close + 1 : after].strip(" \t\r"):
+                    break  # a blank line ends the block, and the code with it
             if text[close] != "`":
                 close += 1
                 continue

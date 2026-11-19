@@ -124,6 +124,7 @@ Use a billing-enabled project, OpenTofu 1.13 or newer, and the Google Cloud CLI.
 with permission to enable the APIs and provision the stack. The account you use for SSH needs
 [IAP tunnel access and OS Admin Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin#assign-oslogin-roles),
 including permission to use the attached service account. Have a domain whose DNS you can edit.
+The stack enables the Cloud OS Login API (`oslogin.googleapis.com`) for SSH.
 
 The stack creates a VPC and subnet, an `e2-small` with a 20 GiB `pd-balanced` boot disk, a
 reserved public IPv4 address, a service account, a Cloud Storage bucket and a Secret Manager
@@ -255,7 +256,7 @@ This example uses Google sign-in at `cairn.example.net` and admits accounts from
    ```
 
 3. Add `serve_extra_args` to `terraform.tfvars`, with one nonsecret argument per string.
-   Compose sets `--public-url` from `domain`. The arguments are visible in the plan and state.
+   The arguments go into the VM's boot configuration. Compose sets `--public-url` from `domain`.
 
    ```hcl
    serve_extra_args = ["--sign-in", "google", "--allowed-email-domain", "example.net"]

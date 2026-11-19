@@ -189,6 +189,18 @@ def test_first_boot_guide_names_the_services_to_check_and_restart():
     assert "sudo systemctl restart cairn-quick.service" in section
 
 
+def test_gcp_provisions_the_os_login_api_before_the_vm():
+    main = (QUICK / "gcp" / "main.tf").read_text()
+    apis = re.search(r'^resource "google_project_service" "api" \{(.*?)^}', main, re.M | re.S)[1]
+    assert "oslogin.googleapis.com" in re.findall(r'^\s+"([\w.]+)",$', apis, re.M)
+    vm = re.search(r'^resource "google_compute_instance" "app" \{(.*?)^}', main, re.M | re.S)[1]
+    assert 'google_project_service.api["oslogin.googleapis.com"]' in vm.split("depends_on = [")[1]
+    assert (
+        "The stack enables the Cloud OS Login API (`oslogin.googleapis.com`)"
+        in (QUICK / "README.md").read_text()
+    )
+
+
 def test_the_compose_override_only_grants_the_replica_tasks_metadata_access():
     override = QUICK / "compose.quick.yaml"
     assert override.is_file(), "the backup bridge override has not been written"

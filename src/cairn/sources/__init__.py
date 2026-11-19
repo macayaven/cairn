@@ -92,9 +92,9 @@ The seam
   tests/acceptance/test_c9_connector.py).
 - Withheld kinds (M2, frozen by tests/acceptance/test_m2_withheld_notes.py).
   `SourceKind.withheld` (False) says that notes of the kind are not sent to a model unless
-  the operator allows it: True for every kind that reads Google Workspace data
-  ("google_meet", "google_calendar", "google_drive", "gmail") and for "connector" (whose
-  words cannot be known), False for "langfuse", "granola", "linear" and "github".
+  the operator allows it: True for every kind in KINDS ("langfuse", "granola",
+  "google_meet", "google_calendar", "google_drive", "gmail", "linear", "github" and
+  "connector"), since the words of any source the server reads are someone else's.
   `withheld_via()` is the `via` of every withheld kind in KINDS, read when called.
   The rule is applied in one place, cairn.arrange, by a note's `via`: a note a person or
   an agent stored with a withheld kind's `via` is withheld too.
@@ -116,8 +116,9 @@ The seam
   kind that is not withheld adds none. `withheld_by_ref(via, source_ref)` says whether a note
   is kept from a model by its `source_ref`: its word is one of withheld_forms() and no kind
   in KINDS writes via `via` (read when called). A note a kind wrote is
-  judged by the kind alone, as M2 has it: Granola's "meeting:granola/<id>" notes are sent
-  (decision 90). The arranger asks it in the same check, of the note it already read.
+  judged by the kind alone, as M2 has it (decision 90): Granola's "meeting:granola/<id>"
+  notes are withheld because Granola is, not by their reference. The arranger asks it in
+  the same check, of the note it already read.
 - Credentials are never in a config: a config names the environment variables of the
   process that syncs (the command line, or `serve`), and the source reads them from the
   `env` it is opened with.
@@ -827,8 +828,8 @@ def withheld_by_ref(via: str | None, source_ref: str | None) -> bool:
     """Whether a note written via `via` is kept from a model by its `source_ref` (M3): its
     word (source_ref_word) is one of withheld_forms(), and no kind in KINDS writes via `via`.
     A note one of the server's own kinds wrote is judged by that kind alone (M2, decision 90):
-    Granola's notes carry "meeting:granola/<id>" and are sent, as they were. KINDS is read
-    now."""
+    Granola's notes carry "meeting:granola/<id>" and are withheld because Granola is, not by
+    that reference. KINDS is read now."""
     if source_ref_word(source_ref) not in withheld_forms():
         return False
     return all(kind.via != via for kind in KINDS.values())

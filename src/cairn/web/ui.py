@@ -1766,7 +1766,8 @@ def session_routes(
     place of 401. Logout ends the session Auth
     admitted, and
     ends and clears every other session cookie the browser sends under a name the server has
-    used for it (auth.SESSION_COOKIES: cairn_session, session, __Host-session), so a session
+    used for it (auth.SESSION_COOKIES: cairn_session, session, __Host-session and
+    __Host-cairn_session, the last two its names on https), so a session
     left under another name does not come back when a brand is switched on or off.
     Without `key_login` only logout is here: people sign in through a provider instead.
     The cookie is `accounts.sessions`' (auth.Sessions); a key's session lasts SESSION_TTL."""

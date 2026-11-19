@@ -246,7 +246,7 @@ The slash command is `/{{slug}}`, unless the owner named it otherwise in the app
 
 | Word | What it does |
 | --- | --- |
-| `find <words>` | Up to 5 claims that match, each with its page's title as a link to the claim, its project and the page's version; or Nothing found. |
+| `find <words>` | Up to 5 claims that match, each with its page's title as a link to the claim, its project and the page's version, and *outside text* when a source wrote it; with more, how many there were and the address of the search page; or Nothing found. |
 | `note <text>` | Writes a note in your Slack project, with `via` `slack`, and links its page. |
 | `project` | Says which project is your Slack project and which projects you can write to. `project <name>` makes another of those your Slack project. |
 | `link` | Says who your Slack user is linked to; if it is linked to nobody, gives a new address to link it. `link <code>` links it with the code that address showed you. |

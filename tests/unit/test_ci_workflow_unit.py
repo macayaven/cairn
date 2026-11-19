@@ -924,6 +924,9 @@ def test_the_comment_and_the_guides_say_what_publish_waits_for():
     )
     readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
     assert "**Publish:** once items 1 to 4 have all passed, pushes to `main`" in readme
+    # "items 1 to 4" counts every job publish waits for: item 4 holds both rehearsals.
+    item_4 = readme.split("4. **")[1].split("5. **")[0]
+    assert "rehearse_stack.py" in item_4 and "rehearse_host.py" in item_4
     gcp = " ".join((REPO / "infra" / "gcp" / "README.md").read_text(encoding="utf-8").split())
     assert (
         "`publish` itself waits for the tests, the infrastructure checks, the image check and"

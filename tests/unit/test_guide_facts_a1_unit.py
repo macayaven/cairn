@@ -159,8 +159,8 @@ def test_what_an_operator_can_do(store):
         "security",
         "**What an operator can do.** Keep notes of different trust in different projects, and"
         " give each agent only the projects it needs. Give an agent that only reads a read-only"
-        " key or approval. Give each source a project of its own. The notes of the Google kinds"
-        " of source and of connectors are not sent to the model that arranges pages unless the"
+        " key or approval. Give each source a project of its own. The notes of every kind of"
+        " source the server reads are not sent to the model that arranges pages unless the"
         " operator allows it.",
     )
     ops = store.create_project("ops")
@@ -168,9 +168,7 @@ def test_what_an_operator_can_do(store):
     with pytest.raises(PermissionError):
         reader.narrow(projects=(ops.id,), access="read").add_note(ops.id, "# A\n\nB.\n")
     withheld = {name for name, kind in KINDS.items() if kind.withheld}
-    assert withheld == set(
-        KINDS
-    )  # Privacy 4: every kind, the Google ones and connectors among them
+    assert withheld == set(KINDS)  # Privacy 4: every kind the server reads
 
 
 # security.md and run.md: what a key made

@@ -69,7 +69,9 @@ Auth (Starlette middleware on the whole app, so it also covers the mounted MCP a
   another method is not one of them.
 - /docs and /docs/<name> (P1, cairn/web/public.py) open without a session, and
   a signed-in reader sees them with the app's navigation.
-- Every other path is the web UI: a `cairn_session` cookie that Store.resolve_session knows;
+- Every other path is the web UI: a session cookie that Store.resolve_session knows
+  (`__Host-cairn_session` on https, `cairn_session` over plain http; under a brand
+  `__Host-session` and `session`: auth.branded_cookie);
   otherwise 303 to /login (to /login?next=<path and query> from GET /new, the share target,
   so what was shared survives signing in, from GET /join/<token>, an invitation, and from
   /oauth/consent as below). POST /login
@@ -235,7 +237,8 @@ Sign-in (cairn/web/signin.py; the providers are cairn/identity.py)
 - GET /auth/<name>[?next=/path] redirects (302) to the provider with `client_id`,
   `redirect_uri` = the issuer + "/auth/<name>/callback", `response_type=code`, a scope, a
   random `state` and, for OIDC, a random `nonce`. The state, nonce and `next` travel in the
-  `cairn_signin` cookie (Path=/auth, HttpOnly, SameSite=Lax, Secure on https, 10 minutes),
+  sign-in state cookie (`__Host-cairn_signin` at Path=/ on https, `cairn_signin` at
+  Path=/auth over plain http; `signin` under a brand; HttpOnly, SameSite=Lax, 10 minutes),
   sealed with a secret made at start-up and bound to that provider. Several sign-ins can be
   under way in one browser (B2): a start adds its state to the cookie and replaces none, the
   cookie holds at most five, each sealed alone and each for its own 10 minutes, and a start

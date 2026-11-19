@@ -2,7 +2,8 @@
 been deleted since the last compaction and the interval has passed (Store.compaction_state).
 
 Compaction (Store.compact) rewrites the whole file and holds the store's lock while it runs,
-so every request waits for it; it runs on a worker thread, off the event loop, never two at
+so every write waits for it; reads do not (they run on the store's read-only connections).
+It runs on a worker thread, off the event loop, never two at
 once, and each run is one line on the access log with how long it took. A run or a
 decision that fails is logged (the error's type, never its text) and the next poll tries
 again: no failure stops the loop. One exception: a run that did not finish because another

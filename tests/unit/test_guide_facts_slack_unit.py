@@ -558,7 +558,9 @@ def test_connect_the_slash_commands_words(bench):
         f"The slash command is `/{PRODUCT.slug}`, unless the owner named it otherwise in the"
         " app's manifest:",
         "| `find <words>` | Up to 5 claims that match, each with its page's title as a link to"
-        " the claim, its project and the page's version; or Nothing found. |",
+        " the claim, its project and the page's version, and *outside text* when a source wrote"
+        " it; with more, how many there were and the address of the search page; or Nothing"
+        " found. |",
         "| `note <text>` | Writes a note in your Slack project, with `via` `slack`, and links its"
         " page. |",
         "| `project` | Says which project is your Slack project and which projects you can write"
@@ -577,6 +579,9 @@ def test_connect_the_slash_commands_words(bench):
     shown = said(blocks.found([hit] * 7, query="quince", base_url=BASE))
     assert shown.count(f"<{BASE}/b/library/p/jars#cl_jar0001|Jars>") == 5
     assert "Project: library · Version: 3" in shown
+    assert "5 of 7 claims shown." in shown and f"{BASE}/search?q=quince" in shown  # with more
+    outside = said(blocks.found([{**hit, "outside": True}], query="quince", base_url=BASE))
+    assert "Version: 3 · outside text" in outside and "outside text" not in shown
     assert said(blocks.nothing_found("quince")).startswith("Nothing found")
     bench.link(ADA_SLACK, bench.ada, bench.library)
     written = said(ask(bench, "note Row 4 holds the quince jars."))

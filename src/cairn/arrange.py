@@ -25,8 +25,10 @@ Arranging one page
   number of claims) or by its id, and may mix the two; the numbers are read as ids first, and
   every rule below then holds for both alike.
 - cairn checks that, and that the claims of each `same` list repeat one another: the same
-  heading path (the one their section shows) and the same text once runs of whitespace are
-  single spaces (`repeat_groups`, the one rule, which also lists the repeats in the request).
+  heading path (the one their section shows) and the same passage as the gate reads one
+  (gate.text_reading: code, tables and prose that holds structure line by line, other prose
+  with each run of white space one space; `repeat_groups`, the one rule, which also lists the
+  repeats in the request).
   A `same` list need not be one the request listed, only one that rule allows. Anything else
   is not an arrangement: a claim missing or named twice (by number, id or both), a number or
   id the page does not have (0, a negative number, one past the last claim), a `same` list of
@@ -214,7 +216,8 @@ Tidying a page, with no model
   and asks no model: the plan is computed, not asked for. Its order is the page's order less
   the later claims of each group `repeat_groups` finds, put through `tree_order`; each group is
   folded into its first claim. So each heading's claims are together, in the order they had,
-  and each run of exact repeats (whitespace aside) is one claim citing every source. On a page
+  and each run of repeats (what the gate reads as the same passage, `repeat_groups`) is one
+  claim citing every source. On a page
   with repeats it saves the page `arrange_page` saves for a model that keeps the order it was
   given.
 - From the plan on it is arrange_page's own code (_save_plan): the folded citations, `moved`

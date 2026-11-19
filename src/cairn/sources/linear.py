@@ -10,8 +10,8 @@ The kind ("linear" in cairn.sources.KINDS)
   and then only issues finished at or after the floor: that switch-on (`since`) less
   `backfill_days`, which is 0 unless given, so that switching a source on never pours an
   unknown amount of history into a project unasked. Its notes are written via
-  "linear", with the label "linear". It is not withheld from a model: it reads the
-  workspace's own tracker, as Granola reads its own meetings.
+  "linear", with the label "linear". It is withheld from a model unless the operator allows
+  it, as every kind is (`SourceKind.withheld`).
 - The config: `key_env` (required: the name of the environment variable that holds a
   personal API key, capitals, digits and "_"), `projects` (at most one project name; none while
   it is off), `teams` (1 to TEAMS_MAX team keys, each 1 to 10 letters, digits or "_", as

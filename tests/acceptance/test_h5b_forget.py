@@ -47,7 +47,7 @@ The service
   without the name); DELETE /api/projects/<project>/notes/<note id> answers 200 with
   `rebuilt` and `removed`. 403 and 404 as above. Writing a forgotten note again is 409 over
   REST and a tool error over MCP, each saying it was forgotten.
-- MCP keeps its seven tools: forgetting is a person's act, or a key's over REST.
+- MCP has no tool that forgets: forgetting is a person's act, or a key's over REST.
 """
 
 import io
@@ -396,7 +396,7 @@ def test_the_web_view_asks_before_it_removes(world, client):
     assert get("/b/meetings/delete", world.cy).status_code == 404
 
 
-def test_rest_deletes_and_mcp_keeps_its_seven_tools(world, client):
+def test_rest_deletes_and_mcp_has_no_tool_that_forgets(world, client):
     whole = {"x-api-key": world.ada.view.create_key("owner-script")}
     narrow = {"x-api-key": world.ada.view.create_key("one-project", projects=(world.meetings.id,))}
     note = f"/api/projects/meetings/notes/{world.first.id}"

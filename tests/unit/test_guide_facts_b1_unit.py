@@ -689,16 +689,28 @@ def test_a_session_keeps_the_address_its_sign_in_was_vouched_with(store):
     assert store.get_user(first.user.id).email == "ada.first@example.test"
 
 
-def test_with_session_days_an_open_session_outlives_the_list():
-    """deploy/README.md and docs/pre-release.md: "With `--session-days`, an open session can
-    go on for as long as that browser is used." The list gates sign-in only (pinned by
-    tests/acceptance/test_h8_allowed_emails.py); the renewal by use is pinned by
-    test_a_sign_in_lasts_12_hours_or_n_days_renewed_by_use."""
-    sentence = (
-        "With `--session-days`, an open session can go on for as long as that browser is used."
+def test_the_list_is_checked_on_every_request_in_every_document():
+    """deploy/README.md, docs/pre-release.md and the README: the list is checked on every
+    request, not only at sign-in, so taking someone off it refuses their open sessions, keys
+    and agents, and deletes nothing (the behaviour is pinned by
+    tests/acceptance/test_h8_allowed_emails.py::test_the_list_holds_on_every_request_and_deletes_nothing
+    and tests/unit/test_allowed_every_request_unit.py). No document still says it gates
+    sign-in only, or that an open session outlives the list."""
+    sentence = "It is checked on every request, not only at sign-in"
+    refused = (
+        "their open sessions, the keys they made and the agents they approved are refused as"
+        " ended ones; nothing is deleted, so putting them back on the list restores them."
     )
-    says(section(DEPLOY, "### Only the people you name"), sentence)
-    says(section(PRE_RELEASE, "## Who can get in"), sentence)
+    for part in (
+        section(DEPLOY, "### Only the people you name"),
+        section(PRE_RELEASE, "## Who can get in"),
+        section(README, "### Sign in with GitHub, Google or your own identity provider"),
+    ):
+        says(part, sentence)
+        says(part, refused)
+        said = flat(part)
+        assert "gates sign-in" not in said and "go on working" not in said
+        assert "can go on for as long as that browser is used" not in said
 
 
 # deploy/README.md: the options with Compose

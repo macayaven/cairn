@@ -6,8 +6,9 @@ closed, unusable (a rollback failed), cannot be read or holds a schema version t
 does not know. Nothing else is said, no path and no error. It is Accounts.serving, one
 bounded read of the store that writes nothing (Store.health): a store whose lock another
 call holds past the bound, as compact holds it on purpose, is busy and alive, so 200. The
-read runs on threads of its own (HEALTH_THREADS), so requests waiting for the store's lock
-do not hold up the answer. Docker's probe, the hosted updater and the uptime alert read it.
+read runs on threads of its own (HEALTH_THREADS), so writes waiting for the store's lock do
+not hold up the answer (every write waits for it; reads do not). Docker's probe, the hosted
+updater and the uptime alert read it.
 Like every machine address it needs no credential, behind the wall and under a brand too."""
 
 import asyncio

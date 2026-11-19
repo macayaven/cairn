@@ -12,7 +12,8 @@ The kind ("github" in cairn.sources.KINDS)
   `backfill_days`, which is 0 unless given, so that switching a source on never pours an
   unknown amount of history into a project unasked. Below, `since` means that floor; it
   moves with each switch-on. Its notes are written
-  via "github", with the label "github". It is not withheld from a model. The
+  via "github", with the label "github". It is withheld from a model unless the operator
+  allows it, as every kind is (`SourceKind.withheld`). The
   project it proposes for a source that names none is DEFAULT_PROJECT, "github", whatever the
   repository: a repository's name can be longer than a project's may be, the other kinds
   propose one project a kind, and the repository is in every note's title.

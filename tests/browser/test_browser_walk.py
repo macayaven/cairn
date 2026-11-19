@@ -124,8 +124,9 @@ def test_a_person_walks_from_sign_in_to_sign_out(visit: Visit, axe: Axe):
     expect(page.get_by_role("link", name="Harbour survey")).to_be_visible()
     inspect(axe, page, "forget")
     page.get_by_role("button", name="Forget this note").click()
-    visit.go("/b/harbour-log")
+    expect(page.get_by_role("heading", level=1, name="harbour-log")).to_be_visible()
     expect(page.get_by_role("heading", level=2, name="No pages yet")).to_be_visible()
+    inspect(axe, page, "project after forgetting")
 
     page.get_by_role("button", name="Sign out").click()
     expect(page.get_by_role("heading", level=1, name="Sign in")).to_be_visible()

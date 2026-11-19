@@ -4,9 +4,11 @@ looks at nothing."""
 
 from __future__ import annotations
 
+import pytest
 from axe_playwright_python.sync_playwright import Axe
 from browser_checks import RULES, SWITCHED_OFF, narrow_problems, rule_ids, violations
 from browser_server import Visit
+from playwright.sync_api import Error as PlaywrightError
 
 # One fault of each kind, put into the sign-in page through the DOM and CSSOM: the page's
 # policy refuses inline style attributes and scripts, not these.
@@ -67,3 +69,10 @@ def test_the_table_of_rules_switched_off_names_one_page_a_known_rule_and_why():
     assert len(known) == sum(len(rules) for rules in RULES.values())
     for (page, rule), why in SWITCHED_OFF.items():
         assert page and rule in known and len(why.split()) >= 5, (page, rule, why)
+
+
+def test_a_request_to_any_other_address_is_refused_and_kept(visit: Visit):
+    with pytest.raises(PlaywrightError):
+        visit.page.goto("http://192.0.2.1/elsewhere")  # a documentation address, never reached
+    assert visit.elsewhere == ["http://192.0.2.1/elsewhere"]
+    visit.elsewhere.clear()  # the fixture fails a test that leaves one here

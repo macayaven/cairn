@@ -51,7 +51,7 @@ def browser(playwright: Playwright) -> Iterator[Browser]:
         launched = playwright.chromium.launch(headless=True)
     except Exception as error:  # Playwright raises its own Error for a missing browser
         if "Executable doesn't exist" in str(error):
-            pytest.fail(f"Chromium is not installed for Playwright. Run: {INSTALL}")
+            pytest.fail(f"Chromium is not installed for Playwright. Run: {INSTALL}", pytrace=False)
         raise
     yield launched
     launched.close()

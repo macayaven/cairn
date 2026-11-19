@@ -14,6 +14,10 @@
 # When the changed paths cannot be known (a v* tag, a manual run, a first or forced push, no
 # run that published, an earlier run on main still going, a failed lookup), the whole gate
 # runs. The tests and the infrastructure checks always run.
+# Every gate run, draft pull requests included, rehearses the build a tag runs (job
+# `package_check`, the same uv build line as job `package`, uploading nothing), so a
+# constraints file that no longer resolves, or a hash that no longer matches, fails there and
+# never a tag after its image is published; `publish` needs it.
 # The shipped compose stack (Caddy, cairn, Litestream) is rehearsed on the runner with
 # scripts/rehearse_stack.py, restore from the replica included.
 # The VM's own host setup (cloud-init's files, the systemd units and infra/gcp/files/host.sh:
@@ -214,6 +218,30 @@ jobs:
           PY
           python3 scripts/restore_drill.py --db-file drill.db --min-notes 1
 
+  # The build job `package` runs on a tag, rehearsed on every run with the same command line
+  # (a test holds the two equal) and the same setup: no secret, a read token the checkout keeps
+  # none of, setup-uv with no token and no cache. It uploads nothing.
+  package_check:
+    name: the release's build, rehearsed
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: false
+          github-token: ""
+      - name: Build the wheel and the source archive
+        run: >-
+          uv build --build-constraint build-constraints.txt --require-hashes
+          --out-dir "$RUNNER_TEMP/release"
+
   image:
     name: image smoke (${{ matrix.platform }})
     needs: [test, changes]
@@ -385,7 +413,7 @@ jobs:
 
   publish:
     name: publish to GHCR
-    needs: [infra, image, stack, host, release_check]
+    needs: [infra, image, stack, host, release_check, package_check]
     if: github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:

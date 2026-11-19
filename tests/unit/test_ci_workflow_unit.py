@@ -61,13 +61,30 @@ def test_deploy_waits_for_tests_infra_both_image_smokes_publish_and_verify():
 
 
 def test_publish_waits_for_the_infrastructure_check_and_the_image_stack_and_host_jobs():
-    assert needs(JOBS["publish"]) == {"infra", "image", "stack", "host", "release_check"}
+    assert needs(JOBS["publish"]) == {
+        "infra",
+        "image",
+        "stack",
+        "host",
+        "release_check",
+        "package_check",
+    }
 
 
 def test_gate_runner_uses_json_override_and_defaults_to_hosted():
     # `package` runs the build backend, which the release runner must never run (decision 150:
     # code a job runs could copy the runner's registration).
-    for name in ("changes", "test", "infra", "image", "stack", "host", "release_check", "package"):
+    for name in (
+        "changes",
+        "test",
+        "infra",
+        "package_check",
+        "image",
+        "stack",
+        "host",
+        "release_check",
+        "package",
+    ):
         expression = JOBS[name]["runs-on"]
         match = re.fullmatch(
             r"\$\{\{ fromJSON\(vars\.CAIRN_GATE_RUNNER \|\| '([^']+)'\) \}\}", expression
@@ -400,9 +417,9 @@ def test_every_job_of_the_gate_is_an_ancestor_of_publish():
     # A job added to the gate and left out of publish is found.
     added = {**JOBS, "docs_check": {"runs-on": "ubuntu-latest", "steps": []}}
     assert gate_jobs_missing_from_publish(added) == {"docs_check"}
-    # So is `infra` dropped from publish's needs.
+    # So are `infra` and `package_check` dropped from publish's needs.
     dropped = {**JOBS, "publish": {**JOBS["publish"], "needs": ["image", "stack", "host"]}}
-    assert gate_jobs_missing_from_publish(dropped) == {"infra"}
+    assert gate_jobs_missing_from_publish(dropped) == {"infra", "package_check"}
 
 
 def test_deploy_runs_on_a_push_to_main_in_the_production_environment():
@@ -512,6 +529,7 @@ def test_the_three_image_jobs_share_one_condition_and_the_cheap_jobs_have_none()
     assert "if" not in JOBS["test"]
     assert "if" not in JOBS["infra"]
     assert "if" not in JOBS["changes"]
+    assert "if" not in JOBS["package_check"]
 
 
 def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_nothing_more():
@@ -534,7 +552,14 @@ def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
     assert needs(JOBS["image"]) == {"test", "changes"}
     assert needs(JOBS["host"]) == {"test", "changes"}
     assert needs(JOBS["stack"]) == {"changes"}
-    assert needs(JOBS["publish"]) == {"infra", "image", "stack", "host", "release_check"}
+    assert needs(JOBS["publish"]) == {
+        "infra",
+        "image",
+        "stack",
+        "host",
+        "release_check",
+        "package_check",
+    }
     assert JOBS["publish"]["if"] == "github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'"
     assert needs(JOBS["verify"]) == {"publish"}
     assert JOBS["verify"]["if"] == (
@@ -698,7 +723,8 @@ def not_a_pull_request(event_name: str, ref: str) -> dict:
 
 
 # Job `changes` runs on every event, like the two cheap jobs, and takes a few seconds.
-CHEAP = {"test", "infra", "changes"}
+# So does `package_check`, the rehearsal of the build a tag runs.
+CHEAP = {"test", "infra", "changes", "package_check"}
 THE_GATE = CHEAP | {"image", "stack", "host"}
 EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "deploy"}
 # A v* tag runs the gate, checks the tag against the version, publishes, smoke-tests what it
@@ -1563,3 +1589,35 @@ def test_the_comments_say_where_the_files_are_built_and_why():
         " deploy, which no job of a pull request uses and which runs no build.",
     ):
         assert sentence in header, sentence
+
+
+def build_line(job: dict) -> str:
+    (line,) = [" ".join(s["run"].split()) for s in job["steps"] if "uv build" in s.get("run", "")]
+    return line
+
+
+def test_every_gate_run_rehearses_the_build_a_tag_runs():
+    """A constraints file that no longer resolves, or a hash that no longer matches, fails a
+    pull request or a push to main, never a tag after its image is published."""
+    check = JOBS.get("package_check", {})
+    assert build_line(check) == build_line(PACKAGE)
+    assert needs(check) == set() and "if" not in check
+    assert "package_check" in needs(JOBS["publish"])
+    for context in (pull_request(draft=True), pull_request(draft=False), MAIN_PUSH, TAG):
+        assert "package_check" in jobs_that_run(context)
+    # No secret, no write, nothing uploaded; the same uv, with no token and no cache.
+    assert check["permissions"] == {"contents": "read"}
+    assert "secrets." not in yaml.safe_dump(check) and "environment" not in check
+    assert [s["name"] for s in check["steps"] if reaches_the_token(s)] == ["Check out"]
+    assert check["steps"][0]["with"] == {"persist-credentials": False}
+    assert not any("upload-artifact" in s.get("uses", "") for s in check["steps"])
+    uv = next(s for s in check["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))
+    assert uv == next(
+        s for s in PACKAGE["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv")
+    )
+    assert check["runs-on"] == PACKAGE["runs-on"]
+    assert (
+        "Every gate run, draft pull requests included, rehearses the build a tag runs (job"
+        " `package_check`, the same uv build line as job `package`, uploading nothing)"
+        in " ".join(RAW_WORKFLOW.split("\nname:")[0].replace("# ", "").split())
+    )

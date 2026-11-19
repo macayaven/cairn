@@ -68,6 +68,7 @@ import httpx
 from cairn.guard import PatternGuard
 from cairn.sources import Clock, SourceError
 from cairn.sources import url as source_url
+from cairn.sources.config import ENV_NAME as ENV_NAME  # what credentials_env may name
 from cairn.sources.http_policy import read_bounded, request_failure
 from cairn.sources.timing import limit
 from cairn.sources.url import PrivateAddress
@@ -82,7 +83,6 @@ MAX_BACKOFF = 32.0  # seconds: Google's "typically 32 or 64"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 REASON = re.compile(r"[A-Za-z][A-Za-z_]{0,63}")
 RATE_REASONS = frozenset({"RATE_LIMIT_EXCEEDED", "rateLimitExceeded", "userRateLimitExceeded"})
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")  # what credentials_env may name
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # an unknown setting a refusal may repeat
 _ADDRESS_CHAR = r"[^@\s,;<>()\[\]\"']"
 # An address starts only where a run of its characters starts (the look-behind), so a search

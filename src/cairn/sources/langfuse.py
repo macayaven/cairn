@@ -151,7 +151,7 @@ from cairn.sources import (
     holds_secret,
 )
 from cairn.sources import url as source_url
-from cairn.sources.config import check_projects
+from cairn.sources.config import check_env_name, check_projects
 from cairn.sources.http_policy import read_bounded, request_failure
 from cairn.sources.timing import limit
 
@@ -178,7 +178,6 @@ VIA = "langfuse"
 LABEL = "langfuse"
 CONFIG_KEYS = ("base_url", "projects", "public_key_env", "secret_key_env", "score_name")
 REQUIRED_KEYS = CONFIG_KEYS[:4]
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 CURSOR_VERSION = 2  # 1: `seen` held the ids themselves; read, and written back as 2
 SCORE_ID = re.compile(r"[!-~]{1,128}")  # printable ASCII, no whitespace
 DIGEST = re.compile(r"[0-9a-f]{32}")
@@ -241,12 +240,15 @@ def check_config(config: object) -> dict[str, Any]:
     checked: dict[str, Any] = {"base_url": _check_base_url(config["base_url"])}
     checked["projects"] = check_projects(config["projects"], kind="langfuse", many=True)
     for key in ("public_key_env", "secret_key_env"):
-        if not isinstance(config[key], str) or not ENV_NAME.fullmatch(config[key]):
-            raise ValueError(
-                f"{key} names an environment variable (capitals, digits and _), which holds"
-                " the key: the key itself never goes in a config"
-            )
-        checked[key] = config[key]
+        checked[key] = check_env_name(
+            config,
+            key,
+            kind="langfuse",
+            holds="the key",
+            secret="key",
+            wrong=f"{key} names an environment variable (capitals, digits and _), which holds"
+            " the key: the key itself never goes in a config",
+        )
     if "score_name" in config:
         name = config["score_name"]
         if (

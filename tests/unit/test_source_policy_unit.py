@@ -161,6 +161,7 @@ def test_source_modules_define_the_shared_checks_once():
     source_dir = Path(cairn.sources.__file__).parent
     check_owners = {
         "check_projects": "config.py",
+        "check_env_name": "config.py",
         "read_bounded": "http_policy.py",
         "request_failure": "http_policy.py",
         "safe_error_text": "http_policy.py",
@@ -171,7 +172,9 @@ def test_source_modules_define_the_shared_checks_once():
         syntax = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(syntax):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                assert node.name not in {"_check_projects", "_bounded"}, path.name
+                assert node.name not in {"_check_projects", "_bounded", "_check_token_env"}, (
+                    path.name
+                )
                 if node.name in found:
                     found[node.name].append(path.name)
             if (
@@ -181,6 +184,18 @@ def test_source_modules_define_the_shared_checks_once():
             ):
                 assert path.name == "http_policy.py"
     assert found == {name: [owner] for name, owner in check_owners.items()}
+
+
+def test_the_rule_for_an_environment_variables_name_is_written_once():
+    """The first review's 11.2: config.py holds the check of a variable's name (key_env,
+    token_env and their like); no source module writes the pattern again."""
+    source_dir = Path(cairn.sources.__file__).parent
+    written = [
+        path.name
+        for path in sorted(source_dir.glob("*.py"))
+        if "[A-Z_][A-Z0-9_]{0,127}" in path.read_text(encoding="utf-8")
+    ]
+    assert written == ["config.py"]
 
 
 def test_connector_sync_keeps_its_report_and_request_counts():

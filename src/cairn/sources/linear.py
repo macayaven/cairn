@@ -183,7 +183,7 @@ from cairn.sources import (
     names,
 )
 from cairn.sources import url as source_url
-from cairn.sources.config import check_projects
+from cairn.sources.config import check_env_name, check_projects
 from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
 from cairn.store.memory import FIELD_MAX
@@ -209,7 +209,6 @@ SETTLE_MINUTES = (30, 0, 1440)  # the default, the least, the most
 LOOKBACK_DAYS = (30, 1, 365)
 BACKFILL_DAYS = (0, 0, 365)
 TEAMS_MAX = 20
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 TEAM_KEY = re.compile(r"[A-Za-z0-9_]{1,10}")
 UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -251,22 +250,14 @@ def check_config(config: object) -> dict[str, Any]:
             f"a linear source does not take one of the settings given: it takes"
             f" {', '.join(SETTINGS)}"
         )
-    if "key_env" not in config:
-        raise ValueError(
-            "a linear source needs key_env: the name of the environment variable that holds"
-            " the Linear API key"
-        )
-    key_env = config["key_env"]
-    if isinstance(key_env, str) and _looks_like_a_credential(key_env):
-        raise ValueError(
-            "key_env holds what looks like a key: put the key in an environment variable of"
-            " the process that syncs, and name that variable here"
-        )
-    if not isinstance(key_env, str) or not ENV_NAME.fullmatch(key_env):
-        raise ValueError(
-            "key_env names an environment variable (capitals, digits and _, at most 128),"
-            " which holds the Linear API key: the key itself never goes in a config"
-        )
+    key_env = check_env_name(
+        config,
+        "key_env",
+        kind="linear",
+        holds="the Linear API key",
+        secret="key",
+        looks_like=_looks_like_a_credential,
+    )
     checked: dict[str, Any] = {
         "key_env": key_env,
         "projects": check_projects(

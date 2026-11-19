@@ -6,6 +6,7 @@ process. Fixtures are synthetic."""
 import asyncio
 import json
 import logging
+import re
 import threading
 
 import httpx
@@ -181,34 +182,40 @@ def path_of(claim, spans):
     return next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
 
 
+HEADING = re.compile(r"(#{2,6}) (.*)")
+
+
 def rendered(title, claims, spans):
-    """(claim, the heading it shows under) in body order, and the heading lines in order."""
+    """(claim, the headings it shows under) in body order, and the heading lines in order."""
     blocks = render_body(title, claims, spans).rstrip("\n").split("\n\n")[1:]
-    headings = [block[3:] for block in blocks if block.startswith("## ")]
-    under, shown, texts = None, [], [block for block in blocks if not block.startswith("## ")]
+    headings = [block for block in blocks if HEADING.fullmatch(block)]
+    above, shown, texts = [], [], [block for block in blocks if not HEADING.fullmatch(block)]
     claim_iter = iter(claims)
     for block in blocks:
-        if block.startswith("## "):
-            under = block[3:]
+        if heading := HEADING.fullmatch(block):
+            level = len(heading[1])
+            above = [*(h for h in above if h[0] < level), (level, heading[2])]
             continue
         claim = next(claim_iter)
         assert claim.text == block
-        shown.append((claim, under))
+        shown.append((claim, tuple(text for _, text in above)))
     assert len(texts) == len(claims)
     return shown, headings
 
 
 def keeps_the_tree(title, claims, spans):
     shown, headings = rendered(title, claims, spans)
+    owns = []
     for claim, under in shown:
         path = path_of(claim, spans)
-        own = path[-1] if path and path[-1] != title else None
+        own = path[1:] if path[:1] == (title,) else path
         assert under == own, (claim.text, under, path)
+        owns.append(own)
     runs = [path_of(c, spans) for c in claims]
     starts = [path for n, path in enumerate(runs) if n == 0 or runs[n - 1] != path]
     assert len(starts) == len(set(starts)), "a heading's claims are split"
-    shown_paths = [path for path in starts if path and path[-1] != title]
-    assert len(headings) == len(shown_paths)
+    nodes = {own[:depth] for own in owns for depth in range(1, len(own) + 1)}
+    assert len(headings) == len(nodes)  # each heading of the tree written once
 
 
 def sections_of(view, page):

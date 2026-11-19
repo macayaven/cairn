@@ -87,6 +87,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
 from cairn import oauth
+from cairn.compiler import render_body, section_headings
 from cairn.kinds import GENERAL
 from cairn.memory import (
     BadRequest,
@@ -734,34 +735,39 @@ def writer_words(kind: str, name: str | None) -> str:
 
 
 def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
-    """The claims in order, each under the section heading the body gives it and linked to
-    numbered sources; then every cited source, shown only when it is a span of `project`,
-    with the numbers of the claims that cite it, who wrote its note (writer_words) and
-    whether that note is outside text (A1, memory.is_outside); then the checks, in words
-    (CHECKS)."""
+    """The claims in the body's order, each under the section headings the body gives it
+    (compiler.section_headings) and linked to numbered sources; then every cited source,
+    shown only when it is a span of `project`, with the numbers of the claims that cite it,
+    who wrote its note (writer_words) and whether that note is outside text (A1,
+    memory.is_outside); then the checks, in words (CHECKS)."""
     span_ids = list(dict.fromkeys(i for claim in page.claims for i in claim.span_ids))
     found = memory.sources(project, span_ids)
     writers = memory.store.note_writers(note.id for _, note in found.values())
     number = {span_id: n for n, span_id in enumerate(span_ids, 1)}
     cited_by: dict[str, list[tuple[str, int]]] = {span_id: [] for span_id in span_ids}
-    items, previous = [], None
+    top: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    previous: tuple[str, ...] = ()
     for n, claim in enumerate(page.claims, 1):
         cites = list(dict.fromkeys(claim.span_ids))
         for span_id in cites:
             cited_by[span_id].append((claim.id, n))
         first = next((found[i][0] for i in cites if i in found), None)
+        # compiler.render_body's rule (section_headings): the claims with no section first,
+        # each other under every heading of its path; `n` stays the claim's stored place.
         path = first.heading_path if first else ()
-        # compiler.render_body's rule: a section heading wherever the heading path changes.
-        section = path[-1] if path != previous and path and path[-1] != page.title else None
-        previous = path
-        items.append(
+        section, headings = section_headings(page.title, path, previous)
+        if section:
+            previous = section
+        (rest if section else top).append(
             {
                 "claim": claim,
                 "kind": first.kind if first else "paragraph",
-                "section": section,
+                "headings": headings,
                 "cites": [(span_id, number[span_id]) for span_id in cites],
             }
         )
+    items = [*top, *rest]
     sources = []
     for span_id in span_ids:
         span, note = found.get(span_id, (None, None))
@@ -794,6 +800,8 @@ def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
     ]
     return {
         "items": items,
+        # The Markdown body as REST and MCP give it: rendered when read, never the stored text.
+        "body": render_body(page.title, page.claims, {i: span for i, (span, _) in found.items()}),
         "sources": sources,
         "metrics": metrics,
         "lines_cited": sum(source["cited"] for source in sources),

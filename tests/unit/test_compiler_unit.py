@@ -78,10 +78,12 @@ def test_body_adds_a_heading_where_the_heading_path_changes():
     assert body == "# T\n\nintro\n\n## A\n\na one\n\na two\n\n## B\n\nb one\n"
 
 
-def test_body_heads_the_first_claim_unless_its_section_is_the_title():
+def test_body_heads_the_first_claim_with_its_whole_path_less_a_leading_title():
     s = span("sp_1", ("Doc", "Setup"), "x")
-    assert render_body("Other", [claim(s)], {s.id: s}) == "# Other\n\n## Setup\n\nx\n"
-    assert render_body("Setup", [claim(s)], {s.id: s}) == "# Setup\n\nx\n"
+    assert render_body("Other", [claim(s)], {s.id: s}) == "# Other\n\n## Doc\n\n### Setup\n\nx\n"
+    assert render_body("Doc", [claim(s)], {s.id: s}) == "# Doc\n\n## Setup\n\nx\n"
+    t = span("sp_2", ("Setup",), "y")
+    assert render_body("Setup", [claim(t)], {t.id: t}) == "# Setup\n\ny\n"
 
 
 def test_body_tolerates_claims_without_known_spans_or_headings():

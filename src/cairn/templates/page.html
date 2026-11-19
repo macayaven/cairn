@@ -40,9 +40,9 @@
 
 <section aria-label="Claims">
 {% for item in items %}
-  {% if item.section %}
-  <h2 class="section">{{ item.section }}</h2>
-  {% endif %}
+  {% for level, heading in item.headings %}
+  <h{{ level }} class="section">{{ heading }}</h{{ level }}>
+  {% endfor %}
   <article class="claim margin-grid {{ item.kind }}" id="{{ item.claim.id }}">
     <div class="in-margin claim-cites">{% for span_id, n in item.cites %}<a href="#{{ span_id }}" title="Source {{ n }}">{{ n }}</a>{% endfor %}</div>
     <div class="claim-body">
@@ -97,6 +97,6 @@
 
 <details class="body">
   <summary>Markdown body of version {{ page.version }}</summary>
-  <pre>{{ page.body }}</pre>
+  <pre>{{ body }}</pre>
 </details>
 {% endblock %}

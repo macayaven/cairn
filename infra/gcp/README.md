@@ -265,12 +265,14 @@ After a rollback, the next push to `main` that changes something the image is bu
 
 Not offered: a manual `workflow_dispatch` that takes a digest. The identity provider refuses every event but `push` on purpose (`iam.tf`); opening it to manual runs would let anyone who can start a workflow get a deploy token without a commit on `main`.
 
-**Data on rollback.** Moving the tag changes the code, never the data. Everything the newer image wrote stays in the database, and the older image keeps it, as long as the newer image did not change the schema.
+**Data on rollback.** Moving the tag changes the code, never the data. Everything the newer image wrote stays in the database, and the older image keeps it, as long as it runs on the newer image's schema.
 
-**Across a schema migration, a rollback is a restore.** cairn refuses to open a database whose schema version is newer than the code knows (`SchemaTooNew`, decision 4 in `docs/decisions.md`), so an older image fails its health check on a migrated database. It exits at start, before it listens, with one line and no traceback; `sudo journalctl -u cairn` on the VM shows it:
+**Which upgrades a rollback undoes.** From schema 31 on, a database records the oldest schema version whose image runs on it. A newer image whose schema steps only add (tables, columns with defaults, indexes) leaves that number: the older image runs on the database it moved forward, so the updater's automatic rollback, or moving the tag back, works with nothing lost. A step that changes what an older image relies on raises the number to itself: the older image refuses the database and fails its health check, and the way back is the cold backup, below. The release's notes say which kind each update is, and the refusal names the version it needs and its own. Schema 31 (release 0.1.0) is of the second kind: no image before it runs on a database it updated.
+
+**Across a schema change the older image cannot run on, a rollback is a restore.** cairn refuses to open a database whose schema version is newer than the code knows and whose recorded oldest version is too (`SchemaTooNew`, decision 4 in `docs/decisions.md`), so an older image fails its health check on such a database. If the updater's rollback is not healthy either, its line in `journalctl -u cairn-update` says to look for this one. It exits at start, before it listens, with one line and no traceback; `sudo journalctl -u cairn` on the VM shows it:
 
 ```text
-SchemaTooNew: the database has schema version <found>; this cairn knows up to <known>. Run the cairn that wrote it or a newer one, or restore the database from before the upgrade.
+SchemaTooNew: the database has schema version <found> and needs a cairn of schema version <floor> or later; this cairn knows up to <known>. Run the cairn that wrote it or a newer one, or restore the database from before the upgrade.
 ```
 
 The database is left as it was. systemd starts cairn again every five seconds (`Restart=always`, `RestartSec=5` in `cairn.service`), and each start ends with the same line, until the image or the database is put right. Two cases:

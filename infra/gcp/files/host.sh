@@ -889,7 +889,7 @@ roll_back() {
   if wait_healthy "$proven"; then
     die "rolled back to $proven; the tag still names the failed image, move it to deploy again"
   fi
-  die "rollback to $proven is not healthy either (a newer database schema needs a restore)"
+  die "rollback to $proven is not healthy either: if journalctl -u cairn shows SchemaTooNew, $candidate changed the schema past what $proven runs on (the line names both versions), and going back needs a restore from before the upgrade; otherwise look at journalctl -u cairn for why"
 }
 
 # Give CANDIDATE one health window, then promote it or roll back. The restart is judged by

@@ -35,7 +35,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from cairn.spans import Span
+from cairn.spans import Span, fence_closes
 
 FactKind = Literal["code_block", "inline_code", "url", "path", "date", "version", "flag", "number"]
 
@@ -345,13 +345,14 @@ def _fenced(text: str) -> Iterator[tuple[int, int, int, int]]:
 
 
 def _closes(line: re.Match[str], opener: re.Match[str]) -> bool:
-    """A closing fence repeats the opener's character at least as often, with no info string,
-    at the same block-quote depth, indented at most 3 more than the opener (as in spans.py)."""
-    return (
-        line["fence"].startswith(opener["fence"])
-        and not line["info"].strip()
-        and line["prefix"].count(">") == opener["prefix"].count(">")
-        and len(line["prefix"]) <= len(opener["prefix"]) + 3
+    """Whether a fence line closes the opener: cairn.spans.fence_closes, the one closer rule
+    (a run of the opener's character at least as long, alone, indented at most 3 more than
+    the opener, a character a column), read past the block-quote markers, at the same
+    block-quote depth. The markers count as indentation, one column each, as they did."""
+    return line["prefix"].count(">") == opener["prefix"].count(">") and fence_closes(
+        " " * len(line["prefix"]) + line["fence"] + line["info"],
+        opener["fence"],
+        len(opener["prefix"]) + 3,
     )
 
 

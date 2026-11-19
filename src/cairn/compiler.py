@@ -350,10 +350,15 @@ def _closed(text: str) -> str:
     limit: a fence opens, and a closer closes it, indented at most 3 columns past the text of
     the list item it sits in, or past the margin. A closer indented deeper is the code's text
     ("    ~~~" under "~~~"), so the fence is still open and the body closes it; a line
-    indented 4 past its item opens no fence (it is indented code), so nothing is added."""
+    indented 4 past its item opens no fence (it is indented code), so nothing is added.
+    Columns are Markdown's: a tab moves to the next stop of four, so a tab before a closer is
+    four columns and closes nothing. cairn.spans counts a tab as one column (its known limit,
+    kept so that the passages of stored notes keep their lines and ids); where the two part,
+    the fence is open to Markdown and the body closes it."""
     opened: tuple[str, str, int] | None = None  # (indentation to write, run, deepest closer)
     items: list[int] = []  # the text column of each list item a line may sit in
-    for line in text.split("\n"):
+    for written_line in text.split("\n"):
+        line = written_line.expandtabs(4)  # Markdown's columns
         if opened is not None:
             if fence_closes(line, opened[1], opened[2]):
                 opened = None
@@ -373,8 +378,7 @@ def _closed(text: str) -> str:
             container = column
         if found:
             column, run = found
-            written = "".join(c if c == "\t" else " " for c in line[:column])
-            opened = (written, run, container + 3)
+            opened = (" " * column, run, container + 3)
     return text if opened is None else f"{text}\n{opened[0]}{opened[1]}"
 
 

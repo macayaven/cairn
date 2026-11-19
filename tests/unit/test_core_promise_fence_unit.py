@@ -359,3 +359,52 @@ def test_an_archive_written_before_the_closer_rule_imports_and_is_stored_as_now(
     store.import_export(archive_written_before_review_two(tmp_path, texts))
     body = store.get_page(store.get_project("alpha").id, "net").body
     assert blocks(body)[-1] == ("paragraph", CRITICAL)
+
+
+# A tab moves to the next stop of four columns, as Markdown reads it
+
+
+TAB_CLOSER = "```\nsample text\n\t```"
+
+
+def test_a_tab_closer_does_not_swallow_the_next_note(memory):
+    first = memory.note("alpha", TAB_CLOSER, title="Runbook")
+    second = memory.note("alpha", CRITICAL, title="Runbook", topic="Runbook")
+    assert first["status"] == second["status"] == "saved"
+    body = memory.page("alpha", first["page"])["body"]
+    assert blocks(body) == [("fence", "sample text\n\t```\n"), ("paragraph", CRITICAL)]
+
+
+@pytest.mark.parametrize(
+    ("indent", "closes"),
+    [
+        ("", True),
+        (" ", True),
+        ("  ", True),
+        ("   ", True),
+        ("    ", False),
+        ("\t", False),
+        (" \t", False),
+        ("  \t", False),
+    ],
+    ids=["0", "1", "2", "3", "4", "tab", "space-tab", "two-spaces-tab"],
+)
+def test_the_body_closes_a_fence_exactly_when_markdown_leaves_it_open(indent, closes):
+    opened = f"```\nsample\n{indent}```"
+    spans = chunk("n1", opened) + chunk("n2", CRITICAL)
+    claims = [Claim(id=f"cl_{n}", text=s.text, span_ids=(s.id,)) for n, s in enumerate(spans)]
+    body = render_body("Runbook", claims, {s.id: s for s in spans})
+    assert blocks(body)[-1] == ("paragraph", CRITICAL)
+    code = "sample\n" if closes else f"sample\n{indent}```\n"
+    assert blocks(body)[0] == ("fence", code)
+    assert body.startswith(f"# Runbook\n\n{opened}\n")  # the claim's own text, untouched
+
+
+def test_a_stored_notes_passages_with_a_tab_closer_are_as_they_were():
+    """The splitter still counts a tab as one column (cairn.spans' known limit): changing it
+    would move the passages of notes already stored, and their ids, which pages cite."""
+    spans = chunk("cap_000000000000", f"{TAB_CLOSER}\n\nNext words.\n")
+    assert [(s.id, s.kind, s.start_line, s.end_line, s.text) for s in spans] == [
+        ("sp_21dec8fa8b254c77", "code", 1, 3, TAB_CLOSER),
+        ("sp_8da422dfddc74e2f", "paragraph", 5, 5, "Next words."),
+    ]

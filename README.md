@@ -1,10 +1,25 @@
 # cairn
 
-cairn is a memory service for AI agents. Agents write notes to it over MCP, and it compiles them into pages. Every claim on a page is a passage copied from a note, and it links to the exact lines it came from. cairn checks each page against its notes before it saves it, and keeps the last good version when a check fails. It runs as one container on your own computer, or on a server where people sign in, share a workspace and keep a project private. cairn's own code is open source under the MIT License. **Pre-alpha, built test-first.**
+cairn is a memory service for AI agents. Agents write notes to it over MCP, and it compiles them into pages. Every claim on a page is a passage copied from a note, and it links to the exact lines it came from. cairn checks each page against its notes before it saves it, and keeps the last good version when a check fails. It runs as one container on your own computer, or on a server where people sign in, share a workspace and keep a project private. cairn's own code is open source under the MIT License. **Version 0.1.0 is the first release: early software, built test-first.**
 
 ## Run it on your computer
 
-You need Docker Engine 28.3.3 or later (`docker version` prints it under Server), Compose 2.24 or later (`docker compose version` prints it) and a clone of this repository. cairn is published here on `127.0.0.1` only, and Engine 28.3.3 is the release that [closed a way](https://docs.docker.com/engine/release-notes/28/) for such a port to be reached from the local network after a firewall reload. Docker Desktop carries its own Engine and Compose: check both the same way. The commands below clone the public source and run from its `deploy` folder. They follow the `main` branch as it moves, not a pinned release. Record `git rev-parse HEAD` with each build to identify the code you run.
+You need Docker Engine 28.3.3 or later (`docker version` prints it under Server), Compose 2.24 or later (`docker compose version` prints it) and a clone of this repository. cairn is published here on `127.0.0.1` only, and Engine 28.3.3 is the release that [closed a way](https://docs.docker.com/engine/release-notes/28/) for such a port to be reached from the local network after a firewall reload. A Linux distribution's own `docker.io` package can be older: [Docker's install pages](https://docs.docker.com/engine/install/) give the current Engine for each distribution. Docker Desktop carries its own Engine and Compose: check both the same way.
+
+There are two ways to get the image, and the commands after this section are the same for both, apart from [Update](#update). **The released image** is pinned: `ghcr.io/macayaven/cairn:0.1.0` names one release and never moves to newer code. Pulling it needs no login:
+
+```bash
+git clone https://github.com/macayaven/cairn.git &&
+  cd cairn/deploy &&
+  echo 'COMPOSE_FILE=compose.local.yaml' > .env &&
+  echo 'CAIRN_IMAGE=ghcr.io/macayaven/cairn:0.1.0' >> .env &&
+  docker compose pull cairn &&
+  docker compose up -d --no-build
+```
+
+The clone is there for the files in `deploy`; the code that runs is the image's. [Run it yourself](docs/guides/run.md#or-pull-a-released-image) says how to check what you pulled.
+
+**Or build the source.** These commands follow the `main` branch as it moves, not a pinned release. Record `git rev-parse HEAD` with each build to identify the code you run:
 
 ```bash
 git clone https://github.com/macayaven/cairn.git &&
@@ -13,7 +28,7 @@ git clone https://github.com/macayaven/cairn.git &&
   docker compose up -d --build
 ```
 
-The `.env` line makes every `docker compose` command in this folder use `compose.local.yaml`: cairn alone, with no domain and no proxy. `--build` builds the image from this clone and names it `cairn:local`. Keep it on the first run: without it Compose starts whatever image already has that name on this computer, such as one an earlier clone left, and the code you just fetched is not what runs. The build takes a few minutes. cairn then answers at http://127.0.0.1:8765, on this computer only; nothing else on your network can reach it. If another program already uses port 8765, choose a free port, write it into `.env` before `up`, and use it wherever this guide says 8765. For port 18765:
+The `.env` file makes every `docker compose` command in this folder use `compose.local.yaml`: cairn alone, with no domain and no proxy; with `CAIRN_IMAGE` in it, Compose runs that image instead of building one. `--build` builds the image from this clone and names it `cairn:local`. Keep it on the first run: without it Compose starts whatever image already has that name on this computer, such as one an earlier clone left, and the code you just fetched is not what runs. The build takes a few minutes. cairn then answers at http://127.0.0.1:8765, on this computer only; nothing else on your network can reach it. If another program already uses port 8765, choose a free port, write it into `.env` before `up`, and use it wherever this guide says 8765. For port 18765:
 
 ```bash
 echo 'CAIRN_PORT=18765' >> .env
@@ -135,6 +150,8 @@ From the same clone's `deploy` folder, take a [cold database backup](#back-it-up
 )
 ```
 
+With the released image there is nothing to build: after the same backup, change the version in the `CAIRN_IMAGE` line of `.env`, then run `docker compose pull cairn` and `docker compose up -d --no-build`.
+
 A newer cairn may update the database when it starts, and an older one then refuses to open it. Going back to an earlier version means going back to a backup taken before the update.
 
 ### Stop it
@@ -165,6 +182,8 @@ uv run python -m cairn.server serve --db runs/dev/cairn.db --host 127.0.0.1 --po
 `runs/` is ignored by git. Tests come first: a change starts with a test that fails for the expected reason. Tests run offline, with a fake model and fake HTTP, and every fixture is synthetic. [CONTRIBUTING.md](CONTRIBUTING.md) says more, and [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 ## What it does not promise
+
+cairn has not been assessed against HIPAA, FERPA, COPPA or any rule like them, and as shipped it is not ready to hold health or education records about people who can be identified: [the privacy guide](docs/guides/privacy.md#records-the-law-protects) says what is missing.
 
 A page keeps its newest 50 versions under `serve`: `--keep-versions N` keeps N, `--keep-versions all` keeps every one, and with a plans file the plans decide. A claim is found again by its project, page, claim id and version, which `evidence` takes, for as long as the page keeps that version. A citation shows what a note said, not which of two notes that disagree is right. What a source reads, and where the check that keeps two sources from writing one item stops, is in the [privacy guide](docs/guides/privacy.md#what-a-source-reads).
 

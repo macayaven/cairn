@@ -5,7 +5,7 @@ This guide runs cairn on your own machine as one container: the same software as
 
 ## Start it
 
-Build from the public source, with no registry sign-in. These commands follow the main branch as it moves, not a pinned release. Run them in a folder where you keep source checkouts, then record `git rev-parse HEAD` with the build so you know which code you run:
+There are two ways to get the image: build it from the public source, as the commands below do, or [pull a released image](#or-pull-a-released-image), which is pinned to one release and takes the place of the clone and the build. Building needs no registry sign-in. These commands follow the main branch as it moves, not a pinned release. Run them in a folder where you keep source checkouts, then record `git rev-parse HEAD` with the build so you know which code you run:
 
 ```bash
 git clone https://github.com/macayaven/cairn.git &&
@@ -278,6 +278,8 @@ docker exec cairn python -m cairn.server compact --db /data/cairn.db
 
 Its first line says how many versions it removed and by what rule. On a database no `serve` of this version has run on, it removes no version and says so. With plans, each workspace keeps what its plan keeps; a workspace on a plan the plans file does not name keeps every version, and `compact` names it on a line of its own.
 
+Beside a continuous backup the replica service holds the log file, so what was removed can stay in it until that service is stopped for a compaction, and in backup copies until they expire.
+
 A compaction needs twice the database's size free on its disk: a second copy, and as much again as a margin. `compact` checks first; without the room it does not rewrite the file (the old versions it removed stay removed), says how many bytes are free and how many a rewrite needs, and exits 1.
 
 After a workspace, a project or a note is deleted, `serve` compacts the database by itself, at most once every `--compact-every` hours (24 by default; `0` never). Each run is one line on its log:
@@ -310,7 +312,7 @@ A server that can serve, a write in progress included, answers `/healthz` with 2
 
 ## Where your data lives
 
-Everything cairn knows is in one SQLite database, `/data/cairn.db`, on the `cairn-data` volume. Beside it, while cairn runs, are its two working files, `cairn.db-wal` and `cairn.db-shm`, and `cairn.db.serve.lock`, an empty file by which one server holds the database. A server that is killed, rather than stopped, leaves them there, and the next start uses them. Nothing else is kept: the container holds no data of its own, so removing it and starting another on the same volume loses nothing.
+Everything cairn knows is in one SQLite database, `/data/cairn.db`, on the `cairn-data` volume. Beside it, while cairn runs, are its two working files, `cairn.db-wal` and `cairn.db-shm`, and `cairn.db.serve.lock`, an empty file by which one server holds the database. One `serve` holds a database: a second one started on the same file stops and says that another server is running on it. cairn is not built to run as several copies on one database: what a server counts in memory, such as its rate limits and when it last tried a compaction, is that one process's and starts empty when it restarts. The other commands of the command line, such as `stats`, `export` and `key-create`, run beside a running server. A server that is killed, rather than stopped, leaves them there, and the next start uses them. Nothing else is kept: the container holds no data of its own, so removing it and starting another on the same volume loses nothing.
 
 A command that makes the database makes it readable by its owner only (mode 0600), and its two working files with it, and makes each folder it needs for it 0700. A database that others on the machine can read is left as it is: each command, and `serve` when it starts, says so in one line that names the file's mode and the `chmod 600` that makes it private. A `--db` that is a symbolic link is refused.
 

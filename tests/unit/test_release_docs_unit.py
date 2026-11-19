@@ -1,0 +1,191 @@
+"""What the documents a first reader meets say about a numbered release, pinned to the code
+so they cannot go false unnoticed: the security policy, the README's first screen, the run
+guide's first section, and the sentences that say where a promise stops (records the law
+protects; text kept in the log file beside a continuous backup; the order of passages on a
+page a model arranged; one server for one database).
+
+Guide sentences are checked as a person reads them (`says`: in that section, once)."""
+
+import re
+import tomllib
+from pathlib import Path
+
+from test_guide_facts_slack_unit import flat, guide_source, says, section
+
+from cairn.web import cli
+
+ROOT = Path(__file__).resolve().parents[2]
+VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+IMAGE = f"ghcr.io/macayaven/cairn:{VERSION}"
+RULES = ("HIPAA", "FERPA", "COPPA")
+
+
+def read(name: str) -> str:
+    return (ROOT / name).read_text(encoding="utf-8")
+
+
+def part(text: str, heading: str) -> str:
+    """The text under one `## ` heading of a root document, as one line."""
+    body = text.split(f"\n{heading}\n", 1)[1]
+    return " ".join(re.split(r"\n## ", body, maxsplit=1)[0].split())
+
+
+def workflow_tags() -> str:
+    return read(".github/workflows/ci-cd.yml").split("- name: Image tags and labels", 1)[1][:900]
+
+
+def test_the_security_policy_says_which_versions_get_fixes_as_the_workflow_tags_them():
+    """SECURITY.md: the newest release gets fixes; a full version never moves; the two-part
+    tag and `latest` do."""
+    fixes = part(read("SECURITY.md"), "## Which versions get fixes")
+    assert "no numbered release" not in fixes
+    assert "The newest release gets fixes." in fixes
+    minor = ".".join(VERSION.split(".")[:2])
+    assert f"`{VERSION}`" in fixes and f"`{minor}`" in fixes and "`latest`" in fixes
+    assert "never moves" in fixes
+    tags = workflow_tags()  # what the sentences rest on
+    assert "type=semver,pattern={{version}}" in tags
+    assert "type=semver,pattern={{major}}.{{minor}}" in tags
+    assert "type=raw,value=latest" in tags
+
+
+def test_the_policy_and_the_readme_say_it_is_not_assessed_for_protected_records():
+    """SECURITY.md and README.md name the three rules and send the reader to the privacy
+    guide's section, which exists under that heading."""
+    for name in ("SECURITY.md", "README.md"):
+        text = read(name)
+        said = next(p for p in text.split("\n\n") if all(rule in p for rule in RULES))
+        assert "has not been assessed" in said, name
+        assert "docs/guides/privacy.md#records-the-law-protects" in said, name
+    assert "## Records the law protects" in guide_source("privacy")
+
+
+def test_the_privacy_guide_says_what_is_missing_for_protected_records_and_names_real_options():
+    """privacy.md, "Records the law protects": what an operator would have to add, each
+    switch it names being one `serve` has."""
+    text = flat(section("privacy", "## Records the law protects"))
+    for rule in RULES:
+        assert rule in text
+    for gap in (
+        "has not been assessed",
+        "does not encrypt the database file itself",
+        "can read every project",
+        "no record of the person a note is about",
+        "no consent",
+        "no legal hold",
+    ):
+        assert gap in text, gap
+    options = {
+        option
+        for action in cli._parser()._subparsers._group_actions[0].choices["serve"]._actions
+        for option in action.option_strings
+    }
+    for switch in ("--audit-reads", "--require-mfa", "--idle-minutes"):
+        assert f"`{switch}`" in text and switch in options, switch
+
+
+def test_the_readme_opens_on_a_release_and_offers_its_image_beside_the_source_build():
+    """README.md: no "Pre-alpha"; the released image of this version, pulled with Compose,
+    stands beside the source build; Docker's own install page is linked by the version it
+    asks for."""
+    text = read("README.md")
+    opening = text.split("\n## ", 1)[0]
+    assert "Pre-alpha" not in text
+    assert f"Version {VERSION}" in opening
+    start = text.split("\n## Run it on your computer\n", 1)[1].split("\n### Make a key", 1)[0]
+    assert IMAGE in start
+    assert "docker compose pull cairn" in start and "docker compose up -d --no-build" in start
+    assert "docker compose up -d --build" in start  # the source build stays
+    assert "https://docs.docker.com/engine/install/" in start
+    assert start.index(IMAGE) < start.index("--build")  # the release comes first
+
+
+def test_the_compose_file_takes_the_image_the_readme_sets():
+    """What the README's released path rests on: the Compose file reads CAIRN_IMAGE."""
+    assert "image: ${CAIRN_IMAGE:-cairn:local}" in read("deploy/compose.local.yaml")
+
+
+def test_the_run_guide_points_at_the_released_image_before_its_first_command():
+    """run.md, "Start it": the pinned image is named before the commands of the source
+    build, which still says it follows the main branch."""
+    start = section("run", "## Start it")
+    before = start.split("```", 1)[0]
+    assert "[pull a released image](#or-pull-a-released-image)" in before
+    assert "main branch" in before and "not a pinned release" in before
+
+
+def test_the_security_guide_points_up_to_the_sections_above_it():
+    """security.md: the operator's section links two sections that stand above it."""
+    source = guide_source("security")
+    link = "[above](#google-accounts-connected-in-the-browser), [Slack](#slack)"
+    assert link in source
+    assert source.index("## Google accounts connected in the browser") < source.index(link)
+
+
+def test_the_security_guide_says_the_order_of_passages_is_not_checked():
+    """security.md: "The checks take each claim by itself. They do not check that two
+    passages that stood next to each other in a note are next to each other on a page a model
+    arranged, so a sentence that leans on the one before it can stand apart from it. Each
+    claim still opens its own lines in its note, where the order is the writer's." """
+    says(
+        "security",
+        "## What the checks on pages catch",
+        "The checks take each claim by itself. They do not check that two passages that stood"
+        " next to each other in a note are next to each other on a page a model arranged, so a"
+        " sentence that leans on the one before it can stand apart from it. Each claim still"
+        " opens its own lines in its note, where the order is the writer's.",
+    )
+
+
+def test_removing_slack_says_where_the_deleted_secrets_can_stay():
+    """connect.md: "Where this install keeps a continuous backup, the deleted secrets, still
+    sealed, can stay in the database's log file until the operator compacts it, and in backup
+    copies until they expire." """
+    says(
+        "connect",
+        "## From Slack",
+        "Where this install keeps a continuous backup, the deleted secrets, still sealed, can"
+        " stay in the database's log file until the operator compacts it, and in backup copies"
+        " until they expire.",
+    )
+
+
+def test_compact_says_what_a_continuous_backup_keeps():
+    """run.md: "Beside a continuous backup the replica service holds the log file, so what was
+    removed can stay in it until that service is stopped for a compaction, and in backup
+    copies until they expire." """
+    says(
+        "run",
+        "## How much history a page keeps",
+        "Beside a continuous backup the replica service holds the log file, so what was removed"
+        " can stay in it until that service is stopped for a compaction, and in backup copies"
+        " until they expire.",
+    )
+
+
+def test_one_server_holds_one_database_and_the_guide_says_so(tmp_path):
+    """run.md: "One `serve` holds a database: a second one started on the same file stops and
+    says that another server is running on it." """
+    says(
+        "run",
+        "## Where your data lives",
+        "One `serve` holds a database: a second one started on the same file stops and says"
+        " that another server is running on it.",
+    )
+    db = tmp_path / "cairn.db"
+    first = cli.take_serve_lock(db)
+    try:
+        assert first is not None and cli.take_serve_lock(db) is None
+        assert "another server is running on this database" in cli.ANOTHER_SERVER
+    finally:
+        first.release()
+
+
+def test_the_readme_says_how_an_install_of_the_released_image_is_updated():
+    """README.md, "Update": with the released image, the version in `CAIRN_IMAGE` changes and
+    the image is pulled; nothing is built."""
+    text = read("README.md")
+    update = text.split("\n### Update\n", 1)[1].split("\n### ", 1)[0]
+    assert "change the version in the `CAIRN_IMAGE` line of `.env`" in update
+    assert "`docker compose pull cairn` and `docker compose up -d --no-build`" in update
+    assert "apart from [Update](#update)" in text

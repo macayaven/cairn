@@ -295,3 +295,17 @@ def test_readers_make_no_file_and_change_no_mode(store, db):
     assert store._con.execute("PRAGMA secure_delete").fetchone() == (1,)
     with pytest.raises(sqlite3.OperationalError), store._read() as con:
         con.execute("CREATE TABLE written (x)")  # a reader cannot write
+
+
+def test_closing_after_reads_leaves_the_file_whole_as_before(db):
+    """The readers close before the writer, so the writer is the last connection to the file:
+    it copies the write-ahead log into the file and removes it, as when it was the only one."""
+    store = Store(db, clock=fixed)
+    store.create_project("alpha")
+    store.list_projects()
+    assert len(readers(store)) == 1
+    store.close()
+    assert not (db.parent / f"{db.name}-wal").exists()
+    before = db.read_bytes()
+    Store(db, clock=fixed).close()
+    assert db.read_bytes() == before

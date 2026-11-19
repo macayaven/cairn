@@ -392,9 +392,11 @@ class StoreBase:
         progress closes as that read ends); on a view this does nothing."""
         if self._owner:
             with self._lock:
-                self._con.close()
+                # The readers first: the writer, closing last, copies the write-ahead log
+                # into the file and removes it, which a read-only connection cannot do.
                 if self._state.readers is not None:
                     self._state.readers.close()
+                self._con.close()
 
     _KEEP: Any = object()  # _observe: leave this observer as it is
 
@@ -480,10 +482,10 @@ class StoreBase:
         if not self._state.unusable:
             store_log.error("a rollback failed: the store is unusable until it is opened again")
         self._state.unusable = True
-        with contextlib.suppress(Exception):
-            self._con.close()
         if self._state.readers is not None:
             self._state.readers.close()
+        with contextlib.suppress(Exception):
+            self._con.close()
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:

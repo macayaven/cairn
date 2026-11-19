@@ -492,6 +492,10 @@ REST (JSON; project = id or name; unknown project or page, or another account's 
 - GET /api/search?q=...[&project=...][&limit=N]: what `recall` answers, `searched` included;
   N is 1 to 50 (8 when left out), and any other is a 400 that says so (Q3)
 - GET /api/usage: the workspace's plan and what it has used of each cap (Plans, below)
+- GET /api/audit[?before=N][&limit=N][&action=...][&project=...]: the audit log, newest
+  first, as /audit reads it (Store.list_audit), for a caller that manages the workspace (403
+  otherwise, a narrowed key included): {"events", "events_total"} and, while older events
+  match, `events_next`, to pass as `before`; `limit` is 1 to 1,000 (100 when left out)
 - GET /api/graph?project=...[&limit=N]: the project's graph (cairn.graph.project_graph), its
   pages, their claims, the passages those cite and their notes; N is 1 to 20 pages (20 when
   left out). A key only; a project out of reach is a 404 as for one that does not exist; the

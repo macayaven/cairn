@@ -560,6 +560,8 @@ table.metrics { width: auto; min-width: 20rem; }
 /* Wide enough for a column to hold a whole name: a project in the audit log, code in a table. */
 @media (min-width: 40.01rem) {
   .rows td[data-label="Project"] { white-space: nowrap; }
+  /* A person's or an agent's name in the audit log breaks between its words, never inside one. */
+  .rows td[data-label="Who"] .actor-name { overflow-wrap: normal; }
   .prose td code, .md td code { overflow-wrap: normal; }
 }
 .rows .slug { display: block; }

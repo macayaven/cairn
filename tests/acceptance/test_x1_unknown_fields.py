@@ -178,6 +178,11 @@ VALID: dict[tuple[str, str], dict] = {
         },
         "status": 200,
     },
+    ("GET", "/api/audit"): {
+        "query": {"before": "1000", "limit": "5", "action": "project", "project": "alpha"},
+        "body": None,
+        "status": 200,
+    },
     ("GET", "/api/credentials"): {"query": {}, "body": None, "status": 200},
     ("DELETE", "/api/credentials/{name}"): {
         "query": {"confirm": "ledger"},

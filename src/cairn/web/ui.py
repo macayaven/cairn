@@ -76,14 +76,18 @@ new private one, as their account's form does.
   fragment, so the browser moves to it. 400, 403 or 409 with the refusal on top; 404 for no
   such source; 403 for a member with no account. Stores nothing."""
 
+import csv
 import functools
+import io
+import json
 import re
+from collections.abc import Iterable, Iterator
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from cairn import oauth
@@ -108,9 +112,9 @@ from cairn.sources import granola as _granola
 from cairn.sources import linear as _linear
 from cairn.sources.runner import PREVIEW_DAYS, PREVIEW_DAYS_MAX, PreviewBusy
 from cairn.spans import Span
-from cairn.store import AUDIT_KEEP, Page, Project
-from cairn.store.audit import UNKNOWN_WRITER
-from cairn.store.models import shown_metrics
+from cairn.store import Page, Project
+from cairn.store.audit import AUDIT_LIMIT_MAX, UNKNOWN_WRITER, AuditPart
+from cairn.store.models import AuditEvent, shown_metrics
 from cairn.store.sources import (
     ACCOUNT_GONE,
     FORMER_MEMBER,
@@ -677,7 +681,16 @@ def _proposed(source: Any, reached: list[Project], decides: bool = True) -> dict
 
 # The counts of a source's last run, in the order /sources shows them.
 SOURCE_COUNTS = ("saved", "unchanged", "refused", "rejected", "skipped")
-AUDIT_SHOWN = 200  # events on /audit, newest first
+AUDIT_SHOWN = 200  # events on /audit, newest first, a part at a time
+AUDIT_FILTERS = ("action", "project", "who")  # what /audit and its downloads filter by
+AUDIT_FILTER_MAX = 200  # characters of a filter read; the rest is left out
+AUDIT_DOWNLOADED = "audit.exported"  # the event a download of the log is recorded as
+# A download's columns, in order, and its formats with their media types.
+AUDIT_COLUMNS = ("n", "at", "actor_kind", "actor", "actor_id", "action", "project", "detail")
+AUDIT_FORMATS = {"csv": "text/csv; charset=utf-8", "json": "application/json"}
+NOT_A_FORMAT = "The audit log downloads as csv or json: choose one of them as the format."
+# A cell a spreadsheet would read as a formula starts with one of these; it is written as text.
+_FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 WEB_PAGES_AT_ONCE = 200  # Q1: the pages a project's page lists at a time, by slug
 # The limits /usage shows, in order, and what a person reads for each.
 USAGE_NAMES = (
@@ -810,6 +823,59 @@ def _sees_rule(memory: Memory, project: Project) -> bool:
     except (PermissionError, KeyError):
         return False
     return True
+
+
+def _audit_filters(request: Request) -> dict[str, str]:
+    """The filters /audit and its downloads were given: each of AUDIT_FILTERS that is not
+    empty, cut to AUDIT_FILTER_MAX characters, in that order."""
+    query = request.query_params
+    found = {name: query.get(name, "").strip()[:AUDIT_FILTER_MAX] for name in AUDIT_FILTERS}
+    return {name: value for name, value in found.items() if value}
+
+
+def _audit_cursor(request: Request) -> int | None:
+    """`before`, the number below which /audit shows events; None when it is not a whole
+    number of 1 or more (a web page ignores what it does not take)."""
+    value = request.query_params.get("before", "")
+    return int(value) if value.isdigit() and int(value) > 0 else None
+
+
+def _cell(value: Any) -> Any:
+    """A value as a CSV cell: text a spreadsheet would run as a formula gets a "'" first."""
+    if isinstance(value, str) and value.startswith(_FORMULA_STARTS):
+        return "'" + value
+    return value
+
+
+def _event_row(event: AuditEvent) -> dict[str, Any]:
+    return {column: getattr(event, column) for column in AUDIT_COLUMNS}
+
+
+def _as_csv(parts: Iterable[AuditPart]) -> Iterator[str]:
+    """The events as CSV: a header of AUDIT_COLUMNS, then one row each; `detail` as JSON."""
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(AUDIT_COLUMNS)
+    for events in parts:
+        for event in events:
+            row = _event_row(event)
+            row["detail"] = json.dumps(row["detail"], sort_keys=True)
+            writer.writerow([_cell(row[column]) for column in AUDIT_COLUMNS])
+        yield out.getvalue()
+        out.seek(0)
+        out.truncate()
+    yield out.getvalue()
+
+
+def _as_json(parts: Iterable[AuditPart]) -> Iterator[str]:
+    """The events as one JSON array of objects with AUDIT_COLUMNS, one per line."""
+    yield "["
+    sep = "\n"
+    for events in parts:
+        for event in events:
+            yield sep + json.dumps(_event_row(event), sort_keys=True)
+            sep = ",\n"
+    yield "\n]\n"
 
 
 def _ui(request: Request, name: str, status_code: int = 200, **context: Any) -> Response:
@@ -1069,12 +1135,72 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
     def audit(request: Request) -> Response:
         """The workspace's audit log, newest first: who wrote what, and the security events.
         For whoever may manage the workspace's keys; a web session always reaches the whole
-        workspace, and a narrowed view's log would be empty anyway."""
+        workspace, and a narrowed view's log would be empty anyway. AUDIT_SHOWN events at a
+        time: `before` (an event's number) gives the older ones, and `action`, `project` and
+        `who` filter (Store.list_audit), all in the address; the page says which events it
+        shows of how many, how many the workspace keeps, and links to the downloads."""
         memory = _memory(request)
         if not part("/audit").opens(memory):
             raise Forbidden(_NOT_AUDITOR)
-        events = memory.store.list_audit(AUDIT_SHOWN)
-        return _ui(request, "audit.html", events=events, kept=AUDIT_KEEP)
+        filters = _audit_filters(request)
+        before = _audit_cursor(request)
+        events = memory.store.list_audit(AUDIT_SHOWN, before=before, **filters)
+        shown = events.newer + len(events)
+        older = None
+        if events and shown < events.total:
+            older = "/audit?" + urlencode({"before": events[-1].n, **filters})
+        return _ui(
+            request,
+            "audit.html",
+            events=events,
+            first=events.newer + 1,
+            last=shown,
+            total=events.total,
+            kept=memory.store.audit_keep,
+            reads=memory.store.reads_audited,
+            filters=filters,
+            older=older,
+            newest=("/audit?" + urlencode(filters)) if filters else "/audit",
+            paged=before is not None,
+            downloads={
+                f: "/audit/download?" + urlencode({"format": f, **filters}) for f in AUDIT_FORMATS
+            },
+        )
+
+    def audit_download(request: Request) -> Response:
+        """Every event of the log the caller sees that matches the filters, newest first, as
+        CSV or JSON (`format`), read a part of AUDIT_LIMIT_MAX at a time. For whoever reads
+        the page. The download is itself an event, AUDIT_DOWNLOADED, with its format and how
+        many events matched; never what was typed in a filter."""
+        memory = _memory(request)
+        if not part("/audit").opens(memory):
+            raise Forbidden(_NOT_AUDITOR)
+        form = request.query_params.get("format", "")
+        if form not in AUDIT_FORMATS:
+            raise BadRequest(NOT_A_FORMAT)
+        filters = _audit_filters(request)
+        store = memory.store
+        first = store.list_audit(AUDIT_LIMIT_MAX, **filters)
+        store._record_read(AUDIT_DOWNLOADED, None, {"format": form, "events": first.total})
+
+        def parts() -> Iterator[AuditPart]:
+            part_ = first
+            while part_:
+                yield part_
+                if len(part_) < AUDIT_LIMIT_MAX:
+                    return
+                part_ = store.list_audit(AUDIT_LIMIT_MAX, before=part_[-1].n, **filters)
+
+        body = _as_csv(parts()) if form == "csv" else _as_json(parts())
+        return StreamingResponse(
+            body,
+            media_type=AUDIT_FORMATS[form],
+            headers={
+                "content-disposition": f'attachment; filename="audit-{store.account_id}.{form}"',
+                "cache-control": "no-store",
+                "x-content-type-options": "nosniff",
+            },
+        )
 
     def sources_page(
         request: Request,
@@ -1435,6 +1561,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         Route("/sets/{set}", update_set, methods=["POST"]),
         Route("/sets/{set}/delete", delete_set, methods=["POST"]),
         Route("/audit", audit, methods=["GET"]),
+        Route("/audit/download", audit_download, methods=["GET"]),
         *compose_routes(),
         *start_routes(mcp_url, oauth=by_url),
         Route("/sources", sources, methods=["GET"]),

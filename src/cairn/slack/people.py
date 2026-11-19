@@ -89,7 +89,7 @@ from cairn.slack import blocks
 from cairn.slack.client import SlackError
 from cairn.slack.dispatch import Context
 from cairn.store import CannotWrite, Project, StoreUnusable, stored_key
-from cairn.store.slack import SlackPerson, TeamChanged
+from cairn.store.slack import SlackInstallChanged, SlackPerson, TeamChanged
 
 log = logging.getLogger("cairn.slack")
 FOUND_AT_ONCE = blocks.SHOWN  # claims a search shows
@@ -246,7 +246,8 @@ def page_url(context: Context, project: str, slug: str) -> str:
 def search(context: Context, asker: Asker, query: str) -> dict:
     """The person's search (the module). Blocking: run it on a worker thread."""
     try:
-        hits = asker.memory.recall(query, limit=FOUND_COUNTED)["hits"]
+        with asker.memory.access("recall"):
+            hits = asker.memory.recall(query, limit=FOUND_COUNTED)["hits"]
     except RequestError as refused:
         return blocks.refused(str(refused))
     if not hits:
@@ -332,6 +333,8 @@ def write(
         answer = asker.memory.note(
             project_id, text, title=title, source_ref=source_ref, via="slack", within=recorded
         )
+    except SlackInstallChanged:
+        raise
     except FiledAlready as filed:  # the message, filed meanwhile by someone else: nothing stored
         return already(context, asker, filed.note_id)
     except TeamChanged:  # the install holds another Slack team by now: nothing stored
@@ -498,6 +501,8 @@ async def _post(context: Context, conversation: str, message: dict) -> None:
             return
         fields = {"channel": conversation, **message}
         await context.slack().call("chat.postMessage", token, fields, within=REPLY_WITHIN)
+    except SlackInstallChanged:
+        return
     except Exception as failed:  # its class only
         log.warning("slack: a reply was not sent: %s", type(failed).__name__)
 

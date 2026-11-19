@@ -73,8 +73,10 @@ import contextlib
 import json
 import logging
 import re
+import sqlite3
 import threading
 from collections import deque
+from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
@@ -87,12 +89,14 @@ from starlette.testclient import TestClient
 import cairn.store.slack as store_slack
 from cairn.compiler import provenance_gate
 from cairn.identity import GitHub
-from cairn.memory import Memory
+from cairn.memory import UNWRITABLE, Memory
 from cairn.plans import Plan, Plans
 from cairn.server import SignIn, create_app
 from cairn.slack import blocks, people
 from cairn.slack.client import SlackClient
 from cairn.store import Claim, Store
+from cairn.store.base import CannotWrite
+from cairn.store.hosted import Sealer
 from cairn.web.slack import Slack
 from cookie_names import session_cookie
 
@@ -454,6 +458,63 @@ def test_nothing_found_is_said(world):
     world.pages(world.library, 2)
     shown = said(private(world.command("find zucchini")))
     assert "Nothing found" in shown and "zucchini" in shown
+
+
+@pytest.mark.parametrize("via", ["command", "direct"])
+@pytest.mark.parametrize("audit_fails", [False, True])
+def test_slack_search_obeys_read_auditing(world, monkeypatch, via, audit_fails):
+    world.link(world.ada, ADA_SLACK, world.library)
+    world.pages(world.library, 1)
+    world.store.reads_audited = True
+
+    def full(*args, **kwargs):
+        raise CannotWrite(sqlite3.OperationalError("database is full"))
+
+    if audit_fails:
+        monkeypatch.setattr(Store, "_record_read", full)
+    if via == "command":
+        reply = private(world.command("find marmalade"))
+    else:
+        response = world.direct("marmalade", "Ev0AUDIT001")
+        assert response.status_code == 200 and response.content == b""
+        (reply,) = world.slack.asked("chat.postMessage")
+
+    events = [event for event in world.ada.view.list_audit(100) if event.action == "read.search"]
+    if audit_fails:
+        refused = UNWRITABLE in reply["text"]
+        assert refused and len(reply["blocks"]) == 1
+        assert not events
+    else:
+        (event,) = events
+        assert (event.actor_kind, event.actor, event.actor_id) == (
+            "session",
+            "Ada",
+            world.ada.id,
+        )
+        assert (event.project, event.detail) == (None, {"user": world.ada.id})
+        assert "/b/library/p/shelf-" in said(reply)
+
+
+def test_a_stale_note_compile_leaves_the_already_stored_note_waiting(world, monkeypatch):
+    world.link(world.ada, ADA_SLACK, world.inbox)
+    save = Store.save_page
+
+    def replace_before_save(self, *args, **kwargs):
+        with closing(Store(world.db, clock=world.clock)) as other:
+            other.slack_sealer = Sealer(k1.KEY)
+            view = other.for_account(world.account, world.ada.id)
+            view.ready_slack_install(
+                world.install.id, signing_secret=k1.OTHER_SECRET, bot_token=k1.OTHER_TOKEN,
+                team_id=TEAM, team_domain="fable-works", bot_user_id=BOT,
+            )  # fmt: skip
+        return save(self, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "save_page", replace_before_save)
+    response = world.command("note The quill is on the desk.")
+    assert world.notes_held() == 1  # its write completed before the replacement
+    assert k1.rows(world.db, "SELECT COUNT(*) FROM waiting") == [(1,)]
+    assert k1.rows(world.db, "SELECT COUNT(*) FROM page_versions") == [(0,)]
+    assert response.status_code == 200 and response.content == b""
 
 
 def test_note_is_written_to_the_slack_project_via_slack_recorded_as_typed_and_linked(world):

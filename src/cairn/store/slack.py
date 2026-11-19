@@ -108,18 +108,24 @@ table is exported (cairn.store.portable); a deleted workspace, a removed person,
 project and a forgotten note each take their rows with them (cairn.store.accounts, people,
 erasure)."""
 
+import copy
 import hashlib
 import hmac
 import json
 import re
 import secrets
 import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from cairn.store.base import StoreBase, _iso, _require_account
 from cairn.store.hosted import Sealer
+
+if TYPE_CHECKING:
+    from cairn.store import Store
 
 INSTALL_ID = re.compile(r"sl_[0-9a-f]{12}")
 STATES = ("pending", "ready", "on", "off", "removed")
@@ -174,6 +180,10 @@ class TeamChanged(ValueError):
         super().__init__("this install's Slack team is no longer the one this was written for")
 
 
+class SlackInstallChanged(Exception):
+    """The installation that verified the callback has since changed."""
+
+
 class NotItsTeam(ValueError):
     """Secrets of another Slack team than the one an install that is ready, on or off holds:
     the install belongs to its team, so nothing is written; connecting another Slack team
@@ -223,12 +233,30 @@ class SlackInstall:
 
 
 @dataclass(frozen=True)
+class SlackGeneration:
+    """The sealed signing secret changes at each set-up or credential replacement."""
+
+    install_id: str
+    account_id: str
+    sealed: str = field(repr=False)
+
+    def require(self, con: sqlite3.Connection) -> None:
+        row = con.execute(
+            "SELECT 1 FROM slack_installs WHERE id = ? AND account_id = ? AND signing_secret = ?",
+            (self.install_id, self.account_id, self.sealed),
+        ).fetchone()
+        if row is None:
+            raise SlackInstallChanged()
+
+
+@dataclass(frozen=True)
 class SlackInbound:
     """What a request to one of the three addresses needs: the install, and its signing
     secret opened (None: none held, or it does not open under this key)."""
 
     install: SlackInstall
     signing_secret: str | None = field(repr=False)
+    generation: SlackGeneration | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -353,6 +381,26 @@ def _when(text: str) -> datetime:
 
 class SlackMethods(StoreBase):
     slack_sealer: Sealer | None = None  # set on the root store by create_app; views copy it
+    _slack_view_check: Callable[[sqlite3.Connection], None] | None = None
+
+    def _slack_checked_view(self, check: Callable[[sqlite3.Connection], None]) -> "Store":
+        """A request's view, with a condition checked inside every write it makes."""
+        view = copy.copy(self)
+        view._owner = False
+        view._slack_view_check = check
+        return cast("Store", view)
+
+    def _check_slack_view(self, con: sqlite3.Connection) -> None:
+        if self._slack_view_check is not None:
+            self._slack_view_check(con)
+
+    @contextmanager
+    def _write(self, **options: bool) -> Iterator[sqlite3.Connection]:
+        # BEGIN IMMEDIATE is already held, so no other writer can change the checked row
+        # before the operation commits. This also covers a note's separate page save.
+        with super()._write(**options) as con:
+            self._check_slack_view(con)
+            yield con
 
     def _slack_sealer(self) -> Sealer:
         if self.slack_sealer is None:
@@ -572,6 +620,7 @@ class SlackMethods(StoreBase):
         it does not open under this key. KeyError: no such install here; NoSlackKey."""
         sealer = self._slack_sealer()
         with self._read() as con:
+            self._check_slack_view(con)
             self._slack_row(con, install_id)
             (sealed,) = con.execute(
                 "SELECT bot_token FROM slack_installs WHERE id = ?", (install_id,)
@@ -594,11 +643,13 @@ class SlackMethods(StoreBase):
         if row is None:
             return None
         install = _install(row[:14])
+        sealed = row[14]
         secret = None
-        if row[14] is not None and self.slack_sealer is not None:
+        if sealed is not None and self.slack_sealer is not None:
             associated = _associated("signing_secret", install.id, install.account_id)
-            secret = self.slack_sealer.open(row[14], associated)
-        return SlackInbound(install, secret)
+            secret = self.slack_sealer.open(sealed, associated)
+        generation = SlackGeneration(install.id, install.account_id, sealed) if sealed else None
+        return SlackInbound(install, secret, generation)
 
     # Notes, and forgetting them (D10)
 
@@ -958,6 +1009,7 @@ class SlackMethods(StoreBase):
     def slack_person(self, install_id: str, slack_user_id: str) -> SlackPerson | None:
         """The person the install's Slack user is linked to, with their project; None."""
         with self._read() as con:
+            self._check_slack_view(con)
             self._slack_row(con, install_id)
             return self._person(con, install_id, slack_user_id)
 

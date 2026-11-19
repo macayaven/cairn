@@ -58,12 +58,13 @@ The three addresses Slack calls (`slack_routes`)
   9. cairn.slack.dispatch answers the rest; this module registers what it owns:
      `app_uninstalled` (Store.remove_slack_install, D10) and `tokens_revoked` naming the
      install's bot (Store.revoke_slack_bot); another user's token revoked changes nothing.
-- A refusal writes nothing. Each request is one record on the access log (cairn.access):
+- Each write checks the sealed signing secret used to verify the request in its own
+  transaction. A callback for an installation that has since changed is acknowledged.
+- A refusal writes nothing. Each request is recorded on the access log (cairn.access):
   its action (ACTIONS: slack_event, slack_command, slack_action), the install and the
   status, under the actor kind "slack"; never the body, a secret, the signature or a header.
-- What verifying costs is counted in statements: one read of the install by its id, then a
-  write for a challenge or an event's id (and one more to forget the id of an event whose
-  handler failed), whatever the workspace holds.
+- What verifying costs is counted in statements: one read of the install by its id, then
+  one indexed generation check in each write, whatever the workspace holds.
 
 The loop (Keeper): started in the app's lifespan with the switch on, a pass at start and then
 every `Slack.every` seconds. First, on the event loop, Slack is asked whether each bot token
@@ -120,8 +121,15 @@ from cairn.slack.verify import (
     read_body,
     verified,
 )
+from cairn.store import Store
 from cairn.store.hosted import KEY_BYTES, Sealer, previous_keys
-from cairn.store.slack import ACCEPTING, ENDED
+from cairn.store.slack import (
+    ACCEPTING,
+    ENDED,
+    SlackGeneration,
+    SlackInbound,
+    SlackInstallChanged,
+)
 from cairn.web.brand import product_of
 from cairn.web.templating import NO_PAGE, _page, brand_of
 
@@ -394,24 +402,18 @@ def _logged(action: str, install: str, status: int) -> None:
 
 @dataclass(frozen=True)
 class Desk:
-    """What the addresses get of the store (as Accounts.ledger hands OAuth its part): the
-    install a request names, the challenge answered, an event seen, an event forgotten again
-    (its handler failed), and a view of a workspace acting for no person."""
+    """The installation a request names and the server's view bound to its generation."""
 
-    inbound: Callable[[str], Any]
-    verified: Callable[[str], Any]
-    seen: Callable[[str, str], bool]
-    view: Callable[[str], Any] = field(repr=False)
-    forget: Callable[[str, str], Any] = field(repr=False)
+    inbound: Callable[[str], SlackInbound | None]
+    for_callback: Callable[[SlackGeneration], Store] = field(repr=False)
 
 
-def desk_of(store: Any) -> Desk:
+def desk_of(store: Store) -> Desk:
     return Desk(
         inbound=store.slack_inbound,
-        verified=store.slack_install_verified,
-        seen=store.slack_event_seen,
-        view=lambda account_id: store.for_account(account_id).acting_as("system", None),
-        forget=lambda install_id, event_id: store.forget_slack_event(install_id, event_id),
+        for_callback=lambda generation: store.acting_as("system", None)._slack_checked_view(
+            generation.require
+        ),
     )
 
 
@@ -477,20 +479,40 @@ def slack_routes(
         if install.state == "off" and (found.type == CHALLENGE or found.name not in OFF_EVENTS):
             _logged(action, install_id, 200)  # off: acknowledged, and nothing is done
             return Response(status_code=200)
+        generation = inbound.generation
+        assert generation is not None  # the verified secret was opened from this stored value
+        ledger = desk.for_callback(generation)
         if found.type == CHALLENGE:
-            await run_in_threadpool(desk.verified, install.id)
+            with contextlib.suppress(SlackInstallChanged):
+                await run_in_threadpool(ledger.slack_install_verified, install.id)
             _logged(action, install_id, 200)
             return PlainTextResponse(found.payload["challenge"])
-        if found.event_id is not None and not await run_in_threadpool(
-            desk.seen, install.id, found.event_id
-        ):
-            _logged(action, install_id, 200)  # done once already
+        event_id = found.event_id
+        try:
+            first = event_id is None or await run_in_threadpool(
+                ledger.slack_event_seen, install.id, event_id
+            )
+        except SlackInstallChanged:
+            first = False
+        if not first:
+            _logged(action, install_id, 200)
             return Response(status_code=200)
-        view = await run_in_threadpool(desk.view, install.account_id)
+        try:
+            view = await run_in_threadpool(ledger.for_account, install.account_id)
+        except KeyError:  # the workspace was deleted after verification
+            _logged(action, install_id, 200)
+            return Response(status_code=200)
+
+        def for_person(user_id: str) -> Memory | None:
+            memory = memory_for(install.account_id, user_id)
+            if memory is not None:
+                memory.store = memory.store._slack_checked_view(generation.require)
+            return memory
+
         context = Context(
             install=install,
             view=view,
-            memory_for=lambda user_id: memory_for(install.account_id, user_id),
+            memory_for=for_person,
             http=http,
             public_url=public_url,
             now=now,
@@ -501,17 +523,21 @@ def slack_routes(
         )
         try:
             answer = await dispatch(found, context)
+        except SlackInstallChanged:
+            answer = Response(status_code=200)
         except Exception as failed:  # its class only: a message can quote what a person wrote
             log.warning("slack: a handler failed: %s", type(failed).__name__)
-            if found.event_id is not None:  # so that Slack's next delivery runs it again
+            status = 500
+            if event_id is not None:  # so that Slack's next delivery runs it again
                 try:
-                    await run_in_threadpool(desk.forget, install.id, found.event_id)
+                    await run_in_threadpool(ledger.forget_slack_event, install.id, event_id)
+                except SlackInstallChanged:
+                    status = 200
                 except Exception as unforgotten:
                     log.warning(
                         "slack: a failed event was not forgotten: %s", type(unforgotten).__name__
                     )
-            _logged(action, install_id, 500)
-            return Response(status_code=500)
+            answer = Response(status_code=status)
         _logged(action, install_id, answer.status_code)
         return answer
 

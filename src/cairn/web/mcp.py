@@ -268,7 +268,8 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         same topic build one page; case, accents on Latin
         letters, separators and punctuation at word edges do not make another topic. The
         same text with the same source_ref is stored once and filed once: sent again for
-        another topic it is an error naming its page. Returns the note id, whether it was
+        another topic it is an error naming the page that holds it, if one does. Returns the
+        note id, whether it was
         new, the page slug, the compile status (saved, unchanged, rejected, or waiting: the
         note is stored and will be filed by itself, so do not send it again), the page
         version and any gate violations."""

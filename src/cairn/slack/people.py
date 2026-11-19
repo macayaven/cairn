@@ -83,12 +83,11 @@ from urllib.parse import quote
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from cairn.compiler import page_for
 from cairn.memory import WAITING, Malformed, Memory, NotFound, RequestError, unavailable
 from cairn.slack import blocks
 from cairn.slack.client import SlackError
 from cairn.slack.dispatch import Context
-from cairn.store import CannotWrite, Project, StoreUnusable, stored_key
+from cairn.store import CannotWrite, Project, StoreUnusable
 from cairn.store.slack import SlackInstallChanged, SlackPerson, TeamChanged
 
 log = logging.getLogger("cairn.slack")
@@ -400,9 +399,17 @@ def already(context: Context, asker: Asker, note_id: str) -> dict:
     project = store.get_project(note.project_id) if note is not None else None
     if note is None or project is None:
         return blocks.refused(ELSEWHERE)
-    slug = page_for(store, note.project_id, stored_key(note), note.topic or note.title)
-    url = page_url(context, project.name, slug)
-    return blocks.filed(title=note.title, page_url=url, project=project.name, already=True)
+    # Its page by the Notes page's rule (Store.note_page): one that cites it, else none.
+    waiting, slug = store.note_page(note.project_id, note.id)
+    url = page_url(context, project.name, slug) if slug is not None else None
+    return blocks.filed(
+        title=note.title,
+        page_url=url,
+        project=project.name,
+        already=True,
+        waiting=waiting,
+        project_url=f"{context.public_url}/b/{quote(project.name, safe='')}",
+    )
 
 
 class Authors:

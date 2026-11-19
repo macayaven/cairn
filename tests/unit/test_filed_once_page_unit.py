@@ -115,3 +115,28 @@ def test_a_note_sent_again_for_another_topic_costs_seven_statements_whatever_its
                 memory.note("ops", text, topic="Backoff", source_ref=ref)
 
         assert statements(store, resend) == 7, ref
+
+
+def test_slack_names_a_held_notes_page_by_the_same_rule(store):
+    """A message filed already (cairn.slack.people.already) links the note's page only when
+    that page cites it; a note its page refused, or one that waits, links its project."""
+    from types import SimpleNamespace
+
+    from cairn.slack import people
+
+    memory = Memory(store, refusing_after(1))
+    on_page = memory.note("ops", FIRST, topic="Retry policy")
+    refused = memory.note("ops", SECOND, topic="Retry policy")
+    project = store.list_projects()[0]
+    waiting = store.add_note(project.id, "- Tessera waits.\n", topic="Queue")[0]
+    context = SimpleNamespace(public_url="https://cairn.example.test")
+    asker = SimpleNamespace(memory=memory)
+
+    def said(note_id: str) -> str:
+        return people.already(context, asker, note_id)["blocks"][0]["text"]["text"]
+
+    assert "/b/ops/p/retry-policy|" in said(on_page["note_id"])
+    for note_id, sentence in ((refused["note_id"], "No page holds it."), (waiting.id, "shortly")):
+        text = said(note_id)
+        assert "/p/" not in text and "<https://cairn.example.test/b/ops|ops>" in text
+        assert sentence in text

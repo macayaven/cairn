@@ -122,14 +122,24 @@ def nothing_found(query: str) -> dict:
 def filed(
     *,
     title: str,
-    page_url: str,
+    page_url: str | None,
     project: str,
     already: bool = False,
     waiting: bool = False,
     project_url: str | None = None,
 ) -> dict:
     """A note filed, or filed already, linking its page. A note stored and still `waiting`
-    for its page links its project (`project_url`), since the page is not there yet."""
+    for its page links its project (`project_url`), since the page is not there yet. A note
+    filed already that no page holds (`page_url` None: it waits, or its page refused it)
+    links its project and says which."""
+    if page_url is None:
+        where = _link(project, project_url) if project_url else _text(project, 350)
+        said = "Its page will appear shortly." if waiting else "No page holds it."
+        status = "Already filed" if already else "Filed"
+        return _message(
+            f"{status} in {_text(project, 350)}: {_title(title, 450)}. {said}",
+            [f"{status} in {where}: {_title(title, 450)}. {said}"],
+        )
     if waiting and not already:
         status = f"Note stored in {_text(project, 350)}. Its page will appear shortly."
         shown = (

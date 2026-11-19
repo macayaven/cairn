@@ -57,6 +57,8 @@
 # linux/amd64 (Trivy), src/ (Bandit) and the whole history checked out (gitleaks, redacted).
 # The quick deploy's OpenTofu definitions (infra/quick/) are checked in job `quick` when a
 # change touches them, and on every tag; `publish` needs it too.
+# Job `browser` runs the browser tests (tests/browser) in headless Chromium on every pull
+# request and every push, with no path condition, and `publish` needs it.
 # Nothing is published from a pull request or a manual run.
 # A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
 # gate runs as before, and nothing is published, verified, released or deployed. Unset, it
@@ -457,6 +459,33 @@ jobs:
         if: needs.changes.outputs.quick == 'false'
         run: echo "The change touches nothing the quick deploy's definitions define or read."
 
+  # The browser tests: a page can break from a template, a style sheet, a route, a
+  # dependency or a test, so the job runs on every change, with no condition (a skipped job
+  # would skip `publish` after it). Playwright installs Chromium's system packages with its
+  # own command (--with-deps), written for GitHub's hosted image, so the job runs there and
+  # not on CAIRN_GATE_RUNNER. The checkout and uv are the `test` job's.
+  browser:
+    name: browser tests (Chromium)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Install the locked environment
+        run: uv sync --locked
+      - name: Install Chromium and its system packages
+        run: uv run python -m playwright install --with-deps --only-shell chromium
+      - name: Browser tests
+        run: uv run pytest tests/browser --run-browser
+
   image:
     name: image smoke (${{ matrix.platform }})
     needs: [test, changes]
@@ -643,6 +672,7 @@ jobs:
       - secrets
       - image_scan
       - quick
+      - browser
     if: github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:

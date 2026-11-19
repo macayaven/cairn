@@ -23,6 +23,7 @@ from cairn.server import SignIn, create_app
 from cairn.store import PAGE_CLAIMS_MAX, Store
 from cairn.store.grants import REFRESH_TOKEN_TTL
 from cairn.web import cli
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -258,7 +259,7 @@ def test_a_private_project_with_no_maker_says_owners_only(tmp_path):
         vault = store.create_project("vault", everyone="none")  # the root store acts for no one
         assert vault.maker_id is None
         with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
-            home = client.get("/", headers={"cookie": f"cairn_session={ada.token}"})
+            home = client.get("/", headers={"cookie": f"{session_cookie()}={ada.token}"})
             assert home.status_code == 200
             row = home.text[home.text.index(">vault<") :]
             assert "Private: owners only" in row[: row.index("</li>")]
@@ -413,7 +414,7 @@ def test_a_provider_sign_in_sets_a_twelve_hour_cookie_and_keeps_no_password(tmp_
             cookie = next(
                 c
                 for c in done.headers.get_list("set-cookie")
-                if c.startswith("__Host-cairn_session=")
+                if c.startswith(f"{session_cookie('https')}=")
             )
             assert "max-age=43200" in cookie.lower()
             now[0] = NOW + timedelta(hours=12) - timedelta(seconds=1)
@@ -527,8 +528,8 @@ def people(tmp_path):
             ada=ada_view,
             brook=brook_view,
             key=key,
-            cookie={"cookie": f"cairn_session={ada.token}"},
-            brook_cookie={"cookie": f"cairn_session={brook.token}"},
+            cookie={"cookie": f"{session_cookie()}={ada.token}"},
+            brook_cookie={"cookie": f"{session_cookie()}={brook.token}"},
         )
     store.close()
 

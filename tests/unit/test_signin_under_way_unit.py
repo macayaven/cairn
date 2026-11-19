@@ -14,6 +14,7 @@ from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.store import Store
 from cairn.web.signin import COOKIE_MAX, NEXT_MAX, SEPARATOR, STATE_TTL, UNDER_WAY
+from cookie_names import session_cookie, signin_cookie
 
 HOST = "kb.example.test"
 BASE = f"https://{HOST}"
@@ -64,7 +65,7 @@ def world(tmp_path, monkeypatch):
     with TestClient(app, base_url=BASE) as browser:
         probe = TestClient(app, base_url=BASE)  # which of the app's seals is the sign-in's
         probe.get("/auth/github", follow_redirects=False)
-        value = probe.cookies.get("__Host-cairn_signin")
+        value = probe.cookies.get(signin_cookie("https"))
         (signs,) = [seals for seals in made if seals.open(value, "sign-in:github") is not None]
         yield browser, clock, signs
     store.close()
@@ -83,7 +84,7 @@ def back(browser: TestClient, state: str) -> httpx.Response:
 
 def held(browser: TestClient) -> list[str]:
     """The sealed states the browser's cookie holds."""
-    value = browser.cookies.get("__Host-cairn_signin", path="/")
+    value = browser.cookies.get(signin_cookie("https"), path="/")
     return value.split(SEPARATOR) if value else []
 
 
@@ -97,7 +98,9 @@ def test_the_longest_next_there_can_be_still_fits_and_pushes_the_oldest_out(worl
         state, r = start(browser, longest)
         states.append(state)
         header = next(
-            h for h in r.headers.get_list("set-cookie") if h.startswith("__Host-cairn_signin=")
+            h
+            for h in r.headers.get_list("set-cookie")
+            if h.startswith(f"{signin_cookie('https')}=")
         )
         assert len(header) < 4000 and len(SEPARATOR.join(held(browser))) <= COOKIE_MAX
     kept = len(held(browser))
@@ -129,14 +132,14 @@ def test_one_state_among_several_expires_on_its_own(world):
 def test_an_expired_state_is_refused_in_a_signed_in_browser_too(world):
     browser, clock, _ = world
     assert back(browser, start(browser)[0]).status_code == 200  # signed in
-    session = browser.cookies.get("__Host-cairn_session")
+    session = browser.cookies.get(session_cookie("https"))
     assert browser.get("/keys", follow_redirects=False).status_code == 200
     late, _ = start(browser)
     clock.now += STATE_TTL
 
     r = back(browser, late)
     assert r.status_code == 400 and STALE in r.text and "set-cookie" not in r.headers
-    assert browser.cookies.get("__Host-cairn_session") == session
+    assert browser.cookies.get(session_cookie("https")) == session
     assert browser.get("/keys", follow_redirects=False).status_code == 200
 
 
@@ -148,7 +151,7 @@ def test_a_state_sealed_before_b2_is_taken_as_it_was(world):
         "sign-in:github",
         ttl=STATE_TTL,
     )
-    browser.cookies.set("__Host-cairn_signin", sealed, domain=HOST, path="/")
+    browser.cookies.set(signin_cookie("https"), sealed, domain=HOST, path="/")
     r = back(browser, "s" * 43)
     assert r.status_code == 200 and "url=/welcome?next=%2Fkeys" in r.text
     assert held(browser) == []  # cleared, as before
@@ -167,7 +170,7 @@ def test_a_state_sealed_before_b2_is_taken_as_it_was(world):
 )
 def test_a_cookie_this_server_did_not_write_is_refused_never_a_500(world, value):
     browser, _, _ = world
-    browser.cookies.set("__Host-cairn_signin", value, domain=HOST, path="/")
+    browser.cookies.set(signin_cookie("https"), value, domain=HOST, path="/")
     r = back(browser, "any-state")
     assert r.status_code == 400 and STALE in r.text
     state, _ = start(browser)  # a start drops what it cannot open and keeps going
@@ -180,7 +183,7 @@ def test_a_state_sealed_by_another_process_is_refused_and_dropped(world):
     elsewhere = oauth.SealedRequests()  # another secret: the server before a restart
     sealed = elsewhere.seal({"state": "s" * 43, "nonce": "n", "next": "/", "held": None},
                             "sign-in:github", ttl=STATE_TTL)  # fmt: skip
-    browser.cookies.set("__Host-cairn_signin", sealed, domain=HOST, path="/")
+    browser.cookies.set(signin_cookie("https"), sealed, domain=HOST, path="/")
     r = back(browser, "s" * 43)
     assert r.status_code == 400 and STALE in r.text
     state, _ = start(browser)

@@ -13,6 +13,7 @@ from cairn.server import create_app
 from cairn.store import Store
 from cairn.web.brand import Brand
 from cairn.web.templating import _page
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -35,7 +36,7 @@ def env(tmp_path):
 
 
 def main_of(html: str) -> str:
-    return html.split('<main id="main">', 1)[1].split("</main>", 1)[0]
+    return html.split('<main id="main" tabindex="-1">', 1)[1].split("</main>", 1)[0]
 
 
 # 4. Every page starts with a link to its main content
@@ -47,20 +48,20 @@ def test_every_page_starts_with_a_skip_link_to_its_main_landmark(env):
         html = client.get(path).text
         body = html.split("<body", 1)[1].split(">", 1)[1].lstrip()
         assert body.startswith(SKIP), path
-        assert html.count('<main id="main">') == 1, path
+        assert html.count('<main id="main" tabindex="-1">') == 1, path
 
 
 def test_a_signed_out_page_has_the_skip_link_too(env):
     client, _ = env
     client.post("/logout", headers=SAME_ORIGIN)
     html = client.get("/login").text
-    assert SKIP in html and '<main id="main">' in html
+    assert SKIP in html and '<main id="main" tabindex="-1">' in html
 
 
 def test_a_branded_page_has_the_skip_link_too():
     html = _page("brand_retry.html", brand=Brand("Fable Works"), url="/").body.decode()
     body = html.split("<body", 1)[1].split(">", 1)[1].lstrip()
-    assert body.startswith(SKIP) and '<main id="main">' in html
+    assert body.startswith(SKIP) and '<main id="main" tabindex="-1">' in html
 
 
 def test_the_skip_link_shows_only_when_it_has_the_keyboards_focus():
@@ -192,7 +193,7 @@ def team(tmp_path):
 
 
 def as_(team, who: str) -> dict[str, str]:
-    return {"cookie": f"cairn_session={team.sessions[who]}"}
+    return {"cookie": f"{session_cookie()}={team.sessions[who]}"}
 
 
 def endings(team) -> list[dict]:

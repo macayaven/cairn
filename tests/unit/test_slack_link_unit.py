@@ -17,6 +17,7 @@ from cairn.server import SignIn, create_app
 from cairn.slack import link
 from cairn.store import Store
 from cairn.web.slack import Slack
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 HOST = "cairn.example.test"
@@ -65,7 +66,7 @@ class World:
             team_domain="fable-works", bot_user_id=BOT,
         )  # fmt: skip
         self.client = TestClient(self.app, base_url=BASE)
-        self.client.cookies.set("__Host-cairn_session", made.token, domain=HOST, path="/")
+        self.client.cookies.set(session_cookie("https"), made.token, domain=HOST, path="/")
 
     def offer(self) -> str:
         return self.view.offer_slack_link(self.install, GUS)

@@ -6,6 +6,7 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -42,7 +43,12 @@ from cairn.sources import (
     SourceError,
     holds_secret,
 )
-from cairn.sources.url import Checked, Resolve, system_resolve
+from cairn.sources.url import (
+    CheckedTransport,
+    Resolve,
+    private_addresses_allowed,
+    system_resolve,
+)
 from cairn.store import SourceOff, Store
 from cairn.store.hosted import HOSTED_ENV, NOT_HERE, RECONNECT, TokenUnusable
 from cairn.store.sources import OwnerCannotWrite
@@ -73,21 +79,22 @@ def source_client(
     query strings and whatever its provider sends back in a header stay out of every log,
     whoever made the client (the command line, `serve`).
 
-    Before each request the client refuses an address inside this machine's network
-    plumbing, and a name that resolves to one (cairn.sources.url.Checked), through
-    `resolve`; without a transport, through the system's resolver. A client given a
-    transport and no resolver (a test's) looks no name up."""
+    Before each request the transport checks the address and pins the connection to a
+    checked IP, keeping the original HTTP Host and TLS name. A MockTransport without an
+    explicit resolver checks literals and known local names without using DNS.
+    """
     for name in CLIENT_LOGGERS:
         client_log = logging.getLogger(name)
         client_log.setLevel(max(logging.WARNING, client_log.level))
-    if resolve is None and transport is None:
+    if resolve is None and not isinstance(transport, httpx.MockTransport):
         resolve = system_resolve
-    hooks = [Checked(resolve)] if resolve is not None else []
     return httpx.AsyncClient(
         timeout=SOURCE_TIMEOUT,
         follow_redirects=False,
-        transport=transport,
-        event_hooks={"request": hooks},
+        transport=CheckedTransport(
+            resolve, allow_private=private_addresses_allowed(os.environ), transport=transport
+        ),
+        trust_env=False,  # A proxy would choose where to dial instead of the checked transport.
     )
 
 

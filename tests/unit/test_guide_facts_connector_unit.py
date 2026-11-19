@@ -26,6 +26,7 @@ from cairn.sources import connector as c
 from cairn.sources import connector_check as check
 from cairn.sources.runner import NOTHING_NEW
 from cairn.store import Store
+from cookie_names import session_cookie
 
 ROOT = Path(__file__).parents[2]
 RAW = guide_source("sources")
@@ -253,7 +254,7 @@ def test_the_sources_page_proposes_a_project_named_like_the_source(tmp_path):
         owner = store.sign_in("sso", "o", "o@example.test", "Olive", issuer=ISSUER, join="default")
         store.add_source("north-pumps", "connector", {"url": URL, "secret_env": "FEED_SECRET"})
         with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
-            client.cookies.set("cairn_session", owner.token)
+            client.cookies.set(session_cookie(), owner.token)
             page = client.get("/sources").text
         (field,) = re.findall(r'<input type="text" id="source-north-pumps-new-project"[^>]*>', page)
         assert 'value="north-pumps"' in field
@@ -313,7 +314,7 @@ def test_a_run_that_stopped_early_says_why_under_the_counts(store, clock, tmp_pa
     assert "nothing it gave was new" in report.said
     owner = store.sign_in("sso", "o", "o@example.test", "Olive", issuer=ISSUER, join="default")
     with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
-        client.cookies.set("cairn_session", owner.token)
+        client.cookies.set(session_cookie(), owner.token)
         page = " ".join(client.get("/sources").text.split())
     assert "still had more after 20 answers" in page and "nothing it gave was new" in page
 

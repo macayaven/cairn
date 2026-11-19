@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import math
-import time
+import threading
 
 import pytest
 
@@ -183,18 +183,16 @@ class ByTitle:
 
     def __init__(self, clock: Clock, b_fails: bool = False) -> None:
         self.clock, self.b_fails = clock, b_fails
-        self.arranger: Arranger | None = None
         self.titles: list[str] = []
         self.waited = False
+        self.pause_applied = threading.Event()
 
     def complete(self, messages):
         user = messages[-1]["content"]
         title = user.split("Page title: ", 1)[1].split("\n", 1)[0]
         self.titles.append(title)
         if title.startswith("B") and not self.waited:
-            deadline = time.monotonic() + 5  # a hang guard on the real thread, nothing else
-            while not self.arranger.paused() and time.monotonic() < deadline:
-                time.sleep(0.005)
+            assert self.pause_applied.wait(5), "the other workspace did not trigger a pause"
             self.waited = True
             self.clock.now += 100  # the pause began 100 s before this answer
         if title.startswith("A") or self.b_fails:
@@ -205,14 +203,22 @@ class ByTitle:
 
 @pytest.mark.parametrize("b_fails", [False, True])
 def test_a_pause_lets_the_pages_in_hand_finish_and_stops_every_page_not_started(
-    store, caplog, b_fails
+    store, caplog, b_fails, monkeypatch
 ):
     clock = Clock()
     model = ByTitle(clock, b_fails=b_fails)
     arranger = Arranger(
         model, price=None, view_for=store.for_account, min_claims=1, clock=clock, pause_after=2
     )
-    model.arranger = arranger
+    count = arranger._count
+
+    def observed(status):
+        pause = count(status)
+        if pause is not None:
+            model.pause_applied.set()
+        return pause
+
+    monkeypatch.setattr(arranger, "_count", observed)
     queued = {}
     for name in ("A", "B"):
         view = store.for_account(store.create_account(name).id)

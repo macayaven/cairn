@@ -16,6 +16,7 @@ from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.store import Store
 from cairn.web.signin import STATE_TTL, UNDER_WAY
+from cookie_names import session_cookie
 
 RUN = files("cairn.guides").joinpath("run.md").read_text(encoding="utf-8")
 BASE = "https://kb.example.test"
@@ -87,7 +88,7 @@ def test_a_person_is_signed_in_on_several_browsers_at_once(world):
     for each in (laptop, phone):
         r = back(each, start(each))
         assert r.status_code == 200
-        tokens.append(each.cookies.get("__Host-session"))
+        tokens.append(each.cookies.get(session_cookie("https", branded=True)))
     assert tokens[0] != tokens[1] and all(store.resolve_session(t) for t in tokens)
     assert signed_in(laptop) and signed_in(phone)
     assert laptop.post("/logout", headers=SAME_ORIGIN).status_code == 303

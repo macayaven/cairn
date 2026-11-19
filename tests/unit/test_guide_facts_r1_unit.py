@@ -11,7 +11,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +21,7 @@ import uvicorn
 from cairn.server import create_app
 from cairn.store import Store
 from cairn.web import cli
+from wait_helpers import poll_until
 
 REPO = Path(__file__).resolve().parents[2]
 DEPLOY = (REPO / "deploy" / "README.md").read_text(encoding="utf-8")
@@ -56,11 +56,8 @@ def serving(store: Store) -> Iterator[int]:
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    deadline = time.monotonic() + 30  # a hang guard on the real server, and nothing else
-    while not server.started:
-        assert time.monotonic() < deadline, "uvicorn did not start"
-        time.sleep(0.02)
     try:
+        poll_until(lambda: server.started, "uvicorn did not start", 30, every=0.02)
         yield port
     finally:
         server.should_exit = True

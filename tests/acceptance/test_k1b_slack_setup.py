@@ -90,6 +90,7 @@ from cairn.slack.manifest import build_manifest, manifest_link
 from cairn.sources import KINDS
 from cairn.store import Store
 from cairn.web.slack import Slack
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 HOST = "cairn.example.test"
@@ -219,7 +220,7 @@ class World:
     def browser(self, person: dict | None) -> TestClient:
         client = TestClient(self.app, base_url=BASE)
         if person is not None:
-            client.cookies.set("__Host-cairn_session", person["token"], domain=HOST, path="/")
+            client.cookies.set(session_cookie("https"), person["token"], domain=HOST, path="/")
         self.clients.append(client)
         return client
 

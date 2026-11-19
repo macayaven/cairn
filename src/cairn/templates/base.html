@@ -49,7 +49,7 @@
   {% endif %}
   {% endblock %}
 </header>
-<main id="main">
+<main id="main" tabindex="-1">
 {% if signed_in and section() == "/workspace" and path() != "/workspace" %}
 {{ crumbs((("/workspace", "Workspace"),)) }}
 {% endif %}

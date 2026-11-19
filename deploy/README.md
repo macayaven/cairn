@@ -60,6 +60,18 @@ One `serve` runs on a database, and cairn holds to it: a second `serve` on the s
 
 The image's health check asks cairn's `/healthz` every 30 seconds. It answers 200 only while cairn can read its database and the database holds the schema this cairn knows, and 503 when the database is closed, cannot be read, holds another schema version, or cannot be used after a write that failed and could not be undone. While a compaction holds the database it answers 200: cairn is busy, not broken. Once one write has held the database for more than a minute (an hour while a compaction runs), it answers 503 with `{"status":"stuck"}`: reads may still work, but no write can be made, and cairn does not get out of it by itself. Restart it with `docker compose restart cairn`: the write under way is lost, nothing committed is. It answers 200 again as soon as that write lets go. After 3 failed checks in a row `docker compose ps` shows cairn as unhealthy. Compose does not restart it for that (it restarts cairn when cairn exits). After a write that could not be undone, `docker compose logs cairn` says so (`a rollback failed: the store is unusable until it is opened again`), and `docker compose restart cairn` brings it back.
 
+### Compose limits
+
+| Service | Memory | Processes | Memory variable | Process variable |
+|---|---:|---:|---|---|
+| cairn | 1024 MiB | 512 | `CAIRN_MEMORY_MB` | `CAIRN_PIDS_LIMIT` |
+| Caddy | 256 MiB | 256 | `CADDY_MEMORY_MB` | `CADDY_PIDS_LIMIT` |
+| Litestream | 256 MiB | 256 | `LITESTREAM_MEMORY_MB` | `LITESTREAM_PIDS_LIMIT` |
+| Litestream restore | 256 MiB | 256 | `LITESTREAM_RESTORE_MEMORY_MB` | `LITESTREAM_RESTORE_PIDS_LIMIT` |
+| Data initializer | 64 MiB | 32 | `CAIRN_DATA_INIT_MEMORY_MB` | `CAIRN_DATA_INIT_PIDS_LIMIT` |
+
+Set overrides in `deploy/.env` as whole numbers. Memory limits are in MiB and include swap. A compaction or a large import can raise cairn's memory use. If the kernel kills a process at the memory limit, Docker applies the container's restart policy. A failed initializer or restore keeps cairn from starting. At the process limit, the kernel refuses new processes or threads.
+
 ### Only the people you name
 
 Sign-in through GitHub, Google or your own provider is turned on with `--sign-in` in `CAIRN_EXTRA_ARGS` and the provider's `CAIRN_<PROVIDER>_CLIENT_ID` and `_CLIENT_SECRET` in `deploy/cairn.env` (the main README's "Sign in with GitHub, Google or your own identity provider"). Anyone with an account there can then sign in. To let in only the people you name, a private pre-release say, list their addresses in `deploy/cairn.env`, separated by commas, and run `docker compose up -d`:

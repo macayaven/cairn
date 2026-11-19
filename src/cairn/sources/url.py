@@ -14,26 +14,21 @@ address (review, finding 3).
   or broadcast address; also when written as an IPv4-mapped or NAT64 IPv6 address, or as
   IPv4 in one number, in hex or with fewer than four parts. Private ranges and loopback are
   not inside: a self-hoster's own services live there.
-- `Checked(resolve)`: the source client's request hook. Before each request, the host is
-  refused when it is inside; a name is resolved with `resolve(host, port)` and refused when
-  any address it resolves to is inside (RefusedAddress, an httpx.ConnectError, so each source
-  answers it as any failure to connect, by the error's kind). A name that does not resolve is
-  an httpx.ConnectError. Neither message names the host. Every request a source makes
-  carries its credential, so every one is checked. The name is resolved again when the
-  request connects: a name that changes its answer between the two (DNS rebinding) is not
-  caught here.
-- `system_resolve(host, port)`: the system's resolver, used only by a client made without
-  a transport (cairn.sources.runner.source_client); tests hand in their own.
+- `CheckedTransport`: resolve every request through the source client and send it only
+  to an address that passed the checks. The HTTP Host and TLS name stay the source's name.
+  A non-global address needs the operator's CAIRN_SOURCE_PRIVATE_ADDRESSES=allow.
+- `system_resolve(host, port)`: the system resolver. Tests hand in their own.
 """
 
 import asyncio
 import ipaddress
 import socket
-from collections.abc import Awaitable, Callable, Iterable
-from urllib.parse import unquote, urlsplit
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import httpx
 
+URL_MAX = 2_048
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # A cloud's metadata service, by name: Google's, Amazon's, and the short names that reach them.
 METADATA_NAMES = frozenset(
@@ -58,15 +53,32 @@ INSIDE = (
     " is never sent"
 )
 
+PRIVATE_ADDRESSES_SETTING = "CAIRN_SOURCE_PRIVATE_ADDRESSES"
+PRIVATE_REFUSAL = (
+    f"To read a source on a non-global address, set {PRIVATE_ADDRESSES_SETTING}=allow."
+)
 Resolve = Callable[[str, int], Awaitable[Iterable[str]]]
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
-def _address_inside(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+def private_addresses_allowed(environ: Mapping[str, str]) -> bool:
+    value = environ.get(PRIVATE_ADDRESSES_SETTING, "refuse")
+    if value not in ("allow", "refuse"):
+        raise ValueError(f"{PRIVATE_ADDRESSES_SETTING} is allow or refuse")
+    return value == "allow"
+
+
+def _policy_address(address: IPAddress) -> IPAddress:
     if isinstance(address, ipaddress.IPv6Address):
         if address.ipv4_mapped is not None:
             address = address.ipv4_mapped
         elif address in _NAT64:
             address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return address
+
+
+def _address_inside(address: IPAddress) -> bool:
+    address = _policy_address(address)
     return (
         address.is_link_local
         or address.is_multicast
@@ -76,7 +88,7 @@ def _address_inside(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> b
     )
 
 
-def _literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+def _literal(host: str) -> IPAddress | None:
     """`host` as an IP address when it is written as one, in any form a resolver would read
     as one without asking (2852039166, 0xa9fea9fe, 169.254.43518 included); else None."""
     try:
@@ -138,31 +150,56 @@ def check_base_url(
     holds: str = "a credential",
     http_said: str = "on this machine",
     looks_like: Callable[[str], bool],
+    full_endpoint: bool = False,
+    loopback: frozenset[str] = LOOPBACK_HOSTS,
 ) -> str:
-    """`base_url` as stored, or ValueError naming it and never repeating the value. `what`
-    is what it is the address of; `comes_from` where the credential comes from ("the key
-    comes from the environment"), `named_by` the setting that names it; `looks_like` says
-    whether a piece of the address looks like a credential."""
-    if not isinstance(value, str) or len(value) > 2048:
+    """Check a source address without repeating it in a refusal. A base has no query
+    and loses its trailing slash. A connector's full endpoint may have a query and
+    is stored exactly as the HTTP client sends it."""
+    name = "url" if full_endpoint else "base_url"
+    if not isinstance(value, str) or (full_endpoint and not value) or len(value) > URL_MAX:
+        if full_endpoint:
+            raise ValueError(f"url is the connector's address, at most {URL_MAX:,} characters")
         raise ValueError(f"base_url is the address of {what}")
     try:
-        parts = urlsplit(value.strip())
-        host = parts.hostname
+        parts = urlsplit(value if full_endpoint else value.strip())
+        host, _ = parts.hostname, parts.port
     except ValueError:
-        raise ValueError("base_url is not a URL") from None
+        raise ValueError(f"{name} is not a URL") from None
     if "@" in parts.netloc:
-        raise ValueError(f"base_url must not hold a user or password: {comes_from}")
+        where = f", named by {named_by}" if full_endpoint else ""
+        raise ValueError(f"{name} must not hold a user or password: {comes_from}{where}")
     scheme = parts.scheme.lower()
-    check_transport("base_url", scheme, host, http_said=http_said)
-    if parts.query or parts.fragment or "?" in value or "#" in value:
+    check_transport(
+        name, scheme, host, loopback=loopback, http_said=http_said,
+        no_host="url is not a URL: it names no host" if full_endpoint else None,
+    )  # fmt: skip
+    if full_endpoint:
+        if parts.fragment or "#" in value:
+            raise ValueError("url has no fragment")
+    elif parts.query or parts.fragment or "?" in value or "#" in value:
         raise ValueError("base_url has no query or fragment")
-    # The address as a whole, and each host label and path segment on its own: a credential
-    # the URL carries is caught where it sits, not only at the start of the string.
+
+    # Catch credential shapes in the whole URL and in its decoded parts individually.
     assert host is not None  # check_transport refused an address without one
     pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]
+    if full_endpoint:
+        pieces.extend(piece for pair in parse_qsl(parts.query) for piece in pair)
     if any(looks_like(piece) for piece in pieces if piece):
-        raise ValueError(f"base_url looks like it holds {holds}: {comes_from}, named by {named_by}")
-    return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+        raise ValueError(f"{name} looks like it holds {holds}: {comes_from}, named by {named_by}")
+
+    if not full_endpoint:
+        return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    try:
+        sent = str(httpx.URL(value))
+    except (httpx.InvalidURL, ValueError):
+        raise ValueError("url is not a URL") from None
+    if sent != value:
+        raise ValueError(
+            "url is not written as it is sent: write it as the HTTP client sends it (the host"
+            " in lower case, anything else percent-encoded)"
+        )
+    return value
 
 
 # Before each request
@@ -171,6 +208,10 @@ def check_base_url(
 class RefusedAddress(httpx.ConnectError):
     """A source's request to an address inside this machine's network plumbing, refused
     before it was sent."""
+
+
+class PrivateAddress(RefusedAddress):
+    """The operator has not allowed sources to reach non-global addresses."""
 
 
 REFUSED = f"the source's address {INSIDE}"
@@ -185,23 +226,97 @@ async def system_resolve(host: str, port: int) -> list[str]:
     return [str(info[4][0]) for info in found]
 
 
-class Checked:
-    """The source client's request hook: refuses a request to an inside address, or to a
-    name that resolves to one (see the module docstring)."""
+class CheckedTransport(httpx.AsyncBaseTransport):
+    """Pin requests to checked IPs with the documented HTTPX sni_hostname extension.
 
-    def __init__(self, resolve: Resolve) -> None:
+    Pools are separate by original host. HTTPX pools by the dial target, so sharing
+    one pool could reuse a connection authenticated for a different TLS name.
+    """
+
+    def __init__(
+        self,
+        resolve: Resolve | None,
+        *,
+        allow_private: bool,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.resolve = resolve
+        self._allow_private = allow_private
+        self._injected = transport
+        self._pools: dict[str, httpx.AsyncHTTPTransport] = {}
 
-    async def __call__(self, request: httpx.Request) -> None:
-        host = request.url.host
-        if inside(host):
+    async def __aenter__(self) -> "CheckedTransport":
+        if self._injected is not None:
+            await self._injected.__aenter__()
+        return self
+
+    async def aclose(self) -> None:
+        if self._injected is not None:
+            await self._injected.aclose()
+        for pool in self._pools.values():
+            await pool.aclose()
+        self._pools.clear()
+
+    async def _addresses(self, request: httpx.Request) -> list[IPAddress] | None:
+        host = request.url.raw_host.decode("ascii")
+        bare = _bare(host)
+        literal = _literal(bare)
+        if inside(bare):
             raise RefusedAddress(REFUSED, request=request)
-        if _literal(_bare(host)) is not None:
-            return
-        port = request.url.port or (443 if request.url.scheme == "https" else 80)
-        try:
-            addresses = list(await self.resolve(host, port))
-        except OSError:
-            raise httpx.ConnectError(UNRESOLVED, request=request) from None
-        if any(inside(address) for address in addresses):
+        if bare == "localhost" and not self._allow_private:
+            raise PrivateAddress(PRIVATE_REFUSAL, request=request)
+        if literal is not None:
+            addresses = [literal]
+        elif self.resolve is None:  # A MockTransport cannot open a connection.
+            return None
+        else:
+            port = request.url.port or (443 if request.url.scheme == "https" else 80)
+            try:
+                answers = list(await self.resolve(host, port))
+                addresses = list(dict.fromkeys(ipaddress.ip_address(_bare(ip)) for ip in answers))
+            except (OSError, ValueError):
+                raise httpx.ConnectError(UNRESOLVED, request=request) from None
+            if not addresses:
+                raise httpx.ConnectError(UNRESOLVED, request=request)
+        if any(_address_inside(address) for address in addresses):
             raise RefusedAddress(REFUSED, request=request)
+        if not self._allow_private and any(
+            not _policy_address(address).is_global for address in addresses
+        ):
+            raise PrivateAddress(PRIVATE_REFUSAL, request=request)
+        if (
+            request.url.scheme == "http"
+            and bare in LOOPBACK_HOSTS
+            and any(not _policy_address(address).is_loopback for address in addresses)
+        ):
+            raise RefusedAddress(
+                "The plain HTTP source did not resolve to loopback.", request=request
+            )
+        return addresses
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        addresses = await self._addresses(request)
+        host = request.url.raw_host.decode("ascii")
+        transport = self._injected
+        if transport is None:
+            if host not in self._pools:
+                self._pools[host] = httpx.AsyncHTTPTransport()
+            transport = self._pools[host]
+        if addresses is None:
+            return await transport.handle_async_request(request)
+        for index, address in enumerate(addresses):
+            target = httpx.Request(
+                request.method,
+                request.url.copy_with(host=str(address)),
+                headers=request.headers,
+                stream=request.stream,
+                extensions={**request.extensions, "sni_hostname": host},
+            )
+            try:
+                return await transport.handle_async_request(target)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                # Alternate addresses came from the same checked resolution. Retry only
+                # a failed connection, before any request bytes can have been sent.
+                if index == len(addresses) - 1:
+                    raise
+        raise AssertionError("a checked address is required")

@@ -21,6 +21,7 @@ from starlette.testclient import TestClient
 from cairn.server import create_app
 from cairn.sources import KINDS
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -53,7 +54,7 @@ def section(markup: str, ident: str) -> str:
 
 def main(markup: str) -> str:
     """The page's own part: what <main> holds, without the frame's sign-out form."""
-    return markup.partition('<main id="main">')[2].partition("</main>")[0]
+    return markup.partition('<main id="main" tabindex="-1">')[2].partition("</main>")[0]
 
 
 def form_to(markup: str, action: str) -> tuple[str, str]:
@@ -74,7 +75,7 @@ def person(store: Store, name: str, role: str | None = None) -> SimpleNamespace:
         store.set_role(signed.user.id, role)
     return SimpleNamespace(
         id=signed.user.id,
-        cookie={"cookie": f"cairn_session={signed.token}"},
+        cookie={"cookie": f"{session_cookie()}={signed.token}"},
         view=store.for_account(signed.account_id, signed.user.id),
     )
 

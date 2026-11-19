@@ -62,6 +62,7 @@ from cairn.store import Claim, Store
 from cairn.web import cli
 from cairn.web.graph_view import render_graph
 from cairn.web.templating import PATH, UI_HEADERS
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.acme.example/pool-1"
@@ -158,7 +159,7 @@ def build(tmp_path, *, explorer: bool, pages: int = 3, notes: int = 3, name: str
         return SimpleNamespace(
             name=who,
             user=signed.user,
-            cookie={"cookie": f"__Host-cairn_session={signed.token}"},
+            cookie={"cookie": f"{session_cookie('https')}={signed.token}"},
             view=store.for_account(signed.account_id, signed.user.id),
         )
 
@@ -557,7 +558,7 @@ def test_under_a_brand_the_script_is_served_by_its_exact_name_and_names_nothing(
                 assert "cairn" not in said and "macayaven" not in said, path
             for path in ("/static/Graph-View.js", "/static/graph-view.JS", "/static/cairn.css"):
                 assert client.get(path).status_code == 404, path
-            client.cookies.set("session", store.create_session())
+            client.cookies.set(session_cookie(branded=True), store.create_session())
             r = client.get("/b/ops/graph")
             assert r.status_code == 200
             (tag,) = Page(r.text).scripts

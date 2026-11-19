@@ -13,6 +13,7 @@ from cairn.server import create_app
 from cairn.sources import KINDS, SourceKind
 from cairn.store import Store
 from cairn.store.usage import Limits
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -236,7 +237,7 @@ def team(world):
         return SimpleNamespace(
             id=signed.user.id,
             view=view.acting_as("session", name, signed.user.id),
-            cookie={"cookie": f"cairn_session={signed.token}", **SAME_ORIGIN},
+            cookie={"cookie": f"{session_cookie()}={signed.token}", **SAME_ORIGIN},
         )
 
     return SimpleNamespace(
@@ -404,7 +405,7 @@ def web(world):
     signed = world.store.sign_in(
         "sso", "sub-ada", "ada@example.test", "Ada", issuer=ISSUER, join="default"
     )
-    cookie = {"cookie": f"cairn_session={signed.token}", **SAME_ORIGIN}
+    cookie = {"cookie": f"{session_cookie()}={signed.token}", **SAME_ORIGIN}
     app = create_app(world.store, public_url=BASE)
     with TestClient(app, base_url=BASE) as client:
         yield SimpleNamespace(client=client, cookie=cookie)
@@ -446,7 +447,7 @@ def test_a_project_the_admin_may_only_read_is_refused_on_the_page(world, web):
         "sso", "sub-cy", "cy@example.test", "Cy", issuer=ISSUER, join="default"
     )
     world.store.set_role(member.user.id, "admin")
-    cy = {"cookie": f"cairn_session={member.token}", **SAME_ORIGIN}
+    cy = {"cookie": f"{session_cookie()}={member.token}", **SAME_ORIGIN}
     before = dump(world.db)
     answer = web.client.post(
         "/integrations/standup/on", data={"project": "handbook"}, headers=cy, follow_redirects=False

@@ -15,6 +15,7 @@ from cairn.compiler import GateResult
 from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -279,7 +280,7 @@ def test_a_note_form_sent_signed_out_comes_back_whole_and_goes_through_once_sign
     # Signed in in another tab: the session cookie is in the browser's jar, and the form
     # posted from this same-origin page carries it (SameSite=Strict sends it on a
     # same-origin request).
-    client.cookies.set("cairn_session", token)
+    client.cookies.set(session_cookie(), token)
     again = post(client, path, **TYPED)
     assert again.status_code == 303
     (note,) = notes(store)

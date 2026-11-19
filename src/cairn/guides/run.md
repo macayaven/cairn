@@ -52,6 +52,18 @@ The second line gives the pulled image the name this guide's commands use, so ru
 
 To check what you pulled: `docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/macayaven/cairn:0.1.0` prints the digest you pulled; it must be the digest the repository's package page on GitHub shows for `0.1.0`. `docker buildx imagetools inspect --raw ghcr.io/macayaven/cairn:0.1.0` prints the release's image index: a manifest for each platform and, after them, attestation manifests listed with the platform `unknown/unknown`, each holding the attestations of one platform's image: the provenance of the build that published it and its bill of materials. The same command's `--format` option prints those two themselves, as Docker's reference for `docker buildx imagetools inspect` shows.
 
+### Compose limits
+
+| Service | Memory | Processes | Memory variable | Process variable |
+|---|---:|---:|---|---|
+| cairn | 1024 MiB | 512 | `CAIRN_MEMORY_MB` | `CAIRN_PIDS_LIMIT` |
+| Caddy | 256 MiB | 256 | `CADDY_MEMORY_MB` | `CADDY_PIDS_LIMIT` |
+| Litestream | 256 MiB | 256 | `LITESTREAM_MEMORY_MB` | `LITESTREAM_PIDS_LIMIT` |
+| Litestream restore | 256 MiB | 256 | `LITESTREAM_RESTORE_MEMORY_MB` | `LITESTREAM_RESTORE_PIDS_LIMIT` |
+| Data initializer | 64 MiB | 32 | `CAIRN_DATA_INIT_MEMORY_MB` | `CAIRN_DATA_INIT_PIDS_LIMIT` |
+
+Set overrides in `deploy/.env` as whole numbers. Memory limits are in MiB and include swap. A compaction or a large import can raise cairn's memory use. If the kernel kills a process at the memory limit, Docker applies the container's restart policy. A failed initializer or restore keeps cairn from starting. At the process limit, the kernel refuses new processes or threads.
+
 ## Make a key
 
 cairn has no password. You sign in with an API key, and agents connect with one. Make the first key inside the container, copy it out, and delete the copy inside:
@@ -223,6 +235,8 @@ docker run -d --name cairn --restart unless-stopped \
 ## Sources the server reads
 
 A source (Langfuse, Granola, Google Meet, Google Drive, Google Calendar, Gmail, Linear, GitHub or a connector of your own) is read by the server itself with credentials from its environment, so you add or remove it on the command line: `python -m cairn.server source-add --help` lists each kind's settings. After that the workspace decides: an owner or an admin switches it on or off under **Workspace**, then **Sources**, and chooses the projects it writes into. A Langfuse source is on as soon as it is added; a kind that starts off reads nothing until someone switches it on, and then only what happens from then on. On the command line, `source-enable --name NAME --project PROJECT` and `source-disable --name NAME` do the same. The [sources guide](sources.md#sources-the-server-reads) says more.
+
+`CAIRN_SOURCE_PRIVATE_ADDRESSES` is `refuse` by default. Set it to `allow` to read a source on a non-global address. Any other value stops `serve` and commands that add, check or run a source. An existing source on such an address keeps its configuration and switch setting. Its next run fails and the Sources page says how to allow it.
 
 ## Slack
 

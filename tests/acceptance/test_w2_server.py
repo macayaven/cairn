@@ -16,6 +16,7 @@ from starlette.testclient import TestClient
 
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 RUNBOOK = (FIXTURES / "runbook_synthetic.md").read_text(encoding="utf-8")
@@ -114,7 +115,7 @@ def test_ui_needs_a_session_and_login_sets_one(env):
     r = c.post("/login", data={"key": env.key}, follow_redirects=False)
     assert r.status_code == 303
     cookie = r.headers["set-cookie"].lower()
-    assert "cairn_session=" in cookie and "httponly" in cookie and "samesite=strict" in cookie
+    assert f"{session_cookie()}=" in cookie and "httponly" in cookie and "samesite=strict" in cookie
     assert c.get("/").status_code == 200
     c.post("/logout", follow_redirects=False)
     assert c.get("/", follow_redirects=False).status_code == 303

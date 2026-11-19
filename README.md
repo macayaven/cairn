@@ -179,6 +179,13 @@ uv run python -m cairn.server key-create --db runs/dev/cairn.db --label laptop -
 uv run python -m cairn.server serve --db runs/dev/cairn.db --host 127.0.0.1 --port 8765
 ```
 
+The browser tests in `tests/browser` start a server of their own on 127.0.0.1 and walk its pages in headless Chromium: axe-core's checks in the light and dark schemes, a 375-pixel screen, the keyboard, and the graph's labels. They make no request beyond that server. No other run collects them, so the commands above need no browser. To run them, fetch Playwright's Chromium once, then name the folder with `--run-browser`:
+
+```bash
+uv run python -m playwright install --only-shell chromium
+uv run pytest tests/browser --run-browser
+```
+
 `runs/` is ignored by git. Tests come first: a change starts with a test that fails for the expected reason. Tests run offline, with a fake model and fake HTTP, and every fixture is synthetic. [CONTRIBUTING.md](CONTRIBUTING.md) says more, and [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 ## What it does not promise

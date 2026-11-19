@@ -1,9 +1,8 @@
 """Unit tests for where a source may send its credential (review, finding 3): one helper,
 cairn.sources.url, checks every source's and connector's address. https, or http to this
 machine as before; never a link-local address, a cloud's metadata name or address, a
-multicast, unspecified or broadcast address. Private ranges and loopback stay allowed. A
-name is resolved before each request through the source client, by a resolver handed in:
-no test here touches DNS."""
+multicast, unspecified or broadcast address. Other non-global addresses require opt-in
+when a source connects. All runtime resolution here uses a stand-in."""
 
 import asyncio
 import inspect
@@ -14,7 +13,16 @@ import httpx
 import pytest
 
 import cairn.sources
-from cairn.sources import connector, github, google_api, google_meet, granola, langfuse, linear
+from cairn.sources import (
+    connector,
+    github,
+    google_api,
+    google_meet,
+    granola,
+    langfuse,
+    linear,
+    runner,
+)
 from cairn.sources import url as u
 from cairn.sources.runner import source_client
 
@@ -188,7 +196,8 @@ def get(client: httpx.AsyncClient, address: str) -> httpx.Response:
         ["0.0.0.0"],
     ],
 )
-def test_a_name_that_resolves_inside_is_refused_and_nothing_is_sent(answers):
+def test_a_name_that_resolves_inside_is_refused_and_nothing_is_sent(answers, monkeypatch):
+    monkeypatch.setenv(u.PRIVATE_ADDRESSES_SETTING, "allow")
     sent, transport = recording()
     resolve = Resolver({"rebind.fable.test": answers})
     client = source_client(transport=transport, resolve=resolve)
@@ -203,7 +212,8 @@ def test_a_name_that_resolves_inside_is_refused_and_nothing_is_sent(answers):
 @pytest.mark.parametrize(
     "answers", [["10.0.0.5"], ["192.168.1.4", "fd12:3456::1"], ["127.0.0.1"], ["::1"]]
 )
-def test_a_name_that_resolves_to_a_private_or_loopback_address_is_sent(answers):
+def test_a_name_that_resolves_to_a_private_or_loopback_address_is_sent(answers, monkeypatch):
+    monkeypatch.setenv(u.PRIVATE_ADDRESSES_SETTING, "allow")
     sent, transport = recording()
     resolve = Resolver({"ghe.fable.test": answers})
     response = get(
@@ -214,7 +224,8 @@ def test_a_name_that_resolves_to_a_private_or_loopback_address_is_sent(answers):
 
 
 @pytest.mark.parametrize("host", ["169.254.169.254", "[fe80::1]", "2852039166", "0xa9fea9fe"])
-def test_an_inside_address_written_out_is_refused_without_asking(host):
+def test_an_inside_address_written_out_is_refused_without_asking(host, monkeypatch):
+    monkeypatch.setenv(u.PRIVATE_ADDRESSES_SETTING, "allow")
     sent, transport = recording()
     resolve = Resolver()
     with pytest.raises(u.RefusedAddress):
@@ -222,7 +233,8 @@ def test_an_inside_address_written_out_is_refused_without_asking(host):
     assert sent == []
 
 
-def test_an_address_written_out_is_not_resolved():
+def test_an_address_written_out_is_not_resolved(monkeypatch):
+    monkeypatch.setenv(u.PRIVATE_ADDRESSES_SETTING, "allow")
     sent, transport = recording()
     resolve = Resolver()
     get(source_client(transport=transport, resolve=resolve), "https://10.0.0.5/api")
@@ -259,16 +271,21 @@ def test_a_source_reading_through_the_client_says_it_cannot_reach_its_address():
     assert SECRET not in str(failed.value)
 
 
-def test_the_client_without_a_transport_checks_with_the_systems_resolver():
-    client = source_client()
-    (check,) = client.event_hooks["request"]
-    assert check.resolve is u.system_resolve
+def test_the_client_without_a_transport_checks_with_the_systems_resolver(monkeypatch):
+    resolve = Resolver({"feed.fable.test": ["fe80::9"]})
+    monkeypatch.setattr(runner, "system_resolve", resolve)
+    with pytest.raises(u.RefusedAddress):
+        get(source_client(), "https://feed.fable.test/")
+    assert resolve.asked == [("feed.fable.test", 443)]
 
 
-def test_a_client_given_a_transport_alone_resolves_nothing():
-    """Tests hand in a transport and, unless they give a resolver, no name is looked up."""
-    _, transport = recording()
-    assert source_client(transport=transport).event_hooks["request"] == []
+def test_a_client_given_a_mock_transport_alone_resolves_nothing(monkeypatch):
+    """An offline stand-in never has to resolve its synthetic host."""
+    resolve = Resolver(fails=True)
+    monkeypatch.setattr(runner, "system_resolve", resolve)
+    sent, transport = recording()
+    assert get(source_client(transport=transport), "https://feed.fable.test/").status_code == 200
+    assert not resolve.asked and len(sent) == 1
 
 
 def test_the_resolver_is_handed_in_and_never_looked_up_by_the_helper():
@@ -283,27 +300,22 @@ def flat(text: str) -> str:
 
 
 def test_the_security_guide_says_where_a_source_connects():
-    """In the security guide: the sources guide is at its bound (70,000 bytes)."""
     from guide_source import guide_source
 
     sentences = (
-        "- A source sends its credential only over `https`, or `http` on this machine, and"
-        " never to an address written out that is a link-local address, a cloud's metadata"
-        " service, or a multicast, unspecified or broadcast address. Before each request that"
-        " carries a credential, a name is resolved and the request refused when any address"
-        " it resolves to is one of those. This does not protect against a name that changes"
-        " its answer between that check and the connection, which resolves the name again:"
-        " an operator who needs the guarantee blocks those addresses at the network, with an"
-        " egress rule. A private address and this machine itself stay allowed, since a"
-        " self-hoster's own services live there.",
+        "A source sends its credential only over `https`, or `http` on this machine.",
+        "Before each request, the server checks the written address or every address the name"
+        " resolves to.",
+        "It always refuses link-local, cloud metadata, multicast, unspecified and broadcast"
+        " addresses.",
+        "Other addresses that are not globally reachable require"
+        " `CAIRN_SOURCE_PRIVATE_ADDRESSES=allow`.",
+        "The connection uses a checked IP, keeps the original HTTP and TLS host name, and"
+        " follows no redirects.",
     )
-    text = flat(guide_source("security"))
+    text = flat(guide_source("security").split("## What cairn leaves to the operator", 1)[1])
     for sentence in sentences:
-        assert flat(sentence) in text, sentence
-    assert "whether the address is written out or a name leads to it" not in text
-    assert connector.check_url("https://10.0.0.5/items") and github._check_base_url(
-        "https://192.168.1.4/api/v3"
-    )
+        assert text.count(flat(sentence)) == 1, sentence
     for refused in ("https://169.254.169.254/x", "https://metadata.google.internal/x"):
         with pytest.raises(ValueError, match="inside this machine's network"):
             connector.check_url(refused)
@@ -321,17 +333,15 @@ def test_the_systems_resolver_gives_back_an_address_written_out():
     assert "::1" in asyncio.run(u.system_resolve("::1", 443))
 
 
-def test_the_check_resolves_once_and_the_connection_is_left_to_resolve_again():
-    """What the guide admits: the hook asks the resolver once, before the request; it does
-    not hand the connection the address it checked, so a name whose second answer differs
-    is not caught here (an egress rule is the operator's guarantee)."""
+def test_the_check_resolves_once_and_hands_the_ip_to_the_transport():
     sent, transport = recording()
-    answers = iter([["10.0.0.5"], ["169.254.169.254"]])
+    answers = iter([["192.0.0.9"], ["169.254.169.254"]])
 
     async def changing(host: str, port: int) -> list[str]:
         return next(answers)
 
     response = get(source_client(transport=transport, resolve=changing), "https://r.fable.test/")
     assert response.status_code == 200 and len(sent) == 1
-    assert sent[0].url.host == "r.fable.test"  # the name, for the transport to resolve
-    assert next(answers) == ["169.254.169.254"]  # asked once: the second answer unused
+    assert sent[0].url.host == "192.0.0.9"
+    assert sent[0].headers["host"] == "r.fable.test"
+    assert next(answers) == ["169.254.169.254"]

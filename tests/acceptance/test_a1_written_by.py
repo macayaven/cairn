@@ -127,6 +127,7 @@ from cairn.server import SignIn, create_app, main
 from cairn.sources import KINDS, NoteDraft, Pulled, SourceKind, run_source
 from cairn.spans import chunk
 from cairn.store import DEFAULT_ACCOUNT_ID, Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 MCP_URL = f"{BASE}/mcp"
@@ -367,7 +368,7 @@ class World:
             "sso", f"sub-{name}", email, name, issuer=ISSUER, join="default"
         )
         browser = self.browser()
-        browser.cookies.set("cairn_session", signed.token)
+        browser.cookies.set(session_cookie(), signed.token)
         return SimpleNamespace(id=signed.user.id, name=name, token=signed.token, browser=browser)
 
     def note(self, source_ref: str) -> str:

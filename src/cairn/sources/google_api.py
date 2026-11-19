@@ -68,7 +68,9 @@ import httpx
 from cairn.guard import PatternGuard
 from cairn.sources import Clock, SourceError
 from cairn.sources import url as source_url
+from cairn.sources.http_policy import read_bounded, request_failure
 from cairn.sources.timing import limit
+from cairn.sources.url import PrivateAddress
 
 LATE = "its deadline, which an answer still arriving passed"
 SIGN_IN_LATE = (
@@ -157,7 +159,14 @@ def check_base_url(value: object, api: str) -> str:
 
 
 class Unreachable(Exception):
-    """The request did not get an answer: its message is the error's class name only."""
+    """The request did not get an answer. The reason is safe to show."""
+
+    def __init__(self, error: httpx.HTTPError) -> None:
+        self._address_refused = isinstance(error, PrivateAddress)
+        super().__init__(request_failure(error))
+
+    def sentence(self, reaching: str) -> str:
+        return str(self) if self._address_refused else f"{reaching}: {self}"
 
 
 class TooLarge(Exception):
@@ -189,21 +198,12 @@ async def fetch(
             follow_redirects=False,
         ) as response:
             status = response.status_code
-            declared = response.headers.get("content-length", "")
-            if declared.isdigit() and int(declared) > limit:
-                if status == 200:
-                    raise TooLarge
-                return status, b""
-            body = bytearray()
-            async for part in response.aiter_bytes():
-                body += part
-                if len(body) > limit:
-                    if status == 200:
-                        raise TooLarge
-                    return status, b""
-            return status, bytes(body)
+            body = await read_bounded(response, limit)
+            if body is None and status == 200:
+                raise TooLarge
+            return status, body or b""
     except httpx.HTTPError as error:
-        raise Unreachable(type(error).__name__) from None
+        raise Unreachable(error) from None
 
 
 def error_reasons(body: bytes) -> frozenset[str]:
@@ -302,7 +302,7 @@ class Reader:
             except TimeoutError:
                 raise Spent(LATE) from None
             except Unreachable as error:
-                raise SourceError(f"cannot reach {service} for {what}: {error}") from None
+                raise SourceError(error.sentence(f"cannot reach {service} for {what}")) from None
             except TooLarge:
                 if raw:
                     raise

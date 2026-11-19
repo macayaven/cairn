@@ -27,6 +27,7 @@ from cairn import oauth
 from cairn.server import create_app
 from cairn.store import Store
 from cairn.store.grants import ROTATION_WINDOW, ROTATIONS
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 RESOURCE = f"{BASE}/mcp"
@@ -808,9 +809,7 @@ def test_a_tampered_or_missing_consent_request_shows_no_form(world):
     ):
         page = browser.get(bad)
         assert page.status_code == 400, bad
-        assert (
-            "decision" not in page.text and "<form" not in page.text.split('<main id="main">')[1]
-        ), bad
+        assert "decision" not in page.text and "<form" not in page.text.split("<main ")[1], bad
     assert browser.get(url).status_code == 200  # the untouched one still opens
 
 
@@ -1012,7 +1011,7 @@ def test_an_access_token_is_a_bearer_credential_for_mcp_and_nothing_else(world):
     for headers in (bearer(grant.access), {"x-api-key": grant.access}):
         assert world.raw.get("/api/projects", headers=headers).status_code == 401
     browser = world.browser()
-    browser.cookies.set("cairn_session", grant.access)
+    browser.cookies.set(session_cookie(), grant.access)
     assert browser.get("/").status_code == 303
 
 

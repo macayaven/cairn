@@ -154,6 +154,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from cairn.sources import Clock, NoteDraft, Pulled, Skip, SourceError, SourceKind, fit, names
+from cairn.sources.config import check_projects
 from cairn.sources.google_api import (
     EMAIL,
     ENV_NAME,
@@ -171,7 +172,7 @@ from cairn.sources.google_api import (
 from cairn.sources.google_auth import AuthorizedUser, Credential, access_token, load_credential
 from cairn.sources.timing import limit
 from cairn.spans import Span, chunk
-from cairn.store.memory import FIELD_MAX, is_project_name
+from cairn.store.memory import FIELD_MAX
 from cairn.store.usage import PASSAGE_KINDS, path_bytes
 
 DEFAULT_BASE_URL = "https://www.googleapis.com/drive/v3"
@@ -339,7 +340,9 @@ def check_config(config: object) -> dict[str, Any]:
             " source is switched on are read too"
         )
     checked["existing"] = existing
-    checked["projects"] = _check_projects(config)
+    checked["projects"] = check_projects(
+        config.get("projects", []), kind="google_drive", looks_like=looks_like_a_credential
+    )
     checked["base_url"] = check_base_url(config.get("base_url", DEFAULT_BASE_URL), API)
     return checked
 
@@ -383,22 +386,6 @@ def _check_folder(folder: object) -> str:
             " the folder's address"
         )
     return folder
-
-
-def _check_projects(config: Mapping[str, Any]) -> list[str]:
-    projects = config.get("projects", [])
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError(
-            "projects names at most one project: a google_drive source writes into one"
-        )
-    for project in projects:
-        if isinstance(project, str) and looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
 
 
 def describe(config: Mapping[str, Any]) -> str:

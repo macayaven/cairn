@@ -18,6 +18,7 @@ from cairn.server import create_app
 from cairn.sources import SourceError
 from cairn.sources import granola as g
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 ISSUER = "https://id.example.test/pool-1"
@@ -58,7 +59,7 @@ def test_a_granola_source_proposes_the_project_meetings_and_the_choice_stays_you
     store.add_source("meet", "granola", GRANOLA)
     app = create_app(store, public_url=BASE)
     with TestClient(app, base_url=BASE) as client:
-        client.cookies.set("cairn_session", owner.token)
+        client.cookies.set(session_cookie(), owner.token)
         html = client.get("/sources").text
         assert 'value="meetings"' in new_project_field(html, "meet")
         store.create_project("meetings")
@@ -388,7 +389,7 @@ def test_a_failed_runs_reason_is_on_the_page_and_names_the_variable_never_the_ke
 
     app = create_app(store, public_url=BASE)
     with TestClient(app, base_url=BASE) as client:
-        client.cookies.set("cairn_session", owner.token)
+        client.cookies.set(session_cookie(), owner.token)
         for env in ({}, {"GRANOLA_KEY": KEY}):  # the variable missing; then the key refused
             with pytest.raises(SourceError):
                 asyncio.run(run(env))

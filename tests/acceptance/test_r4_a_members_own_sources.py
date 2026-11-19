@@ -35,6 +35,7 @@ from cairn.server import create_app
 from cairn.sources import run_source
 from cairn.store import Store
 from cairn.store.sources import NOT_A_SOURCE_MANAGER
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -121,7 +122,7 @@ def person(store: Store, name: str, role: str | None = None) -> SimpleNamespace:
     view = store.for_account(signed.account_id, signed.user.id)
     return SimpleNamespace(
         id=signed.user.id,
-        cookie={"cookie": f"cairn_session={signed.token}"},
+        cookie={"cookie": f"{session_cookie()}={signed.token}"},
         view=view.acting_as("session", name, signed.user.id),
     )
 
@@ -194,7 +195,7 @@ def call(world, who: str, method: str, path: str, **kwargs) -> httpx.Response:
 
 
 def main(markup: str) -> str:
-    return markup.partition('<main id="main">')[2].partition("</main>")[0]
+    return markup.partition('<main id="main" tabindex="-1">')[2].partition("</main>")[0]
 
 
 def page_text(markup: str) -> str:

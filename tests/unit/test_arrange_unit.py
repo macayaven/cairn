@@ -29,6 +29,7 @@ from cairn.compiler import compile_note, render_body
 from cairn.gate import lint_gate
 from cairn.llm import FakeModel, LLMError, OpenAICompatible, Reply
 from cairn.store import Claim, Limits, Store
+from wait_helpers import wait_for_event
 
 FIRST = (
     "# Drift sync\n\nDrift mirrors two buckets.\n\n## Flags\n\n"
@@ -935,21 +936,30 @@ def test_workspaces_take_turns_within_a_pass(store):
     assert len(arranger.pending()) == 5
 
 
-def test_a_background_loop_runs_until_cancelled_and_stop_waits_for_a_page(store):
+def test_a_background_loop_runs_until_cancelled_and_stop_waits_for_a_page(store, monkeypatch):
     project, before = page_of(store, FIRST, SECOND)
     model = FakeModel([reply({"order": ids_of(before)[::-1], "same": []})])
     arranger = Arranger(model, price=None, view_for=store.for_account, min_claims=1, every=0.01)
 
     async def run():
-        task = asyncio.create_task(arranger.loop())
-        arranger.queue(store.account_id, project.id, "drift-sync")
-        for _ in range(500):
-            await asyncio.sleep(0.01)
+        arranged = asyncio.Event()
+        run_once = arranger.run_once
+
+        async def observed(limit=10):
+            result = await run_once(limit)
             if store.get_page(project.id, "drift-sync").version == before.version + 1:
-                break
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+                arranged.set()
+            return result
+
+        monkeypatch.setattr(arranger, "run_once", observed)
+        task = asyncio.create_task(arranger.loop())
+        try:
+            arranger.queue(store.account_id, project.id, "drift-sync")
+            await wait_for_event(arranged, "the arranger did not write the next page version")
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
         return await asyncio.to_thread(arranger.stop, 1.0)
 
     assert asyncio.run(run()) is True

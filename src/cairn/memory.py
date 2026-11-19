@@ -5,9 +5,10 @@ turns a RequestError into a status. The note guard is enforced below this, in
 has not screened; `Memory.note` turns its refusal into Refused (422). A note refused for what it is
 raises Malformed (a BadRequest, 400) with a `reason` that quotes nothing of it: EmptyText
 for blank text, NoPassage for text with no passage to compile (headings, front matter and
-blank lines only: review 7.6), PastBound for a field past cairn.store.FIELD_MAX (naming the
-field and its bound), LongHeadings for headings past theirs, ManyFacts (G1) for more facts than
-cairn.store.FACTS_MAX (giving the count and the bound).
+blank lines only: review 7.6) unless the project holds that very note, stored before the
+refusal (decision 173: it is that note, "unchanged"), PastBound for a field past
+cairn.store.FIELD_MAX (naming the field and its bound), LongHeadings for headings past theirs,
+ManyFacts (G1) for more facts than cairn.store.FACTS_MAX (giving the count and the bound).
 
 The access log: each MCP tool call and REST request runs inside `Memory.access(action)`, as
 does each page of the web view that shows memory (cairn.web.ui and the routes beside it),
@@ -1207,7 +1208,11 @@ class Memory:
         target = self.project(project)
         if not text.strip():
             raise EmptyText("the note's text is empty")
-        if not any(span.kind in CONTENT_KINDS for span in chunk("", text)):
+        if not any(span.kind in CONTENT_KINDS for span in chunk("", text)) and not (
+            # Decision 173: one stored before the refusal is that note, and keeps its answer.
+            # One read, on this path alone.
+            self.store.holds_note(target.id, text, source_ref)
+        ):
             raise NoPassage(NO_PASSAGE)  # nothing stored, counted or bound to its topic
         self._room_on_page(target, text, title, topic, source_ref)  # PageFull: nothing stored
         try:

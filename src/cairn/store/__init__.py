@@ -219,22 +219,30 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   person), followed by one sentence on the Models choice; the audit detail keeps the
   counts alone. It does carry each project's Models
   choice (M4): see "A project kept from every model" below.
-- Compaction (H5). `store.compact()` rewrites the database file (VACUUM) and then truncates
-  the write-ahead log (PRAGMA wal_checkpoint(TRUNCATE)): it gives the freed space back to the
-  disk, and after it nothing of a deleted workspace, index keys included, is in the files. It
-  rewrites every workspace's data and holds the writer's lock while it runs, so every other
-  write waits (reads do not); it is the operator's: only the store that opened the database
-  may run it (PermissionError on a view). CompactIncomplete (a sqlite3.OperationalError) when
-  another connection kept it from finishing; running it again then finishes it.
+- Compaction (H5). `store.compact()` checks for room (NoRoom, a CompactIncomplete, when
+  the database's disk has less than twice the database free; nothing changes), rewrites the
+  database file (VACUUM) and then truncates the write-ahead log (PRAGMA
+  wal_checkpoint(TRUNCATE)): it gives the freed space back to the disk, and after it nothing
+  of a deleted workspace, index keys included, is in the files. It rewrites every
+  workspace's data and holds the writer's lock while it runs, so every other write waits
+  (reads do not); it is the operator's: only the store that opened the database may run it
+  (PermissionError on a view). CompactIncomplete (a sqlite3.OperationalError) when another
+  connection kept it from finishing, with `rewrote` saying whether the file was rewritten;
+  running it again then finishes it. `store.empty_log()` truncates the log alone, which is
+  what is left when a rewrite succeeded and the log was held.
 - Compaction state (H5). `compaction_state()` says when a workspace (since H5b also a project
   or a note) was first deleted since
-  the last compaction (`deleted_at`, None when none was) and when the last compaction began
-  (`compacted_at`). It is two rows of the default workspace's `settings`, "store.compact_due"
-  and "store.compacted_at", which get_setting and set_setting refuse and nothing audits:
-  delete_account, delete_project and forget_note write the first in their own transaction
-  (only for what existed, and only when not already set); compact deletes it and sets the
-  second before it rewrites the file, and restores both when it raises CompactIncomplete.
-  They survive a restart. `serve --compact-every` decides by them (cairn.web.compactor).
+  the last compaction that finished (`deleted_at`, None when none was), whether a rewrite
+  covered every deletion recorded so that only the log is left (`rewritten`), and when the
+  last rewrite began (`compacted_at`). It is two rows of the default workspace's `settings`,
+  "store.compact_due" and "store.compacted_at", which get_setting and set_setting refuse and
+  nothing audits: delete_account, delete_project and forget_note write the first in their
+  own transaction (only for what existed; its time only when not already set, and in every
+  case their time as the row's `updated_at`); compact sets the second and marks the first as
+  rewritten (base.REWRITTEN as its `updated_at`) before it rewrites the file, and puts both
+  back when the rewrite fails; the first goes once the log is emptied, unless a deletion came
+  meanwhile. They survive a restart. `serve --compact-every` decides by them
+  (cairn.web.compactor).
 - `export`, `import_export`, `compact` and `compaction_state` are management calls (see
   Reach): a view limited to named projects, or read-only, is refused (PermissionError) and
   nothing is read or written. An archive is every project, so for a person `export` and

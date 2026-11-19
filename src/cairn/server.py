@@ -900,13 +900,20 @@ most 256 MiB of the archive, all held in memory, unless --max-bytes raises the b
 with `--plans FILE` the workspace is held to its plan in force as `serve` holds it (over a
 cap: 1, "nothing was imported" and the limit's name; a file it cannot use: 2), and
 without it one line on stderr says no plan is applied; `compact --db PATH` runs
-Store.compact (1 for a missing database, or when another process kept it from finishing).
+Store.compact (1 for a missing database, when its disk has not room for the rewrite, or
+when another process kept it from finishing).
 `serve --compact-every HOURS` (24 by default; 0: never) runs Store.compact in the
 background, on a worker thread and never two at once, when Store.compaction_state says a
 workspace was deleted since the last compaction and HOURS have passed since that one began
-(at once when there was none); each run is one access-log line: "compact done in N ms" when
-it finished, "compact not finished: another connection held the file in N ms" when another
-connection kept it from finishing, or "compact failed: <the error's class> in N ms".
+(at once when there was none), and Store.empty_log alone when a rewrite already covered
+every deletion and only the write-ahead log is left (cairn.web.compactor); each run is one
+access-log line: "compact done in N ms" when it finished, "compact done (no rewrite: only
+the write-ahead log was due) in N ms", "compact not finished: another connection held the
+file in N ms" when another connection kept the rewrite from happening, with "(rewritten;
+the write-ahead log was not emptied)" or "(no rewrite: only the write-ahead log was due)"
+before " in" when only the log was held, "compact not started: the database's disk has N
+bytes free, a rewrite needs N" when there was no room, or "compact failed: <the error's
+class> in N ms".
 `serve --sweep-every SECONDS` (600 by default; 0: never, otherwise at least 1; create_app's
 `sweep_every`) runs
 Store.sweep_expired in the background, at start and then every SECONDS, on a worker thread and

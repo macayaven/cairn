@@ -149,3 +149,23 @@ def test_what_the_operator_sees_in_the_log_for_each_case(store, db, caplog):
         "compact done (no rewrite: only the write-ahead log was due)",
     ]
     assert all(last.endswith(" ms") for _, last in said)
+
+
+def test_what_a_write_waits_for_is_said_with_its_bound(store):
+    """A write waits for the whole rewrite, then for the attempt to empty the log, which
+    SQLite's busy wait on the writer bounds: 5 seconds, as the docstrings say."""
+    from cairn.store.portable import PortableMethods
+    from cairn.web import compactor
+
+    (waited,) = store._con.execute("PRAGMA busy_timeout").fetchone()
+    assert waited == 5000
+    for said in (
+        PortableMethods.compact.__doc__,
+        PortableMethods.empty_log.__doc__,
+        compactor.__doc__,
+    ):
+        flat = " ".join(said.split())
+        assert "at most about 5 seconds (SQLite's busy wait" in flat
+    flat = " ".join(compactor.__doc__.split())
+    assert "during a rewrite, the whole of it under the store's lock" in flat
+    assert "Reads do not wait" in flat

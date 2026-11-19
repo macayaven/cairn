@@ -184,3 +184,15 @@ def test_the_check_also_runs_soon_after_boot():
     timer = TEMPLATE[start : TEMPLATE.index("\n  - path: ", start + 1)]
     assert re.search(r"^\s*OnBootSec=2min$", timer, re.M)
     assert re.search(r"^\s*OnCalendar=\*:0/5$", timer, re.M)
+
+
+def test_a_database_gone_after_a_deployment_is_not_current_and_writes_no_line(host):
+    """Only before the first deployment does no database mean nothing to copy. Once an image
+    is proven, a missing database writes no line, and the silence alert fires."""
+    host.record("image", "registry.example.test/cairn@sha256:" + "a" * 64)
+    host.database(False)
+    done = host.replica_check()
+    assert done.line == ""
+    assert host.litestream_log() == []
+    assert done.rc != 0
+    assert "no database, though a deployment was proven" in done.err

@@ -321,6 +321,7 @@ litestream() {
 # cairn's first start (monitoring.tf: the silence alert arms on the first current line). It
 # waits inside for the database cairn creates, then becomes Litestream. A stop ends the wait
 # at once: sh as process 1 ignores SIGTERM without a trap.
+# shellcheck disable=SC2016 # expanded by sh inside the container
 LITESTREAM_WAIT_SCRIPT='trap "exit 0" TERM INT
 until [ -f /data/cairn.db ]; do sleep 2 & wait $!; done
 exec litestream "$@"'
@@ -400,7 +401,10 @@ cmd_replica_check() {
   is_mounted || die "the data disk is not mounted"
   is_count "${REPLICA_BOUND_SECONDS:-}" || die "REPLICA_BOUND_SECONDS is not a number of seconds"
   if [ ! -f "$DB_DIR/cairn.db" ]; then
-    # Nothing to copy is current: the line arms the silence alert on a new VM.
+    # Before the first deployment nothing to copy is current: the line arms the silence alert
+    # on a new VM. After one, a missing database is not, and no line lets that alert fire.
+    [ -z "$(proven_image)" ] ||
+      die "replica check: no database, though a deployment was proven: no line written"
     replica_line "replica: current, no database yet, nothing to copy"
     return 0
   fi
@@ -474,7 +478,7 @@ host_line() {
 }
 
 cmd_host_check() {
-  local now since failed=0 lines="" label path percent name unit count previous errors line
+  local now since failed=0 lines="" label path percent name names unit count previous errors line
   now=$(date +%s)
   mkdir -p "$HOST_CHECK_DIR"
   since=$(first_line "$HOST_CHECK_DIR/since")

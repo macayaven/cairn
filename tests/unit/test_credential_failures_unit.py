@@ -100,7 +100,10 @@ def test_it_keeps_addresses_only_and_nothing_of_a_credential(clock):
     limit = CredentialFailures(clock)
     assert not hasattr(limit, "accepted") and not hasattr(limit, "known")
     limit.failed("203.0.113.7")
-    assert set(vars(limit)) == {"_clock", "_limit", "_window", "addresses", "_failures", "_lock"}
+    assert set(vars(limit)) == {
+        "_clock", "_limit", "_window", "addresses", "_failures", "_lock", "_holding",
+    }  # fmt: skip
+    assert set(limit._holding._order) == {"203.0.113.7"}  # Security 4: which to forget, by address
 
 
 BASE = "http://127.0.0.1:8765"

@@ -79,7 +79,7 @@ import secrets
 import threading
 import time
 import unicodedata
-from collections import OrderedDict, deque
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -111,6 +111,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from cairn.holding import Holding, refusing_until
 from cairn.memory import BadRequest, choose_reach
 from cairn.store import (
     CLIENT_NAME_MAX,
@@ -314,9 +315,10 @@ class RateLimit:
     new one is admitted; an address being refused is forgotten only when every address is,
     and then the one seen longest ago. So a flood from many addresses neither grows the table,
     nor frees the addresses it holds back, nor shuts out an address only because the table is
-    full. The price is that a forgotten address starts a fresh count. A call is O(1), except
-    that a new address at a full table reads, oldest first, until it finds one not at its
-    limit: at most `max_addresses` entries. Called on the event loop only."""
+    full. The price is that a forgotten address starts a fresh count. A call is a constant
+    number of steps, amortized, whatever `max_addresses` is: the address to forget is found
+    without a walk over the table (cairn.holding.Holding, Security 4). Called on the event
+    loop only."""
 
     def __init__(
         self,
@@ -327,42 +329,29 @@ class RateLimit:
     ) -> None:
         self._limit, self._window, self._max = limit, window, max_addresses
         self._clock = clock or _clock
-        self._hits: OrderedDict[str, deque[float]] = OrderedDict()  # seen longest ago first
+        self._hits: dict[str, deque[float]] = {}
+        self._holding: Holding[str] = Holding()  # which address to forget (Security 4)
 
     @property
     def tracked(self) -> int:
         return len(self._hits)
-
-    def _over(self, hits: deque[float], now: float) -> bool:
-        """Whether an address with `hits` is at its limit at `now` (it would be refused).
-        A count holds at most `limit` times, oldest first; a limit below 1 refuses all."""
-        if self._limit < 1:
-            return True
-        return len(hits) >= self._limit and hits[-self._limit] > now - self._window
-
-    def _victim(self, now: float) -> str:
-        """The address to forget: the one seen longest ago that is not at its limit, else the
-        one seen longest ago."""
-        for address, hits in self._hits.items():  # seen longest ago first
-            if not self._over(hits, now):
-                return address
-        return next(iter(self._hits))
 
     def allow(self, address: str | None) -> bool:
         now, key = self._clock(), _network(address)
         hits = self._hits.get(key)
         if hits is None:
             while len(self._hits) >= self._max:
-                del self._hits[self._victim(now)]
+                victim = self._holding.victim(now)
+                del self._hits[victim]
+                self._holding.drop(victim)
             hits = self._hits[key] = deque()
-        else:
-            self._hits.move_to_end(key)
         while hits and hits[0] <= now - self._window:
             hits.popleft()
-        if len(hits) >= self._limit:
-            return False
-        hits.append(now)
-        return True
+        allowed = len(hits) < self._limit
+        if allowed:
+            hits.append(now)
+        self._holding.seen(key, refusing_until(hits, self._limit, self._window))
+        return allowed
 
 
 def _network(address: str | None) -> str:

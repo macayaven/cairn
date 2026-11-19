@@ -192,7 +192,7 @@ def test_the_rate_limiter_stays_bounded_under_a_flood_and_keeps_the_refused():
     assert limiter.tracked() == 50 and limiter.take("fable", 1) > 0
 
 
-# Cost: a full table reads at most its own size to choose, and stops at the first it may drop
+# Cost: choosing is a few steps of the table's Holding, whatever it holds (Security 4: no walk)
 
 
 TABLES = ["credential", "signature", "registration", "workspace"]
@@ -215,34 +215,27 @@ def table_of(name: str, room: int, limit: int):
     return made, lambda n: made.take(f"acct_{n}", limit)
 
 
-def counting(made, monkeypatch) -> list[int]:
-    """Each entry the table reads to decide whether it is over its limit."""
-    read: list[int] = []
-    over = type(made)._over
-    monkeypatch.setattr(type(made), "_over", lambda self, *a: read.append(1) or over(self, *a))
-    return read
+def steps_of(made, attempt, n: int) -> int:
+    """The steps of the table's Holding (cairn.holding) that the n-th caller's attempt takes."""
+    before = made._holding.steps
+    attempt(n)
+    return made._holding.steps - before
 
 
 @pytest.mark.parametrize("name", TABLES)
-def test_choosing_among_entries_all_over_their_limit_reads_at_most_the_table(name, monkeypatch):
+def test_choosing_among_entries_all_over_their_limit_takes_a_few_steps(name):
     made, attempt = table_of(name, room=20, limit=1)
-    read = counting(made, monkeypatch)
     for n in range(20):
         attempt(n)
-    read.clear()
-    attempt(20)
-    assert 0 < len(read) <= 20
+    assert 0 < steps_of(made, attempt, 20) <= 4
 
 
 @pytest.mark.parametrize("name", TABLES)
-def test_choosing_stops_at_the_first_entry_not_over_its_limit(name, monkeypatch):
+def test_choosing_an_entry_not_over_its_limit_takes_a_few_steps(name):
     made, attempt = table_of(name, room=20, limit=5)
-    read = counting(made, monkeypatch)
     for n in range(20):
         attempt(n)
-    read.clear()
-    attempt(20)
-    assert len(read) == 1
+    assert 0 < steps_of(made, attempt, 20) <= 4
 
 
 def test_a_registration_limit_of_zero_refuses_all_and_still_has_room():

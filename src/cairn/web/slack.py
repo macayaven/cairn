@@ -91,7 +91,7 @@ import math
 import pkgutil
 import re
 import threading
-from collections import OrderedDict, deque
+from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -106,6 +106,7 @@ from starlette.responses import PlainTextResponse, Response
 from starlette.routing import Route
 
 import cairn.slack
+from cairn.holding import Holding, refusing_until
 from cairn.memory import Memory, access_log
 from cairn.oauth import _network as network  # the sign-in limit's rule for an address
 from cairn.slack.client import API, REPLY_HOSTS, SlackClient, SlackError
@@ -285,8 +286,8 @@ class SignatureFailures:
     most `limit` times, so at most keys x limit times in all (10,000 x 20 by default); when
     the table is full, the pair forgotten is one not at its limit, the one seen longest ago of
     those; a pair being refused is forgotten only when every pair is, and then the one seen
-    longest ago. A new one is never refused. Choosing reads the pairs seen longest ago first
-    and stops at the first not at its limit: at most `keys` of them. The counts start again
+    longest ago. A new one is never refused. Choosing walks no table (cairn.holding.Holding,
+    Security 4): a constant number of steps, amortized, whatever `keys` is. The counts start again
     when the server restarts. The
     time is `clock()` in seconds (the app's clock), never earlier than a pair's last failure,
     so a clock that steps back frees nothing. Thread-safe."""
@@ -303,41 +304,28 @@ class SignatureFailures:
             raise ValueError("a failure limit needs a limit, a window and room of at least 1")
         self._clock, self._limit, self._window = clock, limit, window
         self.keys = keys
-        self._failures: OrderedDict[tuple[str, str], deque[float]] = OrderedDict()
+        self._failures: dict[tuple[str, str], deque[float]] = {}
+        self._holding: Holding[tuple[str, str]] = Holding()  # which pair to forget
         self._lock = threading.Lock()
 
     def failed(self, install: str, address: str | None) -> int:
         key = (install, network(address))
         with self._lock:
-            failures = self._failures.pop(key, None) or deque()
-            self._failures[key] = failures  # now the most recent
-            while len(self._failures) > self.keys:
-                del self._failures[self._victim(key, self._clock())]
+            failures = self._failures.get(key)
+            if failures is None:
+                while len(self._failures) >= self.keys:  # room for one more
+                    victim = self._holding.victim(self._clock())
+                    del self._failures[victim]
+                    self._holding.drop(victim)
+                failures = self._failures[key] = deque()
             now = max(self._clock(), failures[-1]) if failures else self._clock()
             while failures and failures[0] <= now - self._window:
                 failures.popleft()
-            if len(failures) >= self._limit:
-                return max(1, math.ceil(failures[0] + self._window - now))
-            failures.append(now)
-            return 0
-
-    def _over(self, failures: deque[float], now: float) -> bool:
-        """Whether a pair with `failures` is at its limit at `now` (it would be refused). A
-        pair holds at most `limit` times, oldest first."""
-        return len(failures) >= self._limit and failures[-self._limit] > now - self._window
-
-    def _victim(self, key: tuple[str, str], now: float) -> tuple[str, str]:
-        """The pair to forget, never `key`: the one seen longest ago that is not at its
-        limit, else the one seen longest ago."""
-        oldest = None
-        for pair, failures in self._failures.items():  # seen longest ago first
-            if pair == key:
-                continue
-            if not self._over(failures, now):
-                return pair
-            oldest = oldest or pair
-        assert oldest is not None  # more than one is kept, so another than `key` is
-        return oldest
+            refused = len(failures) >= self._limit
+            if not refused:
+                failures.append(now)
+            self._holding.seen(key, refusing_until(failures, self._limit, self._window))
+            return max(1, math.ceil(failures[0] + self._window - now)) if refused else 0
 
     def tracked(self) -> int:
         """How many (install, address) pairs are kept."""

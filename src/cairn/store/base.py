@@ -359,7 +359,8 @@ class StoreBase:
         """How many of its newest events each workspace keeps: what the server last set for
         the file (`serve --audit-keep`; AUDIT_KEEP_ROW, so a command-line write on the same
         file prunes by it too), else AUDIT_KEEP (100,000); None: every event. Setting it
-        records it in the file and holds it for every view of this connection; a view bound
+        records it in the file (unless the file already reads it: a file that records none
+        reads AUDIT_KEEP, so a restart with the same number writes nothing) and holds it for every view of this connection; a view bound
         to a person or narrowed is refused (PermissionError). ValueError: not None or a whole
         number of at least 1."""
         with self._read() as con:
@@ -372,12 +373,23 @@ class StoreBase:
         if keep is not None and (type(keep) is not int or keep < 1):
             raise ValueError(_KEEP)
         with self._write() as con:
-            con.execute(
-                "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, ?, ?)"
-                " ON CONFLICT (account_id, name)"
-                " DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                (DEFAULT_ACCOUNT_ID, AUDIT_KEEP_ROW, json.dumps({"keep": keep}), self._stamp()),
-            )
+            row = con.execute(
+                "SELECT value FROM settings WHERE account_id = ? AND name = ?",
+                (DEFAULT_ACCOUNT_ID, AUDIT_KEEP_ROW),
+            ).fetchone()
+            recorded = AUDIT_KEEP if row is None else json.loads(row[0]).get("keep")
+            if recorded != keep:  # the number the file already reads is not written again
+                con.execute(
+                    "INSERT INTO settings (account_id, name, value, updated_at)"
+                    " VALUES (?, ?, ?, ?) ON CONFLICT (account_id, name)"
+                    " DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                    (
+                        DEFAULT_ACCOUNT_ID,
+                        AUDIT_KEEP_ROW,
+                        json.dumps({"keep": keep}),
+                        self._stamp(),
+                    ),
+                )
         self._state.audit_keep = keep
 
     def _kept(self, con: sqlite3.Connection) -> int | None:

@@ -148,6 +148,34 @@ def test_the_number_kept_is_set_for_every_view_and_all_keeps_every_event(store, 
     assert count_events(db, store.account_id) >= 20
 
 
+def test_setting_the_number_the_file_already_reads_writes_nothing(store, db):
+    """A server started again with the same number, or with the default on a file that
+    records none, leaves the file as it was: a refused or unchanged request writes nothing,
+    however often the server restarts."""
+    con = sqlite3.connect(db)
+    try:
+        before = "\n".join(con.iterdump())
+        store.audit_keep = 100_000  # the default, on a file that records none
+        assert "\n".join(con.iterdump()) == before
+        store.audit_keep = 5
+        recorded = "\n".join(con.iterdump())
+        assert recorded != before
+        again = Store(db, clock=lambda: datetime(2026, 11, 3, tzinfo=UTC))
+        try:
+            again.audit_keep = 5  # a restart with the same number, at a later time
+        finally:
+            again.close()
+        assert "\n".join(con.iterdump()) == recorded
+        store.audit_keep = 100_000  # back to the default: recorded, so other processes read it
+        reader = Store(db)
+        try:
+            assert reader.audit_keep == 100_000
+        finally:
+            reader.close()
+    finally:
+        con.close()
+
+
 @pytest.mark.parametrize("keep", [0, -1, 1.5, "10", True])
 def test_the_number_kept_is_a_whole_number_of_at_least_one(store, keep):
     with pytest.raises(ValueError):

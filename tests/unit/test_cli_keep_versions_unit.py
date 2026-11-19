@@ -172,10 +172,11 @@ def test_compact_names_the_workspaces_whose_plan_the_record_does_not_name(tmp_pa
 
 def test_the_record_is_not_a_setting(tmp_path, built):
     db = tmp_path / "cairn.db"
-    assert serve(db, "--keep-versions", "4") == 0
+    assert serve(db, "--keep-versions", "4", "--audit-keep", "5000") == 0
     with sqlite3.connect(db) as con:
         rows = con.execute("SELECT account_id, name FROM settings").fetchall()
-    # and the audit log's record beside it (store.audit_keep), no setting either
+    # and the audit log's record beside it (store.audit_keep), no setting either; it is
+    # written only when it differs from what the file reads (the default when it has none)
     assert sorted(rows) == [
         ("acct_default", "store.audit_keep"),
         ("acct_default", "store.keep_versions"),

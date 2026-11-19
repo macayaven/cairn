@@ -40,6 +40,7 @@ ARGS: dict[str, list[str]] = {
     "arrange": ["--account", DEFAULT_ACCOUNT_ID, "--tidy"],
     "waiting": [],  # N1
     "stats": [],  # Q1: it only reads
+    "reseal": ["--slack"],  # the keys are read once the database is open
 }
 # The commands that only read their database (Q1): each reads one on a volume it may not
 # write, where SQLite lets it, instead of refusing as the commands that write must.

@@ -230,7 +230,18 @@ Slack cannot reach a local install that listens on 127.0.0.1, as the commands ab
 
 With a model connected to arrange pages, a page that holds a note that came through Slack is sent to it only if the environment also says `ARRANGER_SLACK_NOTES=send`; `ARRANGER_SOURCE_NOTES=send` does not send it.
 
-Keep the key apart from the database and its backups, as you keep the environment file: a copy of the database holds each workspace's signing secret and bot token sealed, and without the key it opens neither. When the key is lost or changed, no secret sealed with the old one opens, and Slack's requests to the server are refused: each workspace's owner removes Slack on the **Sources** page, sets it up again and pastes both secrets. A backup taken before Slack is removed still holds what came through it: its notes, for as long as the backup is kept, and both secrets, sealed, which the key still opens.
+Keep the key apart from the database and its backups, as you keep the environment file: a copy of the database holds each workspace's signing secret and bot token sealed, and without the key it opens neither. When the key is lost, or changed without the old one kept in `CAIRN_SLACK_KEY_PREVIOUS` ([below](#change-a-sealing-key)), no secret sealed with the old one opens, and Slack's requests to the server are refused: each workspace's owner removes Slack on the **Sources** page, sets it up again and pastes both secrets. A backup taken before Slack is removed still holds what came through it: its notes, for as long as the backup is kept, and both secrets, sealed, which the key still opens.
+
+## Change a sealing key
+
+`CAIRN_GOOGLE_CONNECT_KEY` seals the tokens of the Google accounts connected in the browser, and `CAIRN_SLACK_KEY` seals each workspace's Slack signing secret and bot token. Either key can be changed without anyone connecting again, in four steps:
+
+1. Put the new key in the variable, and the old one in a variable of the same name followed by `_PREVIOUS`: `CAIRN_GOOGLE_CONNECT_KEY_PREVIOUS` or `CAIRN_SLACK_KEY_PREVIOUS`.
+2. Restart the server. What the old key sealed still opens, and everything sealed from now on is sealed under the new key.
+3. Run `docker exec cairn python -m cairn.server reseal --db /data/cairn.db --google-connect --slack`, or with only the option of the key you changed. It seals every stored value again under the new key and prints, for each key, how many it sealed again, how many no key given opens, which it leaves as they were, and how many were under the new key already. Running it again changes nothing.
+4. Remove the `_PREVIOUS` variable and restart the server.
+
+A `_PREVIOUS` variable may hold several earlier keys, separated by commas. A key that is not 32 bytes in base64, or an earlier key equal to the current one, stops `serve` at start with one line that names the variable, never a key. A sealed value does not say which key sealed it: the server tries the current key, then each earlier one in the order given. A backup taken before step 3 holds values sealed under the old key: to restore it after step 4, give the old key as `_PREVIOUS` again, restart and run `reseal`.
 
 ## Notes compiled at once
 

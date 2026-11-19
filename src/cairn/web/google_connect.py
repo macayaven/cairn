@@ -6,10 +6,12 @@ The switch (off unless the operator switches it on)
   is opened: CLIENT_VARIABLE, the JSON the Cloud console gives for an OAuth client of the type
   Web application (a "web" object holding client_id and client_secret), never the sign-in
   client (a client id equal to a sign-in provider's is refused); and KEY_VARIABLE, 32 bytes
-  in base64, the key the refresh tokens are sealed with. Either missing or malformed: serve
-  exits 2 with one sentence that names the variable and never a value. It needs --sign-in
-  and --public-url. `--google-connect-for ADDRESS` (repeatable, which needs the switch) lists
-  the signed-in people who are offered it; without it nobody is.
+  in base64, the key the refresh tokens are sealed with, and beside it, optionally,
+  KEY_VARIABLE_PREVIOUS, earlier keys that still open what they sealed (read_sealer). Either
+  missing or malformed, or an earlier key equal to the current one: serve exits 2 with one
+  sentence that names the variable and never a value. It needs --sign-in and --public-url.
+  `--google-connect-for ADDRESS` (repeatable, which needs the switch) lists the signed-in
+  people who are offered it; without it nobody is.
 - Off (create_app without `google_connect`): no route, no block, no table read, nothing in
   any answer.
 
@@ -98,6 +100,7 @@ from cairn.store.hosted import (
     Sealer,
     TokenUnusable,
     _subject,
+    previous_keys,
 )
 from cairn.web.auth import MEMORY, _memory
 from cairn.web.cli_google import (
@@ -159,6 +162,20 @@ def read_switch(
             f"{CLIENT_VARIABLE} holds the sign-in client: give a Web application client of its"
             " own, so that connecting an account stays apart from signing in"
         )
+    sealer = read_sealer(environ)
+    addresses = set()
+    for position, address in enumerate(offered, 1):
+        if not isinstance(address, str) or not ADDRESS.fullmatch(address.strip()):
+            raise ValueError(f"--google-connect-for number {position} is not one address")
+        addresses.add(address.strip().casefold())
+    custody = GoogleCustody(sealer, client_id=client_id, client_secret=client_secret)
+    return GoogleConnect(custody=custody, offered=frozenset(addresses))
+
+
+def read_sealer(environ: Mapping[str, str]) -> Sealer:
+    """The sealer of the tokens: the key KEY_VARIABLE holds, and the earlier keys its
+    _PREVIOUS variable holds (cairn.store.hosted.previous_keys). ValueError in one sentence
+    that names the variable and never a value."""
     raw = environ.get(KEY_VARIABLE, "").strip()
     if not raw:
         raise ValueError(
@@ -171,13 +188,7 @@ def read_switch(
         key = b""
     if len(key) != KEY_BYTES:
         raise ValueError(f"{KEY_VARIABLE} is not {KEY_BYTES} bytes in base64")
-    addresses = set()
-    for position, address in enumerate(offered, 1):
-        if not isinstance(address, str) or not ADDRESS.fullmatch(address.strip()):
-            raise ValueError(f"--google-connect-for number {position} is not one address")
-        addresses.add(address.strip().casefold())
-    custody = GoogleCustody(Sealer(key), client_id=client_id, client_secret=client_secret)
-    return GoogleConnect(custody=custody, offered=frozenset(addresses))
+    return Sealer(key, previous_keys(environ, KEY_VARIABLE, key))
 
 
 def add_options(serve: argparse.ArgumentParser) -> None:

@@ -15,7 +15,9 @@ The registry and the row
   environment, a fresh 12-byte nonce each time, and the workspace, the credential's name
   (case-folded) and the owner as associated data (`associated`, a JSON list, so no part can
   run into the next). A sealed value copied to another row, or read under another key, does
-  not open: TokenUnusable(UNOPENED).
+  not open: TokenUnusable(UNOPENED). Earlier keys (CAIRN_GOOGLE_CONNECT_KEY_PREVIOUS,
+  `previous_keys`) still open what they sealed; cairn.store.reseal seals it again under the
+  current key.
 - The key and the OAuth client live in this process only (GoogleCustody, on the root store as
   `google_custody`, which every view copies). Without them nothing here reads the table:
   TokenUnusable(NOT_HERE).
@@ -40,13 +42,14 @@ Who
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import secrets
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -106,18 +109,29 @@ class TokenUnusable(Exception):
 
 
 class Sealer:
-    """AES-GCM under one 32-byte key. `seal` gives base64url of the nonce and the sealed text;
-    `open` gives the text back, or None when it does not open (another key, other associated
-    data, a value changed or not one of these)."""
+    """AES-GCM under one 32-byte key, the current one, and any earlier keys beside it
+    (`previous`, from <VARIABLE>_PREVIOUS: `previous_keys`). `seal` gives base64url of the nonce
+    and the sealed text, always under the current key; `open` gives the text back, or None
+    when it does not open (no key given, other associated data, a value changed or not one of
+    these). A value names no key: `open` tries the current key, then each earlier one in the
+    order given, so a copy of the database tells no one which key sealed which value, and a
+    value sealed before earlier keys could be given opens as any other. `current`: whether the
+    current key opens a value (what `reseal` leaves as it is)."""
 
-    __slots__ = ("_aead",)
+    __slots__ = ("_aead", "_previous")
 
-    def __init__(self, key: bytes) -> None:
+    def __init__(self, key: bytes, previous: Sequence[bytes] = ()) -> None:
         if not isinstance(key, bytes) or len(key) != KEY_BYTES:
             raise ValueError(f"the sealing key is {KEY_BYTES} bytes")
+        for earlier in previous:
+            if not isinstance(earlier, bytes) or len(earlier) != KEY_BYTES:
+                raise ValueError(f"an earlier sealing key is {KEY_BYTES} bytes")
+            if hmac.compare_digest(earlier, key):
+                raise ValueError("an earlier sealing key is the current one")
         self._aead = AESGCM(key)
+        self._previous = tuple(AESGCM(earlier) for earlier in previous)
 
-    def __repr__(self) -> str:  # never the key
+    def __repr__(self) -> str:  # never a key
         return "Sealer()"
 
     def seal(self, plain: str, associated: bytes) -> str:
@@ -126,19 +140,60 @@ class Sealer:
         return base64.urlsafe_b64encode(nonce + sealed).decode("ascii")
 
     def open(self, sealed: object, associated: bytes) -> str | None:
-        if not isinstance(sealed, str):
-            return None
+        for aead in (self._aead, *self._previous):
+            plain = _opened(aead, sealed, associated)
+            if plain is not None:
+                return plain
+        return None
+
+    def current(self, sealed: object, associated: bytes) -> bool:
+        return _opened(self._aead, sealed, associated) is not None
+
+
+PREVIOUS = "_PREVIOUS"  # <VARIABLE>_PREVIOUS: the earlier keys beside the key <VARIABLE>
+PREVIOUS_SEPARATOR = ","  # between earlier keys: never in base64
+
+
+def previous_keys(environ: Mapping[str, str], variable: str, key: bytes) -> tuple[bytes, ...]:
+    """The earlier keys `variable`_PREVIOUS holds beside the key `key` of `variable`: none when
+    it is unset or blank, else KEY_BYTES-byte keys in base64 separated by commas (spaces around
+    each allowed). ValueError naming the variable, never a value: an item that is empty or not
+    such a key, or one equal to `key`."""
+    name = variable + PREVIOUS
+    raw = environ.get(name, "").strip()
+    if not raw:
+        return ()
+    found = []
+    for item in raw.split(PREVIOUS_SEPARATOR):
         try:
-            raw = base64.urlsafe_b64decode(sealed.encode("ascii"))
-        except (binascii.Error, ValueError, UnicodeError):
-            return None
-        if len(raw) <= NONCE_BYTES + 16:
-            return None
-        try:
-            plain = self._aead.decrypt(raw[:NONCE_BYTES], raw[NONCE_BYTES:], associated)
-        except InvalidTag:
-            return None
-        return plain.decode("utf-8")
+            earlier = base64.b64decode(item.strip(), validate=True)
+        except (binascii.Error, ValueError):
+            earlier = b""
+        if len(earlier) != KEY_BYTES:
+            raise ValueError(
+                f"{name} is not one or more keys of {KEY_BYTES} bytes in base64, separated by"
+                " commas"
+            )
+        if hmac.compare_digest(earlier, key):
+            raise ValueError(f"{name} holds the key {variable} holds: an earlier key is another")
+        found.append(earlier)
+    return tuple(found)
+
+
+def _opened(aead: AESGCM, sealed: object, associated: bytes) -> str | None:
+    if not isinstance(sealed, str):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(sealed.encode("ascii"))
+    except (binascii.Error, ValueError, UnicodeError):
+        return None
+    if len(raw) <= NONCE_BYTES + 16:
+        return None
+    try:
+        plain = aead.decrypt(raw[:NONCE_BYTES], raw[NONCE_BYTES:], associated)
+    except InvalidTag:
+        return None
+    return plain.decode("utf-8")
 
 
 def associated(account_id: str, credential: str, owner: str | None) -> bytes:

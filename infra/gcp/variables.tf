@@ -128,6 +128,28 @@ variable "deploy_tag" {
   }
 }
 
+variable "registry_keep_versions" {
+  description = "How many of the newest versions of the image cairn the registry keeps whatever their age. A deploy pushes an index and its children (two platforms and their build attestations, about five versions), so 50 is about the last ten deploys."
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.registry_keep_versions >= 10 && floor(var.registry_keep_versions) == var.registry_keep_versions
+    error_message = "registry_keep_versions must be a whole number of at least 10."
+  }
+}
+
+variable "registry_delete_after_days" {
+  description = "Age in days after which the registry deletes an image that is neither among the newest registry_keep_versions nor named by deploy_tag, tagged or not."
+  type        = number
+  default     = 14
+
+  validation {
+    condition     = var.registry_delete_after_days >= 1 && floor(var.registry_delete_after_days) == var.registry_delete_after_days
+    error_message = "registry_delete_after_days must be a whole number of days, at least 1."
+  }
+}
+
 variable "machine_type" {
   description = "Compute Engine machine type. The image is built for x86-64 and arm64; COS stable here is the x86 family."
   type        = string

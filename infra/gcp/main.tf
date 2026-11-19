@@ -141,6 +141,48 @@ resource "google_artifact_registry_repository" "cairn" {
   format        = "DOCKER"
   description   = "cairn images, pushed by CI. The VM follows the tag ${var.deploy_tag} of the image cairn."
   labels        = local.labels
+
+  # The registry cleans up after itself (README, "Rollback"). A KEEP rule wins over a DELETE
+  # rule. Kept: the newest registry_keep_versions versions of the image cairn (a deploy pushes
+  # an index and its children, so that is fewer deploys than versions) and whatever the deploy
+  # tag names. Deleted: everything else older than registry_delete_after_days.
+  cleanup_policy_dry_run = false
+
+  cleanup_policies {
+    id     = "keep-newest"
+    action = "KEEP"
+    most_recent_versions {
+      package_name_prefixes = ["cairn"]
+      keep_count            = var.registry_keep_versions
+    }
+  }
+
+  cleanup_policies {
+    id     = "keep-deploy-tag"
+    action = "KEEP"
+    condition {
+      tag_state    = "TAGGED"
+      tag_prefixes = [var.deploy_tag]
+    }
+  }
+
+  cleanup_policies {
+    id     = "delete-untagged"
+    action = "DELETE"
+    condition {
+      tag_state  = "UNTAGGED"
+      older_than = "${var.registry_delete_after_days * 86400}s"
+    }
+  }
+
+  cleanup_policies {
+    id     = "delete-old"
+    action = "DELETE"
+    condition {
+      tag_state  = "TAGGED"
+      older_than = "${var.registry_delete_after_days * 86400}s"
+    }
+  }
 }
 
 # OpenTofu creates the secret and its access rule but never a version, so the secret's value

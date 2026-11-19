@@ -92,7 +92,7 @@ def test_the_navigation_marks_where_the_reader_is(env):
         "/new": "/new",
         "/b/ops/new": "/new",
         "/workspace": "/workspace",
-        "/start": "/workspace",  # the step before Setup (/start/connect)
+        "/start": "/",  # the first run's choice of projects, before Setup (/start/connect)
         **{part.href: "/workspace" for part in PARTS},
     }
     for path, section in where.items():
@@ -121,7 +121,7 @@ def test_every_page_the_workspace_lists_leads_back_to_it(env):
     client.post("/login", data={"key": key}, headers=SAME_ORIGIN)
     for part in PARTS:
         assert CRUMB in client.get(part.href).text, part.href
-    assert CRUMB in client.get("/start").text
+    assert CRUMB not in client.get("/start").text  # under Projects
     assert CRUMB not in client.get("/workspace").text
     assert CRUMB not in client.get("/").text
 

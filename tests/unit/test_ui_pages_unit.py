@@ -329,3 +329,55 @@ def test_forget_this_note_names_its_note(env):
     html = client.get(f"/b/ops/p/{page.slug}").text
     links = re.findall(r'<a [^>]*href="/b/ops/notes/[^"]+/forget"[^>]*>', html)
     assert links and all('aria-label="Forget the note Deploy"' in link for link in links)
+
+
+# 3. The first-run pages tell the truth about Personal notes
+
+
+def test_the_personal_notes_card_says_who_else_reaches_it_as_the_new_project_page_does(env):
+    from cairn.web.templating import PRIVATE_REACH as SAID
+
+    client, _ = env
+    assert SAID.startswith("Only you, the people you name, and the workspace's owners")
+    assert "keys and sources that belong to whoever runs the server" in SAID
+    PRIVATE_REACH = SAID  # our own words, shown as written
+    assert PRIVATE_REACH in client.get("/").text  # the new-project form, where it was
+    start = main_of(client.get("/start").text)
+    cards = re.findall(r'<li class="use">(.*?)</li>', start, re.DOTALL)
+    personal = [card for card in cards if 'value="personal"' in card]
+    others = [card for card in cards if 'value="personal"' not in card]
+    assert len(personal) == 1 and PRIVATE_REACH in personal[0]
+    assert others and all(PRIVATE_REACH not in card for card in others)
+
+
+def test_each_cards_name_field_has_a_name_of_its_own(env):
+    from cairn.kinds import KINDS
+
+    client, _ = env
+    start = main_of(client.get("/start").text)
+    named = {}
+    for kind_id in re.findall(r'<input id="name-([a-z]+)"', start):
+        label = re.search(rf'<label class="use-name" for="name-{kind_id}">(.*?)</label>', start)
+        named[kind_id] = re.sub(r"<[^>]+>", "", label.group(1))
+    assert len(named) > 1 and len(set(named.values())) == len(named)
+    for kind_id, words in named.items():
+        assert words == f"Project name for {KINDS[kind_id].title}"
+
+
+def test_the_first_run_choice_of_projects_is_under_projects(env):
+    """/start makes projects, so it is under Projects. Its next step, /start/connect, is
+    also the workspace's Setup, which the workspace page lists, so it stays under
+    Workspace and leads back there."""
+
+    def current(html: str) -> list[str]:
+        block = html.split('aria-label="Main"', 1)[1].split("</nav>", 1)[0]
+        return re.findall(r'href="([^"]+)" aria-current="page"', block)
+
+    client, _ = env
+    for path, section, trail in (
+        ("/start", "/", [("/", "Projects")]),
+        ("/start/connect", "/workspace", [("/workspace", "Workspace")]),
+    ):
+        html = client.get(path).text
+        assert current(html) == [section], path
+        assert html.count(BREADCRUMB) == 1 and crumbs_of(html) == trail, path

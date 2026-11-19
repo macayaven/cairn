@@ -354,6 +354,7 @@ KIND = SourceKind(
         "Switched on again, it goes on from where it stopped: traces marked for {product} while it"
         " was off are read too."
     ),
+    withheld=True,
 )
 
 

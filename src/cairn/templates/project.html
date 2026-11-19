@@ -10,7 +10,7 @@
 {% if project.description %}<p class="lede">{{ project.description }}</p>{% endif %}
 <p class="row">{% if sharing and sharing.startswith("Private") %}<span class="tag is-private">private</span> {% endif %}<span class="meta">{% if sharing %}<strong class="sharing">{{ sharing }}</strong>.{% else %}Every member reads and writes.{% endif %}</span></p>
 <div class="row models">
-  <p class="meta">{% if kept %}<strong>Models: never.</strong> No model is sent this project's pages, whatever their notes say or the operator set. Pages already arranged stay as they are.{% if kind_of(project.kind).private %} {{ kind_of(project.kind).title }} start this way.{% endif %}{% else %}<strong>Models: allowed.</strong> A model the operator connects can be sent this project's pages, to put their claims in order.{% endif %}</p>
+  <p class="meta">{% if kept %}<strong>Models: never.</strong> No model is sent this project's pages, whatever their notes say or the operator set. Pages already arranged stay as they are.{% if kind_of(project.kind).private %} {{ kind_of(project.kind).title }} start this way.{% endif %}{% else %}<strong>Models: allowed.</strong> A model the operator connects can be sent this project's pages, to put their claims in order.{% endif %} Models decides only what this server's own model, the one that arranges pages, is sent; the assistants people connect read what they reach and send it to their own provider.</p>
   {% if rule %}
   <form method="post" action="/b/{{ project.name|seg }}/models">
     <input type="hidden" name="models" value="{{ 'allowed' if kept else 'never' }}">

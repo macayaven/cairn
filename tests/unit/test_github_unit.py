@@ -29,7 +29,7 @@ def test_the_kind_is_registered_starts_off_and_proposes_the_project_github():
     kind = KINDS["github"]
     assert kind is g.KIND and kind.starts_off and kind.via == "github"
     assert kind.check is g.check_config and kind.open is g.open_source
-    assert kind.default_project == "github" and kind.withheld is False
+    assert kind.default_project == "github" and kind.withheld is True
 
 
 def test_the_defaults_are_filled_in_and_what_is_stored_checks_the_same():

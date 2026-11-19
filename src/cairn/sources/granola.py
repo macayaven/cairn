@@ -393,6 +393,7 @@ KIND = SourceKind(
     starts_off=True,
     describe=describe,
     default_project=DEFAULT_PROJECT,
+    withheld=True,
 )
 
 

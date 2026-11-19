@@ -977,7 +977,7 @@ def lines_with(text: str, *words: str) -> list[str]:
 
 def test_the_kind_is_linear_starts_off_is_not_withheld_and_proposes_a_project(kind):
     assert kind.starts_off is True and kind.via == "linear"
-    assert kind.withheld is False and "linear" not in withheld_via()
+    assert kind.withheld is True and "linear" in withheld_via()  # Privacy 4: every kind
     assert kind.default_project == "linear"
     checked = kind.check({"key_env": KEY_ENV, "projects": []})
     assert kind.describe is not None

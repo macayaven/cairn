@@ -105,14 +105,14 @@ def test_the_check_reads_each_cited_note_once_whichever_question_answers(store):
     assert set(view.calls) == {"get_spans", "get_note"}
 
 
-def test_a_granola_note_stays_as_it_was_and_the_same_ref_over_mcp_is_withheld(store):
-    """Decision 90: Granola's notes go to the model. Its `meeting:granola/<id>` is judged by the
-    kind; the very same source_ref written over MCP is a note that names a meeting."""
+def test_a_granola_note_is_withheld_and_the_same_ref_over_mcp_is_withheld(store):
+    """Privacy 4: Granola's notes go to no model by default, by the kind; the very same
+    source_ref written over MCP is a note that names a meeting."""
     granola = sources.KINDS["granola"].via
     project, page = page_of(store, "meeting:granola/n-1", via=granola)
     model = FakeModel([answer(page)])
     result = arrange_page(store, project.id, "drift-sync", model, withhold=sources.withheld_via())
-    assert result.status == "arranged"
+    assert result.status == "withheld" and model.requests == []
 
     other = add(store, FIRST, via="mcp", source_ref="meeting:granola/n-1", project="beta")
     add(store, SECOND, via="api", project="beta")

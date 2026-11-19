@@ -68,9 +68,9 @@ def test_a_note_an_agent_or_a_person_wrote_is_withheld_by_its_form():
 
 
 def test_a_note_one_of_the_server_s_own_kinds_wrote_is_judged_by_its_kind_alone():
-    """Decision 90: Granola's notes are not withheld. Its notes carry `meeting:granola/<id>`,
-    a form; they stay as they were, judged by the kind (M2), not by the form."""
-    assert KINDS["granola"].via == "granola" and KINDS["granola"].withheld is False
+    """Granola's notes carry `meeting:granola/<id>`, a form; they are judged by the kind (M2),
+    not by the form: withheld by its `via`, as every kind is (Privacy 4)."""
+    assert KINDS["granola"].via == "granola" and KINDS["granola"].withheld is True
     assert withheld_by_ref("granola", "meeting:granola/n-1") is False
     for kind in KINDS.values():
         assert withheld_by_ref(kind.via, "mail:thread-1") is False, kind.via

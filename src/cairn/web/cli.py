@@ -257,7 +257,7 @@ from cairn.sources.runner import (
 )
 from cairn.store import JOINS, CannotOpen, SchemaTooNew, SourceInfo, Store, UnknownSchema
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
-from cairn.web import cli_arrange, cli_data, cli_google, cli_stats, google_connect
+from cairn.web import cli_arrange, cli_data, cli_google, cli_reseal, cli_stats, google_connect
 from cairn.web import slack as web_slack
 from cairn.web.app import create_app
 from cairn.web.auth import SESSION_TTL
@@ -545,6 +545,7 @@ def _parser() -> argparse.ArgumentParser:
     cli_stats.add_command(commands)  # Q1
     cli_arrange.add_commands(commands)
     cli_google.add_command(commands)
+    cli_reseal.add_command(commands)
     connector_check.add_command(commands)
     return parser
 
@@ -1991,6 +1992,8 @@ def _run(args: argparse.Namespace) -> int:
         return cli_arrange.run(args)
     if args.command == cli_google.COMMAND:
         return cli_google.run(args)
+    if args.command == cli_reseal.COMMAND:
+        return cli_reseal.run(args)
     if args.command == connector_check.COMMAND:
         return connector_check.run(args)
     return _serve(args)

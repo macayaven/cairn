@@ -323,3 +323,103 @@ def test_reseal_is_safe_to_run_twice_and_with_no_earlier_key_changes_nothing(wor
 def test_a_pending_slack_install_holds_no_secret_and_is_not_counted(world):
     world.view().make_slack_install()
     assert reseal_slack(world.store, Sealer(CURRENT, (EARLIER,))) == Resealed(0, 0, 0)
+
+
+# The command: reseal
+
+
+def reseal(monkeypatch, db, *options: str, **env: str) -> int:
+    for name in (*VARIABLES, "CAIRN_GOOGLE_CONNECT_CLIENT"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    return server.main(["reseal", "--db", str(db), *options])
+
+
+BOTH_ROTATED = {
+    GOOGLE: b64(CURRENT), f"{GOOGLE}_PREVIOUS": b64(EARLIER),
+    SLACK: b64(CURRENT), f"{SLACK}_PREVIOUS": b64(EARLIER),
+}  # fmt: skip
+
+
+def leaks(shown: str) -> bool:
+    keys = any(b64(k) in shown or k.hex() in shown for k in (CURRENT, EARLIER, STRANGER))
+    return keys or any(value in shown for value in (TOKEN, SIGNING, BOT, CLIENT_SECRET))
+
+
+def test_reseal_both_keys_says_what_it_did_for_each_and_shows_nothing_secret(
+    world, monkeypatch, capsys
+):
+    connect(world, "ada.mail@example.test")
+    install = slack_ready(world)
+    under(world.store, STRANGER)
+    connect(world, "ada.lost@example.test")
+    code = reseal(monkeypatch, world.db, "--google-connect", "--slack", **BOTH_ROTATED)
+    said = capsys.readouterr()
+    assert code == 0 and said.err == "" and leaks(said.out) is False
+    assert said.out.splitlines() == [
+        f"{GOOGLE}: 1 value sealed again under the current key, 1 that no key given opens left"
+        " as it was, 0 already under it",
+        f"{SLACK}: 2 values sealed again under the current key, 0 that no key given opens left"
+        " as it was, 0 already under it",
+    ]
+    under(world.store, CURRENT)  # restarted without the earlier keys
+    assert (world.store.slack_inbound(install).signing_secret == SIGNING) is True
+    assert sorted(google_opens(world).values()) == [False, True]
+
+
+def test_reseal_one_key_leaves_the_other_and_a_second_run_writes_nothing(
+    world, monkeypatch, capsys
+):
+    connect(world, "ada.mail@example.test")
+    slack_ready(world)
+    before = dump(world.db)
+    assert reseal(monkeypatch, world.db, "--slack", **BOTH_ROTATED) == 0
+    assert capsys.readouterr().out.startswith(f"{SLACK}: 2 values sealed again")
+    after = dump(world.db)
+    google_rows = [line for line in after.splitlines() if "credential_tokens" in line]
+    assert all(line in before for line in google_rows) is True  # the Google token untouched
+    assert reseal(monkeypatch, world.db, "--slack", **BOTH_ROTATED) == 0
+    assert capsys.readouterr().out.startswith(f"{SLACK}: 0 values sealed again")
+    assert (dump(world.db) == after) is True
+
+
+def test_reseal_needs_a_key_to_name(world, monkeypatch, capsys):
+    before = dump(world.db)
+    assert reseal(monkeypatch, world.db, **BOTH_ROTATED) == 2
+    said = capsys.readouterr()
+    assert "--google-connect" in said.err and "--slack" in said.err
+    assert len(said.err.strip().splitlines()) == 1 and (dump(world.db) == before) is True
+
+
+@pytest.mark.parametrize("value", list(MALFORMED.values()), ids=list(MALFORMED))
+@pytest.mark.parametrize("variable", [GOOGLE, SLACK])
+def test_reseal_refuses_a_malformed_or_repeated_earlier_key_and_writes_nothing(
+    world, monkeypatch, capsys, variable, value
+):
+    connect(world, "ada.mail@example.test")
+    slack_ready(world)
+    before = dump(world.db)
+    env = {**BOTH_ROTATED, f"{variable}_PREVIOUS": value}
+    code = reseal(monkeypatch, world.db, "--google-connect", "--slack", **env)
+    said = capsys.readouterr()
+    lines = said.err.strip().splitlines()
+    assert code == 2 and said.out == "" and len(lines) == 1
+    assert f"{variable}_PREVIOUS" in lines[0]
+    leaked = any(part.strip() and part.strip() in said.err for part in value.split(","))
+    assert (leaked or leaks(said.err)) is False
+    assert (dump(world.db) == before) is True
+
+
+def test_reseal_without_the_current_key_says_which_variable(world, monkeypatch, capsys):
+    env = {k: v for k, v in BOTH_ROTATED.items() if k != SLACK}
+    assert reseal(monkeypatch, world.db, "--slack", **env) == 2
+    err = capsys.readouterr().err
+    assert SLACK in err and len(err.strip().splitlines()) == 1 and leaks(err) is False
+
+
+def test_reseal_needs_no_google_client_and_no_database_is_refused(tmp_path, monkeypatch, capsys):
+    env = {GOOGLE: b64(CURRENT)}
+    assert reseal(monkeypatch, tmp_path / "none.db", "--google-connect", **env) == 1
+    assert capsys.readouterr().err.strip() == f"no database at {tmp_path / 'none.db'}"
+    assert not (tmp_path / "none.db").exists()

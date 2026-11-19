@@ -107,6 +107,9 @@ class Sessions:
     # one off /api and /mcp gets it cleared in the answer (on https without a brand, the
     # names before the __Host- prefix: cairn_session at /, cairn_signin at /auth).
     retired: tuple[tuple[str, str], ...] = ()
+    # `serve --idle-minutes N`, in seconds: a session not used that long is over
+    # (Store.identify_session's idle_seconds); None: never.
+    idle: int | None = None
 
     def set(self, response: Response, token: str, seconds: int | None = None) -> None:
         response.set_cookie(
@@ -628,8 +631,12 @@ class Accounts:
         saved: Callable[[str, str, str], None] | None = None,
         sessions: Sessions | None = None,
         compiles: Compiles | None = None,
+        allowed: Callable[[str], bool] | None = None,
     ) -> None:
         self.sessions = sessions or Sessions()  # the web session's cookie and life (B1)
+        # Who may stay signed in (cairn.web.signin.Allowed), checked on every request; None:
+        # the operator limits nobody.
+        self._allowed = allowed
         # G1: the notes this server compiles at once (cairn.web.turns), shared by every way
         # a note reaches a compile: requests, the sources' runs and the filer.
         self.compiles = compiles or Compiles()
@@ -650,24 +657,45 @@ class Accounts:
             return False
 
     def principal(self, request: HTTPConnection) -> tuple[Principal, str | None] | None:
+        found = self._found(request)
+        return (found[0], found[1]) if found else None
+
+    def _found(self, request: HTTPConnection) -> tuple[Principal, str | None, str | None] | None:
         """Who the request acts for, and the actor id that tells them apart from others of
         the same name (Store.identify_*). The web UI takes the session cookie and nothing else.
         /api takes an API key and nothing else. /mcp takes an API key, or an OAuth access
         token as `Authorization: Bearer`: the token's prefix, which no key can have, says
         which of the two a bearer value is, so each is looked up once and never as the
-        other. A token presented anywhere but on /mcp is refused."""
+        other. A token presented anywhere but on /mcp is refused. Third: the address a
+        session's sign-in was vouched with, read with it when the operator limits who signs
+        in (None otherwise, and for a key or a token). With `sessions.idle`, a session not
+        used that long is no session (Store.identify_session)."""
         path = request.scope["path"]
         if not _is_api(path):
             token = request.cookies.get(self.sessions.cookie)
-            return self._store.identify_session(token) if token else None
+            if not token:
+                return None
+            asked: dict[str, Any] = {}
+            if self.sessions.idle is not None:
+                asked["idle_seconds"] = self.sessions.idle
+            if self._allowed is not None:
+                asked["vouched"] = True
+            seen = self._store.identify_session(token, **asked)
+            return (*seen, None)[:3] if seen else None  # type: ignore[return-value]
         key, bearer = request.headers.get("x-api-key", "").strip(), _bearer(request.headers)
         if not key and bearer.startswith(ACCESS_TOKEN_PREFIX):
             usable = self._tokens is not None and _is_mcp(path)
-            return self._store.identify_token(bearer, audience=self._tokens) if usable else None
-        return self._store.identify_key(key or bearer) if key or bearer else None
+            found = self._store.identify_token(bearer, audience=self._tokens) if usable else None
+        else:
+            found = self._store.identify_key(key or bearer) if key or bearer else None
+        return (*found, None) if found else None
 
     def memory(
-        self, principal: Principal, actor_id: str | None = None, key_id: str | None = None
+        self,
+        principal: Principal,
+        actor_id: str | None = None,
+        key_id: str | None = None,
+        vouched: str | None = None,
     ) -> Memory | None:
         """The principal's account, and only that, acting for the principal's person when it
         has one, narrowed to the principal's reach: a key or a grant reaches the projects and
@@ -685,7 +713,11 @@ class Accounts:
         Memory knows the plan. The plan is the one in force now (`Plans.in_force`: the
         operator's, else the default), one read. None: the account is
         gone, or the person is no longer one of its members (either can change between
-        resolving a credential and this call)."""
+        resolving a credential and this call), or the operator limits who signs in and the
+        person's address is not allowed now (`allowed`): a session is checked by the address
+        its sign-in was vouched with (`vouched`), else the person's stored address, which is
+        what a key or an agent acting for them is checked by. Nothing more is read for it:
+        the person is read here anyway, and the vouched address with the session."""
         member = {"user_id": principal.user_id} if principal.user_id else {}
         try:
             view = self._store.for_account(principal.account_id, **member)
@@ -693,6 +725,8 @@ class Accounts:
             return None
         person = view.get_user(principal.user_id) if principal.user_id else None
         if principal.user_id and person is None:
+            return None
+        if person and self._allowed is not None and not self._allowed(vouched or person.email):
             return None
         name = person.name if person and principal.kind == "session" else principal.label
         view = view.acting_as(principal.kind, name, actor_id)
@@ -712,13 +746,13 @@ class Accounts:
         return Memory(view, self._gate, person, plan, plans=self._plans)
 
     def admit(self, request: HTTPConnection) -> Memory | None:
-        found = self.principal(request)
+        found = self._found(request)
         key_id = None
         if found and found[0].kind == "session" and found[0].label and found[0].user_id:
             # A session opened with a key a person made names the person as its actor: the
             # key it was opened with is looked up, by the session's own token (A1).
             key_id = self._store.session_key(request.cookies.get(self.sessions.cookie, ""))
-        memory = self.memory(*found, key_id) if found else None
+        memory = self.memory(found[0], found[1], key_id, found[2]) if found else None
         if memory is not None and self._saved is not None:  # T4b: a saved page is queued
             memory.saved = functools.partial(self._saved, memory.store.account_id)
         return memory

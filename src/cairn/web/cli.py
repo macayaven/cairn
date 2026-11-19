@@ -585,6 +585,13 @@ def _wall_options(serve: argparse.ArgumentParser) -> None:
         " name when not given)",
     )
     serve.add_argument(
+        "--idle-minutes",
+        type=_idle_minutes,
+        metavar="N",
+        help="with --sign-in: a sign-in not used for N minutes (1 to 1440) ends, up to a minute"
+        " late, whatever its length; without it, use is not recorded and nothing ends for it",
+    )
+    serve.add_argument(
         "--require-mfa",
         action="store_true",
         help="with --sign-in through oidc only: a sign-in is refused unless the provider's ID"
@@ -600,6 +607,16 @@ def _wall_options(serve: argparse.ArgumentParser) -> None:
         " without it, 12 hours and no renewal. At start, a sign-in made under a longer length"
         " is cut to end at most this length from then",
     )
+
+
+def _idle_minutes(text: str) -> int:
+    try:
+        minutes = int(text)
+    except ValueError:
+        minutes = 0
+    if not 1 <= minutes <= 1440:
+        raise argparse.ArgumentTypeError("a whole number of minutes from 1 to 1440")
+    return minutes
 
 
 def _days(text: str) -> int:
@@ -621,6 +638,7 @@ def _would_do_nothing(args: argparse.Namespace) -> str | None:
             ("--brand-name", args.brand_name is not None),
             ("--session-days", args.session_days is not None),
             ("--require-mfa", args.require_mfa),
+            ("--idle-minutes", args.idle_minutes is not None),
         ):
             if given:
                 return f"{option} needs --sign-in: without it nobody signs in through a provider"
@@ -1870,6 +1888,7 @@ def _serve(args: argparse.Namespace) -> int:
                 brand_logo=brand.logo if brand else None,
                 brand_logo_alt=args.brand_logo_alt,
                 session_days=args.session_days,
+                idle_minutes=args.idle_minutes,
                 file_every=FILE_EVERY,  # N1: the notes waiting for their page are filed
                 compiles=args.compiles,  # G1: notes compiled at once
                 keep_versions=_kept(args, plans),  # Q1: a page's history bound

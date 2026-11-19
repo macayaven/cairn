@@ -5,10 +5,11 @@ The contract is in cairn/server.py ("Sign-in"). The providers (cairn.identity) t
 into a verified profile; this module holds what is the same for every provider: the state,
 the install's rules (who may join, and where), and the session.
 
-The state of a sign-in travels in a cookie (`cairn_signin`, Path=/auth, HttpOnly,
-SameSite=Lax so that it comes back on the provider's redirect, Secure on https, ten
-minutes), sealed with a secret made when the process starts (`oauth.SealedRequests`): one
-process serves cairn, and a restart only makes a sign-in in progress fail. A state holds the
+The state of a sign-in travels in a cookie (`__Host-cairn_signin` at Path=/ on https,
+`cairn_signin` at Path=/auth over plain http; HttpOnly, SameSite=Lax so that it comes back on
+the provider's redirect, Secure on https, ten minutes), sealed with a secret made when the
+process starts (`oauth.SealedRequests`): one process serves cairn, and a restart only makes a
+sign-in in progress fail. A state holds the
 `state` the provider echoes, the OIDC `nonce` and where to go next, and is bound to one
 provider.
 
@@ -67,8 +68,10 @@ B1 (the contract is in cairn/server.py, "A wall, a brand"). Under a brand on htt
 cookie is `__Host-signin` at Path=/ (the prefix allows no other path) and the session cookie
 `__Host-session` (auth.Sessions), so no other host under the same parent domain can plant
 either (auth.branded_cookie says why); over plain http they are `signin` (Path=/auth) and
-`session`. Only the name set is read. The sign-in page, a refusal on it, the page over the
-limit and the page that moves on after a sign-in are brand_signin.html and
+`session`. Without a brand the names are `cairn_signin` and `cairn_session`, with the same
+prefix and path on https; a cookie under the name before the prefix is cleared and never
+read (auth.Sessions.retired). Only the name set is read. The sign-in page, a refusal on it,
+the page over the limit and the page that moves on after a sign-in are brand_signin.html and
 brand_signed_in.html, which name the brand and nothing else; and no sentence names cairn
 (_REPLACED says "this server"). The session a sign-in
 makes lasts as long as auth.Sessions says: 12 hours, or `serve --session-days` days.
@@ -93,7 +96,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
 from cairn import oauth
-from cairn.identity import IdentityProvider, Profile, SignInRefused
+from cairn.identity import IdentityProvider, Profile, SignInRefused, email_domain
 from cairn.store import JOINS, ProviderChanged, Removed
 from cairn.web.auth import HOST_ONLY, RENEW_AFTER, Accounts, Sessions, branded_cookie
 from cairn.web.brand import Brand, server_name
@@ -257,6 +260,35 @@ def email_entries(entries: Sequence[str]) -> frozenset[str]:
             )
         kept.add(address)
     return frozenset(kept)
+
+
+@dataclass(frozen=True)
+class Allowed:
+    """The install's rule for who signs in, and who stays signed in: an address is allowed
+    when it is one of `emails` (the whole address, ignoring case and the spaces around it),
+    or its domain is one of `domains`; with neither, everyone is. At sign-in the domain test
+    is the provider's (`within`: Google's also needs the Google Workspace domain); on every
+    later request it is the address's domain alone, since nothing else is kept. The addresses
+    are left out of `repr()`."""
+
+    domains: tuple[str, ...] = ()
+    emails: frozenset[str] = field(default=frozenset(), repr=False)
+
+    def __call__(self, address: str, within: Callable[[], bool] | None = None) -> bool:
+        if not self.domains and not self.emails:
+            return True
+        if self.emails and address.strip().lower() in self.emails:
+            return True
+        if not self.domains:
+            return False
+        return within() if within is not None else email_domain(address) in self.domains
+
+
+def allowed(sign_in: SignIn, public_url: str | None) -> Allowed | None:
+    """The rule Accounts checks on every request (cairn.web.auth.Accounts.memory): None when
+    the operator limits nobody. ValueError as `check`, in the same order."""
+    _, domains, emails = check(sign_in, public_url)
+    return Allowed(domains, emails) if domains or emails else None
 
 
 def check(sign_in: SignIn, public_url: str | None) -> tuple[str, tuple[str, ...], frozenset[str]]:
@@ -460,14 +492,12 @@ def signin_routes(
         """Its `next`: the whole way back, taken from memory when it was held there."""
         return held.take(pending["held"]) if pending.get("held") else pending["next"]
 
+    rule = Allowed(domains, emails)
+
     def admitted(provider: IdentityProvider, profile: Profile) -> bool:
         """The install's rule for who signs in: none, or a domain or a listed address (either
         admits). Checked at every sign-in, before anything is written."""
-        if not domains and not emails:
-            return True
-        if emails and profile.email.strip().lower() in emails:
-            return True
-        return bool(domains) and provider.within(profile, domains)
+        return rule(profile.email, lambda: provider.within(profile, domains))
 
     def ended(response: Response, request: Request, part: str) -> Response:
         """The sign-in sealed as `part` is over: only its state leaves the cookie (B2)."""

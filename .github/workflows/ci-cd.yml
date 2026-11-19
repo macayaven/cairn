@@ -431,7 +431,9 @@ jobs:
   # The image job tested a local build; `publish` built again from its cache. This runs the
   # same smoke test on the bytes that were published, for the platform the VM runs. It runs
   # the published image and the checked-out smoke script, so it gets no OIDC token and no
-  # environment secrets: nothing here can ask for a deploy token.
+  # environment secrets: nothing here can ask for a deploy token. On a tag it first pulls the
+  # version the way the run guide tells a reader to, with no login, so the guide's command is
+  # tested and a package nobody may pull anonymously fails the run before the release.
   verify:
     name: smoke test of the published image (linux/amd64)
     needs: publish
@@ -460,6 +462,20 @@ jobs:
         run: |
           if [[ ! $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::The publish job reported no image digest"
+            exit 1
+          fi
+      # On a tag, the run guide's own commands, as a reader runs them: logged out, the version
+      # pulled by its tag, and the digest it prints compared with the one `publish` pushed.
+      - name: Pull the version as the run guide does, with no login
+        if: github.ref_type == 'tag'
+        run: |
+          repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/$repository:${GITHUB_REF_NAME#v}"
+          docker logout ghcr.io
+          docker pull "$image"
+          pulled="$(docker inspect --format '{{index .RepoDigests 0}}' "$image")"
+          if [ "$pulled" != "ghcr.io/$repository@$DIGEST" ]; then
+            echo "::error::$image, pulled with no login, is $pulled, not the digest publish pushed ($DIGEST)"
             exit 1
           fi
       - name: Log in to GHCR

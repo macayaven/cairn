@@ -169,6 +169,78 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
     ]
 
 
+GUIDE_PULL = "Pull the version as the run guide does, with no login"
+
+
+def run_the_guide_pull(tmp_path, repo_digest: str) -> tuple[int, str, list[str]]:
+    """Job `verify`'s anonymous pull as bash runs it, with a docker that records its calls and
+    answers `inspect` with REPO_DIGEST. The tag pushed is v1.2.3 of Owner/Repo."""
+    step = next(s for s in JOBS["verify"]["steps"] if s.get("name") == GUIDE_PULL)
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
+        'if [ "$1" = inspect ]; then printf "%s\\n" "$REPO_DIGEST"; fi\n'
+    )
+    docker.chmod(0o755)
+    calls = tmp_path / "calls"
+    done = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+        env={
+            "PATH": f"{tmp_path}:/usr/bin:/bin",
+            "CALLS": str(calls),
+            "REPO_DIGEST": repo_digest,
+            "GITHUB_REPOSITORY": "Owner/Repo",
+            "GITHUB_REF_NAME": "v1.2.3",
+            "DIGEST": "sha256:" + "a" * 64,
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    return done.returncode, done.stdout, calls.read_text().splitlines()
+
+
+def test_on_a_tag_verify_pulls_the_version_as_the_guide_says_with_no_login(tmp_path):
+    steps = JOBS["verify"]["steps"]
+    pull = next(s for s in steps if s.get("name") == GUIDE_PULL)
+    # On a tag only; on main there is no version to pull.
+    assert evaluate(pull["if"], TAG) and not evaluate(pull["if"], MAIN_PUSH)
+    login = next(s for s in steps if s.get("uses", "").startswith("docker/login-action"))
+    assert steps.index(pull) < steps.index(login)
+    assert set(pull) == {"name", "if", "run"}
+    published = "ghcr.io/owner/repo@sha256:" + "a" * 64
+    code, _, calls = run_the_guide_pull(tmp_path, published)
+    image = "ghcr.io/owner/repo:1.2.3"
+    # Logged out first; then the run guide's own two commands, by the version tag.
+    assert code == 0
+    assert calls == [
+        "logout ghcr.io",
+        f"pull {image}",
+        f"inspect --format {{{{index .RepoDigests 0}}}} {image}",
+    ]
+
+
+def test_the_pull_with_no_login_fails_when_the_digest_is_not_the_one_published(tmp_path):
+    other = "ghcr.io/owner/repo@sha256:" + "b" * 64
+    code, out, _ = run_the_guide_pull(tmp_path, other)
+    assert code == 1
+    assert out == (
+        f"::error::ghcr.io/owner/repo:1.2.3, pulled with no login, is {other},"
+        f" not the digest publish pushed (sha256:{'a' * 64})\n"
+    )
+
+
+def test_the_pull_with_no_login_is_the_one_the_run_guide_gives():
+    guide = (REPO / "src" / "cairn" / "guides" / "run.md").read_text(encoding="utf-8")
+    run = next(s for s in JOBS["verify"]["steps"] if s.get("name") == GUIDE_PULL)["run"]
+    assert re.search(r"^docker pull ghcr\.io/macayaven/cairn:\d+\.\d+\.\d+ &&$", guide, re.M)
+    assert 'docker pull "$image"' in run.splitlines()
+    check = "docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/macayaven/cairn:"
+    assert check in guide
+    assert "docker inspect --format '{{index .RepoDigests 0}}' \"$image\"" in run
+
+
 def test_release_jobs_do_not_run_the_application_environment_or_rehearsals_on_the_host():
     for name in ("publish", "verify", "deploy"):
         for step in JOBS[name]["steps"]:

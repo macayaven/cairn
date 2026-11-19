@@ -2,7 +2,7 @@
 
 One VM runs the same image self-hosted users run. OpenTofu builds everything around it.
 
-**Status: written from the current official docs, not yet applied.** CI formats, validates and plans it with OpenTofu (`tofu test`, against a mock provider and without a cloud project) and rehearses the VM's files and units on a runner; no `tofu plan` against a project, no apply and no boot on Google Cloud has been run. [What was checked](#what-was-checked-and-what-was-not) is at the end. Expect to fix something on the first apply.
+**Status: applied once to a real project, on 2026-11-14, and only what that run showed is verified there.** One `e2-small` VM in `europe-west1` booted, served the domain over TLS, deployed by digest, replicated to the bucket and reported through guest attributes; the replica alert was applied the day after. Everything added since (the later alerts, the container limits, the registry cleanup, the audit and key settings among them) has not been applied, and the end of this file lists what is still unverified. CI formats, validates and plans it with OpenTofu (`tofu test`, against a mock provider and without a cloud project) and rehearses the VM's files and units on a runner. [What was checked](#what-was-checked-and-what-was-not) is at the end. Expect to fix something on the next apply.
 
 ## What it builds
 
@@ -99,6 +99,23 @@ gcloud compute ssh cairn --zone ZONE --tunnel-through-iap
 ```
 
 Project owners can connect as they are. Anyone else needs `roles/iap.tunnelResourceAccessor` and `roles/compute.osAdminLogin`, plus `roles/iam.serviceAccountUser` on the VM's service account.
+
+**A second factor for SSH** is off by default. With `os_login_2fa = true`, OS Login asks everyone who connects for a second factor (a security key, an authenticator code or a phone prompt) at every connection, and their Google account must have 2-Step Verification on. A script or a scheduled job can then no longer connect by SSH. Whether to turn it on is the operator's decision. A change of it changes the instance's metadata, not the VM.
+
+**Remove what every new project starts with.** The VM runs in its own network with its own service account, so it uses neither the `default` network (whose rules let SSH and RDP in from anywhere) nor the default Compute Engine service account (which holds `roles/editor` on the whole project). Remove both, once, by hand; OpenTofu does not own them:
+
+```bash
+gcloud compute firewall-rules list --filter=network=default --format='value(name)' \
+  | xargs -r -n 1 gcloud compute firewall-rules delete --quiet
+gcloud compute networks delete default --quiet
+NUMBER=$(gcloud projects describe PROJECT_ID --format="value(projectNumber)")
+gcloud projects remove-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:${NUMBER}-compute@developer.gserviceaccount.com" --role=roles/editor
+```
+
+Anything else in the project that uses the default network or the default service account stops working; in a project that holds only cairn there is nothing else.
+
+**Customer-managed keys** and the settings a reviewer expects are in [Audit, keys and network](#audit-keys-and-network).
 
 The alert fires until `https://DOMAIN/healthz` answers 200. That is expected during bootstrap. Later it fires while cairn is down or answers 503: it cannot read its database, the database holds a schema version this cairn does not know, or a write failed and could not be undone (cairn then stays out of service until it is restarted: `sudo systemctl restart cairn.service` on the VM, after `sudo journalctl -u cairn` says why).
 
@@ -416,6 +433,8 @@ gcloud secrets versions destroy OLD_VERSION --secret="$(tofu output -raw env_sec
 
 The VM always reads the latest version, at boot and when `cairn-env.service` is restarted. Destroy the old version only after `/healthz` answers with the new one.
 
+The VM checks the data it reads against the checksum Secret Manager sends with it (`dataCrc32c`); when they differ it writes nothing, and `cairn-env.service` fails with one line in its journal, so cairn does not start. Restart `cairn-env.service` to read the secret again. An answer without a checksum is written as before, with a line that says it was not checked.
+
 ## Changing the configuration
 
 `tofu apply` updates the VM's `user-data`, and cloud-init reads it at boot. Changes to the domain, the extra arguments, the plans file, the Caddy or Litestream versions, or anything under `deploy/` and `files/` therefore need a restart of the VM after the apply:
@@ -431,6 +450,47 @@ Changing `boot_disk_size_gb` replaces the VM: the boot disk is made with it. Tha
 **Plans.** To hold workspaces to plans, set `cairn_plans_file` in `terraform.tfvars` to a plans file on your machine (a copy of `deploy/plans.example.yaml`), relative to `infra/gcp` or absolute. `tofu apply` puts its content in the user-data. At boot cloud-init writes it to `/etc/cairn/plans.yaml`, owned by root with mode 0644, and cairn starts with that file mounted read-only and `--plans /etc/cairn/plans.yaml`: cairn's user can read it and cannot change it. Plans are not secret (a workspace's **Usage** page shows its plan's limits), so the user-data, which anyone who can read the instance's metadata can read, is an acceptable place for them. `tofu plan` refuses a file that is missing, empty, larger than 16 KiB, or not printable ASCII text that ends in exactly one line break, and says which. It also refuses `--plans` in `cairn_extra_args` while `cairn_plans_file` is set. After an edit of the file: `tofu apply`, then stop and start the VM as above. Without `cairn_plans_file` the file is empty, and cairn starts without plans.
 
 **Brand.** To show your own name in place of cairn's, set `cairn_brand_name` in `terraform.tfvars`, and with it, if you want a logo, `cairn_brand_logo_file`, an SVG or a PNG on your machine (relative to `infra/gcp` or absolute), and `cairn_brand_logo_alt`, its alt text. `tofu apply` puts each value that is set in the user-data, base64. At boot cloud-init writes them to `/etc/cairn/brand/name`, `/etc/cairn/brand/logo` and `/etc/cairn/brand/logo-alt`, owned by root with mode 0644, and cairn starts with `--brand-name=NAME`, the logo mounted read-only with `--brand-logo /etc/cairn/brand/logo`, and `--brand-logo-alt=TEXT`. Each value reaches `serve` as one argument, as you wrote it: no shell expands it and nothing splits it, so a space, a quote, a backslash or a `$` arrives as it is. The brand is not secret (the sign-in page shows it), so the user-data, which anyone who can read the instance's metadata can read, is an acceptable place for it. `tofu plan` refuses what `serve` would refuse at start: a name that is not 1 to 60 characters or an alt text that is not 1 to 200, one that is only spaces, or one that holds a control character, a character that is not seen (a zero-width space, a direction mark), `<` or `>`; and a logo without a name, an alt text without a logo, and a name without `--sign-in` in `cairn_extra_args`. It also refuses `--brand-name`, `--brand-logo` and `--brand-logo-alt` in `cairn_extra_args`. Of the logo file it refuses one that is missing, empty or larger than 60 KiB (61,440 bytes), and it checks only how the file starts: the 16 bytes every PNG starts with, or an SVG whose first element is `<svg` with `xmlns="http://www.w3.org/2000/svg"`, after at most an XML declaration, white space and comments. It refuses an SVG with a document type declaration (`<!DOCTYPE`), which `serve` refuses so that reading a logo fetches nothing and expands nothing. `serve` reads the whole file at start and may still refuse one the plan took, such as an SVG that is not well-formed XML; on the VM that is a container that does not come up. `serve` itself takes a logo of up to 256 KB; the VM takes at most 60 KiB because the logo travels in the user-data next to the plans file, and Compute Engine takes at most 256 KB in one metadata value, which `tofu plan` also checks for the whole user-data. `--wall` and `--session-days` stay in `cairn_extra_args`, and `tofu plan` refuses either without `--sign-in`. It also refuses a `--session-days` that is not followed by a whole number from 1 to 365, written `--session-days 30` or `--session-days=30`, and a `--wall` with a value (`--wall=yes`): `--wall` takes none. A change of the brand goes as a change of the plans file does: `tofu apply`, then stop and start the VM as above. Unlike the plans file, which is written empty when unset, a brand value that is not set is not written at all; `/etc` is on tmpfs, so a value you remove is gone after the restart and cairn starts without its option.
+
+## Audit, keys and network
+
+**Audit logs.** Data Access audit logs for Cloud Storage and Secret Manager are on (`data_access_audit_logs`): who read, wrote or deleted the replica's objects, and who read the secret, with the identity that did it. Litestream's uploads and the replica check's listings each make an entry, so expect thousands a day; they are billed as log volume past the free allowance. The setting replaces any audit configuration set elsewhere for those two services.
+
+**Retention.** The project's `_Default` log bucket keeps logs 30 days (`log_retention_days`, Google's own default); the audit logs above, the containers' logs and the system's go there. A longer retention is billed. This sets the existing bucket and does not delete it on `tofu destroy`.
+
+**Network.** The subnet has Private Google Access on. Firewall rule logging (`firewall_logging`) and VPC flow logs (`vpc_flow_logs`) are off by default, because both are billed by volume.
+
+### Customer-managed keys
+
+For an operator who must hold the keys. Set `kms_key_name` to a Cloud KMS key in the same region as everything else, and the data disk, the boot disk, the replica bucket and the environment secret use it. Unset, Google manages the keys, as before. `tofu plan` refuses a key in another region.
+
+The key needs `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key for three of Google's service agents of this project: Compute Engine's for the disks, Cloud Storage's for the bucket, Secret Manager's for the secret.
+
+```bash
+NUMBER=$(gcloud projects describe PROJECT_ID --format="value(projectNumber)")
+gcloud beta services identity create --service=secretmanager.googleapis.com --project=PROJECT_ID
+for agent in \
+  service-PROJECT_NUMBER@compute-system.iam.gserviceaccount.com \
+  service-PROJECT_NUMBER@gs-project-accounts.iam.gserviceaccount.com \
+  service-PROJECT_NUMBER@gcp-sa-secretmanager.iam.gserviceaccount.com; do
+  gcloud kms keys add-iam-policy-binding KEY --keyring=RING --location=REGION \
+    --member="serviceAccount:${agent/PROJECT_NUMBER/$NUMBER}" \
+    --role=roles/cloudkms.cryptoKeyEncrypterDecrypter
+done
+```
+
+Grant it before the apply: a disk, a bucket or a secret that cannot use its key is not made. Disabling or destroying the key makes all four unreadable, the database and its replica included.
+
+Not covered: the disk snapshots, the registry, the logs and the state bucket. On an existing deployment, setting it replaces the data disk, the VM and the secret, as far as can be read without a project: read `tofu plan` before `apply`. The data disk is protected from destroy, so the plan stops there; move the database to a new disk by the steps of [The data disk is lost](#the-data-disk-is-lost), and add the secret's version again ([Secret rotation](#secret-rotation)). None of this has been applied.
+
+## What a regulated customer adds
+
+These definitions are not ready as they stand for health or education records, or other data a law governs, even inside the customer's own Google Cloud account. What they do not do, and such a customer adds:
+
+- **a signed agreement with Google** (for health data in the United States, Google's Business Associate Agreement), with the deployment kept to the products and regions it covers;
+- **organisation policies** that hold the project to what this file sets by hand: resource locations, uniform bucket access, no public access, no serial port, allowed members;
+- **VPC Service Controls** around Cloud Storage, Secret Manager and Artifact Registry, so that a stolen credential cannot copy the data out of the perimeter;
+- **a locked log sink**: the audit logs routed to a bucket with a retention lock, for the years a law asks, where nobody with project access can delete them;
+- customer-managed keys ([above](#customer-managed-keys)) on what they do not cover here, and a record of reads inside cairn itself, which cairn's own audit page does not keep.
 
 ## Teardown
 
@@ -698,7 +758,7 @@ Checked on 2026-11-10, without a cloud project, OpenTofu or a running Docker dae
 - The replica it had written, copied from the bucket and restored on another machine with the pinned Litestream image, passed `scripts/restore_drill.py --db-file` (6 of 6 checks) and opened in cairn's store. The database held no note at that point. Later the same day, after a person had signed in through Google and an agent connected by URL had written a note, the replica was restored the same way and the drill found the note (`--min-notes 1`).
 - The brand's three settings reached `serve`: the sign-in page showed the name and served the logo.
 
-It did not show: the metadata block seen from inside a container, a rollback, a restore on the VM, a restart of Docker, the alert's email, or the deploy job from GitHub Actions (the image was pushed by hand, as [Deploy](#deploy) describes). The replica alert was added after that run and applied on 2026-11-15: one resource added, nothing else changed. Seen on the real project that day: its filter matched no entry of the last 24 hours, and the same filter with `INFO` in place of `ERROR` selected Litestream's own lines, so the log's name, the instance, the container's name and the regular expression read as the rehearsal assumed. Its email has not been seen. The replica check and the silence alert came after that and have not been applied: no current line has reached Cloud Logging, the metric has counted nothing, and the silence alert has never fired or sent an email. The compaction alert came after that and has not been applied: its metric has counted nothing and it has never fired.
+It did not show: the metadata block seen from inside a container, a rollback, a restore on the VM, a restart of Docker, the alert's email, or the deploy job from GitHub Actions (the image was pushed by hand, as [Deploy](#deploy) describes). The replica alert was added after that run and applied on 2026-11-15: one resource added, nothing else changed. Seen on the real project that day: its filter matched no entry of the last 24 hours, and the same filter with `INFO` in place of `ERROR` selected Litestream's own lines, so the log's name, the instance, the container's name and the regular expression read as the rehearsal assumed. Its email has not been seen. The replica check and the silence alert came after that and have not been applied: no current line has reached Cloud Logging, the metric has counted nothing, and the silence alert has never fired or sent an email. The compaction alert came after that and has not been applied: its metric has counted nothing and it has never fired. The audit configuration, the log bucket's retention and the other settings of [Audit, keys and network](#audit-keys-and-network) came after that too, two resources more, and have not been applied.
 
 Not checked, most likely to be wrong first:
 

@@ -660,7 +660,15 @@ def test_the_readme_says_what_one_run_on_a_real_project_showed_and_what_it_did_n
     said = flat(GUIDE[start : GUIDE.index("Not checked, most likely to be wrong first:")])
     assert "What that one run showed, and nothing more:" in said
     blocks = sum(len(re.findall(r'^resource "', f.read_text(), re.M)) for f in INFRA.glob("*.tf"))
-    assert blocks == 34 and "created the 28 resources besides the address reserved first" in said
+    assert "created the 28 resources besides the address reserved first" in said
+    # 34 when it ran, the replica alert and the later alerts among them; then the audit
+    # configuration and the log bucket's retention.
+    assert blocks == 34 + 2
+    assert (
+        "The audit configuration, the log bucket's retention and the other settings of [Audit,"
+        " keys and network](#audit-keys-and-network) came after that too, two resources more,"
+        " and have not been applied." in said
+    )
     assert "The replica alert was added after that run" in said
     assert "The replica check and the silence alert came after that and have not been" in said
     later = (INFRA / "monitoring.tf").read_text()
@@ -954,3 +962,98 @@ def test_the_registry_cleanup_the_guide_states_is_the_one_main_tf_makes():
     )
     assert f"| Artifact Registry storage | images pushed (older than {days} days deleted" in said
     assert "no cleanup policy is set" not in said
+
+
+def test_bootstrap_says_to_remove_the_default_network_and_the_editor_role_with_the_commands():
+    said = guide_part("## Bootstrap (once, by a person)")
+    for command in (
+        "gcloud compute firewall-rules list --filter=network=default --format='value(name)'",
+        "| xargs -r -n 1 gcloud compute firewall-rules delete --quiet",
+        "gcloud compute networks delete default --quiet",
+        'NUMBER=$(gcloud projects describe PROJECT_ID --format="value(projectNumber)")',
+        "gcloud projects remove-iam-policy-binding PROJECT_ID \\\n"
+        '  --member="serviceAccount:${NUMBER}-compute@developer.gserviceaccount.com"'
+        " --role=roles/editor",
+    ):
+        assert command in said, command
+
+
+def test_the_guide_says_what_a_second_factor_asks_of_whoever_connects():
+    assert default_of("os_login_2fa") == "false"
+    said = flat(guide_part("## Bootstrap (once, by a person)"))
+    assert (
+        "**A second factor for SSH** is off by default. With `os_login_2fa = true`, OS Login"
+        " asks everyone who connects for a second factor (a security key, an authenticator"
+        " code or a phone prompt) at every connection, and their Google account must have"
+        " 2-Step Verification on. A script or a scheduled job can then no longer connect by"
+        " SSH. Whether to turn it on is the operator's decision." in said
+    )
+
+
+def test_the_guide_names_the_baselines_variables_and_their_defaults():
+    said = flat(GUIDE)
+    assert default_of("data_access_audit_logs") == "true"
+    assert default_of("log_retention_days") == "30"
+    assert default_of("firewall_logging") == "false" and default_of("vpc_flow_logs") == "false"
+    for sentence in (
+        "**Audit logs.** Data Access audit logs for Cloud Storage and Secret Manager are on"
+        " (`data_access_audit_logs`):",
+        "**Retention.** The project's `_Default` log bucket keeps logs 30 days"
+        " (`log_retention_days`, Google's own default);",
+        "Firewall rule logging (`firewall_logging`) and VPC flow logs (`vpc_flow_logs`) are"
+        " off by default, because both are billed by volume.",
+        "The subnet has Private Google Access on.",
+    ):
+        assert sentence in said, sentence
+
+
+def test_the_guide_says_the_secret_is_checked_against_its_checksum():
+    said = flat(guide_part("## Secret rotation"))
+    assert (
+        "The VM checks the data it reads against the checksum Secret Manager sends with it"
+        " (`dataCrc32c`); when they differ it writes nothing, and `cairn-env.service` fails"
+        " with one line in its journal, so cairn does not start." in said
+    )
+
+
+def test_the_customer_managed_keys_section_says_what_the_key_covers_and_its_iam():
+    said = flat(guide_part("### Customer-managed keys"))
+    for sentence in (
+        "Set `kms_key_name` to a Cloud KMS key in the same region as everything else, and the"
+        " data disk, the boot disk, the replica bucket and the environment secret use it.",
+        "Unset, Google manages the keys, as before.",
+        "`roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key for three of Google's service"
+        " agents of this project:",
+        "service-PROJECT_NUMBER@compute-system.iam.gserviceaccount.com",
+        "service-PROJECT_NUMBER@gs-project-accounts.iam.gserviceaccount.com",
+        "service-PROJECT_NUMBER@gcp-sa-secretmanager.iam.gserviceaccount.com",
+        "Not covered: the disk snapshots, the registry, the logs and the state bucket.",
+        "On an existing deployment, setting it replaces the data disk, the VM and the secret,"
+        " as far as can be read without a project: read `tofu plan` before `apply`.",
+    ):
+        assert sentence in said, sentence
+
+
+def test_what_a_regulated_customer_adds_names_what_these_definitions_do_not_do():
+    said = flat(guide_part("## What a regulated customer adds"))
+    for words in (
+        "a signed agreement with Google",
+        "organisation policies",
+        "VPC Service Controls",
+        "a locked log sink",
+        "not ready as they stand for health or education records",
+    ):
+        assert words in said, words
+
+
+def test_the_status_paragraph_and_the_dated_record_agree_that_it_was_applied():
+    status = flat(GUIDE[: GUIDE.index("## What it builds")])
+    record = re.search(r"\*\*Run once on a real project\*\* \((\d{4}-\d{2}-\d{2}): ", GUIDE)
+    assert record, "no dated record of the run on a real project"
+    day = record.group(1)
+    assert f"**Status: applied once to a real project, on {day}," in status
+    for contradiction in ("not yet applied", "no apply and no boot on Google Cloud has been run"):
+        assert contradiction not in flat(GUIDE), contradiction
+    assert "[What was checked](#what-was-checked-and-what-was-not)" in status
+    assert "CI formats, validates and plans it with OpenTofu" in status
+    assert "without a cloud project" in status

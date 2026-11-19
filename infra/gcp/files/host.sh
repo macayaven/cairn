@@ -231,8 +231,28 @@ access_token() {
     sed -n 's/.*"access_token" *: *"\([^"]*\)".*/\1/p'
 }
 
+# crc32c_file FILE: the CRC-32C (Castagnoli) of FILE's bytes, as a decimal number, the form of
+# Secret Manager's dataCrc32c. COS has no tool for it, so it is computed here, a table first.
+crc32c_file() {
+  local crc=4294967295 byte i k c table=()
+  for ((i = 0; i < 256; i++)); do
+    c=$i
+    for ((k = 0; k < 8; k++)); do
+      if ((c & 1)); then c=$(((c >> 1) ^ 0x82F63B78)); else c=$((c >> 1)); fi
+    done
+    table[i]=$c
+  done
+  for byte in $(od -An -v -tu1 "$1"); do
+    crc=$((table[(crc ^ byte) & 255] ^ (crc >> 8)))
+  done
+  echo $((crc ^ 4294967295))
+}
+
+# Returns 1 when the secret cannot be read (the caller tries again) and 2 when it was read and
+# its data does not match its checksum (the caller stops). Nothing of the data, its size or
+# either checksum is printed.
 fetch_env() {
-  local token body data
+  local token body flat data sum
   token=$(access_token) || return 1
   [ -n "$token" ] || return 1
   # The header goes to curl on stdin (printf is a builtin), so the token is never in argv.
@@ -240,19 +260,35 @@ fetch_env() {
     curl -fsS --max-time 20 -K - \
       "https://secretmanager.googleapis.com/v1/$CAIRN_ENV_SECRET/versions/latest:access") ||
     return 1
-  # {"name": "...", "payload": {"data": "<base64>", "dataCrc32c": "..."}}
-  data=$(printf '%s' "$body" | tr -d ' \n\r\t' | sed -n 's/.*"data":"\([^"]*\)".*/\1/p')
+  # {"name": "...", "payload": {"data": "<base64>", "dataCrc32c": "<digits>"}}
+  flat=$(printf '%s' "$body" | tr -d ' \n\r\t')
+  data=$(printf '%s' "$flat" | sed -n 's/.*"data":"\([^"]*\)".*/\1/p')
+  sum=$(printf '%s' "$flat" | sed -n 's/.*"dataCrc32c":"\{0,1\}\([0-9]*\).*/\1/p')
   [ -n "$data" ] || return 1
   printf '%s' "$data" | base64 -d >"$ENV_FILE.new" || return 1
+  if [ -z "$sum" ]; then
+    log "the answer for $CAIRN_ENV_SECRET carries no checksum (dataCrc32c); not checked"
+  elif [ "$(crc32c_file "$ENV_FILE.new")" != "$sum" ]; then
+    rm -f "$ENV_FILE.new"
+    return 2
+  fi
   chmod 0600 "$ENV_FILE.new" && mv -f "$ENV_FILE.new" "$ENV_FILE"
 }
 
 cmd_env() {
+  local rc
   umask 077
   mkdir -p "$ENV_DIR"
   chmod 0700 "$ENV_DIR"
-  # Fail closed: cairn must never start without its settings, so keep trying instead.
-  until fetch_env; do
+  # Fail closed: cairn must never start without its settings, so keep trying instead; but
+  # data that does not match its checksum is not tried again: it stops the start.
+  while :; do
+    rc=0
+    fetch_env || rc=$?
+    [ "$rc" -ne 0 ] || break
+    if [ "$rc" -eq 2 ]; then
+      die "the secret $CAIRN_ENV_SECRET's data does not match its checksum (dataCrc32c); not writing the env file. cairn does not start until a version that matches is read: restart cairn-env.service"
+    fi
     err "could not read the latest version of $CAIRN_ENV_SECRET; retrying in 15 s"
     sleep 15
   done

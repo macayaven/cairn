@@ -326,16 +326,20 @@ class FiledOnce(Conflict):
     """A note the project holds already (the same text and source_ref) was sent again for
     another topic (N1): nothing was stored or recorded. REST answers 409, MCP a tool error,
     the composer its form again, and a source sync skips it (FILED_ELSEWHERE). The message
-    names the page the note is on and the project, never the note's text."""
+    names the page the note is on and the project, never the note's text, and says only what
+    its reader can do (8.2): an agent has no tool that forgets, so forgetting is a person's,
+    on the web."""
 
     reason = FILED_ELSEWHERE
 
     def __init__(self, project: str, slug: str) -> None:
         super().__init__(
             f"Nothing was stored: this note is already in project {project!r}, filed on page"
-            f" {slug!r} under another topic. A note is filed once: to move it, forget it there"
-            " and send it again with its new topic, reworded (a text forgotten in a project"
-            " is not stored there again) or to another project."
+            f" {slug!r} under another topic. A note is filed once: to add to that page, write a"
+            " new note with that page's title as its topic. To move this one, a person who may"
+            " forget notes in this project can forget it on the web; then send it again with"
+            " its new topic, reworded (a text forgotten in a project is not stored there"
+            " again), or send it to another project."
         )
 
 

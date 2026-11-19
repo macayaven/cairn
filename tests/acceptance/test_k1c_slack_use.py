@@ -987,11 +987,11 @@ def test_nothing_of_a_message_a_search_or_a_note_is_in_a_log_line(world, caplog)
 
 def counted(world: World, act) -> int:
     asked: list[str] = []
-    world.store._con.set_trace_callback(asked.append)
+    world.store._observe(trace=asked.append)
     try:
         act()
     finally:
-        world.store._con.set_trace_callback(None)
+        world.store._observe(trace=None)
     return len(asked)
 
 
@@ -1005,6 +1005,11 @@ def test_a_request_costs_the_same_statements_with_8_pages_as_with_48(world):
     for total, start in ((8, 0), (40, 8)):
         world.pages(world.library, total, start=start)
         n = start
+        # Warmed, not counted: the first search on a read-only connection that has not used
+        # the workspace's index runs FTS5's loading of the index's settings (one statement
+        # of its own, and those FTS5 runs inside it, which this count also sees), once per
+        # connection (cairn.store.base.Readers). Both sizes are then counted warm.
+        memory.recall("marmalade", limit=5)
         find = counted(world, lambda: world.command("find marmalade"))
         search = counted(world, lambda: memory.recall("marmalade", limit=5))
         typed = counted(world, lambda n=n: world.command(f"note Row {n} holds pears."))

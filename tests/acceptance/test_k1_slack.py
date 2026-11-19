@@ -358,7 +358,7 @@ def test_off_the_sources_page_shows_nothing_about_slack(off):
 
 def test_off_no_request_reads_the_slack_tables(off):
     asked: list[str] = []
-    off.store._con.set_trace_callback(asked.append)
+    off.store._observe(trace=asked.append)
     try:
         cookie = {"cookie": f"cairn_session={off.ada.token}"}
         for path in ("/sources", "/", "/b/library", "/healthz"):
@@ -366,7 +366,7 @@ def test_off_no_request_reads_the_slack_tables(off):
         off.post("sl_0123456789ab", "commands", command())
         off.post("sl_0123456789ab", "events", challenge())
     finally:
-        off.store._con.set_trace_callback(None)
+        off.store._observe(trace=None)
     assert asked and not [line for line in asked if "slack_" in line]
 
 
@@ -1009,11 +1009,11 @@ def test_verifying_costs_the_same_statements_with_8_pages_as_with_48(world):
 
     def counted() -> int:
         asked: list[str] = []
-        world.store._con.set_trace_callback(asked.append)
+        world.store._observe(trace=asked.append)
         try:
             assert world.post(install.id, "commands", command(text="fable")).status_code == 200
         finally:
-            world.store._con.set_trace_callback(None)
+            world.store._observe(trace=None)
         return len(asked)
 
     def pages(total: int) -> None:

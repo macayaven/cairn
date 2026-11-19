@@ -12,9 +12,15 @@ tests/acceptance/test_t1_members.py; limits by tests/acceptance/test_h6_quotas.p
 a project and forgetting a note by tests/acceptance/test_h5b_forget.py; the sweep of what
 has run out by tests/acceptance/test_h5c_expiry.py):
 - One database file holds every account. `Store(":memory:")` works for tests. The store is
-  safe to call from several threads (one connection, `check_same_thread=False`, guarded by a
-  lock). Each call reads in one transaction (one snapshot of the file, also against another
-  connection) or writes in one.
+  safe to call from several threads. Writes go through one writer connection guarded by a
+  lock; reads run on a pool of at most base.READERS read-only connections to the same file
+  (base.Readers), so a read waits for no write, checkpoint or compaction of this process
+  (in WAL a reader and the writer do not wait for each other), and a read that finds every
+  reader in use waits for one. A database no second connection can open (in memory, or a
+  temporary one) reads on the writer under its lock instead. Each call reads in one
+  transaction (one snapshot of the file, holding every write that returned before it
+  began) or writes in one. `_observe` attaches a trace callback, a progress handler or a
+  row factory to every connection of the store, the readers included.
 - The clock (H6). `Store(path, clock=None)`: `clock` returns the current time as an aware
   datetime (a naive one is a ValueError when it is read). Every timestamp the store writes
   and every expiry it checks, in every view of it and in the schema upgrade, reads that
@@ -216,10 +222,10 @@ has run out by tests/acceptance/test_h5c_expiry.py):
 - Compaction (H5). `store.compact()` rewrites the database file (VACUUM) and then truncates
   the write-ahead log (PRAGMA wal_checkpoint(TRUNCATE)): it gives the freed space back to the
   disk, and after it nothing of a deleted workspace, index keys included, is in the files. It
-  rewrites every workspace's data and holds the store's lock while it runs, so every other
-  call waits; it is the operator's: only the store that opened the database may run it
-  (PermissionError on a view). CompactIncomplete (a sqlite3.OperationalError) when another
-  connection kept it from finishing; running it again then finishes it.
+  rewrites every workspace's data and holds the writer's lock while it runs, so every other
+  write waits (reads do not); it is the operator's: only the store that opened the database
+  may run it (PermissionError on a view). CompactIncomplete (a sqlite3.OperationalError) when
+  another connection kept it from finishing; running it again then finishes it.
 - Compaction state (H5). `compaction_state()` says when a workspace (since H5b also a project
   or a note) was first deleted since
   the last compaction (`deleted_at`, None when none was) and when the last compaction began
@@ -1068,6 +1074,7 @@ from cairn.store.base import (
     UNUSABLE,
     CannotWrite,
     ConnectionState,
+    Readers,
     StoreUnusable,
     _transaction,
 )
@@ -1396,7 +1403,8 @@ class Store(
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
             _upgrade(self._con, self._stamp)
             if str(path) != ":memory:":
-                self._con.execute("PRAGMA journal_mode = WAL")
+                (journal,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
+                self._state.readers = _readers_for(self._con, journal)
         except sqlite3.Error as error:
             self._con.close()
             _refuse(path, error)  # CannotOpen when the file is no database or may not be written
@@ -1412,10 +1420,11 @@ class Store(
         - "ok": the read worked and the file holds the schema this code knows
           (`PRAGMA user_version` is SCHEMA_VERSION, and the default account's row reads).
         - "busy": the store is alive and held on purpose. Either this process holds the
-          store's lock for longer than `wait` seconds (compact holds it for a whole rewrite
-          of the file, and every request waits behind it), or another connection holds the
-          file past `wait` (SQLite's busy wait is held to `wait` for this read, then put
-          back). Each wait is bounded, so the call returns within about twice `wait`.
+          store's lock for longer than `wait` seconds (a write holds it; compact holds it
+          for a whole rewrite of the file, and every write waits behind it), or another
+          connection holds the file past `wait` (SQLite's busy wait is held to `wait` for
+          this read, then put back). Each wait is bounded, so the call returns within about
+          twice `wait`.
         - "unavailable": the store is closed, unusable (base.StoreUnusable), the read
           failed with any other error, or the file holds another schema version.
 
@@ -1457,3 +1466,13 @@ class Store(
         finally:
             con.execute(f"PRAGMA busy_timeout = {int(waited)}")
         return "ok" if version == SCHEMA_VERSION and found else "unavailable"
+
+
+def _readers_for(con: sqlite3.Connection, journal: str) -> Readers | None:
+    """The pool of read-only connections for the database `con` opened, asked of SQLite: a
+    file in WAL has one; a temporary database (no file a second connection could open) or one
+    SQLite keeps out of WAL has none, and its reads stay on the writer (StoreBase._read)."""
+    file = next(row[2] for row in con.execute("PRAGMA database_list") if row[1] == "main")
+    if journal.lower() != "wal" or not file:
+        return None
+    return Readers(Path(file).as_uri() + "?mode=ro")

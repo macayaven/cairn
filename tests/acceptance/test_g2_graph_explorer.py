@@ -631,12 +631,12 @@ class Watch:
     """The statements the store's connection runs during a call and the rows it hands back."""
 
     def __init__(self, store: Store) -> None:
-        self.con = store._con
+        self.store = store
 
     @contextlib.contextmanager
     def __call__(self):
         seen = SimpleNamespace(statements=0, rows=0)
-        before = self.con.row_factory
+        before = self.store._state.observers.rows
 
         def traced(statement: str) -> None:
             text = statement.lstrip()
@@ -647,13 +647,13 @@ class Watch:
             seen.rows += 1
             return row if before is None else before(cursor, row)
 
-        self.con.set_trace_callback(traced)
-        self.con.row_factory = rows
+        self.store._observe(trace=traced)
+        self.store._observe(rows=rows)
         try:
             yield seen
         finally:
-            self.con.set_trace_callback(None)
-            self.con.row_factory = before
+            self.store._observe(trace=None)
+            self.store._observe(rows=before)
 
 
 def test_a_batch_a_claims_passages_and_a_note_page_cost_the_same_in_a_larger_project(

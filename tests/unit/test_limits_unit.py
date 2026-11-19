@@ -279,8 +279,9 @@ def test_the_resolver_is_asked_inside_the_write(store):
     nothing is recorded (the server's default)."""
     seen = []
 
-    def resolve(name):
-        seen.append((name, store._con.in_transaction))
+    def resolve(name):  # the note's look is a read, on a reader: any of the store's connections
+        connections = (store._con, *store._state.readers.connections())
+        seen.append((name, any(con.in_transaction for con in connections)))
         return Limits()
 
     view = store.limited(resolve=resolve)

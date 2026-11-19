@@ -139,11 +139,11 @@ def test_an_install_removed_between_the_claim_and_the_write_gives_the_note_its_d
 def counted(bench: Bench, call) -> tuple[int, int]:
     """(every statement, the write transactions) `call()` runs on the store's connection."""
     asked: list[str] = []
-    bench.store._con.set_trace_callback(asked.append)
+    bench.store._observe(trace=asked.append)
     try:
         call()
     finally:
-        bench.store._con.set_trace_callback(None)
+        bench.store._observe(trace=None)
     return len(asked), asked.count("BEGIN IMMEDIATE")
 
 

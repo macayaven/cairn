@@ -355,12 +355,12 @@ def test_a_deleted_workspace_leaves_no_row(world):
 
 def test_drafts_without_an_item_are_written_as_before_and_never_touch_the_table(world):
     seen: list[str] = []
-    world.store._con.set_trace_callback(seen.append)
+    world.store._observe(trace=seen.append)
     try:
         first = run(world.store, drafts=[plain(1), plain(1), plain(2)])
         second = run(world.store, drafts=[plain(1, text=OTHER_TEXT.format(n=1, m=4))])
     finally:
-        world.store._con.set_trace_callback(None)
+        world.store._observe(trace=None)
     # As every run before items: the same text and link is "unchanged", other text a new note.
     assert counts(first) == (2, 1, 0, 0, 0, 0, 0)
     assert counts(second) == (1, 0, 0, 0, 0, 0, 0)
@@ -376,11 +376,11 @@ def test_a_pull_of_300_items_reads_the_table_once(world):
     drafts = [entry(n) for n in range(1, 301)]
     for expected, inserts in (((300, 0), 300), ((0, 300), 0)):
         seen: list[str] = []
-        world.store._con.set_trace_callback(seen.append)
+        world.store._observe(trace=seen.append)
         try:
             report = run(world.store, drafts=drafts)
         finally:
-            world.store._con.set_trace_callback(None)
+            world.store._observe(trace=None)
         on_table = [s.lstrip().upper() for s in seen if "source_items" in s]
         assert (report.saved, report.unchanged) == expected
         assert len([s for s in on_table if s.startswith("SELECT")]) == 1

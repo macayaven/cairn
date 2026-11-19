@@ -80,11 +80,11 @@ def test_a_filed_message_a_typed_note_and_a_direct_message_are_all_held(bench):
 
 def statements(store, decide) -> tuple[bool, int]:
     seen: list[str] = []
-    store._con.set_trace_callback(seen.append)
+    store._observe(trace=seen.append)
     try:
         said = decide()
     finally:
-        store._con.set_trace_callback(None)
+        store._observe(trace=None)
     return said, len(seen)
 
 

@@ -230,12 +230,12 @@ class Watch:
     trace callback) and the bytes of every value of every row (the row factory)."""
 
     def __init__(self, store: Store) -> None:
-        self.con = store._con
+        self.store = store
 
     @contextlib.contextmanager
     def __call__(self):
         seen = SimpleNamespace(statements=[], bytes=0)
-        before = self.con.row_factory
+        before = self.store._state.observers.rows
 
         def traced(statement: str) -> None:
             text = statement.lstrip()
@@ -255,13 +255,13 @@ class Watch:
                     seen.bytes += 8
             return row if before is None else before(cursor, row)
 
-        self.con.set_trace_callback(traced)
-        self.con.row_factory = rows
+        self.store._observe(trace=traced)
+        self.store._observe(rows=rows)
         try:
             yield seen
         finally:
-            self.con.set_trace_callback(None)
-            self.con.row_factory = before
+            self.store._observe(trace=None)
+            self.store._observe(rows=before)
 
 
 # A: what a read costs

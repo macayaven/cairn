@@ -3,11 +3,12 @@ small helpers they share: the clock, digests, transactions and account rows.
 
 A transaction that fails (R1). Beginning, the body and the commit are under one handler
 (_transaction): whatever fails, the transaction is rolled back before the error goes on, so
-the one connection every view shares is never left inside a transaction and the next call
-works as if nothing had happened once the cause is gone; nothing of the failed write is
-kept. SQLite rolls some failures back by itself (a full disk, an I/O error); then there is
-nothing left to roll back. Whether a rollback is needed, and whether it worked, is read from
-the connection (`in_transaction`), never guessed from which statement raised.
+no connection the views share (the writer, a reader of the pool) is left inside a
+transaction and the next call works as if nothing had happened once the cause is gone;
+nothing of the failed write is kept. SQLite rolls some failures back by itself (a full
+disk, an I/O error); then there is nothing left to roll back. Whether a rollback is needed,
+and whether it worked, is read from the connection (`in_transaction`), never guessed from
+which statement raised.
 
 If the rollback itself fails, the store does not go on in an unknown state: it is unusable.
 The call that found it raises StoreUnusable, the connection is closed (SQLite rolls back
@@ -32,6 +33,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -132,11 +134,21 @@ def _unwritable(error: sqlite3.Error) -> bool:
 
 
 class ConnectionState:
-    """What every view of one store shares about its one connection (views are copies that
-    share this object): whether it was found unusable, and how many versions of each page a
-    save keeps when no plan says (Q1; cairn.store.history; None: every version)."""
+    """What every view of one store shares about its connections (views are copies that
+    share this object): whether it was found unusable, how many versions of each page a
+    save keeps when no plan says (Q1; cairn.store.history; None: every version), the pool of
+    read-only connections (None: reads use the writer, base.Readers), and the observers
+    attached to every connection (StoreBase._observe)."""
 
-    __slots__ = ("audit_keep", "audit_out", "keep_versions", "reads_audited", "unusable")
+    __slots__ = (
+        "audit_keep",
+        "audit_out",
+        "keep_versions",
+        "observers",
+        "readers",
+        "reads_audited",
+        "unusable",
+    )
 
     def __init__(self) -> None:
         self.unusable = False
@@ -149,6 +161,159 @@ class ConnectionState:
         # commits and dropped if it does not (StoreBase._write).
         self.audit_out: list[str] = []
         self.reads_audited = False  # cairn.memory: whether reads are events (serve --audit-reads)
+        self.readers: Readers | None = None
+        self.observers = Observers()
+
+
+# The most read-only connections one store opens (Readers). Reads are short (each is one
+# transaction over rows it fetches at once), so a handful serve the threads of one server;
+# a read that finds all of them in use waits for one, it never opens one more.
+READERS = 4
+
+
+class Observers:
+    """What watches every connection of a store, as tests count statements, steps and rows:
+    a trace callback (sqlite3's set_trace_callback), a progress handler and how many steps
+    between its calls (set_progress_handler), and a row factory. `generation` counts the
+    changes, so a reader connection takes them on at its next read (Readers.take)."""
+
+    __slots__ = ("generation", "progress", "rows", "trace")
+
+    def __init__(self) -> None:
+        self.trace: Callable[[str], object] | None = None
+        self.progress: tuple[Callable[[], int], int] | None = None
+        self.rows: Callable[..., Any] | None = None
+        self.generation = 0
+
+    def apply(self, con: sqlite3.Connection) -> None:
+        con.set_trace_callback(self.trace)
+        con.set_progress_handler(*(self.progress or (None, 0)))
+        con.row_factory = self.rows
+
+
+class ReaderConnection(sqlite3.Connection):
+    """A connection of the pool: it keeps every cursor its read makes (execute makes one),
+    so that `end_reads` can close them when the read is over. A cursor still referenced
+    after its read (kept in a list, or in the frame of an exception someone holds) would
+    otherwise keep its statement running, and with it the read's snapshot: the reader would
+    not see later writes, and a truncating checkpoint could not empty the log."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._cursors: list[sqlite3.Cursor] = []
+
+    def cursor(self, factory: Any = sqlite3.Cursor) -> Any:
+        made = super().cursor(factory)
+        self._cursors.append(made)
+        return made
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        return self.cursor().execute(sql, parameters)
+
+    def end_reads(self) -> None:
+        """Close every cursor made since the last call: each statement is ended."""
+        cursors, self._cursors = self._cursors, []
+        for made in cursors:
+            with contextlib.suppress(sqlite3.Error):
+                made.close()
+
+
+class Readers:
+    """The store's read-only connections to its file, at most `bound` (READERS), opened when
+    a read first needs one and reused, most recently returned first, so that one thread
+    reading alone always reads on the same connection. A connection is lent to one read at a
+    time (take, give back); a read that finds every one lent waits until one comes back.
+
+    Each is opened `mode=ro` on the file's URI, beside the writer that set the file to WAL:
+    in WAL a reader neither waits for the writer nor makes it wait, and its read sees every
+    transaction committed before it began. A reader is never left inside a transaction
+    between reads (StoreBase._read ends each one), so the store's own readers never keep a
+    truncating checkpoint from emptying the write-ahead log once their reads have returned.
+
+    `close` closes those not lent at once and, unless told not to wait, waits for the others
+    to come back and closes them: the store closes its writer after, so the writer is the
+    last connection and folds the log into the file (as when it was the only one; a read in
+    progress made `close` wait for the lock before). After it, `take` answers None and the
+    read goes to the closed writer, which refuses it as before."""
+
+    def __init__(self, uri: str, bound: int = READERS) -> None:
+        self._uri = uri
+        self._bound = bound
+        self._idle: list[sqlite3.Connection] = []
+        self._opened: list[sqlite3.Connection] = []  # every one still open, lent or not
+        self._applied: dict[int, int] = {}  # id(connection) -> Observers.generation it has
+        self._ready = threading.Condition()
+        self._closed = False
+        self.closing = threading.Event()  # set as `close` begins
+
+    def take(self, observers: Observers) -> sqlite3.Connection | None:
+        """A connection for one read, with the store's observers on it; None once closed."""
+        with self._ready:
+            while not self._closed and not self._idle and len(self._opened) >= self._bound:
+                self._ready.wait()
+            if self._closed:
+                return None
+            if self._idle:
+                con = self._idle.pop()
+            else:
+                con = sqlite3.connect(
+                    self._uri,
+                    uri=True,
+                    check_same_thread=False,
+                    isolation_level=None,
+                    factory=ReaderConnection,
+                )
+                self._opened.append(con)
+            if self._applied.get(id(con)) != observers.generation:
+                observers.apply(con)
+                self._applied[id(con)] = observers.generation
+            return con
+
+    def give(self, con: sqlite3.Connection) -> None:
+        """Back from its read, every statement of it ended: lent again, or closed when the
+        store was closed meanwhile."""
+        _end_reads(con)
+        with self._ready:
+            if self._closed:
+                self._drop(con)
+            else:
+                self._idle.append(con)
+            self._ready.notify()
+
+    def discard(self, con: sqlite3.Connection) -> None:
+        """Close a connection whose state is unknown (its rollback failed): never lent again."""
+        with self._ready:
+            self._drop(con)
+            self._ready.notify()
+
+    def close(self, wait: bool = True) -> None:
+        with self._ready:
+            self._closed = True
+            self.closing.set()
+            for con in self._idle:
+                self._drop(con)
+            self._idle.clear()
+            self._ready.notify_all()
+            while wait and self._opened:  # reads in progress: each closes its own as it ends
+                self._ready.wait()
+
+    def connections(self) -> list[sqlite3.Connection]:
+        """Every connection opened and not yet closed, lent or not."""
+        with self._ready:
+            return list(self._opened)
+
+    def _drop(self, con: sqlite3.Connection) -> None:
+        _end_reads(con)
+        with contextlib.suppress(Exception):
+            con.close()
+        if con in self._opened:
+            self._opened.remove(con)
+        self._applied.pop(id(con), None)
+
+
+def _end_reads(con: sqlite3.Connection) -> None:
+    if isinstance(con, ReaderConnection):
+        con.end_reads()
 
 
 class StoreBase:
@@ -361,10 +526,36 @@ class StoreBase:
         return False
 
     def close(self) -> None:
-        """Close the database; on a view this does nothing."""
+        """Close the database, every connection the store opened (a reader lent to a read in
+        progress closes as that read ends); on a view this does nothing."""
         if self._owner:
+            # The readers first, waiting for reads in progress outside the lock (a read that
+            # fails may need it): the writer, closing last, copies the write-ahead log into
+            # the file and removes it, which a read-only connection cannot do.
+            if self._state.readers is not None:
+                self._state.readers.close()
             with self._lock:
                 self._con.close()
+
+    _KEEP: Any = object()  # _observe: leave this observer as it is
+
+    def _observe(self, *, trace: Any = _KEEP, progress: Any = _KEEP, rows: Any = _KEEP) -> None:
+        """Attach observers to every connection of the store: the writer at once, each
+        reader at its next read. `trace`: called with each statement (sqlite3's
+        set_trace_callback); `progress`: (handler, steps) for set_progress_handler; `rows`:
+        a row factory. None removes one; one left out is kept. The one way to watch what
+        the store asks SQLite, reads and writes alike (tests count statements, steps and rows
+        with it); a callback set on the writer alone sees no read."""
+        observers = self._state.observers
+        with self._lock:
+            if trace is not self._KEEP:
+                observers.trace = trace
+            if progress is not self._KEEP:
+                observers.progress = progress
+            if rows is not self._KEEP:
+                observers.rows = rows
+            observers.generation += 1
+            observers.apply(self._con)
 
     # Who manages the workspace: the one rule (T1)
 
@@ -430,15 +621,48 @@ class StoreBase:
         if not self._state.unusable:
             store_log.error("a rollback failed: the store is unusable until it is opened again")
         self._state.unusable = True
+        if self._state.readers is not None:
+            self._state.readers.close(wait=False)  # under the lock: reads end on their own
         with contextlib.suppress(Exception):
             self._con.close()
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
-        """One read transaction under the lock: every statement in it sees the database at
-        one moment, also against another connection to the file (WAL keeps the snapshot)."""
-        with self._locked() as con, _transaction(con, "DEFERRED"):
-            yield con
+        """One read transaction: every statement in it sees the database at one moment, the
+        latest every write that returned before it began left (WAL keeps the snapshot).
+
+        On a reader of the pool (Readers), without the writer's lock, so a read waits for no
+        write, checkpoint or compaction of this process. It ends as it is left, whatever
+        happened inside: committed, or rolled back on an error, and the connection goes back
+        to the pool outside any transaction. Where the store has no pool (a database in
+        memory or a temporary one, which a second connection cannot open, or a file SQLite
+        would not put in WAL) it reads on the writer under the lock, as every read did
+        before. A closed store refuses it as the writer does (sqlite3.ProgrammingError); an
+        unusable one with StoreUnusable, before SQLite is touched, and a reader whose
+        rollback fails makes the store unusable as the writer's does."""
+        readers = self._state.readers
+        con = None
+        if readers is not None:
+            if self._state.unusable:
+                raise StoreUnusable()
+            con = readers.take(self._state.observers)
+        if con is None:  # no pool, or the store is closed: the writer answers
+            with self._locked() as con, _transaction(con, "DEFERRED"):
+                yield con
+            return
+        assert readers is not None
+        try:
+            with _transaction(con, "DEFERRED"):
+                yield con
+        except StoreUnusable:
+            readers.discard(con)
+            con = None
+            with self._lock:
+                self._unusable()
+            raise
+        finally:
+            if con is not None:
+                readers.give(con)
 
     @contextmanager
     def _write(self, *, member: bool = True) -> Iterator[sqlite3.Connection]:

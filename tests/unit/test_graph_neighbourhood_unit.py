@@ -277,11 +277,11 @@ def test_note_batch_work_stays_bounded_as_project_grows(tmp_path):
                 operations[0] += 1
                 return 0
 
-            store._con.set_progress_handler(tick, 1)
+            store._observe(progress=(tick, 1))
             try:
                 graph_neighbourhood(store, "alpha", focus="notes", limit=1)
             finally:
-                store._con.set_progress_handler(None, 0)
+                store._observe(progress=None)
             return operations[0]
 
         small = work()

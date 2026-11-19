@@ -85,11 +85,11 @@ def test_many_missing_citations_cannot_force_unbounded_database_reads(tmp_path):
             [Claim(id="one", text="A claim", span_ids=tuple(f"missing-{i}" for i in range(500)))],
         )
         statements = []
-        store._con.set_trace_callback(statements.append)
+        store._observe(trace=statements.append)
         try:
             graph = project_graph(store, "alpha")
         finally:
-            store._con.set_trace_callback(None)
+            store._observe(trace=None)
         lookups = [s for s in statements if "FROM spans s JOIN notes" in s]
         assert len(lookups) <= 100
         assert graph["truncated"] is True
@@ -212,13 +212,13 @@ def test_database_work_does_not_grow_with_inaccessible_projects(tmp_path):
                 operations[0] += 1
                 return 0
 
-            store._con.set_progress_handler(count, 1)
-            store._con.set_trace_callback(statements.append)
+            store._observe(progress=(count, 1))
+            store._observe(trace=statements.append)
             try:
                 result = project_graph(view, "alpha")
             finally:
-                store._con.set_progress_handler(None, 0)
-                store._con.set_trace_callback(None)
+                store._observe(progress=None)
+                store._observe(trace=None)
             return result, len(statements), operations[0]
 
         small, small_statements, small_operations = measure()
@@ -375,13 +375,13 @@ def test_large_project_reads_the_same_bounded_number_of_rows_and_statements(tmp_
                 operations[0] += 1
                 return 0
 
-            store._con.set_progress_handler(count, 1)
-            store._con.set_trace_callback(statements.append)
+            store._observe(progress=(count, 1))
+            store._observe(trace=statements.append)
             try:
                 result = project_graph(store, "alpha")
             finally:
-                store._con.set_progress_handler(None, 0)
-                store._con.set_trace_callback(None)
+                store._observe(progress=None)
+                store._observe(trace=None)
             return result, len(statements), operations[0]
 
         small, small_statements, small_work = measure()
@@ -426,12 +426,12 @@ def test_uncompiled_notes_are_bounded_and_ordered_without_scanning_the_project(t
             operations[0] += 1
             return 0
 
-        store._con.set_progress_handler(count, 1)
+        store._observe(progress=(count, 1))
         try:
             first = project_graph(store, "alpha")
             work = operations[0]
         finally:
-            store._con.set_progress_handler(None, 0)
+            store._observe(progress=None)
         assert first == project_graph(store, "alpha")
         assert first["counts"]["note"] == 100
         assert first["counts"]["edges"] == 100

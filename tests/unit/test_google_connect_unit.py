@@ -817,9 +817,9 @@ def test_switched_off_there_is_no_route_no_button_and_no_table_read(tmp_path):
         for name, world in (("off", off), ("on", on)):
             client = world.person(ADA)
             seen: list[str] = []
-            world.store._con.set_trace_callback(seen.append)
+            world.store._observe(trace=seen.append)
             page = client.get("/sources")
-            world.store._con.set_trace_callback(None)
+            world.store._observe(trace=None)
             assert page.status_code == 200 and "Connect Google" not in page.text
             assert 'id="google-connect"' not in page.text
             if world is off:  # on, the table is read: does Ada hold a connected account?

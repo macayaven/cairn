@@ -152,7 +152,7 @@ From the same clone's `deploy` folder, take a [cold database backup](#back-it-up
 
 With the released image there is nothing to build: after the same backup, change the version in the `CAIRN_IMAGE` line of `.env`, then run `docker compose pull cairn` and `docker compose up -d --no-build`.
 
-A newer cairn may update the database when it starts, and an older one then refuses to open it. Going back to an earlier version means going back to a backup taken before the update.
+A newer cairn may update the database when it starts. When the update only adds to the database, the earlier version still runs on it; when it changes what the earlier version relies on, that version refuses the database in one line that names the schema version it needs, and going back means going back to a backup taken before the update. The changelog says which kind each release is. Going back from 0.1.0 to a build before it needs the backup.
 
 ### Stop it
 

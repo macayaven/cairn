@@ -189,3 +189,38 @@ def test_the_readme_says_how_an_install_of_the_released_image_is_updated():
     assert "change the version in the `CAIRN_IMAGE` line of `.env`" in update
     assert "`docker compose pull cairn` and `docker compose up -d --no-build`" in update
     assert "apart from [Update](#update)" in text
+
+
+def test_the_newest_events_removed_leave_a_chain_that_still_holds_and_the_guide_says_so(tmp_path):
+    """security.md: "Removing the newest events leaves a shorter chain that still follows, so
+    that, too, shows only against that copy." """
+    import sqlite3
+
+    from cairn.store import DEFAULT_ACCOUNT_ID, Store
+    from cairn.store.audit import check_trail
+
+    says(
+        "security",
+        "## Logs",
+        "Removing the newest events leaves a shorter chain that still follows, so that, too,"
+        " shows only against that copy.",
+    )
+    db = tmp_path / "cairn.db"
+    store = Store(db)
+    try:
+        ops = store.create_project("ops")
+        for n in range(4):
+            store.record_note(ops.id, "unchanged", {"page": f"p{n}"})
+    finally:
+        store.close()
+    con = sqlite3.connect(db)
+    try:
+        (before,) = check_trail(con, DEFAULT_ACCOUNT_ID)
+        newest = con.execute("SELECT MAX(n) FROM audit_events").fetchone()[0]
+        con.execute("DELETE FROM audit_events WHERE n >= ?", (newest - 1,))
+        con.commit()
+        (after,) = check_trail(con, DEFAULT_ACCOUNT_ID)
+    finally:
+        con.close()
+    assert before.broken is None and after.broken is None
+    assert after.checked == before.checked - 2

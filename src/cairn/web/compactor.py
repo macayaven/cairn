@@ -20,9 +20,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from cairn.memory import access_log
-from cairn.store import CompactIncomplete, Store
+from cairn.store import CompactIncomplete, NoRoom, Store
 
 POLL_SECONDS = 600.0  # how often the decision is taken, at most
+# Who each line of the access log names: the server itself, compacting.
+SYSTEM = {"actor_kind": "system", "actor": None, "actor_id": None, "action": "compact",
+          "project": None}  # fmt: skip
 
 
 def _utc_now() -> datetime:
@@ -67,6 +70,16 @@ class Compactor:
             try:
                 self._store.compact()
                 outcome = "done"
+            except NoRoom as room:  # nothing was changed; the next poll checks again
+                with contextlib.suppress(Exception):
+                    access_log.info(
+                        "compact not started: the database's disk has %d bytes free,"
+                        " a rewrite needs %d",
+                        room.free,
+                        room.needed,
+                        extra={**SYSTEM, "status": 507},
+                    )
+                return False
             except CompactIncomplete:
                 outcome, status = "not finished: another connection held the file", 503
                 self._tried = began  # the next try waits the interval, not the next poll
@@ -78,14 +91,7 @@ class Compactor:
                     "compact %s in %.0f ms",
                     outcome,
                     elapsed,
-                    extra={
-                        "actor_kind": "system",
-                        "actor": None,
-                        "actor_id": None,
-                        "action": "compact",
-                        "project": None,
-                        "status": status,
-                    },
+                    extra={**SYSTEM, "status": status},
                 )
             return status == 200
         finally:

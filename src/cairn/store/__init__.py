@@ -1181,7 +1181,7 @@ from cairn.store.people import (
     ProviderChanged,
     Removed,
 )
-from cairn.store.portable import CompactIncomplete, PortableMethods
+from cairn.store.portable import CompactIncomplete, NoRoom, PortableMethods
 from cairn.store.reach import ACCESS, LIMITED, READ_ONLY, ReachMethods
 from cairn.store.reservations import Reservation, ReservationMethods
 from cairn.store.schema import (
@@ -1313,6 +1313,7 @@ __all__ = [
     "Made",
     "Member",
     "NameTaken",
+    "NoRoom",
     "Note",
     "NoteRefused",
     "OAuthClient",

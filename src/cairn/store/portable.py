@@ -113,8 +113,10 @@ import heapq
 import io
 import json
 import math
+import os
 import re
 import secrets
+import shutil
 import sqlite3
 import zipfile
 import zlib
@@ -221,6 +223,18 @@ IMPORTED_MODELS_UNSAID = (
 class CompactIncomplete(sqlite3.OperationalError):
     """compact() could not finish: another connection to the file was writing, or reading
     from the write-ahead log. Nothing is lost; running it again finishes the job."""
+
+
+class NoRoom(CompactIncomplete):
+    """compact() did not start: the free space on the database's disk (`free`, bytes) is
+    under what a rewrite needs (`needed`: twice the database's file and its write-ahead
+    log, a second copy and as much again as a margin). Nothing was changed; the deletion
+    stays due."""
+
+    def __init__(self, free: int, needed: int) -> None:
+        super().__init__(f"the database's disk has {free} bytes free, a rewrite needs {needed}")
+        self.free = free
+        self.needed = needed
 
 
 class PortableMethods(StoreBase):
@@ -501,6 +515,7 @@ class PortableMethods(StoreBase):
             self._state.compacting = False
 
     def _compact(self) -> None:
+        self._room()
         with self._write() as con:  # first, so the file holds the record as it will be after
             before = _compaction_rows(con)
             con.execute(
@@ -527,6 +542,21 @@ class PortableMethods(StoreBase):
                 for name, value in before.items():
                     _set_row(con, name, value)
             raise
+
+    def _room(self) -> None:
+        """NoRoom unless the database's disk has twice the database free (its file and its
+        write-ahead log): a rewrite writes a second copy, and the margin is as much again,
+        the rule `stats` calls low disk. A database in memory has no disk to check."""
+        with self._locked() as con:
+            rows = con.execute("PRAGMA database_list").fetchall()
+        file = next((row[2] for row in rows if row[1] == "main"), "")
+        if not file:
+            return
+        wal = f"{file}-wal"
+        size = os.path.getsize(file) + (os.path.getsize(wal) if os.path.exists(wal) else 0)
+        free = shutil.disk_usage(os.path.dirname(file)).free  # through the module: tests swap it
+        if free < 2 * size:
+            raise NoRoom(free, 2 * size)
 
     def compaction_state(self) -> CompactionState:
         """Whether a workspace was deleted since the last compaction, and when that ran: what

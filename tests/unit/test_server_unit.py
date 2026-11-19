@@ -952,7 +952,9 @@ def test_key_create_writes_a_private_env_file_and_prints_only_its_path(tmp_path,
     db, out = tmp_path / "cairn.db", tmp_path / "laptop.env"
     assert key_create(db, out) == 0
     printed = capsys.readouterr()
-    assert (printed.out, printed.err) == (f"{out}\n", "")
+    (line,) = printed.err.splitlines()  # the key's audit event, as serve writes one
+    assert printed.out == f"{out}\n"
+    assert line.startswith("cairn.audit: ") and '"action": "key.created"' in line
     assert out.stat().st_mode & 0o777 == 0o600
     name, _, key = out.read_text().strip().partition("=")
     assert name == "CAIRN_API_KEY" and len(key) >= 32

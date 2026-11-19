@@ -595,7 +595,8 @@ def test_arrange_tidy_makes_one_pass_with_no_model_and_prints_a_line_a_page(db, 
         "alpha/drift-sync: arranged, version 2 -> 3",
         "alpha/short: unchanged, version 1",
     ]
-    assert err == "" and model == [] and "Drift" not in out
+    others = [line for line in err.splitlines() if not line.startswith("cairn.audit: ")]
+    assert others == [] and model == [] and "Drift" not in out  # stderr: the audit lines only
     assert cli.main(argv) == 0  # tidy already: nothing more to do
     assert sorted(capsys.readouterr().out.splitlines()) == [
         "alpha/drift-sync: unchanged, version 3",

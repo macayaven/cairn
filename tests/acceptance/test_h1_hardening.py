@@ -121,7 +121,8 @@ def test_key_create_and_import_make_private_folders_and_files(tmp_path):
     db = tmp_path / "fresh" / "nested" / "cairn.db"
     made = run("key-create", "--db", db, "--label", "laptop", "--out", tmp_path / "laptop.env")
     assert made.returncode == 0, made.stderr
-    assert made.stderr == ""
+    (line,) = made.stderr.splitlines()  # the key's audit event, as serve writes one
+    assert line.startswith("cairn.audit: ") and '"action": "key.created"' in line
     assert mode(tmp_path / "fresh") == 0o700 and mode(db.parent) == 0o700
     assert mode(db) == 0o600
     store = Store(db)

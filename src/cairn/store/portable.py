@@ -283,7 +283,7 @@ class PortableMethods(StoreBase):
         an owner (NOT_AN_EXPORTER): a partial archive that looks whole would be worse than a
         refusal. KeyError: the workspace was deleted. The summary carries no notice."""
         with self._read() as con:
-            self._require_owner(con)
+            self._require_exporter(con)
             if self._reach(con) is not None:  # a later limit on this view (cairn.store.reach)
                 raise PermissionError("only a view of the whole workspace exports it")
             account = _find_account(con, self._account_id)
@@ -427,7 +427,7 @@ class PortableMethods(StoreBase):
         index = self._index
         with self._write() as con:
             _require_account(con, self._account_id)
-            self._require_owner(con)
+            self._require_exporter(con)
             if self._reach(con) is not None:
                 raise PermissionError("only a view of the whole workspace imports into it")
             _refuse(self._in_force(con, found))
@@ -525,7 +525,7 @@ class PortableMethods(StoreBase):
             said = IMPORTED_MODELS_UNSAID
         return summary.model_copy(update={"notice": f"{notice} {said}"})
 
-    def _require_owner(self, con: sqlite3.Connection) -> None:
+    def _require_exporter(self, con: sqlite3.Connection) -> None:
         """PermissionError(NOT_AN_EXPORTER) for a person who does not own the workspace now;
         a view acting for no person passes (cairn.store.reach has refused a narrowed one)."""
         if self._user_id is not None and self._role_in(con) != "owner":
@@ -553,9 +553,15 @@ class PortableMethods(StoreBase):
         own (base.Readers). Another process writing to the file waits too.
 
         The record (compaction_state): the rewrite and the emptying of the log are kept
-        apart. Once VACUUM has returned, under the same hold of the lock and in one
-        transaction, compacted_at is set to when the rewrite began and the deletion record
-        (store.compact_due) is marked as covered by it; a rewrite that did not happen,
+        apart. Under the lock and before VACUUM, the deletion record (store.compact_due) is
+        read as it stands, its `updated_at` (each deletion sets it to its own time): what
+        the rewrite covers. Once VACUUM has returned, under the same hold of the lock and in
+        one transaction, compacted_at is set to when the rewrite began and the record is
+        marked as covered by it only if it still holds what was read: a deletion another
+        process (the server, beside the command line) records in between keeps it due, for
+        a rewrite of its own. A process that dies after VACUUM and before that transaction
+        leaves the record as it was, so the rewrite is done again: it costs the time of one
+        rewrite and loses nothing. A rewrite that did not happen,
         whatever stopped it, records nothing (CompactIncomplete, `rewrote` False, when the
         file was busy). When the rewrite succeeded and another connection held the log (a
         replica service always does), CompactIncomplete with `rewrote` True: the deletion
@@ -567,16 +573,22 @@ class PortableMethods(StoreBase):
         self._room_for_rewrite()
         began = self._stamp()
         with self._holding() as con:
+            generation = con.execute(  # the record as the rewrite finds it
+                "SELECT updated_at FROM settings WHERE account_id = ? AND name = ?",
+                (DEFAULT_ACCOUNT_ID, COMPACT_DUE),
+            ).fetchone()
             try:
                 con.execute("VACUUM")
             except sqlite3.OperationalError as error:
                 raise _incomplete(f"the database could not be compacted: {error}", False) from None
-            with _transaction(con):  # every deletion recorded so far is the rewrite's
+            with _transaction(con):  # the deletions recorded before the rewrite are its own
                 _set_row(con, COMPACTED_AT, began)
-                con.execute(
-                    "UPDATE settings SET updated_at = ? WHERE account_id = ? AND name = ?",
-                    (REWRITTEN, DEFAULT_ACCOUNT_ID, COMPACT_DUE),
-                )
+                if generation is not None:  # unchanged, or a later deletion keeps it due
+                    con.execute(
+                        "UPDATE settings SET updated_at = ?"
+                        " WHERE account_id = ? AND name = ? AND updated_at = ?",
+                        (REWRITTEN, DEFAULT_ACCOUNT_ID, COMPACT_DUE, generation[0]),
+                    )
         self._empty_log(rewrote=True)
 
     def empty_log(self) -> None:

@@ -114,8 +114,9 @@ SECURITY_CHAIN = (
     " time; pruning the oldest events keeps the chain checkable."
 )
 SECURITY_NOT_SHOWN = (
-    "Someone who can write the database file can rewrite the whole chain, which is why the copy"
-    " of each event on the server's output exists. An event's project and detail are outside"
+    "Someone who can write the database file can rewrite the whole chain, which is why the"
+    " server writes a copy of the events it stores on its output (above, with the events that"
+    " copy can miss). An event's project and detail are outside"
     " the chain, because forgetting a note must be able to take a page's name out of them."
 )
 

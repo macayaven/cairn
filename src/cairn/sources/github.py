@@ -193,7 +193,7 @@ from cairn.sources import (
     names,
 )
 from cairn.sources import url as source_url
-from cairn.sources.config import check_projects
+from cairn.sources.config import check_env_name, check_projects
 from cairn.sources.fit import cut, fenced  # noqa: F401 (the cuts this kind makes, by name)
 from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
@@ -218,7 +218,6 @@ SETTINGS = (
 SETTLE_MINUTES = (30, 0, 1440)  # the default, the least, the most
 LOOKBACK_DAYS = (30, 1, 365)
 BACKFILL_DAYS = (0, 0, 365)
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 # GitHub's account names: letters, digits and single hyphens, not at either end, at most 39.
 OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
@@ -265,7 +264,14 @@ def check_config(config: object) -> dict[str, Any]:
             f" {', '.join(SETTINGS)}"
         )
     checked: dict[str, Any] = {
-        "token_env": _check_token_env(config),
+        "token_env": check_env_name(
+            config,
+            "token_env",
+            kind="github",
+            holds="the GitHub token",
+            secret="token",
+            looks_like=_looks_like_a_credential,
+        ),
         "repo": _check_repo(config),
         "projects": check_projects(
             config.get("projects", []), kind="github", looks_like=_looks_like_a_credential
@@ -281,26 +287,6 @@ def check_config(config: object) -> dict[str, Any]:
     checked["backfill_days"] = _whole(config, "backfill_days", BACKFILL_DAYS)
     checked["base_url"] = _check_base_url(config.get("base_url", DEFAULT_BASE_URL))
     return checked
-
-
-def _check_token_env(config: Mapping[str, Any]) -> str:
-    if "token_env" not in config:
-        raise ValueError(
-            "a github source needs token_env: the name of the environment variable that holds"
-            " the GitHub token"
-        )
-    token_env = config["token_env"]
-    if isinstance(token_env, str) and _looks_like_a_credential(token_env):
-        raise ValueError(
-            "token_env holds what looks like a token: put the token in an environment variable"
-            " of the process that syncs, and name that variable here"
-        )
-    if not isinstance(token_env, str) or not ENV_NAME.fullmatch(token_env):
-        raise ValueError(
-            "token_env names an environment variable (capitals, digits and _, at most 128),"
-            " which holds the GitHub token: the token itself never goes in a config"
-        )
-    return token_env
 
 
 def _check_repo(config: Mapping[str, Any]) -> str:

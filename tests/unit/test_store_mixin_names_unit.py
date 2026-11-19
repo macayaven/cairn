@@ -24,11 +24,6 @@ ALLOWED = {
     ("_require_project", "AccessMethods", "MemoryMethods"): (
         "a chain: AccessMethods asks super() (the project is the view's), then checks writing"
     ),
-    ("_require_owner", "PeopleMethods", "PortableMethods"): (
-        "a clash kept as it is in this release: PeopleMethods' hides PortableMethods', so an"
-        " export or import by a person who is not an owner is refused in PeopleMethods' words"
-        " (NOT_AN_OWNER), not PortableMethods' (NOT_AN_EXPORTER); reported, to be fixed"
-    ),
 }
 
 

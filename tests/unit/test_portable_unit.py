@@ -510,7 +510,9 @@ def test_the_command_line_import_without_plans_says_none_is_applied(source, tmp_
     db = str(tmp_path / "cli.db")
     assert main(["import", "--db", db, "--account", "acct_default", "--in", str(path)]) == 0
     err = capsys.readouterr().err.splitlines()
-    assert err == ["no plan is applied: this import caps nothing (--plans FILE holds it to one)"]
+    assert [line for line in err if not line.startswith("cairn.audit: ")] == [
+        "no plan is applied: this import caps nothing (--plans FILE holds it to one)"
+    ]  # besides the audit lines, which every command but serve writes on stderr
 
 
 @pytest.mark.parametrize(

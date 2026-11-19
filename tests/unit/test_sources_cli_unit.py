@@ -331,7 +331,8 @@ def test_source_sync_with_plans_holds_the_workspace_to_its_plan(db, capsys, tmp_
     assert "no plan" not in err
     code, out, err = run(capsys, "source-sync", "--db", str(db), *which)
     assert code == 0 and "1 saved" in out
-    assert err.count("\n") == 1 and "no plan is applied" in err  # one line, and it says so
+    said = [line for line in err.splitlines() if not line.startswith("cairn.audit: ")]
+    assert len(said) == 1 and "no plan is applied" in said[0]  # one line besides the audit
 
 
 @pytest.mark.parametrize("which", [["--name", "traces"], ["--all"]])

@@ -135,7 +135,7 @@ from cairn.sources import (
     holds_secret,
 )
 from cairn.sources import url as source_url
-from cairn.sources.config import check_projects
+from cairn.sources.config import ENV_NAME, check_projects
 from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
 from cairn.sources.url import URL_MAX as URL_MAX
@@ -158,7 +158,6 @@ PULL_BYTES = 16 * 1024 * 1024  # of answers one pull holds at most before it sto
 # http goes only to these two names of this machine (not [::1]: the rule the guide states).
 NAMED_LOOPBACK = frozenset({"127.0.0.1", "localhost"})
 _HTTP_ONLY_TO_THIS_MACHINE = "only to 127.0.0.1 or localhost (this machine)"
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})")
 CURSOR_VERSION = 1

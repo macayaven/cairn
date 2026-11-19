@@ -11,9 +11,11 @@ Each row also holds `chain`, the value that chains it to the event before it in 
 (base.audit_link; schema step 31). `check_trail` reads a database's trail and says, for each
 workspace, how many events it checked and whether every value follows from the one before,
 or the first event whose value does not (its number and time only). What the chain does not
-show: someone who can write the database file can rewrite the whole chain (the copy on the
-"cairn.audit" logger is for that), and `project` and `detail` are outside it, since
-forgetting a note must be able to take a page's name out of them.
+show: someone who can write the database file can rewrite the whole chain (the copy `serve`
+writes on the "cairn.audit" logger is for that; it is written after each commit, so an event
+committed just before the process dies is not on it, and a command-line command writes its
+lines on its own stderr, kept only where the operator keeps that output), and `project` and
+`detail` are outside it, since forgetting a note must be able to take a page's name out of them.
 """
 
 import copy
@@ -147,7 +149,23 @@ def check_trail(con: sqlite3.Connection, account_id: str | None = None) -> list[
     one past the one pruned. Each event's value must be audit_link of the value before it
     (the stored one, so one changed event names that event, not every one after it) and
     its own fields; a deleted event names the event after it. One read per workspace, in
-    the order of its numbers."""
+    the order of its numbers.
+
+    All of it is one read transaction, from before the workspaces are listed until the last
+    event is read: a server that prunes meanwhile (another connection, committing between the
+    read of the pruned value and the read of the events) does not change the verdict, which
+    is that of the snapshot the check began with. It is ended (rolled back: it wrote nothing)
+    before it returns; a `con` already in a transaction keeps its own."""
+    if con.in_transaction:
+        return _check_trail(con, account_id)
+    con.execute("BEGIN")
+    try:
+        return _check_trail(con, account_id)
+    finally:
+        con.rollback()
+
+
+def _check_trail(con: sqlite3.Connection, account_id: str | None) -> list[TrailCheck]:
     if account_id is None:
         accounts = [a for (a,) in con.execute("SELECT id FROM accounts ORDER BY seq")]
     elif con.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,)).fetchone():

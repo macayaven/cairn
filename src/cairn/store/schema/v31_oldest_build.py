@@ -63,7 +63,10 @@ def _drop_retired(con: sqlite3.Connection) -> None:
       the order of its numbers, the first from the start (a workspace pruned before this
       step starts at its oldest event kept). audit_events is rebuilt (as in _add_actor_ids)
       so that a migrated schema reads exactly like a fresh one; every event keeps its
-      sequence and every field.
+      sequence and every field. The events are read from the renamed table through a
+      cursor, one at a time, as they are written into the new one: the step holds one event
+      in memory, whatever the table holds (it read them all into a list first until the
+      second review; no database outside the tests had run that).
     - oldest_build is added, and _upgrade records this step's number in it.
 
     The step changes what an older build relies on (a build of _LAST_USE checks at open for
@@ -78,9 +81,9 @@ def _drop_retired(con: sqlite3.Connection) -> None:
     previous: dict[str, str] = {}
 
     def chained() -> Iterator[tuple]:
-        for row in con.execute(
+        for row in con.execute(  # one row at a time: executemany takes them as they come
             f"SELECT {columns} FROM audit_events_v30 ORDER BY account_id, n"
-        ).fetchall():
+        ):
             seq, account_id, n, at, kind, actor, actor_id, action = row[:8]
             value = _v31_link(
                 previous.get(account_id, "0" * 64),

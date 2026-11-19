@@ -12,7 +12,17 @@ Contract (frozen by tests/acceptance/test_t1_spans.py and test_t1_regressions.py
 
 Supported Markdown, one span kind per block. Headings, fences, list items, tables and quotes
 start on a line indented at most 3 spaces.
-- Front matter: YAML between a `---` on line 1 and the next `---` line.
+- Front matter: the lines between a `---` on line 1 and the next `---` line, when they read
+  as metadata (review 7.4): each line is a key and its value (a key is one word of letters,
+  digits, "_", "." and "-", or a quoted string, then ":" and a blank or the line's end), a
+  line that continues the value of a key above it (indented, or a list item "- "), a comment
+  ("#"), or blank; no lines at all count too. Anything else is content: the first `---` is a
+  thematic break and every line of the block, both `---` lines included, is one paragraph
+  span, so the spans after it are the spans they were (same lines, same ids) when the block
+  was read as front matter, and a page that cites them still does. It is told by the lines'
+  shape, not by parsing YAML: "Production rule: never drop it." is a YAML mapping, but its
+  key is two words, so it is prose; and metadata that is not valid YAML ("title: [x") stays
+  front matter, for the reader of front matter to report.
 - ATX headings: 1 to 6 `#`, a space or tab, then the text; a closing `#` run is dropped.
 - Fenced code, backtick or tilde: atomic, fence lines included, never split. A closing fence
   is a run of the opening character, at least as long, alone on its line, and indented at
@@ -65,6 +75,9 @@ _HEADING = re.compile(r"(#{1,6})[ \t]+")
 # trying each one read the rest of the line again (G1).
 _FENCE = re.compile(r"`{3,}+(?!.*`)|~{3,}")
 _BULLET = re.compile(r"(?:[-*+]|\d{1,9}[.)])[ \t]")
+# A front-matter key at a line's start: one word, or a quoted string, then ":" and a blank or
+# the line's end.
+_META_KEY = re.compile(r"""(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|"[^"]*"|'[^']*'):(?:[ \t]|$)""")
 
 
 class Span(BaseModel):
@@ -112,8 +125,8 @@ def chunk(source_id: str, text: str) -> list[Span]:
 def _blocks(lines: list[str]) -> Iterator[tuple[SpanKind, int, int]]:
     """Yield (kind, start, end) per block, as 0-based line indexes with `end` exclusive."""
     i = _frontmatter_end(lines)
-    if i:
-        yield "frontmatter", 0, i
+    if i:  # metadata, else one paragraph of content, so every span after it is as it was
+        yield "frontmatter" if _metadata(lines[1 : i - 1]) else "paragraph", 0, i
     while i < len(lines):
         kind = _kind(lines[i])
         if kind is None:
@@ -125,12 +138,27 @@ def _blocks(lines: list[str]) -> Iterator[tuple[SpanKind, int, int]]:
 
 
 def _frontmatter_end(lines: list[str]) -> int:
-    """Index after the `---` that closes front matter opened on line 1; 0 if there is none."""
+    """Index after the `---` that closes a block opened by `---` on line 1; 0 if there is
+    none. The block is front matter when its lines read as metadata (_metadata)."""
     if lines and lines[0] == "---":
         for j in range(1, len(lines)):
             if lines[j] == "---":
                 return j + 1
     return 0
+
+
+def _metadata(lines: list[str]) -> bool:
+    """Whether lines read as metadata: every one a key and its value, a continuation of a key
+    above it (indented, or a list item), a comment or blank (see the module)."""
+    keyed = False
+    for line in lines:
+        if not line.strip() or line.startswith("#"):
+            continue
+        if _META_KEY.match(line):
+            keyed = True
+        elif not (keyed and (line[0] in " \t" or line == "-" or line.startswith("- "))):
+            return False
+    return True
 
 
 def _kind(line: str) -> SpanKind | None:

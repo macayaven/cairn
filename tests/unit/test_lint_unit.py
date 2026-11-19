@@ -117,7 +117,6 @@ def test_titles_compare_case_folded_without_punctuation_or_a_trailing_number():
     "front_matter",
     [
         "title: [unclosed",  # not YAML
-        "- a list",  # not a mapping
         "title: {a: 1}",  # a title that is not a scalar
         "aliases: {a: 1}",  # aliases that are neither a list nor a scalar
     ],

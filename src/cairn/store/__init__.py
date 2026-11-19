@@ -239,10 +239,10 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   nothing audits: delete_account, delete_project and forget_note write the first in their
   own transaction (only for what existed; its time only when not already set, and in every
   case their time as the row's `updated_at`); compact sets the second and marks the first as
-  rewritten (base.REWRITTEN as its `updated_at`) before it rewrites the file, and puts both
-  back when the rewrite fails; the first goes once the log is emptied, unless a deletion came
-  meanwhile. They survive a restart. `serve --compact-every` decides by them
-  (cairn.web.compactor).
+  rewritten (base.REWRITTEN as its `updated_at`) only once the rewrite has returned, under
+  the same hold of the lock, so a rewrite that failed or was killed records nothing and is
+  done again; the first goes once the log is emptied, unless a deletion came meanwhile. They
+  survive a restart. `serve --compact-every` decides by them (cairn.web.compactor).
 - `export`, `import_export`, `compact` and `compaction_state` are management calls (see
   Reach): a view limited to named projects, or read-only, is refused (PermissionError) and
   nothing is read or written. An archive is every project, so for a person `export` and

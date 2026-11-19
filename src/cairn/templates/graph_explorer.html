@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% from "_components.html" import crumbs %}
 {% block title %}{{ project }} graph{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ explorer_stylesheet }}">{% endblock %}
 {% block main %}
 <div class="graph-explorer">
-<p class="crumbs"><a href="/b/{{ project|seg }}">{{ project }}</a> /</p>
+{{ crumbs((("/b/" ~ (project|seg), project),)) }}
 <h1>{{ project }} graph</h1>
 <nav class="graph-views" aria-label="Graph views">
   <a href="{{ navigation.pages_href }}"{% if navigation.focus == "project" %} aria-current="page"{% endif %}>Pages</a>

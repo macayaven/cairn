@@ -41,7 +41,7 @@ CAIRN_API_KEY={{ created.key }}</pre>
       <td data-label="What it can see">{{ scope(scope_of(key.projects, key.access, names, sets, projects, "any project " ~ maker ~ " cannot reach" if maker else ("any project its maker cannot reach" if key.maker_id else "nothing in this workspace")), "What " ~ key.label ~ " can see") }}</td>
       <td data-label="Made by">{% if maker %}{{ actor("person", maker) }}{% else %}The workspace{% endif %}{% set made_with = made_with_words(key.made_with, key.made_with_revoked) %}{% if made_with %}<span class="hint">, {{ made_with }}</span>{% endif %}{% if key.unrecorded_before %}<p class="hint">{{ unrecorded_words(key.unrecorded_before) }}</p>{% endif %}</td>
       <td data-label="Made"><time datetime="{{ key.created_at }}">{{ key.created_at|day }}</time></td>
-      {% if manage %}<td data-label="Action" class="act"><form method="post" action="/keys/{{ key.label|seg }}/revoke"><button type="submit" class="link">Revoke</button></form></td>{% endif %}
+      {% if manage %}<td data-label="Action" class="act"><a href="/keys/{{ key.label|seg }}/revoke" aria-label="Revoke {{ key.label }}">Revoke</a></td>{% endif %}
     </tr>
   {% endfor %}
   </tbody>

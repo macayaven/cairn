@@ -761,7 +761,7 @@ def test_the_sources_page_shows_each_state_and_the_forms_that_apply(world, web):
     # R4: a member reaches the page; with no account of their own, no source and no switch.
     member = web.client.get("/sources", headers=web.brook.cookie)
     assert member.status_code == 200
-    mine = member.text.partition("<main>")[2].partition("</main>")[0]
+    mine = member.text.partition('<main id="main">')[2].partition("</main>")[0]
     assert "<form" not in mine and "/integrations/" not in mine
     assert "traces" not in mine and "standup" not in mine
     assert "No account yet. Ask the person who runs this server to connect one." in mine

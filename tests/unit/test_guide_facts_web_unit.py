@@ -291,7 +291,7 @@ def test_a_member_sees_and_ends_only_their_own_agents_and_an_admin_or_owner_all(
         def page(who: str) -> tuple[set[str], set[str]]:
             text = client.get("/agents", headers=cookie(team.sessions[who])).text
             shown = set(re.findall(r"\b(?:ada|brook|cy|dee)-agent\b", text))
-            ends = set(re.findall(r'action="/agents/([^"/]+)/revoke"', text))
+            ends = set(re.findall(r'href="/agents/([^"/]+)/revoke"', text))
             return shown, ends
 
         def end(who: str, grant: str) -> int:
@@ -552,7 +552,7 @@ def test_no_agent_adds_a_source_and_a_member_sees_only_their_own(team):
         assert client.get("/sources", headers=cookie(team.sessions["brook"])).status_code == 200
         member = client.get("/sources", headers=cookie(team.sessions["cy"]))
         assert member.status_code == 200  # R4: a member with no account: no source, no form
-        assert "<form" not in member.text.partition("<main>")[2].partition("</main>")[0]
+        assert "<form" not in member.text.partition('<main id="main">')[2].partition("</main>")[0]
         workspace = client.get("/workspace", headers=cookie(team.sessions["brook"])).text
         assert 'href="/sources"' in workspace
 

@@ -1,5 +1,9 @@
 {# The design system's components that more than one page draws. Imported, never extended. #}
 
+{# Crumbs: where a page sits, as the links above it, one way on every page: a navigation
+   landmark named "Breadcrumb". `trail`: (href, label) pairs, outermost first. #}
+{% macro crumbs(trail) %}<nav class="crumbs" aria-label="Breadcrumb">{% for href, label in trail %}<a href="{{ href }}">{{ label }}</a> /{% if not loop.last %} {% endif %}{% endfor %}</nav>{% endmacro %}
+
 {# Actor: who did something, its kind as a word (person, key, agent or cairn). #}
 {% macro actor(kind, name) %}<span class="actor"><span class="actor-kind">{{ kind }}</span><span class="actor-name">{{ name }}</span></span>{% endmacro %}
 
@@ -28,7 +32,7 @@
     <span>written <time datetime="{{ source.note.created_at }}">{{ source.note.created_at|when }}</time></span>
     {% if source.writer is defined %}<span class="writer">{{ source.writer }}</span>{% endif %}
     {% if source.outside %}<span class="outside">outside text</span>{% endif %}
-    {% if forget %}<a href="{{ forget }}">Forget this note</a>{% endif %}
+    {% if forget %}<a href="{{ forget }}" aria-label="Forget the note {{ source.note.title or 'Untitled note' }}">Forget this note</a>{% endif %}
   </figcaption>
   <div class="source-lines margin-grid">{% for n, line, cited in source.numbered %}<div class="in-margin{% if cited %} is-cited{% endif %}">{{ n }}</div><div class="source-line{% if cited %} is-cited{% endif %}">{{ line }}</div>{% endfor %}</div>
 </figure>

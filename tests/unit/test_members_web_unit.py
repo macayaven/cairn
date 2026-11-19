@@ -196,7 +196,10 @@ def test_a_member_sees_the_people_but_no_forms_and_no_invites(env):
     page = env.client.get("/members", headers=as_(env, env.cy))
     assert page.status_code == 200
     assert all(name in page.text for name in ("Ada", "Brook", "Cy"))
-    assert "zed@example.test" not in page.text and "<form" not in page.text.split("<main>")[1]
+    assert (
+        "zed@example.test" not in page.text
+        and "<form" not in page.text.split('<main id="main">')[1]
+    )
     hub = env.client.get("/workspace", headers=as_(env, env.cy)).text
     assert 'href="/members"' in hub  # on the workspace page, which the navigation links
 
@@ -208,7 +211,7 @@ def test_an_invite_is_shown_once_and_can_be_revoked(env):
     (pending,) = env.store.list_invites()
     listed = env.client.get("/members", headers=ada).text
     assert "zed@example.test" in listed
-    assert f'action="/members/invites/{pending.id}/revoke"' in listed
+    assert f'href="/members/invites/{pending.id}/revoke"' in listed
     assert send(env, as_(env, env.cy), f"/members/invites/{pending.id}/revoke").status_code == 403
     gone = send(env, ada, f"/members/invites/{pending.id}/revoke")
     assert gone.status_code == 303 and gone.headers["location"] == "/members"
@@ -251,7 +254,7 @@ def test_the_join_page_names_the_address_and_refuses_another_person(env):
     before = dump(env.db)
     page = env.client.get(f"/join/{token}", headers=eve_cookie)
     assert page.status_code == 200 and "zed@example.test" in page.text
-    main = page.text.split("<main>", 1)[1].split("</main>", 1)[0]
+    main = page.text.split('<main id="main">', 1)[1].split("</main>", 1)[0]
     assert f'action="/join/{token}"' not in main  # a button that could only be refused
     said = (
         "You are signed in as <strong>eve@example.test</strong>, and this invitation is for"
@@ -271,7 +274,7 @@ def test_the_person_an_invitation_is_for_gets_the_button_whatever_the_case(env):
     )
     token = env.ada.invite("zed@example.test").token
     page = env.client.get(f"/join/{token}", headers={"cookie": f"cairn_session={zed.token}"})
-    main = page.text.split("<main>", 1)[1].split("</main>", 1)[0]
+    main = page.text.split('<main id="main">', 1)[1].split("</main>", 1)[0]
     assert f'action="/join/{token}"' in main and "You are signed in as" not in main
     assert 'action="/logout"' not in main
 

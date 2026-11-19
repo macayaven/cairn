@@ -14,7 +14,7 @@
       <td data-label="Agent">{{ actor("agent", grant.client_name) }}{% set made_with = made_with_words(grant.made_with, grant.made_with_revoked) %}{% if made_with %} <span class="hint">{{ made_with }}</span>{% endif %}</td>
       <td data-label="What it can see">{{ scope(scope_of(grant.projects, grant.access, names, sets, projects, "any project beyond the reach of whoever approved it"), "What " ~ grant.client_name ~ " can see") }}</td>
       <td data-label="Connected"><time datetime="{{ grant.created_at }}">{{ grant.created_at|day }}</time></td>
-      <td data-label="Action" class="act"><form method="post" action="/agents/{{ grant.id|seg }}/revoke"><button type="submit" class="link">Disconnect</button></form></td>
+      <td data-label="Action" class="act"><a href="/agents/{{ grant.id|seg }}/revoke" aria-label="Disconnect {{ grant.client_name }}">Disconnect</a></td>
     </tr>
   {% endfor %}
   </tbody>

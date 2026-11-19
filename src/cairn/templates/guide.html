@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% from "_components.html" import crumbs %}
 {% block title %}{{ guide.title }}{% endblock %}
 {% block main %}
 <article class="reading guide">
-<p class="meta"><a href="/docs">Guides</a> /</p>
+{{ crumbs((("/docs", "Guides"),)) }}
 <h1>{{ guide.title }}</h1>
 {% if guide.sections %}
 <nav class="toc" aria-label="On this page">

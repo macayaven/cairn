@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% from "_components.html" import crumbs %}
 {% block title %}{{ title }}: {{ ended }}{% endblock %}
 {% block main %}
-<p class="crumbs"><a href="/sources">Sources</a> /</p>
+{{ crumbs((("/sources", "Sources"),)) }}
 <h1>{{ title }}: {{ ended }}</h1>
 {% if error %}
 <p class="alert" role="alert" id="refused">Refused. {{ error }}</p>

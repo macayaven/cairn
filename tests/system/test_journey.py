@@ -853,7 +853,7 @@ def test_an_invited_colleague_joins_and_their_agent_leaves_with_them(tmp_path):
             # Removing the colleague ends their agent and their session at once.
             people = (await owner.get("/members")).text
             row = next(r for r in people.split("<tr>") if "cy@acme.example.test" in r.lower())
-            removal = re.search(r'action="(/members/[^"]+/remove)"', row).group(1)
+            removal = re.search(r'href="(/members/[^"]+/remove)"', row).group(1)
             assert (await owner.post(removal, headers=SAME_ORIGIN)).status_code == 303
             assert (await call_tool(anyone, token, "recall", query="quill")).status_code == 401
             assert (await colleague.get("/members")).status_code == 303  # to /login
@@ -911,7 +911,7 @@ def test_a_removed_colleague_comes_back_only_by_invitation(tmp_path):
             assert await sign_in(colleague, idp, brook) == "/welcome"
             people = (await owner.get("/members")).text
             row = next(r for r in people.split("<tr>") if brook["email"] in r)
-            removal = re.search(r'action="(/members/[^"]+/remove)"', row).group(1)
+            removal = re.search(r'href="(/members/[^"]+/remove)"', row).group(1)
             assert (await owner.post(removal, headers=SAME_ORIGIN)).status_code == 303
             assert (await colleague.get("/keys")).status_code == 303  # the session ended
 

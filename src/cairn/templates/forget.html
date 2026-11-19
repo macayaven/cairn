@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% from "_components.html" import crumbs %}
 {% block title %}Forget a note · {{ project.name }}{% endblock %}
 {% block main %}
-<p class="crumbs"><a href="/">Projects</a> / <a href="/b/{{ project.name|seg }}">{{ project.name }}</a> /</p>
+{{ crumbs((("/", "Projects"), ("/b/" ~ (project.name|seg), project.name))) }}
 <h1>Forget a note</h1>
 <p class="lede"><strong>{{ note.title or "Untitled note" }}</strong>, written <time datetime="{{ note.created_at }}">{{ note.created_at|when }}</time>{% if note.source_ref %} from <span class="mono">{{ note.source_ref }}</span>{% endif %}.</p>
 <p>Forgetting removes the note, its text and every claim that cites only it.</p>

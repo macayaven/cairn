@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% from "_components.html" import source as source_lines %}
+{% from "_components.html" import source as source_lines, crumbs %}
 {% block title %}{{ page.title }} · {{ project.name }}{% endblock %}
 {% block main %}
 {% set page_url = "/b/" ~ (project.name|seg) ~ "/p/" ~ (page.slug|seg) %}
 <header class="page-head">
-<p class="crumbs"><a href="/">Projects</a> / <a href="/b/{{ project.name|seg }}">{{ project.name }}</a> /</p>
+{{ crumbs((("/", "Projects"), ("/b/" ~ (project.name|seg), project.name))) }}
 <h1>{{ page.title }}</h1>
 <ul class="counts" aria-label="What this page holds">
   <li><strong>{{ page.claims|length }}</strong> {{ "claim" if page.claims|length == 1 else "claims" }}</li>
@@ -44,7 +44,7 @@
   <h{{ level }} class="section">{{ heading }}</h{{ level }}>
   {% endfor %}
   <article class="claim margin-grid {{ item.kind }}" id="{{ item.claim.id }}">
-    <div class="in-margin claim-cites">{% for span_id, n in item.cites %}<a href="#{{ span_id }}" title="Source {{ n }}">{{ n }}</a>{% endfor %}</div>
+    <div class="in-margin claim-cites">{% for span_id, n in item.cites %}<a href="#{{ span_id }}" title="Source {{ n }}" aria-label="Source {{ n }}">{{ n }}</a>{% endfor %}</div>
     <div class="claim-body">
       <div class="claim-text md">{{ item.claim.text|md }}</div>
       <details class="proof">

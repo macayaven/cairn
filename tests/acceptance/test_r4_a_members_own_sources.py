@@ -194,7 +194,7 @@ def call(world, who: str, method: str, path: str, **kwargs) -> httpx.Response:
 
 
 def main(markup: str) -> str:
-    return markup.partition("<main>")[2].partition("</main>")[0]
+    return markup.partition('<main id="main">')[2].partition("</main>")[0]
 
 
 def page_text(markup: str) -> str:

@@ -124,8 +124,8 @@ def compaction_line(state: dict[str, Any], db: Path | str) -> str:
     if state["rewritten"]:
         return (
             f"compaction: the file was rewritten after what was deleted since {deleted}; only"
-            f" its write-ahead log is left to empty; {began}; `compact --db {db}` empties it"
-            " once nothing else holds the log, such as a replica"
+            f" its write-ahead log is left to empty; {began}; `compact --if-due --db {db}`"
+            " empties it once nothing else holds the log, such as a replica"
         )
     return (
         f"compaction: what was deleted since {deleted} is still in the database file; {began};"

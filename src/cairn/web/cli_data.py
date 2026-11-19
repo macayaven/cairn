@@ -64,6 +64,12 @@ def add_commands(commands: argparse._SubParsersAction) -> None:
         allow_abbrev=False,
     )
     compact.add_argument("--db", type=Path, required=True, help=DB_EXISTS)
+    compact.add_argument(
+        "--if-due",
+        action="store_true",
+        help="only what a recorded deletion still needs: nothing without one, the write-ahead"
+        " log alone when the file was rewritten since, else the whole compaction",
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -82,7 +88,7 @@ def run(args: argparse.Namespace) -> int:
                 print(f"cannot use those plans: {error}", file=sys.stderr)
                 return 2
         return _import(args.db, args.account, args.source, args.max_bytes, plans)
-    return _compact(args.db)
+    return _compact_if_due(args.db) if args.if_due else _compact(args.db)
 
 
 def _counts(summary) -> str:
@@ -307,6 +313,44 @@ def _compact(db: Path) -> int:
         store.close()
     print(_pruned(pruned))
     print(f"compacted {db}: {before} -> {db.stat().st_size} bytes")
+    return 0
+
+
+def _compact_if_due(db: Path) -> int:
+    """`compact --if-due` (the Google Cloud host's nightly run, infra/gcp/files/host.sh): what
+    the record of compaction (Store.compaction_state) says is still due, so a deletion the
+    server's own compactor already rewrote for is not rewritten again. No deletion recorded:
+    nothing. The file rewritten since the last deletion: the write-ahead log alone
+    (Store.empty_log), not finished (exit 1, as compact's line) when another connection holds
+    it. Otherwise the whole compaction, as `compact`."""
+    if not db.is_file():
+        print(f"no database at {db}", file=sys.stderr)
+        return 1
+    store = Store(db)
+    try:
+        due = store.compaction_state()
+    finally:
+        store.close()
+    if due.deleted_at is None:
+        print(
+            f"nothing to compact in {db}: no deletion is recorded since the last compaction"
+            " finished"
+        )
+        return 0
+    if not due.rewritten:
+        return _compact(db)
+    store = Store(db)
+    try:
+        store.empty_log()
+    except CompactIncomplete as error:
+        print(f"{db} was not fully compacted: {error}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(
+        f"emptied the write-ahead log of {db}: the file was rewritten after the last deletion,"
+        " so only the log was due"
+    )
     return 0
 
 

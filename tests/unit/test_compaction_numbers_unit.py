@@ -131,7 +131,7 @@ def test_stats_json_and_its_lines_say_the_record(db, state, capsys):
         assert line == (
             f"compaction: the file was rewritten after what was deleted since {DELETED}; only"
             f" its write-ahead log is left to empty; the last rewrite began {REWROTE};"
-            f" `compact --db {db}` empties it once nothing else holds the log, such"
+            f" `compact --if-due --db {db}` empties it once nothing else holds the log, such"
             " as a replica"
         )
     store = Store(db, clock=Clock())

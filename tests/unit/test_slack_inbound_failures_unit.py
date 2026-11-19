@@ -86,14 +86,15 @@ def test_what_is_kept_is_bounded_whatever_arrives(clock):
     assert failures.held() <= 50 * 20
 
 
-def test_when_full_the_pair_seen_longest_ago_is_forgotten_never_a_new_one_refused(clock):
+def test_when_full_the_oldest_pair_not_refused_is_forgotten_never_a_new_one_refused(clock):
     failures = SignatureFailures(clock, keys=2)
     for _ in range(20):
-        failures.failed(FABLE, HERE)
+        failures.failed(FABLE, HERE)  # at its limit: refused from now on
     failures.failed(QUILL, HERE)
-    assert failures.failed("sl_000000000001", HERE) == 0  # FABLE's pair is forgotten
+    assert failures.failed("sl_000000000001", HERE) == 0  # QUILL's pair is forgotten
     assert failures.tracked() == 2
-    assert failures.failed(FABLE, HERE) == 0
+    assert failures.failed(FABLE, HERE) > 0  # FABLE's, being refused, is kept
+    assert failures.failed(QUILL, HERE) == 0  # QUILL's starts again from nothing
 
 
 def test_a_clock_that_steps_back_frees_no_pair(clock):

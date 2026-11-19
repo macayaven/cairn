@@ -1,7 +1,8 @@
 locals {
   region = substr(var.zone, 0, length(var.zone) - 2)
   cloud_init = templatefile("${path.module}/../cloud-init.yaml.tftpl", {
-    quick_dir = "${path.module}/.."
+    quick_dir        = "${path.module}/.."
+    serve_extra_args = var.serve_extra_args
     config = {
       CAIRN_CLOUD            = "gcp"
       CAIRN_DOMAIN           = var.domain
@@ -18,6 +19,7 @@ resource "google_project_service" "api" {
     "compute.googleapis.com",
     "iam.googleapis.com",
     "iap.googleapis.com",
+    "oslogin.googleapis.com",
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
   ])
@@ -196,5 +198,6 @@ resource "google_compute_instance" "app" {
     google_storage_bucket_iam_member.replica,
     google_secret_manager_secret_iam_member.settings,
     google_project_service.api["iap.googleapis.com"],
+    google_project_service.api["oslogin.googleapis.com"],
   ]
 }

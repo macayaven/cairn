@@ -20,13 +20,40 @@ ${yamlencode({
       path        = "/opt/cairn/quick.env"
       owner       = "root:root"
       permissions = "0600"
-      content     = join("", [for name, value in config : "${name}=${value}\n"])
+      content = join("", concat(
+        [for name, value in config : "${name}=${value}\n"],
+        [format("CAIRN_QUICK_SERVE_ARGS='%s'\n", join(" ", [for arg in serve_extra_args : "\"${arg}\""]))],
+      ))
     },
     {
       path = "/etc/systemd/system/docker.service.d/cairn-quick.conf"
       content = <<-UNIT
         [Service]
         ExecStartPre=/opt/cairn/bootstrap.sh firewall
+      UNIT
+    },
+    {
+      path = "/etc/systemd/system/cairn-quick-provision.service"
+      content = <<-UNIT
+        [Unit]
+        Description=Install the cairn quick deployment host packages
+        Wants=network-online.target
+        After=network-online.target
+        ConditionPathExists=!/opt/cairn/.host-provisioned
+        StartLimitIntervalSec=0
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        Restart=on-failure
+        RestartSec=20s
+        EnvironmentFile=/opt/cairn/quick.env
+        ExecStart=/opt/cairn/bootstrap.sh install $CAIRN_CLOUD
+        ExecStartPost=systemctl enable --now --no-block cairn-quick.service
+        ExecStartPost=touch /opt/cairn/.host-provisioned
+
+        [Install]
+        WantedBy=multi-user.target
       UNIT
     },
     {
@@ -54,10 +81,7 @@ ${yamlencode({
     },
   ])
   runcmd = [
-    ["/bin/bash", "-ec", join("\n", [
-      "/opt/cairn/bootstrap.sh install ${config.CAIRN_CLOUD}",
-      "systemctl daemon-reload",
-      "systemctl enable --now cairn-quick.service",
-    ])],
+    ["systemctl", "daemon-reload"],
+    ["systemctl", "enable", "--now", "--no-block", "cairn-quick-provision.service"],
   ]
 })}

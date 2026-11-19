@@ -51,6 +51,15 @@ run "three_inputs_with_safe_defaults" {
   }
 
   assert {
+    condition = try(
+      google_project_service.api["oslogin.googleapis.com"].service == "oslogin.googleapis.com" &&
+      !google_project_service.api["oslogin.googleapis.com"].disable_on_destroy,
+      false,
+    )
+    error_message = "The project must enable the Cloud OS Login API for IAP SSH and keep it enabled on teardown."
+  }
+
+  assert {
     # With no customer key, the Google-managed encryption documented for every GCS bucket applies.
     condition = (
       google_storage_bucket.replica.force_destroy == false &&

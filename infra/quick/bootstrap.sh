@@ -1,5 +1,5 @@
 #!/bin/bash
-# cloud-init installs the host once. systemd starts the stack on first boot and each reboot.
+# systemd retries package installation on first boot and starts the stack on each boot.
 set -euo pipefail
 export PATH="$PATH:/snap/bin"
 install_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -9,10 +9,10 @@ die() {
   exit 1
 }
 
-install_host() {
-  local cloud=$1 codename
+install_host() (
+  local cloud=$1 codename architecture staging
   export DEBIAN_FRONTEND=noninteractive
-  apt-get -o Acquire::Retries=3 update
+  apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
   apt-get -y install ca-certificates curl iptables
 
   if [[ "$cloud" == aws ]]; then
@@ -22,20 +22,26 @@ install_host() {
   fi
 
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
+  staging=$(mktemp -d /etc/apt/keyrings/.cairn-quick.XXXXXX)
+  trap 'rm -rf -- "$staging"' EXIT
+  curl -fsSL --connect-timeout 10 --max-time 60 https://download.docker.com/linux/ubuntu/gpg \
+    -o "$staging/docker.asc"
   codename=$(. /etc/os-release; printf '%s' "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
-  cat >/etc/apt/sources.list.d/docker.sources <<EOF
+  architecture=$(dpkg --print-architecture)
+  cat >"$staging/docker.sources" <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: $codename
 Components: stable
-Architectures: $(dpkg --print-architecture)
+Architectures: $architecture
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
-  apt-get -o Acquire::Retries=3 update
+  chmod 0644 "$staging/docker.asc" "$staging/docker.sources"
+  mv -f -- "$staging/docker.asc" /etc/apt/keyrings/docker.asc
+  mv -f -- "$staging/docker.sources" /etc/apt/sources.list.d/docker.sources
+  apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
   apt-get -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-}
+)
 
 # Docker sends forwarded container traffic through DOCKER-USER before its own rules.
 # The Docker unit's ExecStartPre can create this chain before the daemon's first start.
@@ -119,6 +125,10 @@ ACME_EMAIL=${ACME_EMAIL:?}
 CAIRN_IMAGE=${CAIRN_IMAGE:?}
 COMPOSE_FILE=compose.yaml:compose.backup.yaml:compose.quick.yaml
 EOF
+  # Compose splits the quoted arguments from .env into the serve command.
+  if [[ -n "${CAIRN_QUICK_SERVE_ARGS:-}" ]]; then
+    printf "CAIRN_EXTRA_ARGS='%s'\n" "$CAIRN_QUICK_SERVE_ARGS" >>"$staging/.env"
+  fi
   printf 'LITESTREAM_REPLICA_URL=%s\n' "${LITESTREAM_REPLICA_URL:?}" >"$staging/litestream.env"
   if [[ "$CAIRN_CLOUD" == aws ]]; then
     printf 'AWS_REGION=%s\n' "${AWS_REGION:?}" >>"$staging/litestream.env"

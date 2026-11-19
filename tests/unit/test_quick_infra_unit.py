@@ -71,29 +71,30 @@ def test_quickstart_commands_match_stack_outputs_and_the_release_tag(cloud):
     assert positions == sorted(positions)
     assert all(f"`{name}`" in section for name in [INPUTS[cloud], "domain", "acme_email"])
     assert "sudo systemctl restart cairn-quick.service" in section
+    assert "[provider sign-in steps](#provider-sign-in)" in section
+    assert "[first-boot recovery](#first-boot-recovery)" in section
     assert "tofu destroy" in section
     assert ("put-secret-value" if cloud == "aws" else "secrets versions add") in section
 
 
-@pytest.mark.parametrize("cloud", INPUTS)
-def test_the_payload_copies_the_four_deploy_files_as_bytes(tmp_path, cloud):
+def render_cloud_init(tmp_path, cloud, *, serve_extra_args=()):
     template = QUICK / "cloud-init.yaml.tftpl"
     assert template.is_file(), "the shared cloud-init template has not been written"
-    main = (QUICK / cloud / "main.tf").read_text()
-    assert "${path.module}/../cloud-init.yaml.tftpl" in main
     tofu = shutil.which("tofu")
     if tofu is None:
         pytest.skip("OpenTofu is needed to render the cloud-init template")
     arguments = json.dumps(
         {
             "quick_dir": str(QUICK),
+            "serve_extra_args": list(serve_extra_args),
             "config": {
                 "CAIRN_CLOUD": cloud,
                 "CAIRN_DOMAIN": "cairn.example.net",
                 "ACME_EMAIL": "ops@example.net",
                 "CAIRN_IMAGE": f"ghcr.io/macayaven/cairn:{VERSION}",
-                "LITESTREAM_REPLICA_URL": "gs://example-replica/cairn",
-                "CAIRN_SETTINGS_SECRET": "projects/example-project/secrets/cairn-quick-env",
+                "LITESTREAM_REPLICA_URL": f"{'s3' if cloud == 'aws' else 'gs'}://example-replica/cairn",
+                "CAIRN_SETTINGS_SECRET": "example-secret",
+                **({"AWS_REGION": "us-east-1"} if cloud == "aws" else {}),
             },
         }
     )
@@ -111,16 +112,92 @@ def test_the_payload_copies_the_four_deploy_files_as_bytes(tmp_path, cloud):
     if cloud == "aws":
         assert len(payload) <= 16384, "EC2 allows at most 16 KiB of raw user data"
         payload = gzip.decompress(payload)
-    cloud_init = yaml.safe_load(payload)
+    return yaml.safe_load(payload)
+
+
+@pytest.mark.parametrize("cloud", INPUTS)
+def test_the_payload_copies_the_four_deploy_files_as_bytes(tmp_path, cloud):
+    main = (QUICK / cloud / "main.tf").read_text()
+    assert "${path.module}/../cloud-init.yaml.tftpl" in main
+    assert re.search(r"^\s+serve_extra_args\s*=\s*var\.serve_extra_args$", main, re.M)
+    cloud_init = render_cloud_init(tmp_path, cloud)
     files = {item["path"]: item for item in cloud_init["write_files"]}
     for name in ("compose.yaml", "compose.backup.yaml", "Caddyfile", "litestream.yml"):
         item = files[f"/opt/cairn/deploy/{name}"]
         assert item["encoding"] == "b64"
         assert base64.b64decode(item["content"]) == (REPO / "deploy" / name).read_bytes()
-    assert any("cairn-quick.service" in " ".join(command) for command in cloud_init["runcmd"])
+    assert cloud_init["runcmd"] == [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", "--no-block", "cairn-quick-provision.service"],
+    ]
+    provision = files["/etc/systemd/system/cairn-quick-provision.service"]["content"]
+    assert "StartLimitIntervalSec=0" in provision
+    assert "RestartSec=20s" in provision
+    assert "ConditionPathExists=!/opt/cairn/.host-provisioned" in provision
     assert (
         "/opt/cairn/bootstrap.sh firewall"
         in files["/etc/systemd/system/docker.service.d/cairn-quick.conf"]["content"]
+    )
+
+
+@pytest.mark.parametrize("cloud", INPUTS)
+def test_serve_arguments_cannot_add_environment_assignments(tmp_path, cloud):
+    tofu = shutil.which("tofu")
+    if tofu is None:
+        pytest.skip("OpenTofu is needed to check the variable validation")
+    # Plan only the variable declarations, without a provider or any resources.
+    shutil.copyfile(QUICK / cloud / "variables.tf", tmp_path / "variables.tf")
+    values = {
+        INPUTS[cloud]: "us-east-1" if cloud == "aws" else "example-project",
+        "domain": "cairn.example.net",
+        "acme_email": "ops@example.net",
+        "serve_extra_args": ["--brand-name", "Fable\nEXTRA=value"],
+    }
+    (tmp_path / "terraform.tfvars.json").write_text(json.dumps(values))
+    done = subprocess.run(
+        [tofu, "plan", "-input=false", "-no-color"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert done.returncode == 1
+    assert "Use nonempty serve arguments" in done.stderr
+
+
+def test_provider_sign_in_guide_shows_what_to_configure_and_what_the_user_sees():
+    section = (QUICK / "README.md").read_text().split("## Provider sign-in\n")[1].split("## ")[0]
+    steps = [
+        "https://cairn.example.net/auth/google/callback",
+        "CAIRN_GOOGLE_CLIENT_ID=",
+        "CAIRN_GOOGLE_CLIENT_SECRET=",
+        'serve_extra_args = ["--sign-in", "google", "--allowed-email-domain", "example.net"]',
+        "Run `tofu apply`. Changing these arguments replaces the VM",
+        "https://cairn.example.net/login",
+        "Continue with Google",
+    ]
+    positions = [section.index(step) for step in steps]
+    assert positions == sorted(positions)
+
+
+def test_first_boot_guide_names_the_services_to_check_and_restart():
+    section = (QUICK / "README.md").read_text().split("## First-boot recovery\n")[1].split("## ")[0]
+    assert "20 seconds" in section
+    assert "sudo systemctl status cairn-quick-provision.service cairn-quick.service" in section
+    assert "sudo journalctl -b -u cairn-quick-provision.service -u cairn-quick.service" in section
+    assert "sudo systemctl restart cairn-quick-provision.service" in section
+    assert "sudo systemctl restart cairn-quick.service" in section
+
+
+def test_gcp_provisions_the_os_login_api_before_the_vm():
+    main = (QUICK / "gcp" / "main.tf").read_text()
+    apis = re.search(r'^resource "google_project_service" "api" \{(.*?)^}', main, re.M | re.S)[1]
+    assert "oslogin.googleapis.com" in re.findall(r'^\s+"([\w.]+)",$', apis, re.M)
+    vm = re.search(r'^resource "google_compute_instance" "app" \{(.*?)^}', main, re.M | re.S)[1]
+    assert 'google_project_service.api["oslogin.googleapis.com"]' in vm.split("depends_on = [")[1]
+    assert (
+        "The stack enables the Cloud OS Login API (`oslogin.googleapis.com`)"
+        in (QUICK / "README.md").read_text()
     )
 
 

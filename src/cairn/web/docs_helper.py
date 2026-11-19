@@ -451,7 +451,8 @@ def _in_its_guide(html: Markup, guide: str) -> Markup:
     """Rendered `html` whose links to a heading of its own guide ("#claude-code") go to that
     guide's page: on the Help page they would lead nowhere. `guide` is one of the release's
     six names, checked when the artifact is read."""
-    return Markup(str(html).replace('href="#', f'href="/docs/{guide}#'))
+    linked = str(html).replace('href="#', f'href="/docs/{guide}#')
+    return Markup(linked)  # nosec B704 # html was rendered with raw HTML off
 
 
 class HelpLink:

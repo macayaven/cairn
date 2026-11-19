@@ -671,12 +671,12 @@ def run_main(tmp_path, event_name, ref, sha, event, git, api=None) -> tuple[int,
 def test_main_writes_false_only_when_nothing_ships(tmp_path, capsys):
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), FakeGit(), api)
-    assert code == 0 and out == "earlier=1\nimage=false\n"
+    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\n"
     said = capsys.readouterr().out
     assert "docs/x.md" in said and PUBLISHED in said and TOKEN not in said
     git = FakeGit(paths=("src/x.py",))
     code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), git, api)
-    assert code == 0 and out.endswith("image=true\n")
+    assert code == 0 and out.startswith("earlier=1\nimage=true\nquick=")
 
 
 def test_main_reads_the_runs_of_its_own_workflow_and_repository(tmp_path):
@@ -691,23 +691,23 @@ def test_main_writes_true_and_exits_zero_on_anything_unexpected(tmp_path):
 
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), broken, api)
-    assert code == 0 and out.endswith("image=true\n")
+    assert code == 0 and out.startswith("earlier=1\nimage=true\nquick=")
     # No token: the lookup on main cannot be made.
     environ = environment(tmp_path, "push", MAIN, SHA, push_event())
     del environ["GITHUB_TOKEN"]
     assert ci_changes.main(environ, FakeGit()) == 0
-    assert (tmp_path / "output").read_text().endswith("image=true\n")
+    assert (tmp_path / "output").read_text().startswith("earlier=1\nimage=true\nquick=")
     # No event file at all.
     output = tmp_path / "out2"
     environ = {"GITHUB_EVENT_NAME": "push", "GITHUB_OUTPUT": str(output)}
     assert ci_changes.main(environ, FakeGit()) == 0
-    assert output.read_text() == "image=true\n"
+    assert output.read_text() == "image=true\nquick=true\n"
 
 
 def main_says(tmp_path, capsys, event_name, ref, event, git, api=None) -> str:
     """The verdict line main() prints, after checking it wrote image=true and exited 0."""
     code, out = run_main(tmp_path, event_name, ref, SHA, event, git, api)
-    assert code == 0 and out.endswith("image=true\n")
+    assert code == 0 and out.startswith("earlier=1\nimage=true\nquick=")
     said = capsys.readouterr().out
     assert TOKEN not in said
     return said.splitlines()[-1]
@@ -902,7 +902,8 @@ def test_each_path_is_printed_on_one_line_of_its_own(tmp_path, capsys, name):
     path, expected = PATH_LINES[name]
     git = FakeGit(paths=("src/x.py", path, "docs/y.md"))
     code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), git)
-    assert code == 0 and out.endswith("image=true\n")  # src/x.py ships, as before
+    # src/x.py ships, as before
+    assert code == 0 and out.startswith("earlier=1\nimage=true\nquick=")
     lines = capsys.readouterr().out.splitlines()
     mark = "  " if ci_changes.needs_no_image_work(path) else "* "
     assert lines[:3] == [
@@ -919,7 +920,7 @@ def test_each_path_is_printed_on_one_line_of_its_own(tmp_path, capsys, name):
 def test_a_path_with_only_names_on_the_list_keeps_its_verdict_whatever_it_prints(tmp_path):
     git = FakeGit(paths=("docs/a\nb.md", "docs/\udcff.md"))
     code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), git)
-    assert code == 0 and out == "earlier=1\nimage=false\n"
+    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\n"
 
 
 def test_a_long_path_is_cut_and_says_so(tmp_path, capsys):
@@ -950,7 +951,7 @@ def test_a_line_stdout_cannot_encode_is_written_escaped(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdout", stdout)
     git = FakeGit(paths=("docs/a\N{LATIN SMALL LETTER N WITH TILDE}o.md", "docs/\U0001f600.md"))
     code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), git)
-    assert code == 0 and out == "earlier=1\nimage=false\n"
+    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\n"
     assert stdout.getvalue().splitlines() == [
         "  docs/a\\xf1o.md",
         "  docs/\\U0001f600.md",
@@ -962,9 +963,9 @@ def test_a_stdout_that_takes_nothing_changes_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdout", Closed())
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), FakeGit(), api)
-    assert code == 0 and out == "earlier=1\nimage=false\n"
+    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\n"
     code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), FakeGit(("src/x",)))
-    assert code == 0 and out == "earlier=1\nimage=true\n"
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\n"
 
 
 class Watching(io.StringIO):
@@ -998,7 +999,7 @@ def test_a_base_that_is_a_number_is_not_said_and_fails_nothing(tmp_path, capsys)
     # The run's head passes the check as str(), but is not a string: not known, as before.
     api = FakeApi([run(9, head=int("1" * 40))], {9: published_job("success")})
     code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), FakeGit(), api)
-    assert code == 0 and out.endswith("image=true\n")
+    assert code == 0 and out.startswith("earlier=1\nimage=true\nquick=")
     said = capsys.readouterr().out
     assert "main: compared with" not in said and "not known" in said
 
@@ -1009,8 +1010,8 @@ def test_without_github_output_the_image_line_comes_first_on_stdout(tmp_path, ca
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     assert ci_changes.main(environ, FakeGit(), api) == 0
     said = capsys.readouterr().out.splitlines()
-    assert said[0] == "image=false"
-    assert said[1].startswith("main: compared with ") and said[-1].startswith("image jobs")
+    assert said[:2] == ["image=false", "quick=false"]
+    assert said[2].startswith("main: compared with ") and said[-1].startswith("image jobs")
 
 
 # --- on main: the head of the newest run that published an image ---------------------------
@@ -1472,5 +1473,79 @@ def test_a_release_tag_runs_every_job_without_asking_git_or_the_api(tmp_path):
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     git = FakeGit()  # its only changed path is docs/x.md, which alone would ship nothing
     code, out = run_main(tmp_path, "push", "refs/tags/v0.1.0", SHA, push_event(), git, api)
-    assert code == 0 and out == "earlier=1\nimage=true\n"
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\n"
     assert git.calls == [] and api.calls == []
+
+
+# --- the quick deploy's checks: output `quick` --------------------------------------------------
+# Job `quick` runs OpenTofu's checks of infra/quick/aws and infra/quick/gcp when the change
+# touches what they define or read, and always when the paths are not known (a tag).
+
+QUICK = {
+    "the AWS definitions": (["infra/quick/aws/main.tf"], True),
+    "the cloud-init template": (["infra/quick/cloud-init.yaml.tftpl"], True),
+    "the shipped compose file": (["deploy/compose.yaml"], True),
+    "the backup compose file": (["deploy/compose.backup.yaml"], True),
+    "the Caddyfile": (["deploy/Caddyfile"], True),
+    "Litestream's configuration": (["deploy/litestream.yml"], True),
+    "pyproject.toml": (["pyproject.toml"], True),
+    "a test of the quick deploy": (["tests/unit/test_quick_aws_unit.py"], True),
+    "one of them among others": (["docs/x.md", "deploy/Caddyfile"], True),
+    "an empty list": ([], True),
+    "the local compose file": (["deploy/compose.local.yaml"], False),
+    "the hosted VM's definitions": (["infra/gcp/main.tf"], False),
+    "source and documents": (["src/cairn/store.py", "docs/x.md"], False),
+    "another test": (["tests/unit/test_store_unit.py"], False),
+    "a test directory named like one": (["tests/unit/test_quick/x.py"], False),
+    "a path that climbs into infra/quick/": (["docs/../infra/quick/aws/main.tf"], True),
+    "a name that only starts like the directory": (["infra/quickstart.md"], False),
+    "a lower directory named like it": (["docs/infra/quick/x.md"], False),
+}
+
+
+@pytest.mark.parametrize("name", QUICK)
+def test_the_quick_checks_run_only_for_what_they_read(name):
+    paths, runs = QUICK[name]
+    assert ci_changes.quick_verdict(paths) is runs
+
+
+def test_the_quick_checks_run_when_the_paths_are_not_known():
+    assert ci_changes.quick_verdict(None) is True
+
+
+def test_every_path_the_quick_checks_list_exists():
+    for entry in ci_changes.QUICK_WORK:
+        if entry.endswith("/"):
+            assert (REPO / entry).is_dir(), entry
+        elif entry.endswith("_"):
+            assert list(REPO.glob(entry + "*")), entry
+        else:
+            assert (REPO / entry).is_file(), entry
+
+
+def test_main_writes_quick_beside_image(tmp_path):
+    api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
+    git = FakeGit(paths=("docs/x.md", "infra/quick/gcp/main.tf"))
+    code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), git, api)
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\n"
+    git = FakeGit(paths=("src/x.py",))
+    code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), git)
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=false\n"
+    # A tag: not known, so every check runs.
+    code, out = run_main(tmp_path, "push", "refs/tags/v1.2.3-rc.1", SHA, push_event(), FakeGit())
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\n"
+    # Anything unexpected: both run.
+    output = tmp_path / "out3"
+    assert ci_changes.main({"GITHUB_EVENT_NAME": "push", "GITHUB_OUTPUT": str(output)}) == 0
+    assert output.read_text() == "image=true\nquick=true\n"
+
+
+def test_the_scans_are_on_for_every_change():
+    """A secret can arrive in a document: the four scans read no output of this script, so a
+    change of documents only, or a draft, runs them all."""
+    assert ci_changes.ALWAYS == ("dependencies", "static_analysis", "secrets", "image_scan")
+    for name in ci_changes.ALWAYS:
+        job = WORKFLOW["jobs"][name]
+        assert "if" not in job, name
+        assert "needs" not in job, name
+        assert "needs.changes" not in yaml.safe_dump(job), name

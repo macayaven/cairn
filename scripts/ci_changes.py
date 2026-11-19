@@ -7,7 +7,13 @@ and with them `release_check`, `publish`, `verify` and `deploy`. In every other 
 writes `image=true` and the whole gate runs, as before this script: a path not on the list,
 an empty list, a manual run, a tag, a first or forced push, a lookup that fails, anything
 unexpected. Being wrong costs runner minutes, never a skipped check. `test` and `infra` do
-not depend on it.
+not depend on it, and neither do the four scans named in ALWAYS (the locked dependencies,
+the image, static analysis of src/, and secrets in the history): a change of documents only
+runs them too, since a secret can arrive in a document.
+
+It also writes `quick=false` when the changed paths are known and none of them is on
+QUICK_WORK, what the quick deploy's OpenTofu definitions (infra/quick/) define, read or are
+pinned by; then job `quick` runs no check. Otherwise `quick=true`, a tag included.
 
 How the changed paths are found (the checkout has the whole history, fetch-depth 0):
 - pull_request: GITHUB_SHA is the merge commit GitHub made of the pull request's head into
@@ -82,6 +88,24 @@ NO_IMAGE_WORK = (
     "CHANGELOG.md",
     ".gitignore",
 )
+
+# Paths whose change runs job `quick`'s OpenTofu checks of infra/quick/aws and infra/quick/gcp:
+# the definitions and the files beside them, the deploy files they copy onto the machine,
+# pyproject.toml (the version they deploy) and their tests. An entry ending in "/" is a
+# top-level directory and everything under it, one ending in "_" a prefix of a file name,
+# any other entry one file.
+QUICK_WORK = (
+    "infra/quick/",
+    "deploy/compose.yaml",
+    "deploy/compose.backup.yaml",
+    "deploy/Caddyfile",
+    "deploy/litestream.yml",
+    "pyproject.toml",
+    "tests/unit/test_quick_",
+)
+
+# The jobs of the gate that read no output of this script and so run for every change.
+ALWAYS = ("dependencies", "static_analysis", "secrets", "image_scan")
 
 # The display name of job `publish` in ci-cd.yml: the API names a job by it. A test pins the
 # two together. Were they to drift apart, no run would count as published and the whole gate
@@ -223,6 +247,26 @@ def needs_no_image_work(path: str) -> bool:
         elif path == entry:
             return True
     return False
+
+
+def quick_work(path: str) -> bool:
+    """True when PATH is on QUICK_WORK, or is not plain (absolute, with an empty, `.` or `..`
+    segment): such a path could name anything, so it runs the checks."""
+    if any(part in ("", ".", "..") for part in path.split("/")):
+        return True
+    for entry in QUICK_WORK:
+        if entry.endswith(("/", "_")):
+            if path.startswith(entry) and len(path) > len(entry):
+                return True
+        elif path == entry:
+            return True
+    return False
+
+
+def quick_verdict(paths: list[str] | None) -> bool:
+    """Whether job `quick` runs its checks for these changed PATHS (None: not known). An empty
+    list cannot be told apart from a lookup that printed nothing, so it runs them."""
+    return paths is None or not paths or any(quick_work(path) for path in paths)
 
 
 def nothing_ships(paths: Iterable[str]) -> bool:
@@ -534,7 +578,11 @@ def main(
             run, reason = verdict(None, unknown.reason)
     except Exception as error:
         run, reason = True, f"could not decide ({type(error).__name__}: {error})"
-    line = f"image={'true' if run else 'false'}\n"
+    try:
+        quick = quick_verdict(paths)
+    except Exception:
+        quick = True
+    line = f"image={'true' if run else 'false'}\nquick={'true' if quick else 'false'}\n"
     output = environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:

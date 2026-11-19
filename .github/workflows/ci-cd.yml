@@ -45,6 +45,11 @@
 # makes the GitHub release with them and the version's section of CHANGELOG.md. A run that
 # failed after `publish` and before the release was made is finished by re-running only its
 # failed jobs.
+# Four scans run on every pull request and every push, drafts and changes of documents only
+# included, and `publish` needs each: the locked dependencies (pip-audit), the image built for
+# linux/amd64 (Trivy), src/ (Bandit) and the whole history checked out (gitleaks, redacted).
+# The quick deploy's OpenTofu definitions (infra/quick/) are checked in job `quick` when a
+# change touches them, and on every tag; `publish` needs it too.
 # Nothing is published from a pull request or a manual run.
 # A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
 # gate runs as before, and nothing is published, verified, released or deployed. Unset, it
@@ -90,6 +95,7 @@ jobs:
       actions: read
     outputs:
       image: ${{ steps.decide.outputs.image }}
+      quick: ${{ steps.decide.outputs.quick }}
     steps:
       # The whole history, so that the base of the diff is there; no token is kept.
       - name: Check out
@@ -241,6 +247,207 @@ jobs:
         run: >-
           uv build --build-constraint build-constraints.txt --require-hashes
           --out-dir "$RUNNER_TEMP/release"
+
+  # The four scans below run on every pull request and every push, drafts and changes of
+  # documents only included (scripts/ci_changes.py, ALWAYS: a secret can arrive in a
+  # document), and `publish` needs each. Each may read the repository and nothing more,
+  # holds no secret, and runs one tool at one version: the Python ones installed from a
+  # hashed requirements file under .github/scanners, the two binaries checked against the
+  # SHA-256 their release lists before they are unpacked. Their ignore lists, under
+  # .github/scanners, give each entry a reason and a last day; tests/unit/test_ci_scans_unit.py
+  # fails once that day has passed.
+
+  # The locked dependencies (uv.lock, exported with its hashes: the runtime ones the image
+  # installs and the rest) and the build constraints, against PyPI's vulnerability data. A
+  # known vulnerability with a fixed version fails; one without a fix is listed in the job's
+  # summary (.github/scanners/audit_policy.py).
+  dependencies:
+    name: scan the locked dependencies (pip-audit)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: false
+          github-token: ""
+      - name: Install pip-audit
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/scan"
+          uv pip install --python "$RUNNER_TEMP/scan" --require-hashes -r .github/scanners/pip-audit.txt
+      - name: Export the locked dependencies
+        run: >-
+          uv export --frozen --format requirements.txt --all-extras --all-groups
+          --no-emit-project --no-header -o "$RUNNER_TEMP/locked.txt"
+      # pip-audit exits 1 when it finds anything; the policy decides what fails.
+      - name: Audit them
+        run: |
+          status=0
+          "$RUNNER_TEMP/scan/bin/pip-audit" --disable-pip --require-hashes --strict \
+            --progress-spinner off -r "$RUNNER_TEMP/locked.txt" -r build-constraints.txt \
+            --format json -o "$RUNNER_TEMP/audit.json" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::pip-audit could not audit the dependencies (exit $status)"
+            exit "$status"
+          fi
+          python3 .github/scanners/audit_policy.py "$RUNNER_TEMP/audit.json" \
+            .github/scanners/pip-audit-ignore.toml --summary "$GITHUB_STEP_SUMMARY"
+
+  # Bandit over src/ (tests are outside its scope) at medium severity and medium confidence
+  # or above. pyproject.toml, [tool.bandit], says which rule is off and why; a line where a
+  # rule is wrong says so with `# nosec <rule> # <reason>`.
+  static_analysis:
+    name: static analysis of src/ (Bandit)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: false
+          github-token: ""
+      - name: Install Bandit
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/scan"
+          uv pip install --python "$RUNNER_TEMP/scan" --require-hashes -r .github/scanners/bandit.txt
+      - name: Scan src/
+        run: >-
+          "$RUNNER_TEMP/scan/bin/bandit" -c pyproject.toml -r src
+          --severity-level medium --confidence-level medium
+
+  # gitleaks over the whole history the job checks out (fetch-depth: 0), with every match
+  # redacted in the log, and nothing else written. .gitleaks.toml lets the made-up keys of
+  # named tests and the vendors' examples quoted in named documents pass, each with its
+  # reason; `gitleaks:allow` comments count for nothing. A match fails the job.
+  secrets:
+    name: scan the history for secrets (gitleaks)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/"
+          case "$RUNNER_ARCH" in
+            X64) asset=gitleaks_8.30.1_linux_x64.tar.gz sum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+            ARM64) asset=gitleaks_8.30.1_linux_arm64.tar.gz sum=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 ;;
+            *) echo "::error::no gitleaks archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+      - name: Scan the history
+        run: >-
+          gitleaks git --config .gitleaks.toml --redact --ignore-gitleaks-allow
+          --exit-code 1 --no-banner --verbose .
+
+  # The image as the image check builds it for linux/amd64, the platform the VM runs, built
+  # here again so that a draft or a change of documents only is scanned too, before anything
+  # is published. Trivy fails the job on a HIGH or CRITICAL vulnerability that has a fixed
+  # version; the unfixed ones are listed in the job's summary and fail nothing.
+  image_scan:
+    name: scan the image (Trivy, linux/amd64)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    env:
+      DOCKER_DEFAULT_PLATFORM: linux/amd64
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up QEMU
+        if: runner.arch == 'ARM64'
+        env:
+          # The binfmt installer must run natively before emulation exists.
+          DOCKER_DEFAULT_PLATFORM: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - name: Build the image
+        run: docker build --platform linux/amd64 -t cairn:scan .
+      - name: Install trivy
+        run: |
+          base="https://github.com/aquasecurity/trivy/releases/download/v0.76.2/"
+          case "$RUNNER_ARCH" in
+            X64) asset=trivy_0.76.2_Linux-64bit.tar.gz sum=bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf ;;
+            ARM64) asset=trivy_0.76.2_Linux-ARM64.tar.gz sum=ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3 ;;
+            *) echo "::error::no trivy archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/trivy"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/trivy" trivy
+          echo "$RUNNER_TEMP/trivy" >> "$GITHUB_PATH"
+      - name: List the unfixed HIGH and CRITICAL in the summary
+        run: |
+          {
+            echo "### Image: HIGH and CRITICAL with no fixed version (listed, not failing)"
+            echo '```'
+            trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-status fixed \
+              --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 0 --no-progress \
+              --format table cairn:scan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail on a HIGH or CRITICAL that has a fixed version
+        run: >-
+          trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed
+          --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 1 --no-progress cairn:scan
+
+  # The quick deploy's OpenTofu definitions (infra/quick/aws and infra/quick/gcp), with no
+  # cloud credentials: formatting, init from the committed lock files (read-only, no
+  # backend), validate, and their mocked `tofu test`. On GitHub's hosted linux/amd64 runner
+  # and not on CAIRN_GATE_RUNNER: the AWS lock holds the providers' hashes for linux_amd64
+  # and darwin_arm64 only. Its steps run when the change touches what scripts/ci_changes.py
+  # lists in QUICK_WORK, and always on a tag; the job itself always runs, so that `publish`,
+  # which needs it, is never skipped for it.
+  quick:
+    name: quick deploy definitions (OpenTofu)
+    needs: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up OpenTofu
+        if: needs.changes.outputs.quick != 'false'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.13.9"
+          tofu_wrapper: false
+      - name: Check infra/quick/aws and infra/quick/gcp
+        if: needs.changes.outputs.quick != 'false'
+        run: |
+          for dir in infra/quick/aws infra/quick/gcp; do
+            tofu -chdir="$dir" fmt -check -diff
+            tofu -chdir="$dir" init -backend=false -input=false -lockfile=readonly
+            tofu -chdir="$dir" validate -no-color
+            tofu -chdir="$dir" test -no-color
+          done
+      - name: Nothing to check
+        if: needs.changes.outputs.quick == 'false'
+        run: echo "The change touches nothing the quick deploy's definitions define or read."
 
   image:
     name: image smoke (${{ matrix.platform }})
@@ -413,7 +620,18 @@ jobs:
 
   publish:
     name: publish to GHCR
-    needs: [infra, image, stack, host, release_check, package_check]
+    needs:
+      - infra
+      - image
+      - stack
+      - host
+      - release_check
+      - package_check
+      - dependencies
+      - static_analysis
+      - secrets
+      - image_scan
+      - quick
     if: github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:

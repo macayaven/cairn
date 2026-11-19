@@ -1,0 +1,7 @@
+# Vulnerabilities that job `image_scan` of .github/workflows/ci-cd.yml lets pass, passed to
+# Trivy with --ignorefile. Prefer moving the base image over an entry here. Each entry:
+#
+#   - id: CVE-2026-00000
+#     statement: Why it does not reach cairn, in one sentence.
+#     expired_at: 2026-12-31   # after it Trivy reports it again, and a test fails
+vulnerabilities: []

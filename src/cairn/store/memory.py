@@ -1408,7 +1408,7 @@ def _front_matter_title(spans: Sequence[Span]) -> str | None:
         return None
     yaml_text = "\n".join(spans[0].text.splitlines()[1:-1])  # between the "---" fences
     try:
-        meta = yaml.load(yaml_text, Loader=yaml.BaseLoader)  # strings only; builds no objects
+        meta = yaml.load(yaml_text, Loader=yaml.BaseLoader)  # nosec B506 # BaseLoader: strings only
     except yaml.YAMLError:
         return None
     title = meta.get("title") if isinstance(meta, dict) else None

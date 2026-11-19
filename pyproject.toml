@@ -46,3 +46,12 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.bandit]
+# Job `static_analysis` of .github/workflows/ci-cd.yml runs Bandit over src/ with this file.
+# B608 (SQL built from strings) is off: it flags every SQL text cairn puts together, 107
+# places at the time it was switched off, and in each the pieces put in are cairn's own (table
+# and column names, its per-account index names, `?` placeholder lists, clauses written in
+# the code), while every value goes to SQLite as one of the statement's parameters. Every
+# other rule stands; a line where one is wrong says so with `# nosec <rule> # <reason>`.
+skips = ["B608"]

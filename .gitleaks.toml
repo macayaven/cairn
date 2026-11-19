@@ -1,0 +1,44 @@
+# gitleaks' configuration for job `secrets` of .github/workflows/ci-cd.yml, which scans the
+# whole history it checks out, redacted, and fails on a match. The default rules all apply.
+# Each allowlist below lets one rule pass in named files only, for credentials made up for a
+# test or quoted from a vendor's documentation, never for a real one. A new match anywhere
+# else fails the job: the fix is to remove the secret (and rotate it), or, for a made-up one,
+# an entry here with its reason. tests/unit/test_ci_scans_unit.py checks that every allowlist
+# names its rules, its exact files and a description.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Made-up keys and tokens the tests feed to the code that must hide or refuse them"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^tests/acceptance/test_c3_granola\.py$''',
+  '''^tests/acceptance/test_t4_llm_compile\.py$''',
+  '''^tests/unit/test_caddy_log_unit\.py$''',
+  '''^tests/unit/test_guard_unit\.py$''',
+  '''^tests/unit/test_portable_unit\.py$''',
+  '''^tests/unit/test_slack_repr_unit\.py$''',
+  '''^tests/unit/test_source_items_unit\.py$''',
+  '''^tests/unit/test_source_url_unit\.py$''',
+]
+
+[[allowlists]]
+description = "The opening line of a private key block, which the guard's tests must recognise"
+targetRules = ["private-key"]
+paths = ['''^tests/unit/test_guard_unit\.py$''']
+
+[[allowlists]]
+description = "Example token responses quoted from Google's public OAuth documentation"
+targetRules = ["generic-api-key"]
+paths = ['''^docs/google-auth\.md$''', '''^docs/google-oauth-installed\.md$''']
+
+[[allowlists]]
+description = "A vendor's documented curl example, with a placeholder for the key"
+targetRules = ["curl-auth-header"]
+paths = ['''^docs/granola-api\.md$''']
+
+[[allowlists]]
+description = "A vendor's documented curl example, with placeholders for the key pair"
+targetRules = ["curl-auth-user"]
+paths = ['''^docs/langfuse-api\.md$''']

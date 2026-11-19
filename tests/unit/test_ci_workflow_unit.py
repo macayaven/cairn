@@ -28,6 +28,10 @@ DEPLOY = JOBS["deploy"]
 TF_VARIABLES = (REPO / "infra" / "gcp" / "variables.tf").read_text(encoding="utf-8")
 
 
+# The four scans and the quick deploy's checks: jobs of the gate that `publish` needs.
+SCANS_AND_QUICK = ("dependencies", "static_analysis", "secrets", "image_scan", "quick")
+
+
 def needs(job: dict) -> set[str]:
     value = job.get("needs", [])
     return {value} if isinstance(value, str) else set(value)
@@ -68,6 +72,7 @@ def test_publish_waits_for_the_infrastructure_check_and_the_image_stack_and_host
         "host",
         "release_check",
         "package_check",
+        *SCANS_AND_QUICK,
     }
 
 
@@ -419,7 +424,7 @@ def test_every_job_of_the_gate_is_an_ancestor_of_publish():
     assert gate_jobs_missing_from_publish(added) == {"docs_check"}
     # So are `infra` and `package_check` dropped from publish's needs.
     dropped = {**JOBS, "publish": {**JOBS["publish"], "needs": ["image", "stack", "host"]}}
-    assert gate_jobs_missing_from_publish(dropped) == {"infra", "package_check"}
+    assert gate_jobs_missing_from_publish(dropped) == {"infra", "package_check", *SCANS_AND_QUICK}
 
 
 def test_deploy_runs_on_a_push_to_main_in_the_production_environment():
@@ -541,7 +546,10 @@ def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_n
     checkout, decide = changes["steps"]
     assert checkout["with"] == {"persist-credentials": False, "fetch-depth": 0}
     assert decide["run"] == "python3 scripts/ci_changes.py"
-    assert changes["outputs"] == {"image": "${{ steps." + decide["id"] + ".outputs.image }}"}
+    assert changes["outputs"] == {
+        "image": "${{ steps." + decide["id"] + ".outputs.image }}",
+        "quick": "${{ steps." + decide["id"] + ".outputs.quick }}",
+    }
     # The job's token for the API; the rest the script reads from GitHub's own variables.
     assert decide["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
     assert set(decide) == {"name", "id", "env", "run"}
@@ -559,6 +567,7 @@ def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
         "host",
         "release_check",
         "package_check",
+        *SCANS_AND_QUICK,
     }
     assert JOBS["publish"]["if"] == "github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'"
     assert needs(JOBS["verify"]) == {"publish"}
@@ -724,7 +733,7 @@ def not_a_pull_request(event_name: str, ref: str) -> dict:
 
 # Job `changes` runs on every event, like the two cheap jobs, and takes a few seconds.
 # So does `package_check`, the rehearsal of the build a tag runs.
-CHEAP = {"test", "infra", "changes", "package_check"}
+CHEAP = {"test", "infra", "changes", "package_check", *SCANS_AND_QUICK}
 THE_GATE = CHEAP | {"image", "stack", "host"}
 EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "deploy"}
 # A v* tag runs the gate, checks the tag against the version, publishes, smoke-tests what it
@@ -1015,7 +1024,7 @@ def test_opentofu_is_set_up_without_its_wrapper():
         for step in job["steps"]
         if step.get("uses", "").startswith("opentofu/setup-opentofu@")
     ]
-    assert len(setups) == 2
+    assert len(setups) == 3  # infra, host and quick
     for step in setups:
         assert step["with"]["tofu_wrapper"] is False
     assert "steps.tofu" not in (REPO / ".github" / "workflows" / "ci-cd.yml").read_text()

@@ -8,12 +8,17 @@ value in a way that would print it when it fails: each comparison is made into a
 
 import base64
 import json
+import sqlite3
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 import uvicorn
 
 from cairn import server
-from cairn.store.hosted import Sealer, associated
+from cairn.store import Store
+from cairn.store.hosted import GoogleCustody, Sealer, associated
+from cairn.store.reseal import Resealed, reseal_google, reseal_slack
 from cairn.web import google_connect
 from cairn.web import slack as web_slack
 
@@ -188,3 +193,133 @@ def test_serve_stops_at_start_on_a_malformed_or_repeated_earlier_key(
     leaked = any(part.strip() and part.strip() in shown for part in value.split(","))
     leaked = leaked or any(b64(k) in shown or k.hex() in shown for k in (CURRENT, EARLIER))
     assert leaked is False
+
+
+# The stored values under a changed key, and re-sealing them
+
+ISSUER = "https://sso.example.test"
+NOW = datetime(2099, 11, 17, 9, tzinfo=UTC)
+GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+SIGNING = "slack-signing-" + "0e" * 8
+BOT = "xoxb-" + "rotation-" + "0123456789"
+
+
+def dump(db) -> str:
+    con = sqlite3.connect(db)
+    try:
+        return "\n".join(con.iterdump())
+    finally:
+        con.close()
+
+
+def under(store: Store, key: bytes, *previous: bytes) -> None:
+    """The keys this process holds from now on, as a restart with them would give."""
+    store.google_custody = GoogleCustody(
+        Sealer(key, previous), client_id="rotation-client.apps.example.test",
+        client_secret=CLIENT_SECRET,
+    )  # fmt: skip
+    store.slack_sealer = Sealer(key, previous)
+
+
+@pytest.fixture
+def world(tmp_path):
+    db = tmp_path / "cairn.db"
+    store = Store(db, clock=lambda: NOW)
+    under(store, EARLIER)
+    ada = store.sign_in("sso", "sub-ada", "ada@example.test", "Ada", issuer=ISSUER, join="personal")
+    w = SimpleNamespace(store=store, db=db, account=ada.account_id, ada=ada.user.id)
+    w.view = lambda: store.for_account(w.account, w.ada)  # a view copies the keys held now
+    yield w
+    store.close()
+
+
+def connect(w, address: str, token: str = TOKEN) -> str:
+    subject = "1000" + str(sum(map(ord, address)))
+    return w.view().connect_google("gmail", address, [GMAIL_SCOPE], token, subject=subject).name
+
+
+def slack_ready(w) -> str:
+    view = w.view()
+    made = view.make_slack_install()
+    view.ready_slack_install(
+        made.id, signing_secret=SIGNING, bot_token=BOT, team_id="T0FABLE01",
+        team_domain="fable", bot_user_id="U0BOT0001",
+    )  # fmt: skip
+    return made.id
+
+
+def google_opens(w) -> dict[str, bool]:
+    view = w.view()
+    found = {}
+    for account in view.google_accounts():
+        try:
+            found[account.name] = view.google_token(account.name) == TOKEN
+        except Exception:  # TokenUnusable: it does not open
+            found[account.name] = False
+    for revocation, _subject, token in w.store.pending_google_revocations():
+        found[revocation] = token == TOKEN
+    return found
+
+
+def test_a_connected_account_and_a_slack_install_sealed_under_an_earlier_key_still_work(world):
+    name = connect(world, "ada.mail@example.test")
+    install = slack_ready(world)
+    under(world.store, CURRENT, EARLIER)
+    assert google_opens(world) == {name: True}
+    secret = world.store.slack_inbound(install).signing_secret
+    assert (secret == SIGNING) is True
+    assert (world.view().slack_bot_token(install) == BOT) is True
+    under(world.store, CURRENT)  # without the earlier key, as before: nothing opens
+    assert google_opens(world) == {name: False}
+    assert world.store.slack_inbound(install).signing_secret is None
+
+
+def test_reseal_seals_every_stored_value_under_the_current_key_and_counts_what_it_could_not_open(
+    world,
+):
+    kept = connect(world, "ada.mail@example.test")
+    dropped = connect(world, "ada.old@example.test")
+    gone = world.view().disconnect_google(dropped)  # its token waits, sealed, to be revoked
+    world.store.release_google_revocation(gone.pending, gone.claim)  # its send did not settle
+    install = slack_ready(world)
+    under(world.store, STRANGER)  # a key no one gives again: what it sealed stays shut
+    lost = connect(world, "ada.lost@example.test")
+    under(world.store, CURRENT, EARLIER)
+    fresh = connect(world, "ada.new@example.test")
+    shut = "SELECT sealed FROM credential_tokens WHERE credential = ?"
+    before = sqlite3.connect(world.db).execute(shut, (lost,)).fetchone()
+    google = reseal_google(world.store, world.store.google_custody.sealer)
+    slack = reseal_slack(world.store, world.store.slack_sealer)
+    assert google == Resealed(resealed=2, unopened=1, current=1)
+    assert slack == Resealed(resealed=2, unopened=0, current=0)
+    after = sqlite3.connect(world.db).execute(shut, (lost,)).fetchone()
+    assert (after == before) is True  # what did not open is left as it was
+    under(world.store, CURRENT)  # the earlier key removed
+    opens = google_opens(world)
+    assert opens.pop(lost) is False and set(opens.values()) == {True}
+    assert {kept, fresh} <= set(opens) and len(opens) == 3  # the waiting token too
+    assert (world.store.slack_inbound(install).signing_secret == SIGNING) is True
+    assert (world.view().slack_bot_token(install) == BOT) is True
+
+
+def test_reseal_is_safe_to_run_twice_and_with_no_earlier_key_changes_nothing(world):
+    connect(world, "ada.mail@example.test")
+    slack_ready(world)
+    under(world.store, CURRENT, EARLIER)
+    reseal_google(world.store, world.store.google_custody.sealer)
+    reseal_slack(world.store, world.store.slack_sealer)
+    before = dump(world.db)
+    again = (
+        reseal_google(world.store, world.store.google_custody.sealer),
+        reseal_slack(world.store, world.store.slack_sealer),
+    )
+    assert again == (Resealed(0, 0, 1), Resealed(0, 0, 2))
+    assert (dump(world.db) == before) is True
+    under(world.store, CURRENT)
+    assert reseal_google(world.store, world.store.google_custody.sealer) == Resealed(0, 0, 1)
+    assert (dump(world.db) == before) is True
+
+
+def test_a_pending_slack_install_holds_no_secret_and_is_not_counted(world):
+    world.view().make_slack_install()
+    assert reseal_slack(world.store, Sealer(CURRENT, (EARLIER,))) == Resealed(0, 0, 0)

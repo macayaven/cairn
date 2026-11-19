@@ -11,8 +11,10 @@ Each row also holds `chain`, the value that chains it to the event before it in 
 (base.audit_link; schema step 31). `check_trail` reads a database's trail and says, for each
 workspace, how many events it checked and whether every value follows from the one before,
 or the first event whose value does not (its number and time only). What the chain does not
-show: someone who can write the database file can rewrite the whole chain (the copy on the
-"cairn.audit" logger is for that), and `project` and `detail` are outside it, since
+show: someone who can write the database file can rewrite the whole chain (the copy `serve`
+writes on the "cairn.audit" logger is for that; it is written after each commit, so an event
+committed just before the process dies, or stored by a command-line command, which installs
+no handler, is not on it), and `project` and `detail` are outside it, since
 forgetting a note must be able to take a page's name out of them.
 """
 

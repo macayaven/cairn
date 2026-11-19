@@ -591,7 +591,9 @@ class StoreBase:
         deleted in the same transaction, a batch at a time (both lookups use the number's
         index). A batch is AUDIT_PRUNE_BATCH, or half of what is kept when that is less, so a
         prune never leaves fewer than half. The event, as its row holds it, is also one JSON
-        line on the "cairn.audit" logger once the transaction commits (_write).
+        line on the "cairn.audit" logger once the transaction commits (_write): after the
+        commit, so a process that dies in between stores the event and logs no line, and only
+        a process with a handler on that logger (serve's) writes the line anywhere.
 
         The one writer of audit events, so every event is chained (audit_link): the read that
         finds the workspace's numbers also takes its last event's value and the newest

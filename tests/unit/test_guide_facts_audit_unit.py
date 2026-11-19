@@ -97,12 +97,15 @@ def test_security_reads_are_events_when_the_operator_says(store):
 
 
 SECURITY_COPY = (
-    "Each event the running server stores is also one line on its output: a JSON object with"
-    " the same fields as the stored event, on a logger of its own, and never a note's text."
-    " Keeping those lines where nobody can change them, such as a bucket locked against"
-    " deletion, is the operator's set-up: the log in the database is rewritten when a note is"
-    " forgotten or a project deleted, which takes out the page names made from notes, and loses"
-    " its oldest events past the number kept."
+    "The running server writes each event it stores as one line on its output, once the"
+    " event's write has committed: a JSON object with the same fields as the stored event, on"
+    " a logger of its own, and never a note's text. The copy can miss an event: one committed"
+    " just before the server's process dies, and one a command of the command line writes,"
+    " such as `key-create` or `import`, which writes no such line. Keeping those lines where"
+    " nobody can change them, such as a bucket locked against deletion, is the operator's"
+    " set-up, and such a place keeps what it received: the log in the database is rewritten"
+    " when a note is forgotten or a project deleted, which takes out the page names made from"
+    " notes, and loses its oldest events past the number kept."
 )
 
 
@@ -130,7 +133,9 @@ PRIVACY_NOT_KEPT = (
     " audit log, as above, without the words searched."
 )
 PRIVACY_LINES = (
-    "Each audit event is also one line there, written as it is stored. Those lines are not"
+    "Each audit event the server stores is also one line there, written once it is stored; an"
+    " event a command of the command line stores, or one stored just before the server's"
+    " process dies, has none. Those lines are not"
     " rewritten when a note is forgotten or a project deleted, and the oldest are not deleted"
     " with the database's: they keep the names of pages made from a note's title for as long as"
     " the operator keeps them."
@@ -172,8 +177,10 @@ def test_the_guides_name_no_product_in_these_sentences():
 
 RUN_OPTIONS = (
     "`serve --audit-reads` records reads in the audit log; `--audit-keep N` or `all` sets how"
-    " many events each workspace keeps; each stored event is one JSON line on the `cairn.audit`"
-    " logger."
+    " many events each workspace keeps; `serve` writes each event it stores as one JSON line on"
+    " the `cairn.audit` logger, once the event's write has committed. That copy can miss an"
+    " event: one committed just before the server's process dies, and one a command of the"
+    " command line writes, such as `key-create` or `import`, which writes no such line."
 )
 
 

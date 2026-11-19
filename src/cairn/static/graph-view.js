@@ -3,14 +3,21 @@
    it makes no request, writes no markup and no inline style, and runs no text as code.
    Without it the page works as it is sent. Nothing moves by itself: every change is drawn
    at once, in answer to the person, so there is no motion for a reduced-motion setting to
-   stop. */
+   stop.
+
+   Labels. Each label is cut to 190 px by its own frame in the markup, and every node's
+   full title is a link in the "Graph content" list below the drawing, which the Tab key
+   reaches. After every draw the labels are placed in turn: the focus's first, then the
+   others nearest the viewer first (in 2D, in the order of the markup). A label whose box
+   would cross one already placed is hidden; the next draw where it crosses none shows it
+   again. Only labels are hidden: every mark, line and link stays. */
 (() => {
   for (const root of document.querySelectorAll('[data-graph-interactive]')) {
     const svg = root.querySelector('svg');
     const viewport = svg && svg.parentElement;
     let box = svg && svg.viewBox.baseVal;
     const nodes = [...root.querySelectorAll('g[data-graph-node]')].map(element => ({
-      element, id: element.dataset.graphNode,
+      element, id: element.dataset.graphNode, label: element.querySelector(':scope > svg'),
       x: Number(element.dataset.x), y: Number(element.dataset.y), z: Number(element.dataset.z),
     }));
     if (!svg || !box || !box.width || !box.height || !nodes.length ||
@@ -60,6 +67,7 @@
     const draw = () => {
       for (const n of nodes) {
         let x = n.x, y = n.y, z = n.z;
+        n.depth = 0; // 2D: no node is nearer than another
         if (mode === '3d') {
           const rx = x * Math.cos(yaw) + z * Math.sin(yaw);
           const rz = -x * Math.sin(yaw) + z * Math.cos(yaw);
@@ -67,6 +75,7 @@
           z = y * Math.sin(pitch) + rz * Math.cos(pitch);
           const perspective = 1 / Math.max(0.25, 1 + z * scale / (Math.min(box.width, box.height) * 3));
           x = rx * perspective; y = ry * perspective;
+          n.depth = z; // a larger z is farther from the viewer
         }
         n.px = box.x + box.width / 2 - 95 + panX + x * scale;
         n.py = box.y + box.height / 2 + panY + y * scale;
@@ -75,6 +84,27 @@
       for (const {element, source, target} of edges) {
         element.setAttribute('x1', source.px); element.setAttribute('y1', source.py);
         element.setAttribute('x2', target.px); element.setAttribute('y2', target.py);
+      }
+      placeLabels();
+    };
+    // A label's box, as the markup places its frame: 9 right of the mark and 8 above it,
+    // 22 high, as wide as its text up to the frame's 190.
+    const labelBox = n => {
+      if (n.labelWidth === undefined) {
+        const text = n.label && n.label.querySelector('text');
+        n.labelWidth = text ? Math.min(190, text.getComputedTextLength()) : 0;
+      }
+      return {left: n.px + 9, top: n.py - 8, right: n.px + 9 + n.labelWidth, bottom: n.py + 14};
+    };
+    const crosses = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const placeLabels = () => {
+      const order = [focus, ...others.slice().sort((a, b) => a.depth - b.depth)];
+      const placed = [];
+      for (const n of order) {
+        if (!n.label) continue;
+        const own = labelBox(n);
+        if (placed.some(other => crosses(own, other))) n.label.setAttribute('data-graph-label-hidden', '');
+        else { n.label.removeAttribute('data-graph-label-hidden'); placed.push(own); }
       }
     };
     const zoom = factor => { scale = Math.max(0.01, Math.min(20, scale * factor)); draw(); };

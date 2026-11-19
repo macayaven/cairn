@@ -236,3 +236,18 @@ def test_the_readme_points_at_the_quick_deploy_for_both_clouds():
     for cloud in ("aws", "gcp"):
         assert (ROOT / "infra" / "quick" / cloud / "main.tf").is_file()
     assert "applied to a real account" in " ".join(guide.split())
+
+
+def test_slack_is_called_through_the_checked_client_and_the_guide_says_so():
+    """security.md: "The server's calls to Slack go through the same check." The app gives
+    Slack's client, its keeper and its replies the client the sources use unless a test hands
+    it another."""
+    says(
+        "security",
+        "## What cairn leaves to the operator",
+        "The server's calls to Slack go through the same check.",
+    )
+    app = (ROOT / "src" / "cairn" / "web" / "app.py").read_text(encoding="utf-8")
+    assert "OneClient(slack.http or source_http)" in app
+    assert app.count("http=slack.http or source_http") >= 3
+    assert "source_http: Callable[[], httpx.AsyncClient] = source_client" in app

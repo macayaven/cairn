@@ -64,7 +64,7 @@ def few(tmp_path):
 
 
 def main_of(html: str) -> str:
-    return html.split('<main id="main">', 1)[1].split("</main>", 1)[0]
+    return html.split('<main id="main" tabindex="-1">', 1)[1].split("</main>", 1)[0]
 
 
 def ticked(html: str) -> set[str]:

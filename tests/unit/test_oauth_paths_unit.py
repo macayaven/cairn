@@ -110,7 +110,7 @@ def test_a_consent_page_for_an_account_that_is_gone_shows_no_form(world, monkeyp
     monkeypatch.setattr(cairn.store.Store, "get_account", lambda self, account_id: None)
     page = browser.get(url)
     assert page.status_code == 400 and "location" not in page.headers
-    assert "<form" not in page.text.split('<main id="main">')[1] and "decision" not in page.text
+    assert "<form" not in page.text.split("<main ")[1] and "decision" not in page.text
     assert "not valid any more" in page.text
     assert world.count("oauth_codes") == 0
 

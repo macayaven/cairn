@@ -809,9 +809,7 @@ def test_a_tampered_or_missing_consent_request_shows_no_form(world):
     ):
         page = browser.get(bad)
         assert page.status_code == 400, bad
-        assert (
-            "decision" not in page.text and "<form" not in page.text.split('<main id="main">')[1]
-        ), bad
+        assert "decision" not in page.text and "<form" not in page.text.split("<main ")[1], bad
     assert browser.get(url).status_code == 200  # the untouched one still opens
 
 

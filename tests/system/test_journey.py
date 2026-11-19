@@ -2875,6 +2875,9 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
         "CAIRN_OIDC_LABEL": "Fable Works SSO",
         "CAIRN_SLACK_KEY": SLACK_KEY,
         "JOURNEY_SLACK_API": standin.api_base,
+        # Slack is called through the client the sources use, whose addresses are checked; the
+        # stand-in is on loopback, which an operator has to allow.
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
     }
     options = ("--sign-in", "oidc", "--join", "personal", "--public-url", PUBLIC, "--slack")
     server = Server(tmp_path / "cairn.db", *options, env=env)

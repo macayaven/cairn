@@ -28,7 +28,7 @@
 {% else %}
 <p>Every earlier version of {{ "that page" if (rebuilt|length + removed|length) == 1 else "those pages" }} goes too, since {{ "it" if (rebuilt|length + removed|length) == 1 else "they" }} held the note's text.</p>
 {% endif %}
-<p>The same text will not be stored in this project again, whoever sends it. What forgetting removes is overwritten in the database file at once.</p>
+<p>The same text will not be stored in this project again, whoever sends it. What forgetting removes is overwritten in the database file. Where this install keeps a continuous backup, the old text can stay in the database's log file until the operator compacts it, and in backup copies until they expire.</p>
 <section class="sheet" aria-label="Forget the note">
 <p><strong>This cannot be undone.</strong></p>
 <form method="post" action="/b/{{ project.name|seg }}/notes/{{ note.id|seg }}/forget" class="row">

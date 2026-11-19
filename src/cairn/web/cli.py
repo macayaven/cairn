@@ -174,12 +174,15 @@ arranges with no model: each heading's claims together and claims that repeat fo
 no key and no budget. `serve` tidies by default (decision 76): `serve --no-tidy` runs no
 worker and loads no arranging code, and `serve --model-env` runs the model in its place.
 
-A database a newer cairn wrote (its schema version above cairn.store.SCHEMA_VERSION; the
-store raises SchemaTooNew before it reads or writes anything) stops every command with exit
-1 and one line on stderr (NEWER_DATABASE), nothing on stdout: "SchemaTooNew: the database
-has schema version <found>; this cairn knows up to <known>. Run the cairn that wrote it or a
-newer one, or restore the database from before the upgrade." The file is left as it was,
-nothing is made beside it (no key file, no export) and `serve` never starts listening.
+A database a newer cairn wrote that this one may not run on (its schema version above
+cairn.store.SCHEMA_VERSION, and the oldest build it records too; the store raises
+SchemaTooNew before it reads or writes anything) stops every command with exit 1 and one line
+on stderr (NEWER_DATABASE), nothing on stdout: "SchemaTooNew: the database has schema version
+<found> and needs a cairn of schema version <floor> or later; this cairn knows up to <known>.
+Run the cairn that wrote it or a newer one, or restore the database from before the
+upgrade." The file is left as it was, nothing is made beside it (no key file, no export) and
+`serve` never starts listening. A newer database whose oldest build is at or below
+SCHEMA_VERSION (its newer steps only added) is opened and used as any other.
 
 A database at this cairn's schema version that lacks a table of that schema (the store
 raises UnknownSchema before it writes anything) stops every command the same way, with the
@@ -258,7 +261,15 @@ from cairn.sources.runner import (
 from cairn.store import JOINS, CannotOpen, SchemaTooNew, SourceInfo, Store, UnknownSchema
 from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
-from cairn.web import cli_arrange, cli_data, cli_google, cli_reseal, cli_stats, google_connect
+from cairn.web import (
+    cli_arrange,
+    cli_audit_verify,
+    cli_data,
+    cli_google,
+    cli_reseal,
+    cli_stats,
+    google_connect,
+)
 from cairn.web import slack as web_slack
 from cairn.web.app import create_app
 from cairn.web.auth import SESSION_TTL
@@ -558,6 +569,7 @@ def _parser() -> argparse.ArgumentParser:
     _plan_parsers(commands)
     _waiting_parser(commands)
     cli_stats.add_command(commands)  # Q1
+    cli_audit_verify.add_command(commands)  # reads only, as stats
     cli_arrange.add_commands(commands)
     cli_google.add_command(commands)
     cli_reseal.add_command(commands)
@@ -2078,6 +2090,8 @@ def _run(args: argparse.Namespace) -> int:
         return _waiting(args.db, args.workspace, args.json)
     if args.command == cli_stats.COMMAND:  # Q1: reads only
         return cli_stats.run(args)
+    if args.command == cli_audit_verify.COMMAND:  # reads only, as stats
+        return cli_audit_verify.run(args)
     if args.command == "key-revoke":
         return _key_revoke(args.db, args.label, args.with_made)
     if args.command == "session-end":

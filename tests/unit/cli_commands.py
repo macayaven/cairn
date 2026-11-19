@@ -40,11 +40,12 @@ ARGS: dict[str, list[str]] = {
     "arrange": ["--account", DEFAULT_ACCOUNT_ID, "--tidy"],
     "waiting": [],  # N1
     "stats": [],  # Q1: it only reads
+    "audit-verify": [],  # it only reads, as stats
     "reseal": ["--slack"],  # the keys are read once the database is open
 }
 # The commands that only read their database (Q1): each reads one on a volume it may not
 # write, where SQLite lets it, instead of refusing as the commands that write must.
-READS_ONLY = ("stats",)
+READS_ONLY = ("stats", "audit-verify")
 # The commands that open no database and take no --db, each with why.
 NO_DATABASE: dict[str, str] = {
     "google-authorize": "obtains a Google credential into a file; it reads and writes no store",

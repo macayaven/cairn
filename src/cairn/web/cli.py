@@ -585,6 +585,13 @@ def _wall_options(serve: argparse.ArgumentParser) -> None:
         " name when not given)",
     )
     serve.add_argument(
+        "--require-mfa",
+        action="store_true",
+        help="with --sign-in through oidc only: a sign-in is refused unless the provider's ID"
+        " token shows a second factor (amr holding mfa, or a multi-factor acr); github and"
+        " google do not say, so serve refuses to start with them",
+    )
+    serve.add_argument(
         "--session-days",
         type=_days,
         metavar="N",
@@ -613,6 +620,7 @@ def _would_do_nothing(args: argparse.Namespace) -> str | None:
             ("--test-instance", args.test_instance),
             ("--brand-name", args.brand_name is not None),
             ("--session-days", args.session_days is not None),
+            ("--require-mfa", args.require_mfa),
         ):
             if given:
                 return f"{option} needs --sign-in: without it nobody signs in through a provider"
@@ -1590,6 +1598,7 @@ def _sign_in(args: argparse.Namespace, environ: Mapping[str, str]) -> SignIn | N
         join=args.join,
         allowed_email_domains=args.domains,
         allowed_emails=emails,
+        require_mfa=args.require_mfa,
     )
 
 

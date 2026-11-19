@@ -133,6 +133,10 @@ _STALE = (
 )
 _OUTSIDE = "This install only admits accounts of its organisation's email domains."
 _UNLISTED = "This install admits only the people its operator has listed."
+NO_SECOND_FACTOR = (
+    "This install admits only sign-ins made with a second factor, and the provider does not"
+    " show one for this sign-in."
+)
 _REPLACED = (  # {server}: brand.server_name, which is cairn's without a brand
     "This sign-in provider has changed since this account last signed in through it, so"
     " {server} cannot tell whether it is the same person. An operator of this install must"
@@ -185,6 +189,9 @@ class SignIn:
     join: str = "personal"
     allowed_email_domains: Sequence[str] = ()
     allowed_emails: Sequence[str] = field(default=(), repr=False)
+    # `serve --require-mfa`: a sign-in is admitted only when the provider's ID token shows a
+    # second factor (Profile.second_factor); every provider must state it (check).
+    require_mfa: bool = False
 
 
 class Continuations:
@@ -273,6 +280,14 @@ def check(sign_in: SignIn, public_url: str | None) -> tuple[str, tuple[str, ...]
     if not all(domains):
         raise ValueError("an allowed email domain cannot be blank")
     emails = email_entries(sign_in.allowed_emails)
+    if sign_in.require_mfa:
+        silent = [p.name for p in sign_in.providers if not getattr(p, "states_factors", False)]
+        if silent:
+            raise ValueError(
+                f"--require-mfa cannot be checked through {', '.join(silent)}: the provider does"
+                " not say whether the person signed in with a second factor (only OpenID"
+                " Connect's ID token does, in amr or acr)"
+            )
     public = [p.name for p in sign_in.providers if p.open_to_anyone]
     if sign_in.join == "default" and public and not domains and not emails:
         raise ValueError(
@@ -491,6 +506,8 @@ def signin_routes(
             )
             if not admitted(provider, profile):
                 raise SignInRefused(403, _OUTSIDE if domains else _UNLISTED)
+            if sign_in.require_mfa and profile.second_factor is not True:
+                raise SignInRefused(403, NO_SECOND_FACTOR)
         except SignInRefused as refusal:
             return ended(login_page(pending["next"], str(refusal), refusal.status), request, part)
         try:

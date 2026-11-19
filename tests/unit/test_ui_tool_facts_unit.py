@@ -171,8 +171,8 @@ def test_a_page_filled_during_the_compile_keeps_the_note_and_adds_nothing(env, m
 
 
 def test_the_search_page_counts_only_below_the_most_it_shows(env):
-    """search.html: the page asks for at most 30 hits (web/ui.py UI_HITS), so with 30 it says
-    "The first 30 claims that match" and below that it keeps the count."""
+    """search.html: the page asks for at most 30 hits (web/ui/memory_pages.py UI_HITS), so with 30
+    it says "The first 30 claims that match" and below that it keeps the count."""
     text = "# Ledger\n\n" + "".join(f"Quill line {i} holds.\n\n" for i in range(35))
     text += "# Kite\n\nThe kite flies high.\n\nThe kite is red.\n"
     assert answer(env.client, env.key, "note", project="ops", text=text)["status"] == "saved"
@@ -487,12 +487,13 @@ def test_the_composer_keeps_the_note_when_the_gate_refuses_the_page(tmp_path):
         store.close()
 
 
-# web/ui.py: keys made and revoked in the web view
+# web/ui/workspace_pages.py: keys made and revoked in the web view
 
 
 def test_a_keys_label_has_1_to_80_printable_characters_and_an_unknown_one_is_not_revoked(env):
-    """web/ui.py: "A key's label has 1 to 80 printable characters." and "no key labelled X".
-    A refused label makes no key; revoking an unknown label is 404 and revokes nothing."""
+    """web/ui/workspace_pages.py: "A key's label has 1 to 80 printable characters." and "no
+    key labelled X". A refused label makes no key; revoking an unknown label is 404 and
+    revokes nothing."""
     env.sign_in()
     before = dump(env.db)
     for label in ("", "   ", "x" * 81, "bell\x07", "tab\there"):

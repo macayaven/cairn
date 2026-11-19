@@ -24,6 +24,7 @@ and is never printed.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -69,6 +70,34 @@ if pathlib.Path("/app/LICENSE").is_file():
 print(json.dumps({"expression": dist.metadata["License-Expression"],
                   "metadata": metadata, "plain": plain}))
 """
+
+
+def fts5_secure_delete() -> dict:
+    """Whether this Python's SQLite gives FTS5 secure-delete: cairn's own flag (the one
+    tests/unit/test_erasure_unit.py skips on) and whether an FTS5 table takes the option.
+    Runs inside the image as SECURE_DELETE_PROBE; the unit tests run it on the host too."""
+    import sqlite3
+
+    from cairn.store.schema import _FTS5_SECURE_DELETE
+
+    con = sqlite3.connect(":memory:")
+    try:
+        con.execute("CREATE VIRTUAL TABLE probe USING fts5(body)")
+        con.execute("INSERT INTO probe (probe, rank) VALUES ('secure-delete', 1)")
+        taken = True
+    except sqlite3.Error:
+        taken = False
+    finally:
+        con.close()
+    return {"sqlite": sqlite3.sqlite_version, "cairn": _FTS5_SECURE_DELETE, "fts5": taken}
+
+
+# The function's own source and one JSON line of what it returns, for `python -c`.
+SECURE_DELETE_PROBE = (
+    "import json\n"
+    + inspect.getsource(fts5_secure_delete)
+    + "print(json.dumps(fts5_secure_delete()))\n"
+)
 
 
 # Seconds a container gets to report healthy. Natively it takes a few seconds; under QEMU
@@ -363,13 +392,22 @@ class Smoke:
 
     def overwrites_what_the_index_drops(self) -> str:
         """The privacy guide says a deleted note's text is overwritten in the search index at
-        once. cairn asks FTS5 for that (secure-delete), which SQLite has from 3.42."""
-        version = docker(
-            "exec", self.names[-1], "python", "-c", "import sqlite3; print(sqlite3.sqlite_version)"
+        once. cairn asks FTS5 for that (secure-delete), which SQLite has from 3.42. The image
+        is asked with cairn's own flag, the one tests/unit/test_erasure_unit.py skips on, and
+        with an FTS5 table that must take the option."""
+        out = docker("exec", self.names[-1], "python", "-c", SECURE_DELETE_PROBE)
+        try:
+            found = json.loads(out)
+        except ValueError:
+            raise Failed(f"the secure-delete probe printed no JSON: {out[:200]!r}") from None
+        version = found.get("sqlite")
+        expect(
+            found.get("cairn") is True and found.get("fts5") is True,
+            f"The image's SQLite {version} does not give FTS5 secure-delete, so a deleted"
+            f" note's text would stay in the search index (cairn's flag: {found.get('cairn')},"
+            f" FTS5 took the option: {found.get('fts5')}).",
         )
-        numbers = tuple(int(part) for part in version.split(".")[:2])
-        expect(numbers >= (3, 42), f"the image's SQLite is {version}; secure-delete needs 3.42")
-        return f"SQLite {version} in the image: FTS5 secure-delete is there"
+        return f"SQLite {version} in the image: FTS5 takes secure-delete, as cairn's flag says"
 
     def imports_an_export_as_the_run_guide_says(self) -> str:
         """A fresh install on its own volume takes the export taken above, by the run guide's

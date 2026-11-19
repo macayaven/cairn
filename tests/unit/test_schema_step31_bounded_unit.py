@@ -20,30 +20,43 @@ from cairn.store.audit import check_trail
 BOUND = 1
 
 
-class Counted:
-    """A cursor that notes how many rows each fetch hands over at once."""
+class Held:
+    """How many rows have been read from a cursor and not yet handed to an insert, at most:
+    a list made from the cursor holds them all, a stream one."""
 
-    def __init__(self, cursor: sqlite3.Cursor, seen: list[int]) -> None:
-        self._cursor, self._seen = cursor, seen
+    def __init__(self) -> None:
+        self.read = self.written = 0
+        self.peak = 0
+
+    def note(self, read: int) -> None:
+        self.read += read
+        self.peak = max(self.peak, self.read - self.written)
+
+
+class Counted:
+    """A cursor that counts the rows each fetch hands over."""
+
+    def __init__(self, cursor: sqlite3.Cursor, held: Held) -> None:
+        self._cursor, self._held = cursor, held
 
     def fetchall(self) -> list[Any]:
         rows = self._cursor.fetchall()
-        self._seen.append(len(rows))
+        self._held.note(len(rows))
         return rows
 
     def fetchmany(self, size: int = 1) -> list[Any]:
         rows = self._cursor.fetchmany(size)
-        self._seen.append(len(rows))
+        self._held.note(len(rows))
         return rows
 
     def fetchone(self) -> Any:
         row = self._cursor.fetchone()
-        self._seen.append(row is not None)
+        self._held.note(row is not None)
         return row
 
     def __iter__(self):
         for row in self._cursor:
-            self._seen.append(1)
+            self._held.note(1)
             yield row
 
     def __getattr__(self, name: str) -> Any:
@@ -51,12 +64,22 @@ class Counted:
 
 
 class Counting(sqlite3.Connection):
+    """Reads through Counted; each row executemany takes is one no longer held."""
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.seen: list[int] = []
+        self.held = Held()
 
     def execute(self, sql: str, parameters: Any = (), /) -> Any:
-        return Counted(super().execute(sql, parameters), self.seen)
+        return Counted(super().execute(sql, parameters), self.held)
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        def taken():
+            for row in parameters:
+                self.held.written += 1
+                yield row
+
+        return super().executemany(sql, taken())
 
 
 def with_events(db: Path, count: int) -> None:
@@ -75,14 +98,14 @@ def with_events(db: Path, count: int) -> None:
         con.commit()
 
 
-def step_31(db: Path) -> list[int]:
+def step_31(db: Path) -> int:
     con = sqlite3.connect(db, factory=Counting, isolation_level=None)
     try:
         con.execute("BEGIN")
         schema._MIGRATIONS[31](con)
         con.execute("PRAGMA user_version = 31")
         con.execute("COMMIT")
-        return con.seen
+        return con.held.peak
     finally:
         con.close()
 
@@ -91,8 +114,8 @@ def step_31(db: Path) -> list[int]:
 def test_step_31_holds_a_bounded_number_of_events_at_once(tmp_path, count):
     db = tmp_path / "cairn.db"
     with_events(db, count)
-    seen = step_31(db)
-    assert max(seen) <= BOUND, max(seen)
+    peak = step_31(db)
+    assert peak <= BOUND, peak
     with connect(db) as con:
         (found,) = check_trail(con, DEFAULT_ACCOUNT_ID)
     assert found.checked == count and found.broken is None

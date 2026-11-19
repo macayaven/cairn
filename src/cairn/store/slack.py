@@ -23,11 +23,14 @@ The install
   belongs to its team: secrets of another team are NotItsTeam, and nothing changes (connecting
   another team takes removing the install first). Made ready with the team it had when it was
   removed, that team's notes are no longer due to be forgotten (D10), and only that team's:
-  each row of slack_notes holds the team its install held when the row was made. With another
-  team, the old team's notes stay due, and are forgotten on their day whatever happens to the
-  install afterwards, and the old team's links go. One Slack team has one install: the unique
-  index slack_installs_team counts the installs that are ready, on or off (a pending or removed
-  one holds no team), so making ready a team another workspace holds is TeamHeld, whatever races;
+  each row of slack_notes holds the team its install held when the row was made. Only the
+  first time it is made ready after a removal (`removed_at` is cleared then), and only for the
+  notes that removal made due: with another team set up in between, the old team's notes stay
+  due and are forgotten on their day whatever happens to the install afterwards, a later
+  paste of either team's secrets included, and the old team's links go. One Slack team has one
+  install: the unique index slack_installs_team counts the installs that are ready, on or off (a
+  pending or removed one holds no team), so making ready a team another workspace holds is
+  TeamHeld, whatever races;
   `slack_team_held` counts the same states. A new bot token clears `bot_gone_at` and the count
   of ended answers.
 - `switch_slack_install(on=)`: an owner or admin. Off from ready or on; on from ready or off
@@ -464,12 +467,13 @@ class SlackMethods(StoreBase):
                 )  # fmt: skip
             except sqlite3.IntegrityError:  # slack_installs_team: another workspace's team
                 raise TeamHeld() from None
-            if was_team == team_id:  # the same Slack team again: its own notes are not due
-                con.execute(
-                    "UPDATE slack_notes SET forget_at = NULL WHERE install_id = ? AND team_id = ?",
-                    (install_id, team_id),
+            if row[10] is not None:  # first made ready since its latest removal (D10)
+                con.execute(  # that removal's notes of this same team are not due any more
+                    "UPDATE slack_notes SET forget_at = NULL WHERE install_id = ? AND team_id = ?"
+                    " AND forget_at = ?",
+                    (install_id, team_id, _iso(_when(row[10]) + FORGET_AFTER)),
                 )
-            elif was_team is not None:  # another team: the old team's people are not its
+            if was_team is not None and was_team != team_id:  # the old team's people are not its
                 con.execute("DELETE FROM slack_people WHERE install_id = ?", (install_id,))
             self._slack_audit(con, "slack.install_ready", install_id, team=team_id)
             return _install(self._slack_row(con, install_id))

@@ -169,3 +169,30 @@ def test_a_filed_note_and_its_record_cost_the_statements_pinned(bench):
 
 
 WRITE_STATEMENTS = 108
+
+
+# 9. The store's `within` is general: nothing of Slack
+
+
+def test_add_note_runs_within_inside_its_write_and_a_raise_keeps_nothing(bench):
+    seen = []
+
+    def within(con, note, created):
+        seen.append((con.in_transaction, note.id, created))
+
+    note, created = bench.owner.add_note(bench.library.id, "Row 7 holds figs.", within=within)
+    held, again = bench.owner.add_note(bench.library.id, "Row 7 holds figs.", within=within)
+    assert created and not again and held.id == note.id
+    assert seen == [(True, note.id, True), (True, note.id, False)]
+
+    def fails(con, note, created):
+        raise RuntimeError("the caller's own fault")
+
+    with pytest.raises(RuntimeError):
+        bench.owner.add_note(bench.library.id, "Row 8 holds plums.", within=fails)
+    texts = [text for _, _, text, _ in bench.notes()]
+    assert texts == ["Row 7 holds figs."]
+    waiting = bench.store._con.execute("SELECT COUNT(*) FROM waiting").fetchone()
+    assert waiting == (1,)  # only the first note's
+    other, made = bench.owner.add_note(bench.library.id, "Row 9 holds dates.")  # omitted
+    assert made and other.text == "Row 9 holds dates."

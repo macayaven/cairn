@@ -3,6 +3,8 @@ of another team are refused and change nothing; every note row says which team i
 and setting an install up again cancels the forgetting of that team's notes alone. Every name,
 id and secret here is made up."""
 
+from datetime import timedelta
+
 import pytest
 from test_slack_store_unit import (  # noqa: F401
     OTHER_TEAM,
@@ -143,10 +145,15 @@ def test_the_first_team_set_up_again_later_does_not_cancel_its_old_notes(world):
     world.view.remove_slack_install(install.id)
     world.view.make_slack_install()
     paste(world, install)
+    world.clock.now += timedelta(days=1)
     world.view.remove_slack_install(install.id)
     world.view.make_slack_install()
     ready(world)  # team A again
     assert rows(world.db, "SELECT note_id FROM slack_notes WHERE forget_at IS NOT NULL") == [(a,)]
+    ready(world)  # and A's secrets pasted again
+    assert rows(world.db, "SELECT note_id FROM slack_notes WHERE forget_at IS NOT NULL") == [(a,)]
+    world.clock.now += FORGET_AFTER
+    assert world.store.slack_notes_due() == [(world.account, a)]
 
 
 # 4. The count, the day and "forget them now", whichever team the notes came from

@@ -318,20 +318,18 @@ def test_the_checks_see_a_doctored_guide(monkeypatch):
 
 def test_sources_md_says_the_rule_is_about_cairn_s_own_model_not_a_connected_agent_s(store):
     """sources.md: "**cairn's own model reads them only if the operator allows it.** ...
-    This is about the model the operator connects to arrange pages. An agent a person
-    connects reads what that person reaches, these notes included, and hands what it reads
-    to the model it runs on: that is the agent's doing, and neither this setting,
-    `<PREFIX>_SLACK_NOTES`, `<PREFIX>_UNDECIDED_PROJECTS` nor a project's **Models** changes
-    it.\" (Privacy 4: connected assistants are outside all three.)"""
+    An agent a person connects reads what that person reaches, these notes included, and
+    hands what it reads to the model it runs on: that is the agent's doing, and no setting of
+    the operator's and no project's **Models** changes it.\" (Privacy 4: connected assistants
+    are outside all three settings.)"""
     text = flat(sources_section())
     assert "**cairn's own model reads them only if the operator allows it.**" in text
     assert "A model reads them only if the operator allows it" not in text
     assert (
-        "This is about the model the operator connects to arrange pages. An agent a person"
-        " connects reads what that person reaches, these notes included, and hands what it"
-        " reads to the model it runs on: that is the agent's doing, and neither this setting,"
-        " `<PREFIX>_SLACK_NOTES`, `<PREFIX>_UNDECIDED_PROJECTS` nor a project's **Models**"
-        " changes it."
+        "cairn tidies that page itself instead. An agent a person connects reads what that"
+        " person reaches, these notes included, and hands what it reads to the model it runs"
+        " on: that is the agent's doing, and no setting of the operator's and no project's"
+        " **Models** changes it."
     ) in text
     # a note from a withheld source is found by search like any other
     mail_page(store)  # a page of two notes read from Gmail

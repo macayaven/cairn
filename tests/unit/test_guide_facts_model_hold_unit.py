@@ -69,7 +69,8 @@ def page(view, project: str, via: str | None = None) -> str:
 def test_each_guide_names_every_source_and_none_says_one_is_sent():
     """'... a note any source the server reads brought (...)', in all three guides; no
     sentence says Granola's notes, or any source's, are sent."""
-    assert ALL in models_line() and ALL in run_section() and ALL in sources_section()
+    short = ALL.replace("Google ", "")  # the sources guide gives the short names
+    assert ALL in models_line() and ALL in run_section() and short in sources_section()
     names = re.findall(r"[A-Z][A-Za-z]+(?: [A-Z][a-z]+)?", ALL)
     assert len(names) == len(KINDS) - 1  # the connector is "a connector of your own"
     assert set(KINDS) == {n for n, k in KINDS.items() if k.withheld}
@@ -162,8 +163,8 @@ def test_the_guides_say_connected_assistants_are_outside_all_three():
         " person connects reads what that person reaches and sends it to its own provider."
     ) in run_section()
     assert (
-        "that is the agent's doing, and neither this setting, `<PREFIX>_SLACK_NOTES`,"
-        " `<PREFIX>_UNDECIDED_PROJECTS` nor a project's **Models** changes it."
+        "that is the agent's doing, and no setting of the operator's and no project's **Models**"
+        " changes it."
     ) in sources_section()
     # The arranger is the one place a model is called: an agent's reads go through no hold.
     for name in ("SOURCE_NOTES", "SLACK_NOTES", "UNDECIDED_PROJECTS"):

@@ -1321,10 +1321,15 @@ def _topic_of(title: str | None, topic: str | None, spans: Sequence[Span]) -> st
     return topic or _title(title, spans, FIELD_MAX["title"])
 
 
+_RULE = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")  # a thematic break
+
+
 def _title(given: str | None, spans: Sequence[Span], cut: int = TITLE_MAX) -> str:
     """The given title, else the front matter `title`, else the first ATX heading's text, else
-    the first non-blank line outside the front matter; stripped and cut to `cut` characters
-    (TITLE_MAX, 80, for the title a note is stored with).
+    the first non-blank line outside the front matter that is not a rule (a thematic break:
+    three or more of one of `-`, `*`, `_`, alone on the line with spaces between, such as the
+    `---` opening a block read as content); stripped and cut to `cut` characters (TITLE_MAX,
+    80, for the title a note is stored with).
 
     Headings come from the spans, so a "# comment" inside a code fence is not a heading. A
     blank candidate counts as missing; when every candidate is missing the title is "".
@@ -1333,7 +1338,16 @@ def _title(given: str | None, spans: Sequence[Span], cut: int = TITLE_MAX) -> st
         given,
         _front_matter_title(spans),
         next((s.heading_path[-1] for s in spans if s.kind == "heading"), None),
-        next((s.text.splitlines()[0] for s in spans if s.kind != "frontmatter"), None),
+        next(
+            (
+                line
+                for s in spans
+                if s.kind != "frontmatter"
+                for line in s.text.splitlines()
+                if line.strip() and not _RULE.match(line)
+            ),
+            None,
+        ),
     )
     for candidate in candidates:
         if candidate and candidate.strip():

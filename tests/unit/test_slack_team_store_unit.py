@@ -17,7 +17,7 @@ from test_slack_store_unit import (  # noqa: F401
 )
 from test_store_unit import rows
 
-from cairn.store.slack import FORGET_AFTER, NotItsTeam
+from cairn.store.slack import FORGET_AFTER, NotItsTeam, TeamChanged
 
 QUILL_SECRET = "slack-signing-" + "4b" * 8
 QUILL_TOKEN = "xoxb-" + "unit-" + "9876543210"
@@ -176,3 +176,56 @@ def test_the_count_the_day_and_forget_now_take_every_due_note_whatever_its_team(
     assert world.view.forget_slack_notes_now(install.id) == 2
     assert world.view.get_note(a) is None and world.view.get_note(b) is None
     assert world.view.slack_notes_to_forget() is None
+
+
+# A request that was Slack's for one team is never written under another's
+
+
+def test_a_write_begun_for_a_team_that_was_replaced_meanwhile_stores_no_record(world):  # noqa: F811
+    """A request verified for team A is still in hand when A is removed and B set up under
+    the same install id: recording it now would file A's note among B's, with no day to be
+    forgotten. It is refused, and nothing is written."""
+    install = ready(world)
+    late = a_note(world, "# Late\n\nWritten for A.\n")
+    world.view.remove_slack_install(install.id)
+    world.view.make_slack_install()
+    paste(world, install)  # team B
+    before = everything(world)
+    with pytest.raises(TeamChanged):
+        world.view.record_slack_note(
+            install.id, late, how="typed", brought_by=world.owner, team_id=TEAM
+        )
+    with pytest.raises(TeamChanged):
+        world.view.claim_slack_message(
+            install.id, CONVERSATION, "1900000000.000100", brought_by=world.owner, team_id=TEAM
+        )
+    with pytest.raises(TeamChanged):
+        world.view.record_slack_note(
+            install.id, late, how="filed", brought_by=world.owner, team_id=TEAM,
+            conversation_id=CONVERSATION, message_time="1900000000.000100",
+        )  # fmt: skip
+    assert everything(world) == before
+    theirs = a_note(world, "# Theirs\n\nWritten for B.\n")
+    world.view.record_slack_note(
+        install.id, theirs, how="typed", brought_by=world.owner, team_id=OTHER_TEAM
+    )
+    assert rows(world.db, "SELECT note_id, team_id, forget_at FROM slack_notes") == [
+        (theirs, OTHER_TEAM, None)
+    ]
+
+
+def test_a_write_begun_before_its_own_teams_removal_is_recorded_with_that_removals_day(world):  # noqa: F811
+    install = ready(world)
+    late = a_note(world, "# Late\n\nWritten for A.\n")
+    world.view.remove_slack_install(install.id)
+    world.view.record_slack_note(
+        install.id, late, how="typed", brought_by=world.owner, team_id=TEAM
+    )
+    ((team, due),) = rows(world.db, "SELECT team_id, forget_at FROM slack_notes")
+    assert team == TEAM and due is not None
+    world.view.make_slack_install()  # set up again, no team chosen yet: still A's
+    other = a_note(world, "# Later\n\nAlso for A.\n")
+    world.view.record_slack_note(
+        install.id, other, how="typed", brought_by=world.owner, team_id=TEAM
+    )
+    assert len(rows(world.db, "SELECT 1 FROM slack_notes WHERE forget_at IS NOT NULL")) == 2

@@ -165,6 +165,15 @@ class TeamHeld(ValueError):
         super().__init__("another workspace on this server has Slack set up for this team")
 
 
+class TeamChanged(ValueError):
+    """A write that was Slack's for one team, arriving once the install holds another (it
+    was removed and set up again for another Slack team meanwhile): nothing is written, since
+    the note would be kept among the new team's, with no day to be forgotten."""
+
+    def __init__(self) -> None:
+        super().__init__("this install's Slack team is no longer the one this was written for")
+
+
 class NotItsTeam(ValueError):
     """Secrets of another Slack team than the one an install that is ready, on or off holds:
     the install belongs to its team, so nothing is written; connecting another Slack team
@@ -601,6 +610,7 @@ class SlackMethods(StoreBase):
         conversation_id: str | None = None,
         message_time: str | None = None,
         con: sqlite3.Connection | None = None,
+        team_id: str | None = None,
     ) -> str:
         """Record that the install created the note `note_id`: `how` one of HOWS, a filed
         message with its conversation and time (D9), a typed note with neither. A filed
@@ -609,14 +619,17 @@ class SlackMethods(StoreBase):
         An install removed meanwhile: the note is due when its other notes are. KeyError: no
         such install or note here; ValueError otherwise. `con`: the connection of a write
         already open (Store.add_note's `within`), so the record is in the note's transaction;
-        else it is a write of its own."""
+        else it is a write of its own. `team_id`: the Slack team the request was verified
+        for; when the install holds another by now, TeamChanged and nothing is written (an
+        install removed meanwhile, or set up again with no team chosen yet, still holds
+        it)."""
         _recordable(how, conversation_id, message_time)
         if con is not None:
             return self._record(con, install_id, note_id, how, brought_by, conversation_id,
-                                message_time)  # fmt: skip
+                                message_time, team_id)  # fmt: skip
         with self._write() as opened:
             return self._record(opened, install_id, note_id, how, brought_by, conversation_id,
-                                message_time)  # fmt: skip
+                                message_time, team_id)  # fmt: skip
 
     def _record(
         self,
@@ -627,8 +640,11 @@ class SlackMethods(StoreBase):
         brought_by: str | None,
         conversation_id: str | None,
         message_time: str | None,
+        team_id: str | None = None,
     ) -> str:
         row = self._slack_row(con, install_id)
+        if team_id is not None and row[3] != team_id:
+            raise TeamChanged()
         if how == "filed":
             found = con.execute(
                 "SELECT note_id FROM slack_notes WHERE install_id = ? AND conversation_id = ?"
@@ -644,7 +660,9 @@ class SlackMethods(StoreBase):
         ).fetchone()
         if held is None:
             raise KeyError(note_id)
-        due = _iso(_when(row[10]) + FORGET_AFTER) if row[2] == "removed" else None
+        # removed, or set up again with no team chosen yet: the removal's day, as its other notes
+        gone = row[2] in ("removed", "pending") and row[10] is not None
+        due = _iso(_when(row[10]) + FORGET_AFTER) if gone else None
         if how == "filed":  # the claim, made again when it was swept
             con.execute(
                 "INSERT INTO slack_notes (install_id, how, team_id, conversation_id,"
@@ -670,15 +688,25 @@ class SlackMethods(StoreBase):
         return note_id
 
     def claim_slack_message(
-        self, install_id: str, conversation_id: str, message_time: str, *, brought_by: str | None
+        self,
+        install_id: str,
+        conversation_id: str,
+        message_time: str,
+        *,
+        brought_by: str | None,
+        team_id: str | None = None,
     ) -> SlackClaim:
         """Claim a message before anything is asked or written for it (D9): CLAIMED, a row
         with no note yet; FILED, with the note it is; FILING, claimed by someone else and not
-        stored yet. A claim with no note older than CLAIM_FOR is taken over. KeyError: no such
+        stored yet. A claim with no note older than CLAIM_FOR is taken over. `team_id`: the
+        Slack team the request was verified for; TeamChanged, and nothing written, when the
+        install holds another by now. KeyError: no such
         install here; ValueError: a conversation or a time not as Slack writes them."""
         _message(conversation_id, message_time)
         with self._write() as con:
             team = self._slack_row(con, install_id)[3]
+            if team_id is not None and team != team_id:  # the request's team, replaced since
+                raise TeamChanged()
             key = (install_id, conversation_id, message_time)
             con.execute(
                 "DELETE FROM slack_notes WHERE install_id = ? AND conversation_id = ?"

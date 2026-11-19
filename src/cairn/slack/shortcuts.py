@@ -38,7 +38,7 @@ from cairn.slack import blocks, people
 from cairn.slack.dispatch import Context, on_action
 from cairn.slack.text import NotText, note_from_message
 from cairn.slack.verify import Envelope
-from cairn.store.slack import FILED, FILING, MESSAGE_TIME, SLACK_ID
+from cairn.store.slack import FILED, FILING, MESSAGE_TIME, SLACK_ID, TeamChanged
 
 
 def _place(payload: dict) -> tuple[dict, str, str] | None:
@@ -69,11 +69,18 @@ async def _filed(envelope: Envelope, context: Context) -> dict:
     message, conversation_id, time = place
     if not _has_text(message):
         return blocks.refused(people.NO_TEXT)
-    held = await run_in_threadpool(
-        lambda: context.view.claim_slack_message(
-            context.install.id, conversation_id, time, brought_by=asker.person.user_id
+    try:
+        held = await run_in_threadpool(
+            lambda: context.view.claim_slack_message(
+                context.install.id,
+                conversation_id,
+                time,
+                brought_by=asker.person.user_id,
+                team_id=context.install.team_id,
+            )
         )
-    )
+    except TeamChanged:  # the install holds another Slack team by now: nothing is claimed
+        return blocks.refused(people.TEAM_CHANGED)
     if held.outcome == FILED:
         return await run_in_threadpool(people.already, context, asker, held.note_id)
     if held.outcome == FILING:

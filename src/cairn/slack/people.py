@@ -88,7 +88,7 @@ from cairn.slack import blocks
 from cairn.slack.client import SlackError
 from cairn.slack.dispatch import Context
 from cairn.store import CannotWrite, Project, StoreUnusable, stored_key
-from cairn.store.slack import SlackPerson
+from cairn.store.slack import SlackPerson, TeamChanged
 
 log = logging.getLogger("cairn.slack")
 FOUND_AT_ONCE = 5  # claims a search shows
@@ -119,6 +119,10 @@ NOT_WRITABLE = (
 )
 NOT_A_NOTE = "This is not a note cairn keeps ({reason}), and nothing was stored."
 ELSEWHERE = "This message is filed already, in a project you do not reach."
+TEAM_CHANGED = (
+    "Slack was set up again here for another Slack workspace since you asked, and nothing was"
+    " stored."
+)
 BEING_FILED = (
     "This message is being filed right now, and nothing more was filed. Try again in a moment"
     " to see its note."
@@ -279,12 +283,15 @@ def write(
         if message is not None:  # a filed message is recorded always: it is its key (D9)
             filed = context.view.record_slack_note(
                 install, note.id, how="filed", brought_by=by, conversation_id=message[0],
-                message_time=message[1], con=con,
+                message_time=message[1], con=con, team_id=context.install.team_id,
             )  # fmt: skip
             if filed != note.id:  # the claim was taken over and the message filed meanwhile
                 raise FiledAlready(filed)
         elif created:  # a typed text the project held already did not come through here
-            context.view.record_slack_note(install, note.id, how="typed", brought_by=by, con=con)
+            context.view.record_slack_note(
+                install, note.id, how="typed", brought_by=by, con=con,
+                team_id=context.install.team_id,
+            )  # fmt: skip
         kept.append(note.id)
 
     try:
@@ -293,6 +300,8 @@ def write(
         )
     except FiledAlready as filed:  # the message, filed meanwhile by someone else: nothing stored
         return already(context, asker, filed.note_id)
+    except TeamChanged:  # the install holds another Slack team by now: nothing stored
+        return blocks.refused(TEAM_CHANGED)
     except NotFound:
         return blocks.refused(OUT_OF_REACH.format(command=command))
     except Malformed as malformed:

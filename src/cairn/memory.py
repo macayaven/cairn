@@ -18,9 +18,9 @@ ids the store resolved. Reads are recorded only here, unless the server audits r
 (`serve --audit-reads`, Store.reads_audited): then a read of READ_EVENTS that ends well is
 also an event of the workspace (`access`), naming who, the kind of read, the project and
 the page, claim or note read, never a query or any text. An export is always an event
-(EXPORTED_EVENT). Writes are recorded here and in the workspace's audit log. Two records come from outside a
-call, with the same attributes and fixed values (`record_access`): a request to /api or
-/mcp refused before its route for want of a valid credential is ("none", None, None,
+(EXPORTED_EVENT). Writes are recorded here and in the workspace's audit log. Two records
+come from outside a call, with the same attributes and fixed values (`record_access`): a
+request to /api or /mcp refused before its route for want of a valid credential is ("none", None, None,
 DENIED, None, 401), never with what it presented; an MCP call whose arguments fail the
 tool's schema is its caller's, INVALID, no project, 400; a request over its workspace's rate
 (cairn.web.auth) is its caller's, "rate_limited", no project, 429. A log handler that raises

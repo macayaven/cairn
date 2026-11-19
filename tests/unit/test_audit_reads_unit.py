@@ -129,9 +129,12 @@ def test_a_read_whose_event_cannot_be_written_is_unavailable(store, world, monke
         raise CannotWrite(sqlite3.OperationalError("database or disk is full"))
 
     monkeypatch.setattr(type(memory.store), "_record_read", full)
-    with caplog.at_level(logging.INFO, logger="cairn.access"):
-        with pytest.raises(Unavailable), memory.access("page"):
-            memory.page("ops", "deploy")
+    with (
+        caplog.at_level(logging.INFO, logger="cairn.access"),
+        pytest.raises(Unavailable),
+        memory.access("page"),
+    ):
+        memory.page("ops", "deploy")
     (record,) = [r for r in caplog.records if r.name == "cairn.access"]
     assert record.status == 503
 
@@ -146,7 +149,6 @@ def test_a_deleted_project_takes_the_page_names_out_of_its_read_events(store, wo
 
 
 def test_an_export_is_one_event_with_reads_on_or_off(store, world):
-    _, _, memory = world
     exporter = Memory(store.acting_as("session", "Ada", "usr_1"), lint_gate)
     for on in (True, False):
         store.reads_audited = on

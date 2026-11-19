@@ -3,9 +3,9 @@
 The audit log holds a workspace's writes and security events, one row each, written by the
 store method that makes the write, in the same transaction (StoreBase._audit). A read is
 recorded here only when the server is told to (`reads_audited`; cairn.memory records it,
-through `_record_read`, as the read ends), and an export and a download of this log always. Each row names the view's actor, set with
-`acting_as` (a bare view acts as "system"). A row holds names, ids and counts, never note
-text, a secret or a digest.
+through `_record_read`, as the read ends), and an export and a download of this log always.
+Each row names the view's actor, set with `acting_as` (a bare view acts as "system"). A row
+holds names, ids and counts, never note text, a secret or a digest.
 """
 
 import copy

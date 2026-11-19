@@ -37,6 +37,12 @@ def count_events(db: Path, account_id: str) -> int:
     return n
 
 
+def stored_chain(store) -> str:
+    with sqlite3.connect(store.database_file()) as con:
+        (chain,) = con.execute("SELECT chain FROM audit_events ORDER BY seq DESC").fetchone()
+    return chain
+
+
 def admin_without(store, project_name: str):
     """Ada owns the workspace; Brook is an admin who does not reach `project_name`."""
     people = [
@@ -216,6 +222,7 @@ def test_every_stored_event_is_one_json_line_on_the_audit_logger(store, caplog):
         "action": "project.created",
         "project": "ops",
         "detail": event.detail,
+        "chain": stored_chain(store),  # schema step 31: the value that chains it
     }
     assert "\n" not in record.getMessage()
 

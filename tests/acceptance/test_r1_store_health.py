@@ -337,6 +337,8 @@ def test_healthz_is_503_on_a_schema_this_code_does_not_know(env):
         other = sqlite3.connect(env.db)
         try:
             other.execute(f"PRAGMA user_version = {version}")
+            # a step this cairn may not run on: the floor goes up with it
+            other.execute("UPDATE oldest_build SET version = MAX(version, ?)", (version,))
             other.commit()
         finally:
             other.close()

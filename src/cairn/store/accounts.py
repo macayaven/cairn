@@ -118,9 +118,6 @@ class AccountMethods(StoreBase):
                 "DELETE FROM usage WHERE account_id = ?",
                 "DELETE FROM account_quota WHERE account_id = ?",
                 "DELETE FROM account_disk WHERE account_id = ?",  # after its spans and pages
-                "DELETE FROM subscriptions WHERE account_id = ?",
-                "DELETE FROM billing_messages WHERE account_id = ?",
-                "DELETE FROM checkouts WHERE account_id = ?",  # R3
                 "DELETE FROM model_reservations WHERE account_id = ?",
                 *_FORGET_MEMBERS,
                 "DELETE FROM accounts WHERE id = ?",

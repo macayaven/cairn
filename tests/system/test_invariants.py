@@ -5,7 +5,6 @@ read the whole database, so a table a later task adds is covered the day it appe
 """
 
 import sqlite3
-from datetime import UTC, datetime
 from pathlib import Path
 
 from cairn.compiler import compile_note
@@ -101,28 +100,6 @@ def fill(store: Store, account_id: str, tag: str) -> None:
     view.record_model_use(1_004, 5_570, 2_850)
     store.set_plan(account_id, f"{MARKER}-{tag}-plan")
     assert view.usage().notes == 1 and view.stored_bytes() > 0
-    # What a build that sold plans left (H7, R3): a subscription with the provider's
-    # references, the message seen for it and an open checkout. Nothing reads them now;
-    # deleting the workspace still erases them.
-    now = datetime.now(UTC).isoformat()
-    with store._write() as con:
-        con.execute(
-            "INSERT INTO subscriptions (account_id, provider, plan, status, since, customer_ref,"
-            " subscription_ref) VALUES (?, ?, ?, 'active', ?, ?, ?)",
-            (account_id, f"{MARKER}-{tag}-provider", f"{MARKER}-{tag}-bought", now,
-             f"cus-{MARKER}-{tag}", f"sub-{MARKER}-{tag}"),
-        )  # fmt: skip
-        con.execute(
-            "INSERT INTO billing_messages (provider, id, account_id, received_at)"
-            " VALUES (?, ?, ?, ?)",
-            (f"{MARKER}-{tag}-provider", f"evt-{MARKER}-{tag}-{account_id}", account_id, now),
-        )
-        con.execute(
-            "INSERT INTO checkouts (account_id, plan, idempotency_key, url, opened_at, ends_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (account_id, f"{MARKER}-{tag}-bought", f"key-{MARKER}-{tag}",
-             f"https://pay.example.test/{MARKER}-{tag}", now, now),
-        )  # fmt: skip
 
 
 def test_deleting_a_workspace_leaves_no_row_that_names_it(tmp_path):

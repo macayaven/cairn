@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 store_log = logging.getLogger("cairn.store")
 # Every audit event, once stored, is also one JSON line here (StoreBase._audit), with the same
-# fields as its row: an operator sends this logger to a store nobody can edit.
+# fields as its row but its sequence: an operator sends this logger to a store nobody can edit.
 AUDIT_LOGGER = "cairn.audit"
 audit_log = logging.getLogger(AUDIT_LOGGER)
 
@@ -78,6 +78,13 @@ DEFAULT_ACCOUNT_ID = "acct_default"
 # oldest, a batch of AUDIT_PRUNE_BATCH at a time, so most inserts delete nothing.
 AUDIT_KEEP = 100_000
 AUDIT_PRUNE_BATCH = 1_000
+# Each audit event's `chain` (schema step 31): audit_link of the value of the event before it in
+# its workspace and its own fields that never change. The first event of a workspace chains to
+# AUDIT_START; once events are pruned, to the value of the last event pruned, which the
+# workspace keeps in its settings as AUDIT_PRUNED_ROW, {"n": its number, "chain": its value}
+# (a row no setting call reads or changes; it goes with the workspace).
+AUDIT_START = "0" * 64
+AUDIT_PRUNED_ROW = "store.audit_pruned"
 UNSET = object()  # ConnectionState.audit_keep before it is set or read from the file
 ABSENT = object()  # ConnectionState.audit_keep when the file records no number: AUDIT_KEEP
 # The number of events the last `serve` was told to keep, a row of the default workspace's
@@ -110,6 +117,28 @@ MANAGER_ROLES = frozenset({"owner", "admin"})
 NOT_A_MANAGER = "only the workspace's owners and admins manage it"
 NOT_A_MEMBER = "you are no longer a member of this workspace"
 VIEW_IS_BOUND = "a view is bound to its workspace and person: open another from the store"
+
+
+def audit_link(
+    previous: str,
+    account_id: str,
+    n: int,
+    seq: int,
+    at: str,
+    actor_kind: str,
+    actor: str | None,
+    actor_id: str | None,
+    action: str,
+) -> str:
+    """The value that chains an audit event to the one before it in its workspace: SHA-256,
+    in hex, of the JSON array of `previous` (that event's value, or where its workspace's
+    chain starts) and this event's fields that never change once it is written. `project`
+    and `detail` are left out: erasure rewrites them on purpose. A JSON array, not a joined
+    string, so no field can borrow characters from the next and a missing actor (null) is not
+    an empty one."""
+    fields = [previous, account_id, n, seq, at, actor_kind, actor, actor_id, action]
+    text = json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class StoreUnusable(RuntimeError):
@@ -492,31 +521,53 @@ class StoreBase:
         deleted in the same transaction, a batch at a time (both lookups use the number's
         index). A batch is AUDIT_PRUNE_BATCH, or half of what is kept when that is less, so a
         prune never leaves fewer than half. The event, as its row holds it, is also one JSON
-        line on the "cairn.audit" logger once the transaction commits (_write)."""
+        line on the "cairn.audit" logger once the transaction commits (_write).
+
+        The one writer of audit events, so every event is chained (audit_link): the read that
+        finds the workspace's numbers also takes its last event's value and the newest
+        sequence of the table, and the event is inserted with that sequence plus one (what
+        SQLite would give it) and its value. A prune first records the value of the last event
+        it removes (AUDIT_PRUNED_ROW), in the same transaction. Two statements an event, as
+        before the chain; a prune two, one more than before."""
         detail = dict(detail or {})
         if actor is None:
             actor, actor_id = self._actor, self._actor_id
             if self._user_id is not None:
                 detail["user"] = self._user_id
         account_id = account_id or self._account_id
-        last, oldest = con.execute(
-            "SELECT MAX(n), MIN(n) FROM audit_events WHERE account_id = ?", (account_id,)
+        last, oldest, previous, newest = con.execute(
+            "SELECT MAX(n), MIN(n),"
+            " (SELECT chain FROM audit_events WHERE account_id = ?1 ORDER BY n DESC LIMIT 1),"
+            " (SELECT MAX(seq) FROM audit_events)"
+            " FROM audit_events WHERE account_id = ?1",
+            (account_id,),
         ).fetchone()
-        number = (last or 0) + 1
+        number, seq = (last or 0) + 1, (newest or 0) + 1
         stamp = at or self._stamp()
         stored = json.dumps(detail, sort_keys=True)
+        chain = audit_link(
+            AUDIT_START if previous is None else previous,
+            account_id, number, seq, stamp, actor[0], actor[1], actor_id, action,
+        )  # fmt: skip
         con.execute(
-            "INSERT INTO audit_events"
-            " (account_id, n, at, actor_kind, actor, actor_id, action, project, detail)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (account_id, number, stamp, *actor, actor_id, action, project, stored),
+            "INSERT INTO audit_events (seq, account_id, n, at, actor_kind, actor, actor_id,"
+            " action, project, detail, chain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (seq, account_id, number, stamp, *actor, actor_id, action, project, stored, chain),
         )
         keep = self._kept(con)
         if keep is not None and number - (oldest or number) + 1 > keep:  # one too many
             batch = min(AUDIT_PRUNE_BATCH, max(1, keep // 2))
+            cut = number - keep + batch - 1  # the last event that goes
             con.execute(
-                "DELETE FROM audit_events WHERE account_id = ? AND n <= ?",
-                (account_id, number - keep + batch - 1),
+                "INSERT INTO settings (account_id, name, value, updated_at)"
+                " SELECT account_id, ?, json_object('n', n, 'chain', chain), ?"
+                " FROM audit_events WHERE account_id = ? AND n = ?"
+                " ON CONFLICT (account_id, name)"
+                " DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (AUDIT_PRUNED_ROW, stamp, account_id, cut),
+            )
+            con.execute(
+                "DELETE FROM audit_events WHERE account_id = ? AND n <= ?", (account_id, cut)
             )
         line = {
             "account_id": account_id,
@@ -528,6 +579,7 @@ class StoreBase:
             "action": action,
             "project": project,
             "detail": json.loads(stored),
+            "chain": chain,
         }
         self._state.audit_out.append(json.dumps(line, sort_keys=True))
 

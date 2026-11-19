@@ -6,6 +6,14 @@ recorded here only when the server is told to (`reads_audited`; cairn.memory rec
 through `_record_read`, as the read ends), and an export and a download of this log always.
 Each row names the view's actor, set with `acting_as` (a bare view acts as "system"). A row
 holds names, ids and counts, never note text, a secret or a digest.
+
+Each row also holds `chain`, the value that chains it to the event before it in its workspace
+(base.audit_link; schema step 31). `check_trail` reads a database's trail and says, for each
+workspace, how many events it checked and whether every value follows from the one before,
+or the first event whose value does not (its number and time only). What the chain does not
+show: someone who can write the database file can rewrite the whole chain (the copy on the
+"cairn.audit" logger is for that), and `project` and `detail` are outside it, since
+forgetting a note must be able to take a page's name out of them.
 """
 
 import copy
@@ -13,16 +21,25 @@ import json
 import re
 import sqlite3
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from cairn.store.base import AUDIT_LOGGER, MANAGER_ROLES, StoreBase, _require_account
+from cairn.store.base import (
+    AUDIT_LOGGER,
+    AUDIT_PRUNED_ROW,
+    AUDIT_START,
+    MANAGER_ROLES,
+    StoreBase,
+    _require_account,
+    audit_link,
+)
 from cairn.store.models import AuditEvent
 
 if TYPE_CHECKING:
     from cairn.guard import Finding, Guard
     from cairn.store import Store
 
-__all__ = ["AUDIT_LOGGER"]  # the logger every stored event is copied to (base.audit_log)
+__all__ = ["AUDIT_LOGGER", "AUDIT_START", "audit_link"]  # base.audit_log, the chain
 
 ACTOR_KINDS = ("key", "token", "session", "system")
 ACTOR_NAME_MAX = 200  # characters kept of an actor's name
@@ -107,6 +124,60 @@ def _shown_detail(
     elif hidden:
         detail["projects"] = [ref for ref in projects if ref not in hidden]
     return detail
+
+
+@dataclass(frozen=True)
+class TrailCheck:
+    """What check_trail found in one workspace: how many events it checked, and the first
+    event whose value does not follow from the one before, as (its number, its time); None
+    when the chain holds."""
+
+    account_id: str
+    checked: int
+    broken: tuple[int, str] | None
+
+
+def check_trail(con: sqlite3.Connection, account_id: str | None = None) -> list[TrailCheck]:
+    """Verify the audit trail of every workspace (or of `account_id` alone; KeyError for one
+    the database does not hold), in their creation order, on `con`: a read that writes
+    nothing, which needs no store (the command `audit-verify` opens the file read-only).
+
+    A workspace's chain starts from the value of the last event pruned (AUDIT_PRUNED_ROW),
+    or AUDIT_START when none was; with a pruned value, its oldest event must be numbered
+    one past the one pruned. Each event's value must be audit_link of the value before it
+    (the stored one, so one changed event names that event, not every one after it) and
+    its own fields; a deleted event names the event after it. One read per workspace, in
+    the order of its numbers."""
+    if account_id is None:
+        accounts = [a for (a,) in con.execute("SELECT id FROM accounts ORDER BY seq")]
+    elif con.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,)).fetchone():
+        accounts = [account_id]
+    else:
+        raise KeyError(account_id)
+    found = []
+    for account in accounts:
+        row = con.execute(
+            "SELECT value FROM settings WHERE account_id = ? AND name = ?",
+            (account, AUDIT_PRUNED_ROW),
+        ).fetchone()
+        pruned = json.loads(row[0]) if row else None
+        previous = pruned["chain"] if pruned else AUDIT_START
+        expected = pruned["n"] + 1 if pruned else None  # the oldest number kept
+        checked, broken = 0, None
+        for seq, n, at, kind, actor, actor_id, action, chain in con.execute(
+            "SELECT seq, n, at, actor_kind, actor, actor_id, action, chain FROM audit_events"
+            " WHERE account_id = ? ORDER BY n",
+            (account,),
+        ):
+            checked += 1
+            first = checked == 1 and expected is not None and n != expected
+            value = audit_link(previous, account, n, seq, at, kind, actor, actor_id, action)
+            if first or chain != value:
+                broken = (n, at)
+                break
+            previous = chain
+        found.append(TrailCheck(account, checked, broken))
+    return found
 
 
 class AuditPart(list[AuditEvent]):

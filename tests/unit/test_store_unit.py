@@ -2793,7 +2793,7 @@ def test_a_version_11_database_opens_with_an_empty_subscriptions_table_and_every
         after = before_step_24(before_step_22(statements(db)))
         assert all(line in after for line in kept_rows(kept_at_17(v11["statements"])))
         assert s.plan_in_force(V2_ADA) == "solo"  # the operator's, as before
-        assert rows(db, "SELECT COUNT(*) FROM subscriptions") == [(0,)]
+        assert "subscriptions" not in tables(db)  # step 12 made it empty; step 31 dropped it
     finally:
         s.close()
 
@@ -2850,14 +2850,21 @@ def subscribed_database(db: Path) -> dict[str, Any]:
 
 
 def test_a_database_before_subscription_times_opens_with_its_subscription_kept(db):
+    """The step keeps the subscription (run alone, as the version after it left it); opening
+    the database runs every step after it too, and step 31 drops the table with the row."""
     before = subscribed_database(db)
+    with connect(db) as con:
+        con.execute("BEGIN")
+        cairn.store.schema._MIGRATIONS[cairn.store.schema._SUBSCRIPTION_TIMES](con)
+        assert con.execute(
+            "SELECT account_id, plan, status, started, past_due_since FROM subscriptions"
+        ).fetchall() == [(V2_ADA, "team", "past_due", None, None)]
+        con.rollback()
     s = Store(db, clock=lambda: datetime(2026, 11, 12, tzinfo=UTC))
     try:
         assert user_version(db) == SCHEMA_VERSION > before["version"]
-        assert rows(
-            db, "SELECT account_id, plan, status, started, past_due_since FROM subscriptions"
-        ) == [(V2_ADA, "team", "past_due", None, None)]
-        assert s.plan_in_force(V2_ADA) == "solo"  # the operator's: nothing reads the row
+        assert "subscriptions" not in tables(db)
+        assert s.plan_in_force(V2_ADA) == "solo"  # the operator's: nothing read the row
     finally:
         s.close()
 
@@ -3583,11 +3590,43 @@ def test_a_failed_step_to_the_source_switch_leaves_the_version_20_database_as_it
 V21_SESSION = hashlib.sha256(b"token-v21").hexdigest()
 
 
-def before_step_30(lines: list[str]) -> list[str]:
-    """Statements of a database migrated past step 30, as step 29 left them: step 30 gives
-    each session its last use (its last column), NULL on every session that existed."""
+_WITH_CHAIN = re.compile(r",'[0-9a-f]{64}'\);$")  # an audit event's chain, its last column
+
+
+def before_step_31(lines: list[str]) -> list[str]:
+    """Statements of a database migrated past step 31, as step 30 left them: step 31 rebuilds
+    audit_events with each event's chain (its last column), adds oldest_build with its row,
+    and drops the tables billing kept (put back here as step 30 left them, empty: no database
+    here holds rows in them by then; the tests of steps 11 to 13 run those steps alone).
+    Anything else step 31 changed stays, and fails the comparison."""
+    schema = cairn.store.schema
     out = []
     for line in lines:
+        if line.startswith('INSERT INTO "audit_events"'):
+            assert _WITH_CHAIN.search(line), line
+            line = _WITH_CHAIN.sub(");", line)
+        elif line == schema._V31_AUDIT_EVENTS + ";":
+            line = schema._V7_AUDIT_EVENTS + ";"
+        elif line == schema._V31_OLDEST_BUILD + ";" or line.startswith(
+            'INSERT INTO "oldest_build"'
+        ):
+            continue
+        out.append(line)
+    retired = (
+        schema._V13_SUBSCRIPTIONS,
+        schema._V12_BILLING_MESSAGES,
+        schema._V12_BILLING_MESSAGES_BY_ACCOUNT,
+        schema._V27_CHECKOUTS,
+    )
+    return out + [statement + ";" for statement in retired if statement + ";" not in out]
+
+
+def before_step_30(lines: list[str]) -> list[str]:
+    """Statements of a database migrated past step 30, as step 29 left them: step 30 gives
+    each session its last use (its last column), NULL on every session that existed. Every
+    database here that is past step 30 is past step 31 too, whose change goes first."""
+    out = []
+    for line in before_step_31(lines):
         if line.startswith('INSERT INTO "sessions"'):
             assert line.endswith(",NULL);"), line
             line = line.removesuffix(",NULL);") + ");"

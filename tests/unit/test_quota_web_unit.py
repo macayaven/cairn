@@ -550,6 +550,8 @@ def test_workspace_list_refuses_a_newer_database_as_usage_does(tmp_path, capsys)
     Store(db).close()
     con = sqlite3.connect(db)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    # a step this cairn may not run on: the floor goes up with it
+    con.execute("UPDATE oldest_build SET version = ?", (SCHEMA_VERSION + 1,))
     con.commit()
     con.close()
     before = dump(db)

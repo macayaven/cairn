@@ -27,17 +27,21 @@ def test_step_27_adds_the_empty_checkouts_table_and_changes_nothing_else(tmp_pat
     db = tmp_path / "cairn.db"
     v26 = v26_database(db)
     assert cairn.store.schema._CHECKOUTS == 27 and SCHEMA_VERSION >= 27
+    with connect(db) as con:  # the step alone: step 31 drops the table again
+        con.execute("BEGIN")
+        cairn.store.schema._MIGRATIONS[cairn.store.schema._CHECKOUTS](con)
+        assert [row[1] for row in con.execute("PRAGMA table_info(checkouts)")] == COLUMNS
+        assert con.execute("SELECT COUNT(*) FROM checkouts").fetchall() == [(0,)]
+        con.rollback()
     Store(db).close()
     assert user_version(db) == SCHEMA_VERSION
-    assert [row[1] for row in rows(db, "PRAGMA table_info(checkouts)")] == COLUMNS
-    assert rows(db, "SELECT COUNT(*) FROM checkouts") == [(0,)]
+    assert rows(db, "PRAGMA table_info(checkouts)") == []
     before = set(v26["statements"])
     added = [line for line in statements(db) if line not in before]
     later = ("credential_tokens", "google_revocations", "slack_")  # 28, 29: empty tables
     later += ("sessions",)  # 30: sessions rebuilt with their last use
-    assert added and all(
-        "checkouts" in line or any(name in line for name in later) for line in added
-    ), added
+    later += ("audit_events", "oldest_build")  # 31: events chained, and the floor
+    assert added and all(any(name in line for name in later) for line in added), added
     rebuilt = {line for line in v26["statements"] if line.startswith("CREATE TABLE sessions")}
     kept = set(before_step_30(statements(db)))
     assert set(v26["statements"]) - rebuilt <= kept  # every row there was is kept

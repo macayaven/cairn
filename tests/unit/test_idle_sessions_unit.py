@@ -230,17 +230,17 @@ def test_step_30_adds_the_last_use_and_keeps_every_session(tmp_path):
     signed = made.sign_in("github", "1", "ada@example.test", "Ada", issuer="https://github.com",
                           join="personal")  # fmt: skip
     made.close()
-    assert store_schema._LAST_USE == 30 == store_schema.SCHEMA_VERSION
+    assert store_schema._LAST_USE == 30 < store_schema.SCHEMA_VERSION
     columns = "digest, account_id, expires_at, created_at, user_id, label, key_id, vouched_email"
     con = sqlite3.connect(db)
-    try:  # the database as version 29 left it
+    try:  # its sessions as version 29 left them, then step 30 alone (later steps are done)
         con.execute("BEGIN")
         before = con.execute(f"SELECT {columns} FROM sessions").fetchall()
         con.execute("ALTER TABLE sessions RENAME TO sessions_v30")
         con.execute(store_schema._V22_SESSIONS)
         con.execute(f"INSERT INTO sessions SELECT {columns} FROM sessions_v30")
         con.execute("DROP TABLE sessions_v30")
-        con.execute("PRAGMA user_version = 29")
+        store_schema._MIGRATIONS[store_schema._LAST_USE](con)
         con.commit()
     finally:
         con.close()
@@ -252,7 +252,7 @@ def test_step_30_adds_the_last_use_and_keeps_every_session(tmp_path):
     con = sqlite3.connect(db)
     fresh = sqlite3.connect(tmp_path / "fresh.db")
     try:
-        assert con.execute("PRAGMA user_version").fetchone() == (30,)
+        assert con.execute("PRAGMA user_version").fetchone() == (store_schema.SCHEMA_VERSION,)
         assert con.execute(f"SELECT {columns}, used_at FROM sessions").fetchall() == [
             (*row, None) for row in before
         ]

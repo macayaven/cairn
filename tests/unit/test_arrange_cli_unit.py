@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 import uvicorn
+from test_schema_floor_unit import v30_database
 
 import cairn.arrange
 import cairn.plans
@@ -429,9 +430,13 @@ def test_arrange_needs_the_plans_when_a_workspace_has_a_plan(db, model, tmp_path
 
 
 def test_a_subscription_an_older_build_left_does_not_ask_for_plans(db, model, capsys):
-    """Nothing reads the billing tables: a row there puts no workspace on a plan."""
-    Store(db).close()
+    """Nothing read the billing tables: a row an older build left (in a database at step 30;
+    step 31 drops the tables) puts no workspace on a plan."""
+    for made in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        made.unlink(missing_ok=True)  # the fixture's database: this one is older
+    v30_database(db)
     con = sqlite3.connect(db)
+    con.execute("UPDATE account_quota SET plan = NULL")  # no plan the operator set
     con.execute(
         "INSERT INTO subscriptions (account_id, provider, plan, status, since)"
         " VALUES ('acct_default', 'till', 'solo', 'active', ?)",

@@ -87,8 +87,7 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   at start with the length in force), and says how many it shortened.
 - `delete_account(id) -> bool` removes the account and everything it owns, its sets, OAuth
   grants, codes and tokens, its sources, its settings and audit log, its usage and plan,
-  its rows in the tables billing wrote (subscriptions, billing_messages, checkouts), its
-  memberships,
+  its memberships,
   invitations, project rules and removal markers included (False for an unknown id,
   ValueError for the default account), and nothing of
   any other account. A view acting for a person deletes only its own workspace, and only
@@ -961,17 +960,15 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   list[AccountSummary]` (not scoped, a read; PermissionError for a view acting for a
   person, and refused on a narrowed view as management) is every workspace in creation
   order with its name, created_at, how many people belong to it and its plan in force, in
-  one read for them all: never an address. The tables billing wrote (subscriptions,
-  billing_messages, checkouts; schema steps 12, 13 and 27) stay in the database; nothing
-  reads or writes them, except that `delete_account` deletes a workspace's rows in them, and an
-  export leaves them out.
+  one read for them all: never an address. The tables billing wrote (schema steps 12, 13
+  and 27) are dropped by step 31 (schema.py's _OLDEST_BUILD step).
 - Ids: accounts "acct_" + 12 hex chars, projects "br_" + 12 hex chars, notes "cap_" + 12
   hex chars, sets "set_" + 12 hex chars. Timestamps are ISO 8601 UTC strings.
 - Schema: `PRAGMA user_version` holds SCHEMA_VERSION (2 added accounts, 3 the OAuth
   tables, 4 people, 5 reach and search statistics, 6 settings, the audit log and the key a
   session was opened with, 7 actor ids, 8 project kinds, 9 sources, 10 invitations, project
-  rules, makers and removal markers, 11 metering and plans, 12 subscriptions and the
-  provider messages seen, 13 when a subscription started and became past due, 14
+  rules, makers and removal markers, 11 metering and plans, 12 billing's two tables, 13
+  when a subscription started and became past due, 14
   model-use reservations, 15 the digests of forgotten notes, 16 each workspace's passages
   and page history, 17 the end of key sessions that cannot be tied to a live key, 18 the
   passages counter charging the headings stored with each span, 19 the MCP address each
@@ -997,8 +994,8 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   From 10: usage by month and each workspace's plan and stored bytes are added beside the
   accounts (accounts itself is not rebuilt); every workspace is on the default plan, and
   the notes it holds are counted, their UTF-8 size in its total and each in the UTC month
-  of its `created_at`. From 11: subscriptions and the provider messages seen are added,
-  empty; every workspace stays on the plan the operator set. From 12 (schema.py's
+  of its `created_at`. From 11: billing's two tables are added, empty; every workspace
+  stays on the plan the operator set. From 12 (schema.py's
   _SUBSCRIPTION_TIMES step): each subscription gains when it started and when it became
   past due, both unknown for the rows that exist. From 13: model-use reservations are
   added, empty, and nothing that existed changes. From 14 (schema.py's _FORGOTTEN step):
@@ -1030,12 +1027,22 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   with; recorded_since holds the moment the step ran, read from the store's clock (a new
   database holds the moment it was made). From 29 (schema.py's _LAST_USE step, 30):
   sessions are rebuilt with `used_at`, every session that exists kept as it was with no use
-  recorded, so its last use reads as when it was made (`serve --idle-minutes`).
+  recorded, so its last use reads as when it was made (`serve --idle-minutes`). From 30
+  (schema.py's _OLDEST_BUILD step, 31): the tables billing wrote are dropped, with any rows
+  in them; each audit event gains the value that chains it to the one before
+  (cairn.store.audit), filled in order for every event that exists; and oldest_build
+  records the floor, 31.
   Each version step
   is one transaction, so a step that fails leaves the database as it was.
-  Opening a database whose version is higher than SCHEMA_VERSION raises SchemaTooNew and
-  leaves the file untouched. A file that is neither empty nor a v0 database (v0's tables,
-  each with exactly v0's columns) is refused the same way, with sqlite3.DatabaseError.
+  From 31 on, a database records its floor (schema.py's oldest_build): the lowest schema
+  version whose cairn runs on it. A step that only adds (schema.py's _ONLY_ADDS: 29 and 30)
+  leaves it; any other raises it to itself. Opening a database whose version is higher than
+  SCHEMA_VERSION opens it as it is, with no step run and nothing written, when its floor is
+  at or below SCHEMA_VERSION: tables and columns this code does not know are left alone.
+  Otherwise, or when it records no floor, it raises SchemaTooNew, whose one sentence names
+  the database's version, its floor and SCHEMA_VERSION, and leaves the file untouched. A
+  file that is neither empty nor a v0 database (v0's tables, each with exactly v0's
+  columns) is refused untouched too, with sqlite3.DatabaseError.
   Opening one at SCHEMA_VERSION that lacks a table of the current schema raises
   UnknownSchema ("the database was not made by this version of cairn: it has schema version
   N but no table T", the first such table) before anything is written, and leaves the file
@@ -1198,6 +1205,7 @@ from cairn.store.schema import (
     SchemaTooNew,
     UnknownSchema,
     _refuse,
+    _runs_on,
     _upgrade,
 )
 from cairn.store.sets import SET_ID_PREFIX, SetMethods
@@ -1440,8 +1448,9 @@ class Store(
         """Whether the store can serve, from one bounded read that writes nothing (what
         /healthz answers, through cairn.web.auth.Accounts):
 
-        - "ok": the read worked and the file holds the schema this code knows
-          (`PRAGMA user_version` is SCHEMA_VERSION, and the default account's row reads).
+        - "ok": the read worked and the file holds a schema this code runs on (`PRAGMA
+          user_version` is SCHEMA_VERSION, or a newer one whose floor, oldest_build, is at
+          or below it; and the default account's row reads).
         - "busy": the store is alive and held on purpose. Either this process holds the
           store's lock (the writer) for longer than `wait` seconds (HEALTH_WAIT unless given,
           read at each call; a write holds it, and compact holds it for a whole rewrite of
@@ -1493,13 +1502,13 @@ class Store(
         con.execute(f"PRAGMA busy_timeout = {max(1, int(wait * 1000))}")
         try:
             with _transaction(con, "DEFERRED"):
-                (version,) = con.execute("PRAGMA user_version").fetchone()
+                runs = _runs_on(con)  # this schema, or a newer one within its floor
                 found = con.execute(
                     "SELECT 1 FROM accounts WHERE id = ?", (DEFAULT_ACCOUNT_ID,)
                 ).fetchone()
         finally:
             con.execute(f"PRAGMA busy_timeout = {int(waited)}")
-        return "ok" if version == SCHEMA_VERSION and found else "unavailable"
+        return "ok" if runs and found else "unavailable"
 
 
 def _readers_for(con: sqlite3.Connection, journal: str) -> Readers | None:

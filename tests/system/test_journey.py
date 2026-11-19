@@ -1502,6 +1502,8 @@ def test_a_rollback_onto_a_newer_database_is_one_line_from_the_real_process(tmp_
     con = sqlite3.connect(db)
     try:
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+        # a step this cairn may not run on: the floor goes up with it
+        con.execute("UPDATE oldest_build SET version = ?", (SCHEMA_VERSION + 1,))
         con.commit()
     finally:
         con.close()
@@ -1514,7 +1516,10 @@ def test_a_rollback_onto_a_newer_database_is_one_line_from_the_real_process(tmp_
         assert "Traceback" not in result.stderr
         (line,) = result.stderr.splitlines()
         assert line.startswith("SchemaTooNew: the database has schema version ")
-        assert f"version {SCHEMA_VERSION + 1}; this cairn knows up to {SCHEMA_VERSION}." in line
+        assert (
+            f"version {SCHEMA_VERSION + 1} and needs a cairn of schema version"
+            f" {SCHEMA_VERSION + 1} or later; this cairn knows up to {SCHEMA_VERSION}."
+        ) in line
         assert db.read_bytes() == before, argv[0]
     assert sorted(path.name for path in tmp_path.iterdir()) == ["cairn.db"]
 

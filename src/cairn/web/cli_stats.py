@@ -85,7 +85,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         try:
             version = _schema_version(con)  # SchemaTooNew: a newer cairn wrote it
-            if version == SCHEMA_VERSION:
+            if version >= SCHEMA_VERSION:  # a newer one runs here when its floor allows
                 _check_tables(con)  # UnknownSchema: this version did not make it
         except sqlite3.Error as error:
             _refuse(db, error)  # CannotOpen: not a database, or one it may not read

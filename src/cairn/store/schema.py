@@ -1,11 +1,13 @@
 """The schema: its DDL, its version, the upgrade loop and each migration step."""
 
 import functools
+import hashlib
+import json
 import re
 import secrets
 import sqlite3
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -53,9 +55,12 @@ _CHECKOUTS = 27
 _CREDENTIAL_TOKENS = 28
 # The one place the Slack step's number is written (K1).
 _SLACK = 29
-# The one place the last-use step's number is written (sessions that are not used end), and
-# so the newest version.
+# The one place the last-use step's number is written (sessions that are not used end).
 _LAST_USE = 30
+# The one place the oldest-build step's number is written (the retired tables go, the audit
+# trail is chained, and the database records the oldest build that runs on it), and so the
+# newest version.
+_OLDEST_BUILD = 31
 # The newest step. 1: v0's schema, which shipped unstamped; 2: accounts; 3: OAuth; 4: people;
 # 5: reach (project sets, and the projects and access of each key and grant), search statistics;
 # 6: settings and the audit log, and the key a session was opened with; 7: actor ids (each
@@ -82,13 +87,21 @@ _LAST_USE = 30
 # the browser (cairn.store.hosted), and those whose Google permission is still to be ended;
 # _SLACK: each workspace's Slack install, its links, one-time offers, events seen and the
 # notes that came through it (cairn.store.slack); _LAST_USE: a session records when it was
-# last used (`serve --idle-minutes`)
-SCHEMA_VERSION = _LAST_USE
+# last used (`serve --idle-minutes`); _OLDEST_BUILD: the tables billing kept go, and the
+# database records the oldest build that runs on it (oldest_build)
+SCHEMA_VERSION = _OLDEST_BUILD
+# The steps that only add (tables, columns with defaults, indexes): a build older than such a
+# step still runs on a database the step brought forward, so the floor stays where it was.
+# Every other step changes what an older build relies on, and raises the database's floor to
+# itself (_upgrade). The steps before _SLACK never said, and count as changing.
+_ONLY_ADDS = frozenset({_SLACK, _LAST_USE})
 _FTS5_SECURE_DELETE = sqlite3.sqlite_version_info >= (3, 42, 0)  # the option's first release
 
 
 class SchemaTooNew(RuntimeError):
-    """The database was written by a newer cairn than this one; it is left untouched."""
+    """The database was written by a newer cairn than this one, and one that this one may
+    not run on: its floor (oldest_build) is above this cairn's version, or it records none.
+    It is left untouched."""
 
 
 class UnknownSchema(RuntimeError):
@@ -557,7 +570,23 @@ _V7_AUDIT_EVENTS_BY_NUMBER = (
     "CREATE UNIQUE INDEX audit_events_by_number ON audit_events (account_id, n)"
 )
 _V7_AUDIT = (_V6_SETTINGS, _V7_AUDIT_EVENTS, _V7_AUDIT_EVENTS_BY_NUMBER)
-_AUDIT = _V7_AUDIT
+# From _OLDEST_BUILD, each event carries the value that chains it to the event before it in
+# its workspace (cairn.store.base.audit_link; StoreBase._audit writes it).
+_V31_AUDIT_EVENTS = """CREATE TABLE audit_events (
+    seq INTEGER PRIMARY KEY,  -- the order of events, even if the clock steps back
+    account_id TEXT NOT NULL,
+    n INTEGER NOT NULL,  -- its number in its workspace, 1, 2, ...: the oldest are pruned
+    at TEXT NOT NULL,
+    actor_kind TEXT NOT NULL CHECK (actor_kind IN ('key', 'token', 'session', 'system')),
+    actor TEXT,  -- the key's label, the agent's client name or the person; NULL for system
+    actor_id TEXT,  -- the key's id, the grant's or the person's (names repeat); NULL: system
+    action TEXT NOT NULL,
+    project TEXT,  -- the project's name when the event is about one
+    detail TEXT NOT NULL,  -- a JSON object
+    chain TEXT NOT NULL  -- SHA-256 hex over the event before it's chain and this one's fields
+)"""
+_V31_AUDIT = (_V6_SETTINGS, _V31_AUDIT_EVENTS, _V7_AUDIT_EVENTS_BY_NUMBER)
+_AUDIT = _V31_AUDIT
 # A workspace's sources (cairn.sources): the config its kind checked (never a credential:
 # it names environment variables), where the next run starts, how the last one went, and
 # the claim of the run that holds it now (a compare-and-set, seen by every process).
@@ -858,10 +887,9 @@ _V11_ACCOUNT_QUOTA = """CREATE TABLE account_quota (
 ) WITHOUT ROWID"""
 _V11_METERING = (_V11_USAGE, _V11_ACCOUNT_QUOTA)
 _METERING = _V11_METERING
-# Nothing reads or writes the tables billing kept any more (subscriptions, billing_messages
-# and, above, checkouts): cairn sells no plan. They stay so that every schema step stays and
-# an older database opens; deleting a workspace deletes its rows in them, and an export
-# leaves them out.
+# The tables billing kept (subscriptions, billing_messages and, above, checkouts): nothing
+# read or wrote them once cairn sold no plan, and _OLDEST_BUILD drops them. Their statements
+# stay, for the steps that made them (history: an older database still runs those steps).
 # Billing (H7). The subscription a workspace holds, as its payment provider last said, with
 # the provider's references for the customer and the subscription (the portal needs the
 # customer's; nothing about a payment method is kept). And every provider message applied
@@ -902,7 +930,6 @@ _V13_SUBSCRIPTIONS = """CREATE TABLE subscriptions (
     started TEXT,  -- when the subscription began; NULL: the provider did not say
     past_due_since TEXT  -- when it became past due; NULL unless it is
 ) WITHOUT ROWID"""
-_BILLING = (_V13_SUBSCRIPTIONS, _V12_BILLING_MESSAGES, _V12_BILLING_MESSAGES_BY_ACCOUNT)
 # Model-use reservations (T4b; store/reservations.py). What a model call may cost, booked into
 # its month's usage.model_micros before the call and replaced by what it spent after; a row
 # is a reservation not settled yet, counted as spent in full.
@@ -997,6 +1024,13 @@ BEGIN
 END""",
 )
 _DISK_COUNTERS = (_V16_ACCOUNT_DISK, *_V18_PASSAGES, *_V16_COUNTERS[3:])
+# The oldest build that runs on this database (_OLDEST_BUILD): one row, the lowest schema
+# version whose cairn may open it. A step that only adds leaves it; any other raises it to
+# itself (_upgrade). A cairn that meets a newer database reads it before anything else.
+_V31_OLDEST_BUILD = """CREATE TABLE oldest_build (
+    one INTEGER PRIMARY KEY CHECK (one = 1),  -- a single row
+    version INTEGER NOT NULL  -- the lowest schema version whose cairn runs on this database
+)"""
 _SCHEMA = (
     _ACCOUNTS,
     _PROJECTS,
@@ -1015,7 +1049,6 @@ _SCHEMA = (
     _SOURCES,
     *_ACCESS,
     *_METERING,
-    *_BILLING,
     *_RESERVATIONS,
     _FORGOTTEN_NOTES,
     *_DISK_COUNTERS,
@@ -1024,10 +1057,10 @@ _SCHEMA = (
     _V24_WAITING,
     *_V25_WRITERS,
     *_V26_HEADS,
-    _V27_CHECKOUTS,
     _V28_CREDENTIAL_TOKENS,
     _V28_GOOGLE_REVOCATIONS,
     *_V29_SLACK,
+    _V31_OLDEST_BUILD,
 )
 # One search index per account, made by the account's first save_page, where its searches
 # match (cairn.store.ranking scores them with the statistics above, never FTS5's own). One row
@@ -1047,8 +1080,12 @@ _STAMP: ContextVar[Callable[[], str]] = ContextVar("cairn_store_upgrade_stamp")
 
 def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str]) -> None:
     """Bring the database to SCHEMA_VERSION, one transaction per step, so a step that fails
-    leaves the database as it was. A current database is not written to, and a newer one is
-    refused before anything is. `stamp`: the store's clock, as an ISO timestamp."""
+    leaves the database as it was. A current database is not written to. A newer one is
+    opened as it is, with no step run and nothing written, when this cairn's version is at or
+    above the floor it records (oldest_build), and refused before anything is written
+    otherwise (SchemaTooNew). From _OLDEST_BUILD on, a step that changes what an older build
+    relies on (not in _ONLY_ADDS) raises the floor to itself, in its own transaction.
+    `stamp`: the store's clock, as an ISO timestamp."""
     reset = _STAMP.set(stamp)
     try:
         while _schema_version(con) < SCHEMA_VERSION:
@@ -1059,11 +1096,46 @@ def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str]) -> None:
                     _create(con)
                     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 elif version < SCHEMA_VERSION:
-                    _MIGRATIONS[version + 1](con)
-                    con.execute(f"PRAGMA user_version = {version + 1}")
+                    step = version + 1
+                    _MIGRATIONS[step](con)
+                    if step >= _OLDEST_BUILD and step not in _ONLY_ADDS:
+                        _record_floor(con, step)
+                    con.execute(f"PRAGMA user_version = {step}")
         _check_tables(con)
     finally:
         _STAMP.reset(reset)
+
+
+def _floor_of(version: int) -> int:
+    """The floor of a database this cairn's steps brought to `version`: the newest step up
+    to it that is not in _ONLY_ADDS."""
+    return max(step for step in range(1, version + 1) if step not in _ONLY_ADDS)
+
+
+def _record_floor(con: sqlite3.Connection, version: int) -> None:
+    con.execute(
+        "INSERT INTO oldest_build (one, version) VALUES (1, ?)"
+        " ON CONFLICT (one) DO UPDATE SET version = excluded.version",
+        (version,),
+    )
+
+
+def _recorded_floor(con: sqlite3.Connection, version: int) -> int:
+    """The floor a database at `version` records; `version` itself when it records none (no
+    oldest_build table, or no row in it): such a database is run by its own version only."""
+    if not _has_table(con, "oldest_build"):
+        return version
+    row = con.execute("SELECT version FROM oldest_build WHERE one = 1").fetchone()
+    return version if row is None else row[0]
+
+
+def _runs_on(con: sqlite3.Connection) -> bool:
+    """Whether this cairn runs on the database as it is now: its version is this cairn's, or
+    newer with a floor at or below this cairn's. A read that writes nothing (Store.health)."""
+    try:
+        return _schema_version(con) >= SCHEMA_VERSION
+    except SchemaTooNew:
+        return False
 
 
 _TABLES = tuple(
@@ -1109,12 +1181,18 @@ def _check_tables(con: sqlite3.Connection) -> None:
 
 def _schema_version(con: sqlite3.Connection) -> int:
     """`PRAGMA user_version`, where 0 is an empty file. v0 never stamped its schema, so
-    version 0 with tables reads as 1. SchemaTooNew: a newer cairn wrote the database."""
+    version 0 with tables reads as 1. A newer version is returned as it is when this cairn
+    may run on it (its floor is at or below SCHEMA_VERSION); SchemaTooNew otherwise, in one
+    sentence that names the database's version, its floor and this cairn's version."""
     (version,) = con.execute("PRAGMA user_version").fetchone()
     if version > SCHEMA_VERSION:
-        raise SchemaTooNew(
-            f"the database has schema version {version}; this cairn knows up to {SCHEMA_VERSION}"
-        )
+        floor = _recorded_floor(con, version)
+        if floor > SCHEMA_VERSION:
+            raise SchemaTooNew(
+                f"the database has schema version {version} and needs a cairn of schema"
+                f" version {floor} or later; this cairn knows up to {SCHEMA_VERSION}"
+            )
+        return version
     if version == 0 and con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
         return 1
     return version
@@ -1126,6 +1204,7 @@ def _create(con: sqlite3.Connection) -> None:
         con.execute(statement)
     _insert_account(con, Account(id=DEFAULT_ACCOUNT_ID, name="default", created_at=_STAMP.get()()))
     con.execute("INSERT INTO recorded_since (at) VALUES (?)", (_STAMP.get()(),))
+    _record_floor(con, _floor_of(SCHEMA_VERSION))
 
 
 def _add_accounts(con: sqlite3.Connection) -> None:
@@ -1763,7 +1842,9 @@ def _add_credential_tokens(con: sqlite3.Connection) -> None:
 
 def _add_slack(con: sqlite3.Connection) -> None:
     """Schema _CREDENTIAL_TOKENS to _SLACK (K1): the five Slack tables, empty, whether or not
-    the server is ever started with --slack. Nothing that existed changes."""
+    the server is ever started with --slack. Nothing that existed changes. It only adds
+    (_ONLY_ADDS): a build of _CREDENTIAL_TOKENS would run on it, leaving the Slack tables
+    alone (a workspace it deleted would leave its rows there)."""
     for statement in _V29_SLACK:
         con.execute(statement)
 
@@ -1772,7 +1853,9 @@ def _add_last_use(con: sqlite3.Connection) -> None:
     """Schema _SLACK to _LAST_USE: a session records its last use (`used_at`), which `serve
     --idle-minutes` ends it by. Sessions are rebuilt (as in _add_vouched_email) so that a
     migrated schema reads exactly like a fresh one; every session that exists is kept as it
-    was, with no use recorded: its last use reads as when it was made."""
+    was, with no use recorded: its last use reads as when it was made. It only adds
+    (_ONLY_ADDS): the rebuilt table is the old one with one more column, which may be NULL; a
+    session an older build writes records no use, read as when it was made."""
     columns = "digest, account_id, expires_at, created_at, user_id, label, key_id, vouched_email"
     con.execute("ALTER TABLE sessions RENAME TO sessions_v29")
     con.execute(_V30_SESSIONS)
@@ -1780,6 +1863,70 @@ def _add_last_use(con: sqlite3.Connection) -> None:
         f"INSERT INTO sessions ({columns}) SELECT {columns} FROM sessions_v29 ORDER BY rowid"
     )
     con.execute("DROP TABLE sessions_v29")
+
+
+def _v31_link(
+    previous: str,
+    account_id: str,
+    n: int,
+    seq: int,
+    at: str,
+    actor_kind: str,
+    actor: str | None,
+    actor_id: str | None,
+    action: str,
+) -> str:
+    """cairn.store.base.audit_link as _OLDEST_BUILD wrote it: this step's own copy, so a later
+    change to the writer's value cannot change what this step wrote."""
+    fields = [previous, account_id, n, seq, at, actor_kind, actor, actor_id, action]
+    text = json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _drop_retired(con: sqlite3.Connection) -> None:
+    """Schema _LAST_USE to _OLDEST_BUILD. Three changes:
+
+    - The tables billing kept, which nothing has read or written since cairn sold no plan,
+      are dropped (subscriptions, billing_messages and its index, checkouts); any rows in
+      them are lost with the step (none should be there).
+    - Each audit event gains `chain`, the value that chains it to the event before it in its
+      workspace (_v31_link), filled for every event that exists, workspace by workspace in
+      the order of its numbers, the first from the start (a workspace pruned before this
+      step starts at its oldest event kept). audit_events is rebuilt (as in _add_actor_ids)
+      so that a migrated schema reads exactly like a fresh one; every event keeps its
+      sequence and every field.
+    - oldest_build is added, and _upgrade records this step's number in it.
+
+    The step changes what an older build relies on (a build of _LAST_USE checks at open for
+    the tables dropped here, and writes audit events with no value), so no build before this
+    one runs on a database it brought forward: going back to one needs the database as it
+    was before this step, a backup."""
+    for table in ("subscriptions", "billing_messages", "checkouts"):
+        con.execute(f"DROP TABLE {table}")  # and with it its index
+    columns = "seq, account_id, n, at, actor_kind, actor, actor_id, action, project, detail"
+    con.execute("ALTER TABLE audit_events RENAME TO audit_events_v30")
+    con.execute(_V31_AUDIT_EVENTS)
+    previous: dict[str, str] = {}
+
+    def chained() -> Iterator[tuple]:
+        for row in con.execute(
+            f"SELECT {columns} FROM audit_events_v30 ORDER BY account_id, n"
+        ).fetchall():
+            seq, account_id, n, at, kind, actor, actor_id, action = row[:8]
+            value = _v31_link(
+                previous.get(account_id, "0" * 64),
+                account_id, n, seq, at, kind, actor, actor_id, action,
+            )  # fmt: skip
+            previous[account_id] = value
+            yield (*row, value)
+
+    con.executemany(
+        f"INSERT INTO audit_events ({columns}, chain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        chained(),
+    )
+    con.execute("DROP TABLE audit_events_v30")  # and with it its index
+    con.execute(_V7_AUDIT_EVENTS_BY_NUMBER)
+    con.execute(_V31_OLDEST_BUILD)
 
 
 # Each step takes the schema from one version to the next, keyed by the version it leaves. A
@@ -1815,6 +1962,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     _CREDENTIAL_TOKENS: _add_credential_tokens,
     _SLACK: _add_slack,
     _LAST_USE: _add_last_use,
+    _OLDEST_BUILD: _drop_retired,
 }
 
 

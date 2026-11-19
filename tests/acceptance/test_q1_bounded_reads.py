@@ -1503,6 +1503,8 @@ def newer(data: Path) -> tuple[Path, list[Path]]:
     Store(db, clock=Clock()).close()
     con = sqlite3.connect(db)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    # a step this cairn may not run on: the floor goes up with it
+    con.execute("UPDATE oldest_build SET version = ?", (SCHEMA_VERSION + 1,))
     con.commit()
     con.close()
     return db, []

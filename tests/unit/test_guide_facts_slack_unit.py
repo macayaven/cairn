@@ -23,7 +23,11 @@ from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, 
 from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
 
 import cairn.store.slack as store_slack
-from cairn import server
+from cairn import server, sources
+from cairn.arrange import Arranger
+from cairn.compiler import compile_note, extractive
+from cairn.llm import FakeModel
+from cairn.memory import Memory
 from cairn.server import create_app
 from cairn.slack import (
     blocks,
@@ -50,6 +54,7 @@ from cairn.store.slack import (
     OFFER_TTL,
     TRIES,
 )
+from cairn.web import cli_arrange
 from cairn.web import slack as web_slack
 from cairn.web.brand import product_of
 
@@ -441,6 +446,30 @@ def test_connect_the_page_says_the_state_switch_off_and_on():
     assert web_slack.OFF_EVENTS == ("app_uninstalled", "tokens_revoked")  # no message
 
 
+def test_connect_secrets_pasted_again_are_of_the_same_slack_workspace(world):  # noqa: F811
+    """connect.md: "Secrets pasted again must be of the same Slack workspace: to connect
+    another Slack workspace, remove Slack first, and the first workspace's notes are then
+    forgotten on their day, even once the other one is set up.\""""
+    says(
+        *CONNECT,
+        "Secrets pasted again must be of the same Slack workspace: to connect another Slack"
+        " workspace, remove Slack first, and the first workspace's notes are then forgotten on"
+        " their day, even once the other one is set up.",
+    )
+    assert "remove Slack first" in setup.REFUSALS["other_team"]
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    with pytest.raises(store_slack.NotItsTeam):
+        ready(world, team="T0QUILL01")
+    assert world.view.get_slack_install().team_id == TEAM
+    world.view.remove_slack_install(install.id)
+    ready(world, team="T0QUILL01")
+    ready(world, team="T0QUILL01")  # its secrets pasted again
+    world.clock.now += FORGET_AFTER
+    assert world.store.slack_notes_due() == [(world.account, note)]
+
+
 def test_connect_remove_deletes_the_secrets_and_links_and_forgets_10_days_later(world):  # noqa: F811
     """connect.md: "**Remove Slack**, once you type the workspace's name, deletes both secrets
     and every link between a Slack user and a person at once, and every note Slack created is
@@ -535,7 +564,7 @@ def test_connect_the_slash_commands_words(bench):
         "| `link` | Says who your Slack user is linked to; if it is linked to nobody, gives a"
         " new address to link it. `link <code>` links it with the code that address showed"
         " you. |",
-        "| `unlink` | Undoes your link, and offers a new address to link again. |",
+        "| `unlink` | Undoes your link, and says to use `link` to link again. |",
         "| `help`, or no word | Lists what there is. |",
     )
     made = manifest.build_manifest(public_url=BASE, install="sl_0123456789ab", command="/notes")
@@ -553,8 +582,16 @@ def test_connect_the_slash_commands_words(bench):
     assert [via for *_, via in bench.notes()] == ["slack"]
     assert said(ask(bench, "project")) == said(blocks.project_is("library", writable=["library"]))
     assert said(ask(bench, "link")) == said(blocks.linked("Ada"))
-    assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "unlink"))
+    unlinked = said(ask(bench, "unlink"))
+    assert "You are unlinked. The bot no longer acts as you here." in unlinked
+    assert "`/cairn link`" in unlinked
+    assert "/integrations/slack/link?t=" not in unlinked
+    assert bench.owner.slack_person(bench.install.id, ADA_SLACK) is None
+    assert bench.store._con.execute("SELECT * FROM slack_link_offers").fetchall() == []
     assert f"{BASE}/integrations/slack/link?t=" in said(ask(bench, "link"))  # linked to nobody
+    assert bench.store._con.execute("SELECT slack_user_id FROM slack_link_offers").fetchall() == [
+        (ADA_SLACK,)
+    ]
     for word in ("help", ""):
         assert said(ask(bench, word)) == said(blocks.help_text("/cairn"))
 
@@ -869,6 +906,56 @@ def test_privacy_the_slack_secrets_are_credentials_the_database_can_hold():
     assert "is the one credential of another service" not in raw
 
 
+def test_privacy_where_a_note_from_slack_can_go(bench, monkeypatch):
+    """privacy.md: "cairn compiles a note that came through Slack itself, with no model. A
+    page that holds one is not sent to a model the operator connects to arrange pages unless
+    the operator sets `<PREFIX>_SLACK_NOTES=send`, the one setting that names Slack, and then
+    not in a project its people keep from every model; cairn tidies that page itself
+    instead.\""""
+    name = PRODUCT.name
+    says(
+        *PRIVACY,
+        f"{name} compiles a note that came through Slack itself, with no model.",
+        "A page that holds one is not sent to a model the operator connects to arrange pages"
+        " unless the operator sets `<PREFIX>_SLACK_NOTES=send`, the one setting that names"
+        " Slack, and then not in a project its people keep from every model;"
+        f" {name} tidies that page itself instead.",
+    )
+    # compiled with no model: Memory compiles with compile_note's own default, the extractive
+    assert inspect.signature(compile_note).parameters["compose"].default is extractive
+    assert "compose" not in inspect.getsource(Memory.note)
+    # held unless the setting that names Slack says send; SOURCE_NOTES=send does not
+    environ = {"ARRANGER_SOURCE_NOTES": "send"}
+    assert not cli_arrange.sends_slack_notes("ARRANGER", environ)
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SLACK_NOTES": "send"})
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+    ask(bench, "note Kiln log\n\nThe kiln is fired on Tuesdays.")
+    model = FakeModel([])
+    arranger = Arranger(model, price=None, view_for=bench.store.for_account, withhold=())
+    arranger.queue(bench.account, bench.library.id, "kiln-log")
+    (done,) = asyncio.run(arranger.run_once())
+    assert done.status == "withheld" and model.requests == []
+
+
+def test_privacy_the_list_of_what_a_model_is_not_sent_names_slack():
+    """privacy.md, **Models.**: "A page that holds a note read from Google Meet, Google
+    Calendar, Gmail or Google Drive, from a connector of your own, or through Slack, is not
+    sent unless the operator allows it" and "A page that holds a note that came through Slack
+    is sent only with `<PREFIX>_SLACK_NOTES=send`, except in such a project.\""""
+    (line,) = [line for line in guide_source("privacy").splitlines() if "**Models.**" in line]
+    assert (
+        "A page that holds a note read from Google Meet, Google Calendar, Gmail or Google Drive,"
+        " from a connector of your own, or through Slack, is not sent unless the operator allows"
+        " it;"
+    ) in flat(line)
+    assert (
+        "A page that holds a note that came through Slack is sent only with"
+        " `<PREFIX>_SLACK_NOTES=send`, except in such a project."
+    ) in flat(line)
+    assert frozenset({"slack"}) == sources.HELD_VIA
+    assert "slack" not in sources.withheld_via() and "slack" not in sources.KINDS
+
+
 # The security guide, "Slack"
 
 SECURITY = ("security", "## Slack")
@@ -1072,3 +1159,18 @@ def test_security_the_one_credential_sentences_name_slack_too():
         " operator switches either on",
     ):
         assert raw.count(sentence) == 1, sentence
+
+
+def test_run_says_which_setting_sends_slacks_notes_to_the_arranging_model():
+    """run.md: "With a model connected to arrange pages, a page that holds a note that came
+    through Slack is sent to it only if the environment also says
+    `ARRANGER_SLACK_NOTES=send`; `ARRANGER_SOURCE_NOTES=send` does not send it.\""""
+    says(
+        *RUN,
+        "With a model connected to arrange pages, a page that holds a note that came through"
+        " Slack is sent to it only if the environment also says `ARRANGER_SLACK_NOTES=send`;"
+        " `ARRANGER_SOURCE_NOTES=send` does not send it.",
+    )
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SLACK_NOTES": "send"}) is True
+    assert cli_arrange.sends_slack_notes("ARRANGER", {"ARRANGER_SOURCE_NOTES": "send"}) is False
+    assert cli_arrange.sends_slack_notes("ARRANGER", {}) is False

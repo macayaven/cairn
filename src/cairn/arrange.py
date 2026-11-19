@@ -133,6 +133,13 @@ Arranging one page
   enough, whoever wrote the rest of the page, and a claim that cites it after another note's
   span (a folded repeat) counts too. A note a person or an agent stored with such a
   `via` is judged like a source's: it errs on the side of not sending.
+- Notes held by `via` alone. `arrange_page(..., held_via=())` takes more `via` values whose
+  notes go to no model, judged in the same check of the same note and nothing else: unlike
+  `withhold`, they never turn on the `source_ref` rule below. The worker's are
+  cairn.sources.HELD_VIA, Slack's ("slack": a message filed, a note typed with the command
+  and a direct message alike), unless the operator sends them (<PREFIX>_SLACK_NOTES=send,
+  cairn.web.cli_arrange); <PREFIX>_SOURCE_NOTES=send does not send them. A page that holds
+  such a note is "withheld", as below.
 - Notes that name a source (M3, tests/acceptance/test_m3_notes_that_name_a_source.py). Wherever
   notes are withheld at all (`withhold` not empty: the worker's default, or a caller that
   withholds some `via`), a note is withheld too when its `source_ref` has one of the forms the
@@ -240,7 +247,10 @@ The worker (`Arranger`)
 - Withheld pages (M2). With a model, the worker withholds the `via` values `withhold` names, or,
   when it is None (the default), cairn.sources.withheld_via() read as each page is
   judged, and with them the notes whose `source_ref` names a source (M3, above); `withhold=()`
-  withholds neither (`<PREFIX>_SOURCE_NOTES=send`). A page that holds
+  withholds neither (`<PREFIX>_SOURCE_NOTES=send`). Apart from both, with a model, it holds
+  back the notes whose `via` is in `held_via`, or, when it is None (the default),
+  cairn.sources.HELD_VIA (Slack's); `held_via=()` holds none (`<PREFIX>_SLACK_NOTES=send`).
+  Without a model it holds nothing. A page that holds
   a withheld note (arrange_page's "withheld", or holds_withheld for a page under
   `min_claims`, which is never sent either) is tidied instead, by tidy_page, exactly as the
   worker without a model tidies it, and is done as "withheld" with no draft, `previous` the
@@ -666,6 +676,7 @@ def arrange_page(
     boundary: Callable[[], str] = new_boundary,
     clock: Callable[[], float] = time.perf_counter,
     withhold: Collection[str] = (),
+    held_via: Collection[str] = (),
 ) -> Arranged:
     """Ask `model` to arrange the page and save what it answers as the page's next version,
     when it is an arrangement; a page that holds a note whose `via` is in `withhold`, or,
@@ -698,8 +709,10 @@ def arrange_page(
     if kept:  # its project is at "never" (M4): before anything else, whatever `withhold`
         return outcome("kept from models", page.version, problem=KEPT)
     cited = [i for claim in page.claims for i in claim.span_ids]
-    spans = view.get_spans(cited) if withhold else None
-    if withhold and holds_withheld(view, page, withhold, spans=spans):  # before anything else
+    spans = view.get_spans(cited) if withhold or held_via else None
+    if (withhold or held_via) and holds_withheld(  # before anything else
+        view, page, withhold, spans=spans, held_via=held_via
+    ):
         return outcome("withheld", page.version, problem=WITHHELD)
     if not (0 < len(model.name) <= NAME_MAX and model.name.isprintable()):
         problem = f"the model's name must be 1 to {NAME_MAX} printable characters"
@@ -805,6 +818,7 @@ def holds_withheld(
     withhold: Collection[str],
     *,
     spans: Mapping[str, Span] | None = None,
+    held_via: Collection[str] = (),
 ) -> bool:
     """Whether a claim of `page` cites a note whose `via` is in `withhold`, or whose
     `source_ref` names a source (cairn.sources.withheld_by_ref, M3), as the view reaches it:
@@ -814,9 +828,8 @@ def holds_withheld(
     was read) counts as withheld, and so does a known span whose note the view cannot read.
     Reads no other note, and nothing when `withhold` is empty: a caller that withholds
     nothing withholds nothing."""
-    if not withhold:
+    if not withhold and not held_via:
         return False
-    from cairn.sources import withheld_by_ref  # with something to withhold only
 
     cited = [i for claim in page.claims for i in claim.span_ids]
     if spans is None:
@@ -825,9 +838,30 @@ def holds_withheld(
         return True
     for note_id in dict.fromkeys(span.source_id for span in spans.values()):
         note = view.get_note(note_id)
-        if note is None or note.via in withhold or withheld_by_ref(note.via, note.source_ref):
+        if note is None or note.via in withhold or note.via in held_via:
+            return True
+        if withhold and _by_ref(note.via, note.source_ref):
             return True
     return False
+
+
+def _by_ref(via: str | None, source_ref: str | None) -> bool:
+    """cairn.sources.withheld_by_ref, imported only when something is withheld."""
+    from cairn.sources import withheld_by_ref
+
+    return withheld_by_ref(via, source_ref)
+
+
+def _held_via(model: ChatModel | None, held_via: Collection[str] | None) -> frozenset[str]:
+    """The `via` values the worker holds back by `via` alone: those given, else, with a
+    model, cairn.sources.HELD_VIA (Slack's); nothing without a model."""
+    if held_via is not None:
+        return frozenset(held_via)
+    if model is None:
+        return frozenset()
+    from cairn.sources import HELD_VIA  # imported with a model only
+
+    return HELD_VIA
 
 
 def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
@@ -981,6 +1015,7 @@ class Arranger:
         pause_after: int = PAUSE_AFTER,
         pause_seconds: float = PAUSE_SECONDS,
         withhold: Collection[str] | None = None,
+        held_via: Collection[str] | None = None,
     ) -> None:
         if capacity < 1 or min_claims < 0 or max_claims < 1:
             raise ValueError("capacity and max_claims are at least 1, min_claims at least 0")
@@ -998,6 +1033,7 @@ class Arranger:
         self.pause_after, self.pause_seconds = pause_after, float(pause_seconds)
         self._view_for = view_for
         self._withhold = None if withhold is None else frozenset(withhold)
+        self._held_via = _held_via(model, held_via)
         self._min_claims, self._max_claims = min_claims, max_claims
         self._capacity, self._attempts = capacity, attempts
         self._lock = threading.Lock()  # the queue and the memories; never held across a call
@@ -1187,7 +1223,7 @@ class Arranger:
         elif kept:  # its project is at "never" (M4): never sent, and still worth a tidy
             judged, reason = page.version, "kept from models"
         elif len(page.claims) < self._min_claims:
-            if not holds_withheld(view, page, self._withheld()):
+            if not holds_withheld(view, page, self._withheld(), held_via=self._held_via):
                 return Done(*item, status="small", previous=page.version, version=page.version)
             judged = page.version  # never sent, and still worth a tidy: it costs nothing
         else:
@@ -1200,6 +1236,7 @@ class Arranger:
                 attempts=self._attempts,
                 max_claims=self._max_claims,
                 withhold=self._withheld(),
+                held_via=self._held_via,
             )
             if result.status in NOT_SENT:  # kept too: switched since the page was read
                 judged, reason = result.previous, result.status

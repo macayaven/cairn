@@ -15,13 +15,16 @@ In this order, each refusal said privately with its reason and nothing filed:
    now is refused (people.BEING_FILED). From here on, whatever ends without a note stored (a
    refusal below, a busy server, a write refused, an error) releases the claim
    (Store.release_slack_claim), so the message can be filed again; a note stored keeps it,
-   as the write gives the claim its note (people.write).
+   as the write gives the claim its note in the same transaction as the note (people.write),
+   so a write that fails anywhere releases it too.
 4. No project chosen is refused before anything is asked of Slack.
 5. The author (D7): a message with no person as its author is refused without asking; else
    Slack is asked who the author is, once, within 1.5 seconds in all, unless the answer is
    kept already (people.author): another organisation, a stranger, a bot or a deactivated
    account, no answer in time, a rate limit and an error from Slack are each refused.
-6. The note is written (people.write) before Slack is answered (D8).
+6. The note is written (people.write) before Slack is answered (D8); a message that is
+   another note's by then (its claim taken over) stores nothing and is answered as filed
+   already.
 
 The answer to Slack is 200 with an empty body; the reply follows once the response has left,
 through the reply address the signed request gave (SlackClient.reply: Slack's hosts only,
@@ -35,7 +38,7 @@ from cairn.slack import blocks, people
 from cairn.slack.dispatch import Context, on_action
 from cairn.slack.text import NotText, note_from_message
 from cairn.slack.verify import Envelope
-from cairn.store.slack import FILED, FILING, MESSAGE_TIME, SLACK_ID
+from cairn.store.slack import FILED, FILING, MESSAGE_TIME, SLACK_ID, TeamChanged
 
 
 def _place(payload: dict) -> tuple[dict, str, str] | None:
@@ -66,11 +69,18 @@ async def _filed(envelope: Envelope, context: Context) -> dict:
     message, conversation_id, time = place
     if not _has_text(message):
         return blocks.refused(people.NO_TEXT)
-    held = await run_in_threadpool(
-        lambda: context.view.claim_slack_message(
-            context.install.id, conversation_id, time, brought_by=asker.person.user_id
+    try:
+        held = await run_in_threadpool(
+            lambda: context.view.claim_slack_message(
+                context.install.id,
+                conversation_id,
+                time,
+                brought_by=asker.person.user_id,
+                team_id=context.install.team_id,
+            )
         )
-    )
+    except TeamChanged:  # the install holds another Slack team by now: nothing is claimed
+        return blocks.refused(people.TEAM_CHANGED)
     if held.outcome == FILED:
         return await run_in_threadpool(people.already, context, asker, held.note_id)
     if held.outcome == FILING:

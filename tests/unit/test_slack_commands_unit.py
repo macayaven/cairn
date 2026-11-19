@@ -18,7 +18,7 @@ from cairn.memory import Memory
 from cairn.slack import blocks, commands, dispatch, people
 from cairn.slack.dispatch import Context
 from cairn.slack.verify import envelope
-from cairn.store import Claim, Store
+from cairn.store import Claim, StalePage, Store
 from cairn.store.hosted import Sealer
 
 BASE = "https://cairn.example.test"
@@ -170,7 +170,7 @@ def test_help_none_and_blank_are_the_help_of_the_installs_command(bench):
 
 
 def test_an_unlinked_user_gets_the_one_time_address_and_nothing_else(bench):
-    for text in ("find jars", "note Row 4.", "project", "project library", "link", "unlink"):
+    for text in ("find jars", "note Row 4.", "project", "project library", "link"):
         answer = said(ask(bench, text))
         assert f"{BASE}/integrations/slack/link?t=" in answer
     offered = bench.store._con.execute("SELECT COUNT(*) FROM slack_link_offers").fetchone()
@@ -276,18 +276,20 @@ def test_a_project_no_longer_reached_is_shown_as_none_chosen(bench):
     )
 
 
-def test_link_says_who_and_unlink_undoes_it_and_offers_the_address(bench):
+def test_link_says_who_and_unlink_confirms_the_link_is_undone_and_how_to_link_again(bench):
     bench.link(ADA_SLACK, bench.ada, bench.library)
     assert said(ask(bench, "link")) == said(blocks.linked("Ada"))
     answer = said(ask(bench, "unlink"))
     assert bench.owner.slack_person(bench.install.id, ADA_SLACK) is None
-    assert f"{BASE}/integrations/slack/link?t=" in answer
+    assert "You are unlinked. The bot no longer acts as you here." in answer
+    assert "`/cairn link`" in answer
+    assert "/integrations/slack/link?t=" not in answer
+    assert bench.store._con.execute("SELECT * FROM slack_link_offers").fetchall() == []
+    assert said(ask(bench, "unlink")) == answer
 
 
 def test_after_unlink_the_answer_is_the_one_seam_for_it(bench, monkeypatch):
     bench.link(ADA_SLACK, bench.ada, bench.library)
-    today = asyncio.run(people.unlinked(bench.context, ADA_SLACK))  # the offer, as before
-    assert f"{BASE}/integrations/slack/link?t=" in said(today)
     asked = []
 
     async def seam(context, slack_user):
@@ -321,17 +323,36 @@ def test_a_note_waiting_for_its_page_is_answered_through_the_one_seam_for_it(ben
     assert asked == [{"title": "Row 4 holds the quince jars.", "page_url": url,
                       "project": "library", "waiting": True}]  # fmt: skip
     monkeypatch.undo()
-    for flag in (True, False):  # today both are what blocks.filed says of a note filed
+    for flag in (True, False):
         fields = {**asked[0], "waiting": flag}
         assert people.filed_message(**fields) == blocks.filed(
-            title=fields["title"], page_url=url, project="library"
+            title=fields["title"], page_url=url, project="library", waiting=flag
         )
+
+
+def test_waiting_command_keeps_the_note_and_links_its_future_page(bench, monkeypatch):
+    bench.link(ADA_SLACK, bench.ada, bench.library)
+
+    def moving(*args, **kwargs):
+        raise StalePage(expected=0, found=1)
+
+    monkeypatch.setattr(Store, "save_page", moving)
+    payload = ask(bench, "note Row 4 holds the quince jars.")
+    assert len(bench.notes()) == 1
+    assert [note.note_id for note in bench.store.waiting_notes()] == [bench.notes()[0][0]]
+    assert bench.owner.list_pages(bench.library.id) == []
+    for text in (payload["text"], payload["blocks"][0]["text"]["text"]):
+        assert "stored" in text.lower() and "appear shortly" in text.lower()
+        assert "Filed" not in text
+    assert f"<{BASE}/b/library/p/row-4-holds-the-quince-jars|" in said(payload)
 
 
 def test_the_command_is_the_installs(bench):
     install = dataclasses.replace(bench.install, command="/shelf")
     bench.context = dataclasses.replace(bench.context, install=install)
     assert said(ask(bench, "help")) == said(blocks.help_text("/shelf"))
+    answer = said(ask(bench, "unlink"))
+    assert "`/shelf link`" in answer and "/cairn" not in answer
 
 
 def test_who_asks_shows_ids_in_a_repr_and_nothing_of_their_memory(bench):

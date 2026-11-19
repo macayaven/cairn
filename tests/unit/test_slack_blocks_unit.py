@@ -136,6 +136,30 @@ def test_filed_links_page_and_distinguishes_duplicate(already, word):
     assert_valid(payload)
 
 
+def test_waiting_note_says_stored_and_links_the_page_that_will_appear_shortly():
+    payload = blocks.filed(
+        title="Note & <x>", page_url="https://example.test/p", project="lab", waiting=True
+    )
+    for text in (payload["text"], section_text(payload)):
+        assert "stored" in text.lower() and "appear shortly" in text.lower()
+        assert "Filed" not in text
+        assert "—" not in text and ";" not in re.sub(r"&(?:amp|lt|gt);", "", text)
+        assert ": " not in text
+    assert "<https://example.test/p|Note &amp; &lt;x&gt;>" in section_text(payload)
+    assert "lab" in payload["text"]
+    assert_valid(payload)
+
+
+def test_unlinked_confirms_the_link_is_undone_and_names_the_installs_own_command():
+    payload = blocks.unlinked("/memory<&>")
+    for text in (payload["text"], section_text(payload)):
+        assert "You are unlinked. The bot no longer acts as you here." in text
+        assert "`/memory&lt;&amp;&gt; link`" in text
+        assert "—" not in text and ";" not in re.sub(r"&(?:amp|lt|gt);", "", text)
+        assert ": " not in text
+    assert_valid(payload)
+
+
 def test_link_prompt_explains_expiring_link_and_keeps_url_usable():
     payload = blocks.link_prompt("https://example.test/link?a=1&b=2")
     assert "https://example.test/link?a=1&amp;b=2" in section_text(payload)
@@ -202,6 +226,10 @@ def test_all_helpers_keep_even_escaped_long_inputs_inside_slack_limits(value):
         blocks.refused(value),
         blocks.link_prompt("https://example.test/" + value),
         blocks.linked(value),
+        blocks.unlinked(value),
+        blocks.filed(
+            title=value, page_url="https://example.test/" + value, project=value, waiting=True
+        ),
         blocks.project_is(value, writable=[value] * 100),
         blocks.help_text(value),
     ]

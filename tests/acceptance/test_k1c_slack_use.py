@@ -12,7 +12,8 @@ every call cairn would make to Slack goes to an httpx.MockTransport that records
 A Slack user who is not linked
 - Whatever they ask, with the slash command, the message shortcut or a direct message, they
   are answered privately with a one-time address to link themselves (10 minutes, one use,
-  one at a time) and nothing else happens. `help` alone is answered without it.
+  one at a time) and nothing else happens. `help` is answered without it. `unlink`
+  confirms the link is undone, without an offer. A subsequent `link` offers a new address.
 - A link takes two steps: the person who opens the address signed in and says yes is shown
   a code, and the Slack user who asked types `/cairn link <code>`. Someone who sends their
   address to another person gains nothing from that person's yes.
@@ -301,10 +302,10 @@ def offers(world: World) -> list[tuple]:
     return k1.rows(world.db, "SELECT slack_user_id, expires_at, user_id FROM slack_link_offers")
 
 
-def test_an_unlinked_user_is_answered_only_with_a_one_time_address_whatever_they_ask(world):
+def test_an_unlinked_user_gets_a_one_time_address_when_asking_to_use_cairn(world):
     before = world.notes()
     for text in ("find marmalade", "note The shelf moves.", "project", "project library",
-                 "unlink", "link"):  # fmt: skip
+                 "link"):  # fmt: skip
         assert LINK in said(private(world.command(text)))
     assert world.shortcut().status_code == 200
     assert world.direct("marmalade", "Ev0LINK0001").status_code == 200
@@ -495,13 +496,19 @@ def test_project_name_changes_it_to_one_the_person_writes_to_and_refuses_any_oth
     assert person.project_id == world.inbox.id
 
 
-def test_link_unlink_and_help(world):
-    world.link(world.ada, ADA_SLACK, world.inbox)
-    assert "Linked to Ada" in said(private(world.command("link")))
+@pytest.mark.parametrize("linked", [False, True])
+def test_unlink_privately_confirms_the_link_is_undone_and_link_starts_a_new_offer(world, linked):
+    if linked:
+        world.link(world.ada, ADA_SLACK, world.inbox)
+        assert "Linked to Ada" in said(private(world.command("link")))
     assert offers(world) == []
     unlinked = said(private(world.command("unlink")))
     assert world.ada.view.slack_person(world.install.id, ADA_SLACK) is None
-    assert LINK in unlinked
+    assert "You are unlinked. The bot no longer acts as you here." in unlinked
+    assert "`/cairn link`" in unlinked and LINK not in unlinked
+    assert offers(world) == []
+    assert LINK in said(private(world.command("link")))
+    assert len(offers(world)) == 1 and offers(world)[0][0] == ADA_SLACK
     assert "/cairn note" in said(private(world.command("help")))
 
 

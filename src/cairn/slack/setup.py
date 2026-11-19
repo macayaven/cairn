@@ -24,7 +24,9 @@ The addresses (`setup_routes`, only with `serve --slack`)
   not_a_bot; one that does not name its team, its workspace's address (`team_domain`) and the
   bot's user (`identity`) is unclear; a team for which another workspace of this server holds
   an install that is ready, on or off (`Office.team_held`, and the store's own index) is
-  taken. Each is one sentence (REFUSALS) and keeps nothing. Otherwise
+  taken; a team other than the one this install holds while it is ready, on or off is
+  other_team (cairn.store.slack.NotItsTeam), which says to remove Slack first. Each is one
+  sentence (REFUSALS) and keeps nothing. Otherwise
   Store.ready_slack_install records the team and seals both secrets. When Slack revoked the
   bot's token (SlackInstall.needs_bot_token), only the token is asked for and the signing
   secret kept is used (`Office.kept_secret`); when it does not open (the key changed), that
@@ -87,6 +89,7 @@ from cairn.store.slack import (
     NOT_AN_OWNER,
     SECRET_VALUE,
     SLACK_ID,
+    NotItsTeam,
     SlackInstall,
     TeamHeld,
 )
@@ -124,7 +127,8 @@ PERMISSIONS = {  # what each scope of the manifest (cairn.slack.manifest.SCOPES)
     ),
 }
 CHANGED_AT_SLACK = (  # said with the secrets form while Slack is on or off
-    "If the signing secret or the bot token was changed at Slack, paste both here again. A"
+    "If the signing secret or the bot token was changed at Slack, paste both here again."
+    " They must be of the same Slack workspace: to connect another one, remove Slack first. A"
     " signing secret other than the one kept has to be proven anew: Slack is then ready, and"
     " on once Slack verifies the events address again. Pasted while Slack is off, they"
     " switch it on again."
@@ -181,6 +185,10 @@ REFUSALS = {  # each one sentence; none quotes what was typed
     "taken": (
         "Another workspace on this server has Slack set up for this Slack workspace already, so"
         " nothing was kept."
+    ),
+    "other_team": (
+        "This bot token is of another Slack workspace than the one set up here: to connect"
+        " that one, remove Slack first; nothing was kept."
     ),
     "unkept": "This server could not keep these secrets, so nothing was kept.",
     "unopened": (
@@ -464,6 +472,8 @@ def setup_routes(
             return await told(memory, noted, "none")
         except TeamHeld:  # made ready for this team elsewhere since team_held was asked
             return await told(memory, noted, "taken")
+        except NotItsTeam:  # ready, on or off for another Slack team: remove Slack first
+            return await told(memory, noted, "other_team")
         except ValueError:
             return await told(memory, noted, "unkept")
         return await told(memory, noted, "ready")

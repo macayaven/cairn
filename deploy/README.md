@@ -244,7 +244,7 @@ Once only, the first update to a `compose.yaml` that gives the network a fixed s
 
 The update to schema 18 counts the headings stored with each passage toward a workspace's passages, so an existing workspace's count rises and can pass its plan's cap; until some of its notes are removed or its plan changes, its new notes are refused.
 
-An older image refuses to open a database with a newer schema. cairn exits at start, before it listens, with one line and no traceback, and leaves the database as it was; `docker compose logs cairn` shows it:
+An older image refuses to open a database with a newer schema, unless that database records that the older image still runs on it (an update that only added to the database; see below). When it refuses, cairn exits at start, before it listens, with one line and no traceback, and leaves the database as it was; `docker compose logs cairn` shows it:
 
 ```text
 SchemaTooNew: the database has schema version <found> and needs a cairn of schema version <floor> or later; this cairn knows up to <known>. Run the cairn that wrote it or a newer one, or restore the database from before the upgrade.

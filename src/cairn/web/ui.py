@@ -852,12 +852,13 @@ def _ended(
     action: str,
     button: str,
     back: str,
+    keep: str = "No, keep it",
 ) -> Response:
     """The page before an ending a list offers (end.html): `title`, what ends (`said`), the
-    one form, posting to `action`, and the way back to the list at `back`."""
+    one form, posting to `action`, and the way back to the list at `back`, said as `keep`."""
     return _ui(
         request, "end.html", title=title, trail=trail, said=said, action=action,
-        button=button, back=back, keep="No, keep it",
+        button=button, back=back, keep=keep,
     )  # fmt: skip
 
 
@@ -1520,6 +1521,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
             action=f"/members/{quote(found.user_id, safe='')}/remove",
             button=f"Remove {found.name}",
             back="/members",
+            keep=f"No, keep {found.name}",
         )
 
     def ask_revoke_invite(request: Request) -> Response:

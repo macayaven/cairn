@@ -1,0 +1,63 @@
+#cloud-config
+${yamlencode({
+  write_files = concat([
+    for destination, source in {
+      "bootstrap.sh"               = "${quick_dir}/bootstrap.sh"
+      "deploy/compose.yaml"        = "${quick_dir}/../../deploy/compose.yaml"
+      "deploy/compose.backup.yaml" = "${quick_dir}/../../deploy/compose.backup.yaml"
+      "deploy/Caddyfile"           = "${quick_dir}/../../deploy/Caddyfile"
+      "deploy/litestream.yml"      = "${quick_dir}/../../deploy/litestream.yml"
+      "deploy/compose.quick.yaml"  = "${quick_dir}/compose.quick.yaml"
+    } : {
+      path        = "/opt/cairn/${destination}"
+      owner       = "root:root"
+      permissions = destination == "bootstrap.sh" ? "0755" : "0644"
+      encoding    = "b64"
+      content     = base64encode(file(source))
+    }
+    ], [
+    {
+      path        = "/opt/cairn/quick.env"
+      owner       = "root:root"
+      permissions = "0600"
+      content     = join("", [for name, value in config : "${name}=${value}\n"])
+    },
+    {
+      path = "/etc/systemd/system/docker.service.d/cairn-quick.conf"
+      content = <<-UNIT
+        [Service]
+        ExecStartPre=/opt/cairn/bootstrap.sh firewall
+      UNIT
+    },
+    {
+      path = "/etc/systemd/system/cairn-quick.service"
+      content = <<-UNIT
+        [Unit]
+        Description=cairn quick deployment
+        Wants=network-online.target
+        Requires=docker.service
+        After=network-online.target docker.service
+        PartOf=docker.service
+        StartLimitIntervalSec=0
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        Restart=on-failure
+        RestartSec=20s
+        EnvironmentFile=/opt/cairn/quick.env
+        ExecStart=/opt/cairn/bootstrap.sh start
+
+        [Install]
+        WantedBy=multi-user.target docker.service
+      UNIT
+    },
+  ])
+  runcmd = [
+    ["/bin/bash", "-ec", join("\n", [
+      "/opt/cairn/bootstrap.sh install ${config.CAIRN_CLOUD}",
+      "systemctl daemon-reload",
+      "systemctl enable --now cairn-quick.service",
+    ])],
+  ]
+})}

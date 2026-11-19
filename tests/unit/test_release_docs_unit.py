@@ -224,3 +224,15 @@ def test_the_newest_events_removed_leave_a_chain_that_still_holds_and_the_guide_
         con.close()
     assert before.broken is None and after.broken is None
     assert after.checked == before.checked - 2
+
+
+def test_the_readme_points_at_the_quick_deploy_for_both_clouds():
+    """README.md, "Run it for other people": one sentence leads to the quick deploy on AWS or
+    Google Cloud, whose guide and definitions exist and say they were not applied."""
+    others = part(read("README.md"), "## Run it for other people")
+    assert "[quick deploy](infra/quick/README.md)" in others
+    assert "AWS" in others and "Google Cloud" in others
+    guide = read("infra/quick/README.md")
+    for cloud in ("aws", "gcp"):
+        assert (ROOT / "infra" / "quick" / cloud / "main.tf").is_file()
+    assert "applied to a real account" in " ".join(guide.split())

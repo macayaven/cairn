@@ -1,0 +1,238 @@
+# Quick deploy on AWS or Google Cloud
+
+Run cairn on one Ubuntu 24.04 LTS VM with the released image. Cloud-init copies this checkout's
+Compose files and configuration to the VM. Caddy gets the HTTPS certificate, and Litestream uses
+the VM's identity to replicate SQLite to a private, provider-encrypted bucket.
+
+## It is not
+
+- It runs one small VM.
+- There is no updater that follows a tag or deploys from CI.
+- There are no alerts or data disk snapshots.
+- [The fuller Google Cloud setup](../gcp/README.md) includes CI deployment, a separate data disk
+  and snapshots.
+
+The bucket is what survives a VM replacement. The shipped [Litestream configuration](../../deploy/litestream.yml)
+syncs changes every 10 seconds and expires old replica files. With healthy replication keeping up,
+replacing the VM can lose the last 10 seconds of writes. If replication has stalled, recovery goes
+back to the last successful upload. On a fresh disk, Compose restores the database from the bucket
+before starting cairn.
+
+## AWS
+
+Use a commercial AWS region, OpenTofu 1.13 or newer, the AWS CLI with credentials for provisioning
+the stack, and the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+and permissions for an interactive session. Have a domain whose DNS you can edit.
+
+The stack creates a VPC and subnet, a `t3.small` with a 20 GiB encrypted `gp3` boot disk, a
+reserved public IPv4 address, an instance profile, an S3 bucket and a Secrets Manager secret.
+While it runs, budget for [EC2 instance time](https://aws.amazon.com/ec2/pricing/on-demand/),
+[the disk](https://aws.amazon.com/ebs/pricing/), [the IPv4 address](https://aws.amazon.com/vpc/pricing/),
+[S3 storage and requests](https://aws.amazon.com/s3/pricing/), [the secret and its API calls](https://aws.amazon.com/secrets-manager/pricing/),
+and billable transfer.
+
+1. Clone at the release tag.
+
+   ```sh
+   git clone --branch v0.1.0 https://github.com/macayaven/cairn.git
+   cd cairn/infra/quick/aws
+   ```
+
+2. Copy the example and set its three lines, `region`, `domain` and `acme_email`.
+
+   ```sh
+   cp terraform.tfvars.example terraform.tfvars
+   ```
+
+3. Initialize the stack.
+
+   ```sh
+   tofu init
+   ```
+
+4. Review and apply the plan.
+
+   ```sh
+   tofu apply
+   ```
+
+5. Set your domain's A record to the printed address.
+
+   ```sh
+   tofu output -raw public_ipv4
+   ```
+
+6. Wait for DNS and for this check to answer over HTTPS.
+
+   ```sh
+   curl -fsS "$(tofu output -raw url)/healthz"
+   ```
+
+7. Print and run the Session Manager command locally. Print the key command locally and run it
+   inside that session.
+
+   ```sh
+   tofu output -raw connect_command
+   tofu output -raw first_key_command
+   ```
+
+The key command writes a root-owned file with mode 0600 and prints its path. Read it in a private
+session without transcript logging. Use the API key to sign in at your HTTPS URL and keep the key
+in your credential store.
+
+### AWS settings
+
+The settings secret starts without a version, so you can sign in with API keys from the start.
+To configure sign-in providers or other settings, prepare a local `cairn.env` as described in
+[the Compose guide](../../deploy/README.md#settings). From the AWS stack directory, upload it without
+putting its value in your command line or OpenTofu state.
+
+```sh
+aws secretsmanager put-secret-value --region "$(tofu output -raw region)" \
+  --secret-id "$(tofu output -raw settings_secret)" --secret-string file://./cairn.env
+```
+
+In the Session Manager shell, reload the settings from the secret store.
+
+```sh
+sudo systemctl restart cairn-quick.service
+```
+
+### AWS teardown
+
+Save the bucket and region before destroying the stack. The destroy operation refuses to delete
+a bucket with objects. Secrets Manager schedules the settings secret for deletion.
+
+```sh
+bucket="$(tofu output -raw backup_bucket)"
+region="$(tofu output -raw region)"
+tofu destroy
+```
+
+To remove a retained bucket too, empty it and retry the destroy. This deletes the backups.
+
+```sh
+aws s3 rm "s3://$bucket/" --region "$region" --recursive
+tofu destroy
+```
+
+## Google Cloud
+
+Use a billing-enabled project, OpenTofu 1.13 or newer, and the Google Cloud CLI. Configure
+[Application Default Credentials](https://docs.cloud.google.com/docs/authentication/provide-credentials-adc)
+with permission to enable the APIs and provision the stack. The account you use for SSH needs
+[IAP tunnel access and OS Admin Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin#assign-oslogin-roles),
+including permission to use the attached service account. Have a domain whose DNS you can edit.
+
+The stack creates a VPC and subnet, an `e2-small` with a 20 GiB `pd-balanced` boot disk, a
+reserved public IPv4 address, a service account, a Cloud Storage bucket and a Secret Manager
+secret. The default zone is `us-central1-a`. While it runs, budget for
+[Compute Engine instance time](https://cloud.google.com/compute/vm-instance-pricing),
+[the disk](https://cloud.google.com/compute/disks-image-pricing),
+[the IPv4 address and billable transfer](https://cloud.google.com/vpc/network-pricing),
+[replica storage and requests](https://cloud.google.com/storage/pricing),
+and [active secret versions and access operations](https://cloud.google.com/secret-manager/pricing).
+
+1. Clone at the release tag.
+
+   ```sh
+   git clone --branch v0.1.0 https://github.com/macayaven/cairn.git
+   cd cairn/infra/quick/gcp
+   ```
+
+2. Copy the example and set its three lines, `project_id`, `domain` and `acme_email`.
+
+   ```sh
+   cp terraform.tfvars.example terraform.tfvars
+   ```
+
+3. Initialize the stack.
+
+   ```sh
+   tofu init
+   ```
+
+4. Review and apply the plan.
+
+   ```sh
+   tofu apply
+   ```
+
+5. Set your domain's A record to the printed address.
+
+   ```sh
+   tofu output -raw public_ipv4
+   ```
+
+6. Wait for DNS and for this check to answer over HTTPS.
+
+   ```sh
+   curl -fsS "$(tofu output -raw url)/healthz"
+   ```
+
+7. Print and run the IAP SSH command locally. Print the key command locally and run it inside
+   the SSH session.
+
+   ```sh
+   tofu output -raw connect_command
+   tofu output -raw first_key_command
+   ```
+
+The key command writes a root-owned file with mode 0600 and prints its path. Read it in a private
+session and use the API key to sign in at your HTTPS URL. Keep the key in your credential store.
+
+### Google Cloud settings
+
+The settings secret starts without a version, so you can sign in with API keys from the start.
+To configure sign-in providers or other settings, prepare a local `cairn.env` as described in
+[the Compose guide](../../deploy/README.md#settings). From the Google Cloud stack directory, upload
+it without putting its value in your command line or OpenTofu state.
+
+```sh
+gcloud secrets versions add "$(tofu output -raw settings_secret)" \
+  --project="$(tofu output -raw project_id)" --data-file=./cairn.env
+```
+
+In the IAP SSH shell, reload the settings from the secret store.
+
+```sh
+sudo systemctl restart cairn-quick.service
+```
+
+### Google Cloud teardown
+
+Save the bucket name before destroying the stack. The destroy operation refuses to delete a
+bucket with objects. The project APIs stay enabled.
+
+```sh
+bucket="$(tofu output -raw backup_bucket)"
+tofu destroy
+```
+
+To remove a retained bucket too, empty it and retry the destroy. This deletes the backups.
+
+```sh
+gcloud storage rm --all-versions "gs://$bucket/**"
+tofu destroy
+```
+
+## Upgrade
+
+Save a [cold copy of the database](../../src/cairn/guides/run.md#back-it-up) from the Compose
+`cairn` service's `/data` volume off the VM and note the running image, then set `image` in
+`terraform.tfvars` to the next release or check out its tag in this clone and run `tofu apply`
+(run `tofu init` first if the lock changed).
+OpenTofu replaces the VM when the rendered boot configuration changes, keeping the address and
+bucket, and the new cairn may migrate the restored database.
+Check the release notes before going back, because an older image can use an additive schema
+update but needs the pre-upgrade backup after an incompatible one.
+
+## What was tried
+
+- The bootstrap tests used stand-ins for Docker, the cloud secret stores and the metadata firewall.
+  The template tests compared the contents delivered by cloud-init with the files in the checkout.
+- Both configurations passed the OpenTofu formatting check and initialized from local provider
+  packages. In the implementation sandbox, `tofu validate` and `tofu test` with mocked providers
+  could not finish because the provider processes were denied their local sockets.
+- Neither path has been applied to a real account. VM boot, cloud access, certificate issuance
+  and bucket-backed restore still need a live check.

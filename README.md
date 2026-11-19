@@ -160,7 +160,7 @@ A newer cairn may update the database when it starts. When the update only adds 
 
 ## Run it for other people
 
-[deploy/README.md](deploy/README.md) runs cairn on a server that a domain points at, behind Caddy, which gets the certificate. It adds backups to object storage with Litestream, sign-in with GitHub, Google or your own identity provider, and caps per workspace from a plans file the operator writes. [Run it yourself](docs/guides/run.md) builds the source and runs it with `docker run` instead of Compose.
+[deploy/README.md](deploy/README.md) runs cairn on a server that a domain points at, behind Caddy, which gets the certificate. To put that on one small VM on AWS or Google Cloud with three settings, backups to a bucket included, see the [quick deploy](infra/quick/README.md); it has been validated but not yet applied to a real account, and says what that leaves unproven. [infra/gcp](infra/gcp/README.md) is the fuller set-up for Google Cloud. It adds backups to object storage with Litestream, sign-in with GitHub, Google or your own identity provider, and caps per workspace from a plans file the operator writes. [Run it yourself](docs/guides/run.md) builds the source and runs it with `docker run` instead of Compose.
 
 ## Develop
 

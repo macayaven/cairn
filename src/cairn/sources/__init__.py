@@ -233,10 +233,12 @@ the memory use cases)
   name items) and `out_of_reach` (drafts for a project the viewer does not reach, never
   shown). A source that cannot be read answers `read` False and why; one whose credential
   variable is unset fails in `open`, before any request.
-- `source_client(transport=None)` is the HTTP client sources read through: a 30 s timeout,
-  redirects never followed. Making one holds the "httpx" and "httpcore" loggers at WARNING
-  or above, so no caller's log gets httpx's request lines, which carry the query string, or
-  httpcore's DEBUG trace of a response's headers, where a provider may echo a credential.
+- `source_client(transport=None, resolve=None)` is the HTTP client sources read through: a
+  30 s timeout, redirects never followed, and no request to an address inside this
+  machine's network plumbing, written out or resolved (cairn.sources.url). Making one
+  holds the "httpx" and "httpcore" loggers at WARNING or above, so no caller's log gets
+  httpx's request lines, which carry the query string, or httpcore's DEBUG trace of a
+  response's headers, where a provider may echo a credential.
   `kept_error(error)` is what a failed run keeps and prints.
 """
 

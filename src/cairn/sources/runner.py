@@ -42,6 +42,7 @@ from cairn.sources import (
     SourceError,
     holds_secret,
 )
+from cairn.sources.url import Checked, Resolve, system_resolve
 from cairn.store import SourceOff, Store
 from cairn.store.hosted import HOSTED_ENV, NOT_HERE, RECONNECT, TokenUnusable
 from cairn.store.sources import OwnerCannotWrite
@@ -62,17 +63,32 @@ Sleep = Callable[[float], Awaitable[None]]
 Turn = Callable[[], AbstractAsyncContextManager[Any]]
 
 
-def source_client(transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
+def source_client(
+    transport: httpx.AsyncBaseTransport | None = None, *, resolve: Resolve | None = None
+) -> httpx.AsyncClient:
     """The HTTP client sources read through: a timeout, and redirects never followed. It
     also holds the "httpx" and "httpcore" loggers (CLIENT_LOGGERS) at WARNING or above for
     good: httpx logs every request at INFO with its full URL, and httpcore traces every
     response's headers at DEBUG, where a provider may echo a credential. So a source's
     query strings and whatever its provider sends back in a header stay out of every log,
-    whoever made the client (the command line, `serve`)."""
+    whoever made the client (the command line, `serve`).
+
+    Before each request the client refuses an address inside this machine's network
+    plumbing, and a name that resolves to one (cairn.sources.url.Checked), through
+    `resolve`; without a transport, through the system's resolver. A client given a
+    transport and no resolver (a test's) looks no name up."""
     for name in CLIENT_LOGGERS:
         client_log = logging.getLogger(name)
         client_log.setLevel(max(logging.WARNING, client_log.level))
-    return httpx.AsyncClient(timeout=SOURCE_TIMEOUT, follow_redirects=False, transport=transport)
+    if resolve is None and transport is None:
+        resolve = system_resolve
+    hooks = [Checked(resolve)] if resolve is not None else []
+    return httpx.AsyncClient(
+        timeout=SOURCE_TIMEOUT,
+        follow_redirects=False,
+        transport=transport,
+        event_hooks={"request": hooks},
+    )
 
 
 @dataclass

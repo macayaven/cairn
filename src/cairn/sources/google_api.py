@@ -62,12 +62,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import unquote, urlsplit
 
 import httpx
 
 from cairn.guard import PatternGuard
 from cairn.sources import Clock, SourceError
+from cairn.sources import url as source_url
 from cairn.sources.timing import limit
 
 LATE = "its deadline, which an answer still arriving passed"
@@ -80,7 +80,6 @@ MAX_BACKOFF = 32.0  # seconds: Google's "typically 32 or 64"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 REASON = re.compile(r"[A-Za-z][A-Za-z_]{0,63}")
 RATE_REASONS = frozenset({"RATE_LIMIT_EXCEEDED", "rateLimitExceeded", "userRateLimitExceeded"})
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")  # what credentials_env may name
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # an unknown setting a refusal may repeat
 _ADDRESS_CHAR = r"[^@\s,;<>()\[\]\"']"
@@ -144,30 +143,14 @@ def looks_like_a_credential(value: str) -> bool:
 
 def check_base_url(value: object, api: str) -> str:
     """`base_url` as stored, or ValueError naming it (`api` says what it is the address of)
-    and never repeating the value."""
-    if not isinstance(value, str) or len(value) > 2048:
-        raise ValueError(f"base_url is the address of {api}")
-    try:
-        parts = urlsplit(value.strip())
-        host = parts.hostname
-    except ValueError:
-        raise ValueError("base_url is not a URL") from None
-    if "@" in parts.netloc:
-        raise ValueError(
-            "base_url must not hold a user or password: the credential comes from the environment"
-        )
-    scheme = parts.scheme.lower()
-    if not host or not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("base_url is https, or http on this machine")
-    if parts.query or parts.fragment or "?" in value or "#" in value:
-        raise ValueError("base_url has no query or fragment")
-    pieces = [*host.split("."), *(unquote(s) for s in parts.path.split("/"))]
-    if any(looks_like_a_credential(piece) for piece in pieces if piece):
-        raise ValueError(
-            "base_url looks like it holds a credential: the credential comes from the"
-            " environment, named by credentials_env"
-        )
-    return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    and never repeating the value (cairn.sources.url.check_base_url)."""
+    return source_url.check_base_url(
+        value,
+        what=api,
+        comes_from="the credential comes from the environment",
+        named_by="credentials_env",
+        looks_like=looks_like_a_credential,
+    )
 
 
 # Requests

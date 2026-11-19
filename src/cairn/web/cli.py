@@ -256,6 +256,7 @@ from cairn.sources.runner import (
     sync_all,
 )
 from cairn.store import JOINS, CannotOpen, SchemaTooNew, SourceInfo, Store, UnknownSchema
+from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import cli_arrange, cli_data, cli_google, cli_stats, google_connect
 from cairn.web import slack as web_slack
@@ -499,6 +500,20 @@ def _parser() -> argparse.ArgumentParser:
         metavar="N",
         help=f"keep the newest N versions of each page ({KEEP_VERSIONS}; all: every version);"
         " not with --plans, where each plan says",
+    )
+    serve.add_argument(  # each read an event of its workspace's audit log
+        "--audit-reads",
+        action="store_true",
+        help="record each read of a page, a note, a claim's evidence, a search and a graph"
+        " in its workspace's audit log, with who read and what (never the words searched);"
+        " each read then costs one more write",
+    )
+    serve.add_argument(
+        "--audit-keep",
+        type=_audit_keep,
+        metavar="N",
+        help=f"keep the newest N events of each workspace's audit log ({AUDIT_KEEP};"
+        " all: every event)",
     )
     serve.add_argument(  # Q1: the install's numbers, a line in the log
         "--stats-every",
@@ -1595,13 +1610,15 @@ def _sign_in(args: argparse.Namespace, environ: Mapping[str, str]) -> SignIn | N
 
 @contextlib.contextmanager
 def _access_log_on_stderr() -> Iterator[None]:
-    """The access log on stderr, one line per call, and the line with the install's numbers
-    (Q1; cairn.web.stats.STATS_LOGGER), while the server runs; each logger is put back as it
-    was afterwards. Neither propagates: the MCP SDK configures the root logger, and its
+    """The access log on stderr, one line per call, the line with the install's numbers
+    (Q1; cairn.web.stats.STATS_LOGGER), and each audit event as it is stored (AUDIT_LOGGER,
+    "cairn.audit: {...}", one JSON object), while the server runs; each logger is put back
+    as it was afterwards. None propagates: the MCP SDK configures the root logger, and its
     handler would print each record a second time."""
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
-    loggers = [logging.getLogger(name) for name in (ACCESS_LOGGER, STATS_LOGGER)]  # Q1
+    names = (ACCESS_LOGGER, STATS_LOGGER, AUDIT_LOGGER)  # Q1; the audit trail's copy
+    loggers = [logging.getLogger(name) for name in names]
     kept = [(logger.level, logger.propagate) for logger in loggers]
     for logger in loggers:
         logger.addHandler(handler)
@@ -1658,6 +1675,15 @@ def _at_least_one(text: str) -> int:
 
 def _keep_versions(text: str) -> int | str:
     """`serve --keep-versions`: a whole number of at least 1, or "all" (ALL_VERSIONS)."""
+    if text == ALL_VERSIONS:
+        return ALL_VERSIONS
+    if not re.fullmatch(r"[0-9]+", text) or int(text) < 1:
+        raise argparse.ArgumentTypeError("a whole number, 1 or more, or all")
+    return int(text)
+
+
+def _audit_keep(text: str) -> int | str:
+    """`serve --audit-keep`: a whole number of at least 1, or "all" (ALL_VERSIONS's word)."""
     if text == ALL_VERSIONS:
         return ALL_VERSIONS
     if not re.fullmatch(r"[0-9]+", text) or int(text) < 1:
@@ -1841,6 +1867,8 @@ def _serve(args: argparse.Namespace) -> int:
                 google_connect=google,  # a Google account connected in the browser, or off
                 slack=slack,  # K1: Slack, both ways, or off
                 graph_explorer=args.graph_explorer,  # G2: the graph page you can explore
+                audit_reads=args.audit_reads,  # each read an event of its workspace
+                audit_keep=_audit_kept(args),  # how many events each workspace keeps
             )
         except ValueError as error:
             print(f"cannot sign in that way: {error}", file=sys.stderr)
@@ -1871,6 +1899,14 @@ def _serve(args: argparse.Namespace) -> int:
         store.close()
         lock.release()
     return 0
+
+
+def _audit_kept(args: argparse.Namespace) -> int | None:
+    """How many events of its audit log each workspace keeps: AUDIT_KEEP unless
+    `--audit-keep` says; None for `--audit-keep all` (every event)."""
+    if args.audit_keep == ALL_VERSIONS:
+        return None
+    return AUDIT_KEEP if args.audit_keep is None else args.audit_keep
 
 
 def _kept(args: argparse.Namespace, plans: Plans | None) -> int | None:

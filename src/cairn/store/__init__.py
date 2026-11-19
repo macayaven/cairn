@@ -1020,7 +1020,9 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   made_with and recorded_since are added, the first two empty, so every note that exists
   has no recorded writer ("unknown") and every key and grant records no key it was made
   with; recorded_since holds the moment the step ran, read from the store's clock (a new
-  database holds the moment it was made).
+  database holds the moment it was made). From 29 (schema.py's _LAST_USE step, 30):
+  sessions are rebuilt with `used_at`, every session that exists kept as it was with no use
+  recorded, so its last use reads as when it was made (`serve --idle-minutes`).
   Each version step
   is one transaction, so a step that fails leaves the database as it was.
   Opening a database whose version is higher than SCHEMA_VERSION raises SchemaTooNew and

@@ -95,12 +95,18 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         " moves the production VM to it",
         "7. **Release:** a tag whose published image passed becomes a GitHub release, with the"
         " version's section of `CHANGELOG.md` as its text and the wheel and source archive"
-        " that `uv build` makes attached. A tag never deploys.",
+        " attached.",
+        "Job `package` builds them in a job that may only read the repository, with the build"
+        " backend and its dependencies pinned by hash in `build-constraints.txt`; job"
+        " `release`, the only one that may write to the repository, builds and installs"
+        " nothing, checks that it got one wheel and one source archive of the tag's version,"
+        " and makes the release. A tag never deploys.",
         "A run that failed after publishing and before the release was made is finished by"
         " re-running only its failed jobs: re-running every job would publish the version"
         " again.",
     ):
         assert sentence in ci, sentence
+    assert "that `uv build` makes attached" not in ci
     assert "Tags are the version, `major.minor`, the branch and the commit." not in ci
     assert "A tag is published as `X.Y.Z`, `X.Y` and `latest`" not in ci
 

@@ -272,16 +272,18 @@ def test_an_invitation_does_not_open_the_gate(make):
     assert found is not None and found.email == BROOK
 
 
-def test_the_list_gates_sign_in_and_nothing_else(make):
+def test_the_list_holds_on_every_request_and_deletes_nothing(make):
     world = make(join="personal", allowed_emails=(ADA, BROOK))
     assert sign_in(world, "github", BROOK_GITHUB).status_code == 200
     session = world.client.cookies["__Host-cairn_session"]
+    before = dump(world.db)
     # The server starts again with a shorter list, on the same database.
     later = app_on(world.store, world.fake, join="personal", allowed_emails=(ADA,))
     with TestClient(later, base_url=BASE) as browser:
         browser.cookies.set("__Host-cairn_session", session)
         home = browser.get("/", follow_redirects=False)
-        assert home.status_code == 200 and "Brook Ng" in home.text  # still open, still Brook
+        assert "Brook Ng" not in home.text  # ended: answered as to someone signed out
+        assert dump(world.db) == before  # nothing deleted
         fresh = TestClient(later, base_url=BASE)  # signing in again is another matter
         r = sign_in(world, "github", BROOK_GITHUB, client=fresh)
         assert r.status_code == 403 and "__Host-cairn_session" not in fresh.cookies

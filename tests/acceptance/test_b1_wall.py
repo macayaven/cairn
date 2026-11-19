@@ -1471,7 +1471,7 @@ def test_an_agent_outlives_the_brand_being_set_or_removed(make, branded_first):
         assert projects_over_mcp(after, got["access_token"], heard) == ["core"]
 
 
-# 7. The list still decides who signs in, and nothing else
+# 7. The list decides who signs in, and is checked on every request
 
 
 def test_the_list_still_gates_sign_in_under_the_wall_and_the_brand(make):
@@ -1484,10 +1484,11 @@ def test_the_list_still_gates_sign_in_under_the_wall_and_the_brand(make):
     later = world.app(listed=(ADA,), **settings)
     again = world.browser(later)
     again.cookies.set(cookie, token)
-    home = again.get("/", follow_redirects=False)
-    assert home.status_code == 200 and "Brook Ng" in home.text  # still open, still Brook
-    stranger = fresh(later)
     before = dump(world.db)
+    home = again.get("/", follow_redirects=False)
+    assert home.status_code == 303 and "Brook Ng" not in home.text  # ended: checked per request
+    assert dump(world.db) == before  # nothing deleted
+    stranger = fresh(later)
     r = sign_in(world, stranger, BROOK_GITHUB)
     assert r.status_code == 403 and dump(world.db) == before
     assert not [c for c, (value, a) in set_cookies(r).items() if value and a.get("path") == "/"]

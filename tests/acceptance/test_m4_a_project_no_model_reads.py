@@ -731,7 +731,7 @@ def test_it_is_kept_in_the_settings_and_goes_with_its_project(world):
     con = sqlite3.connect(world.db)
     try:
         (version,) = con.execute("PRAGMA user_version").fetchone()
-        assert version == SCHEMA_VERSION == 29
+        assert version == SCHEMA_VERSION == 30
         named = "SELECT COUNT(*) FROM settings WHERE instr(name, ?) > 0 OR instr(value, ?) > 0"
         assert con.execute(named, (launch.id, launch.id)).fetchone() == (1,)
         assert world.cy.view.delete_project(launch.id) is True

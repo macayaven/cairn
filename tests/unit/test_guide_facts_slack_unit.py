@@ -441,6 +441,30 @@ def test_connect_the_page_says_the_state_switch_off_and_on():
     assert web_slack.OFF_EVENTS == ("app_uninstalled", "tokens_revoked")  # no message
 
 
+def test_connect_secrets_pasted_again_are_of_the_same_slack_workspace(world):  # noqa: F811
+    """connect.md: "Secrets pasted again must be of the same Slack workspace: to connect
+    another Slack workspace, remove Slack first, and the first workspace's notes are then
+    forgotten on their day, even once the other one is set up.\""""
+    says(
+        *CONNECT,
+        "Secrets pasted again must be of the same Slack workspace: to connect another Slack"
+        " workspace, remove Slack first, and the first workspace's notes are then forgotten on"
+        " their day, even once the other one is set up.",
+    )
+    assert "remove Slack first" in setup.REFUSALS["other_team"]
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    with pytest.raises(store_slack.NotItsTeam):
+        ready(world, team="T0QUILL01")
+    assert world.view.get_slack_install().team_id == TEAM
+    world.view.remove_slack_install(install.id)
+    ready(world, team="T0QUILL01")
+    ready(world, team="T0QUILL01")  # its secrets pasted again
+    world.clock.now += FORGET_AFTER
+    assert world.store.slack_notes_due() == [(world.account, note)]
+
+
 def test_connect_remove_deletes_the_secrets_and_links_and_forgets_10_days_later(world):  # noqa: F811
     """connect.md: "**Remove Slack**, once you type the workspace's name, deletes both secrets
     and every link between a Slack user and a person at once, and every note Slack created is

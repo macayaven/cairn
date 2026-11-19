@@ -55,18 +55,26 @@ before, which stays as it was (and what `note` answers does not change):
   writers were recorded (no name). The writer is the caller's, never anything the request
   says: a note's `via` is the caller's own word and is shown as given.
 - `outside` (is_outside): a note a source's run wrote is outside text, its words written by
-  whoever can write at that source; a note with no recorded writer is outside when its
-  `via` is the `via` of a kind in cairn.sources.KINDS (read at each call); every other
-  note is not.
+  whoever can write at that source; so is a Slack message someone filed (8.5: its
+  `slack_notes` row, of how "filed", created the note), its words its author's; a note with
+  no recorded writer is outside when its `via` is the `via` of a kind in
+  cairn.sources.KINDS (read at each call); every other note is not, a note typed with the
+  Slack command among them.
 - Every hit of `recall` carries `outside` (true when any note its claim cites is outside)
   and `written_by`: one entry per note the claim cites, in the order the claim first cites
   each, at most WRITTEN_BY_MAX (3), each {"note": the note's id, "kind", "name", "via",
-  "outside"}; and `written_by_more`, the count of notes left out, only when there are more.
-  A passage the store no longer holds, or one out of the caller's reach, names nothing.
-- Every claim `page` answers carries `outside` by the same rule. The stored body is not
-  rewritten.
-- Every passage `evidence` answers carries `written_by` ({"kind", "name"} of its note's writer),
-  its note's `via` and `outside`.
+  "outside"}, and for a filed Slack message `filed_message` (SLACK_FILED: the writer filed
+  it, the words are the message's author's); and `written_by_more`, the count of notes left
+  out, only when there are more. A passage the store no longer holds, or one out of the
+  caller's reach, names nothing.
+- Every claim `page` answers carries `outside` and `written_by` (and `written_by_more`) by
+  the same rule. The stored body is not rewritten.
+- Every passage `evidence` answers carries `written_by` ({"kind", "name"} of its note's
+  writer, and `filed_message` as above), its note's `via` and `outside`.
+- When (8.1): every hit, claim and passage carries `written_at`, the `created_at` the store
+  keeps of its note (ISO 8601); for a hit or a claim citing several notes, the newest; None
+  when it cites none the caller reaches. It is read with the writers (Store.note_origins)
+  or with the note itself, so no statement is added.
 - No name holds an address: a person is named by audit.person_name, and a key, an agent and
   a source by the label or name they were given.
 
@@ -781,6 +789,12 @@ def _claim(claim: Claim) -> dict[str, Any]:
     return claim.shown()
 
 
+# 8.5: what a `written_by` entry of a Slack message someone filed says beside its writer.
+SLACK_FILED = (
+    "A Slack message this writer filed: its words are its author's, whom the note's heading names."
+)
+
+
 def source_via() -> frozenset[str]:
     """The `via` of every kind of source (cairn.sources.KINDS), read now: a kind added at
     run time counts."""
@@ -789,10 +803,13 @@ def source_via() -> frozenset[str]:
     return frozenset(kind.via for kind in SOURCE_KINDS.values())
 
 
-def is_outside(kind: str, via: str | None) -> bool:
-    """Whether a note is outside text (A1): a source's run wrote it; or no writer was
-    recorded for it (it was stored before) and its `via` is a source kind's."""
-    if kind == "source":
+def is_outside(kind: str, via: str | None, *, filed_message: bool = False) -> bool:
+    """Whether a note is outside text (A1): a source's run wrote it; or it is a Slack
+    message someone filed (8.5: Store.note_origins' `filed_message`), whose words are its
+    author's, as a source's are whoever wrote there; or no writer was recorded for it (it
+    was stored before) and its `via` is a source kind's. A note typed with the Slack command
+    is its writer's own."""
+    if kind == "source" or filed_message:
         return True
     return kind == UNKNOWN_WRITER and via is not None and via in source_via()
 
@@ -800,13 +817,28 @@ def is_outside(kind: str, via: str | None) -> bool:
 def _written(note: str, origin: NoteOrigin) -> dict[str, Any]:
     """One entry of a hit's `written_by`."""
     kind, name, via = origin[:3]
-    return {
+    entry = {
         "note": note,
         "kind": kind,
         "name": name,
         "via": via,
-        "outside": is_outside(kind, via),
+        "outside": is_outside(kind, via, filed_message=origin.filed_message),
     }
+    return entry | _filed(origin)
+
+
+def _filed(origin: NoteOrigin) -> dict[str, str]:
+    """8.5: what a writer of a Slack message they filed is said with: SLACK_FILED."""
+    return {"filed_message": SLACK_FILED} if origin.filed_message else {}
+
+
+def _writers(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """A claim's `written_by` (A1): its first WRITTEN_BY_MAX entries, and `written_by_more`,
+    the count of the rest, only when there are more."""
+    shown: dict[str, Any] = {"written_by": entries[:WRITTEN_BY_MAX]}
+    if len(entries) > WRITTEN_BY_MAX:
+        shown["written_by_more"] = len(entries) - WRITTEN_BY_MAX
+    return shown
 
 
 def _newest(times: Iterable[str]) -> str | None:
@@ -1307,11 +1339,9 @@ class Memory:
                 "version": hit.version,
                 "score": hit.score,
                 "outside": any(entry["outside"] for entry in entries),
-                "written_by": entries[:WRITTEN_BY_MAX],
+                **_writers(entries),
                 "written_at": _newest(origins[entry["note"]].created_at for entry in entries),
             }
-            if len(entries) > WRITTEN_BY_MAX:
-                answer["written_by_more"] = len(entries) - WRITTEN_BY_MAX
             answers.append(answer)
         return {"hits": answers, "searched": searched(found.searched)}
 
@@ -1343,6 +1373,7 @@ class Memory:
                 {
                     **_claim(claim),
                     "outside": any(entry["outside"] for entry in entries),
+                    **_writers(entries),
                     "written_at": _newest(origins[entry["note"]].created_at for entry in entries),
                 }
                 for claim, entries in zip(page.claims, writers, strict=True)
@@ -1385,19 +1416,22 @@ class Memory:
             which = "page" if version is None else f"version {page.version} of page"
             raise NotFound(f"no claim {claim_id!r} on {which} {slug!r} in project {target.name!r}")
         sources = self.sources(target, claim.span_ids)
-        writers = self.store.note_writers(note.id for _, note in sources.values())
+        origins = self.store.note_origins(note.id for _, note in sources.values())
         passages = []
         for span_id in claim.span_ids:
             if span_id not in sources:
                 continue
             span, note = sources[span_id]
-            kind, name, via = writers.get(note.id, (UNKNOWN_WRITER, None, note.via))
+            unknown = NoteOrigin(UNKNOWN_WRITER, None, note.via, note.created_at, False)
+            origin = origins.get(note.id, unknown)
+            kind, name, via = origin[:3]
             passages.append(
                 {
                     **_source(span, note),
-                    "written_by": {"kind": kind, "name": name},  # A1: who wrote its note
+                    # A1: who wrote its note; 8.5: and a Slack message's, who filed it
+                    "written_by": {"kind": kind, "name": name} | _filed(origin),
                     "via": via,
-                    "outside": is_outside(kind, via),
+                    "outside": is_outside(kind, via, filed_message=origin.filed_message),
                     "written_at": note.created_at,  # 8.1: the row read already holds it
                 }
             )

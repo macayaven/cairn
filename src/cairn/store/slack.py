@@ -821,7 +821,7 @@ class SlackMethods(StoreBase):
         forgotten = 0
         for note in notes:
             try:
-                self.forget_note(note)  # type: ignore[attr-defined]
+                self.forget_note(note)
                 forgotten += 1
             except KeyError:  # forgotten meanwhile: its record went with it
                 pass
@@ -914,7 +914,7 @@ class SlackMethods(StoreBase):
         with self._write() as con:
             self._slack_row(con, install_id)
             self._link(con, install_id, slack_user_id, user_id)
-            return self._person(con, install_id, slack_user_id)  # type: ignore[return-value]
+            return self._person(con, install_id, slack_user_id)
 
     def _link(
         self, con: sqlite3.Connection, install_id: str, slack_user: str, user_id: str
@@ -1107,7 +1107,7 @@ class SlackMethods(StoreBase):
                 ).fetchone()
                 if member is not None:
                     self._link(con, install_id, slack_user_id, row[0])
-                    return self._person(con, install_id, slack_user_id)  # type: ignore[return-value]
+                    return self._person(con, install_id, slack_user_id)
                 con.execute(
                     "DELETE FROM slack_link_offers WHERE install_id = ? AND slack_user_id = ?",
                     (install_id, slack_user_id),

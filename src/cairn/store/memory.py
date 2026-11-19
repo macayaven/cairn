@@ -425,7 +425,7 @@ class MemoryMethods(StoreBase):
             _require_account(con, self._account_id)
             if self._project_named(con, name) is not None:
                 raise NameTaken(name)
-            self._admit_projects(con, 1)  # type: ignore[attr-defined]  # OverLimit
+            self._admit_projects(con, 1)  # OverLimit
             return self._insert_project(con, name, description, kind, everyone)
 
     def create_projects(self, wanted: Sequence[tuple[str, str]]) -> list[Project]:
@@ -455,7 +455,7 @@ class MemoryMethods(StoreBase):
                 if existing is not None and existing.kind != kind:
                     raise ProjectTaken(existing, kind)
                 found.append(existing)
-            self._admit_projects(con, found.count(None))  # type: ignore[attr-defined]
+            self._admit_projects(con, found.count(None))
             return [
                 self._insert_project(con, name, "", kind, kind_everyone(kind))
                 if existing is None
@@ -588,13 +588,13 @@ class MemoryMethods(StoreBase):
         check_facts(spans)  # TooManyFacts, the same way (G1)
         key = topic_key(_topic_of(title, topic, spans))  # N1: made once, from what was given
         # OverLimit, cheaply, when a cap already refuses it (the write checks again).
-        self._look_before_screening(project_id, text, source_ref)  # type: ignore[attr-defined]
-        found = self._screen(fields)  # type: ignore[attr-defined]
+        self._look_before_screening(project_id, text, source_ref)
+        found = self._screen(fields)
         with self._write() as con:
             self._require_project(con, project_id)
             if _forgotten(con, project_id, hashlib.sha256(text.encode()).hexdigest()):
                 raise ForgottenNote
-            found = self._in_force(con, found)  # type: ignore[attr-defined]
+            found = self._in_force(con, found)
             if not found:
                 note, created = self._insert_note(con, project_id, fields, self._instant(), key)
                 if within is not None:
@@ -637,8 +637,8 @@ class MemoryMethods(StoreBase):
             return held, False
         note_id = "cap_" + secrets.token_hex(6)
         spans = chunk(note_id, text)
-        self._admit_note(con, len(encoded), at, 1, charge_of(spans))  # type: ignore[attr-defined]  # OverLimit
-        self._meter_note(con, len(encoded), at)  # type: ignore[attr-defined]
+        self._admit_note(con, len(encoded), at, 1, charge_of(spans))  # OverLimit
+        self._meter_note(con, len(encoded), at)
         note = Note(
             id=note_id,
             project_id=project_id,
@@ -651,7 +651,7 @@ class MemoryMethods(StoreBase):
             created_at=_iso(at),
             topic_key=key,
         )
-        _write_note(con, note, spans, self.writer)  # type: ignore[attr-defined]  # A1
+        _write_note(con, note, spans, self.writer)  # A1
         con.execute(
             "INSERT INTO waiting (note_id, project_id) VALUES (?, ?)", (note_id, project_id)
         )
@@ -882,8 +882,8 @@ class MemoryMethods(StoreBase):
             version = latest + 1
             row = (project_id, slug, version, title, body, claims_json, metrics_json, self._stamp())
             _write_page_version(con, self._account_id, index, row, claims)
-            self._keep_versions(con, project_id, slug)  # type: ignore[attr-defined]  # a plan's bound
-            self._keep_history(con)  # type: ignore[attr-defined]  # the storage cap's
+            self._keep_versions(con, project_id, slug)  # a plan's bound
+            self._keep_history(con)  # the storage cap's
             (name,) = con.execute(
                 "SELECT name FROM projects WHERE id = ?", (project_id,)
             ).fetchone()

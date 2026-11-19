@@ -80,7 +80,7 @@ class AccountMethods(StoreBase):
             account = _find_account(con, account_id)
             if account is None:
                 return False
-            dropped = self._hosted_tokens(con, account.id)  # type: ignore[attr-defined]
+            dropped = self._hosted_tokens(con, account.id)
             projects = "(SELECT id FROM projects WHERE account_id = ?)"
             for statement in (
                 f"DROP TABLE IF EXISTS {_index_name(account.id)}",
@@ -127,7 +127,7 @@ class AccountMethods(StoreBase):
                 RECORD_DELETION,
                 (DEFAULT_ACCOUNT_ID, COMPACT_DUE, self._stamp(), self._stamp()),
             )
-        self._queue_revocations(dropped)  # type: ignore[attr-defined]  # Google, by the rule
+        self._queue_revocations(dropped)  # Google, by the rule
         self._truncate_log(f"workspace {account.id}")
         return True
 

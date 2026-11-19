@@ -118,7 +118,7 @@ class ErasureMethods(StoreBase):
         """Whether this view may delete the project and forget its notes (see the module).
         KeyError for a project unknown or out of reach. A read."""
         with self._read() as con:
-            _, maker_id, _ = self._reached(con, project_id)  # type: ignore[attr-defined]
+            _, maker_id, _ = self._reached(con, project_id)
             return self._erasure_refusal(con, maker_id) is None
 
     def delete_project(self, project_id: str) -> bool:
@@ -132,7 +132,7 @@ class ErasureMethods(StoreBase):
         index = self._index
         with self._write() as con:
             try:
-                name, maker_id, _ = self._reached(con, project_id)  # type: ignore[attr-defined]
+                name, maker_id, _ = self._reached(con, project_id)
             except KeyError:
                 return False
             self._refuse_erasure(con, maker_id)
@@ -187,13 +187,13 @@ class ErasureMethods(StoreBase):
             self._forget_declined(con, project_id)
             self._unstore(con, size)
             gone = DELETED_PROJECT.format(project_id)
-            self._forget_destination(con, name)  # type: ignore[attr-defined]
+            self._forget_destination(con, name)
             _unname(con, self._account_id, name, gone, None)
             _unname_sources(con, self._account_id, name, gone)
             detail = {"id": project_id, "name": name, "notes": notes, "pages": pages}
             self._audit(con, "project.deleted", project=gone, detail=detail)
             _compaction_due(con, self._stamp())
-        self._truncate_log(f"project {project_id}")  # type: ignore[attr-defined]
+        self._truncate_log(f"project {project_id}")
         return True
 
     def forget_note(self, note_id: str) -> Forgotten:
@@ -213,7 +213,7 @@ class ErasureMethods(StoreBase):
         index = self._index
         with self._write() as con:
             project_id, text_sha256, size = self._note_in_reach(con, note_id)
-            name, maker_id, _ = self._reached(con, project_id)  # type: ignore[attr-defined]
+            name, maker_id, _ = self._reached(con, project_id)
             self._refuse_erasure(con, maker_id)
             plan = _plan(con, project_id, note_id)
             con.execute("DELETE FROM spans WHERE note_id = ?", (note_id,))
@@ -263,7 +263,7 @@ class ErasureMethods(StoreBase):
             detail = {"note": note_id, "project": project_id, "pages": len(plan)}
             self._audit(con, "note.forgotten", project=name, detail=detail)
             _compaction_due(con, self._stamp())
-        self._truncate_log(f"note {note_id}")  # type: ignore[attr-defined]
+        self._truncate_log(f"note {note_id}")
         return _outcome(note_id, plan)
 
     def forget_preview(self, note_id: str) -> Forgotten:

@@ -42,7 +42,12 @@ from typing import TYPE_CHECKING, Any
 from cairn.store.models import Account
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from cairn.guard import Finding
     from cairn.store import Store
+    from cairn.store.hosted import Dropped
+    from cairn.store.models import Forgotten, Project
 
 store_log = logging.getLogger("cairn.store")
 # Every audit event, once stored, is also one JSON line here (StoreBase._audit), with the same
@@ -410,6 +415,71 @@ class StoreBase:
     _writer: tuple[str, str | None] | None = None  # who its notes name (writing_as), if set
     _made_through: str | None = None  # the id of the key its caller came with (writing_as)
     _guard: Any = None  # a note guard that replaces the workspace's policy (with_guard)
+
+    if TYPE_CHECKING:
+        # For the type checker only; nothing here exists at run time. What Store.__init__
+        # sets and every view shares, and what one area of the store calls on another: Store
+        # is made of every area (cairn.store.Store), so each call finds its method there.
+        _con: sqlite3.Connection
+        _lock: "WriterLock"
+        _state: "ConnectionState"
+        _owner: bool
+
+        @property
+        def writer(self) -> tuple[str, str | None]: ...  # audit.py
+        @property
+        def made_through(self) -> str | None: ...  # audit.py
+        def _screen(self, fields: Mapping[str, str | None]) -> list[tuple[str, Finding]]: ...
+        def _in_force(
+            self, con: sqlite3.Connection, found: list[tuple[str, Finding]]
+        ) -> list[tuple[str, Finding]]: ...  # audit.py
+        def _level(self, con: sqlite3.Connection, project_id: str) -> str: ...  # access.py
+        def _reached(
+            self, con: sqlite3.Connection, project_id: str
+        ) -> tuple[str, str | None, str]: ...  # access.py
+        def _require_project(self, con: sqlite3.Connection, project_id: str) -> None: ...
+        def _project_named(self, con: sqlite3.Connection, name: str) -> Project | None: ...
+        def _insert_project(
+            self,
+            con: sqlite3.Connection,
+            name: str,
+            description: str,
+            kind: str,
+            everyone: str = "write",
+        ) -> Project: ...  # memory.py
+        def forget_note(self, note_id: str) -> Forgotten: ...  # erasure.py
+        def _truncate_log(self, what: str) -> None: ...  # accounts.py
+        def _disconnect(
+            self,
+            con: sqlite3.Connection,
+            grant_id: str,
+            *,
+            by_agent: bool,
+            reason: str | None = None,
+        ) -> None: ...  # grants.py
+        def _admit_projects(self, con: sqlite3.Connection, new: int) -> None: ...  # usage.py
+        def _admit_note(
+            self, con: sqlite3.Connection, size: int, at: datetime, new: int = 1, passages: int = 0
+        ) -> None: ...  # usage.py
+        def _meter_note(
+            self, con: sqlite3.Connection, size: int, at: datetime, notes: int = 1
+        ) -> None: ...  # usage.py
+        def _look_before_screening(
+            self, project_id: str, text: str, source_ref: str | None
+        ) -> None: ...  # usage.py
+        def _keep_versions(
+            self, con: sqlite3.Connection, project_id: str, slug: str | None
+        ) -> None: ...  # usage.py
+        def _keep_history(self, con: sqlite3.Connection) -> None: ...  # usage.py
+        def _drop_credential(self, con: sqlite3.Connection, held: dict) -> list[str]: ...
+        def _decides_destinations(self, con: sqlite3.Connection) -> bool: ...  # sources.py
+        def _forget_destination(
+            self, con: sqlite3.Connection, project: str, reason: str = ...
+        ) -> None: ...  # sources.py
+        def _hosted_tokens(self, con: sqlite3.Connection, account_id: str) -> list[Dropped]: ...
+        def _drop_hosted_of(self, con: sqlite3.Connection, owner: str) -> list[Dropped]: ...
+        def _queue_revocations(self, dropped: list[Dropped]) -> None: ...  # hosted.py
+        def _sweep_slack(self, con: sqlite3.Connection) -> int: ...  # slack.py
 
     def _instant(self) -> datetime:
         """Now: the one place a store reads the time. ValueError: a clock that answers

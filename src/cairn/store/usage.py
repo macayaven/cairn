@@ -391,7 +391,7 @@ class UsageMethods(StoreBase):
         encoded = text.encode()
         with self._read() as con:
             try:
-                self._require_project(con, project_id)  # type: ignore[attr-defined]
+                self._require_project(con, project_id)
             except (KeyError, PermissionError):
                 return  # the write says so, as it would without a cap
             held = con.execute(

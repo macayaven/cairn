@@ -463,11 +463,11 @@ class ReachMethods(StoreBase):
 
     def _limited_connection(self) -> bool:
         """StoreBase._limited_connection: any narrowing, to some projects or to reading."""
-        return self._narrowed or super()._limited_connection()  # type: ignore[misc]
+        return self._narrowed or super()._limited_connection()
 
     def _bound(self) -> bool:
         """StoreBase._bound, and any narrowing: a narrowed view is held to its workspace."""
-        return super()._bound() or self._narrowed  # type: ignore[misc]
+        return super()._bound() or self._narrowed
 
     def for_account(self, account_id: str, *args: Any, **kwargs: Any) -> "Store":
         """As StoreBase.for_account, keeping every narrowing. PermissionError: a narrowed

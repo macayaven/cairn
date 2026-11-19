@@ -708,7 +708,7 @@ class HostedMethods(StoreBase):
             token = self.google_custody.sealer.open(
                 row[1], associated(self._account_id, held["name"], row[0])
             )
-        switched = self._drop_credential(con, held)  # type: ignore[attr-defined]
+        switched = self._drop_credential(con, held)
         address, subject = (row[2], row[3]) if row is not None else (None, None)
         pending, claim = self._wait_for_revocation(con, subject, address, token, claimed=claimed)
         return Dropped(

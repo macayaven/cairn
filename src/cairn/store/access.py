@@ -141,7 +141,7 @@ class AccessMethods(StoreBase):
     def _require_project(self, con: sqlite3.Connection, project_id: str) -> None:
         """As MemoryMethods._require_project (KeyError unless the project is the account's and in
         the view's reach), and then PermissionError unless the view's person may write there."""
-        super()._require_project(con, project_id)  # type: ignore[misc]
+        super()._require_project(con, project_id)
         if self._level(con, project_id) != "write":
             raise PermissionError(READ_ONLY_PROJECT)
 
@@ -263,8 +263,8 @@ class AccessMethods(StoreBase):
             before = (held, _people(con, project_id))
             after = (everyone or held, before[1] if wanted is None else wanted)
             narrowed = held != "none" and after[0] == "none"
-            if narrowed and not self._decides_destinations(con):  # type: ignore[attr-defined]
-                self._forget_destination(con, name, PROJECT_PRIVATE)  # type: ignore[attr-defined]
+            if narrowed and not self._decides_destinations(con):
+                self._forget_destination(con, name, PROJECT_PRIVATE)
             self._replace_rule(con, project_id, name, before, after)
         return ProjectAccess(maker_id=maker_id, everyone=after[0], people=after[1])  # type: ignore[arg-type]
 

@@ -421,16 +421,16 @@ class PortableMethods(StoreBase):
                     kept = {name: fields[name] for name in FIELD_MAX}
                     project.notes[place] = (note.model_copy(update=kept), spans)
                     fields_cut += cut
-                found += self._screen(fields)  # type: ignore[attr-defined]
+                found += self._screen(fields)
             for page in project.pages:
-                found += self._screen({"title": page.title, "text": page.body})  # type: ignore[attr-defined]
+                found += self._screen({"title": page.title, "text": page.body})
         index = self._index
         with self._write() as con:
             _require_account(con, self._account_id)
             self._require_owner(con)
             if self._reach(con) is not None:
                 raise PermissionError("only a view of the whole workspace imports into it")
-            _refuse(self._in_force(con, found))  # type: ignore[attr-defined]
+            _refuse(self._in_force(con, found))
             names = [project.name for project in plan.projects]
             taken = con.execute(
                 "SELECT name FROM projects WHERE account_id = ?"
@@ -450,13 +450,13 @@ class PortableMethods(StoreBase):
             size = sum(len(note.text.encode()) for note in notes)
             at = self._instant()
             # A limited view's caps, for the whole archive at once: OverLimit, nothing imported.
-            self._admit_projects(con, len(plan.projects))  # type: ignore[attr-defined]
+            self._admit_projects(con, len(plan.projects))
             if notes:  # counted in the month of the import, as any other write
                 passages = sum(
                     charge_of(spans) for project in plan.projects for _, spans in project.notes
                 )
-                self._admit_note(con, size, at, len(notes), passages)  # type: ignore[attr-defined]
-                self._meter_note(con, size, at, len(notes))  # type: ignore[attr-defined]
+                self._admit_note(con, size, at, len(notes), passages)
+                self._meter_note(con, size, at, len(notes))
             versions, kept = [], 0
             for planned in plan.projects:
                 project_id = "br_" + secrets.token_hex(6)
@@ -482,7 +482,7 @@ class PortableMethods(StoreBase):
                     _choose_models(con, self._account_id, project_id, MODELS[0], _iso(at))
                 for note, spans in planned.notes:
                     # A1: the writer its line gives; a line that gives none, the importer's.
-                    writer = planned.writers.get(note.id, self.writer)  # type: ignore[attr-defined]
+                    writer = planned.writers.get(note.id, self.writer)
                     _write_note(
                         con, note.model_copy(update={"project_id": project_id}), spans, writer
                     )
@@ -511,8 +511,8 @@ class PortableMethods(StoreBase):
                 _write_page_version(con, self._account_id, index, row, page.claims)
             for project_versions in versions:  # a limited view's versions_per_page, as a save
                 for project_id in dict.fromkeys(project_id for _, project_id in project_versions):
-                    self._keep_versions(con, project_id, None)  # type: ignore[attr-defined]
-            self._keep_history(con)  # type: ignore[attr-defined]  # the storage cap's budget
+                    self._keep_versions(con, project_id, None)
+            self._keep_history(con)  # the storage cap's budget
             summary = plan.summary().model_copy(update={"fields_cut": fields_cut})
             detail = {**summary.model_dump(exclude={"notice"}), "kept_from_models": kept}
             self._audit(con, "workspace.imported", detail=detail)

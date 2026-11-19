@@ -45,5 +45,5 @@ class ExpiryMethods(StoreBase):
                 " AND id NOT IN (SELECT client_id FROM oauth_codes)",
                 (_iso(now - timedelta(seconds=UNUSED_CLIENT_TTL)),),
             )
-            self._sweep_slack(con)  # type: ignore[attr-defined]  # K1: cairn.store.slack
+            self._sweep_slack(con)  # K1: cairn.store.slack
             return con.total_changes - before

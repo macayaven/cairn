@@ -181,7 +181,7 @@ class CredentialMethods(StoreBase):
                 if taken != label:
                     self._audit(con, "key.revoked", detail={"label": taken})
             for grant_id, _ in grants:
-                self._disconnect(con, grant_id, by_agent=False)  # type: ignore[attr-defined]
+                self._disconnect(con, grant_id, by_agent=False)
             if keys or grants:
                 detail = {"label": label, "keys": labels, "agents": sorted(n for _, n in grants)}
                 self._audit(con, "key.revoked_with_made", detail=detail)

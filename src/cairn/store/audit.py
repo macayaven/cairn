@@ -20,7 +20,7 @@ import copy
 import json
 import re
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -271,7 +271,7 @@ class AuditMethods(StoreBase):
         ).fetchone()
         return row[0] if row else DEFAULT_GUARD_POLICY
 
-    def _screen(self, fields: dict[str, str | None]) -> list[tuple[str, "Finding"]]:
+    def _screen(self, fields: Mapping[str, str | None]) -> list[tuple[str, "Finding"]]:
         """What the view's guard finds in each field, or else the PatternGuard of the widest
         policy (add_note keeps what the workspace's policy refuses), as (field, finding)
         pairs in SCREENED_FIELDS order. Pure: no lock, no database."""
@@ -470,7 +470,7 @@ class AuditMethods(StoreBase):
         if outcome not in NOTE_OUTCOMES:
             raise ValueError(f"a recorded note outcome is one of {NOTE_OUTCOMES}, not {outcome!r}")
         with self._write() as con:
-            self._require_project(con, project_id)  # type: ignore[attr-defined]
+            self._require_project(con, project_id)
             (name,) = con.execute(
                 "SELECT name FROM projects WHERE id = ?", (project_id,)
             ).fetchone()

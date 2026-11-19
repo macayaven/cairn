@@ -4,6 +4,7 @@ every element the Tab key reaches shows that it has focus."""
 from __future__ import annotations
 
 import pytest
+from browser_checks import focus_unseen
 from browser_server import Server, Visit
 from playwright.sync_api import expect
 
@@ -17,10 +18,6 @@ The early crossing leaves at 06:40.
 
 A return ticket costs 9 EUR.
 """
-
-# How focus looks on an element: its outline and its shadow.
-LOOK = """el => { const look = getComputedStyle(el);
-  return [look.outlineStyle, look.outlineWidth, look.outlineColor, look.boxShadow].join(' | '); }"""
 
 
 @pytest.fixture(scope="module")
@@ -63,27 +60,16 @@ def test_every_element_the_tab_key_reaches_on_the_page_view_shows_focus(
     visit: Visit, page_path: str
 ):
     open_the_page(visit, page_path)
-    page = visit.page
-    page.evaluate(
-        f"""() => {{ const look = {LOOK};
-          window.unfocused = new Map([...document.querySelectorAll('*')].map(el => [el, look(el)]));
-          window.reached = new Set();
-        }}"""
-    )
-    reached, unseen = [], []
-    for _ in range(200):
-        page.keyboard.press("Tab")
-        step = page.evaluate(
-            f"""() => {{ const el = document.activeElement, look = {LOOK};
-              const again = el === document.body || window.reached.has(el);
-              window.reached.add(el);
-              return [again, el.outerHTML.slice(0, 100), look(el) !== window.unfocused.get(el)];
-            }}"""
-        )
-        if step[0]:
-            break
-        reached.append(step[1])
-        if not step[2]:
-            unseen.append(step[1])
+    reached, unseen = focus_unseen(visit.page)
     assert len(reached) > 10, reached
     assert unseen == [], unseen
+
+
+def test_the_focus_check_finds_an_element_whose_focus_cannot_be_seen(visit: Visit, page_path: str):
+    open_the_page(visit, page_path)
+    visit.page.get_by_role("link", name="Source 2").evaluate(
+        "el => el.style.setProperty('outline', 'none', 'important')"
+    )
+    _, unseen = focus_unseen(visit.page)
+    assert [element for element in unseen if 'aria-label="Source 2"' in element], unseen
+    assert len(unseen) == 1, unseen

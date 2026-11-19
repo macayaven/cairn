@@ -148,3 +148,37 @@ def inspect(axe: Axe, page: Page, name: str) -> None:
     assert broken == {}, f"{name}: {broken}"
     problems = narrow_problems(page)
     assert problems == [], f"{name}: {problems}"
+
+
+# How focus looks on an element: its outline and its shadow.
+_LOOK = """el => { const look = getComputedStyle(el);
+  return [look.outlineStyle, look.outlineWidth, look.outlineColor, look.boxShadow].join(' | '); }"""
+
+
+def focus_unseen(page: Page, most: int = 300) -> tuple[list[str], list[str]]:
+    """Press Tab from where focus is until it comes round again. Returns every element
+    reached, and those whose outline and shadow look the same focused as they did before
+    anything had focus."""
+    page.evaluate(
+        f"""() => {{ const look = {_LOOK};
+          window.unfocused = new Map([...document.querySelectorAll('*')].map(el => [el, look(el)]));
+          window.reached = new Set();
+        }}"""
+    )
+    reached: list[str] = []
+    unseen: list[str] = []
+    for _ in range(most):
+        page.keyboard.press("Tab")
+        again, element, changed = page.evaluate(
+            f"""() => {{ const el = document.activeElement, look = {_LOOK};
+              const again = el === document.body || window.reached.has(el);
+              window.reached.add(el);
+              return [again, el.outerHTML.slice(0, 100), look(el) !== window.unfocused.get(el)];
+            }}"""
+        )
+        if again:
+            break
+        reached.append(element)
+        if not changed:
+            unseen.append(element)
+    return reached, unseen

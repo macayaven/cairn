@@ -1752,10 +1752,11 @@ def _serve(args: argparse.Namespace) -> int:
     except ValueError as error:  # names the option, never the file's path
         print(f"cannot use that brand: {error}", file=sys.stderr)
         return 2
-    send = False  # <PREFIX>_SOURCE_NOTES, read with a model only, before anything is opened
+    send = slack_send = False  # <PREFIX>_SOURCE_NOTES and _SLACK_NOTES, with a model only
     if args.model_env is not None:
         try:
             send = cli_arrange.sends_source_notes(args.model_env)
+            slack_send = cli_arrange.sends_slack_notes(args.model_env)
         except ValueError as error:  # names the setting, never its value
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2
@@ -1801,7 +1802,9 @@ def _serve(args: argparse.Namespace) -> int:
         raise
     try:
         try:
-            arranger = cli_arrange.serve_arranger(args, store, plans, send_source_notes=send)
+            arranger = cli_arrange.serve_arranger(
+                args, store, plans, send_source_notes=send, send_slack_notes=slack_send
+            )
         except ValueError as error:  # a cairn.llm.LLMConfigError names the setting only
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2

@@ -327,7 +327,7 @@ from typing import Any, Literal, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from cairn.compiler import CandidatePage, DraftStats, render_body
-from cairn.gate import verbatim_gate
+from cairn.gate import text_reading, verbatim_gate
 from cairn.guard import Guard
 from cairn.llm import ChatModel, LLMError, draw_tag, failure_text, new_boundary
 from cairn.llm import unwrap_reply as _unwrap
@@ -500,10 +500,13 @@ def messages(
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 
-def _repeat_key(claim: Claim, sections: Mapping[str, tuple[str, ...]]) -> tuple[Any, str]:
+def _repeat_key(claim: Claim, sections: Mapping[str, tuple[str, ...]]) -> tuple[Any, Any]:
     """The one rule for claims that repeat one another: the same heading path, and the same
-    text once runs of whitespace are single spaces. Claims repeat when their keys are equal."""
-    return tuple(sections.get(claim.id, ())), " ".join(claim.text.split())
+    passage as verbatim_gate reads one (gate.text_reading: code, tables and prose that holds
+    structure line by line, other prose with each run of white space one space), so the gate
+    accepts every fold this rule allows (review 7.3). Claims repeat when their keys are equal."""
+    reading = text_reading(claim.text)  # None for text no claim copies: then the text alone
+    return tuple(sections.get(claim.id, ())), claim.text if reading is None else reading
 
 
 def repeat_groups(
@@ -511,7 +514,7 @@ def repeat_groups(
 ) -> list[list[int]]:
     """The groups of `claims` that repeat one another (_repeat_key), by number (1 for the
     first claim): each group in page order, the groups in the order of their first claims."""
-    groups: dict[tuple[Any, str], list[int]] = {}
+    groups: dict[tuple[Any, Any], list[int]] = {}
     for n, claim in enumerate(claims, start=1):
         groups.setdefault(_repeat_key(claim, sections), []).append(n)
     return [group for group in groups.values() if len(group) > 1]

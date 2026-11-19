@@ -74,7 +74,7 @@ from collections.abc import Iterable, Mapping
 
 from cairn.compiler import CandidatePage, GateResult
 from cairn.lint import ClaimInput, PageInput, lint_pages
-from cairn.spans import Span
+from cairn.spans import Span, chunk
 from cairn.store import Claim
 
 PROSE_KINDS = frozenset({"paragraph", "bullet", "quote"})
@@ -231,6 +231,17 @@ def _not_verbatim(
                 f"{span_id} does not have: keep the lines of {span_id} as they are",
             )
     return None
+
+
+def text_reading(text: str) -> _Reading:
+    """What verbatim_gate reads in a passage of this text, read as a note's text is: its kind
+    is the kind of its first block (cairn.spans.chunk). Two claims that copy passages whole
+    say the same, by the gate's own equality, exactly when their readings are equal
+    (arrange.repeat_groups, review 7.3); None for text that holds no passage a claim copies."""
+    blocks = chunk("", text)
+    if not blocks:
+        return None
+    return _reading(blocks[0].model_copy(update={"text": text}))
 
 
 def _reading(span: Span) -> _Reading:

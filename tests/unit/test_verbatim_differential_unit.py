@@ -68,6 +68,7 @@ MARKER = "a claim that drops, adds or moves a marker the passage has"
 PART = "a claim that cites a passage for one sentence of it"
 ORDER = "a claim that reorders or repeats the sentences of a passage"
 NOTHING = "a blank claim that cites no passage the gate was given"
+SPACED = "a claim that changes the white space inside inline code of the passage"
 TABLE = {
     CUT: (
         "whole sentences of the passage, which a claim could select (a list item, a quote's"
@@ -95,6 +96,11 @@ TABLE = {
         "each sentence alone, in any order and as often as the claim liked",
         "the passage says its sentences once and in its order: 'Run the backup. Then delete"
         " it.' reversed says something else",
+    ),
+    SPACED: (
+        "every run of white space as one space, inside inline code too",
+        "inside backticks white space is the code's: `a  b.txt` and `a b.txt` name two files,"
+        " and a claim that respaces one names the other (review blocker 3)",
     ),
     NOTHING: (
         "the claim's lines against the passages it was given; with no line and no passage"
@@ -124,6 +130,8 @@ def shape(text: str, cited: list[Span]) -> str | None:
         return NOTHING if not text.strip() else None
     said = words(text)
     theirs = [words(span.text) for span in cited]
+    if all(read == said for read in theirs) and _respaced_code(text, cited):
+        return SPACED  # the same words, but white space inside inline code differs
     if all(read == said for read in theirs):
         return MARKER  # the same words, markers aside: a marker differs, or where it stands
     if len(cited) > 1:
@@ -178,18 +186,92 @@ def _rows(lines: list[str], keep: str) -> list[str]:
 def _tokens(lines: list[str]) -> list[tuple[str, str]]:
     """The words of prose in order, each with what stands before it: a space, or a line break
     where the word starts a line with a list or quote marker or follows a line that is only a
-    marker. A word is a run of characters other than space, tab, CR and LF."""
+    marker. A word is a run of characters other than space, tab, CR and LF, except that the
+    white space of inline code is the code's (a CR before a line break aside): it joins its
+    word, across a line break too, and a line that starts inside code starts with no marker
+    (review blocker 3)."""
+    text = "\n".join(line.removesuffix("\r") for line in lines)
+    inside = _in_code(text)
+    words: list[tuple[int, str]] = []  # (where it starts, the word)
+    word, start = "", 0
+    for n, char in enumerate(text):
+        if char in " \t\r\n" and n not in inside:
+            if word:
+                words.append((start, word))
+            word = ""
+            continue
+        if not word:
+            start = n
+        word += char
+    if word:
+        words.append((start, word))
+    by_line: dict[int, list[str]] = {}
+    for start, word in words:
+        by_line.setdefault(text.count("\n", 0, start), []).append(word)
+    line_starts = [0, *(n + 1 for n, char in enumerate(text) if char == "\n")]
     out: list[tuple[str, str]] = []
     after_bare = False
-    for line in lines:
-        found = [word for word in _RUN.split(line) if word]
-        if not found:
-            continue
-        marked = found[0] in ("-", "*", "+") or found[0].startswith(">")
+    for line, found in sorted(by_line.items()):
+        continued = line_starts[line] - 1 in inside
+        marked = not continued and (found[0] in ("-", "*", "+") or found[0].startswith(">"))
         out.append(("\n" if out and (marked or after_bare) else " ", found[0]))
         out.extend((" ", word) for word in found[1:])
-        after_bare = len(found) == 1 and found[0] in ("-", "*", "+", ">")
+        after_bare = not continued and len(found) == 1 and found[0] in ("-", "*", "+", ">")
     return out
+
+
+def _respaced_code(text: str, cited: list[Span]) -> bool:
+    """Whether the claim's words differ from a passage's only by white space inside a word,
+    which only inline code holds."""
+    mine = _tokens(text.split("\n"))
+    for span in cited:
+        theirs = _tokens(span.text.split("\n"))
+        if mine != theirs and _flat(mine) == _flat(theirs):
+            return True
+    return False
+
+
+def _flat(tokens: list[tuple[str, str]]) -> list[str]:
+    return " ".join(word for _, word in tokens).split()
+
+
+def _in_code(text: str) -> set[int]:
+    """The places of every character of inline code, its backticks included, found the slow
+    way: each run of backticks not escaped by a backslash (outside code) is tried, and the
+    first later run of exactly as many closes it; a run with none is text."""
+    inside: set[int] = set()
+    n = 0
+    while n < len(text):
+        if text[n] != "`":
+            n += 1
+            continue
+        end = n
+        while end < len(text) and text[end] == "`":
+            end += 1
+        slashes = 0
+        while n - slashes - 1 >= 0 and text[n - slashes - 1] == "\\":
+            slashes += 1
+        opener = n + 1 if slashes % 2 else n
+        size = end - opener
+        close = end
+        found = None
+        while size and close < len(text):
+            if text[close] != "`":
+                close += 1
+                continue
+            stop = close
+            while stop < len(text) and text[stop] == "`":
+                stop += 1
+            if stop - close == size:
+                found = stop
+                break
+            close = stop
+        if found is None:
+            n = end
+            continue
+        inside.update(range(opener, found))
+        n = found
+    return inside
 
 
 # Drafts

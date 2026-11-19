@@ -27,8 +27,8 @@ Arranging one page
 - cairn checks that, and that the claims of each `same` list repeat one another: the same
   heading path (the one their section shows) and the same passage as the gate reads one
   (gate.text_reading: code, tables and prose that holds structure line by line, other prose
-  with each run of white space one space; `repeat_groups`, the one rule, which also lists the
-  repeats in the request).
+  with each run of white space outside inline code one space; `repeat_groups`, the one rule,
+  which also lists the repeats in the request).
   A `same` list need not be one the request listed, only one that rule allows. Anything else
   is not an arrangement: a claim missing or named twice (by number, id or both), a number or
   id the page does not have (0, a negative number, one past the last claim), a `same` list of
@@ -532,7 +532,8 @@ def messages(
 def _repeat_key(claim: Claim, sections: Mapping[str, tuple[str, ...]]) -> tuple[Any, Any]:
     """The one rule for claims that repeat one another: the same heading path, and the same
     passage as verbatim_gate reads one (gate.text_reading: code, tables and prose that holds
-    structure line by line, other prose with each run of white space one space), so the gate
+    structure line by line, other prose with each run of white space outside inline code one
+    space), so the gate
     accepts every fold this rule allows (review 7.3). Claims repeat when their keys are equal."""
     reading = text_reading(claim.text)  # None for text no claim copies: then the text alone
     return tuple(sections.get(claim.id, ())), claim.text if reading is None else reading

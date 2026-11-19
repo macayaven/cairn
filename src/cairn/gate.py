@@ -40,7 +40,10 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   read.
 - Any other prose passage is compared as text: the same characters, with each run of white
   space read as one space and the white space at the two ends dropped, so a hard-wrapped
-  passage may be wrapped elsewhere. White space is space, tab, CR and LF only. Nothing else is
+  passage may be wrapped elsewhere. White space inside inline code (a backtick run and the
+  next run of as many, as CommonMark pairs them) is the code's and is compared as it is, so
+  `a  b.txt` and `a b.txt` are two texts (review blocker 3). White space is space, tab, CR
+  and LF only. Nothing else is
   normalised: no case folding, no Unicode normalisation, and zero-width, no-break and
   bidirectional characters are text, so a homoglyph or an override never matches. A list or
   quote marker ("- ", "* ", "+ ", ">") is text too, never dropped or added, and it keeps its
@@ -69,6 +72,7 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   re-nested by indentation under four columns still passes.
 """
 
+import bisect
 import re
 from collections.abc import Iterable, Mapping
 
@@ -87,6 +91,7 @@ _WHITESPACE = re.compile(r"[ \t\r\n]+")
 _LEADS = re.compile(r"[-*+](?: |$)|>")
 _MARKERS_ALONE = re.compile(r"(?:[-*+](?: |$)|> ?)+")
 _QUOTED = re.compile(r"^[ \t]*(?:> ?)+")  # a line's quote markers, set aside to find code
+_TICKS = re.compile(r"`+")  # a run of backticks, which opens or closes inline code
 _ITEM = re.compile(r"(?:[-*+]|\d{1,9}[.)])(?: |$)")  # a list item's marker, at its text's start
 # A line's text (indentation and quote markers aside) that Markdown reads as structure.
 _STRUCTURE = re.compile(
@@ -277,18 +282,90 @@ def _rows(lines: list[str], exact: bool) -> tuple[str, ...]:
 def _text(lines: Iterable[str]) -> str:
     """Prose read as text: each run of white space one space and the ends dropped, except that
     a line break stays before a line that opens with a list or quote marker and after a line
-    that is markers alone, so every marker stays at the start of its line."""
+    that is markers alone, so every marker stays at the start of its line. White space inside
+    inline code (`_code_spans`) is the code's own and is kept as it is, line breaks included
+    (a CR before one aside), so `a  b.txt` and `a b.txt` are two texts (review blocker 3)."""
+    rows = [raw.removesuffix("\r") for raw in lines]
+    text = "\n".join(rows)
+    code = _code_spans(text)
     out: list[str] = []
     alone = False
-    for raw in lines:
-        line = _WHITESPACE.sub(" ", raw).strip(" ")
-        if not line:
+    at = 0
+    for raw in rows:
+        start, at = at, at + len(raw) + 1
+        in_code = _within(code, start - 1)  # the line break before this line is code's
+        line = _line_text(raw, start, code)
+        if not line and not in_code:
             continue
         if out:
-            out.append("\n" if alone or _LEADS.match(line) else " ")
+            out.append("\n" if in_code or alone or _LEADS.match(line) else " ")
         out.append(line)
-        alone = _MARKERS_ALONE.fullmatch(line) is not None
+        alone = not in_code and _MARKERS_ALONE.fullmatch(line) is not None
     return "".join(out)
+
+
+def _line_text(raw: str, start: int, code: list[tuple[int, int]]) -> str:
+    """One line read as text: its white space outside inline code one space, the white space
+    at its two ends dropped where it is outside inline code, and inline code as it is.
+    `start` is where the line begins in the text `code` was found in."""
+    if not code or not raw:
+        return _WHITESPACE.sub(" ", raw).strip(" ")
+    pieces: list[tuple[bool, str]] = []  # (kept as it is, text)
+    pos, end = start, start + len(raw)
+    for n in range(bisect.bisect_right(code, start, key=lambda span: span[1]), len(code)):
+        left, right = code[n]
+        if left >= end:
+            break
+        if left > pos:
+            pieces.append((False, raw[pos - start : left - start]))
+        pieces.append((True, raw[max(left, pos) - start : min(right, end) - start]))
+        pos = min(right, end)
+    if pos < end:
+        pieces.append((False, raw[pos - start :]))
+    read = [(kept, piece if kept else _WHITESPACE.sub(" ", piece)) for kept, piece in pieces]
+    if not read[0][0]:
+        read[0] = (False, read[0][1].lstrip(" "))
+    if not read[-1][0]:
+        read[-1] = (False, read[-1][1].rstrip(" "))
+    return "".join(piece for _, piece in read)
+
+
+def _within(code: list[tuple[int, int]], at: int) -> bool:
+    """Whether the character at `at` is inside one of the spans of `code`."""
+    n = bisect.bisect_right(code, at, key=lambda span: span[0]) - 1
+    return n >= 0 and at < code[n][1]
+
+
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """Where inline code is in prose, as CommonMark reads it: (start, end) of each code span,
+    its backtick runs included, in order. A run of n backticks opens one, unless a backslash
+    escapes its first backtick, and the next run of exactly n backticks closes it, across a
+    line break too; a run with no such run after it is text. Inside a span a backslash is
+    text. Each run is looked at once, and its closer found by bisection: linear in the text,
+    whatever its backticks."""
+    if "`" not in text:
+        return []
+    runs = [(m.start(), m.end()) for m in _TICKS.finditer(text)]
+    by_size: dict[int, list[int]] = {}  # each run's size, and the runs of that size in order
+    for n, (left, right) in enumerate(runs):
+        by_size.setdefault(right - left, []).append(n)
+    spans: list[tuple[int, int]] = []
+    n = 0
+    while n < len(runs):
+        left, right = runs[n]
+        slashes = 0  # the backslashes right before the run: each run of them read once
+        while left - slashes > 0 and text[left - slashes - 1] == "\\":
+            slashes += 1
+        if slashes % 2:  # an escaped backtick is text; the rest of the run may open
+            left += 1
+        same = by_size.get(right - left, [])
+        closer = bisect.bisect_right(same, n)
+        if left == right or closer == len(same):
+            n += 1
+            continue
+        spans.append((left, runs[same[closer]][1]))
+        n = same[closer] + 1
+    return spans
 
 
 def _added_structure(lines: list[str]) -> int | None:

@@ -90,6 +90,17 @@ A copy of the database file, and the replica in the operator's bucket, hold all 
 - **Backups** made before the deletion keep what was deleted until they expire. With the shipped configuration that is eight days for the copies in the storage bucket. The shipped Google Cloud configuration adds two more: its bucket keeps what it removes restorable for 7 more days, and it takes a daily snapshot of the machine's data disk, kept 14 days. An operator may configure any of these differently.
 - **A person.** When a person is removed from a workspace, what they wrote stays in it, and their sessions, agents and keys there end. A person who belongs to no workspace any more is deleted with their sign-in identities. To keep them from rejoining by signing in again, cairn keeps a digest of the workspace and their address, never the address itself, until they accept a new invitation or the workspace is deleted.
 
+## Records the law protects
+
+cairn has not been assessed against HIPAA, FERPA, COPPA or any rule like them, and as shipped it is not ready to hold health or education records about people who can be identified, children's least of all. Nothing in the software stops such a record from being written, so keeping them out is a rule for the people who use an install. What an operator would have to add or decide before that could change:
+
+- **Encryption of the file.** cairn does not encrypt the database file itself. The disk, the storage bucket and the snapshots are encrypted by whoever provides them, with their keys unless the operator supplies one. Whoever holds the file or a backup of it reads every workspace.
+- **Who inside can read.** A workspace's owners can read every project in it, private ones included, and so can a key that manages the workspace. No setting takes that away.
+- **Who read what.** Reads are recorded in the audit log only when the server runs with `--audit-reads`. A second factor at sign-in is required only with `--require-mfa`, which needs a provider that says one was used, and a session left idle ends only with `--idle-minutes`.
+- **The person a record is about.** There is no record of the person a note is about, so nothing finds, exports or deletes one person's records as a set: someone has to find each note. There is no consent to record or withdraw, and no legal hold: whoever may delete a note or a project can delete it whatever anyone needs it for.
+- **Deletion.** What is deleted can stay in the database's log file and in backups for the times this guide gives under [Deletion](#deletion).
+- **Other parties.** An agent a person connects sends what it reads to the company that runs its model, under that person's agreement with it. An agreement between the operator and whoever owns the records, of the kind those rules ask for, is theirs to make: the software comes with none.
+
 ## For the operator to fill in
 
 This section is the operator's, not cairn's. cairn cannot know these answers. Until the operator gives cairn their answers (`serve --operator-notes FILE`, which puts them here in place of this section's text), they are unknown.

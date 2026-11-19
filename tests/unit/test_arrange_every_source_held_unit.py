@@ -165,6 +165,12 @@ def test_opt_in_with_a_store_that_cannot_say_who_chose_sends_nothing(store):
     said = arrange_page(store, project_id, SLUG, model, opt_in=True)
     assert said.status == "undecided" and model.requests == []
     assert said.problem == UNDECIDED and said.version == said.previous
+    # The store at this commit records "allowed" as no row: a project switched to never and
+    # back is still undecided to the arranger (the store change the report asks for).
+    store.set_project_models(project_id, "never")
+    store.set_project_models(project_id, "allowed")
+    assert arrange_page(store, project_id, SLUG, model, opt_in=True).status == "undecided"
+    assert model.requests == []
 
 
 def test_opt_in_never_sends_a_kept_project_and_still_holds_the_sources(store):
@@ -185,7 +191,7 @@ def test_without_opt_in_an_undecided_project_is_sent_as_today(store):
     assert len(model.requests) == 1
 
 
-def test_opt_in_leaves_a_page_a_model_ordered_as_it_is(store):
+def test_opt_in_tidies_a_page_a_model_ordered_without_changing_it(store):
     project_id = page(store, "ordered")
     assert arrange_page(store, project_id, SLUG, Recorder()).status == "arranged"
     before = store.get_page(project_id, SLUG)
@@ -199,6 +205,31 @@ def test_opt_in_leaves_a_page_a_model_ordered_as_it_is(store):
         before.version,
     )
     assert store.get_page(project_id, SLUG) == before and model.requests == []
+
+
+def test_an_undecided_page_is_one_access_line_with_no_slug_or_text(store, caplog):
+    project_id = page(store, "undecided")
+    arranger = Arranger(Recorder(), price=None, view_for=store.for_account, opt_in=True)
+    arranger.queue(store.account_id, project_id, SLUG)
+    with caplog.at_level("INFO", logger="cairn.access"):
+        asyncio.run(arranger.run_once())
+    (line,) = [r.getMessage() for r in caplog.records if getattr(r, "action", None) == "arrange"]
+    assert line.startswith("arrange undecided in project ") and project_id in line
+    assert SLUG not in line and "Drift" not in line and "buckets" not in line
+
+
+# 6. With no model connected nothing changes
+
+
+def test_without_a_model_every_kind_s_page_is_tidied_whatever_opt_in_says(store):
+    by_kind = {name: page(store, f"from-{name}", via=KINDS[name].via) for name in sorted(KINDS)}
+    undecided = page(store, "typed")
+    arranger = Arranger(None, price=None, view_for=store.for_account, opt_in=True)
+    for project_id in (*by_kind.values(), undecided):
+        arranger.queue(store.account_id, project_id, SLUG)
+    done = asyncio.run(arranger.run_once(limit=20))
+    assert {d.status for d in done} == {"arranged"}
+    assert len(done) == len(by_kind) + 1
 
 
 # 7. Cost: deciding the hold for a page stays the number of statements it is today

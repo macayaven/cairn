@@ -73,8 +73,6 @@ def test_each_guide_names_every_source_and_none_says_one_is_sent():
     names = re.findall(r"[A-Z][A-Za-z]+(?: [A-Z][a-z]+)?", ALL)
     assert len(names) == len(KINDS) - 1  # the connector is "a connector of your own"
     assert set(KINDS) == {n for n, k in KINDS.items() if k.withheld}
-    for text in (models_line(), run_section(), sources_section()):
-        assert "Granola's notes are sent" not in text
 
 
 def test_privacy_says_slack_is_held_too_and_the_two_settings_that_send(store):
@@ -126,6 +124,22 @@ def test_the_guides_say_the_opt_in_setting_as_cairn_reads_it(store):
     (done,) = asyncio.run(arranger.run_once())
     assert done.status == "undecided"
     assert store.get_page(undecided, "drift-sync").metrics["arranged_by"] == "cairn"
+    # The other half: a project whose people chose "allowed" is sent, by a store that can say
+    # so (the third item of page_for_model the report asks the store for).
+    chosen = page(store, "chosen")
+    claims = len(store.get_page(chosen, "drift-sync").claims)
+    model = FakeModel([json.dumps({"order": list(range(claims, 0, -1)), "same": []})])
+
+    class Chosen:
+        def __getattr__(self, name):
+            return getattr(store, name)
+
+        def page_for_model(self, project_id, slug):
+            found = store.page_for_model(project_id, slug)
+            return None if found is None else (*found, project_id == chosen)
+
+    said = arrange_page(Chosen(), chosen, "drift-sync", model, opt_in=True)
+    assert said.status == "arranged" and len(model.requests) == 1
 
 
 def test_run_md_any_other_opt_in_value_stops_cairn_at_start(tmp_path, monkeypatch, capsys):

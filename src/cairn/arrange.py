@@ -292,9 +292,12 @@ The worker (`Arranger`)
   tidied as above. Without a model
   nothing is kept: every page is tidied, as before.
 - Undecided pages (Privacy 4). With a model and `opt_in`, a page of a project nobody chose
-  "allowed" for is judged in the same read, after the kept check, and treated as a kept page
-  is (tidied, remembered, no draft, the count towards a pause left as it is, none of the
-  budget spent), done as "undecided". Without a model `opt_in` is not read.
+  "allowed" for is judged in the same read, after the kept check, and treated as a withheld
+  page is (tidied by tidy_page, remembered, no draft, the count towards a pause left as it
+  is, none of the budget spent), done as "undecided". Unlike a kept page there is no
+  exception for a version a model put in order: its tidy keeps the model's order and
+  only folds a repeat left in it. Without a
+  model `opt_in` is not read.
 - One line per page on the "cairn.access" log (action "arrange"), except "seen" and
   "small", and without a model "unchanged" too (every saved note queues its page, and a page
   read and left as it is has nothing to report): its status, project id, versions and tokens;

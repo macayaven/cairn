@@ -76,7 +76,9 @@ was asked, "?" for a count it did not report and "tokens not reported" when it r
 neither (a call that failed). A page withheld from the model (<PREFIX>_SOURCE_NOTES, above)
 prints "<project>/<slug>: withheld, version <a>[ -> <b>]": the version judged and the one its
 tidy saved, never tokens. A page of a project its people keep from every model (M4), whatever
-the setting, prints "<project>/<slug>: kept from models, version <a>[ -> <b>]" the same way.
+the setting, prints "<project>/<slug>: kept from models, version <a>[ -> <b>]" the same way,
+and with <PREFIX>_UNDECIDED_PROJECTS=withhold a page of a project nobody set to allowed prints
+"<project>/<slug>: undecided, version <a>[ -> <b>]".
 With `--plans
 FILE` it holds the workspace to its plan in force, as the worker of `serve --plans` does
 (worker_views); `--plans` is required, with --tidy too, and the command says so, when any
@@ -329,10 +331,10 @@ def serve_says(
     args: argparse.Namespace, arranger: "Arranger | None", send: bool, opt_in: bool = False
 ) -> str | None:
     """The line `serve` prints as it starts with a model: the model, and whether pages that
-    hold notes read from Google sources or a connector, or notes whose source_ref says they
+    hold notes any source the server reads brought, or notes whose source_ref says they
     came from a meeting, a mail thread, a calendar, a document or a to-do list, are sent to
-    it (with send, except in a project its people keep from every model). None without a
-    model."""
+    it (with send, except in a project its people keep from every model); with `opt_in`,
+    that only projects whose people set Models to allowed are sent. None without a model."""
     if arranger is None or arranger.model is None:
         return None
     name = f"{args.model_env}_{SOURCE_NOTES}"
@@ -384,9 +386,10 @@ def serve_arranger(
 ) -> "Arranger | None":
     """The background worker `serve` runs: with --model-env, the model's (`refused` has turned
     down --tidy with it, and --no-tidy changes nothing), withholding the withheld kinds'
-    notes and the notes whose source_ref names a source unless `send_source_notes`
-    (sends_source_notes, read by `serve` before anything is opened), and the notes that came
-    through Slack unless `send_slack_notes` (sends_slack_notes); else, with --tidy or by
+    notes (every kind's) and the notes whose source_ref names a source unless
+    `send_source_notes` (sends_source_notes, read by `serve` before anything is opened), and
+    the notes that came through Slack unless `send_slack_notes` (sends_slack_notes), and with
+    `opt_in` (opts_in) sending only projects whose people chose "allowed"; else, with --tidy or by
     default (TIDY_BY_DEFAULT, read here), the worker without a model; with --no-tidy, None,
     and nothing of cairn.arrange is imported. ValueError (a cairn.llm.LLMConfigError among
     them) says what is wrong, naming settings only."""

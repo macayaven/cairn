@@ -199,7 +199,10 @@ def test_an_observer_left_out_is_kept(store):
 # E. A reader honours the writer's checks: closed, unusable
 
 
-def test_closing_the_store_closes_every_reader_and_refuses_reads(store):
+def test_closing_the_store_waits_for_reads_in_progress_and_closes_every_reader(store, db):
+    """Closing closes the readers given back at once, waits for the one still lent (as it
+    waited for the lock before), then closes the writer last: the log is folded into the file
+    and removed, and every connection is closed."""
     view = store.for_account(store.create_account("Fable Works").id)
     held = HeldReads(store, 3)
     for _ in range(3):
@@ -208,11 +211,20 @@ def test_closing_the_store_closes_every_reader_and_refuses_reads(store):
     held.release(2)
     for _ in range(2):  # two have ended; one is still reading
         assert held.out.acquire(timeout=SAFETY)
-    store.close()
-    assert len(readers(store)) == 1  # the two given back are closed; the one lent is not yet
+    closing = threading.Thread(target=store.close, daemon=True)
+    closing.start()
+    assert store._state.readers.closing.wait(SAFETY)
+    # A close that does not wait would end within this join; one that waits cannot end
+    # before the read is released, so this cannot fail by chance.
+    closing.join(0.2)
+    assert closing.is_alive()  # waiting for the read in progress
+    assert store._con.execute("SELECT 1").fetchone() == (1,)  # the writer is still open
     held.release()
     held.join()
-    assert readers(store) == []  # the read in progress closed its reader as it ended
+    closing.join(SAFETY)
+    assert not closing.is_alive()
+    assert readers(store) == []
+    assert not (db.parent / f"{db.name}-wal").exists()  # the writer closed last
     for con in opened:
         with pytest.raises(sqlite3.ProgrammingError):
             con.execute("SELECT 1")
@@ -309,3 +321,64 @@ def test_closing_after_reads_leaves_the_file_whole_as_before(db):
     before = db.read_bytes()
     Store(db, clock=fixed).close()
     assert db.read_bytes() == before
+
+
+def test_a_cursor_kept_past_its_read_does_not_hold_the_read_open(store, db, caplog):
+    """A cursor still referenced after `_read` (in a list, in a frame an exception keeps):
+    the reader neither keeps its old snapshot nor keeps the log from being emptied."""
+    project = store.create_project("team")
+    note, _ = store.add_note(project.id, WEEKLY)
+    for n in range(3):
+        store.add_note(project.id, f"- Row {n} holds pears.\n")
+    kept: list[object] = []
+    with store._read() as con:
+        cursor = con.execute("SELECT id FROM notes ORDER BY seq")
+        cursor.fetchone()
+        kept.append(cursor)
+
+    def leave() -> None:
+        with store._read() as con:
+            held = con.execute("SELECT id FROM spans")
+            held.fetchone()
+            raise LookupError("left with a cursor in its frame")
+
+    try:
+        leave()
+    except LookupError as error:
+        kept.append(error)  # its traceback keeps the frame, and the cursor in it
+    (reader,) = readers(store)
+    store.add_note(project.id, "- Row 9 holds plums.\n")
+    assert store.count_notes(project.id) == 5  # the same reader sees the write
+    assert readers(store) == [reader]
+    with caplog.at_level("WARNING", logger="cairn.store"):
+        store.forget_note(note.id)
+    assert not caplog.records
+    assert wal(db) == 0
+    assert kept
+
+
+def test_a_read_in_progress_when_a_note_is_forgotten_does_not_leave_it_in_the_log(
+    store, db, caplog
+):
+    """A read is held while a note is forgotten: the truncating checkpoint waits for it (one
+    of the store's own readers), and once the read ends it empties the log."""
+    project = store.create_project("team")
+    note, _ = store.add_note(project.id, WEEKLY)
+    store._con.execute("PRAGMA busy_timeout = 60000")  # the wait cannot run out in the test
+    began = threading.Event()
+    store._con.set_trace_callback(
+        lambda s: began.set() if s == "PRAGMA wal_checkpoint(TRUNCATE)" else None
+    )  # the writer's own connection: it checkpoints
+    held = HeldReads(store, 1)
+    assert held.inside.acquire(timeout=SAFETY)
+    with caplog.at_level("WARNING", logger="cairn.store"):
+        forgetting = threading.Thread(target=store.forget_note, args=(note.id,), daemon=True)
+        forgetting.start()
+        assert began.wait(SAFETY)
+        held.release()
+        held.join()
+        forgetting.join(SAFETY)
+    store._con.set_trace_callback(None)
+    assert not forgetting.is_alive()
+    assert not caplog.records
+    assert wal(db) == 0

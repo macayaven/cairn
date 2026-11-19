@@ -244,8 +244,37 @@ ${brand_files}  - path: /etc/systemd/system/cairn-disk.service
       OnCalendar=*:0/5
       AccuracySec=10s
 
+  # Once a night, before the daily disk snapshot (04:00 UTC, main.tf): compact the database
+  # when a deletion waits for it, with Litestream stopped for those seconds, as `host.sh
+  # compact` does by hand. A failure is an "Error:" line the replica alert reads.
+  - path: /etc/systemd/system/cairn-compact.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: compact the database when a deletion waits for it
+      Requires=cairn-disk.service cairn-network.service
+      Wants=docker.service
+      After=cairn-disk.service cairn-network.service docker.service
+
+      [Service]
+      Type=oneshot
+      TimeoutStartSec=1800
+      ExecStart=/bin/bash /etc/cairn/host.sh compact-if-due
+
+  - path: /etc/systemd/system/cairn-compact.timer
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=cairn: compact after a deletion, once a night
+
+      [Timer]
+      OnCalendar=*-*-* 03:00:00 UTC
+      AccuracySec=1min
+
 # /etc is stateless, so `systemctl enable` would not persist; start the units instead.
 # --no-block: cairn waits for the secret and the restore, and cloud-init must not wait with it.
 runcmd:
   - systemctl daemon-reload
-  - systemctl start --no-block caddy.service cairn.service litestream.service cairn-update.timer cairn-replica-check.timer
+  - systemctl start --no-block caddy.service cairn.service litestream.service cairn-update.timer cairn-replica-check.timer cairn-compact.timer

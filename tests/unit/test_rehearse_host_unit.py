@@ -297,6 +297,7 @@ def test_runcmd_reloads_systemd_and_starts_the_services():
         "litestream.service",
         "cairn-update.timer",
         "cairn-replica-check.timer",
+        "cairn-compact.timer",
     ]
 
 
@@ -332,7 +333,11 @@ def test_the_replica_check_runs_once_the_database_is_restored_and_before_the_upd
 
 def test_the_rehearsal_starts_neither_timer_with_the_boot_units():
     """Every run of the updater and of the replica check is one the rehearsal starts itself."""
-    assert rehearse.TIMERS == ("cairn-update.timer", "cairn-replica-check.timer")
+    assert rehearse.TIMERS == (
+        "cairn-update.timer",
+        "cairn-replica-check.timer",
+        "cairn-compact.timer",
+    )
     units = rehearse.started_units(rehearse.runcmd(_shipped()))
     assert [u for u in units if u not in rehearse.TIMERS] == [
         "caddy.service",
@@ -341,6 +346,8 @@ def test_the_rehearsal_starts_neither_timer_with_the_boot_units():
     ]
     assert "cairn-replica-check.timer" in rehearse.STOP_ORDER
     assert "cairn-replica-check.service" in rehearse.STOP_ORDER
+    assert "cairn-compact.timer" in rehearse.STOP_ORDER
+    assert "cairn-compact.service" in rehearse.STOP_ORDER
     assert "cairn-replica-check" in rehearse.CONTAINERS
 
 

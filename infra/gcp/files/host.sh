@@ -16,6 +16,7 @@
 #   litestream ARGS run one Litestream command with the replica's settings (for the runbooks)
 #   replica-check   say how old the newest copy in the replica is, in Litestream's own log
 #                   (cairn-replica-check.timer, every 5 minutes; the replica alerts read it)
+#   compact-if-due  compact, when a deletion waits for one (cairn-compact.timer, nightly)
 #   compact         by hand, after a workspace is deleted: check that cairn answers and the
 #                   replica is current, stop Litestream, run cairn's compact, start Litestream
 #                   again whatever happened, and wait until the replica has copied it
@@ -434,9 +435,17 @@ COMPACT_CHECKS=24
 COMPACT_STOPPED=""
 COMPACT_STEP=""
 
+# The record store.compact_due, read-only: its time, "" when no deletion waits, "?" when it
+# could not be read.
+compact_due() {
+  local due
+  due=$(docker exec cairn python -c 'import sqlite3; r = sqlite3.connect("file:/data/cairn.db?mode=ro", uri=True).execute("SELECT value FROM settings WHERE name = ?", ("store.compact_due",)).fetchone(); print(r[0] if r else "")') || due="?"
+  printf '%s' "$due"
+}
+
 compact_sizes() {
   local due db wal
-  due=$(docker exec cairn python -c 'import sqlite3; r = sqlite3.connect("file:/data/cairn.db?mode=ro", uri=True).execute("SELECT value FROM settings WHERE name = ?", ("store.compact_due",)).fetchone(); print(r[0] if r else "")') || due="?"
+  due=$(compact_due)
   case "$due" in
     "?") due="unknown, the record could not be read" ;;
     "") due=no ;;
@@ -518,6 +527,42 @@ cmd_compact() {
   done
   [ -z "$failed" ] || die "compact: failed at step $failed"
   log "compact: done"
+}
+
+# compact-if-due, from cairn-compact.timer once a night: `compact` when, and only when, a
+# deletion waits for a compaction. On success one line with the sizes before and after. On
+# failure Litestream runs again (compact's trap) and an "Error: compact: ..." line goes into
+# the litestream container's log, which the replica alert matches (monitoring.tf), and into
+# the journal.
+nightly_failed() {
+  local line="compact: the nightly compaction failed: $1"
+  err "$line"
+  printf 'Error: %s\n' "$line" | docker exec -i litestream sh -c 'cat >/proc/1/fd/1' ||
+    err "the litestream container is not running: the line above reached the journal only"
+  exit 1
+}
+
+cmd_compact_if_due() {
+  local due said rc=0 failed before after
+  is_mounted || nightly_failed "the data disk is not mounted"
+  due=$(compact_due)
+  case "$due" in
+    "?") nightly_failed "whether a deletion waits could not be read (is cairn running?)" ;;
+    "")
+      log "compact: nightly: no deletion waits for a compaction; nothing to do"
+      return 0
+      ;;
+  esac
+  said=$( (cmd_compact) 2>&1) || rc=$?
+  printf '%s\n' "$said"
+  if [ "$rc" -ne 0 ]; then
+    failed=$(printf '%s\n' "$said" | sed -n 's/^.*cairn-host: ERROR: compact: //p' | tail -n 1)
+    nightly_failed "${failed:-exit $rc}"
+  fi
+  # "compact: before: database N bytes, write-ahead log N bytes; ..." and its "after:" twin.
+  before=$(printf '%s\n' "$said" | sed -n 's/^cairn-host: compact: before: database \([0-9]*\) bytes, write-ahead log \([0-9]*\) bytes;.*/\1 \2/p')
+  after=$(printf '%s\n' "$said" | sed -n 's/^cairn-host: compact: after: database \([0-9]*\) bytes, write-ahead log \([0-9]*\) bytes;.*/\1 \2/p')
+  log "compact: nightly: database ${before% *} -> ${after% *} bytes, write-ahead log ${before#* } -> ${after#* } bytes"
 }
 
 # --- deployment state -----------------------------------------------------------------------
@@ -1021,6 +1066,7 @@ case "${1:-}" in
     ;;
   replica-check) cmd_replica_check ;;
   compact) cmd_compact ;;
+  compact-if-due) cmd_compact_if_due ;;
   update) cmd_update ;;
   hold) cmd_hold ;;
   pin)
@@ -1033,7 +1079,7 @@ case "${1:-}" in
     ;;
   state) cmd_state ;;
   *)
-    echo "usage: host.sh disk|boot-settle|network|env|restore|run-cairn|run-caddy|run-litestream|litestream ARGS|replica-check|compact|update|hold|pin DIGEST|release [--force]|state" >&2
+    echo "usage: host.sh disk|boot-settle|network|env|restore|run-cairn|run-caddy|run-litestream|litestream ARGS|replica-check|compact|compact-if-due|update|hold|pin DIGEST|release [--force]|state" >&2
     exit 2
     ;;
 esac

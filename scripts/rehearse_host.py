@@ -237,12 +237,14 @@ CONTAINERS = (
     "cairn-replica-check",
 )
 # runcmd starts both; the rehearsal does not, so that every run of either is one it starts.
-TIMERS = ("cairn-update.timer", "cairn-replica-check.timer")
+TIMERS = ("cairn-update.timer", "cairn-replica-check.timer", "cairn-compact.timer")
 STOP_ORDER = (
     "cairn-update.timer",
     "cairn-update.service",
     "cairn-replica-check.timer",
     "cairn-replica-check.service",
+    "cairn-compact.timer",
+    "cairn-compact.service",
     "cairn.service",
     "caddy.service",
     "litestream.service",

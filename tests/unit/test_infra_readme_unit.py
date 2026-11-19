@@ -833,7 +833,13 @@ def test_every_line_the_runbook_quotes_is_one_host_sh_prints(tmp_path):
             x.removeprefix("<3>").removeprefix("cairn-host: ") for x in done.text.splitlines()
         ]
         printed = [x.removeprefix("ERROR: ") for x in printed]
-    quoted = quoted_compact_lines(guide_part(AFTER_DELETION))
+    # The nightly run's own lines (`compact: nightly: ...`) are checked against what
+    # `compact-if-due` prints, in test_host_compact_nightly_unit.py.
+    quoted = [
+        x
+        for x in quoted_compact_lines(guide_part(AFTER_DELETION))
+        if not x.startswith("compact: nightly: ")
+    ]
     assert len(quoted) >= 8, quoted
     for line in quoted:
         assert any(compact_pattern(line).fullmatch(x) for x in printed), line
@@ -1057,3 +1063,38 @@ def test_the_status_paragraph_and_the_dated_record_agree_that_it_was_applied():
     assert "[What was checked](#what-was-checked-and-what-was-not)" in status
     assert "CI formats, validates and plans it with OpenTofu" in status
     assert "without a cloud project" in status
+
+
+NUMBER_WORDS = {
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+}
+
+
+def test_the_count_of_systemd_units_is_the_number_cloud_init_writes():
+    unit_entry = r"^(?:\$\{brand_files\})?  - path: /etc/systemd/system/"
+    written = len(re.findall(unit_entry, TEMPLATE, re.M))
+    assert written == len(re.findall(r"path: /etc/systemd/system/", TEMPLATE))
+    [word] = re.findall(r"cloud-init writes (\w+) systemd units", GUIDE)
+    assert NUMBER_WORDS[word] == written
+
+
+def test_the_ground_paragraph_names_every_timer_cloud_init_writes():
+    timers = re.findall(r"^  - path: /etc/systemd/system/([\w-]+)\.timer$", TEMPLATE, re.M)
+    start = GUIDE.index("The others prepare the ground:")
+    paragraph = GUIDE[start : GUIDE.index("\n\n", start)]
+    for name in timers:
+        assert f"`{name}` (a timer" in paragraph, name
+
+
+def test_no_sentence_says_nothing_runs_the_compaction_by_itself():
+    assert "Nothing runs it by itself" not in GUIDE
+    start = GUIDE.index("### After a workspace is deleted")
+    section = GUIDE[start : GUIDE.index("\n## ", start)]
+    assert "cairn-compact" in section
+    assert "03:00 UTC" in section

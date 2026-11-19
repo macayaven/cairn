@@ -18,7 +18,7 @@ One VM runs the same image self-hosted users run. OpenTofu builds everything aro
 | Monitoring | an uptime check on `https://DOMAIN/healthz` and an email alert; a second email alert when Litestream logs an error; a third when the replica check stops saying the replica is current; a fourth when a compaction keeps not finishing ([Alerts](#alerts)) |
 | Identities | a VM service account, and a deployer service account that one GitHub Actions workflow reaches through Workload Identity Federation. The deployer can push images and read the VM's deploy status, nothing else. No keys. |
 
-On the VM, cloud-init writes eleven systemd units on every boot (COS keeps `/etc` on tmpfs). Three of them run containers:
+On the VM, cloud-init writes thirteen systemd units on every boot (COS keeps `/etc` on tmpfs). Three of them run containers:
 
 - **`cairn`**: the image recorded on the data disk, always by digest, with its environment from the secret.
 - **`caddy`** (2.11.9): TLS for the domain, HSTS, a 4 MiB body cap, logs without query strings. Certificates live on the data disk.
@@ -26,7 +26,7 @@ On the VM, cloud-init writes eleven systemd units on every boot (COS keeps `/etc
 
 cairn and Caddy share one Docker network that cannot reach the VM's metadata server; Litestream is alone on a second one that can ([why and how](#containers-and-the-metadata-server)).
 
-The others prepare the ground: `cairn-disk` mounts the data disk and drops the record of a deployment that a reboot interrupted, `cairn-network` creates the two Docker networks and the firewall rules between containers and the metadata server, `cairn-env` fetches the secret into `/run/cairn/cairn.env` (tmpfs, mode 0600), `cairn-restore` restores the database from the replica when the file is missing, `cairn-update` (a timer, every minute) follows the deploy tag in the registry, and `cairn-replica-check` (a timer, every five minutes) says in Litestream's log how old the newest copy in the replica is ([Alerts](#alerts)). cairn does not start until the secret is read and the restore step has succeeded.
+The others prepare the ground: `cairn-disk` mounts the data disk and drops the record of a deployment that a reboot interrupted, `cairn-network` creates the two Docker networks and the firewall rules between containers and the metadata server, `cairn-env` fetches the secret into `/run/cairn/cairn.env` (tmpfs, mode 0600), `cairn-restore` restores the database from the replica when the file is missing, `cairn-update` (a timer, every minute) follows the deploy tag in the registry, and `cairn-replica-check` (a timer, every five minutes) says in Litestream's log how old the newest copy in the replica is ([Alerts](#alerts)), and `cairn-compact` (a timer, every night at 03:00 UTC) finishes the compaction after a deletion when one waits ([After a workspace is deleted](#after-a-workspace-is-deleted)). cairn does not start until the secret is read and the restore step has succeeded.
 
 `deploy/Caddyfile` and `deploy/litestream.yml` are used unchanged, so the VM and a self-hosted compose stack run the same configuration. The host logic is one script, [`files/host.sh`](files/host.sh).
 
@@ -667,7 +667,9 @@ The compaction alert says that cairn logged `cairn.access: compact not finished:
 
 ### After a workspace is deleted
 
-Beside Litestream a compaction rewrites the database but never truncates the write-ahead log, so what a deleted workspace left in the log file stays there until later writes reach it: 5 to more than 8 minutes on a laptop, with no bound found ([docs/compaction-beside-a-replica.md](../../docs/compaction-beside-a-replica.md)). `host.sh compact` finishes it by stopping Litestream for the seconds a compaction takes. Nothing runs it by itself.
+Beside Litestream a compaction rewrites the database but never truncates the write-ahead log, so what a deleted workspace left in the log file stays there until later writes reach it: 5 to more than 8 minutes on a laptop, with no bound found ([docs/compaction-beside-a-replica.md](../../docs/compaction-beside-a-replica.md)). `host.sh compact` finishes it by stopping Litestream for the seconds a compaction takes.
+
+**Every night.** `cairn-compact` (a timer, at 03:00 UTC, an hour before the daily snapshot of the data disk) runs `host.sh compact-if-due`. It reads the compaction record (`store.compact_due`) and runs `host.sh compact` when, and only when, a deletion waits for a compaction; otherwise it logs `compact: nightly: no deletion waits for a compaction; nothing to do`. After a compaction it logs one line of sizes, `compact: nightly: database N -> N bytes, write-ahead log N -> N bytes` (`sudo journalctl -u cairn-compact`). When it fails, or cannot read the record, it writes `Error: compact: the nightly compaction failed: ...` with the step that failed into the `litestream` container's log, where the replica alert reads it ([Alerts](#alerts)); Litestream is started again as by hand. So a deletion leaves the log file within a day without a person. The steps below are for a deletion whose data must leave the disk now.
 
 **When.** After a workspace is deleted, once the compaction alert has fired or cairn has logged `compact not finished` ([When a compaction keeps not finishing](#when-a-compaction-keeps-not-finishing), step 1): the truncating step did not happen. Beside Litestream that is every deletion, so it is worth running after any deletion whose data must leave the disk now, and not only after the alert. On the VM:
 

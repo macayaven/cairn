@@ -115,3 +115,29 @@ def test_a_body_with_a_sentence_no_claim_holds_is_still_refused(previous, tmp_pa
         target.close()
         if view is not previous:
             view.close()
+
+
+def test_an_archive_with_deep_headings_written_before_the_breadcrumb_imports(tmp_path, monkeypatch):
+    """Should-fix 9: an archive whose bodies wrote every heading past level 6 at level 6
+    (compiler.render_body_before_review_two) imports, and takes the breadcrumb."""
+    deep = "".join(f"{'#' * level} H{level}\n\n" for level in range(1, 7)) + "Deep words.\n"
+    view = Store(tmp_path / "deep.db")
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                cairn.compiler, "render_body", cairn.compiler.render_body_before_review_two
+            )
+            project = view.create_project("alpha-ops")
+            note, _ = view.add_note(project.id, deep, title="Other", topic="Other")
+            assert compile_note(view, note).status == "saved"
+        assert "###### H5\n\n###### H6\n" in view.get_page(project.id, "other").body
+        archive = exported(view)
+    finally:
+        view.close()
+    target = Store(tmp_path / "target.db")
+    try:
+        target.import_export(io.BytesIO(archive))
+        body = target.get_page(target.get_project("alpha-ops").id, "other").body
+        assert "###### H5 > H6\n\nDeep words.\n" in body
+    finally:
+        target.close()

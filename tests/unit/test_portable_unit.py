@@ -306,8 +306,11 @@ def test_a_claim_must_say_what_a_span_it_cites_says(source, tmp_path):
 
 
 def test_a_claim_may_differ_from_its_span_in_whitespace_only(source, tmp_path):
+    """White space the verbatim gate reads as the same: prose wrapped elsewhere, blank lines
+    at its ends (review blocker 2: a tab that indents a line is structure, refused)."""
+
     def respace(claim):
-        claim["text"] = "  " + claim["text"].replace(" ", " \n\t ") + "\n"
+        claim["text"] = "\n" + claim["text"].replace(" ", " \n ") + "\n"
 
     target = fresh_import(tmp_path, claims_changed(exported(source), respace))
     target.close()

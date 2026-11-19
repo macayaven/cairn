@@ -131,3 +131,35 @@ def test_an_archive_that_holds_such_a_note_still_imports(store, tmp_path):
     store.import_export(archive)
     (note,) = store.list_notes(store.get_project("alpha").id)
     assert note.text == HEADINGS
+
+
+# Decision 173: a note stored before the refusal keeps its answer when it is sent again
+
+
+def test_such_a_note_stored_before_is_unchanged_when_sent_again(memory, store):
+    project = store.get_project("alpha")
+    held, _ = store.add_note(project.id, HEADINGS, title="Checklist")  # stored before this change
+    again = memory.note("alpha", HEADINGS, title="Checklist")
+    assert (again["note_id"], again["created"], again["status"]) == (held.id, False, "unchanged")
+    assert len(store.list_notes(project.id)) == 1
+
+
+def test_rest_answers_unchanged_for_it_and_still_refuses_another_source(store):
+    key = store.create_key("laptop")
+    project = store.create_project("alpha")
+    held, _ = store.add_note(project.id, HEADINGS, title="Checklist", source_ref="old/1")
+    with TestClient(create_app(store, gate=lint_gate, public_url=BASE), base_url=BASE) as client:
+        same = client.post(
+            "/api/projects/alpha/notes",
+            headers={"x-api-key": key},
+            json={"text": HEADINGS, "title": "Checklist", "source_ref": "old/1"},
+        )
+        other = client.post(
+            "/api/projects/alpha/notes",
+            headers={"x-api-key": key},
+            json={"text": HEADINGS, "title": "Checklist", "source_ref": "old/2"},
+        )
+    assert same.status_code < 400
+    assert (same.json()["note_id"], same.json()["status"]) == (held.id, "unchanged")
+    assert other.status_code == 400 and SAID in other.text
+    assert [note.id for note in store.list_notes(project.id)] == [held.id]

@@ -180,3 +180,14 @@ def test_showing_a_nested_page_costs_what_a_flat_one_does(env):
     compiled(store, project, "One more.\n", title="Loose", topic="Deep")
     compiled(store, project, "One more too.\n", title="Loose too", topic="Flat")
     assert statements_to_show(store, client, "deep") == statements_to_show(store, client, "flat")
+
+
+def test_six_nested_headings_show_their_whole_ancestry_as_the_body_does(env):
+    """Should-fix 9 on the web page: past level 6 the rest of the path is one breadcrumb
+    heading, through section_headings, which the body uses too."""
+    store, project, client = env
+    text = "".join(f"{'#' * level} H{level}\n\n" for level in range(1, 7)) + "Deep words.\n"
+    page = compiled(store, project, text, title="Other", topic="Other")
+    web = web_outline(client, page)
+    assert web == body_outline(page)
+    assert web[-2:] == [("h", 6, "H5 > H6"), ("c", "Deep words.")]

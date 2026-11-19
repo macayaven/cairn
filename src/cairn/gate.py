@@ -4,7 +4,10 @@ Contract (frozen by tests/acceptance/test_w3_gate.py):
 - `lint_gate(page, spans)` lints the candidate as one cairn-format page (claims as given,
   body = page.body) against exactly the spans its claims cite, via `lint.lint_pages` with no
   entities and no unassigned spans. It passes when the report has no violations.
-- violations: one string per lint violation, "<code>: <claim_id or ->: <message>".
+- violations: one string per lint violation, "<code>: <claim_id or ->: <message>", and
+  provenance.unclaimed_line when a line of the body is no claim's, nor a heading or fence the
+  body writes (`unclaimed_line`, review blocker 1: the reverse of the claim-in-body check;
+  no statement, as the gate reads nothing from the store).
 - metrics: {"claims": claim count, "spans_cited": distinct cited span count,
   "retention": plain retention overall, "code_line_retention": plain code-line retention,
   "span_coverage": cairn span coverage, "omission_rate": cairn omission rate}.
@@ -40,7 +43,10 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   read.
 - Any other prose passage is compared as text: the same characters, with each run of white
   space read as one space and the white space at the two ends dropped, so a hard-wrapped
-  passage may be wrapped elsewhere. White space is space, tab, CR and LF only. Nothing else is
+  passage may be wrapped elsewhere. White space inside inline code (a backtick run and the
+  next run of as many, as CommonMark pairs them) is the code's and is compared as it is, so
+  `a  b.txt` and `a b.txt` are two texts (review blocker 3). White space is space, tab, CR
+  and LF only. Nothing else is
   normalised: no case folding, no Unicode normalisation, and zero-width, no-break and
   bidirectional characters are text, so a homoglyph or an override never matches. A list or
   quote marker ("- ", "* ", "+ ", ">") is text too, never dropped or added, and it keeps its
@@ -69,6 +75,7 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   re-nested by indentation under four columns still passes.
 """
 
+import bisect
 import re
 from collections.abc import Iterable, Mapping
 
@@ -87,6 +94,7 @@ _WHITESPACE = re.compile(r"[ \t\r\n]+")
 _LEADS = re.compile(r"[-*+](?: |$)|>")
 _MARKERS_ALONE = re.compile(r"(?:[-*+](?: |$)|> ?)+")
 _QUOTED = re.compile(r"^[ \t]*(?:> ?)+")  # a line's quote markers, set aside to find code
+_TICKS = re.compile(r"`+")  # a run of backticks, which opens or closes inline code
 _ITEM = re.compile(r"(?:[-*+]|\d{1,9}[.)])(?: |$)")  # a list item's marker, at its text's start
 # A line's text (indentation and quote markers aside) that Markdown reads as structure.
 _STRUCTURE = re.compile(
@@ -113,9 +121,13 @@ def lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
         [spans[span_id] for span_id in cited if span_id in spans],
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
+    unclaimed = unclaimed_violations(page, spans)
     return GateResult(
-        passed=not report.violations,
-        violations=[f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations],
+        passed=not report.violations and not unclaimed,
+        violations=[
+            *(f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations),
+            *unclaimed,
+        ],
         metrics={
             "claims": len(page.claims),
             "spans_cited": len(cited),
@@ -136,9 +148,13 @@ def strict_lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResu
         [PageInput(slug=page.slug, text=page.body, claims=claims)], list(spans.values())
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
+    unclaimed = unclaimed_violations(page, spans)
     return GateResult(
-        passed=not report.violations,
-        violations=[f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations],
+        passed=not report.violations and not unclaimed,
+        violations=[
+            *(f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations),
+            *unclaimed,
+        ],
         metrics={
             "claims": len(page.claims),
             "spans_cited": len(cited),
@@ -277,18 +293,90 @@ def _rows(lines: list[str], exact: bool) -> tuple[str, ...]:
 def _text(lines: Iterable[str]) -> str:
     """Prose read as text: each run of white space one space and the ends dropped, except that
     a line break stays before a line that opens with a list or quote marker and after a line
-    that is markers alone, so every marker stays at the start of its line."""
+    that is markers alone, so every marker stays at the start of its line. White space inside
+    inline code (`_code_spans`) is the code's own and is kept as it is, line breaks included
+    (a CR before one aside), so `a  b.txt` and `a b.txt` are two texts (review blocker 3)."""
+    rows = [raw.removesuffix("\r") for raw in lines]
+    text = "\n".join(rows)
+    code = _code_spans(text)
     out: list[str] = []
     alone = False
-    for raw in lines:
-        line = _WHITESPACE.sub(" ", raw).strip(" ")
-        if not line:
+    at = 0
+    for raw in rows:
+        start, at = at, at + len(raw) + 1
+        in_code = _within(code, start - 1)  # the line break before this line is code's
+        line = _line_text(raw, start, code)
+        if not line and not in_code:
             continue
         if out:
-            out.append("\n" if alone or _LEADS.match(line) else " ")
+            out.append("\n" if in_code or alone or _LEADS.match(line) else " ")
         out.append(line)
-        alone = _MARKERS_ALONE.fullmatch(line) is not None
+        alone = not in_code and _MARKERS_ALONE.fullmatch(line) is not None
     return "".join(out)
+
+
+def _line_text(raw: str, start: int, code: list[tuple[int, int]]) -> str:
+    """One line read as text: its white space outside inline code one space, the white space
+    at its two ends dropped where it is outside inline code, and inline code as it is.
+    `start` is where the line begins in the text `code` was found in."""
+    if not code or not raw:
+        return _WHITESPACE.sub(" ", raw).strip(" ")
+    pieces: list[tuple[bool, str]] = []  # (kept as it is, text)
+    pos, end = start, start + len(raw)
+    for n in range(bisect.bisect_right(code, start, key=lambda span: span[1]), len(code)):
+        left, right = code[n]
+        if left >= end:
+            break
+        if left > pos:
+            pieces.append((False, raw[pos - start : left - start]))
+        pieces.append((True, raw[max(left, pos) - start : min(right, end) - start]))
+        pos = min(right, end)
+    if pos < end:
+        pieces.append((False, raw[pos - start :]))
+    read = [(kept, piece if kept else _WHITESPACE.sub(" ", piece)) for kept, piece in pieces]
+    if not read[0][0]:
+        read[0] = (False, read[0][1].lstrip(" "))
+    if not read[-1][0]:
+        read[-1] = (False, read[-1][1].rstrip(" "))
+    return "".join(piece for _, piece in read)
+
+
+def _within(code: list[tuple[int, int]], at: int) -> bool:
+    """Whether the character at `at` is inside one of the spans of `code`."""
+    n = bisect.bisect_right(code, at, key=lambda span: span[0]) - 1
+    return n >= 0 and at < code[n][1]
+
+
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """Where inline code is in prose, as CommonMark reads it: (start, end) of each code span,
+    its backtick runs included, in order. A run of n backticks opens one, unless a backslash
+    escapes its first backtick, and the next run of exactly n backticks closes it, across a
+    line break too; a run with no such run after it is text. Inside a span a backslash is
+    text. Each run is looked at once, and its closer found by bisection: linear in the text,
+    whatever its backticks."""
+    if "`" not in text:
+        return []
+    runs = [(m.start(), m.end()) for m in _TICKS.finditer(text)]
+    by_size: dict[int, list[int]] = {}  # each run's size, and the runs of that size in order
+    for n, (left, right) in enumerate(runs):
+        by_size.setdefault(right - left, []).append(n)
+    spans: list[tuple[int, int]] = []
+    n = 0
+    while n < len(runs):
+        left, right = runs[n]
+        slashes = 0  # the backslashes right before the run: each run of them read once
+        while left - slashes > 0 and text[left - slashes - 1] == "\\":
+            slashes += 1
+        if slashes % 2:  # an escaped backtick is text; the rest of the run may open
+            left += 1
+        same = by_size.get(right - left, [])
+        closer = bisect.bisect_right(same, n)
+        if left == right or closer == len(same):
+            n += 1
+            continue
+        spans.append((left, runs[same[closer]][1]))
+        n = same[closer] + 1
+    return spans
 
 
 def _added_structure(lines: list[str]) -> int | None:
@@ -339,3 +427,115 @@ def _structure(lines: Iterable[str]) -> int | None:
 
 def _refusal(claim: Claim, message: str) -> str:
     return f"grounding.not_verbatim: {claim.id}: {message}"
+
+
+# The reverse of provenance.claim_not_in_body (review blocker 1): every line of a body the
+# compiler wrote is a line of a claim, a heading it wrote, a fence it wrote or blank.
+
+_HEADING_LINE = re.compile(r"(#{1,6}) (.*)")
+_FENCE_LINE = re.compile(r"[ \t]*(?:`{3,}|~{3,})")
+BREADCRUMB = " > "  # between the headings past the sixth level, in its one heading
+
+
+def unclaimed_violations(page: CandidatePage, spans: Mapping[str, Span]) -> list[str]:
+    """provenance.unclaimed_line, once, for the first line of the body no claim holds
+    (`unclaimed_line`), naming its number, never its text; [] when there is none."""
+    at = unclaimed_line(page, spans)
+    if at is None:
+        return []
+    return [
+        f"provenance.unclaimed_line: -: line {at} of the body is not in a claim, nor a heading"
+        " or fence the body writes"
+    ]
+
+
+def unclaimed_line(page: CandidatePage, spans: Mapping[str, Span]) -> int | None:
+    """The number of the first line of `page.body` that is none of: blank; the title, as the
+    first line ("# " and the title's words); a heading of level 2 to 6 whose words are those
+    of a heading on the path of a passage the claims cite, or of the headings past the
+    sixth level joined by BREADCRUMB; the lines of a claim, whole and in order, each claim
+    once; a line of a fence's run alone, right after a claim (the closer the body writes).
+    None when every line is one of those. It reads the body, never renders one: a rule kept
+    apart from compiler.render_body, so a fault in the rendering is found by it. Pure, no
+    statement; linear in the body, the claims and the cited heading paths."""
+    lines = page.body.split("\n")
+    if not lines or not _same_words(lines[0], "# " + page.title):
+        return 1
+    headings: set[str] = set()
+    for claim in page.claims:
+        for span_id in claim.span_ids:
+            if span_id in spans:
+                path = spans[span_id].heading_path
+                headings.update(_words(text) for text in path)
+                headings.update(_words(BREADCRUMB.join(path[n:])) for n in range(len(path)))
+    texts = [_words(claim.text) for claim in page.claims]  # each claim's words
+    by_line: dict[str, list[int]] = {}  # the words of a claim's first line: those claims
+    by_word: dict[str, list[int]] = {}  # a claim's first word: those claims
+    for place, claim in enumerate(page.claims):
+        if texts[place]:
+            first = next(row for row in claim.text.split("\n") if row.strip())
+            by_line.setdefault(_words(first), []).append(place)
+            by_word.setdefault(texts[place].split(" ", 1)[0], []).append(place)
+    left = set(range(len(texts)))  # the claims not yet found, each found once
+    n, after_claim = 1, False
+    while n < len(lines):
+        line = lines[n]
+        if not line.strip():
+            n, after_claim = n + 1, False
+            continue
+        said = _words(line)
+        taken = _claim_at(lines, n, texts, by_line.get(said, ()), left) or _claim_at(
+            lines, n, texts, by_word.get(said.split(" ", 1)[0], ()), left
+        )  # a claim as written, else one whose words are wrapped otherwise
+        if taken is not None:
+            n, after_claim = taken, True
+            continue
+        if after_claim and _FENCE_LINE.fullmatch(line.rstrip(" \t")):
+            n, after_claim = n + 1, False
+            continue
+        heading = _HEADING_LINE.fullmatch(line)
+        if heading and len(heading[1]) > 1 and _words(heading[2]) in headings:
+            n, after_claim = n + 1, False
+            continue
+        return n + 1
+    return None
+
+
+def _claim_at(
+    lines: list[str], n: int, texts: list[str], places: Iterable[int], left: set[int]
+) -> int | None:
+    """The line after the longest claim among `places` still `left` (its words, white space
+    collapsed, as provenance.claim_not_in_body compares them, in `texts`) that the lines from
+    `n` hold whole, from its first word to its last; that claim leaves `left`. None when none
+    of them is there."""
+    best: tuple[int, int] | None = None  # (the line after it, the claim's place)
+    for place in places:
+        if place not in left:
+            continue
+        words, at, end = texts[place], 0, n
+        while end < len(lines) and at < len(words):
+            more = _words(lines[end])
+            end += 1
+            if not more:
+                continue
+            if at:
+                if words[at] != " ":
+                    break
+                at += 1
+            if not words.startswith(more, at):
+                break
+            at += len(more)
+        if at == len(words) and (best is None or len(words) > len(texts[best[1]])):
+            best = (end, place)
+    if best is None:
+        return None
+    left.discard(best[1])
+    return best[0]
+
+
+def _words(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _same_words(line: str, title_line: str) -> bool:
+    return _words(line) == _words(title_line)

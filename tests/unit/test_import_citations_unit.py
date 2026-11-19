@@ -209,7 +209,7 @@ def test_claims_padded_with_whitespace_past_the_factor_are_refused(source, tmp_p
             return {name: data}
         line = json.loads(data)
         for claim in line["claims"]:
-            claim["text"] += " " * (2 * len(NOTE))  # the same words, whitespace aside
+            claim["text"] += "\n" * (2 * len(NOTE))  # the same words, blank lines aside
         return {name: json.dumps(line).encode() + b"\n"}
 
     refused(tmp_path, rebuilt(exported(source), padded), "twice the text")
@@ -225,7 +225,7 @@ def test_claims_at_twice_their_spans_import(source, tmp_path):
         if name != "projects/ops/pages.jsonl":
             return {name: data}
         line = json.loads(data)
-        line["claims"][0]["text"] += " " * room  # exactly the bound
+        line["claims"][0]["text"] += "\n" * room  # exactly the bound
         return {name: json.dumps(line).encode() + b"\n"}
 
     target = Store(tmp_path / "target.db")
@@ -243,10 +243,12 @@ ITEMS = 10
 
 @pytest.fixture
 def listed(tmp_path):
-    """One note of ten list items on one page: ten claims, each citing its own item."""
+    """One note of ten list items on one page, each saying the same: ten claims, each citing
+    its own item, and each the whole of every other item too, so a claim may cite them all
+    (an import takes a claim only when it is every passage it cites, review blocker 2)."""
     view = Store(tmp_path / "listed.db")
     project = view.create_project("ops")
-    items = "".join(f"- Heron step {n} restarts a queue.\n" for n in range(ITEMS))
+    items = "- Heron restarts a queue.\n" * ITEMS
     note, _ = view.add_note(project.id, "# Heron runbook\n\n" + items)
     assert compile_note(view, note).status == "saved"
     assert len(view.get_page(project.id, "heron-runbook").claims) == ITEMS
@@ -256,7 +258,7 @@ def listed(tmp_path):
 
 def cited_more(view: Store, extra: list[int]) -> bytes:
     """The export of `view` with claim n citing, after its own item, the next `extra[n]`
-    items too; each claim still says what its own item says."""
+    items too; each claim still says what each item it cites says."""
     project = view.get_project("ops")
     page = view.get_page(project.id, "heron-runbook")
     spans = view.get_spans([i for claim in page.claims for i in claim.span_ids])
@@ -300,7 +302,7 @@ def test_citations_at_twice_the_claims_and_passages_import(listed, tmp_path):
 def test_citations_past_twice_the_claims_and_passages_are_refused(listed, tmp_path):
     archive = cited_more(listed, [4] + [3] * (ITEMS - 1))  # 41 citations of 40
     said = refused(tmp_path, archive, "cites its passages")
-    assert "heron-runbook" in said and "sp_" not in said and "Heron step" not in said
+    assert "heron-runbook" in said and "sp_" not in said and "Heron restarts" not in said
 
 
 def test_every_claim_citing_every_passage_is_refused(listed, tmp_path):

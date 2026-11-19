@@ -184,9 +184,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   that arrived at "never", M4). ValueError, with nothing written:
   not a zip, an unknown format or version, an archive past a bound or a name outside the
   layout, a manifest that does not match the files, a note that does not match its sha256,
-  a claim citing a span that is not of its own project's notes, a claim that is not, whitespace
-  aside, the text of a span it cites (a page cairn could not have written: the compiler's
-  claims are its spans' text), a span cited from two pages of a project (in any versions:
+  a claim citing a span that is not of its own project's notes, a claim that is not the whole
+  of every span it cites by the verbatim gate's comparison (cairn.gate.whole; a page cairn
+  could not have written: the compiler's claims are its spans' text, review blocker 2), a
+  claim citing spans of two heading paths, two claims of a version with one id, a span cited
+  from two pages of a project (in any versions:
   cairn compiles a note into one page), a version without claims, a claim whose id is
   not shaped as cairn makes one (portable.CLAIM_ID) or that cites a span twice, a version
   whose citations (its claims' span lists, added up) pass portable.CITATION_FACTOR (2)

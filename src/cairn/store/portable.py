@@ -874,8 +874,7 @@ def _plan(entries: dict[str, bytes]) -> _Plan:
             raise ValueError(f"export.json lists the project {project.name!r} twice")
         seen_names.add(project.name.casefold())
         root = f"projects/{project.name}/"
-        spans: dict[str, str] = {}  # each span's id, and its text with whitespace collapsed
-        chunks: dict[str, Span] = {}  # each span, by id, for the bodies cairn would render
+        chunks: dict[str, Span] = {}  # each span, by id: what claims cite, and bodies render
         for n, line in enumerate(_lines(entries, root + "notes.jsonl"), 1):
             note, chunked = _note(entries, root, n, line)
             if "writer" in line:  # A1: an archive written before writers has none
@@ -896,7 +895,6 @@ def _plan(entries: dict[str, bytes]) -> _Plan:
                 raise ValueError(f"the note {note.id} is in this export twice")
             seen_ids.add(note.id)
             used.add(root + f"notes/{n:04d}-{note.id}.md")
-            spans.update((span.id, _collapsed(span.text)) for span in chunked)
             chunks.update((span.id, span) for span in chunked)
             project.notes.append((note, chunked))
         versions: dict[str, int] = {}  # each page's latest version so far
@@ -904,7 +902,7 @@ def _plan(entries: dict[str, bytes]) -> _Plan:
         cited: dict[str, str] = {}  # each span cited so far, and the page that cites it
         keys: dict[str, str | None] = {}  # each page's topic key, as its lines carry it (N1)
         for line in _lines(entries, root + "pages.jsonl"):
-            page = _page_version(root, line, versions, spans)
+            page = _page_version(root, line, versions, chunks)
             _cited_once(page, cited, root)
             _claim_text(page, chunks, root)
             _page_key(line, page, keys, root)
@@ -1234,8 +1232,10 @@ def _collapsed(text: str) -> str:
 def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     """The version with the body cairn writes of its claims and the spans they cite
     (cairn.compiler.render_body). The archive's must equal it, or a rendering cairn wrote
-    before, whitespace aside: before fix H (previous_render_body), or before review 7.2, with
-    a claim's open code fence left open (render_body_with_fences_open). ValueError otherwise,
+    before, whitespace aside: before fix H (previous_render_body), before review 7.2, with
+    a claim's open code fence left open (render_body_with_fences_open), or before the second
+    review (render_body_before_review_two: a title as given, deep headings at level 6, a
+    fence closed at any indentation). ValueError otherwise,
     naming the page and version, never the text: an import never brings a body cairn would
     not have written, and the version is stored with the current rendering. A title longer
     than cairn writes (a note's topic, FIELD_MAX) is cut to it, and the body is rendered
@@ -1243,6 +1243,7 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     from cairn.compiler import (  # the compiler builds on the store
         previous_render_body,
         render_body,
+        render_body_before_review_two,
         render_body_with_fences_open,
     )
 
@@ -1251,7 +1252,11 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     given = _collapsed(page.body)
     if given != _collapsed(body) and all(
         given != _collapsed(earlier(page.title, page.claims, spans))
-        for earlier in (previous_render_body, render_body_with_fences_open)
+        for earlier in (
+            previous_render_body,
+            render_body_with_fences_open,
+            render_body_before_review_two,
+        )
     ):
         raise ValueError(
             f"the body of {page.slug!r} version {page.version} in {root} is not what cairn"
@@ -1264,12 +1269,18 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
 
 
 def _page_version(
-    root: str, line: dict[str, Any], versions: dict[str, int], spans: dict[str, str]
+    root: str, line: dict[str, Any], versions: dict[str, int], spans: Mapping[str, Span]
 ) -> Page:
     """One line of a project's pages.jsonl: the next version of its page (`versions` holds
-    each page's latest so far), citing only `spans`, the spans of the project's own notes (id
-    to text, whitespace collapsed). A page cairn could have written: each claim's text,
-    whitespace aside, is the text of a span it cites, as the compiler writes it."""
+    each page's latest so far), citing only `spans`, the spans of the project's own notes by
+    id. A page cairn could have written (review blocker 2): each claim is the whole of every
+    span it cites, by the verbatim gate's own comparison (cairn.gate.whole: code and
+    structured prose line by line, other prose with its white space read as one space outside
+    inline code), so no citation is false and no code is re-indented; a claim that cites
+    several spans (a fold) cites spans of one heading path, the one its section shows; and no
+    two claims of the version share an id, which `evidence` finds a claim by."""
+    from cairn.gate import whole as copied  # the gate builds on the store
+
     where = f"a line of {root}pages.jsonl"
     if missing := [key for key in _PAGE_LINE if key not in line]:
         raise ValueError(f"{where} has no {missing[0]!r}")
@@ -1314,11 +1325,20 @@ def _page_version(
             raise ValueError(
                 f"a claim of {slug!r} in {root} cites a passage that is not of its project's notes"
             )
-        if _collapsed(claim.text) not in {spans[span_id] for span_id in claim.span_ids}:
+        if not copied(claim, spans):  # every span it cites, not one of them
             raise ValueError(  # its place, never its text or id (the archive's, not cairn's)
                 f"claim {n} of {slug!r} version {expected} in {root} does not say what a"
                 " passage it cites says"
             )
+        if len({spans[span_id].heading_path for span_id in claim.span_ids}) > 1:
+            raise ValueError(  # never a heading: the archive's text
+                f"claim {n} of {slug!r} version {expected} in {root} folds passages under"
+                " different headings"
+            )
+    if len({claim.id for claim in claims}) != len(claims):
+        raise ValueError(  # never the id: the archive's, not cairn's
+            f"version {expected} of {slug!r} in {root} holds two claims with one id"
+        )
     citations = sum(len(claim.span_ids) for claim in claims)
     cited = {span_id for claim in claims for span_id in claim.span_ids}
     if citations > CITATION_FACTOR * (len(claims) + len(cited)):

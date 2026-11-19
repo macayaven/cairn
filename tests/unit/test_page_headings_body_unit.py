@@ -4,7 +4,7 @@ call render_body on made-up spans. The web page's half is test_page_headings_web
 
 import pytest
 
-from cairn.compiler import claim_id, compile_note, render_body
+from cairn.compiler import BREADCRUMB, claim_id, compile_note, render_body
 from cairn.spans import Span
 from cairn.store import Claim, Store
 
@@ -60,7 +60,8 @@ def headings_over(body: str) -> dict[str, tuple[str, ...]]:
         if marks:
             while open_ and open_[-1][0] >= marks:
                 open_.pop()
-            open_.append((marks, block[marks:].strip()))
+            # the deepest level holds the rest of the path as a breadcrumb (should-fix 9)
+            open_.extend((marks, text) for text in block[marks:].strip().split(BREADCRUMB))
         else:
             over[block] = tuple(text for _, text in open_)
     return over
@@ -117,6 +118,8 @@ def test_nested_sections_keep_their_parents(store, project):
         [("T", "A"), ("T",), ("A",)],
         [("A",), ("T",)],
         [tuple("abcdefgh"), tuple("abcdefg"), tuple("abcdefgi")],
+        [tuple("abcdefg"), tuple("abcdef"), tuple("abcdefh"), tuple("abcde"), tuple("abcdx")],
+        [("T", *"abcdef"), tuple("abcdef")],
         [("A", "B"), ("C", "B"), ("A", "B")],
     ],
 )
@@ -125,9 +128,7 @@ def test_no_claim_is_shown_under_a_heading_off_its_path(paths):
     for n, path in enumerate(paths, 1):
         own = path[1:] if path[:1] == ("T",) else path
         shown = over[f"c{n}"]
-        assert set(shown) <= set(own), (n, path, shown)
-        if len(own) <= 5:  # every heading of a path is shown while it fits under ######
-            assert shown == own, (n, path, shown)
+        assert shown == own, (n, path, shown)  # every heading, past ###### too (should-fix 9)
 
 
 # 2. A claim with no section comes before every section
@@ -152,11 +153,26 @@ def test_moving_them_first_changes_no_stored_claim(store, project):
 # 3. The whole path, each heading at its depth, written again only when it changes
 
 
-def test_each_heading_is_written_at_its_depth_and_deeper_ones_at_six():
+def test_each_heading_is_written_at_its_depth_and_deeper_ones_in_the_sixth():
+    """Should-fix 9: past ###### the rest of the path is one heading, a breadcrumb, so no
+    heading of it reads as a sibling of its parent (it read "###### e", "###### f", ...)."""
     body = body_of("T", [tuple("abcdefg")])
-    assert body == (
-        "# T\n\n## a\n\n### b\n\n#### c\n\n##### d\n\n###### e\n\n###### f\n\n###### g\n\nc1\n"
-    )
+    assert body == "# T\n\n## a\n\n### b\n\n#### c\n\n##### d\n\n###### e > f > g\n\nc1\n"
+
+
+def test_six_nested_headings_under_another_title_keep_their_whole_ancestry(store, project):
+    """The reviewer's note: six nested headings, and a page title that is none of them."""
+    text = "".join(f"{'#' * level} H{level}\n\n" for level in range(1, 7)) + "Deep words.\n"
+    page = compiled(store, project, text, title="Other", topic="Other")
+    assert headings_over(page.body)["Deep words."] == tuple(f"H{n}" for n in range(1, 7))
+    assert "###### H5 > H6\n" in page.body
+
+
+def test_a_heading_that_holds_the_breadcrumb_reads_as_two():
+    """The limit of a breadcrumb: a heading whose own text holds " > " past the sixth level
+    reads as two headings there; every heading is still shown, in order."""
+    body = body_of("T", [("a", "b", "c", "d", "e", "f > g")])
+    assert "###### e > f > g\n" in body
 
 
 def test_a_heading_is_written_again_only_when_it_changes_at_its_depth_or_above():

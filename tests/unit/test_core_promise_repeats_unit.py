@@ -11,7 +11,7 @@ import pytest
 
 from cairn.arrange import parse_arrangement, repeat_groups, tidy_page
 from cairn.compiler import CandidatePage, render_body
-from cairn.gate import lint_gate, verbatim_gate
+from cairn.gate import lint_gate, text_reading, verbatim_gate
 from cairn.memory import Memory
 from cairn.spans import chunk
 from cairn.store import Claim, Store
@@ -80,6 +80,13 @@ PAIRS = {
     "a list item rewrapped": ("- Install Docker\n  and uv", "- Install Docker and uv"),
     "a list item and the same text unmarked": ("- Install Docker", "Install Docker"),
     "a quote and its text": ("> Keep it off.", "Keep it off."),
+    # Blocker 3: white space inside inline code is the code's, and kept
+    "inline code spaced otherwise": ("Keep `a  b.txt` here.", "Keep `a b.txt` here."),
+    "inline code with a tab": ("Keep `a\tb.txt` here.", "Keep `a b.txt` here."),
+    "inline code the same, prose wrapped": ("Keep `a  b.txt`\nhere.", "Keep `a  b.txt` here."),
+    "double-tick code spaced otherwise": ("Keep ``a  `b`` here.", "Keep ``a `b`` here."),
+    "code across a line break": ("Keep `a\nb.txt` here.", "Keep `a b.txt` here."),
+    "an unmatched run before code": ("A `` tick, `a  b` here.", "A `` tick, `a b` here."),
 }
 
 
@@ -115,6 +122,47 @@ def test_repeats_under_other_headings_are_still_apart():
     sections = {claims[0].id: ("A",), claims[1].id: ("B",)}
     assert repeat_groups(claims, sections) == []
     assert repeat_groups(claims, {c.id: ("A",) for c in claims}) == [[1, 2]]
+
+
+APART = [
+    "inline code spaced otherwise",
+    "inline code with a tab",
+    "double-tick code spaced otherwise",
+    "code across a line break",
+    "an unmatched run before code",
+]
+
+
+@pytest.mark.parametrize("name", APART)
+def test_white_space_inside_inline_code_is_kept(name):
+    claims, _ = claims_of(*PAIRS[name])
+    assert repeat_groups(claims, {}) == [], name
+
+
+def test_inline_code_the_same_still_repeats_when_the_prose_is_wrapped():
+    claims, _ = claims_of(*PAIRS["inline code the same, prose wrapped"])
+    assert repeat_groups(claims, {}) == [[1, 2]]
+
+
+def test_an_escaped_backtick_opens_no_code():
+    assert text_reading("A \\` tick, `a  b` here.") != text_reading("A \\` tick, `a b` here.")
+    assert text_reading("No `code  here.") == text_reading("No `code here.")
+
+
+def test_two_notes_that_differ_only_inside_inline_code_both_survive_a_tidy(store):
+    store.create_project("alpha")
+    memory = Memory(store, lint_gate)
+    first, second = "Keep `a  b.txt` for the archive.", "Keep `a b.txt` for the archive."
+    slug = memory.note("alpha", first, title="Files")["page"]
+    memory.note("alpha", second, title="Files", topic="Files")
+    project = store.get_project("alpha")
+    tidied = tidy_page(store, project.id, slug)
+    assert (tidied.status, tidied.merged) == ("unchanged", 0)
+    page = store.get_page(project.id, slug)
+    assert [(claim.text, len(claim.span_ids)) for claim in page.claims] == [
+        (first, 1),
+        (second, 1),
+    ]
 
 
 def test_text_that_holds_no_passage_repeats_only_itself():

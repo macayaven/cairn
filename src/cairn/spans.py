@@ -212,7 +212,7 @@ def _item_end(lines: list[str], i: int) -> int:
             j += 1
             continue
         if j == i or _indent(line) >= column:  # item text, a nested item, or a fence kept whole
-            j = _fence_end(lines, j) if _FENCE.match(line[_content_column(line) :]) else j + 1
+            j = _fence_end(lines, j) if fence_opener(line) else j + 1
         elif j == end and _kind(line) == "paragraph":  # a lazy continuation line
             j += 1
         else:
@@ -240,20 +240,33 @@ def _fence_end(lines: list[str], i: int) -> int:
     character, at least as long as the opening run, indented at most 3 spaces more than the
     opening fence (less is fine).
     """
-    column = _content_column(lines[i])
-    fence = _FENCE.match(lines[i][column:]).group()
+    column, fence = fence_opener(lines[i]) or (0, "")
     for j in range(i + 1, len(lines)):
-        closer = lines[j].strip()
-        if (
-            len(closer) >= len(fence)
-            and set(closer) == {fence[0]}
-            and _indent(lines[j]) <= column + 3
-        ):
+        if fence_closes(lines[j], fence, column + 3):
             return j + 1
     end = len(lines)
     while not lines[end - 1].strip():
         end -= 1
     return end
+
+
+def fence_opener(line: str) -> tuple[int, str] | None:
+    """The code fence a line opens, as (column, run), or None: past the line's indentation and
+    any list marker, a run of three or more backticks with no backtick after it on the line,
+    or of three or more tildes. The one rule for openers, here and in the body the compiler
+    writes (compiler.render_body). The column counts characters, a tab as one."""
+    column = _content_column(line)
+    found = _FENCE.match(line[column:])
+    return (column, found.group()) if found else None
+
+
+def fence_closes(line: str, run: str, deepest: int) -> bool:
+    """Whether a line closes a fence opened with `run`: it holds only a run of the same
+    character, at least as long, indented `deepest` columns at most. The one rule for closers,
+    here and in the body the compiler writes: chunk gives `deepest` as the opener's column
+    plus 3 (see the module), the body as Markdown's own limit (compiler.render_body)."""
+    closer = line.strip()
+    return len(closer) >= len(run) > 0 and set(closer) == {run[0]} and _indent(line) <= deepest
 
 
 def _heading(line: str) -> tuple[int, str]:

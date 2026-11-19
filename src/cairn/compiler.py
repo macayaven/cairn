@@ -233,18 +233,41 @@ def claim_id(span_id: str) -> str:
     return "cl_" + span_id.removeprefix("sp_")
 
 
+def section_headings(
+    title: str, path: Sequence[str], previous: Sequence[str]
+) -> tuple[tuple[str, ...], list[tuple[int, str]]]:
+    """A claim's section and the headings to write before it, as (level, text), when the
+    claim shown before it had the section `previous`. The section is `path` (its heading
+    path) less a first heading that is the page's `title`; empty, the claim has no section.
+    Each heading is written at its depth, the first at level 2, deeper ones at 6 at most:
+    from the first that differs from `previous`, or, when the section is `previous` cut
+    short, its last, so no claim reads as under a heading off its path."""
+    section = tuple(path[1:] if path[:1] == (title,) else path)
+    same = 0
+    while same < min(len(section), len(previous)) and section[same] == previous[same]:
+        same += 1
+    if section and same == len(section) < len(previous):
+        same -= 1  # back up to a parent: it is written again
+    return section, [(min(depth + 2, 6), section[depth]) for depth in range(same, len(section))]
+
+
 def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) -> str:
     """Render the extractive body. A claim's section is the heading path of its first span
-    found in `spans`; a claim with no known span counts as having no heading path."""
-    blocks = [f"# {title}"]
-    previous: tuple[str, ...] | None = None
+    found in `spans` (section_headings); a claim with no known span counts as having no
+    heading path. The claims with no section come first, in their order; then the others in
+    their order, each under its section's headings. One pass over `claims`."""
+    top, rest = [f"# {title}"], []
+    previous: tuple[str, ...] = ()
     for claim in claims:
         path = next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
-        if path != previous and path and path[-1] != title:
-            blocks.append(f"## {path[-1]}")
-        blocks.append(claim.text)
-        previous = path
-    return "\n\n".join(blocks) + "\n"
+        section, headings = section_headings(title, path, previous)
+        if not section:
+            top.append(claim.text)
+            continue
+        rest.extend(f"{'#' * level} {text}" for level, text in headings)
+        rest.append(claim.text)
+        previous = section
+    return "\n\n".join([*top, *rest]) + "\n"
 
 
 def candidate_page(

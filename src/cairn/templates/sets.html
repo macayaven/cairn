@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_narrow.html" import project_filter %}
 {% block title %}Sets{% endblock %}
 {% block main %}
 <h1>Sets</h1>
@@ -8,13 +9,14 @@
   <h2 id="new-set">New set</h2>
   <form method="post" action="/sets" class="stack">
     <label for="set-name">Name</label>
-    <input id="set-name" type="text" name="name" maxlength="64" required aria-describedby="set-name-hint">
+    <input id="set-name" type="text" name="name" maxlength="64" required aria-describedby="set-name-hint"{% if narrow_new and narrow_new.typed %} value="{{ narrow_new.typed }}"{% endif %}>
     <p class="hint" id="set-name-hint">A name, such as work.</p>
     {% if projects %}
     <fieldset class="reach">
       <legend>Its projects</legend>
-      {% for project in projects %}
-      <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"> {{ project.name }}</label>
+      {% if narrow_new %}{{ project_filter(narrow_new, "filter-new", "/sets", "new") }}{% endif %}
+      {% for project in (narrow_new.projects if narrow_new else projects) %}
+      <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"{% if narrow_new and project.id in narrow_new.ticked %} checked{% endif %}> {{ project.name }}</label>
       {% endfor %}
     </fieldset>
     {% endif %}
@@ -33,8 +35,10 @@
   <form method="post" action="/sets/{{ group.id|seg }}" class="stack">
     <fieldset class="reach">
       <legend>Its projects</legend>
-      {% for project in projects %}
-      <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"{% if project.id in group.project_ids %} checked{% endif %}> {{ project.name }}</label>
+      {% set narrow = narrow_sets.get(group.id) if narrow_sets else None %}
+      {% if narrow %}{{ project_filter(narrow, "filter-" ~ group.id, "/sets", group.id) }}{% endif %}
+      {% for project in (narrow.projects if narrow else projects) %}
+      <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"{% if project.id in (narrow.ticked if narrow else group.project_ids) %} checked{% endif %}> {{ project.name }}</label>
       {% endfor %}
     </fieldset>
     <div class="choices">

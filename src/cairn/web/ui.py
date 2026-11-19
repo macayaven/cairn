@@ -86,6 +86,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import QueryParams
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -133,6 +134,7 @@ from cairn.web.auth import SESSION_COOKIES, SESSION_TTL, Accounts, _memory, may_
 from cairn.web.brand import product_of
 from cairn.web.components import UNREACHED_DESTINATION, destination_of, numbered_lines
 from cairn.web.compose import compose_routes
+from cairn.web.narrowing import narrowed
 from cairn.web.ratelimit import TOO_MANY_FAILURES, CredentialFailures
 from cairn.web.rest import (
     _held_said,
@@ -1102,13 +1104,22 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
             projects=memory.store.list_projects(),
         )
 
-    def key_page(memory: Memory, created: dict[str, str] | None = None) -> dict[str, Any]:
+    def key_page(
+        memory: Memory,
+        created: dict[str, str] | None = None,
+        params: QueryParams | None = None,
+    ) -> dict[str, Any]:
         """What keys.html shows: the keys with their reach by name, what a new key's reach
-        can be chosen from, and the address an app is given with a new key."""
+        can be chosen from (narrowed by `params`, the address the page was asked with, when
+        the list is long: cairn.web.narrowing), and the address an app is given with a new
+        key."""
+        projects = memory.store.list_projects()
         return {
             "app_url": app_url,
             "keys": memory.store.list_keys(),
-            "projects": memory.store.list_projects(),
+            "projects": projects,
+            "narrow": narrowed(projects, params or QueryParams(), "/keys", typed="label"),
+            "narrow_action": "/keys",
             "sets": memory.store.list_sets(),
             "names": memory.reach_names(),
             "created": created,
@@ -1119,7 +1130,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
     def keys(request: Request) -> Response:
         """The workspace's key labels and reach; the form and the revoke buttons only for a
         caller who may manage them."""
-        return _ui(request, "keys.html", **key_page(_memory(request)))
+        return _ui(request, "keys.html", **key_page(_memory(request), None, request.query_params))
 
     async def managed_store(request: Request) -> Any:
         """The caller's store, when the caller may manage the workspace's keys and sets; 403
@@ -1182,13 +1193,25 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
 
     def sets(request: Request) -> Response:
         """The workspace's sets with their projects by name; the forms only for a caller who
-        may manage them (the same rule as keys)."""
+        may manage them (the same rule as keys). A long list of projects can be narrowed on
+        each form (cairn.web.narrowing): `filtering` in the address says which form sent it,
+        "new" or a set's id, and only that form reads its ticks and filter from there."""
         memory = _memory(request)
+        groups = memory.store.list_sets()
+        projects = memory.store.list_projects()
+        params, which = request.query_params, request.query_params.get("filtering")
         return _ui(
             request,
             "sets.html",
-            sets=memory.store.list_sets(),
-            projects=memory.store.list_projects(),
+            sets=groups,
+            projects=projects,
+            narrow_new=narrowed(projects, params, "/sets", mine=which == "new", typed="name"),
+            narrow_sets={
+                group.id: narrowed(
+                    projects, params, "/sets", mine=which == group.id, ticked=group.project_ids
+                )
+                for group in groups
+            },
             names=memory.reach_names(),
             manage=may_manage_credentials(memory),
         )

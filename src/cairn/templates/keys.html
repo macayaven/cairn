@@ -19,7 +19,7 @@ CAIRN_API_KEY={{ created.key }}</pre>
   <h2 id="new-key">New key</h2>
   <form method="post" action="/keys" class="stack">
     <label for="key-label">Label</label>
-    <input id="key-label" type="text" name="label" maxlength="80" required aria-describedby="key-label-hint">
+    <input id="key-label" type="text" name="label" maxlength="80" required aria-describedby="key-label-hint"{% if narrow and narrow.typed %} value="{{ narrow.typed }}"{% endif %}>
     <p class="hint" id="key-label-hint">What will use the key, in up to 80 characters.</p>
     {% include "_reach.html" %}
     <button type="submit">Make a key</button>

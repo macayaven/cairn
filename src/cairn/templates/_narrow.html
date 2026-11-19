@@ -1,0 +1,11 @@
+{# A filter for a long list of projects (cairn.web.narrowing): its button sends the form it is in with GET to `action`, so the boxes ticked on it come back ticked. `which`: the value the button sends as `filtering`, for a page with more than one such form. #}
+{% macro project_filter(narrow, id, action, which=None) %}
+<div class="narrow">
+  <label for="{{ id }}">Filter projects</label>
+  <div class="narrow-row">
+    <input id="{{ id }}" type="search" name="filter" value="{{ narrow.text }}" maxlength="64" aria-describedby="{{ id }}-count">
+    <button type="submit" class="quiet" formmethod="get" formaction="{{ action }}" formnovalidate{% if which %} name="filtering" value="{{ which }}"{% endif %}>Filter</button>
+  </div>
+  <p class="hint" id="{{ id }}-count">{{ narrow.shown }} shown of {{ narrow.total }}, ticked ones always shown.{% if narrow.text %} <a href="{{ narrow.everything }}">Show all projects</a>{% endif %}</p>
+</div>
+{% endmacro %}

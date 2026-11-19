@@ -1,21 +1,23 @@
-{# The reach of a new connection: which projects, and whether it may write. Needs `projects`, `sets` and `names` (id to name). #}
+{# The reach of a new connection: which projects, and whether it may write. Needs `projects`, `sets` and `names` (id to name); `narrow` (cairn.web.narrowing) and `narrow_action` when the list can be narrowed. #}
+{% from "_narrow.html" import project_filter %}
 <fieldset class="reach">
   <legend>Projects it reaches</legend>
-  <label class="option"><input type="radio" name="scope" value="all" checked> All projects <span class="hint">every project you reach in this workspace, now and later</span></label>
-  <label class="option"><input type="radio" name="scope" value="selected"> Selected projects <span class="hint">only the ones ticked here</span></label>
+  <label class="option"><input type="radio" name="scope" value="all"{% if not narrow or narrow.scope == "all" %} checked{% endif %}> All projects <span class="hint">every project you reach in this workspace, now and later</span></label>
+  <label class="option"><input type="radio" name="scope" value="selected"{% if narrow and narrow.scope == "selected" %} checked{% endif %}> Selected projects <span class="hint">only the ones ticked here</span></label>
   {% if projects or sets %}
   <div class="ticks">
-    {% for project in projects %}
-    <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"> {{ project.name }}</label>
+    {% if narrow %}{{ project_filter(narrow, "filter-projects", narrow_action) }}{% endif %}
+    {% for project in (narrow.projects if narrow else projects) %}
+    <label class="option"><input type="checkbox" name="projects" value="{{ project.id }}"{% if narrow and project.id in narrow.ticked %} checked{% endif %}> {{ project.name }}</label>
     {% endfor %}
     {% for group in sets %}
-    <label class="option"><input type="checkbox" name="projects" value="{{ group.id }}"> {{ group.name }} <span class="hint">set: {{ reach_label(group.project_ids, names) }}</span></label>
+    <label class="option"><input type="checkbox" name="projects" value="{{ group.id }}"{% if narrow and group.id in narrow.ticked %} checked{% endif %}> {{ group.name }} <span class="hint">set: {{ reach_label(group.project_ids, names) }}</span></label>
     {% endfor %}
   </div>
   {% endif %}
 </fieldset>
 <fieldset class="reach">
   <legend>What it may do there</legend>
-  <label class="option"><input type="radio" name="access" value="write" checked> {{ access_labels["write"] }}</label>
-  <label class="option"><input type="radio" name="access" value="read"> {{ access_labels["read"] }}</label>
+  <label class="option"><input type="radio" name="access" value="write"{% if not narrow or narrow.access == "write" %} checked{% endif %}> {{ access_labels["write"] }}</label>
+  <label class="option"><input type="radio" name="access" value="read"{% if narrow and narrow.access == "read" %} checked{% endif %}> {{ access_labels["read"] }}</label>
 </fieldset>

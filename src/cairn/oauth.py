@@ -123,6 +123,7 @@ from cairn.store import (
     TokenPair,
 )
 from cairn.store.grants import ROTATION_WINDOW, TooManyRotations
+from cairn.web.narrowing import narrowed
 
 SCOPE = "cairn"  # the one thing a grant gives: this account's memory over /mcp
 BRANDED_SCOPE = "memory"  # its other name, said under a brand (B1); the same for every brand
@@ -805,7 +806,12 @@ def routes(
 
     async def consent_page(request: Request) -> Response:
         view = account(request)
-        pending = requests.open(request.query_params.get("request"), "authorize")
+        sealed = request.query_params.get("request")
+        pending = requests.open(sealed, "authorize")
+        if pending is None:  # sent again by the form's filter button (cairn.web.narrowing)
+            pending = requests.open(sealed, "consent")
+            if pending is not None and pending.get("account") != view.account_id:
+                pending = None
         client = (
             await run_in_threadpool(ledger.get_client, pending["client_id"]) if pending else None
         )
@@ -827,6 +833,8 @@ def routes(
             projects=projects,
             sets=sets,
             names=names,
+            narrow=narrowed(projects, request.query_params, CONSENT_PATH),
+            narrow_action=CONSENT_PATH,
         )
         policy = response.headers["content-security-policy"]
         origin = origin_of(pending["redirect_uri"])

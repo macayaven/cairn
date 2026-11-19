@@ -167,12 +167,12 @@ def test_listing_pages_reads_the_heads_in_two_statements_without_bodies(store, d
         for _ in range(2):
             store.save_page(project.id, slug, slug.upper(), "y" * 200_000, claims(3))
     seen: list[str] = []
-    store._con.set_trace_callback(seen.append)
+    store._observe(trace=seen.append)
     try:
         heads, total = store.page_heads(project.id, 2)
         counts = store.page_counts()
     finally:
-        store._con.set_trace_callback(None)
+        store._observe(trace=None)
     assert [(h.slug, h.version, h.claims) for h in heads] == [("a", 2, 3), ("b", 2, 3)]
     assert total == 3 and counts == {project.id: 3}
     read = [s for s in seen if s.lstrip().upper().startswith("SELECT")]

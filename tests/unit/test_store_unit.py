@@ -3996,14 +3996,16 @@ def test_a_busy_begin_is_a_busy_error_and_the_store_goes_on(store, db):
 
 
 def test_a_transaction_left_open_is_rolled_back_by_the_next_call(store, alpha):
-    """Something began a transaction on the connection and left it: the next call's BEGIN
-    fails, its handler rolls the leftover back, and the call after it works."""
+    """Something began a transaction on the writer and left it: the next call that uses the
+    writer (a write: reads have connections of their own) fails at its BEGIN, its handler
+    rolls the leftover back, and the call after it works."""
     store._con.execute("BEGIN")
     store._con.execute("DELETE FROM projects")
     with pytest.raises(sqlite3.OperationalError):
-        store.list_projects()
+        store.create_project("beta")
     assert store._con.in_transaction is False
     assert [b.name for b in store.list_projects()] == ["alpha"]
+    assert store.create_project("beta").name == "beta"
 
 
 def test_a_view_made_before_the_store_broke_is_unusable_too(store):
@@ -4112,12 +4114,14 @@ def test_a_read_is_never_turned_into_cannot_write(store):
                 raise self.error
             return self._real.execute(sql, *args)
 
-    real = store._con
-    store._con = ReadFails(real, error)
+    readers = store._state.readers  # reads run on the store's read-only connections
+    real = readers.take(store._state.observers)
+    readers.give(real)
+    readers.take = lambda observers: ReadFails(real, error)
+    readers.give = lambda con: None
     with pytest.raises(sqlite3.OperationalError) as failed:
         store.list_projects()
     assert failed.value is error
-    store._con = real
 
 
 def test_health_is_ok_on_a_working_store_and_writes_nothing(store, db, alpha):

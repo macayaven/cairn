@@ -219,11 +219,11 @@ def test_whether_a_team_is_held_is_one_statement_with_2_workspaces_or_8(world):
 
     def counted() -> int:
         asked: list[str] = []
-        world.store._con.set_trace_callback(asked.append)
+        world.store._observe(trace=asked.append)
         try:
             assert office.team_held(TEAM, world.ada["account"])
         finally:
-            world.store._con.set_trace_callback(None)
+            world.store._observe(trace=None)
         return len([s for s in asked if s.lstrip().upper().startswith("SELECT")])
 
     two = counted()

@@ -214,11 +214,11 @@ def test_a_search_over_two_projects_reads_no_claim_of_the_other_two_hundred(stor
         if "_content'" in statement:
             read.append(statement)
 
-    store._con.set_trace_callback(traced)
+    store._observe(trace=traced)
     try:
         hits = view.search("quill relay")
     finally:
-        store._con.set_trace_callback(None)
+        store._observe(trace=None)
     assert len(hits) == 4
     assert [s for s in read if not s.endswith("WHERE T.'rowid'=?")] == []  # no scan
     matched_in_reach, words = 4, 2  # each matched claim: once to match, once per word scored

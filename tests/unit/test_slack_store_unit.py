@@ -217,11 +217,11 @@ def test_a_pending_install_is_not_switched_on_and_the_challenge_does_not_turn_it
 def test_the_inbound_lookup_is_one_statement(world):
     install = ready(world)
     asked: list[str] = []
-    world.store._con.set_trace_callback(asked.append)
+    world.store._observe(trace=asked.append)
     try:
         world.store.slack_inbound(install.id)
     finally:
-        world.store._con.set_trace_callback(None)
+        world.store._observe(trace=None)
     assert len([s for s in asked if s.lstrip().upper().startswith("SELECT")]) == 1
     assert world.store.slack_inbound("sl_000000000000") is None
     assert world.store.slack_inbound("not an id") is None
@@ -432,11 +432,11 @@ def test_the_sweep_takes_offers_past_their_time_and_is_part_of_sweep_expired(wor
 def selects(store: Store, call) -> int:
     """How many SELECT statements `call()` runs on the store's connection."""
     asked: list[str] = []
-    store._con.set_trace_callback(asked.append)
+    store._observe(trace=asked.append)
     try:
         call()
     finally:
-        store._con.set_trace_callback(None)
+        store._observe(trace=None)
     return len([s for s in asked if s.lstrip().upper().startswith(("SELECT", "WITH"))])
 
 

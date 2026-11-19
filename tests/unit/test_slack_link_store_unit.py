@@ -266,13 +266,13 @@ def test_taking_a_code_costs_the_same_statements_whatever_the_workspace_holds(wo
 
     def counted(act) -> int:
         asked: list[str] = []
-        world.store._con.set_trace_callback(asked.append)
+        world.store._observe(trace=asked.append)
         try:
             act()
         except KeyError:
             pass
         finally:
-            world.store._con.set_trace_callback(None)
+            world.store._observe(trace=None)
         return len(asked)
 
     costs = []

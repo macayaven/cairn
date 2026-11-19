@@ -211,7 +211,7 @@ class Watch:
     counts them."""
 
     def __init__(self, store: Store) -> None:
-        self.con = store._con
+        self.store = store
 
     def count(self, call) -> int:
         seen: list[str] = []
@@ -224,11 +224,11 @@ class Watch:
                 return
             seen.append(text)
 
-        self.con.set_trace_callback(traced)
+        self.store._observe(trace=traced)
         try:
             call()
         finally:
-            self.con.set_trace_callback(None)
+            self.store._observe(trace=None)
         return len(seen)
 
 

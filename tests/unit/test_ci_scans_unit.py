@@ -4,8 +4,9 @@ nothing more, each running a tool pinned to one version.
 
 - `dependencies`: pip-audit on uv.lock (exported with its hashes) and build-constraints.txt;
   a known vulnerability with a fixed version fails the job (.github/scanners/audit_policy.py).
-- `image_scan`: Trivy on the image built for linux/amd64; HIGH or CRITICAL with a fix fails,
-  the unfixed are listed in the job's summary.
+- `image_scan`: Trivy on both platforms of the one build `image_build` made, each pulled by the
+  index's digest from a registry on the runner; HIGH or CRITICAL with a fix fails, the unfixed
+  are listed in the job's summary.
 - `static_analysis`: Bandit over src/ at medium severity and medium confidence.
 - `secrets`: gitleaks over the whole history checked out, redacted.
 
@@ -197,7 +198,9 @@ def test_each_scan_is_a_job_publish_needs_reading_the_repository_and_nothing_mor
     assert name in needs(JOBS["publish"])
     assert name in ancestors("publish")
     assert job["permissions"] == {"contents": "read"}
-    assert "if" not in job and "needs" not in job
+    # The image scan needs the build it scans, which also runs on every change.
+    assert "if" not in job and needs(job) <= {"image_build"}
+    assert "if" not in JOBS["image_build"] and "needs" not in JOBS["image_build"]
     configuration = yaml.safe_dump(job)
     assert "secrets." not in configuration and "github.token" not in configuration
     assert "environment" not in job
@@ -318,7 +321,33 @@ BINARIES = {
             ),
         },
     ),
+    # Read from the release's oras_1.3.6_checksums.txt on 2026-11-19.
+    "publish": (
+        "oras",
+        "https://github.com/oras-project/oras/releases/download/v1.3.6/",
+        {
+            "oras_1.3.6_linux_amd64.tar.gz": (
+                "66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0"
+            ),
+            "oras_1.3.6_linux_arm64.tar.gz": (
+                "b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1"
+            ),
+        },
+    ),
 }
+
+
+def test_every_job_that_uses_oras_installs_it_with_the_same_step():
+    users = [
+        name
+        for name, job in JOBS.items()
+        if any(re.search(r"\boras\b", s.get("run", "")) for s in job["steps"])
+    ]
+    assert set(users) == {"image_scan", "image", "publish", "aliases"}
+    steps = [
+        next(s for s in JOBS[name]["steps"] if s.get("name") == "Install oras") for name in users
+    ]
+    assert all(step == steps[0] for step in steps)
 
 
 def install_step(job: str) -> dict:
@@ -428,14 +457,19 @@ def test_every_allowlist_names_its_rules_and_its_exact_files():
             assert re.fullmatch(r"[\w/.-]+", path) and (REPO / path).is_file(), pattern
 
 
-# --- the image: built for linux/amd64 and scanned before anything is published ----------------
+# --- the image: both platforms of image_build's build, scanned before anything is published ----
 
 
-def test_the_image_scan_builds_amd64_and_fails_on_a_fixed_high_or_critical():
+def test_the_image_scan_scans_both_platforms_of_the_build_and_fails_on_a_fixed_high_or_critical():
     job = JOBS["image_scan"]
-    assert job["env"]["DOCKER_DEFAULT_PLATFORM"] == "linux/amd64"
+    platforms = [entry["platform"] for entry in job["strategy"]["matrix"]["include"]]
+    assert sorted(platforms) == ["linux/amd64", "linux/arm64"]
+    assert job["env"] == {"LOCAL": "cairn:scan"}
     text = runs("image_scan")
-    assert "docker build --platform linux/amd64 -t cairn:scan ." in text
+    # It builds nothing: it pulls this leg's platform of the build, by the index's digest.
+    assert "docker build" not in text
+    assert not any(s.get("uses", "").startswith("docker/build-push") for s in job["steps"])
+    assert 'docker pull --platform "$PLATFORM" "localhost:5000/cairn@$DIGEST"' in text
     flat = " ".join(text.split())
     assert (
         "trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed"

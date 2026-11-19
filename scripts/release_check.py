@@ -175,6 +175,26 @@ def is_highest(tag: str, tags: list[str]) -> bool:
     return all(number <= mine for number in versions)
 
 
+def aliases(released: list[str], published: list[str]) -> dict[str, str]:
+    """Where `latest` and each `X.Y` belong: {alias: full version}. RELEASED are the tags of
+    the repository's GitHub releases that are neither drafts nor pre-releases, PUBLISHED the
+    registry's tags. Of the released plain versions (`vMAJOR.MINOR.PATCH`) whose full version
+    is in the registry, `latest` is the highest and each `X.Y` the highest of its line; compared
+    as numbers. Job `aliases` of .github/workflows/ci-cd.yml decides the same in its own step
+    (a job that may write to the registry runs no script from the repository), from what
+    exists when it runs, so whichever run moves them last leaves them here."""
+    there = set(published)
+    versions = sorted(
+        (number, name[1:]) for name in released if (number := _number(name)) and name[1:] in there
+    )
+    placed: dict[str, str] = {}
+    if versions:
+        placed["latest"] = versions[-1][1]
+    for number, version in versions:
+        placed[f"{number[0]}.{number[1]}"] = version
+    return placed
+
+
 def _highest(tags: list[str]) -> str:
     return max((name for name in tags if _number(name)), key=_number)
 

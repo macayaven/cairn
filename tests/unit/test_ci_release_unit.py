@@ -1,5 +1,5 @@
 """The tag path of .github/workflows/ci-cd.yml: release_check -> publish -> verify -> package
--> attest -> release.
+-> attest -> release -> aliases.
 
 - `package` (no permission at all) builds the wheel and the source archive and writes
   SHA256SUMS over what it made; `attest` and `release` each check every file against it.
@@ -7,7 +7,10 @@
   right to store attestations), runs nothing from the repository or from the files, and
   attests the wheel, the source archive, SHA256SUMS and the image's digest.
 - A release candidate vX.Y.Z-rc.N runs all of it, and publishes the image as X.Y.Z-rc.N and
-  sha-<commit> only, and a GitHub pre-release that is not marked latest. It never deploys."""
+  sha-<commit> only, and a GitHub pre-release that is not marked latest. It never deploys,
+  and `aliases` does not run for it.
+- No job that may write, or holds an identity token, builds or runs the repository's code,
+  whether in a shell line or through an action that builds (`deploy` runs its one script)."""
 
 import hashlib
 import re
@@ -62,28 +65,64 @@ def test_the_permissions_of_every_job_on_the_tag_path():
 
 BUILDS_OR_RUNS_THE_CHECKOUT = re.compile(
     r"\buv\s+(build|sync|pip|run|tool)\b|\bpip3?\b|\bpython3?\b|\bscripts/|\./"
+    r"|\bdocker\s+(build|buildx\s+build|buildx\s+bake|compose|run|create|start|exec)\b"
 )
+# The actions that build: an image from the checkout, or the checkout's Python environment.
+BUILDING_ACTIONS = (
+    "docker/build-push-action",
+    "docker/bake-action",
+    "astral-sh/setup-uv",
+    "actions/setup-python",
+)
+# The one script a job holding a token may run: `deploy` holds the deploy identity and runs
+# scripts/deploy_production.sh from the checked-out commit of main, which copies an image by
+# digest and moves a tag; it builds nothing and runs no image or test code (its own test,
+# test_deploy_runs_no_script_but_the_deploy_script, holds that).
+ALLOWED = {"deploy": "scripts/deploy_production.sh"}
+
+
+def holds_a_token(job: dict) -> bool:
+    permissions = job.get("permissions") or {}
+    return any(level == "write" for level in permissions.values())
+
+
+def builds_or_runs_the_checkout(name: str, job: dict) -> list[str]:
+    """The steps of JOB that build or run repository code: a `run:` line that does, or a
+    `uses:` action that builds."""
+    found = []
+    for step in job.get("steps", []):
+        action = step.get("uses", "").split("@")[0]
+        if action in BUILDING_ACTIONS:
+            found.append(f"{name}: uses {action}")
+        command = step.get("run", "")
+        if name in ALLOWED:
+            command = command.replace(ALLOWED[name], "")
+        if BUILDS_OR_RUNS_THE_CHECKOUT.search(command):
+            found.append(f"{name}: runs {step.get('name')}")
+    return found
 
 
 def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_the_checkout():
-    holders = [
-        name
-        for name in TAG_PATH
-        if any(level == "write" for level in (JOBS[name].get("permissions") or {}).values())
-    ]
-    assert holders == ["publish", "attest", "release"]
-    for name in holders:
-        job = JOBS[name]
-        for step in job["steps"]:
-            assert not BUILDS_OR_RUNS_THE_CHECKOUT.search(step.get("run", "")), (name, step)
-            assert not step.get("uses", "").startswith("astral-sh/setup-uv"), name
-    # Neither `attest` nor `release` checks out the repository at all.
-    for job in (ATTEST, RELEASE):
-        assert not any("actions/checkout" in s.get("uses", "") for s in job["steps"])
-    # The model sees a build where one is.
+    holders = [name for name, job in JOBS.items() if holds_a_token(job)]
+    assert set(holders) == {"publish", "aliases", "attest", "release", "deploy"}
+    assert [f for name in holders for f in builds_or_runs_the_checkout(name, JOBS[name])] == []
+    # Neither `publish`, `aliases`, `attest` nor `release` checks out the repository at all.
+    for name in ("publish", "aliases", "attest", "release"):
+        assert not any("actions/checkout" in s.get("uses", "") for s in JOBS[name]["steps"])
+    # The model sees a build where one is: in a shell line, and in an action.
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("uv build --out-dir dist")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 scripts/release_check.py v1")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("pip install x")
+    assert BUILDS_OR_RUNS_THE_CHECKOUT.search("docker buildx build --push .")
+    assert BUILDS_OR_RUNS_THE_CHECKOUT.search("docker run --rm ghcr.io/o/r@sha256:x")
+    build = {"uses": "docker/build-push-action@" + "0" * 40, "with": {"push": True}}
+    assert builds_or_runs_the_checkout("x", {"steps": [build]}) == [
+        "x: uses docker/build-push-action"
+    ]
+    # And the deploy script counts everywhere but in `deploy`.
+    deploy = {"steps": [{"name": "s", "run": "bash scripts/deploy_production.sh copy x"}]}
+    assert builds_or_runs_the_checkout("publish", deploy) == ["publish: runs s"]
+    assert builds_or_runs_the_checkout("deploy", deploy) == []
 
 
 def test_only_attest_and_deploy_hold_an_identity_token_and_attest_runs_where_nothing_is_built():
@@ -332,7 +371,6 @@ def test_a_candidate_is_a_pre_release_never_marked_latest(tmp_path):
 def test_release_check_tells_the_jobs_after_it_that_a_tag_is_a_candidate():
     (check,) = [s for s in JOBS["release_check"]["steps"] if s.get("id")]
     assert JOBS["release_check"]["outputs"] == {
-        "latest": "${{ steps." + check["id"] + ".outputs.latest }}",
         "candidate": "${{ steps." + check["id"] + ".outputs.candidate }}",
     }
 
@@ -351,16 +389,19 @@ def test_a_candidate_is_published_as_its_own_tag_and_its_commit_only():
     assert candidate_tags("v0.1.0-rc.12") == {"0.1.0-rc.12", f"sha-{SHA[:7]}"}
 
 
-def test_a_release_after_its_candidates_publishes_what_it_did_before():
-    assert release_tags("v0.1.0", ["v0.1.0-rc.1", "v0.1.0-rc.2"]) == {"0.1.0", "0.1", "latest"}
-    assert release_tags("v0.1.1", ["v0.1.0", "v0.2.0-rc.1", "v0.2.0"]) == {"0.1.1", "0.1"}
+def test_a_release_after_its_candidates_publishes_its_full_version():
+    # `publish` pushes the full version alone; `aliases` moves 0.1 and latest after the release.
+    assert release_tags("v0.1.0", ["v0.1.0-rc.1", "v0.1.0-rc.2"]) == {"0.1.0"}
+    assert release_tags("v0.1.1", ["v0.1.0", "v0.2.0-rc.1", "v0.2.0"]) == {"0.1.1"}
     assert release_check.is_highest("v0.2.0", ["v0.2.0-rc.1", "v0.3.0-rc.1", "v0.2.0"])
 
 
 def test_a_candidate_runs_the_whole_tag_path_and_never_deploys():
-    ran = jobs_that_run(CANDIDATE)
+    ran = jobs_that_run(CANDIDATE, {"release_check": {"candidate": "true"}})
     assert ran == THE_GATE | set(TAG_PATH)
-    assert "deploy" not in ran
+    # Neither deploy nor the aliases: a candidate moves neither X.Y nor latest.
+    assert "deploy" not in ran and "aliases" not in ran
+    assert "aliases" in jobs_that_run(CANDIDATE, {"release_check": {"candidate": ""}})
     assert not evaluate(JOBS["deploy"]["if"], CANDIDATE)
 
 

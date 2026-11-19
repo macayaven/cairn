@@ -30,8 +30,10 @@ def part(text: str, heading: str) -> str:
     return " ".join(re.split(r"\n## ", body, maxsplit=1)[0].split())
 
 
-def workflow_tags() -> str:
-    return read(".github/workflows/ci-cd.yml").split("- name: Image tags and labels", 1)[1][:900]
+def workflow_step(name: str) -> str:
+    """The workflow from the step called NAME to the next step."""
+    rest = read(".github/workflows/ci-cd.yml").split(f"- name: {name}\n", 1)[1]
+    return rest.split("\n      - name: ", 1)[0]
 
 
 def test_the_security_policy_says_which_versions_get_fixes_as_the_workflow_tags_them():
@@ -43,10 +45,17 @@ def test_the_security_policy_says_which_versions_get_fixes_as_the_workflow_tags_
     minor = ".".join(VERSION.split(".")[:2])
     assert f"`{VERSION}`" in fixes and f"`{minor}`" in fixes and "`latest`" in fixes
     assert "never moves" in fixes
-    tags = workflow_tags()  # what the sentences rest on
+    # What the sentences rest on. `publish` pushes the full version, and only when the registry
+    # does not have it: there already as the same build it is carried on, as another it stops,
+    # so a re-run never moves it (tests/unit/test_ci_promote_unit.py runs both).
+    tags = workflow_step("Image tags")
     assert "type=semver,pattern={{version}}" in tags
-    assert "type=semver,pattern={{major}}.{{minor}}" in tags
-    assert "type=raw,value=latest" in tags
+    assert "{{major}}.{{minor}}" not in tags and "latest" not in tags.split("tags: |")[1]
+    push = workflow_step("Push the scanned build")
+    assert 'grep -Fxq "$first"' in push and "a full version is published once" in push
+    # Job `aliases` moves X.Y to the newest X.Y.z and latest to the highest release.
+    aliases = workflow_step("Point latest and each X.Y at the highest release")
+    assert "point latest " in aliases and 'point "$line" ' in aliases
 
 
 def test_the_policy_and_the_readme_say_it_is_not_assessed_for_protected_records():

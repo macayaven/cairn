@@ -30,8 +30,17 @@ TF_VARIABLES = (REPO / "infra" / "gcp" / "variables.tf").read_text(encoding="utf
 
 
 # The four scans and the quick deploy's checks: jobs of the gate that `publish` needs.
-# The gate jobs that run on every change and that `publish` needs, beside the first ones.
-ALWAYS_ON = ("dependencies", "static_analysis", "secrets", "image_scan", "quick", "browser")
+# The gate jobs that run on every change and that `publish` needs, beside the first ones;
+# `image_build` is the one build of the image that the scan, the image check and `publish` take.
+ALWAYS_ON = (
+    "dependencies",
+    "static_analysis",
+    "secrets",
+    "image_build",
+    "image_scan",
+    "quick",
+    "browser",
+)
 
 
 def needs(job: dict) -> set[str]:
@@ -86,6 +95,7 @@ def test_gate_runner_uses_json_override_and_defaults_to_hosted():
         "test",
         "infra",
         "package_check",
+        "image_build",
         "image",
         "stack",
         "host",
@@ -101,7 +111,7 @@ def test_gate_runner_uses_json_override_and_defaults_to_hosted():
 
 
 def test_release_runner_uses_separate_json_override_and_defaults_to_hosted():
-    for name in ("publish", "verify", "deploy", "attest", "release"):
+    for name in ("publish", "verify", "deploy", "attest", "release", "aliases"):
         expression = JOBS[name]["runs-on"]
         match = re.fullmatch(
             r"\$\{\{ fromJSON\(vars\.CAIRN_RELEASE_RUNNER \|\| '([^']+)'\) \}\}", expression
@@ -118,7 +128,7 @@ def test_release_runner_uses_separate_json_override_and_defaults_to_hosted():
             assert "cairn-release-arm64" not in configuration, name
 
 
-@pytest.mark.parametrize("name", ["publish", "verify"])
+@pytest.mark.parametrize("name", ["image_build", "verify"])
 def test_release_qemu_installer_uses_the_native_platform_before_image_work(name):
     steps = JOBS[name]["steps"]
     qemu = next(step for step in steps if step.get("uses", "").startswith("docker/setup-qemu"))
@@ -132,10 +142,12 @@ def test_release_qemu_installer_uses_the_native_platform_before_image_work(name)
         or "scripts/smoke_container.py" in step.get("run", "")
     )
     assert steps.index(qemu) < image_work
-    if name == "publish":
-        build = next(step for step in steps if step.get("id") == "build")
+    if name == "image_build":
+        # One build of both platforms, written as an archive: nothing is pushed or loaded.
+        build = next(s for s in steps if s.get("uses", "").startswith("docker/build-push"))
         assert set(build["with"]["platforms"].split(",")) == {"linux/amd64", "linux/arm64"}
-        assert build["with"]["push"] is True
+        assert build["with"]["outputs"] == ("type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar")
+        assert "push" not in build["with"] and "load" not in build["with"]
 
 
 @pytest.mark.parametrize(("runner_arch", "emulated"), [("ARM64", True), ("X64", False)])
@@ -302,7 +314,7 @@ def test_the_pull_with_no_login_is_the_one_the_run_guide_gives():
 
 
 def test_release_jobs_do_not_run_the_application_environment_or_rehearsals_on_the_host():
-    for name in ("publish", "verify", "deploy", "attest", "release"):
+    for name in ("publish", "verify", "deploy", "attest", "release", "aliases"):
         for step in JOBS[name]["steps"]:
             assert not step.get("uses", "").startswith("astral-sh/setup-uv"), name
             command = step.get("run", "")
@@ -328,10 +340,13 @@ def test_image_emulation_and_health_budget_follow_the_runner(runner_arch, image_
     match = re.fullmatch(r"\$\{\{ (.+) && '300' \|\| '90' \}\}", budget)
     assert match, budget
     assert evaluate(match[1], context) is emulated
-    build = next(step for step in steps if step.get("uses", "").startswith("docker/build-push"))
-    assert build["with"]["platforms"] == "${{ matrix.platform }}"
-    assert build["with"]["cache-from"] == "type=gha,scope=${{ matrix.arch }}"
-    assert build["with"]["cache-to"] == "type=gha,mode=max,scope=${{ matrix.arch }}"
+    # The image check builds nothing: it runs image_build's build, this leg's platform of it.
+    assert not any(s.get("uses", "").startswith("docker/build-push") for s in steps)
+    build = next(
+        s for s in JOBS["image_build"]["steps"] if s.get("uses", "").startswith("docker/build-push")
+    )
+    assert build["with"]["cache-from"] == "type=gha,scope=image"
+    assert build["with"]["cache-to"] == "type=gha,mode=max,scope=image"
 
 
 @pytest.mark.parametrize("name", ["stack", "host"])
@@ -426,7 +441,9 @@ def test_every_job_of_the_gate_is_an_ancestor_of_publish():
     assert gate_jobs_missing_from_publish(added) == {"docs_check"}
     # So are `infra` and `package_check` dropped from publish's needs.
     dropped = {**JOBS, "publish": {**JOBS["publish"], "needs": ["image", "stack", "host"]}}
-    assert gate_jobs_missing_from_publish(dropped) == {"infra", "package_check", *ALWAYS_ON}
+    # (image_build stays an ancestor: the image check needs it.)
+    missing = {"infra", "package_check", *ALWAYS_ON} - {"image_build"}
+    assert gate_jobs_missing_from_publish(dropped) == missing
 
 
 def test_deploy_runs_on_a_push_to_main_in_the_production_environment():
@@ -558,8 +575,9 @@ def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_n
 
 
 def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
-    # The three image jobs also need `changes`, the only way to read its output.
-    assert needs(JOBS["image"]) == {"test", "changes"}
+    # The three image jobs also need `changes`, the only way to read its output; the image
+    # check needs image_build, whose build it runs.
+    assert needs(JOBS["image"]) == {"test", "changes", "image_build"}
     assert needs(JOBS["host"]) == {"test", "changes"}
     assert needs(JOBS["stack"]) == {"changes"}
     assert needs(JOBS["publish"]) == {
@@ -741,7 +759,15 @@ EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "deploy"}
 # A v* tag runs the gate, checks the tag against the version, publishes, smoke-tests what it
 # published, builds the wheel and the source archive and makes the GitHub release; it never
 # deploys.
-A_RELEASE = THE_GATE | {"release_check", "publish", "verify", "package", "attest", "release"}
+A_RELEASE = THE_GATE | {
+    "release_check",
+    "publish",
+    "verify",
+    "package",
+    "attest",
+    "release",
+    "aliases",
+}
 
 
 def test_which_jobs_run_for_each_event_when_changes_says_nothing():
@@ -1096,10 +1122,8 @@ def test_the_release_check_runs_on_a_tag_before_publish_and_needs_nothing_instal
         "GH_TOKEN": "${{ github.token }}",
         "GH_REPO": "${{ github.repository }}",
     }
-    assert job["outputs"] == {
-        "latest": "${{ steps." + check["id"] + ".outputs.latest }}",
-        "candidate": "${{ steps." + check["id"] + ".outputs.candidate }}",
-    }
+    # `latest` is no output: no job reads it, and job `aliases` decides it when it runs.
+    assert job["outputs"] == {"candidate": "${{ steps." + check["id"] + ".outputs.candidate }}"}
     # The check itself runs on a tag; on main the job passes without it and publish goes on.
     assert evaluate(check["if"], TAG) and not evaluate(check["if"], MAIN_PUSH)
     part = RAW_WORKFLOW[RAW_WORKFLOW.index("  release_check:") :]
@@ -1218,8 +1242,12 @@ def test_the_header_says_what_a_tag_must_be_and_what_it_publishes():
         " a version whose section of CHANGELOG.md is missing, has no entry or is dated after"
         " the day of the run, a tag whose commit is not on main, a tag lower than another of"
         " its X.Y, and a version that already has a GitHub release.",
-        "A tag is published as X.Y.Z and X.Y, and as latest only when it is the highest"
-        " version tagged; a push to main as main and sha-<commit>, never latest.",
+        "A tag is published as X.Y.Z, a full version that never moves: when the registry has"
+        " it already, `publish` carries on with the same digest and stops at another one.",
+        "A push to main is published as main and sha-<commit>, never latest.",
+        "After a release, job `aliases`, one at a time across all runs, points latest at the"
+        " highest released version and each X.Y at its highest X.Y.z, deciding from the"
+        " releases and the registry as they are when it runs.",
         "Job `verify` smoke-tests the published image on main and on tags; in a public"
         " repository it first pulls the image with no login, as the run guide does (a tag's"
         " version, or on main the commit's own tag), and checks its digest.",
@@ -1228,6 +1256,7 @@ def test_the_header_says_what_a_tag_must_be_and_what_it_publishes():
     ):
         assert sentence in flat, sentence
     assert "A tag is published as X.Y.Z, X.Y and latest" not in flat
+    assert "A tag is published as X.Y.Z and X.Y" not in flat
 
 
 def test_a_push_to_main_still_publishes_verifies_and_deploys_and_makes_no_release():
@@ -1259,7 +1288,7 @@ def image_tags(context: dict) -> set[str]:
     if github["ref_type"] == "tag":
         found = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(-rc\.\d+)?", github["ref_name"])
         version = found.groups() if found else None
-    patterns = {"{{version}}": 3, "{{major}}.{{minor}}": 2}
+    patterns = {"{{version}}": 3}
     made = set()
     for line in step["with"]["tags"].strip().splitlines():
         kind, *rest = line.split(",")
@@ -1289,37 +1318,34 @@ def image_tags(context: dict) -> set[str]:
 
 
 def release_tags(tag: str, tagged_before: list[str]) -> set[str]:
-    """The image tags a push of TAG publishes when TAGGED_BEFORE are the repository's tags:
-    job `release_check` ranks it with the script's own function and says `latest`, and
-    `publish` reads that output."""
-    latest = release_check.is_highest(tag, [*tagged_before, tag])
+    """The image tags `publish` pushes for TAG when TAGGED_BEFORE are the repository's tags:
+    job `release_check` refuses a tag lower than another of its line, with the script's own
+    function; `publish` pushes the full version only (`aliases` moves X.Y and latest)."""
+    release_check.is_highest(tag, [*tagged_before, tag])
     context = not_a_pull_request("push", f"refs/tags/{tag}")
-    outputs = {"release_check": {"outputs": {"latest": "true" if latest else "false"}}}
-    return image_tags({**context, "needs": outputs})
+    return image_tags({**context, "needs": {"release_check": {"outputs": {}}}})
 
 
-def test_latest_is_published_only_for_the_highest_version_and_never_from_main():
-    # The first tag.
-    assert release_tags("v0.1.0", []) == {"0.1.0", "0.1", "latest"}
-    # A patch on an older line while a higher version exists: 0.1 moves to the newest 0.1.z,
-    # and latest stays on 0.2.0.
-    assert release_tags("v0.1.1", ["v0.1.0", "v0.2.0"]) == {"0.1.1", "0.1"}
-    # A higher version.
-    assert release_tags("v0.2.0", ["v0.1.0", "v0.1.1"]) == {"0.2.0", "0.2", "latest"}
+def test_publish_pushes_the_full_version_only_and_never_latest_or_x_y():
+    # The first tag, a patch on an older line, a higher version: the full version, alone.
+    assert release_tags("v0.1.0", []) == {"0.1.0"}
+    assert release_tags("v0.1.1", ["v0.1.0", "v0.2.0"]) == {"0.1.1"}
+    assert release_tags("v0.2.0", ["v0.1.0", "v0.1.1"]) == {"0.2.0"}
     # A tag lower than another of its line is refused: release_check fails, nothing is
     # published, and X.Y never goes backwards.
     with pytest.raises(release_check.Refused):
         release_tags("v0.1.1", ["v0.1.0", "v0.1.2"])
     refused = jobs_that_run(TAG, failed=frozenset({"release_check"}))
-    assert not refused & {"publish", "package", "release"}
-    # A push to main publishes main and the commit, never latest, whatever the output says.
+    assert not refused & {"publish", "package", "release", "aliases"}
+    # A push to main publishes main and the commit, never latest.
     assert image_tags(MAIN_PUSH) == {"main", f"sha-{SHA[:7]}"}
-    said_true = {"release_check": {"outputs": {"latest": "true"}}}
-    assert image_tags({**MAIN_PUSH, "needs": said_true}) == {"main", f"sha-{SHA[:7]}"}
-    # On main the check is skipped, so the output is empty, and empty is not 'true'.
-    assert image_tags(TAG) == {"0.1.0", "0.1"}
-    build = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "build")
-    assert build["with"]["tags"] == "${{ steps.meta.outputs.tags }}"
+    assert image_tags(TAG) == {"0.1.0"}
+    meta = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "meta")
+    assert "latest" not in meta["with"]["tags"] and "{{major}}" not in meta["with"]["tags"]
+    # The build's provenance and bill of materials are made by image_build, not here.
+    build = next(
+        s for s in JOBS["image_build"]["steps"] if s.get("uses", "").startswith("docker/build-push")
+    )
     assert build["with"]["provenance"] == "mode=max" and build["with"]["sbom"] is True
 
 
@@ -1518,12 +1544,21 @@ def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
 # actions/upload-artifact@cf430e03 has no token input; actions/download-artifact@9000827c has
 # `github-token` with no default (needed only for another repository or run): None.
 # actions/attest@1e69f48a `github-token`, whose default is the workflow's token.
+# Read on 2026-11-19: docker/build-push-action@c3c9e263 `github-token` ("used to authenticate
+# against a repository for Git context") and docker/metadata-action@dc802804 `github-token`
+# default to the token; docker/setup-qemu-action@99012661, docker/setup-buildx-action@f87e5991
+# and docker/login-action@8aa5831f have no input that does.
 TOKEN_DEFAULTS = {
     "actions/checkout": "token",
     "astral-sh/setup-uv": "github-token",
     "actions/upload-artifact": None,
     "actions/download-artifact": None,
     "actions/attest": "github-token",
+    "docker/build-push-action": "github-token",
+    "docker/metadata-action": "github-token",
+    "docker/setup-qemu-action": None,
+    "docker/setup-buildx-action": None,
+    "docker/login-action": None,
 }
 
 
@@ -1577,19 +1612,25 @@ def rerun(names: set[str], jobs: dict = JOBS) -> set[str]:
 def test_a_failed_tag_run_is_finished_without_publishing_again():
     # Of the jobs a tag runs (deploy, which needs verify, is skipped on a tag by its own
     # condition): verify failed: it, package and release run again; publish's digest is kept.
-    assert rerun({"verify"}) & A_RELEASE == {"verify", "package", "attest", "release"}
+    assert rerun({"verify"}) & A_RELEASE == {"verify", "package", "attest", "release", "aliases"}
     # package failed, or release found no files (an expired artifact): package, attest and
-    # release.
-    assert rerun({"package"}) == {"package", "attest", "release"}
-    assert rerun({"release"}) == {"release"}
+    # release, and the aliases after them.
+    assert rerun({"package"}) == {"package", "attest", "release", "aliases"}
+    assert rerun({"release"}) == {"release", "aliases"}
     for names in ({"verify"}, {"package"}, {"release"}):
         assert not rerun(names) & {"release_check", "publish"}
     comment = job_comment("release_check")
     assert (
         "A run that failed after `publish` and before the release was made: re-run only its"
-        " failed jobs (\"Re-run failed jobs\"), which keeps this job's result and `publish`'s"
-        " digest." in comment
+        " failed jobs (\"Re-run failed jobs\"), which keeps this job's result, image_build's"
+        " archive and `publish`'s digest." in comment
     )
+    assert (
+        "Re-running every job builds again, and `publish` then stops in one line, since the"
+        " registry holds the version as another digest: a full version is never pushed twice."
+        in comment
+    )
+    assert "Re-running every job would publish the version again" not in comment
     assert (
         "If `release` finds no files from `package` (they are kept five days), re-run"
         " `package` alone: GitHub re-runs `release` after it, and nothing that publishes."
@@ -1620,7 +1661,8 @@ def test_the_comments_say_where_the_files_are_built_and_why():
         " CHANGELOG.md.",
         "CAIRN_GATE_RUNNER names the runner of the gate's jobs and of `package`, which runs the"
         " build backend; CAIRN_RELEASE_RUNNER names the runner of publish, verify, attest,"
-        " release and deploy, which no job of a pull request uses and which runs no build.",
+        " release, aliases and deploy, which no job of a pull request uses and which runs no"
+        " build.",
     ):
         assert sentence in header, sentence
 

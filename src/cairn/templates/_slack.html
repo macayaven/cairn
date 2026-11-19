@@ -14,7 +14,7 @@
   {% if slack.manages %}
   {% if slack.says %}<p>{{ slack.says }}</p>{% endif %}
   {% if slack.gone %}
-  <p class="alert">Slack no longer accepts this install's bot token, since <time datetime="{{ slack.gone.since }}">{{ slack.gone.since|when }}</time>. Paste a new bot token here by <time datetime="{{ slack.gone.by }}">{{ slack.gone.by|when }}</time>: after that day, Slack is removed here, and every note Slack created is forgotten 10 days later.</p>
+  <p class="alert" role="alert">Slack no longer accepts this install's bot token, since <time datetime="{{ slack.gone.since }}">{{ slack.gone.since|when }}</time>. Paste a new bot token here by <time datetime="{{ slack.gone.by }}">{{ slack.gone.by|when }}</time>: after that day, Slack is removed here, and every note Slack created is forgotten 10 days later.</p>
   {% endif %}
   {% if not slack.state or slack.state == "removed" %}
   <p>One Slack app for this workspace, made by you at Slack from what this page gives: people then file a Slack message as a note, write one, and ask the bot to find something, each as the person they linked here.</p>
@@ -51,8 +51,8 @@
     {% endif %}
     <label for="slack-bot-token">Bot token</label>
     <input type="password" id="slack-bot-token" name="bot_token" autocomplete="off" spellcheck="false" required aria-describedby="slack-bot-token-hint">
-    <p class="hint" id="slack-bot-token-hint">At Slack, in the app's OAuth &amp; Permissions, once it is installed to your Slack workspace. Both are checked with Slack, kept sealed, and never shown again.</p>
-    <button type="submit">Keep them</button>
+    <p class="hint" id="slack-bot-token-hint">At Slack, in the app's OAuth &amp; Permissions, once it is installed to your Slack workspace. {% if slack.state == "revoked" %}It is checked with Slack, kept sealed, and never shown again.{% else %}Both are checked with Slack, kept sealed, and never shown again.{% endif %}</p>
+    {% if slack.state == "revoked" %}<button type="submit">Keep it</button>{% else %}<button type="submit">Keep them</button>{% endif %}
   </form>
   {% endif %}
   {% if slack.state in ("ready", "on") %}
@@ -75,7 +75,10 @@
   {% if slack.due %}
   <p>{{ slack.due.notes }} {{ "note" if slack.due.notes == 1 else "notes" }} came through Slack: {{ "it" if slack.due.notes == 1 else "they" }} will be forgotten on <time datetime="{{ slack.due.at }}">{{ slack.due.at|when }}</time>{% if slack.state in ("removed", "pending") %}, unless the same Slack workspace is set up again before then.{% else %}. {{ "It" if slack.due.notes == 1 else "They" }} came from a Slack workspace that was removed here.{% endif %}</p>
   {% if slack.forgets %}
-  <form method="post" action="/integrations/slack/forget" class="ending">
+  <form method="post" action="/integrations/slack/forget" class="stack ending">
+    <label for="slack-forget-confirm">Type <strong>{{ slack.workspace }}</strong> to forget them now</label>
+    <input type="text" id="slack-forget-confirm" name="confirm" autocomplete="off" spellcheck="false" required aria-describedby="slack-forget-confirm-hint">
+    <p class="hint" id="slack-forget-confirm-hint">Forgetting cannot be undone, and takes every note Slack created in this workspace, in projects you do not reach too.</p>
     <button type="submit" class="quiet danger">Forget them now</button>
   </form>
   {% endif %}

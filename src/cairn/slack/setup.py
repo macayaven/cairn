@@ -197,6 +197,9 @@ REFUSALS = {  # each one sentence; none quotes what was typed
     ),
     "needs_token": "Slack revoked the bot's token: paste the new one to switch Slack on again.",
     "confirm": "Type the workspace's name to remove Slack, as a check; nothing was changed.",
+    "confirm_forget": (
+        "Type the workspace's name to forget these notes now, as a check; nothing was forgotten."
+    ),
     "state": "That cannot be done while Slack is in this state; nothing was changed.",
 }
 
@@ -517,6 +520,10 @@ def setup_routes(
             raise Forbidden(f"{NOT_AN_OWNER[:1].upper()}{NOT_AN_OWNER[1:]}.")
         if install is None:
             return await told(memory, noted, "none")
+        confirm = _typed(await request.form(), "confirm")
+        account = await run_in_threadpool(memory.store.get_account, memory.store.account_id)
+        if account is None or confirm != account.name:  # forgetting cannot be undone
+            return await told(memory, noted, "confirm_forget")
         try:
             await run_in_threadpool(memory.store.forget_slack_notes_now, install.id)
         except PermissionError:

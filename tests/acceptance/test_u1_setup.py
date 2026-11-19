@@ -198,7 +198,9 @@ def test_agents_see_each_projects_kind_and_guidance(env):
     assert bad.status_code == 400 and "meetings" in bad.json()["error"]
 
     names = {t["name"] for t in tools_list(env)}
-    assert names == {"projects", "new_project", "note", "recall", "page", "evidence", "overview"}
+    assert names == {
+        "projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph"
+    }  # fmt: skip
 
 
 def tools_list(env) -> list:

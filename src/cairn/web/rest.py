@@ -79,6 +79,7 @@ from cairn.memory import (
     Forbidden,
     NotFound,
     not_taken,
+    without_missing_page,
 )
 from cairn.sources import CHOOSING, KINDS
 from cairn.sources.runner import PreviewBusy, preview_days, preview_new_source, preview_source
@@ -196,7 +197,8 @@ def rest_routes() -> list[Route]:
                 )
             )
         # N1: a note stored and still waiting for its page is accepted, not created on it
-        return JSONResponse(noted, status_code=202 if noted["status"] == WAITING else 201)
+        status = 202 if noted["status"] == WAITING else 201
+        return JSONResponse(without_missing_page(noted), status_code=status)
 
     def pages(request: Request) -> Response:
         """Q1: `limit` and `after` (the `pages_next` of an earlier answer), as the query."""

@@ -58,18 +58,26 @@ before, which stays as it was (and what `note` answers does not change):
   writers were recorded (no name). The writer is the caller's, never anything the request
   says: a note's `via` is the caller's own word and is shown as given.
 - `outside` (is_outside): a note a source's run wrote is outside text, its words written by
-  whoever can write at that source; a note with no recorded writer is outside when its
-  `via` is the `via` of a kind in cairn.sources.KINDS (read at each call); every other
-  note is not.
+  whoever can write at that source; so is a Slack message someone filed (8.5: its
+  `slack_notes` row, of how "filed", created the note), its words its author's; a note with
+  no recorded writer is outside when its `via` is the `via` of a kind in
+  cairn.sources.KINDS (read at each call); every other note is not, a note typed with the
+  Slack command among them.
 - Every hit of `recall` carries `outside` (true when any note its claim cites is outside)
   and `written_by`: one entry per note the claim cites, in the order the claim first cites
   each, at most WRITTEN_BY_MAX (3), each {"note": the note's id, "kind", "name", "via",
-  "outside"}; and `written_by_more`, the count of notes left out, only when there are more.
-  A passage the store no longer holds, or one out of the caller's reach, names nothing.
-- Every claim `page` answers carries `outside` by the same rule. The stored body is not
-  rewritten.
-- Every passage `evidence` answers carries `written_by` ({"kind", "name"} of its note's writer),
-  its note's `via` and `outside`.
+  "outside"}, and for a filed Slack message `filed_message` (SLACK_FILED: the writer filed
+  it, the words are the message's author's); and `written_by_more`, the count of notes left
+  out, only when there are more. A passage the store no longer holds, or one out of the
+  caller's reach, names nothing.
+- Every claim `page` answers carries `outside` and `written_by` (and `written_by_more`) by
+  the same rule. The stored body is not rewritten.
+- Every passage `evidence` answers carries `written_by` ({"kind", "name"} of its note's
+  writer, and `filed_message` as above), its note's `via` and `outside`.
+- When (8.1): every hit, claim and passage carries `written_at`, the `created_at` the store
+  keeps of its note (ISO 8601); for a hit or a claim citing several notes, the newest; None
+  when it cites none the caller reaches. It is read with the writers (Store.note_origins)
+  or with the note itself, so no statement is added.
 - No name holds an address: a person is named by audit.person_name, and a key, an agent and
   a source by the label or name they were given.
 
@@ -112,6 +120,7 @@ from cairn.compiler import (
     lost_race,
     page_for,
     render_body,
+    slugify,
 )
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
@@ -146,7 +155,7 @@ from cairn.store import (
 )
 from cairn.store.access import NOT_THE_MAKER
 from cairn.store.audit import UNKNOWN_WRITER
-from cairn.store.memory import PAGE_CHARS_MAX, PAGE_CLAIMS_MAX, claim_chars
+from cairn.store.memory import PAGE_CHARS_MAX, PAGE_CLAIMS_MAX, NoteOrigin, claim_chars
 from cairn.store.models import shown_metrics
 from cairn.store.reach import REACH_MAX, reach_too_wide
 from cairn.store.usage import (
@@ -164,6 +173,7 @@ HITS_RANGE = f"'limit' is a whole number, 1 to {MAX_HITS}"  # what a search says
 PAGES_AT_ONCE = 100  # Q1: the most pages one answer of `pages` or `overview` lists
 VERSIONS_AT_ONCE = 50  # Q1: the most version numbers one answer of `page` lists
 WRITTEN_BY_MAX = 3  # the notes a recall hit names; `written_by_more` counts the rest (A1)
+NEAREST_SHOWN = 3  # 8.6: the page names a page not found names
 ACCESS_LOGGER = "cairn.access"
 access_log = logging.getLogger(ACCESS_LOGGER)
 # The note fields the guard checks besides the text, as a person reads their names.
@@ -338,20 +348,40 @@ WAITS = (
 )
 
 
+NO_PAGE = (
+    "No page was made from this note: it is stored, but no page holds it, so there is no page"
+    " to read."
+)
+
+
+def without_missing_page(answer: dict[str, Any]) -> dict[str, Any]:
+    """8.6: what `note` answers an agent (MCP and REST): a note that made no page (it is on
+    none: `version` None, and not WAITING for its page) has `page` None and `message`
+    NO_PAGE, so it names no page that does not open. Any other answer as it is. The web
+    composer and Slack read Memory.note's own answer."""
+    if answer["version"] is not None or answer["status"] == WAITING:
+        return answer
+    return {**answer, "page": None, "message": NO_PAGE}
+
+
 class FiledOnce(Conflict):
     """A note the project holds already (the same text and source_ref) was sent again for
     another topic (N1): nothing was stored or recorded. REST answers 409, MCP a tool error,
     the composer its form again, and a source sync skips it (FILED_ELSEWHERE). The message
-    names the page the note is on and the project, never the note's text."""
+    names the page the note is on and the project, never the note's text, and says only what
+    its reader can do (8.2): an agent has no tool that forgets, so forgetting is a person's,
+    on the web."""
 
     reason = FILED_ELSEWHERE
 
     def __init__(self, project: str, slug: str) -> None:
         super().__init__(
             f"Nothing was stored: this note is already in project {project!r}, filed on page"
-            f" {slug!r} under another topic. A note is filed once: to move it, forget it there"
-            " and send it again with its new topic, reworded (a text forgotten in a project"
-            " is not stored there again) or to another project."
+            f" {slug!r} under another topic. A note is filed once: to add to that page, write a"
+            " new note with that page's title as its topic. To move this one, a person who may"
+            " forget notes in this project can forget it on the web; then send it again with"
+            " its new topic, reworded (a text forgotten in a project is not stored there"
+            " again), or send it to another project."
         )
 
 
@@ -679,6 +709,10 @@ NARROW = (  # more than one project searched
     " hold it first."
 )
 RARER = "Add a rarer word to rank the claims that hold it first."  # one project searched
+NO_WORDS = (  # 8.4: a query of nothing but spaces or punctuation
+    "Nothing was searched: the query holds no words, only spaces or punctuation. Search with"
+    " words of letters or digits."
+)
 
 
 def _cut(word: str) -> str:
@@ -695,7 +729,8 @@ def searched(facts: Searched) -> dict[str, Any]:
     """Q2: what a search left out, as `recall` answers it under `searched`: the facts, each
     word left out cut to NAME_SHOWN characters (the store keeps the first WORDS_SHOWN, 5), and
     `said`, one or two sentences from those facts alone that say what was left out and what
-    to do about it, or NOTHING_LEFT_OUT. The advice follows the search: searching one project
+    to do about it, or NOTHING_LEFT_OUT; NO_WORDS for a query that held no word to search
+    (8.4: never "every word was searched"). The advice follows the search: searching one project
     is advised only to a search of more than one (NARROW), never to one that covered one
     project, named or the only one reached (RARER). The search page shows `said` as it is."""
     sentences = []
@@ -743,7 +778,7 @@ def searched(facts: Searched) -> dict[str, Any]:
         "claims_matched": facts.claims_matched,
         **stopped,
         "claims_ranked": facts.claims_ranked,
-        "said": " ".join(sentences) or NOTHING_LEFT_OUT,
+        "said": " ".join(sentences) or (NOTHING_LEFT_OUT if facts.words_searched else NO_WORDS),
     }
 
 
@@ -770,6 +805,12 @@ def _claim(claim: Claim) -> dict[str, Any]:
     return claim.shown()
 
 
+# 8.5: what a `written_by` entry of a Slack message someone filed says beside its writer.
+SLACK_FILED = (
+    "A Slack message this writer filed: its words are its author's, whom the note's heading names."
+)
+
+
 def source_via() -> frozenset[str]:
     """The `via` of every kind of source (cairn.sources.KINDS), read now: a kind added at
     run time counts."""
@@ -778,24 +819,48 @@ def source_via() -> frozenset[str]:
     return frozenset(kind.via for kind in SOURCE_KINDS.values())
 
 
-def is_outside(kind: str, via: str | None) -> bool:
-    """Whether a note is outside text (A1): a source's run wrote it; or no writer was
-    recorded for it (it was stored before) and its `via` is a source kind's."""
-    if kind == "source":
+def is_outside(kind: str, via: str | None, *, filed_message: bool = False) -> bool:
+    """Whether a note is outside text (A1): a source's run wrote it; or it is a Slack
+    message someone filed (8.5: Store.note_origins' `filed_message`), whose words are its
+    author's, as a source's are whoever wrote there; or no writer was recorded for it (it
+    was stored before) and its `via` is a source kind's. A note typed with the Slack command
+    is its writer's own."""
+    if kind == "source" or filed_message:
         return True
     return kind == UNKNOWN_WRITER and via is not None and via in source_via()
 
 
-def _written(note: str, writer: tuple[str, str | None, str | None]) -> dict[str, Any]:
+def _written(note: str, origin: NoteOrigin) -> dict[str, Any]:
     """One entry of a hit's `written_by`."""
-    kind, name, via = writer
-    return {
+    kind, name, via = origin[:3]
+    entry = {
         "note": note,
         "kind": kind,
         "name": name,
         "via": via,
-        "outside": is_outside(kind, via),
+        "outside": is_outside(kind, via, filed_message=origin.filed_message),
     }
+    return entry | _filed(origin)
+
+
+def _filed(origin: NoteOrigin) -> dict[str, str]:
+    """8.5: what a writer of a Slack message they filed is said with: SLACK_FILED."""
+    return {"filed_message": SLACK_FILED} if origin.filed_message else {}
+
+
+def _writers(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """A claim's `written_by` (A1): its first WRITTEN_BY_MAX entries, and `written_by_more`,
+    the count of the rest, only when there are more."""
+    shown: dict[str, Any] = {"written_by": entries[:WRITTEN_BY_MAX]}
+    if len(entries) > WRITTEN_BY_MAX:
+        shown["written_by_more"] = len(entries) - WRITTEN_BY_MAX
+    return shown
+
+
+def _newest(times: Iterable[str]) -> str | None:
+    """8.1: when the newest of a claim's notes was written (the store's ISO times sort as
+    times), or None when none of its notes is held."""
+    return max(times, default=None)
 
 
 def _source(span: Span, note: Note) -> dict[str, Any]:
@@ -975,6 +1040,37 @@ class Memory:
             which = "page" if version is None else f"version {version} of page"
             raise NotFound(f"no {which} {slug!r} in project {project.name!r}")
         return page
+
+    def named_page(self, project: Project, slug: str, version: int | None = None) -> Page:
+        """find_page, for an agent (8.6): a latest page that is not there is NotFound with
+        the nearest of the project's page names (nearest_pages), or that it has none."""
+        try:
+            return self.find_page(project, slug, version)
+        except NotFound as missing:
+            if version is not None:
+                raise
+            raise NotFound(f"{missing}. {self.nearest_pages(project, slug)}") from None
+
+    def nearest_pages(self, project: Project, name: str) -> str:
+        """The sentence naming the NEAREST_SHOWN page names of `project` nearest to `name`,
+        a slug or a title: those whose slug sorts at or after `name` made a slug, then the
+        project's first ones; or that the project has no pages. Bounded: at most twice
+        NEAREST_SHOWN page heads, in four statements (Store.page_heads, twice at most)."""
+        key = slugify(name)  # never empty; slugs hold [a-z0-9-], all below "\x7f"
+        below = key[:-1] + chr(ord(key[-1]) - 1) + "\x7f"  # the slugs after it are key's and on
+        heads, total = self.store.page_heads(project.id, NEAREST_SHOWN, below)
+        if not total:
+            return f"Project {project.name!r} has no pages yet."
+        if len(heads) < NEAREST_SHOWN:
+            held = {head.slug for head in heads}
+            first, _ = self.store.page_heads(project.id, NEAREST_SHOWN)
+            heads += [head for head in first if head.slug not in held]
+        # slugs only: a title is a note's words, and this sentence goes onto logs too
+        shown = ", ".join(repr(head.slug) for head in heads[:NEAREST_SHOWN])
+        return (
+            "A page is named by its slug, as note, recall and overview give it; the nearest:"
+            f" {shown}."
+        )
 
     def sources(self, project: Project, span_ids: Iterable[str]) -> dict[str, tuple[Span, Note]]:
         """The known spans among `span_ids` whose note is in `project`, with that note:
@@ -1244,16 +1340,17 @@ class Memory:
 
     def _written_by(
         self, claims: Iterable[Iterable[str]]
-    ) -> tuple[list[list[dict[str, Any]]], dict[str, Span]]:
-        """written_by's answer, and the spans it read to make it."""
+    ) -> tuple[list[list[dict[str, Any]]], dict[str, Span], dict[str, NoteOrigin]]:
+        """written_by's answer, the spans it read to make it, and the origin of each note
+        they come from (when it was written: 8.1), read in the same statement."""
         cited = [list(span_ids) for span_ids in claims]
         spans = self.store.get_spans(i for span_ids in cited for i in span_ids)
-        writers = self.store.note_writers(span.source_id for span in spans.values())
+        origins = self.store.note_origins(span.source_id for span in spans.values())
         answers = []
         for span_ids in cited:
             notes = dict.fromkeys(spans[i].source_id for i in span_ids if i in spans)
-            answers.append([_written(note, writers[note]) for note in notes if note in writers])
-        return answers, spans
+            answers.append([_written(note, origins[note]) for note in notes if note in origins])
+        return answers, spans, origins
 
     def recall(self, query: str, project: str | None = None, limit: int = 8) -> dict[str, Any]:
         """The best hits for `query`, each with who wrote what its claim cites (A1), and what
@@ -1265,8 +1362,9 @@ class Memory:
         found = self.store.find(query, project_ids, limit)
         self._read = {}  # a search: never its words (READ_EVENTS)
         hits = found.hits
+        writers, _, origins = self._written_by(h.span_ids for h in hits)
         answers = []
-        for hit, entries in zip(hits, self.written_by(h.span_ids for h in hits), strict=True):
+        for hit, entries in zip(hits, writers, strict=True):
             answer = {
                 "project": hit.project,
                 "page": hit.slug,
@@ -1277,10 +1375,9 @@ class Memory:
                 "version": hit.version,
                 "score": hit.score,
                 "outside": any(entry["outside"] for entry in entries),
-                "written_by": entries[:WRITTEN_BY_MAX],
+                **_writers(entries),
+                "written_at": _newest(origins[entry["note"]].created_at for entry in entries),
             }
-            if len(entries) > WRITTEN_BY_MAX:
-                answer["written_by_more"] = len(entries) - WRITTEN_BY_MAX
             answers.append(answer)
         return {"hits": answers, "searched": searched(found.searched)}
 
@@ -1298,8 +1395,8 @@ class Memory:
         rendered when read (compiler.render_body of its claims and the spans they cite, read
         once with the writers), so a version stored under an earlier rendering reads as now."""
         target = self.project(project)
-        page = self.find_page(target, slug, version)
-        writers, spans = self._written_by(claim.span_ids for claim in page.claims)
+        page = self.named_page(target, slug, version)
+        writers, spans, origins = self._written_by(claim.span_ids for claim in page.claims)
         versions, total, _, following = self.versions_of(target, page.slug, limit, before)
         answer = {
             "project": target.name,
@@ -1309,7 +1406,12 @@ class Memory:
             "versions": versions,
             "body": render_body(page.title, page.claims, spans),
             "claims": [
-                {**_claim(claim), "outside": any(entry["outside"] for entry in entries)}
+                {
+                    **_claim(claim),
+                    "outside": any(entry["outside"] for entry in entries),
+                    **_writers(entries),
+                    "written_at": _newest(origins[entry["note"]].created_at for entry in entries),
+                }
                 for claim, entries in zip(page.claims, writers, strict=True)
             ],
             "metrics": shown_metrics(page.metrics),
@@ -1344,26 +1446,30 @@ class Memory:
         refused as `page` refuses it (find_page); a claim that version does not hold is
         NotFound, whatever another version holds."""
         target = self.project(project)
-        page = self.find_page(target, slug, version)
+        page = self.named_page(target, slug, version)
         claim = next((c for c in page.claims if c.id == claim_id), None)
         if claim is None:
             which = "page" if version is None else f"version {page.version} of page"
             raise NotFound(f"no claim {claim_id!r} on {which} {slug!r} in project {target.name!r}")
         self._read = {"page": page.slug, "claim": claim.id}
         sources = self.sources(target, claim.span_ids)
-        writers = self.store.note_writers(note.id for _, note in sources.values())
+        origins = self.store.note_origins(note.id for _, note in sources.values())
         passages = []
         for span_id in claim.span_ids:
             if span_id not in sources:
                 continue
             span, note = sources[span_id]
-            kind, name, via = writers.get(note.id, (UNKNOWN_WRITER, None, note.via))
+            unknown = NoteOrigin(UNKNOWN_WRITER, None, note.via, note.created_at, False)
+            origin = origins.get(note.id, unknown)
+            kind, name, via = origin[:3]
             passages.append(
                 {
                     **_source(span, note),
-                    "written_by": {"kind": kind, "name": name},  # A1: who wrote its note
+                    # A1: who wrote its note; 8.5: and a Slack message's, who filed it
+                    "written_by": {"kind": kind, "name": name} | _filed(origin),
                     "via": via,
-                    "outside": is_outside(kind, via),
+                    "outside": is_outside(kind, via, filed_message=origin.filed_message),
+                    "written_at": note.created_at,  # 8.1: the row read already holds it
                 }
             )
         return {"claim": _claim(claim), "version": page.version, "passages": passages}

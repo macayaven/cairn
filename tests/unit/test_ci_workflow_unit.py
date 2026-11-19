@@ -1163,15 +1163,54 @@ def test_the_release_is_made_from_the_tag_with_the_changelog_and_the_built_files
         'gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME"'
         ' --notes-file "$RUNNER_TEMP/notes.md" dist/*'
     )
-    # The token reaches only the step that makes the release; the checkout keeps none.
-    holders = [step for step in job["steps"] if "github.token" in str(step)]
-    assert holders == [create] and create["env"] == {
+    assert create["env"] == {
         "GH_TOKEN": "${{ github.token }}",
         "GH_REPO": "${{ github.repository }}",
     }
     uv = next(s for s in job["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))
     assert uv["with"]["enable-cache"] is False
     assert job["steps"][0]["with"] == {"persist-credentials": False}
+
+
+# The inputs of each action the release job uses that default to the workflow's token, read
+# from the action's own action.yml at the pinned commit: actions/checkout@3d3c42e5 `token`,
+# astral-sh/setup-uv@68559e99 `github-token` ("Used when downloading uv from GitHub releases").
+TOKEN_DEFAULTS = {"actions/checkout": "token", "astral-sh/setup-uv": "github-token"}
+
+
+def reaches_the_token(step: dict) -> bool:
+    """Whether STEP is handed the job's token: written in one of its values, or left to an
+    input of its action whose default is the token."""
+    explicit = yaml.safe_dump({k: step.get(k) for k in ("with", "env", "run")})
+    if "github.token" in explicit or "secrets.GITHUB_TOKEN" in explicit:
+        return True
+    if "uses" not in step:
+        return False
+    action = step["uses"].split("@")[0]
+    assert action in TOKEN_DEFAULTS, f"read {action}'s action.yml for inputs that default to it"
+    return (step.get("with") or {}).get(TOKEN_DEFAULTS[action]) != ""
+
+
+def test_the_write_token_reaches_the_checkout_and_the_last_step_and_nothing_else():
+    steps = JOBS["release"]["steps"]
+    reached = [step["name"] for step in steps if reaches_the_token(step)]
+    # The checkout fetches with it and keeps none; setup-uv gets an empty input, as uv's
+    # version is pinned and the action uses the token only for GitHub Releases downloads.
+    assert reached == ["Check out", "Create the release"]
+    uv = next(s for s in steps if s.get("uses", "").startswith("astral-sh/setup-uv"))
+    assert uv["with"]["github-token"] == "" and uv["with"]["version"] == "0.11.19"
+    # The model sees an implicit default: the same job without the empty input gives setup-uv
+    # the token.
+    bare = {**uv, "with": {k: v for k, v in uv["with"].items() if k != "github-token"}}
+    assert reaches_the_token(bare)
+    part = RAW_WORKFLOW[RAW_WORKFLOW.index("  # A v* tag whose image was published") :]
+    part = " ".join(part[: part.index("\n  release:\n")].replace("# ", "").split())
+    assert (
+        "The only job that may write to the repository. Its token reaches two steps: the"
+        " checkout, which fetches with it and keeps none, and the last step, which makes the"
+        " release. setup-uv gets an empty github-token: uv's version is pinned, and the"
+        " action uses the token only to download from GitHub Releases." in part
+    )
 
 
 def test_only_the_release_job_may_write_to_the_repository():

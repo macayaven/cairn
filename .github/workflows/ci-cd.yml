@@ -478,8 +478,11 @@ jobs:
 
   # A v* tag whose image was published and smoke-tested becomes a GitHub release: the text is
   # the version's section of CHANGELOG.md, and the wheel and source archive `uv build` makes
-  # are attached. The only job that may write to the repository, and only its last step
-  # holds the token. It needs the gh CLI on its runner, as GitHub's hosted runners have.
+  # are attached. The only job that may write to the repository. Its token reaches two steps:
+  # the checkout, which fetches with it and keeps none, and the last step, which makes the
+  # release. setup-uv gets an empty github-token: uv's version is pinned, and the action uses
+  # the token only to download from GitHub Releases. It needs the gh CLI on its runner, as
+  # GitHub's hosted runners have.
   release:
     name: GitHub release
     needs: [publish, verify]
@@ -498,6 +501,8 @@ jobs:
           version: "0.11.19"
           # A release is built from the tag alone, never from a cache another run wrote.
           enable-cache: false
+          # Not the job's token, which may write: see the comment above the job.
+          github-token: ""
       - name: The release's text
         run: python3 scripts/release_check.py "$GITHUB_REF_NAME" --notes > "$RUNNER_TEMP/notes.md"
       - name: Build the wheel and the source archive

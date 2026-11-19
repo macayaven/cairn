@@ -552,7 +552,7 @@ def test_no_agent_adds_a_source_and_a_member_sees_only_their_own(team):
         assert client.get("/sources", headers=cookie(team.sessions["brook"])).status_code == 200
         member = client.get("/sources", headers=cookie(team.sessions["cy"]))
         assert member.status_code == 200  # R4: a member with no account: no source, no form
-        assert "<form" not in member.text.partition('<main id="main">')[2].partition("</main>")[0]
+        assert "<form" not in member.text.partition("<main ")[2].partition("</main>")[0]
         workspace = client.get("/workspace", headers=cookie(team.sessions["brook"])).text
         assert 'href="/sources"' in workspace
 

@@ -51,6 +51,10 @@ def test_the_first_tab_reaches_the_skip_link_and_it_leads_into_the_main_content(
     expect(skip).to_be_visible()
     page.keyboard.press("Enter")
     assert page.url.endswith("#main")
+    # Focus itself moves to the main content (it takes focus from a script or a link, never
+    # from the Tab key), so a screen reader starts reading there.
+    assert page.evaluate("document.activeElement === document.querySelector('main')")
+    assert page.evaluate("document.querySelector('main').tabIndex") == -1
     # The next Tab goes on from the main content, not from the header.
     page.keyboard.press("Tab")
     assert page.evaluate("document.querySelector('main').contains(document.activeElement)")

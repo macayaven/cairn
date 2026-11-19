@@ -72,12 +72,12 @@ def test_a_message_filed_already_is_answered_with_its_note(bench):
     assert replied(bench, handle(bench, user=BROOK_SLACK)).startswith("Already filed")
 
 
-def test_a_note_written_under_a_claim_someone_took_over_is_recorded_as_slacks_too(
+def test_a_claim_taken_over_and_filed_meanwhile_stores_nothing_and_says_filed_already(
     bench, monkeypatch
 ):
-    """A filing whose claim was taken over after CLAIM_FOR still writes its note: the message
-    stays the first note's, the second person is told it is filed already, and the note
-    their filing made is recorded as one Slack created, so removal forgets it too."""
+    """A filing whose claim was taken over after CLAIM_FOR finds, inside its write, that the
+    message is another note's already: the write stores nothing, so a filed message is one
+    note for good, and the second person is told it is filed already."""
     bench.link(BROOK_SLACK, bench.brook, bench.library)
     handle(bench, user=BROOK_SLACK)  # the one who took the claim over, and filed
     ((first, *_),) = bench.notes()
@@ -90,9 +90,8 @@ def test_a_note_written_under_a_claim_someone_took_over_is_recorded_as_slacks_to
     )
     assert replied(bench, handle(bench)).startswith("Already filed")
     monkeypatch.setattr(type(bench.view), "claim_slack_message", taken_over)
-    assert len(bench.notes()) == 2
-    (stray,) = [note_id for note_id, *_ in bench.notes() if note_id != first]
-    assert rows(bench) == [(first, CONVERSATION, TIME), (stray, None, None)]
+    assert [note_id for note_id, *_ in bench.notes()] == [first]  # nothing more stored
+    assert rows(bench) == [(first, CONVERSATION, TIME)]
 
 
 def refused_then_filed(bench: Bench, response, reason: str) -> None:

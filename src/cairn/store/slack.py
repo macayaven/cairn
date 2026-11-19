@@ -20,7 +20,7 @@ The install
   data (`_associated`): a copy of the database opens neither, and a sealed value moved to
   another install, or to the other column, does not open. Pending, ready or off becomes ready;
   on stays on; removed is refused (make it pending first). An install that is ready, on or off
-  belongs to its team: secrets of another team are OtherTeam, and nothing changes (connecting
+  belongs to its team: secrets of another team are NotItsTeam, and nothing changes (connecting
   another team takes removing the install first). Made ready with the team it had when it was
   removed, that team's notes are no longer due to be forgotten (D10), and only that team's:
   each row of slack_notes holds the team its install held when the row was made. With another
@@ -86,7 +86,9 @@ Links, offers, notes, events
   note is swept after CLAIM_FOR (10 minutes). `record_slack_note`: the install created a note
   of the workspace, filed (the claim gets its note; the same message is one note, D9, and the
   note it already is comes back) or typed; an install removed meanwhile makes it due with its
-  other notes. `slack_note_for` finds the note a message already is.
+  other notes. Given `con`, the connection of a write already open (Store.add_note's
+  `within`), the record is in the note's own transaction (cairn.slack.people.write).
+  `slack_note_for` finds the note a message already is.
 - `slack_event_seen`: True the first time an install sees an event id, False after; ids are
   kept SEEN_FOR (a day). `forget_slack_event`: an id is no longer seen (its handler failed),
   so Slack's next delivery of it is the first time again. `sweep_slack` (also part of
@@ -160,7 +162,7 @@ class TeamHeld(ValueError):
         super().__init__("another workspace on this server has Slack set up for this team")
 
 
-class OtherTeam(ValueError):
+class NotItsTeam(ValueError):
     """Secrets of another Slack team than the one an install that is ready, on or off holds:
     the install belongs to its team, so nothing is written; connecting another Slack team
     takes removing Slack first, after which the first team's notes are forgotten on their
@@ -324,6 +326,15 @@ def _message(conversation_id: object, message_time: object) -> None:
         raise ValueError("a filed message has its time, as Slack writes it")
 
 
+def _recordable(how: str, conversation_id: object, message_time: object) -> None:
+    if how not in HOWS:
+        raise ValueError(f"a note comes through Slack {' or '.join(HOWS)}")
+    if how == "filed":
+        _message(conversation_id, message_time)
+    elif conversation_id is not None or message_time is not None:
+        raise ValueError("a typed note has no conversation or message time")
+
+
 def _when(text: str) -> datetime:
     return datetime.fromisoformat(text)
 
@@ -404,7 +415,7 @@ class SlackMethods(StoreBase):
         enterprise_id: str | None = None,
     ) -> SlackInstall:
         """Keep the install's two secrets and its team once Slack accepted the token (see
-        the module). KeyError: no such install here; OtherTeam: an install ready, on or off for
+        the module). KeyError: no such install here; NotItsTeam: an install ready, on or off for
         another team; ValueError: a removed install, or a value that is blank or not of its
         shape (never quoted); PermissionError: not an owner or admin; NoSlackKey."""
         sealer = self._slack_sealer()
@@ -424,7 +435,7 @@ class SlackMethods(StoreBase):
             if state == "removed":
                 raise ValueError("this Slack install was removed: set it up again first")
             if state != "pending" and was_team != team_id:  # it belongs to its team
-                raise OtherTeam()
+                raise NotItsTeam()
             account = self._account_id
             kept = con.execute(
                 "SELECT signing_secret FROM slack_installs WHERE id = ?", (install_id,)
@@ -585,60 +596,74 @@ class SlackMethods(StoreBase):
         brought_by: str | None,
         conversation_id: str | None = None,
         message_time: str | None = None,
+        con: sqlite3.Connection | None = None,
     ) -> str:
         """Record that the install created the note `note_id`: `how` one of HOWS, a filed
         message with its conversation and time (D9), a typed note with neither. A filed
         message's claim gets its note (a claim swept meanwhile is made again). The note
         recorded: for a message recorded already, the note it already is (nothing written).
         An install removed meanwhile: the note is due when its other notes are. KeyError: no
-        such install or note here; ValueError otherwise."""
-        if how not in HOWS:
-            raise ValueError(f"a note comes through Slack {' or '.join(HOWS)}")
+        such install or note here; ValueError otherwise. `con`: the connection of a write
+        already open (Store.add_note's `within`), so the record is in the note's transaction;
+        else it is a write of its own."""
+        _recordable(how, conversation_id, message_time)
+        if con is not None:
+            return self._record(con, install_id, note_id, how, brought_by, conversation_id,
+                                message_time)  # fmt: skip
+        with self._write() as opened:
+            return self._record(opened, install_id, note_id, how, brought_by, conversation_id,
+                                message_time)  # fmt: skip
+
+    def _record(
+        self,
+        con: sqlite3.Connection,
+        install_id: str,
+        note_id: str,
+        how: str,
+        brought_by: str | None,
+        conversation_id: str | None,
+        message_time: str | None,
+    ) -> str:
+        row = self._slack_row(con, install_id)
         if how == "filed":
-            _message(conversation_id, message_time)
-        elif conversation_id is not None or message_time is not None:
-            raise ValueError("a typed note has no conversation or message time")
-        with self._write() as con:
-            row = self._slack_row(con, install_id)
-            if how == "filed":
-                found = con.execute(
-                    "SELECT note_id FROM slack_notes WHERE install_id = ? AND conversation_id = ?"
-                    " AND message_time = ?",
-                    (install_id, conversation_id, message_time),
-                ).fetchone()
-                if found is not None and found[0] is not None:
-                    return found[0]
-            held = con.execute(
-                "SELECT 1 FROM notes JOIN projects ON projects.id = notes.project_id"
-                " WHERE notes.id = ? AND projects.account_id = ?",
-                (note_id, self._account_id),
+            found = con.execute(
+                "SELECT note_id FROM slack_notes WHERE install_id = ? AND conversation_id = ?"
+                " AND message_time = ?",
+                (install_id, conversation_id, message_time),
             ).fetchone()
-            if held is None:
-                raise KeyError(note_id)
-            due = _iso(_when(row[10]) + FORGET_AFTER) if row[2] == "removed" else None
-            if how == "filed":  # the claim, made again when it was swept
-                con.execute(
-                    "INSERT INTO slack_notes (install_id, how, team_id, conversation_id,"
-                    " message_time, brought_by, brought_at) VALUES (?, 'filed', ?, ?, ?, ?, ?)"
-                    " ON CONFLICT (install_id, conversation_id, message_time) DO NOTHING",
-                    (install_id, row[3], conversation_id, message_time, brought_by,
-                     self._stamp()),
-                )  # fmt: skip
-                con.execute(
-                    "UPDATE slack_notes SET note_id = ?, forget_at = COALESCE(forget_at, ?)"
-                    " WHERE install_id = ? AND conversation_id = ? AND message_time = ?"
-                    " AND note_id IS NULL AND NOT EXISTS"
-                    " (SELECT 1 FROM slack_notes WHERE note_id = ?)",
-                    (note_id, due, install_id, conversation_id, message_time, note_id),
-                )
-                return note_id
+            if found is not None and found[0] is not None:
+                return found[0]
+        held = con.execute(
+            "SELECT 1 FROM notes JOIN projects ON projects.id = notes.project_id"
+            " WHERE notes.id = ? AND projects.account_id = ?",
+            (note_id, self._account_id),
+        ).fetchone()
+        if held is None:
+            raise KeyError(note_id)
+        due = _iso(_when(row[10]) + FORGET_AFTER) if row[2] == "removed" else None
+        if how == "filed":  # the claim, made again when it was swept
             con.execute(
-                "INSERT INTO slack_notes (note_id, install_id, how, team_id, brought_by,"
-                " brought_at, forget_at) VALUES (?, ?, 'typed', ?, ?, ?, ?)"
-                " ON CONFLICT (note_id) DO NOTHING",
-                (note_id, install_id, row[3], brought_by, self._stamp(), due),
+                "INSERT INTO slack_notes (install_id, how, team_id, conversation_id,"
+                " message_time, brought_by, brought_at) VALUES (?, 'filed', ?, ?, ?, ?, ?)"
+                " ON CONFLICT (install_id, conversation_id, message_time) DO NOTHING",
+                (install_id, row[3], conversation_id, message_time, brought_by,
+                 self._stamp()),
+            )  # fmt: skip
+            con.execute(
+                "UPDATE slack_notes SET note_id = ?, forget_at = COALESCE(forget_at, ?)"
+                " WHERE install_id = ? AND conversation_id = ? AND message_time = ?"
+                " AND note_id IS NULL AND NOT EXISTS"
+                " (SELECT 1 FROM slack_notes WHERE note_id = ?)",
+                (note_id, due, install_id, conversation_id, message_time, note_id),
             )
             return note_id
+        con.execute(
+            "INSERT INTO slack_notes (note_id, install_id, how, team_id, brought_by,"
+            " brought_at, forget_at) VALUES (?, ?, 'typed', ?, ?, ?, ?)"
+            " ON CONFLICT (note_id) DO NOTHING",
+            (note_id, install_id, row[3], brought_by, self._stamp(), due),
+        )
+        return note_id
 
     def claim_slack_message(
         self, install_id: str, conversation_id: str, message_time: str, *, brought_by: str | None

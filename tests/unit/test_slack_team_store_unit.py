@@ -15,7 +15,7 @@ from test_slack_store_unit import (  # noqa: F401
 )
 from test_store_unit import rows
 
-from cairn.store.slack import FORGET_AFTER, OtherTeam
+from cairn.store.slack import FORGET_AFTER, NotItsTeam
 
 QUILL_SECRET = "slack-signing-" + "4b" * 8
 QUILL_TOKEN = "xoxb-" + "unit-" + "9876543210"
@@ -57,7 +57,7 @@ def test_another_teams_secrets_are_refused_and_nothing_changes(world, state):  #
     if state == "off":
         world.view.switch_slack_install(install.id, on=False)
     before = everything(world)
-    with pytest.raises(OtherTeam) as refused:
+    with pytest.raises(NotItsTeam) as refused:
         paste(world, install)
     assert "remove Slack first" in str(refused.value)
     assert QUILL_TOKEN not in str(refused.value) and OTHER_TEAM not in str(refused.value)

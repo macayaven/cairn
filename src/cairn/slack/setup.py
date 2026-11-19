@@ -25,7 +25,7 @@ The addresses (`setup_routes`, only with `serve --slack`)
   bot's user (`identity`) is unclear; a team for which another workspace of this server holds
   an install that is ready, on or off (`Office.team_held`, and the store's own index) is
   taken; a team other than the one this install holds while it is ready, on or off is
-  other_team (cairn.store.slack.OtherTeam), which says to remove Slack first. Each is one
+  other_team (cairn.store.slack.NotItsTeam), which says to remove Slack first. Each is one
   sentence (REFUSALS) and keeps nothing. Otherwise
   Store.ready_slack_install records the team and seals both secrets. When Slack revoked the
   bot's token (SlackInstall.needs_bot_token), only the token is asked for and the signing
@@ -89,7 +89,7 @@ from cairn.store.slack import (
     NOT_AN_OWNER,
     SECRET_VALUE,
     SLACK_ID,
-    OtherTeam,
+    NotItsTeam,
     SlackInstall,
     TeamHeld,
 )
@@ -471,7 +471,7 @@ def setup_routes(
             return await told(memory, noted, "none")
         except TeamHeld:  # made ready for this team elsewhere since team_held was asked
             return await told(memory, noted, "taken")
-        except OtherTeam:  # ready, on or off for another Slack team: remove Slack first
+        except NotItsTeam:  # ready, on or off for another Slack team: remove Slack first
             return await told(memory, noted, "other_team")
         except ValueError:
             return await told(memory, noted, "unkept")

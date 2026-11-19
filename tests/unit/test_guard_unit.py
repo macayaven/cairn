@@ -276,12 +276,17 @@ NEAR_MISSES = {
     "model_api_key": "sk-" + "a" * 251 + " ",
     "jwt": "eyJ" + "a" * 4096 + ".eyJ" + "a" * 8192 + "." + "a" * 4097 + " ",
     "cairn_credential": "cairn.at." + "a" * 65 + " ",
+    "cairn_api_key": "cairn_" + "a" * 44 + " ",  # one longer than a key is
+    "credential_url": "a" * 31 + "://" + "a" * 128 + ":" + "b" * 257 + " ",  # no "@" after
+    "auth_header": "authorization: bearer " + "a" * 4097 + " ",
     "assigned_secret": "password" * 30 + " =        '" + "a" * 300 + " ",  # never closed
     "email_address": "a" * 64 + "@" + ("a" * 62 + "1.") * 8 + "a1 ",  # no top-level domain
     "phone_number": "+1" + "1" * 15 + " ",  # 16 digits: one too many
     "us_ssn": "123-45-678 ",
     "payment_card": "4111 1111 1111 111 " + "1" * 20 + " ",
     "iban": "GB82" + "ABCD" * 8 + "x ",  # runs on into a lower-case letter
+    "date_of_birth": "date of birth: 1111-11-11111 ",
+    "medical_record_number": "medical record number: " + "1" * 16 + " ",
 }
 
 

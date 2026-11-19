@@ -15,7 +15,9 @@ The registry and the row
   environment, a fresh 12-byte nonce each time, and the workspace, the credential's name
   (case-folded) and the owner as associated data (`associated`, a JSON list, so no part can
   run into the next). A sealed value copied to another row, or read under another key, does
-  not open: TokenUnusable(UNOPENED).
+  not open: TokenUnusable(UNOPENED). Earlier keys (CAIRN_GOOGLE_CONNECT_KEY_PREVIOUS,
+  `previous_keys`) still open what they sealed; cairn.store.reseal seals it again under the
+  current key.
 - The key and the OAuth client live in this process only (GoogleCustody, on the root store as
   `google_custody`, which every view copies). Without them nothing here reads the table:
   TokenUnusable(NOT_HERE).

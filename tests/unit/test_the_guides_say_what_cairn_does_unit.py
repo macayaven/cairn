@@ -193,7 +193,10 @@ def test_the_sources_guide_says_what_is_compared_and_points_to_the_bounds(served
 
 
 def test_the_sources_guide_stays_under_its_size():
-    assert len(text("src/cairn/guides/sources.md").encode()) < 70_000
+    # The bound that is real is docs_publisher.MAX_FILE_BYTES (128 KiB): test_docs_helper shows a
+    # sources guide past 70,000 bytes published and searched. This lower one only makes growth
+    # a choice someone states; it was raised from 70,000 for the sentence on changing the key.
+    assert len(text("src/cairn/guides/sources.md").encode()) < 72_000
 
 
 # Item 2: the README

@@ -814,7 +814,10 @@ def test_the_guide_says_how_long_an_item_is_held_and_that_case_is_blind():
     words = "made from one registered account are compared"
     said = next(s for s in guide.split(". ") if words in s)
     assert "case-blind" in said and "look-back window" in said and "unwritten" in said
-    assert len(guide.encode()) < 70_000
+    # The bound that is real is docs_publisher.MAX_FILE_BYTES (128 KiB): test_docs_helper shows a
+    # sources guide past 70,000 bytes published and searched. This lower one only makes growth
+    # a choice someone states; it was raised from 70,000 for the sentence on changing the key.
+    assert len(guide.encode()) < 72_000
 
 
 def test_the_guide_says_which_second_source_the_form_refuses():

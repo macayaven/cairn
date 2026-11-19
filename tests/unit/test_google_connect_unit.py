@@ -1775,7 +1775,10 @@ def test_the_security_guide_says_what_changing_the_sealing_key_does_and_in_what_
 
 def test_the_sources_guide_names_what_the_code_reads():
     guide = (Path(gc.__file__).parents[1] / "guides" / "sources.md").read_text()
-    assert len(guide.encode()) < 70_000
+    # The bound that is real is docs_publisher.MAX_FILE_BYTES (128 KiB): test_docs_helper shows a
+    # sources guide past 70,000 bytes published and searched. This lower one only makes growth
+    # a choice someone states; it was raised from 70,000 for the sentence on changing the key.
+    assert len(guide.encode()) < 72_000
     section = guide[guide.index("### A Google account connected in the browser") :]
     for fact in (
         gc.CLIENT_VARIABLE,
@@ -1798,6 +1801,15 @@ def test_the_sources_guide_names_what_the_code_reads():
         "still connected elsewhere on this server",  # the revoking rule
     ):
         assert fact in section, fact
+    said = " ".join(section.split())
+    lost = said.index("every account must be connected again.")
+    change = said.index(
+        "To change the key without anyone connecting again: put the new key in"
+        f" `{gc.KEY_VARIABLE}` and the old one in `{gc.KEY_VARIABLE}_PREVIOUS`, restart the"
+        " server, run the `reseal` command with `--google-connect`, then remove"
+        f" `{gc.KEY_VARIABLE}_PREVIOUS` and restart."
+    )
+    assert lost < change
     assert gc.KEY_BYTES == 32 and "32 random bytes" in section
     assert "takes the access away at Google" not in guide  # it does so only by the rule
 

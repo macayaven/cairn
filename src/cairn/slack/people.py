@@ -23,14 +23,17 @@ A search and a note, as the person's
   Slack is answered the note is in the store (D8); a page that kept moving leaves it stored
   and waiting for `serve` (N1), and the answer still links its page. Then
   Store.record_slack_note records it as having come through the install: filed, always, with
-  its conversation and message time (D9: a message recorded already answers with the note it
-  already is); typed, only when the note is new (a text the project held already came in
-  some other way, and is not forgotten with the install, D10). The record is written when the
-  note is stored and before it is compiled (Memory.note's `on_stored`): for a filed message
-  it gives the claim cairn.slack.shortcuts made its note, so a compile that then fails leaves
-  a note the install's removal still finds; the person is then told it is
-  stored (STORED_NOT_FILED). The answer links the note's page. Each refusal is its own
-  sentence: no project chosen (NO_PROJECT), the project out of
+  its conversation and message time; typed, only when the note is new (a text the project
+  held already came in some other way, stores nothing and is not forgotten with the install,
+  D10). The record is written inside the note's own write, before it is compiled
+  (Memory.note's `within`): the note and its record are kept together or not at all, so a
+  fault between them leaves no note, and the filed message's claim is released. For a filed
+  message it gives the claim cairn.slack.shortcuts made its note; when the message is
+  another note's already at that moment (a claim taken over meanwhile, D9), the write stores
+  nothing (FiledAlready) and the person is told it is filed already (`already`). A compile
+  that then fails leaves a note stored and recorded, which the install's removal finds; the
+  person is told it is stored (STORED_NOT_FILED). The answer links the note's page. Each
+  refusal is its own sentence: no project chosen (NO_PROJECT), the project out of
   reach or gone (OUT_OF_REACH), read-only (the store's sentence), the guard's (cairn's own,
   naming the rule), the plan's cap, a full page, a note filed under another topic, a text the
   project forgot, a text that is not a note (NOT_A_NOTE), the store unable to write.
@@ -55,8 +58,9 @@ The author of a message (D7)
   `is_bot` nor `deleted` set. Otherwise NotFiled with the reason: no person as its author,
   another organisation, no answer in time, a rate limit, Slack's error by its code.
 - AUTHORS keeps positive answers, KNOWN_MAX at most, each for KNOWN_FOR by the server's clock
-  (Context.now), per install and author, so a second filing of the same author's message
-  asks Slack nothing. A negative answer is not kept.
+  (Context.now), per install, the Slack team it holds and author, so a second filing of the
+  same author's message asks Slack nothing, and an answer for one team is never used for
+  another team the same install holds later. A negative answer is not kept.
 
 Replies after the answer
 - `reply_later` and `post_later` send a private reply once Slack has its 200 (the response's
@@ -154,6 +158,16 @@ class Asker:
     def name(self) -> str:
         found = self.memory.person
         return found.name if found is not None else ""
+
+
+class FiledAlready(Exception):
+    """Raised inside a note's write when the filed message is another note's already (a claim
+    taken over meanwhile), so the write stores nothing; `note_id`: the note it is. Neither a
+    KeyError nor a ValueError, which Memory.note reads as other refusals."""
+
+    def __init__(self, note_id: str) -> None:
+        super().__init__("this message is filed already")
+        self.note_id = note_id
 
 
 class NotFiled(Exception):
@@ -256,36 +270,29 @@ def write(
     project_id = asker.person.project_id
     if project_id is None:
         return blocks.refused(NO_PROJECT.format(command=command))
-    kept: list[str] = []  # the note this became, once it is stored and recorded
+    kept: list[str] = []  # the note recorded, inside the write that stores it
 
-    def stored(note: Any, created: bool) -> None:
+    def recorded(con: Any, note: Any, created: bool) -> None:
+        """Run inside the note's write (Memory.note's `within`): the note and its record are
+        kept together or not at all."""
+        install, by = context.install.id, asker.person.user_id
         if message is not None:  # a filed message is recorded always: it is its key (D9)
-            recorded = context.view.record_slack_note(
-                context.install.id,
-                note.id,
-                how="filed",
-                brought_by=asker.person.user_id,
-                conversation_id=message[0],
-                message_time=message[1],
-            )
-            if recorded != note.id and created:
-                # the claim was taken over and the message filed meanwhile: this note is
-                # one Slack created all the same, so it is forgotten with the install's
-                context.view.record_slack_note(
-                    context.install.id, note.id, how="typed", brought_by=asker.person.user_id
-                )
-            kept.append(recorded)
-            return
-        if created:  # a typed text the project held already did not come through here
-            context.view.record_slack_note(
-                context.install.id, note.id, how="typed", brought_by=asker.person.user_id
-            )
+            filed = context.view.record_slack_note(
+                install, note.id, how="filed", brought_by=by, conversation_id=message[0],
+                message_time=message[1], con=con,
+            )  # fmt: skip
+            if filed != note.id:  # the claim was taken over and the message filed meanwhile
+                raise FiledAlready(filed)
+        elif created:  # a typed text the project held already did not come through here
+            context.view.record_slack_note(install, note.id, how="typed", brought_by=by, con=con)
         kept.append(note.id)
 
     try:
         answer = asker.memory.note(
-            project_id, text, title=title, source_ref=source_ref, via="slack", on_stored=stored
+            project_id, text, title=title, source_ref=source_ref, via="slack", within=recorded
         )
+    except FiledAlready as filed:  # the message, filed meanwhile by someone else: nothing stored
+        return already(context, asker, filed.note_id)
     except NotFound:
         return blocks.refused(OUT_OF_REACH.format(command=command))
     except Malformed as malformed:
@@ -295,12 +302,10 @@ def write(
     except (CannotWrite, StoreUnusable) as trouble:
         return blocks.refused(str(unavailable(trouble)))
     except Exception as failed:  # the compile, after the note was stored and recorded
-        if not kept:
+        if not kept or asker.memory.store.get_note(kept[0]) is None:  # the write rolled back
             raise
         log.warning("slack: a note was stored and not filed: %s", type(failed).__name__)
         return blocks.refused(STORED_NOT_FILED)
-    if kept[0] != answer["note_id"]:  # the same message, filed meanwhile by someone else
-        return already(context, asker, kept[0])
     project = asker.memory.store.get_project(project_id)
     note = asker.memory.store.get_note(answer["note_id"])
     if project is None or note is None:  # gone since: what is said of a project gone
@@ -347,29 +352,38 @@ def already(context: Context, asker: Asker, note_id: str) -> dict:
 
 
 class Authors:
-    """Positive answers about authors (the module): at most `most`, each for `keep`."""
+    """Positive answers about authors (the module): at most `most`, each for `keep`, by
+    install, Slack team and author."""
 
     def __init__(self, most: int = KNOWN_MAX, keep: timedelta = KNOWN_FOR) -> None:
         self.most, self.keep = most, keep
-        self._known: OrderedDict[tuple[str, str], tuple[str | None, Any]] = OrderedDict()
+        self._known: OrderedDict[tuple[str, str | None, str], tuple[str | None, Any]] = (
+            OrderedDict()
+        )
 
     def __len__(self) -> int:
         return len(self._known)
 
-    def get(self, install: str, author: str, now: Any) -> tuple[str | None] | None:
-        """(name,) when the author is known to be of the install's team, else None."""
-        found = self._known.get((install, author))
+    def get(
+        self, install: str, team: str | None, author: str, now: Any
+    ) -> tuple[str | None] | None:
+        """(name,) when the author is known to be of the team the install holds, else None."""
+        key = (install, team, author)
+        found = self._known.get(key)
         if found is None:
             return None
         name, until = found
         if now >= until:
-            del self._known[(install, author)]
+            del self._known[key]
             return None
         return (name,)
 
-    def remember(self, install: str, author: str, name: str | None, now: Any) -> None:
-        self._known.pop((install, author), None)
-        self._known[(install, author)] = (name, now + self.keep)
+    def remember(
+        self, install: str, team: str | None, author: str, name: str | None, now: Any
+    ) -> None:
+        key = (install, team, author)
+        self._known.pop(key, None)
+        self._known[key] = (name, now + self.keep)
         while len(self._known) > self.most:
             self._known.popitem(last=False)
 
@@ -395,7 +409,7 @@ async def author(context: Context, message: dict) -> str | None:
     if not isinstance(author_id, str) or not author_id or message.get("bot_id"):
         raise NotFiled(NO_PERSON)
     install = context.install
-    known = AUTHORS.get(install.id, author_id, context.now())
+    known = AUTHORS.get(install.id, install.team_id, author_id, context.now())
     if known is not None:
         return known[0]
     token = await run_in_threadpool(context.bot_token)
@@ -414,7 +428,7 @@ async def author(context: Context, message: dict) -> str | None:
     if found.get("is_bot") or found.get("deleted"):
         raise NotFiled(NO_PERSON)
     name = _name(found)
-    AUTHORS.remember(install.id, author_id, name, context.now())
+    AUTHORS.remember(install.id, install.team_id, author_id, name, context.now())
     return name
 
 

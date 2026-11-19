@@ -15,13 +15,16 @@ In this order, each refusal said privately with its reason and nothing filed:
    now is refused (people.BEING_FILED). From here on, whatever ends without a note stored (a
    refusal below, a busy server, a write refused, an error) releases the claim
    (Store.release_slack_claim), so the message can be filed again; a note stored keeps it,
-   as the write gives the claim its note (people.write).
+   as the write gives the claim its note in the same transaction as the note (people.write),
+   so a write that fails anywhere releases it too.
 4. No project chosen is refused before anything is asked of Slack.
 5. The author (D7): a message with no person as its author is refused without asking; else
    Slack is asked who the author is, once, within 1.5 seconds in all, unless the answer is
    kept already (people.author): another organisation, a stranger, a bot or a deactivated
    account, no answer in time, a rate limit and an error from Slack are each refused.
-6. The note is written (people.write) before Slack is answered (D8).
+6. The note is written (people.write) before Slack is answered (D8); a message that is
+   another note's by then (its claim taken over) stores nothing and is answered as filed
+   already.
 
 The answer to Slack is 200 with an empty body; the reply follows once the response has left,
 through the reply address the signed request gave (SlackClient.reply: Slack's hosts only,

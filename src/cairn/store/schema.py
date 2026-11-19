@@ -791,14 +791,17 @@ _V29_SLACK_EVENTS = """CREATE TABLE slack_events (
     PRIMARY KEY (install_id, event_id)
 ) WITHOUT ROWID"""
 # Every note an install created: how (a filed message, with its conversation and time, unique
-# within the install; or a typed note), who brought it and when, and when it is to be forgotten
-# once the install was removed (NULL: not due). A filed message is claimed first, a row with no
-# note yet, so two filings of it store one note; a claim with no note is swept after ten minutes.
+# within the install; or a typed note), the Slack team the install held when the row was made,
+# who brought it and when, and when it is to be forgotten once the install was removed (NULL:
+# not due; setting the install up again for that same team makes it NULL again). A filed
+# message is claimed first, a row with no note yet, so two filings of it store one note; a claim
+# with no note is swept after ten minutes.
 _V29_SLACK_NOTES = """CREATE TABLE slack_notes (
     id INTEGER PRIMARY KEY,
     note_id TEXT UNIQUE,  -- NULL while a filed message is claimed and not yet stored
     install_id TEXT NOT NULL,
     how TEXT NOT NULL,  -- filed or typed
+    team_id TEXT,  -- the Slack team the install held when this row was made
     conversation_id TEXT,  -- a filed message's
     message_time TEXT,  -- a filed message's time, as Slack writes it
     brought_by TEXT,  -- the person

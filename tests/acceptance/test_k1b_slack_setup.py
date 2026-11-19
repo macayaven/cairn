@@ -614,6 +614,29 @@ def test_ready_on_and_off_each_offer_both_secrets_again(world):
     assert 'name="signing_secret"' in page and 'name="bot_token"' in page
 
 
+@pytest.mark.parametrize("state", ["ready", "on", "off"])
+def test_secrets_of_another_slack_workspace_are_refused_and_change_nothing(world, state):
+    """An install that is ready, on or off belongs to its Slack team: pasting a valid bot
+    token of another team is refused in one sentence that says to remove Slack first, and
+    the team, both sealed secrets, the links and the notes stay as they were."""
+    install = world.readied()
+    world.view(world.ada).link_slack_user(install, BROOK_SLACK, world.brook["id"])
+    typed_note(world, install, "tides turn at dusk")
+    ada = world.browser(world.ada)
+    if state == "on":
+        world.store.slack_install_verified(install)
+    if state == "off":
+        said(ada, ada.post(setup.PAUSE_PATH, follow_redirects=False))
+    before = world.slack_rows()
+    page = said(ada, secrets(ada, secret=QUILL_SECRET, token=QUILL_TOKEN))
+    assert setup.REFUSALS["other_team"] in page and "remove Slack first" in page
+    assert world.slack_rows() == before
+    assert world.view(world.ada).get_slack_install().team_id == TEAM
+    assert QUILL_TOKEN not in page and QUILL_SECRET not in page
+    page = said(ada, secrets(ada))  # the same team's secrets work as before
+    assert setup.SAID["ready"] in page
+
+
 def test_on_off_and_off_because_revoked_say_their_state(world):
     install = world.readied()
     ada = world.browser(world.ada)

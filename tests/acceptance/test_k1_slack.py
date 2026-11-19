@@ -1271,6 +1271,25 @@ def test_another_teams_install_made_ready_does_not_cancel_it(world):
     assert held(world, notes) == [False] * 3
 
 
+def test_another_team_set_up_and_its_secrets_pasted_again_never_cancel_the_first_teams(world):
+    """The first team's notes are due once it was removed; the second team set up, and its
+    secrets pasted again as a routine change at Slack, keep them due, and the loop forgets
+    them on their day."""
+    install = world.install()
+    notes = notes_through(world, install.id)
+    world.ada.view.remove_slack_install(install.id)
+    world.install(OTHER_SECRET, OTHER_TOKEN, OTHER_TEAM)
+    world.clock.now += timedelta(days=2)
+    again = world.install(OTHER_SECRET, OTHER_TOKEN, OTHER_TEAM)
+    assert again.id == install.id and again.team_id == OTHER_TEAM
+    world.clock.now += timedelta(days=7)
+    world.keeper().run_once()
+    assert held(world, notes) == [True] * 3
+    world.clock.now += timedelta(days=1)
+    world.keeper().run_once()
+    assert held(world, notes) == [False] * 3
+
+
 def revoked(bot: str = BOT, oauth: tuple = ()) -> dict:
     return {"tokens": {"oauth": list(oauth), "bot": [bot] if bot else []}}
 

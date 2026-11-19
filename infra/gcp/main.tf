@@ -21,6 +21,9 @@ locals {
   bucket_name = coalesce(var.replica_bucket_name, "${var.project_id}-${var.name}-replica")
   replica_url = "gs://${google_storage_bucket.replica.name}/${var.replica_path}"
 
+  # null leaves the boot disk's key to Google, as before kms_key_name existed.
+  boot_disk_key = var.kms_key_name == "" ? null : var.kms_key_name
+
   env_secret = "projects/${var.project_id}/secrets/${google_secret_manager_secret.env.secret_id}"
 
   # Everything the VM runs is in this one document. cloud-init applies it on every boot,
@@ -94,6 +97,19 @@ resource "google_compute_subnetwork" "cairn" {
   region        = var.region
   network       = google_compute_network.cairn.id
   ip_cidr_range = "10.10.0.0/24"
+
+  # Google's APIs over Google's network, not only through the VM's external address.
+  private_ip_google_access = true
+
+  # Off by default: flow logs are billed by volume.
+  dynamic "log_config" {
+    for_each = var.vpc_flow_logs ? [1] : []
+    content {
+      aggregation_interval = "INTERVAL_5_MIN"
+      flow_sampling        = 0.5
+      metadata             = "INCLUDE_ALL_METADATA"
+    }
+  }
 }
 
 resource "google_compute_firewall" "web" {
@@ -109,6 +125,14 @@ resource "google_compute_firewall" "web" {
     protocol = "tcp"
     ports    = ["80", "443"]
   }
+
+  # Off by default: each logged connection is a billed log entry.
+  dynamic "log_config" {
+    for_each = var.firewall_logging ? [1] : []
+    content {
+      metadata = "INCLUDE_ALL_METADATA"
+    }
+  }
 }
 
 resource "google_compute_firewall" "iap_ssh" {
@@ -123,6 +147,13 @@ resource "google_compute_firewall" "iap_ssh" {
   allow {
     protocol = "tcp"
     ports    = ["22"]
+  }
+
+  dynamic "log_config" {
+    for_each = var.firewall_logging ? [1] : []
+    content {
+      metadata = "INCLUDE_ALL_METADATA"
+    }
   }
 }
 
@@ -195,6 +226,13 @@ resource "google_secret_manager_secret" "env" {
     user_managed {
       replicas {
         location = var.region
+
+        dynamic "customer_managed_encryption" {
+          for_each = var.kms_key_name == "" ? [] : [1]
+          content {
+            kms_key_name = var.kms_key_name
+          }
+        }
       }
     }
   }
@@ -222,6 +260,22 @@ resource "google_storage_bucket" "replica" {
   versioning {
     enabled = false
   }
+
+  dynamic "encryption" {
+    for_each = var.kms_key_name == "" ? [] : [1]
+    content {
+      default_kms_key_name = var.kms_key_name
+    }
+  }
+
+  lifecycle {
+    # The data disk, the boot disk, the bucket and the secret all live in var.region, and a
+    # key encrypts them only from that same location.
+    precondition {
+      condition     = var.kms_key_name == "" || split("/", var.kms_key_name)[3] == var.region
+      error_message = "kms_key_name names a key in ${try(split("/", var.kms_key_name)[3], "another location")}; the data disk, the boot disk, the bucket and the secret are in ${var.region}. Make the key ring in ${var.region}."
+    }
+  }
 }
 
 # --- data disk and its snapshots ------------------------------------------------------------
@@ -232,6 +286,13 @@ resource "google_compute_disk" "data" {
   type   = "pd-balanced"
   size   = var.data_disk_size_gb
   labels = local.labels
+
+  dynamic "disk_encryption_key" {
+    for_each = var.kms_key_name == "" ? [] : [1]
+    content {
+      kms_key_self_link = var.kms_key_name
+    }
+  }
 
   lifecycle {
     # The database lives here. To destroy it on purpose, follow "Teardown" in the README.
@@ -294,7 +355,8 @@ resource "google_compute_instance" "cairn" {
   deletion_protection       = false
 
   boot_disk {
-    auto_delete = true
+    auto_delete       = true
+    kms_key_self_link = local.boot_disk_key
 
     initialize_params {
       image = "cos-cloud/cos-stable"
@@ -332,14 +394,15 @@ resource "google_compute_instance" "cairn" {
   # than whoever applies this configuration can set instance metadata.
   # Guest attributes carry the updater's status (cairn/status, files/host.sh) out to the
   # deploy job, which may read them and nothing else on this VM (iam.tf).
-  metadata = {
+  # A second factor for OS Login only when os_login_2fa asks for it (README, "Bootstrap").
+  metadata = merge({
     user-data                 = local.cloud_init
     enable-oslogin            = "TRUE"
     block-project-ssh-keys    = "TRUE"
     enable-guest-attributes   = "TRUE"
     google-logging-enabled    = "true"
     google-monitoring-enabled = "true"
-  }
+  }, var.os_login_2fa ? { enable-oslogin-2fa = "TRUE" } : {})
 
   lifecycle {
     ignore_changes = [
@@ -414,4 +477,32 @@ resource "google_compute_instance" "cairn" {
     google_storage_bucket_iam_member.vm_replica,
     google_secret_manager_secret_iam_member.vm_env,
   ]
+}
+
+# --- audit and log retention ----------------------------------------------------------------
+
+# Data Access audit logs: who read or wrote the replica's objects and who read the secret.
+# Authoritative for these two services: an audit config set for them elsewhere is replaced.
+resource "google_project_iam_audit_config" "data_access" {
+  for_each = var.data_access_audit_logs ? toset(["storage.googleapis.com", "secretmanager.googleapis.com"]) : toset([])
+
+  project = var.project_id
+  service = each.value
+
+  audit_log_config {
+    log_type = "DATA_READ"
+  }
+
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
+
+# The project's _Default log bucket, which Google makes with every project: only its
+# retention is set here. Destroying this resource leaves the bucket as it is.
+resource "google_logging_project_bucket_config" "default" {
+  project        = var.project_id
+  location       = "global"
+  bucket_id      = "_Default"
+  retention_days = var.log_retention_days
 }

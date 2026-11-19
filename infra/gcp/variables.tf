@@ -387,3 +387,51 @@ variable "labels" {
   type        = map(string)
   default     = {}
 }
+
+# --- a baseline a reviewer expects (README, "Bootstrap" and "Logs") --------------------------
+
+variable "data_access_audit_logs" {
+  description = "Data Access audit logs (data reads and writes) for Cloud Storage and Secret Manager in the project: who read or changed the replica's objects and who read the secret. On by default. Litestream's uploads and the replica check's listings each make an entry, billed as log volume past the free allowance."
+  type        = bool
+  default     = true
+}
+
+variable "log_retention_days" {
+  description = "How many days the project's _Default log bucket keeps logs, the containers' and the audit logs among them. 30 is Google's default; longer is billed."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.log_retention_days >= 1 && var.log_retention_days <= 3650 && floor(var.log_retention_days) == var.log_retention_days
+    error_message = "log_retention_days must be a whole number from 1 to 3650."
+  }
+}
+
+variable "os_login_2fa" {
+  description = "Ask for a second factor at every SSH connection through OS Login. Off by default: with it, a connection needs a person at a prompt, and unattended SSH (a script, a scheduled job) stops working (README, \"Bootstrap\")."
+  type        = bool
+  default     = false
+}
+
+variable "firewall_logging" {
+  description = "Log every connection the two firewall rules allow. Off by default: each is a billed log entry."
+  type        = bool
+  default     = false
+}
+
+variable "vpc_flow_logs" {
+  description = "VPC flow logs on the subnet, half of the flows sampled, every 5 minutes. Off by default: billed by volume."
+  type        = bool
+  default     = false
+}
+
+variable "kms_key_name" {
+  description = "A Cloud KMS key (projects/P/locations/REGION/keyRings/R/cryptoKeys/K) for an operator who must hold the keys: the data disk, the boot disk, the replica bucket and the environment secret use it. Empty: Google manages the keys, as before. The key must be in region, and Google's service agents need roles/cloudkms.cryptoKeyEncrypterDecrypter on it (README, \"Customer-managed keys\"). Set on an existing deployment, it replaces the disks and the secret: read `tofu plan` first."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.kms_key_name == "" || can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/keyRings/[A-Za-z0-9_-]+/cryptoKeys/[A-Za-z0-9_-]+$", var.kms_key_name))
+    error_message = "kms_key_name must be a key's resource name, projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY, or empty."
+  }
+}

@@ -4,6 +4,8 @@
     python3 scripts/release_check.py v0.1.0 --notes    # the same check, then the section
 
 A tag passes only when, in this order:
+0. with --repository-private VALUE, VALUE is exactly `false` (the event's
+   repository.private): a release is made only from a public repository;
 1. pyproject.toml's `[project] version` is a plain MAJOR.MINOR.PATCH (no pre-release, no
    local part, no leading zero);
 2. the tag is `v` followed by that version, exactly;
@@ -11,18 +13,24 @@ A tag passes only when, in this order:
    real date and not after today (UTC; --today gives another), and that section has at
    least one entry: a line that starts with `- `.
    HTML comments (`<!-- ... -->`) are not part of the section: what they hide is no entry,
-   and they are left out of the notes.
+   and they are left out of the notes;
+4. with --commit and --branch, git says the commit is the branch's head or one of its
+   ancestors, and no tag of the same MAJOR.MINOR is a higher version. Of the repository's
+   tags that are plain versions (`vMAJOR.MINOR.PATCH`, compared as numbers; other tags are
+   ignored), the tag is `latest` only when it is the highest: --github-output gets
+   `latest=true` or `latest=false`;
+5. with --not-released, gh lists the repository's releases and none is the tag's.
 Otherwise it prints `release refused: ` and the first rule that failed, on one line, and exits
-1. Job `release_check` of .github/workflows/ci-cd.yml runs it on a tag before anything is
-published; job `release` runs it with --notes for the text of the GitHub release.
+1. Job `release_check` of .github/workflows/ci-cd.yml runs it on a tag with every flag before
+anything is published; job `release` runs it with --notes for the text of the GitHub release.
 
-It reads only the two files and needs only the standard library, so the runner's python3
-runs it before any environment is installed.
+It reads the two files, and runs git and gh only for their flags. It needs only the standard
+library, so the runner's python3 runs it before any environment is installed.
 """
-
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -144,12 +152,52 @@ def _highest(tags: list[str]) -> str:
     return max((name for name in tags if _number(name)), key=_number)
 
 
+RELEASES_ASKED = 1000
+
+
+def run_gh(args: list[str]) -> tuple[int, str]:
+    """gh's exit code and standard output; the job gives it GH_TOKEN and GH_REPO."""
+    try:
+        done = subprocess.run(
+            ["gh", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        )
+    except OSError:
+        return 127, ""
+    return done.returncode, done.stdout
+
+
+def not_released(tag: str, gh) -> None:
+    """Refuses TAG if the repository has a GitHub release for it, or if gh cannot say."""
+    code, out = gh(["release", "list", "--limit", str(RELEASES_ASKED), "--json", "tagName"])
+    try:
+        names = [release["tagName"] for release in json.loads(out)] if code == 0 else None
+    except (ValueError, TypeError, KeyError):
+        names = None
+    if names is None:
+        raise Refused("gh could not list the repository's releases")
+    if tag in names:
+        raise Refused(f"{tag} already has a GitHub release: a released version is published once")
+    if len(names) >= RELEASES_ASKED:
+        raise Refused(
+            f"gh listed {len(names)} releases, the most it asks for, so {tag} may have one"
+        )
+
+
+def public(private: str) -> None:
+    """Refuses unless the event says the repository is not private, in exactly those words."""
+    where = "a release is made only where the public reads it"
+    if private == "true":
+        raise Refused(f"the repository is private: {where}")
+    if private != "false":
+        raise Refused(f"the repository's visibility is not known ({private!r}): {where}")
+
+
 def notes(version: str, changelog: str) -> str:
     """VERSION's section of the changelog, for the release's text."""
     return _section(version, changelog) + "\n"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, gh=run_gh) -> int:
     parser = argparse.ArgumentParser(
         prog="release_check.py", description="Say whether a tag may be released."
     )
@@ -166,12 +214,23 @@ def main(argv: list[str] | None = None) -> int:
         " and say whether the tag is the highest version (latest)",
     )
     parser.add_argument(
+        "--repository-private",
+        help="the event's repository.private; anything but 'false' refuses the tag first",
+    )
+    parser.add_argument(
+        "--not-released",
+        action="store_true",
+        help="refuse a tag that already has a GitHub release (asks gh)",
+    )
+    parser.add_argument(
         "--github-output", type=Path, help="append latest=true|false here (with --branch)"
     )
     args = parser.parse_args(argv)
     if (args.commit is None) != (args.branch is None):
         parser.error("--commit and --branch come together")
     try:
+        if args.repository_private is not None:
+            public(args.repository_private)
         texts = []
         for name in ("pyproject.toml", "CHANGELOG.md"):
             path = args.root / name
@@ -189,6 +248,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refused("git could not list the repository's tags")
             names = tags.stdout.split()
             latest = is_highest(args.tag, names)
+        if args.not_released:
+            not_released(args.tag, gh)
+            said.append("it has no GitHub release yet")
     except Refused as refusal:
         print(f"release refused: {refusal}", file=sys.stderr)
         return 1

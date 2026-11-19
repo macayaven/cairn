@@ -5,6 +5,7 @@ at least one entry. The section is the release's text."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -316,3 +317,90 @@ def test_main_reads_the_tags_and_writes_latest_for_the_job(repo, tmp_path, capsy
     assert release_check.main(["v1.2.3", *argv]) == 1
     assert capsys.readouterr().err.startswith("release refused: v1.2.4 is a higher version of 1.2")
     assert outputs.read_text() == "latest=true\nlatest=false\n"  # nothing for a refused tag
+
+
+# --- a released version is released once ----------------------------------------------------
+# The job asks gh for the repository's releases; here a function stands in for gh.
+
+
+class FakeGh:
+    def __init__(self, code: int = 0, out: str = "[]"):
+        self.code, self.out, self.calls = code, out, []
+
+    def __call__(self, args: list[str]) -> tuple[int, str]:
+        self.calls.append(args)
+        return self.code, self.out
+
+
+def files(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
+    return ["--root", str(tmp_path)]
+
+
+def test_a_tag_with_no_github_release_passes_and_gh_is_asked_for_the_list(tmp_path, capsys):
+    gh = FakeGh(out='[{"tagName": "v1.2.2"}, {"tagName": "v1.2.30"}]')
+    assert release_check.main(["v1.2.3", *files(tmp_path), "--not-released"], gh=gh) == 0
+    assert gh.calls == [["release", "list", "--limit", "1000", "--json", "tagName"]]
+    assert capsys.readouterr().out == (
+        "v1.2.3 may be released: it is the version, CHANGELOG.md has its section,"
+        " and it has no GitHub release yet\n"
+    )
+
+
+def test_a_tag_that_already_has_a_github_release_is_refused(tmp_path, capsys):
+    gh = FakeGh(out='[{"tagName": "v1.2.4"}, {"tagName": "v1.2.3"}]')
+    assert release_check.main(["v1.2.3", *files(tmp_path), "--not-released"], gh=gh) == 1
+    assert capsys.readouterr().err == (
+        "release refused: v1.2.3 already has a GitHub release:"
+        " a released version is published once\n"
+    )
+
+
+def test_gh_that_fails_or_cannot_list_every_release_refuses_the_tag(tmp_path, capsys):
+    full = json.dumps([{"tagName": f"v0.0.{n}"} for n in range(1000)])
+    for gh, said in (
+        (FakeGh(code=1, out=""), "gh could not list the repository's releases"),
+        (FakeGh(out="not json"), "gh could not list the repository's releases"),
+        (FakeGh(out='{"tagName": "v1.2.3"}'), "gh could not list the repository's releases"),
+        (FakeGh(out=full), "gh listed 1000 releases, the most it asks for, so v1.2.3 may have one"),
+    ):
+        assert release_check.main(["v1.2.3", *files(tmp_path), "--not-released"], gh=gh) == 1
+        assert capsys.readouterr().err == f"release refused: {said}\n"
+
+
+def test_gh_is_not_asked_without_the_flag_or_for_a_tag_already_refused(tmp_path):
+    gh = FakeGh(out='[{"tagName": "v1.2.3"}]')
+    assert release_check.main(["v1.2.3", *files(tmp_path)], gh=gh) == 0
+    assert release_check.main(["v1.2.4", *files(tmp_path), "--not-released"], gh=gh) == 1
+    assert gh.calls == []
+
+
+# --- a release is made only where the public reads it ---------------------------------------
+
+
+def test_a_private_repository_or_one_whose_visibility_is_not_known_is_refused_first(
+    tmp_path, capsys
+):
+    gh = FakeGh()
+    for value, said in (
+        ("true", "the repository is private: a release is made only where the public reads it"),
+        (
+            "",
+            "the repository's visibility is not known (''): a release is made only where"
+            " the public reads it",
+        ),
+        (
+            "False",
+            "the repository's visibility is not known ('False'): a release is made only"
+            " where the public reads it",
+        ),
+    ):
+        # Refused before anything else is looked at, even a tag that is not the version.
+        for tag in ("v1.2.3", "v9.9.9"):
+            argv = [tag, *files(tmp_path), "--repository-private", value, "--not-released"]
+            assert release_check.main(argv, gh=gh) == 1
+            assert capsys.readouterr().err == f"release refused: {said}\n"
+    assert gh.calls == []
+    argv = ["v1.2.3", *files(tmp_path), "--repository-private", "false"]
+    assert release_check.main(argv) == 0

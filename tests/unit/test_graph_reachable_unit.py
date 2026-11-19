@@ -144,14 +144,32 @@ def test_a_revoked_key_is_refused(world):
     assert "nodes" not in r.json()
 
 
-def test_an_agents_token_is_refused_on_the_api_and_no_tool_draws_the_graph(world):
+def mcp(world, headers: dict, method: str, params: dict) -> dict:
+    body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    sent = {"accept": "application/json, text/event-stream", **headers}
+    answer = world.client.post("/mcp", headers=sent, json=body)
+    assert answer.status_code == 200, answer.text  # the token is good on /mcp
+    return answer.json()["result"]
+
+
+def test_an_agents_token_is_refused_on_the_api_and_its_graph_tool_gives_the_resource(world):
+    """An agent reaches the graph over MCP only: the `graph` tool (for clients that only call
+    tools) gives what the graph resource gives, with the same reach, and its token is refused
+    on /api."""
     bearer = agent(world)
-    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
-    headers = {"accept": "application/json, text/event-stream", **bearer}
-    listed = world.client.post("/mcp", headers=headers, json=body)
-    assert listed.status_code == 200  # the token is good on /mcp
-    tools = [tool["name"] for tool in listed.json()["result"]["tools"]]
-    assert not [name for name in tools if "graph" in name]
+    tools = [tool["name"] for tool in mcp(world, bearer, "tools/list", {})["tools"]]
+    assert [name for name in tools if "graph" in name] == ["graph"]
+    for project in ("alpha", "beta"):
+        read = mcp(world, bearer, "resources/read", {"uri": f"graph://project/{project}/20"})
+        resource = json.loads(read["contents"][0]["text"])
+        called = mcp(world, bearer, "tools/call", {"name": "graph",
+                                                   "arguments": {"project": project}})  # fmt: skip
+        assert called.get("isError") is not True, called
+        assert json.loads(called["content"][0]["text"]) == resource
+        assert resource["nodes"][0]["label"] == project
+    hidden = mcp(world, bearer, "tools/call", {"name": "graph",
+                                               "arguments": {"project": "gamma"}})  # fmt: skip
+    assert hidden["isError"] is True and hidden["content"][0]["text"].endswith("Project not found.")
     r = world.client.get("/api/graph?project=alpha", headers=bearer)
     assert r.status_code == 401
 

@@ -59,7 +59,7 @@ def test_the_changelog_dates_the_version_and_says_what_slack_was_tested_against(
     # What the top of the changelog says about releases is what release_check.py does.
     assert (
         "Each release has a section headed `## <version> - <date>`, and the tag `v<version>`,"
-        " pushed to the public repository on a commit of `main`, publishes it:"
+        " pushed to a public repository on a commit of `main`, publishes it:"
         " `scripts/release_check.py` refuses a tag that is not the version in `pyproject.toml`,"
         " whose section here is missing, has no entry or is dated after the day the check runs"
         " (UTC), or whose version already has a release. The section is the GitHub release's"
@@ -80,7 +80,7 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         "5. **Publish:** once items 1 to 4 have all passed, pushes to `main` and `v*` tags"
         " publish one multi-arch image, with provenance and an SBOM, to"
         " `ghcr.io/<owner>/<repo>`.",
-        "A tag is published only from the public repository, when it is `v` and the version"
+        "A tag is published only from a public repository, when it is `v` and the version"
         " in `pyproject.toml`, `CHANGELOG.md` has a section for that version with an entry,"
         " dated no later than the day of the run, the tag's commit is on `main`, no tag of its"
         " `X.Y` is a higher version, and the version has no GitHub release yet:"

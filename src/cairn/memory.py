@@ -45,7 +45,8 @@ path and no SQL. Nothing is recorded in the audit log: the write's audit row wen
 Filing (N1): `Memory.note` stores a note, then files it on the page of its topic key
 (cairn.compiler.page_for; the store says which page that is, nothing here makes an
 address). The same note sent again for another topic raises FiledOnce (409), naming its
-page; nothing is stored. A note whose page moved under it more often than the compiler
+page only when that page's latest version cites it (Store.note_page, the Notes page's rule),
+else saying it waits (WAITS) or is on no page (NO_PAGE); nothing is stored. A note whose page moved under it more often than the compiler
 retries is compiled once more; if it loses again, nothing is recorded, the note stays
 waiting, and the answer is `status` WAITING with the sentence WAITS (REST 202, an MCP
 result that is not an error). `file_waiting(note_id)` files a waiting note as `note`
@@ -121,7 +122,6 @@ from cairn.compiler import (
     Gate,
     compile_note,
     lost_race,
-    page_for,
     render_body,
     slugify,
 )
@@ -156,7 +156,6 @@ from cairn.store import (
     User,
     note_key,
     ranking,
-    stored_key,
 )
 from cairn.store.access import NOT_THE_MAKER
 from cairn.store.audit import UNKNOWN_WRITER
@@ -386,20 +385,33 @@ class FiledOnce(Conflict):
     """A note the project holds already (the same text and source_ref) was sent again for
     another topic (N1): nothing was stored or recorded. REST answers 409, MCP a tool error,
     the composer its form again, and a source sync skips it (FILED_ELSEWHERE). The message
-    names the page the note is on and the project, never the note's text, and says only what
-    its reader can do (8.2): an agent has no tool that forgets, so forgetting is a person's,
-    on the web."""
+    names the project and, as `page`, the page the note is on by the Notes page's rule
+    (Store.note_page): only a page whose latest version cites it. A note that waits for its
+    page names none and says WAITS, as `note` answers one; a note on no page (its page was
+    refused it) names none and says NO_PAGE. Never the note's text; it says only what its
+    reader can do (8.2): an agent has no tool that forgets, so forgetting is a person's, on
+    the web."""
 
     reason = FILED_ELSEWHERE
 
-    def __init__(self, project: str, slug: str) -> None:
+    def __init__(self, project: str, slug: str | None, waiting: bool = False) -> None:
+        self.page = slug
+        if slug is not None:
+            where = (
+                f"Nothing was stored: this note is already in project {project!r}, filed on"
+                f" page {slug!r} under another topic. A note is filed once: to add to that"
+                " page, write a new note with that page's title as its topic."
+            )
+        else:
+            where = (
+                f"Nothing was stored: this note is already in project {project!r}, under"
+                f" another topic. {WAITS if waiting else NO_PAGE}"
+            )
         super().__init__(
-            f"Nothing was stored: this note is already in project {project!r}, filed on page"
-            f" {slug!r} under another topic. A note is filed once: to add to that page, write a"
-            " new note with that page's title as its topic. To move this one, a person who may"
-            " forget notes in this project can forget it on the web; then send it again with"
-            " its new topic, reworded (a text forgotten in a project is not stored there"
-            " again), or send it to another project."
+            f"{where} To move this one, a person who may forget notes in this project can"
+            " forget it on the web; then send it again with its new topic, reworded (a text"
+            " forgotten in a project is not stored there again), or send it to another"
+            " project."
         )
 
 
@@ -1228,7 +1240,7 @@ class Memory:
             )
             result = self._file(note, record_errors=True)
         except FiledElsewhere as elsewhere:  # N1: the same note, for another topic
-            raise FiledOnce(target.name, self._page_of(elsewhere.held)) from None
+            raise FiledOnce(target.name, *self._page_of(elsewhere.held)) from None
         except PermissionError as refused:  # a read-only connection
             raise Forbidden(str(refused)) from None
         except NoteRefused as refused:  # recorded as note.refused; nothing else stored
@@ -1314,9 +1326,12 @@ class Memory:
                 self.saved(project_id, result.slug)
         return result
 
-    def _page_of(self, held: Note) -> str:
-        """The page a stored note is on, or is filed on once it is compiled (N1)."""
-        return page_for(self.store, held.project_id, stored_key(held), held.topic or held.title)
+    def _page_of(self, held: Note) -> tuple[str | None, bool]:
+        """(the page a stored note is on, whether it waits for its page), by the Notes page's
+        rule (Store.note_page): a page only when its latest version cites the note, so a note
+        refused a place on its topic's page, or waiting for it, names none. One statement."""
+        waiting, slug = self.store.note_page(held.project_id, held.id)
+        return slug, waiting
 
     def _room_on_page(
         self,

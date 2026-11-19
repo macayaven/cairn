@@ -40,6 +40,28 @@ from cairn.store.schema import _create_index, _secure_index
 from cairn.store.usage import PASSAGE_KINDS, charge_of, path_bytes
 from cairn.topics import topic_key
 
+# A note's page by the Notes page's rule (notes_part, note_page), read in one statement: the
+# slug of its topic's page when the note waits no more and that page's latest version cites a
+# passage of it (a claim whose span_ids hold one of its spans), else NULL. _PAGE_OF_NOTE joins
+# the tables it reads to `notes`.
+_PAGE_OF_NOTE = (
+    " LEFT JOIN waiting ON waiting.note_id = notes.id"
+    " LEFT JOIN page_keys ON page_keys.project_id = notes.project_id"
+    "  AND page_keys.topic_key = notes.topic_key"
+)
+_CITED_PAGE = (
+    "CASE WHEN waiting.note_id IS NULL AND EXISTS (SELECT 1 FROM page_heads"
+    "  JOIN page_versions ON page_versions.project_id = page_heads.project_id"
+    "   AND page_versions.slug = page_heads.slug"
+    "   AND page_versions.version = page_heads.version,"
+    "  json_each(page_versions.claims) AS claim,"
+    "  json_each(claim.value, '$.span_ids') AS cited"
+    "  JOIN spans ON spans.id = cited.value"
+    "  WHERE page_heads.project_id = notes.project_id"
+    "   AND page_heads.slug = page_keys.slug AND spans.note_id = notes.id)"
+    "  THEN page_keys.slug END"
+)
+
 
 class NoteOrigin(NamedTuple):
     """Who wrote a note and how it came (MemoryStore.note_origins)."""
@@ -737,22 +759,9 @@ class MemoryMethods(StoreBase):
             rows = con.execute(
                 "SELECT notes.id, notes.title, notes.created_at, notes.source_ref, notes.via,"
                 " COALESCE(note_writers.kind, ?), note_writers.name,"
-                " waiting.note_id IS NOT NULL,"
-                " CASE WHEN waiting.note_id IS NULL AND EXISTS (SELECT 1 FROM page_heads"
-                "  JOIN page_versions ON page_versions.project_id = page_heads.project_id"
-                "   AND page_versions.slug = page_heads.slug"
-                "   AND page_versions.version = page_heads.version,"
-                "  json_each(page_versions.claims) AS claim,"
-                "  json_each(claim.value, '$.span_ids') AS cited"
-                "  JOIN spans ON spans.id = cited.value"
-                "  WHERE page_heads.project_id = notes.project_id"
-                "   AND page_heads.slug = page_keys.slug AND spans.note_id = notes.id)"
-                "  THEN page_keys.slug END"
+                f" waiting.note_id IS NOT NULL, {_CITED_PAGE}"
                 " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
-                " LEFT JOIN waiting ON waiting.note_id = notes.id"
-                " LEFT JOIN page_keys ON page_keys.project_id = notes.project_id"
-                "  AND page_keys.topic_key = notes.topic_key"
-                f" WHERE notes.project_id = ? AND notes.{_OWN_PROJECT}"
+                f"{_PAGE_OF_NOTE} WHERE notes.project_id = ? AND notes.{_OWN_PROJECT}"
                 " AND (? IS NULL OR notes.seq <"
                 "  (SELECT seq FROM notes AS cut WHERE cut.id = ? AND cut.project_id = ?))"
                 " ORDER BY notes.seq DESC LIMIT ?",
@@ -774,6 +783,20 @@ class MemoryMethods(StoreBase):
         ]
         full = limit > 0 and len(heads) == limit
         return heads, heads[-1].id if full else None
+
+    def note_page(self, project_id: str, note_id: str) -> tuple[bool, str | None]:
+        """Where a note of the project stands, by notes_part's rule: whether it waits for its
+        page, and its page's slug when that page's latest version cites a passage of it (it
+        waits no more), else None. (False, None) for a note the project does not hold or a
+        project out of reach. One statement, which reads the claims of one page version at
+        most."""
+        with self._read() as con:
+            row = con.execute(
+                f"SELECT waiting.note_id IS NOT NULL, {_CITED_PAGE} FROM notes{_PAGE_OF_NOTE}"
+                f" WHERE notes.id = ? AND notes.project_id = ? AND notes.{_OWN_PROJECT}",
+                (note_id, project_id, *self._scope(con)),
+            ).fetchone()
+        return (bool(row[0]), row[1]) if row else (False, None)
 
     def note_spans(self, note_id: str) -> list[Span]:
         """The note's spans in document order: exactly chunk(note.id, note.text)."""

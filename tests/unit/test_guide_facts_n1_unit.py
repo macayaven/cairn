@@ -21,7 +21,7 @@ from test_store_unit import v23_database
 
 from cairn import server
 from cairn.compiler import provenance_gate
-from cairn.memory import FILED_ELSEWHERE, WAITING, FiledOnce, Memory, NoteForgotten
+from cairn.memory import FILED_ELSEWHERE, WAITING, WAITS, FiledOnce, Memory, NoteForgotten
 from cairn.server import create_app
 from cairn.sources import KINDS, NoteDraft, Pulled, SourceKind, run_source
 from cairn.store import Store
@@ -159,16 +159,19 @@ def feed(monkeypatch, store):
 def test_a_note_is_filed_once_and_is_moved_reworded_or_to_another_project(memory, feed):
     """sources.md: "**A note is filed once.** The same text with the same `source_ref` is one
     note, filed on the page of the topic it was first sent with. Sent again with another
-    topic, it is refused and nothing is stored: the answer names the page the note is on,
-    and a source's run skips it with the reason `filed under another topic`. To move a note,
+    topic, it is refused and nothing is stored: the answer names the page the note is on
+    when that page holds it, and otherwise says that the note waits for its page or is on
+    none, and a source's run skips it with the reason `filed under another topic`. To move a
+    note,
     forget it on the page that cites it, then send it with its new topic, reworded or to
     another project: a text forgotten in a project is not stored there again.\""""
     says(
         "sources",
         "**A note is filed once.** The same text with the same `source_ref` is one note, filed"
         " on the page of the topic it was first sent with. Sent again with another topic, it"
-        " is refused and nothing is stored: the answer names the page the note is on, and a"
-        " source's run skips it with the reason `filed under another topic`.",
+        " is refused and nothing is stored: the answer names the page the note is on when that"
+        " page holds it, and otherwise says that the note waits for its page or is on none, and"
+        " a source's run skips it with the reason `filed under another topic`.",
         "To move a note, forget it on the page that cites it, then send it with its new"
         " topic, reworded or to another project: a text forgotten in a project is not stored"
         " there again.",
@@ -181,6 +184,12 @@ def test_a_note_is_filed_once_and_is_moved_reworded_or_to_another_project(memory
     with pytest.raises(FiledOnce) as refused:
         memory.note("ops", text, topic="Backoff", source_ref="mail:t-1")
     assert f"'{first['page']}'" in str(refused.value) and store.list_notes(ops.id) == held
+    waits = "- Lumen keeps the relay.\n"
+    store.add_note(ops.id, waits, topic="Relay", source_ref="mail:t-2")  # stored, not filed
+    with pytest.raises(FiledOnce) as refused:
+        memory.note("ops", waits, topic="Backoff", source_ref="mail:t-2")
+    assert refused.value.page is None and WAITS in str(refused.value)
+    held = store.list_notes(ops.id)
     draft = NoteDraft("ops", "Backoff", text, source_ref="mail:t-1", label="mail")
     Feed.answers = [Pulled(drafts=[draft], cursor="c1")]
     report = asyncio.run(run_source(store, "ops-feed", http=httpx.AsyncClient(), env={}))

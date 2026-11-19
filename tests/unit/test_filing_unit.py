@@ -76,11 +76,14 @@ def test_the_same_note_for_another_topic_is_refused_naming_its_page(memory, stor
     assert [c.id for c in store.list_notes(store.list_projects()[0].id)] == [first["note_id"]]
 
 
-def test_a_waiting_note_sent_for_another_topic_names_the_page_it_will_be_filed_on(memory, store):
+def test_a_waiting_note_sent_for_another_topic_names_no_page_and_says_it_waits(memory, store):
+    # As the Notes page reads it: a waiting note is on no page yet (Store.note_page).
     project = store.list_projects()[0]
     store.add_note(project.id, TEXT, topic="Retry policy", source_ref="r")  # not compiled
-    with pytest.raises(FiledOnce, match="'retry-policy'"):
+    with pytest.raises(FiledOnce) as refused:
         memory.note("ops", TEXT, topic="Backoff", source_ref="r")
+    assert refused.value.page is None and WAITS in str(refused.value)
+    assert "retry-policy" not in str(refused.value)
     assert store.list_pages(project.id) == []
 
 

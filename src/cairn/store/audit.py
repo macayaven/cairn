@@ -11,14 +11,17 @@ import copy
 import json
 import re
 import sqlite3
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from cairn.store.base import MANAGER_ROLES, StoreBase, _require_account
+from cairn.store.base import AUDIT_LOGGER, MANAGER_ROLES, StoreBase, _require_account
 from cairn.store.models import AuditEvent
 
 if TYPE_CHECKING:
     from cairn.guard import Finding, Guard
     from cairn.store import Store
+
+__all__ = ["AUDIT_LOGGER"]  # the logger every stored event is copied to (base.audit_log)
 
 ACTOR_KINDS = ("key", "token", "session", "system")
 ACTOR_NAME_MAX = 200  # characters kept of an actor's name
@@ -103,6 +106,17 @@ def _shown_detail(
     elif hidden:
         detail["projects"] = [ref for ref in projects if ref not in hidden]
     return detail
+
+
+class AuditPart(list[AuditEvent]):
+    """A part of the audit log, newest first (AuditMethods.list_audit): the events, and how
+    many the viewer sees that match its filters (`total`) and how many of those are newer
+    than its first event (`newer`)."""
+
+    def __init__(self, events: Iterable[AuditEvent], *, total: int, newer: int) -> None:
+        super().__init__(events)
+        self.total = total
+        self.newer = newer
 
 
 class AuditMethods(StoreBase):
@@ -222,8 +236,26 @@ class AuditMethods(StoreBase):
         return [(name, finding) for name, finding in found if finding.kind in kinds]
 
     # The audit log
-    def list_audit(self, limit: int = 100) -> list[AuditEvent]:
-        """This workspace's events, newest first, at most `limit` (up to AUDIT_LIMIT_MAX).
+    def list_audit(
+        self,
+        limit: int = 100,
+        *,
+        before: int | None = None,
+        action: str | None = None,
+        project: str | None = None,
+        who: str | None = None,
+    ) -> "AuditPart":
+        """This workspace's events, newest first, at most `limit` (up to AUDIT_LIMIT_MAX), as an
+        AuditPart: a list that also says how many events the viewer sees that match (`total`)
+        and how many of those are newer than the first it holds (`newer`), one count each.
+        Each event carries its number in its workspace (`n`). `before`: only events numbered
+        below it (the `n` of the last event of the part before). The filters, each left out
+        when None or empty: `action`, an action ("note.saved") or a family of them, the part
+        before the dot ("note"); `project`, the project's name as the event names it, ignoring
+        case (a deleted project's events: DELETED_PROJECT); `who`, the actor's name ignoring
+        case, or its id. A filter never widens what the viewer sees, which is decided first,
+        by the rules below, for the events, the counts and every part alike.
+
         For a view acting for a person who does not reach every project (StoreBase._reach), an
         event of a project they do not reach is left out before the limit is applied (events
         name projects and page slugs, and a slug comes from a note's title); the id of such a
@@ -244,7 +276,7 @@ class AuditMethods(StoreBase):
         left out for a person who does not own the workspace, whatever they reach. An owner,
         and a view acting for no person that reaches every project, read every event."""
         if limit < 1:
-            return []
+            return AuditPart([], total=0, newer=0)
         limit = min(limit, AUDIT_LIMIT_MAX)
         with self._read() as con:
             reach = self._reach(con)
@@ -267,28 +299,47 @@ class AuditMethods(StoreBase):
                         "SELECT id FROM projects WHERE account_id = ?", (self._account_id,)
                     )
                 )
+            # Who may see what: one clause, for the events and both counts.
+            seen = "account_id = ?"
+            params: list[Any] = [self._account_id]
             if reach is None:  # an owner, or a view acting for no person: every event
-                rows = con.execute(
-                    f"SELECT {_EVENT_COLUMNS} FROM audit_events WHERE account_id = ?"
-                    " ORDER BY n DESC LIMIT ?",
-                    (self._account_id, limit),
-                ).fetchall()
                 hidden: frozenset[str] = frozenset()
             else:
-                reached = json.dumps(sorted(reach))
-                rows = con.execute(
-                    f"SELECT {_EVENT_COLUMNS} FROM audit_events WHERE account_id = ?"
+                seen += (
                     " AND (project IS NULL OR project IN (SELECT name FROM projects"
                     " WHERE account_id = ? AND id IN (SELECT value FROM json_each(?))))"
                     f" AND (action NOT LIKE 'source.%' OR {sources_seen})"
                     " AND action NOT IN (SELECT value FROM json_each(?))"
-                    " ORDER BY n DESC LIMIT ?",
-                    (self._account_id, self._account_id, reached, unseen, limit),
-                ).fetchall()
+                )
+                params += [self._account_id, json.dumps(sorted(reach)), unseen]
                 every = con.execute(
                     "SELECT id FROM projects WHERE account_id = ?", (self._account_id,)
                 ).fetchall()
                 hidden = frozenset(project_id for (project_id,) in every) - reach
+            if action:
+                seen += " AND (action = ? OR substr(action, 1, length(?) + 1) = ? || '.')"
+                params += [action, action, action]
+            if project:
+                seen += " AND project = ? COLLATE NOCASE"
+                params.append(project)
+            if who:
+                seen += " AND (actor = ? COLLATE NOCASE OR actor_id = ?)"
+                params += [who, who]
+            older = " AND n < ?" if before is not None else ""
+            rows = con.execute(
+                f"SELECT {_EVENT_COLUMNS}, n FROM audit_events WHERE {seen}{older}"
+                " ORDER BY n DESC LIMIT ?",
+                (*params, *(() if before is None else (before,)), limit),
+            ).fetchall()
+            (total,) = con.execute(
+                f"SELECT COUNT(*) FROM audit_events WHERE {seen}", params
+            ).fetchone()
+            newer = 0
+            if rows:
+                (newer,) = con.execute(
+                    f"SELECT COUNT(*) FROM audit_events WHERE {seen} AND n > ?",
+                    (*params, rows[0][-1]),
+                ).fetchone()
             names = (
                 None  # the operator's view: every name, a deleted project's included
                 if self._user_id is None and reach is None
@@ -300,18 +351,23 @@ class AuditMethods(StoreBase):
                     if reach is None or project_id in reach
                 )
             )
-        return [
-            AuditEvent(
-                at=at,
-                actor_kind=kind,
-                actor=actor,
-                actor_id=actor_id,
-                action=action,
-                project=project,
-                detail=_shown_detail(json.loads(detail), hidden, action, names),
-            )
-            for at, kind, actor, actor_id, action, project, detail in rows
-        ]
+        return AuditPart(
+            (
+                AuditEvent(
+                    at=at,
+                    actor_kind=kind,
+                    actor=actor,
+                    actor_id=actor_id,
+                    action=action,
+                    project=project,
+                    detail=_shown_detail(json.loads(detail), hidden, action, names),
+                    n=n,
+                )
+                for at, kind, actor, actor_id, action, project, detail, n in rows
+            ),
+            total=total,
+            newer=newer,
+        )
 
     def record_note(
         self, project_id: str, outcome: str, detail: dict[str, Any], filed: str | None = None

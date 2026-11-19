@@ -43,6 +43,10 @@ if TYPE_CHECKING:
     from cairn.store import Store
 
 store_log = logging.getLogger("cairn.store")
+# Every audit event, once stored, is also one JSON line here (StoreBase._audit), with the same
+# fields as its row: an operator sends this logger to a store nobody can edit.
+AUDIT_LOGGER = "cairn.audit"
+audit_log = logging.getLogger(AUDIT_LOGGER)
 
 UNUSABLE = (
     "the store cannot be used: a transaction failed and could not be rolled back, so its"
@@ -72,6 +76,8 @@ DEFAULT_ACCOUNT_ID = "acct_default"
 # oldest, a batch of AUDIT_PRUNE_BATCH at a time, so most inserts delete nothing.
 AUDIT_KEEP = 100_000
 AUDIT_PRUNE_BATCH = 1_000
+UNSET = object()  # ConnectionState.audit_keep before the server sets it
+_KEEP = "how many events a workspace keeps is a whole number, 1 or more, or None for every event"
 # The store's own record of compaction, two rows of the default workspace's settings that
 # no setting call can read or change (they are not in audit.SETTINGS): when a workspace was
 # deleted since the last compaction, and when the last compaction began.
@@ -124,11 +130,18 @@ class ConnectionState:
     share this object): whether it was found unusable, and how many versions of each page a
     save keeps when no plan says (Q1; cairn.store.history; None: every version)."""
 
-    __slots__ = ("keep_versions", "unusable")
+    __slots__ = ("audit_keep", "audit_out", "keep_versions", "reads_audited", "unusable")
 
     def __init__(self) -> None:
         self.unusable = False
         self.keep_versions: int | None = None
+        # How many events each workspace keeps (StoreBase.audit_keep): UNSET for AUDIT_KEEP,
+        # read when an event is stored; None for every event.
+        self.audit_keep: int | object | None = UNSET
+        # The events stored by the write under way, sent to the "cairn.audit" logger once it
+        # commits and dropped if it does not (StoreBase._write).
+        self.audit_out: list[str] = []
+        self.reads_audited = False  # cairn.memory: whether reads are events (serve --audit-reads)
 
 
 class StoreBase:
@@ -169,6 +182,33 @@ class StoreBase:
         id or a person's; None for a bare view."""
         return self._actor_id
 
+    @property
+    def audit_keep(self) -> int | None:
+        """How many of its newest events each workspace keeps: AUDIT_KEEP (100,000) until the
+        server sets it for every view of this connection (`serve --audit-keep`); None: every
+        event. Held in memory for this connection only. ValueError: not None or a whole
+        number of at least 1."""
+        keep = self._state.audit_keep
+        return AUDIT_KEEP if keep is UNSET else keep  # type: ignore[return-value]
+
+    @audit_keep.setter
+    def audit_keep(self, keep: int | None) -> None:
+        if keep is not None and (type(keep) is not int or keep < 1):
+            raise ValueError(_KEEP)
+        self._state.audit_keep = keep
+
+    @property
+    def reads_audited(self) -> bool:
+        """Whether a read is an event of the workspace (`serve --audit-reads`; cairn.memory),
+        for every view of this connection. False until the server says so."""
+        return self._state.reads_audited
+
+    @reads_audited.setter
+    def reads_audited(self, on: bool) -> None:
+        if type(on) is not bool:
+            raise ValueError("reads_audited is True or False")
+        self._state.reads_audited = on
+
     def _audit(
         self,
         con: sqlite3.Connection,
@@ -186,8 +226,11 @@ class StoreBase:
         actor unless the write belongs to another (an OAuth call on the unscoped store names
         the account and agent of the code or grant it settles). A view acting for a person
         names them in the detail. `at`: the write's own timestamp, when it has one. Each event
-        gets the next number in its workspace; past AUDIT_KEEP events, the oldest are deleted
-        in the same transaction, a batch at a time (both lookups use the number's index)."""
+        gets the next number in its workspace; past `audit_keep` events, the oldest are
+        deleted in the same transaction, a batch at a time (both lookups use the number's
+        index). A batch is AUDIT_PRUNE_BATCH, or half of what is kept when that is less, so a
+        prune never leaves fewer than half. The event, as its row holds it, is also one JSON
+        line on the "cairn.audit" logger once the transaction commits (_write)."""
         detail = dict(detail or {})
         if actor is None:
             actor, actor_id = self._actor, self._actor_id
@@ -198,26 +241,33 @@ class StoreBase:
             "SELECT MAX(n), MIN(n) FROM audit_events WHERE account_id = ?", (account_id,)
         ).fetchone()
         number = (last or 0) + 1
+        stamp = at or self._stamp()
+        stored = json.dumps(detail, sort_keys=True)
         con.execute(
             "INSERT INTO audit_events"
             " (account_id, n, at, actor_kind, actor, actor_id, action, project, detail)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                account_id,
-                number,
-                at or self._stamp(),
-                *actor,
-                actor_id,
-                action,
-                project,
-                json.dumps(detail, sort_keys=True),
-            ),
+            (account_id, number, stamp, *actor, actor_id, action, project, stored),
         )
-        if number - (oldest or number) + 1 > AUDIT_KEEP:  # one too many: prune a batch
+        keep = self.audit_keep
+        if keep is not None and number - (oldest or number) + 1 > keep:  # one too many
+            batch = min(AUDIT_PRUNE_BATCH, max(1, keep // 2))
             con.execute(
                 "DELETE FROM audit_events WHERE account_id = ? AND n <= ?",
-                (account_id, number - AUDIT_KEEP + AUDIT_PRUNE_BATCH - 1),
+                (account_id, number - keep + batch - 1),
             )
+        line = {
+            "account_id": account_id,
+            "n": number,
+            "at": stamp,
+            "actor_kind": actor[0],
+            "actor": actor[1],
+            "actor_id": actor_id,
+            "action": action,
+            "project": project,
+            "detail": json.loads(stored),
+        }
+        self._state.audit_out.append(json.dumps(line, sort_keys=True))
 
     def _bind(self, account_id: str, user_id: str | None = None) -> None:
         self._account_id = account_id
@@ -369,12 +419,15 @@ class StoreBase:
         whatever the write. `member=False` only for a write that ends what the person
         holds (end_session)."""
         with self._locked() as con:
+            out = self._state.audit_out
+            out.clear()  # nothing of an earlier write that did not commit
             try:
                 with _transaction(con):
                     if member and self._user_id is not None and self._role_in(con) is None:
                         raise PermissionError(NOT_A_MEMBER)
                     yield con
             except sqlite3.Error as error:
+                out.clear()  # rolled back: its events were never stored
                 if isinstance(error, CannotWrite) or not _unwritable(error):
                     raise
                 store_log.warning(
@@ -383,6 +436,14 @@ class StoreBase:
                     getattr(error, "sqlite_errorname", None) or "no code",
                 )
                 raise CannotWrite(error) from error
+            except BaseException:
+                out.clear()  # rolled back: its events were never stored
+                raise
+            lines = list(out)
+            out.clear()
+            for line in lines:  # stored: each is one line on "cairn.audit"
+                with contextlib.suppress(Exception):  # the log's trouble, not the write's
+                    audit_log.info(line)
 
 
 @contextmanager

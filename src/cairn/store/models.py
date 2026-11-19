@@ -263,6 +263,9 @@ class AuditEvent(BaseModel):
     action: str  # "note.saved", "key.created", ...
     project: str | None  # the project's name when the event is about one
     detail: dict[str, Any] = Field(default_factory=dict)
+    # Its number in its workspace, 1, 2, ... in the order events were stored (the row's `n`):
+    # what `list_audit(before=...)` pages by. None only for an event made outside the store.
+    n: int | None = None
 
 
 class Project(BaseModel):

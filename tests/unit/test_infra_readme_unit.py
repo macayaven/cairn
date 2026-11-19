@@ -738,9 +738,10 @@ def test_the_alerts_section_says_when_the_compaction_alert_fires_and_when_it_doe
 def test_the_runbook_says_what_the_line_means_and_that_the_database_was_rewritten():
     said = flat(guide_part(COMPACT_HEADING))
     for sentence in (
-        "Each line is one compaction that rewrote the whole database file under the store's"
-        " lock, so every request waited for it, and Litestream then copied the rewritten file"
-        " again.",
+        "A line that says `(rewritten; the write-ahead log was not emptied)` is a compaction"
+        " that rewrote the whole database file under the store's lock, so every write waited"
+        " for it, and Litestream then copied the rewritten file again.",
+        "A line that says `(no rewrite: only the write-ahead log was due)` rewrote nothing:",
         "The step that did not finish is the last one, truncating the write-ahead log:"
         " Litestream reads the log for as long as it runs.",
         "Nothing is lost when it does not finish:",

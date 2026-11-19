@@ -189,8 +189,9 @@ resource "google_monitoring_alert_policy" "replica_silent" {
 # `serve` compacts the database: it rewrites the file (VACUUM), then truncates the write-ahead
 # log. Beside Litestream, which reads the log for as long as it runs, the second step does not
 # finish, and cairn writes one line on its access log, in the cairn container's output:
-# "cairn.access: compact not finished: another connection held the file in NN ms". Each such
-# run has rewritten the whole database under the store's lock. Since the fix of decision 143,
+# "cairn.access: compact not finished: another connection held the file (...) in NN ms". The
+# first after a deletion has rewritten the whole database under the store's lock; the tries
+# after it only try to empty the log, with no rewrite. Since the fix of decision 143,
 # one line a day, or one after each restart, is expected; three within an hour is a server
 # trying again at every poll, or one that keeps restarting. The metric counts the lines and
 # the policy fires on the third within an hour. The filter takes the form
@@ -255,7 +256,7 @@ resource "google_monitoring_alert_policy" "compact_not_finished" {
 
   documentation {
     mime_type = "text/markdown"
-    content   = "cairn at https://${var.domain} logged more than two unfinished compactions within an hour, and each one rewrote the whole database. Runbook: \"When a compaction keeps not finishing\" in infra/gcp/README.md in the cairn repository."
+    content   = "cairn at https://${var.domain} logged more than two unfinished compactions within an hour; the first after a deletion rewrote the whole database. Runbook: \"When a compaction keeps not finishing\" in infra/gcp/README.md in the cairn repository."
   }
 }
 

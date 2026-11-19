@@ -277,6 +277,16 @@ docker exec cairn python -m cairn.server compact --db /data/cairn.db
 
 Its first line says how many versions it removed and by what rule. On a database no `serve` of this version has run on, it removes no version and says so. With plans, each workspace keeps what its plan keeps; a workspace on a plan the plans file does not name keeps every version, and `compact` names it on a line of its own.
 
+A compaction needs twice the database's size free on its disk: a second copy, and as much again as a margin. `compact` checks first; without the room it changes nothing, says how many bytes are free and how many a rewrite needs, and exits 1.
+
+After a workspace, a project or a note is deleted, `serve` compacts the database by itself, at most once every `--compact-every` hours (24 by default; `0` never). Each run is one line on its log:
+
+- `compact done in N ms`: the file was rewritten and its write-ahead log emptied.
+- `compact not started: the database's disk has N bytes free, a rewrite needs N`: there was no room; nothing changed, and it tries again at the next poll, 10 minutes later.
+- `compact not finished: another connection held the file (rewritten; the write-ahead log was not emptied) in N ms`: another program reading the database, such as a replica, held its write-ahead log. The file was rewritten; only emptying the log is left.
+- `compact not finished: another connection held the file (no rewrite: only the write-ahead log was due) in N ms`: the next try, after the interval or at the first poll after a restart, empties the log alone and never rewrites the file again for the same deletion; this one found the log still held.
+- `compact done (no rewrite: only the write-ahead log was due) in N ms`: the log is emptied, and the compaction is done. A deletion after the rewrite starts a new one.
+
 ## A graph to explore
 
 `serve --graph-explorer` makes a project's **Graph** page one to explore: its pages or its notes a batch of at most 20 at a time, with **Next batch** for the rest, a search within the view, a page's claims, the passages a claim cites, and a page for each note. That page is the only one that runs a script, cairn's own, and it works without it. Without the option the graph page is drawn by the server alone and runs no script.
@@ -294,6 +304,8 @@ It shows the schema's number, the size of the database and of its write-ahead lo
 `serve` also writes the install's numbers to its log: one line at start, then one every 15 minutes, `stats` followed by a JSON object with the install's totals and `requests`, how many responses it sent since the last line, by class (`2xx`, `3xx`, `4xx`, `5xx`, and `429`, which counts in `4xx` too). The line holds no workspace's id. `--stats-every MINUTES` changes how often, and `--stats-every 0` turns it off. No address of the server serves these numbers.
 
 Low disk means the free space on the database's disk is under twice the database's size. Then the line is a warning, followed by one that says so: writes can fail when the disk is full, and a compaction or a backup copy of the database cannot run, since each needs about as much space again as the database. Free some space or move the database to a larger disk. Nothing else changes: the server keeps answering, and `/healthz` answers as before.
+
+A server that can serve, a write in progress included, answers `/healthz` with 200 and `{"status":"ok"}`. `/healthz` answers 503 with `{"status":"stuck"}` once one write has held the database for more than a minute (an hour while a compaction runs): reads may still work, but no write can be made, and the server does not get out of it by itself. Restart the server: the write under way is lost, nothing committed is. It answers 200 again as soon as that write lets go. Any other 503 is `{"status":"unavailable"}`: the database cannot be read or holds another schema version.
 
 ## Where your data lives
 

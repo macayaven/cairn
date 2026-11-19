@@ -117,7 +117,7 @@ Anything else in the project that uses the default network or the default servic
 
 **Customer-managed keys** and the settings a reviewer expects are in [Audit, keys and network](#audit-keys-and-network).
 
-The alert fires until `https://DOMAIN/healthz` answers 200. That is expected during bootstrap. Later it fires while cairn is down or answers 503: it cannot read its database, the database holds a schema version this cairn does not know, or a write failed and could not be undone (cairn then stays out of service until it is restarted: `sudo systemctl restart cairn.service` on the VM, after `sudo journalctl -u cairn` says why).
+The alert fires until `https://DOMAIN/healthz` answers 200. That is expected during bootstrap. Later it fires while cairn is down or answers 503: it cannot read its database, the database holds a schema version this cairn does not know, or a write failed and could not be undone (cairn then stays out of service until it is restarted: `sudo systemctl restart cairn.service` on the VM, after `sudo journalctl -u cairn` says why). It also answers 503 when one write has held the database for more than a minute (an hour while a compaction runs) and it answers `{"status":"stuck"}`: reads may still work, no write can. Restart cairn the same way: the write under way is lost, nothing committed is.
 
 ## Deploy
 
@@ -653,7 +653,7 @@ The silence alert says that no line has said the replica is current for 20 minut
 
 ### When a compaction keeps not finishing
 
-The compaction alert says that cairn logged `cairn.access: compact not finished: another connection held the file in NN ms` more than twice within an hour. Each line is one compaction that rewrote the whole database file under the store's lock, so every request waited for it, and Litestream then copied the rewritten file again. The step that did not finish is the last one, truncating the write-ahead log: Litestream reads the log for as long as it runs. Nothing is lost when it does not finish: the database is whole, the deletion stays recorded as due, and Litestream's own checkpoints fold the log into the file later. What was measured beside Litestream, and what is not known, is in [docs/compaction-beside-a-replica.md](../../docs/compaction-beside-a-replica.md).
+The compaction alert says that cairn logged `cairn.access: compact not finished: another connection held the file (...) in NN ms` more than twice within an hour. A line that says `(rewritten; the write-ahead log was not emptied)` is a compaction that rewrote the whole database file under the store's lock, so every write waited for it, and Litestream then copied the rewritten file again. A line that says `(no rewrite: only the write-ahead log was due)` rewrote nothing: it held writes for at most about 5 seconds while it tried to empty the log, which is all a rewrite that succeeded leaves due, at the next interval and after a restart alike. The step that did not finish is the last one, truncating the write-ahead log: Litestream reads the log for as long as it runs. Nothing is lost when it does not finish: the database is whole, the deletion stays recorded as due, and Litestream's own checkpoints fold the log into the file later. A compaction starts only with twice the database's size free on its disk; without it cairn logs `compact not started`, which this alert does not count, and the disk alert covers the disk. What was measured beside Litestream, and what is not known, is in [docs/compaction-beside-a-replica.md](../../docs/compaction-beside-a-replica.md).
 
 1. **Read the lines.** From your machine:
 
@@ -668,7 +668,7 @@ The compaction alert says that cairn logged `cairn.access: compact not finished:
    sudo docker exec cairn python -c 'import sqlite3; con = sqlite3.connect("file:/data/cairn.db?mode=ro", uri=True); print(con.execute("SELECT name, value FROM settings WHERE name LIKE ?", ("store.compact%",)).fetchall())'
    ```
 
-   `store.compact_due` is there while a deletion waits for a compaction, with the time of the deletion; `store.compacted_at` is when the last compaction that finished began. Beside Litestream `store.compact_due` stays, because no compaction of `serve`'s finishes there; [`host.sh compact`](#after-a-workspace-is-deleted) clears it.
+   `store.compact_due` is there while a deletion waits for a compaction, with the time of the deletion; `store.compacted_at` is when the last rewrite began. Beside Litestream `store.compact_due` stays, because no compaction of `serve`'s finishes there; [`host.sh compact`](#after-a-workspace-is-deleted) clears it.
 3. **Check the running image.** The fix, a compaction that did not finish waits its interval before the next try, is commit `f14b49b` (pull request 23, merged into `main` on 2026-11-17). An image built before it tries again at every poll. Read the digest cairn runs (`running=` in the status line, [Deploy](#deploy)), then the tags of that digest in Artifact Registry:
 
    ```bash

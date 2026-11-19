@@ -11,9 +11,9 @@ One VM runs the same image self-hosted users run. OpenTofu builds everything aro
 | VM | `e2-small`, Container-Optimized OS (stable), Shielded VM, in its own network |
 | Data disk | 20 GB `pd-balanced`, separate from the boot disk, protected from destroy, mounted at `/mnt/disks/data` |
 | Address | one static IPv4; ports 80 and 443 open; SSH only from Identity-Aware Proxy, with OS Login |
-| Registry | one Artifact Registry Docker repository; the VM follows the tag `cairn:production` in it |
+| Registry | one Artifact Registry Docker repository; the VM follows the tag `cairn:production` in it; a cleanup policy deletes old images ([Rollback](#rollback)) |
 | Secret | one Secret Manager secret that holds cairn's env file |
-| Replica | one bucket (uniform access, public access prevented, soft delete: whatever is deleted stays restorable for 30 days) |
+| Replica | one bucket (uniform access, public access prevented, soft delete: whatever is deleted stays restorable for 7 days) |
 | Snapshots | a daily snapshot of the data disk, kept 14 days |
 | Monitoring | an uptime check on `https://DOMAIN/healthz` and an email alert; a second email alert when Litestream logs an error; a third when the replica check stops saying the replica is current; a fourth when a compaction keeps not finishing ([Alerts](#alerts)) |
 | Identities | a VM service account, and a deployer service account that one GitHub Actions workflow reaches through Workload Identity Federation. The deployer can push images and read the VM's deploy status, nothing else. No keys. |
@@ -233,6 +233,8 @@ gcloud artifacts docker images list "${IMAGE%:*}" --include-tags --sort-by=~CREA
 gcloud artifacts docker tags add "${IMAGE%:*}@sha256:OLDER_DIGEST" "$IMAGE"
 ```
 
+The registry keeps the newest 50 versions of the image (`registry_keep_versions`) and whatever the deploy tag names, and deletes every other image once it is 14 days old (`registry_delete_after_days`). A deploy pushes an index and its children, about five versions, so that is about the last ten deploys; an older digest is gone, and rolling back to that code means building and pushing it again. Whether the cleanup spares the children of an index it keeps has not been checked against Artifact Registry ([What was checked](#what-was-checked-and-what-was-not)).
+
 `"${IMAGE%:*}:sha-COMMIT"` works as the source too: the deploy job copies every image it deploys under the full commit SHA. `tofu output -raw rollback_command` prints the last line with this project's names filled in; its placeholder is `DIGEST`, the whole digest (`sha256:` and the hex). The deploy job's log names the digest each deploy replaced (`cairn:production moved from sha256:... to sha256:...`; `from none` on the first deploy, and `already names` with no `moved` line when the tag was there already). To wait for the VM the way the job does, with your own `gcloud` credentials:
 
 ```bash
@@ -355,11 +357,11 @@ If the restore undoes a schema migration, follow the held procedure in [Rollback
 
 ### The replica was deleted or tampered with
 
-The VM's identity can delete replica files, because Litestream's own retention has to. What it cannot do is delete them for good. The bucket has soft delete set to 30 days (`replica_soft_delete_days`): everything deleted or overwritten in it stays restorable for that long, and Cloud Storage's documentation says it cannot be permanently deleted during that time. The VM's identity has no permission on the bucket itself, so it cannot shorten the window, and a shorter window would not apply to what is already deleted anyway. This is the backstop behind a compromised VM or a mistake.
+The VM's identity can delete replica files, because Litestream's own retention has to. What it cannot do is delete them for good. The bucket has soft delete set to 7 days (`replica_soft_delete_days`, the least Cloud Storage allows): everything deleted or overwritten in it stays restorable for that long, and Cloud Storage's documentation says it cannot be permanently deleted during that time. The VM's identity has no permission on the bucket itself, so it cannot shorten the window, and a shorter window would not apply to what is already deleted anyway. This is the backstop behind a compromised VM or a mistake.
 
 If the database on the data disk is intact and trusted, you do not need the old replica at all: set a new `replica_path`, `tofu apply`, restart the VM, and Litestream starts a fresh replica from the live database.
 
-If the database is gone or not trusted either, you have 30 days from the deletion to bring the replica back:
+If the database is gone or not trusted either, you have 7 days from the deletion to bring the replica back:
 
 1. **Stop the writers**, so nothing new lands in the path. On the VM: `bash /etc/cairn/host.sh hold`, then `systemctl stop cairn.service litestream.service`, as the first lines of [The database is lost or damaged](#the-database-is-lost-or-damaged) do. The VM stays up: the restore needs it. If the VM itself is suspect, stop it instead (`gcloud compute instances stop cairn --zone ZONE`), disable its service account (`gcloud iam service-accounts disable "$(tofu output -raw vm_service_account)"`), and replace it while the account is still disabled.
 2. **See what is there.** `tofu output -raw replica_url` is `gs://BUCKET/PATH`.
@@ -380,7 +382,20 @@ If the database is gone or not trusted either, you have 30 days from the deletio
 
    If you stopped or replaced the VM in step 1, do not start it with its account enabled. At boot it would restore the newest state in the path if the database is missing, serve it, and let Litestream write into the path you just recovered, where its retention can delete again the older files the bulk restore brought back. Start it with the account still disabled: without credentials neither the settings step nor the restore step can finish, so cairn and Litestream do not start. Then, on the VM, take the hold, stop the waiting steps and the services (`systemctl stop cairn-env.service cairn-restore.service cairn.service litestream.service`), enable the account again, and restore by hand as above. This order is read from the units; it has not been run on a VM.
 
-Past the 30 days the files are gone, and the daily disk snapshots (14 days, below) are what is left.
+Past the 7 days the files are gone, and the daily disk snapshots (14 days, below) are what is left. A longer `replica_soft_delete_days` (up to 90) buys more time here, and keeps what a person deleted in cairn that much longer ([below](#how-long-a-deletion-stays-in-the-backups)).
+
+### How long a deletion stays in the backups
+
+What a person deletes in cairn leaves the database at once ([After a workspace is deleted](#after-a-workspace-is-deleted) says what is left in the log file and when it goes), but not the backups made before. With the shipped settings:
+
+| Where | How long it keeps a deleted note |
+|---|---|
+| Litestream's files in the bucket | up to 8 days (`retention: 192h` in `deploy/litestream.yml`) |
+| Then soft delete in the bucket | 7 more days (`replica_soft_delete_days`) |
+| The replica bucket in all | up to 15 days |
+| The daily disk snapshots | up to 14 days (`google_compute_resource_policy.data_daily`) |
+
+Seven days is the least soft delete Cloud Storage allows. A longer window keeps more time to bring back a replica that was deleted or tampered with ([above](#the-replica-was-deleted-or-tampered-with)) and keeps deleted notes in the bucket for as long; that is the operator's trade.
 
 ### The data disk is lost
 
@@ -411,6 +426,8 @@ gcloud compute instances stop cairn --zone ZONE && gcloud compute instances star
 
 Growing the data disk needs the same restart: raise `data_disk_size_gb`, apply, restart. The file system grows at boot. Disks cannot shrink.
 
+Changing `boot_disk_size_gb` replaces the VM: the boot disk is made with it. That is the step of [The VM is broken, the data disk is fine](#the-vm-is-broken-the-data-disk-is-fine), and `tofu plan` says so. The boot disk holds the pulled images and the containers' logs; after each promotion the updater removes every image older than three days, except the running image and the one before it, which a rollback needs.
+
 **Plans.** To hold workspaces to plans, set `cairn_plans_file` in `terraform.tfvars` to a plans file on your machine (a copy of `deploy/plans.example.yaml`), relative to `infra/gcp` or absolute. `tofu apply` puts its content in the user-data. At boot cloud-init writes it to `/etc/cairn/plans.yaml`, owned by root with mode 0644, and cairn starts with that file mounted read-only and `--plans /etc/cairn/plans.yaml`: cairn's user can read it and cannot change it. Plans are not secret (a workspace's **Usage** page shows its plan's limits), so the user-data, which anyone who can read the instance's metadata can read, is an acceptable place for them. `tofu plan` refuses a file that is missing, empty, larger than 16 KiB, or not printable ASCII text that ends in exactly one line break, and says which. It also refuses `--plans` in `cairn_extra_args` while `cairn_plans_file` is set. After an edit of the file: `tofu apply`, then stop and start the VM as above. Without `cairn_plans_file` the file is empty, and cairn starts without plans.
 
 **Brand.** To show your own name in place of cairn's, set `cairn_brand_name` in `terraform.tfvars`, and with it, if you want a logo, `cairn_brand_logo_file`, an SVG or a PNG on your machine (relative to `infra/gcp` or absolute), and `cairn_brand_logo_alt`, its alt text. `tofu apply` puts each value that is set in the user-data, base64. At boot cloud-init writes them to `/etc/cairn/brand/name`, `/etc/cairn/brand/logo` and `/etc/cairn/brand/logo-alt`, owned by root with mode 0644, and cairn starts with `--brand-name=NAME`, the logo mounted read-only with `--brand-logo /etc/cairn/brand/logo`, and `--brand-logo-alt=TEXT`. Each value reaches `serve` as one argument, as you wrote it: no shell expands it and nothing splits it, so a space, a quote, a backslash or a `$` arrives as it is. The brand is not secret (the sign-in page shows it), so the user-data, which anyone who can read the instance's metadata can read, is an acceptable place for it. `tofu plan` refuses what `serve` would refuse at start: a name that is not 1 to 60 characters or an alt text that is not 1 to 200, one that is only spaces, or one that holds a control character, a character that is not seen (a zero-width space, a direction mark), `<` or `>`; and a logo without a name, an alt text without a logo, and a name without `--sign-in` in `cairn_extra_args`. It also refuses `--brand-name`, `--brand-logo` and `--brand-logo-alt` in `cairn_extra_args`. Of the logo file it refuses one that is missing, empty or larger than 60 KiB (61,440 bytes), and it checks only how the file starts: the 16 bytes every PNG starts with, or an SVG whose first element is `<svg` with `xmlns="http://www.w3.org/2000/svg"`, after at most an XML declaration, white space and comments. It refuses an SVG with a document type declaration (`<!DOCTYPE`), which `serve` refuses so that reading a logo fetches nothing and expands nothing. `serve` reads the whole file at start and may still refuse one the plan took, such as an SVG that is not well-formed XML; on the VM that is a container that does not come up. `serve` itself takes a logo of up to 256 KB; the VM takes at most 60 KiB because the logo travels in the user-data next to the plans file, and Compute Engine takes at most 256 KB in one metadata value, which `tofu plan` also checks for the whole user-data. `--wall` and `--session-days` stay in `cairn_extra_args`, and `tofu plan` refuses either without `--sign-in`. It also refuses a `--session-days` that is not followed by a whole number from 1 to 365, written `--session-days 30` or `--session-days=30`, and a `--wall` with a value (`--wall=yes`): `--wall` takes none. A change of the brand goes as a change of the plans file does: `tofu apply`, then stop and start the VM as above. Unlike the plans file, which is written empty when unset, a brand value that is not set is not written at all; `/etc` is on tmpfs, so a value you remove is gone after the restart and cairn starts without its option.
@@ -419,7 +436,7 @@ Growing the data disk needs the same restart: raise `data_disk_size_gb`, apply, 
 
 1. Take a last copy if you want one: run the restore drill, or `gcloud storage cp -r` the replica path.
 2. In `main.tf`, remove `prevent_destroy = true` from `google_compute_disk.data`.
-3. Empty the replica bucket: `gcloud storage rm "gs://BUCKET/**"`. What you delete stays in soft delete, billed, for another 30 days. To skip that, turn soft delete off first (`gcloud storage buckets update gs://BUCKET --soft-delete-duration=0`); it only affects what is deleted afterwards.
+3. Empty the replica bucket: `gcloud storage rm "gs://BUCKET/**"`. What you delete stays in soft delete, billed, for another 7 days. To skip that, turn soft delete off first (`gcloud storage buckets update gs://BUCKET --soft-delete-duration=0`); it only affects what is deleted afterwards.
 4. `tofu destroy`.
 5. Clean up what OpenTofu does not own: the scheduled disk snapshots (kept on purpose when the disk is deleted), the state bucket, and the DNS record.
 
@@ -630,18 +647,18 @@ List prices for `europe-west1`, read on 2026-11-10 from Google's pricing pages (
 | Item | Scales with | Price |
 |---|---|---|
 | VM, `e2-small` | fixed | $13.45 a month |
-| Boot disk, 10 GB `pd-balanced` | fixed | $1.00 a month |
+| Boot disk, 20 GB `pd-balanced` | fixed | $2.00 a month |
 | Data disk, 20 GB `pd-balanced` | disk size | $2.00 a month |
 | Static IPv4 address | fixed | $3.65 a month |
-| Replica bucket: storage and write requests | database size, write rate; everything Litestream deletes is billed for 30 more days (soft delete) | $1.40 a month for 5 GiB and about 260,000 writes at a 10 s sync interval |
+| Replica bucket: storage and write requests | database size, write rate; everything Litestream deletes is billed for 7 more days (soft delete) | $1.40 a month for 5 GiB and about 260,000 writes at a 10 s sync interval |
 | Network egress | traffic | $0.60 a month for 5 GiB |
 | Disk snapshots, 14 daily | changed blocks | not priced yet |
-| Artifact Registry storage | images pushed (no cleanup policy is set) | not priced yet |
+| Artifact Registry storage | images pushed (older than 14 days deleted, except the newest 50 versions and what the deploy tag names) | not priced yet |
 | Secret Manager: one secret, its versions, one read per boot | versions kept | not priced yet |
 | Cloud Logging and Monitoring: container logs, one uptime check, four alert policies (one of them log-based, two on log-based metrics), two log-based metrics | log volume | not priced yet beyond the free allowance |
 | Domain and DNS | outside Google Cloud | not priced yet |
 
-The priced rows come to about $22 a month.
+The priced rows come to about $23 a month.
 
 The replica alert reads log lines that already arrive, so it adds no log volume. Google's pricing examples count a log-based alerting policy as one metric reference at $0.35 a month, with no charge for points returned, because it returns none ([example 7](https://cloud.google.com/stackdriver/observability-pricing-examples), read on 2026-11-15; the pricing page, not the example, is what bills).
 
@@ -649,7 +666,7 @@ The replica check and the silence alert are not priced yet: on 2026-11-16 neithe
 
 The compaction alert is not priced either. It adds no log line (it counts lines cairn already writes, one a day at most while a deletion waits), one log-based metric with one time series that gets a point when such a line arrives, and one alert condition on it.
 
-The replica bucket's price was read when the bucket kept 30 days of old object versions and Litestream kept seven days of snapshots; the bucket now keeps 30 days of soft-deleted files and Litestream keeps eight days, which is the same order of storage but not the same number.
+The replica bucket's price was read when the bucket kept 30 days of old object versions and Litestream kept seven days of snapshots; the bucket now keeps 7 days of soft-deleted files and Litestream keeps eight days, which is less storage, by a number not measured.
 
 ## What was checked, and what was not
 

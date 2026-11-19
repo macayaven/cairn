@@ -187,9 +187,9 @@ variable "container_limits" {
 }
 
 variable "boot_disk_size_gb" {
-  description = "Boot disk size. It holds the OS and the pulled container images, no data."
+  description = "Boot disk size. It holds the OS, the pulled container images and their logs, no data. A change replaces the VM (README, \"The VM is broken, the data disk is fine\")."
   type        = number
-  default     = 10
+  default     = 20
 
   validation {
     condition     = var.boot_disk_size_gb >= 10 && floor(var.boot_disk_size_gb) == var.boot_disk_size_gb
@@ -361,9 +361,9 @@ variable "replica_bucket_name" {
 }
 
 variable "replica_soft_delete_days" {
-  description = "How long the bucket keeps what was deleted or overwritten in it, restorable and not deletable for good. This is what stands between a compromised VM and the loss of the replica. Cloud Storage allows 7 to 90 days."
+  description = "How long the bucket keeps what was deleted or overwritten in it, restorable and not deletable for good. This is what stands between a compromised VM and the loss of the replica, and how long a deletion outlives Litestream's own retention in the bucket (README, \"How long a deletion stays in the backups\"). Cloud Storage allows 7 to 90 days; 7 is the least."
   type        = number
-  default     = 30
+  default     = 7
 
   validation {
     condition     = var.replica_soft_delete_days >= 7 && var.replica_soft_delete_days <= 90 && floor(var.replica_soft_delete_days) == var.replica_soft_delete_days

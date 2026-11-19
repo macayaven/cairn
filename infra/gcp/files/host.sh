@@ -654,11 +654,23 @@ wait_healthy() {
 
 # The image is written first: if this is cut off before the record is removed, the leftover
 # record names the proven image and settle only has to remove it.
+#
+# Then the boot disk, which holds every pulled image: `docker image prune -a` removes each
+# image no container uses and that was built more than three days ago. The running image is
+# in use; the image before it is kept for a rollback by a container made from it and never
+# started, cairn-previous. When settle finishes a promotion cut short, the candidate is
+# already the proven image and the container from the first call stays as it is.
 promote() {
+  local previous
+  previous=$(proven_image)
   write_state "$IMAGE_FILE" "$1"
   rm -f "$PENDING_FILE" "$FAILED_FILE" "$INTERRUPTED_FILE"
   log "now running $1"
-  docker image prune -af --filter until=720h >/dev/null 2>&1 || true
+  if [ -n "$previous" ] && [ "$previous" != "$1" ]; then
+    docker rm -f cairn-previous >/dev/null 2>&1 || true
+    docker create --name cairn-previous "$previous" >/dev/null 2>&1 || true
+  fi
+  docker image prune -af --filter until=72h >/dev/null 2>&1 || true
 }
 
 roll_back() {

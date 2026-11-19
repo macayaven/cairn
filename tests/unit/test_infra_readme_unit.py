@@ -863,3 +863,94 @@ def test_host_shs_record_reader_shows_a_deletion_not_yet_compacted(tmp_path):
         check=True,
     ).stdout.strip()
     assert shown and shown == Store(db).compaction_state().deleted_at
+
+
+# --- numbers the guide states are numbers the definitions hold -------------------------------
+
+VARIABLES_TF = (INFRA / "variables.tf").read_text(encoding="utf-8")
+
+
+def default_of(name: str) -> str:
+    start = VARIABLES_TF.index(f'variable "{name}"')
+    block = VARIABLES_TF[start : VARIABLES_TF.index("\n}\n", start)]
+    return re.search(r"^  default\s*=\s*(.+)$", block, re.M).group(1).strip('"')
+
+
+def litestream_days() -> int:
+    import yaml
+
+    retention = yaml.safe_load((REPO / "deploy" / "litestream.yml").read_text())["snapshot"][
+        "retention"
+    ]
+    assert retention.endswith("h") and int(retention[:-1]) % 24 == 0, retention
+    return int(retention[:-1]) // 24
+
+
+def snapshot_days() -> int:
+    main = (INFRA / "main.tf").read_text(encoding="utf-8")
+    return int(re.search(r"max_retention_days\s*=\s*(\d+)", main).group(1))
+
+
+def test_every_soft_delete_period_the_guide_states_is_the_variables_default():
+    days = int(default_of("replica_soft_delete_days"))
+    assert days == 7
+    said = flat(GUIDE)
+    for sentence in (
+        f"soft delete: whatever is deleted stays restorable for {days} days)",
+        f"The bucket has soft delete set to {days} days (`replica_soft_delete_days`, the least"
+        " Cloud Storage allows):",
+        f"you have {days} days from the deletion to bring the replica back:",
+        f"Past the {days} days the files are gone,",
+        f"What you delete stays in soft delete, billed, for another {days} days.",
+        f"everything Litestream deletes is billed for {days} more days (soft delete)",
+        f"the bucket now keeps {days} days of soft-deleted files",
+    ):
+        assert sentence in said, sentence
+    # No sentence about soft delete names another period.
+    for sentence in re.split(r"(?<=[.:;|])\s", said):
+        if re.search(r"soft[ -]delet", sentence):
+            for number in re.findall(r"\b(\d+) (?:more )?days\b", sentence):
+                assert int(number) in (days, snapshot_days()), sentence
+    assert not re.search(r"\b38\b", said)
+
+
+def test_the_table_of_how_long_a_deletion_stays_in_the_backups_adds_up():
+    table = flat(guide_part("### How long a deletion stays in the backups"))
+    lite, soft, snaps = (
+        litestream_days(),
+        int(default_of("replica_soft_delete_days")),
+        snapshot_days(),
+    )
+    assert (lite, soft, snaps) == (8, 7, 14)
+    for row in (
+        f"| Litestream's files in the bucket | up to {lite} days (`retention: 192h` in"
+        " `deploy/litestream.yml`) |",
+        f"| Then soft delete in the bucket | {soft} more days (`replica_soft_delete_days`) |",
+        f"| The replica bucket in all | up to {lite + soft} days |",
+        f"| The daily disk snapshots | up to {snaps} days"
+        " (`google_compute_resource_policy.data_daily`) |",
+    ):
+        assert row in table, row
+
+
+def test_the_boot_disk_the_guide_prices_is_the_default_and_its_change_replaces_the_vm():
+    size = int(default_of("boot_disk_size_gb"))
+    said = flat(GUIDE)
+    assert f"| Boot disk, {size} GB `pd-balanced` | fixed | ${size / 10:.2f} a month |" in said
+    assert "Changing `boot_disk_size_gb` replaces the VM: the boot disk is made with it." in said
+    assert "older than three days, except the running image and the one before it" in said
+
+
+def test_the_registry_cleanup_the_guide_states_is_the_one_main_tf_makes():
+    keep, days = (
+        int(default_of("registry_keep_versions")),
+        int(default_of("registry_delete_after_days")),
+    )
+    said = flat(GUIDE)
+    assert (
+        f"The registry keeps the newest {keep} versions of the image (`registry_keep_versions`)"
+        " and whatever the deploy tag names, and deletes every other image once it is"
+        f" {days} days old (`registry_delete_after_days`)." in said
+    )
+    assert f"| Artifact Registry storage | images pushed (older than {days} days deleted" in said
+    assert "no cleanup policy is set" not in said

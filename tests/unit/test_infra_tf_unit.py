@@ -7,9 +7,9 @@ import importlib.util
 import re
 from pathlib import Path
 
+import deploy_standins
 import pytest
 import yaml
-import deploy_standins
 from deploy_standins import EXTRA_ARGS, IMAGE, NEW, PUBLIC_URL, SUBNET, Standins
 
 REPO = Path(__file__).resolve().parents[2]

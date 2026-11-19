@@ -67,7 +67,8 @@ def test_a_project_is_allowed_until_someone_switches_it(store, team, db):
     assert store.kept_from_models([handbook.id, journal.id]) == {journal.id}
     assert rows(db) == [(store.account_id, MODELS_PREFIX + journal.id, "never")]
     assert cy.set_project_models(journal.id, "allowed") == "allowed"
-    assert store.kept_from_models([journal.id]) == frozenset() and rows(db) == []
+    assert store.kept_from_models([journal.id]) == frozenset()
+    assert rows(db) == [(store.account_id, MODELS_PREFIX + journal.id, "allowed")]  # Privacy 4
 
 
 def test_setting_the_state_it_has_writes_nothing(store, team, db):
@@ -114,7 +115,7 @@ def test_who_may_change_it_is_who_may_change_who_reaches_it(store, team, db):
         ada.narrow([journal.id]).set_project_models(journal.id, "never")
     with pytest.raises(PermissionError):
         ada.narrow(None, "read").set_project_models(journal.id, "never")
-    assert rows(db) == []
+    assert rows(db) == [(store.account_id, MODELS_PREFIX + journal.id, "allowed")]
 
 
 @pytest.mark.parametrize("value", ["", "Never", "send", "withhold", None, True])
@@ -151,9 +152,9 @@ def test_a_page_is_read_with_whether_its_project_is_kept(store, team):
     note, _ = cy.add_note(journal.id, "# Diary\n\nThe crate went north.\n")
     compile_note(cy, note, gate=lint_gate)
     page = store.get_page(journal.id, "diary")
-    assert store.page_for_model(journal.id, "diary") == (page, False)
+    assert store.page_for_model(journal.id, "diary") == (page, False, False)
     cy.set_project_models(journal.id, "never")
-    assert store.page_for_model(journal.id, "diary") == (page, True)
+    assert store.page_for_model(journal.id, "diary") == (page, True, False)
     assert store.page_for_model(journal.id, "nothing") is None
     assert store.page_for_model(handbook.id, "diary") is None
     other = store.for_account(store.create_account("Other").id)

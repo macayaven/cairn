@@ -10,11 +10,11 @@
 {% if project.description %}<p class="lede">{{ project.description }}</p>{% endif %}
 <p class="row">{% if sharing and sharing.startswith("Private") %}<span class="tag is-private">private</span> {% endif %}<span class="meta">{% if sharing %}<strong class="sharing">{{ sharing }}</strong>.{% else %}Every member reads and writes.{% endif %}</span></p>
 <div class="row models">
-  <p class="meta">{% if kept %}<strong>Models: never.</strong> No model is sent this project's pages, whatever their notes say or the operator set. Pages already arranged stay as they are.{% if kind_of(project.kind).private %} {{ kind_of(project.kind).title }} start this way.{% endif %}{% else %}<strong>Models: allowed.</strong> A model the operator connects can be sent this project's pages, to put their claims in order.{% endif %} Models decides only what this server's own model, the one that arranges pages, is sent; the assistants people connect read what they reach and send it to their own provider.</p>
+  <p class="meta">{% if models == "never" %}<strong>Models: never.</strong> No model is sent this project's pages, whatever their notes say or the operator set. Pages already arranged stay as they are.{% if kind_of(project.kind).private %} {{ kind_of(project.kind).title }} start this way.{% endif %}{% elif models == "allowed" %}<strong>Models: allowed.</strong> A model the operator connects can be sent this project's pages, to put their claims in order.{% else %}<strong>Models: not decided.</strong> Nobody has chosen for this project: a model the operator connects can be sent its pages, unless the operator sends only the pages of projects whose people chose allowed, and then it is sent none.{% endif %} Models decides only what this server's own model, the one that arranges pages, is sent; the assistants people connect read what they reach and send it to their own provider.</p>
   {% if rule %}
   <form method="post" action="/b/{{ project.name|seg }}/models">
-    <input type="hidden" name="models" value="{{ 'allowed' if kept else 'never' }}">
-    <button type="submit" class="quiet">{% if kept %}Allow a model{% else %}Keep from every model{% endif %}</button>
+    {% if models != "allowed" %}<button type="submit" class="quiet" name="models" value="allowed">Allow a model</button>{% endif %}
+    {% if models != "never" %}<button type="submit" class="quiet" name="models" value="never">Keep from every model</button>{% endif %}
   </form>
   {% endif %}
 </div>

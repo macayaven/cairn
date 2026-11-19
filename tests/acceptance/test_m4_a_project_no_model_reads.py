@@ -119,6 +119,7 @@ NEVER_SAID = (
     " operator set. Pages already arranged stay as they are."
 )
 PERSONAL_SAID = "Personal notes start this way."
+UNDECIDED_SAID = "Models: not decided. Nobody has chosen for this project"  # Privacy 4
 
 # Six claims each, the first line twice, so a tidy folds it.
 LAUNCH_ONE = (
@@ -637,6 +638,11 @@ def test_each_change_is_one_audit_entry_naming_who_the_project_and_the_new_state
 
 def test_the_project_s_page_says_the_state_and_offers_the_switch_to_whoever_may_change_it(world):
     form = 'action="/b/launch/models"'
+    # Privacy 4: nobody chose yet, so the page says so and offers both choices.
+    undecided = world.client.get("/b/launch", headers=world.ada.cookie)
+    assert UNDECIDED_SAID in visible(undecided.text) and ALLOWED_SAID not in visible(undecided.text)
+    assert 'name="models" value="allowed"' in undecided.text
+    world.cy.view.set_project_models(world.launch.id, "allowed")
     for who in (world.ada, world.cy, world.dee):
         shown = world.client.get("/b/launch", headers=who.cookie)
         assert shown.status_code == 200

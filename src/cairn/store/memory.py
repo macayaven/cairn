@@ -816,7 +816,7 @@ class MemoryMethods(StoreBase):
             if by_model:  # the latest version, and whether the project is at "never"
                 latest, kept = con.execute(
                     "SELECT COALESCE(MAX(version), 0), EXISTS (SELECT 1 FROM settings"
-                    "  WHERE account_id = ? AND name = ?)"
+                    "  WHERE account_id = ? AND name = ? AND value = 'never')"
                     " FROM page_versions WHERE project_id = ? AND slug = ?",
                     (self._account_id, MODELS_PREFIX + project_id, project_id, slug),
                 ).fetchone()
@@ -889,19 +889,22 @@ class MemoryMethods(StoreBase):
             None if metrics is None else json.loads(metrics),
         )
 
-    def page_for_model(self, project_id: str, slug: str) -> tuple[Page, bool] | None:
-        """The page's latest version and whether its project is at "never" (M4: its pages go to
-        no model), in the one statement that reads the page, so the arranger learns it at no
-        cost of its own; None when there is no such page in reach."""
+    def page_for_model(self, project_id: str, slug: str) -> tuple[Page, bool, bool] | None:
+        """The page's latest version, whether its project is at "never" (M4: its pages go to
+        no model) and whether its people chose "allowed" themselves (Privacy 4), in the one
+        statement that reads the page, so the arranger learns both at no cost of its own;
+        None when there is no such page in reach."""
         with self._read() as con:
             row = con.execute(
-                f"SELECT {_PAGE_COLUMNS}, EXISTS (SELECT 1 FROM settings"
+                f"SELECT {_PAGE_COLUMNS}, (SELECT value FROM settings"
                 "  WHERE settings.account_id = ? AND settings.name = ? || page_versions.project_id)"
                 " FROM page_versions WHERE project_id = ? AND slug = ?"
                 f" AND {_OWN_PROJECT} ORDER BY version DESC LIMIT 1",
                 (self._account_id, MODELS_PREFIX, project_id, slug, *self._scope(con)),
             ).fetchone()
-        return (_page(row[:-1]), bool(row[-1])) if row else None
+        if row is None:
+            return None
+        return _page(row[:-1]), row[-1] == "never", row[-1] == "allowed"
 
     def list_pages(self, project_id: str) -> list[Page]:
         """Latest versions, sorted by slug."""

@@ -45,10 +45,12 @@ NOT_THE_MAKER = (
     "only the project's maker, the workspace's owners and the people it gives 'manage' see or"
     " change who reaches it"
 )
-# Whether a project's pages may be sent to a model the operator connects (M4): "allowed", the
-# default, or "never". A project at "never" is one row of the workspace's settings, named
-# MODELS_PREFIX and its id, holding "never"; "allowed" is no row. Not a setting the setting
-# calls know (cairn.store.audit.SETTINGS): get_setting and set_setting refuse the name.
+# Whether a project's pages may be sent to a model the operator connects (M4): "allowed" or
+# "never", as its people chose, or not decided when nobody did (Privacy 4). A choice is one row
+# of the workspace's settings, named MODELS_PREFIX and its id, holding "allowed" or "never";
+# a project nobody decided for has no row. Whether a project is kept from every model is
+# whether its row holds "never", never whether it has one. Not a setting the setting calls
+# know (cairn.store.audit.SETTINGS): get_setting and set_setting refuse the name.
 MODELS = ("allowed", "never")
 MODELS_PREFIX = "project.models:"
 
@@ -58,9 +60,13 @@ class KeptFromModels(Exception):
     because the project is at "never" (M4): nothing of it was written."""
 
 
-_MODELS_NAMES = (  # the rows of the ids in a JSON array (?2), of the account ?1
-    "SELECT substr(name, length(?3) + 1) FROM settings WHERE account_id = ?1"
+_MODELS_CHOICES = (  # the ids in a JSON array (?2) with a choice, of the account ?1, and it
+    "SELECT substr(name, length(?3) + 1), value FROM settings WHERE account_id = ?1"
     " AND name IN (SELECT ?3 || value FROM json_each(?2))"
+)
+_MODELS_NAMES = (  # the ids among them at "never"
+    "SELECT substr(name, length(?3) + 1) FROM settings WHERE account_id = ?1"
+    " AND name IN (SELECT ?3 || value FROM json_each(?2)) AND value = 'never'"
 )
 # Each project of an account, and the level the person (?1) has there by its maker and rule:
 # "manage" is "write" here (deciding who reaches it is _may_change_rule's question).
@@ -324,6 +330,18 @@ class AccessMethods(StoreBase):
             kept = frozenset(project_id for (project_id,) in found)
         return kept if reach is None else kept & reach
 
+    def models_choices(self, project_ids: Iterable[str]) -> dict[str, str]:
+        """The choice of each project among `project_ids` whose people made one, by id:
+        "allowed" or "never" (Privacy 4); a project nobody decided for, and an id unknown or
+        out of reach, is left out. One statement, besides what the view's reach costs,
+        whatever their number. A read."""
+        wanted = json.dumps(list(dict.fromkeys(project_ids)))
+        with self._read() as con:
+            reach = self._reach(con)
+            found = con.execute(_MODELS_CHOICES, (self._account_id, wanted, MODELS_PREFIX))
+            chosen = dict(found.fetchall())
+        return {k: v for k, v in chosen.items() if reach is None or k in reach}
+
     def set_project_models(self, project_id: str, models: str) -> str:
         """Set whether a model may be sent the project's pages: "allowed" or "never" (MODELS),
         recorded as project.models_changed (the project by name, as every event of a project
@@ -341,18 +359,12 @@ class AccessMethods(StoreBase):
             self._may_change_rule(con, project_id, maker_id)
             key = MODELS_PREFIX + project_id
             held = con.execute(
-                "SELECT 1 FROM settings WHERE account_id = ? AND name = ?",
+                "SELECT value FROM settings WHERE account_id = ? AND name = ?",
                 (self._account_id, key),
             ).fetchone()
-            if (held is not None) == (models == "never"):
+            if held is not None and held[0] == models:
                 return models
-            if models == "never":
-                _keep_from_models(con, self._account_id, project_id, self._stamp())
-            else:
-                con.execute(
-                    "DELETE FROM settings WHERE account_id = ? AND name = ?",
-                    (self._account_id, key),
-                )
+            _choose_models(con, self._account_id, project_id, models, self._stamp())
             detail = {"project_id": project_id, "models": models}
             self._audit(con, "project.models_changed", project=name, detail=detail)
         return models
@@ -381,10 +393,19 @@ class AccessMethods(StoreBase):
 
 def _keep_from_models(con: sqlite3.Connection, account_id: str, project_id: str, now: str) -> None:
     """Put a project at "never" (its row of the settings), inside the caller's write."""
+    _choose_models(con, account_id, project_id, "never", now)
+
+
+def _choose_models(
+    con: sqlite3.Connection, account_id: str, project_id: str, models: str, now: str
+) -> None:
+    """Record the project's people's choice, "allowed" or "never", as its row of the settings,
+    whatever row it had, inside the caller's write."""
     con.execute(
-        "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, 'never', ?)"
-        " ON CONFLICT (account_id, name) DO NOTHING",
-        (account_id, MODELS_PREFIX + project_id, now),
+        "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, ?, ?)"
+        " ON CONFLICT (account_id, name) DO UPDATE SET value = excluded.value,"
+        " updated_at = excluded.updated_at",
+        (account_id, MODELS_PREFIX + project_id, models, now),
     )
 
 

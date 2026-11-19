@@ -990,8 +990,9 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
             rule=_sees_rule(memory, target),
             erase=memory.may_erase(target),
             sharing=sharing_words(memory, target.id),
-            # M4: whether a model may be sent its pages; whoever sees `rule` may change it
-            kept=bool(memory.store.kept_from_models([target.id])),
+            # M4, Privacy 4: "allowed", "never" or None (nobody decided), in one read;
+            # whoever sees `rule` may change it
+            models=memory.store.models_choices([target.id]).get(target.id),
         )
 
     def page(request: Request) -> Response:

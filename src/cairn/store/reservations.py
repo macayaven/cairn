@@ -57,7 +57,7 @@ class ReservationMethods(StoreBase):
             if (
                 project_id is not None
                 and con.execute(
-                    "SELECT 1 FROM settings WHERE account_id = ? AND name = ?",
+                    "SELECT 1 FROM settings WHERE account_id = ? AND name = ? AND value = 'never'",
                     (self._account_id, MODELS_PREFIX + project_id),
                 ).fetchone()
             ):

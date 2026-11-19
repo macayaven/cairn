@@ -349,6 +349,7 @@ PROJECT_CALLS = {
     "page_claims": lambda d: (d["api"], "retries", 10_000),
     "page_for_model": lambda d: (d["api"], "retries"),  # M4: the page and its project's switch
     "kept_from_models": lambda d: ([d["api"]],),
+    "models_choices": lambda d: ([d["api"]],),  # Privacy 4: the three states
     "list_pages": lambda d: (d["api"],),
     "page_versions": lambda d: (d["api"], "retries"),
     "page_counts": lambda d: (),  # Q1: the bounded reads

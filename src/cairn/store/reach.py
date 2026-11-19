@@ -257,6 +257,7 @@ LIMITED_READS = frozenset(
         "page_claims",  # a page without its body (Help)
         "page_for_model",  # M4: the page, and whether its project goes to no model
         "kept_from_models",  # M4: which projects in reach go to no model
+        "models_choices",  # Privacy 4: which projects in reach their people decided for, and how
         "list_pages",
         "page_versions",
         "page_counts",  # Q1: the reads that cost what they return, as their neighbours

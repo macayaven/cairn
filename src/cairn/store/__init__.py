@@ -450,30 +450,39 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   the agents they approved; managers see all.
 - A project kept from every model (M4, frozen by
   tests/acceptance/test_m4_a_project_no_model_reads.py). A project's pages may be sent to a
-  model the operator connects ("allowed", the default) or never ("never"): MODELS.
+  model the operator connects ("allowed") or never ("never"), as its people chose (MODELS),
+  or nobody decided (Privacy 4: the operator's <PREFIX>_UNDECIDED_PROJECTS says what that
+  sends).
   `view.set_project_models(project_id, models) -> str` sets it and gives the state now:
   ValueError, before anything is read, for any other value; then KeyError and
   PermissionError exactly as set_project_access has them (the same callers: the maker, an
   owner, a person at "manage", a view acting for no person), and a narrowed view is refused
   (reach.MANAGEMENT). A change is one project.models_changed event (the project by name;
   detail: `project_id` and `models`, and `user` as every person's event has it); setting the
-  state a project has writes nothing. `view.kept_from_models(project_ids) -> frozenset[str]`
-  gives the ids among them, in reach, at "never", in one statement whatever their number.
-  `view.page_for_model(project_id, slug) -> (Page, bool) | None` is get_page's latest version
-  and whether its project is at "never", read in that one statement (cairn.arrange learns it
-  at no cost of its own). It is kept with no change to the schema, as one row of the
-  workspace's settings per project at "never" (access.MODELS_PREFIX and the project's id;
-  "allowed" is no row), bounded by the workspace's projects; get_setting and set_setting
-  refuse the name. A project whose kind is private (cairn.kinds.Kind.private: "personal")
-  starts at "never", whoever makes it and however (create_project, create_projects,
-  import_export), in the write that makes it; every other project starts at "allowed".
+  state a project has writes nothing; choosing "allowed" where nobody decided is a change.
+  `view.kept_from_models(project_ids) -> frozenset[str]` gives the ids among them, in reach,
+  at "never", and `view.models_choices(project_ids) -> dict[str, str]` the choice of each
+  one whose people made one, each in one statement whatever their number.
+  `view.page_for_model(project_id, slug) -> (Page, bool, bool) | None` is get_page's latest
+  version, whether its project is at "never" and whether its people chose "allowed", read in
+  that one statement (cairn.arrange learns it at no cost of its own). It is kept with no
+  change to the schema, as one row of the workspace's settings per project whose people
+  chose (access.MODELS_PREFIX and the project's id, holding "allowed" or "never"; nobody
+  deciding is no row), bounded by the workspace's projects; every check of "never" reads the
+  value, never whether a row exists. get_setting and set_setting refuse the name. A project
+  whose kind is private (cairn.kinds.Kind.private: "personal") starts at "never", whoever
+  makes it and however (create_project, create_projects, import_export), in the write that
+  makes it; every other project starts not decided.
   delete_project removes the row in its own write, and a deleted workspace takes its
   settings with it. Projects are never renamed, and the row names the id, not the name. An
-  export carries this one setting, each project's `models` in its manifest: an import puts
-  a project the archive says is at "never" there, in its own write, and a project of a
-  private kind at "never" whatever the archive says; an archive written before says it of
-  no project, and each starts as a new one of its kind (portable.py says the notice and the
-  audit count). Existing projects are not touched: nothing was migrated.
+  export carries this one setting, each project's `models` and `models_decided` in its
+  manifest: an import puts a project the archive says is at "never" there, in its own
+  write, one its people chose "allowed" for at "allowed", and a project of a private kind at
+  "never" whatever the archive says; an archive written before says it of no project, and
+  each starts as a new one of its kind, and one that says `models` and not
+  `models_decided` brings no "allowed" (portable.py says the notices and the audit count).
+  Existing projects are not touched: nothing was migrated, so a project set back to
+  "allowed" before this build is not decided.
   The state holds at the moment of a call: `view.reserve_model_use(micros, project_id)`
   reads it in the reservation's own transaction and raises KeptFromModels, writing nothing,
   for a project at "never"; `save_page(..., by_model=True)` reads it in the statement that

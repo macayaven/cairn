@@ -6,7 +6,8 @@ The export format, version 1 (frozen by tests/acceptance/test_h5_data.py), is a 
     export.json                    {"format": "cairn-export", "version": 1, "exported_at",
                                     "workspace", "projects": [{"id", "name", "description",
                                     "kind", "created_at", "notes", "pages",
-                                    "models" (M4)}]}
+                                    "models" (M4), "models_decided"
+                                    (Privacy 4)}]}
     projects/<name>/notes.jsonl   one line per note, oldest first: id, title, topic, label,
                                    source_ref, via, created_at, file, sha256,
                                    topic_key, before_topics (N1), writer (A1)
@@ -39,7 +40,8 @@ know it passes it by, as the format's readers pass by every key they do not ask 
 build from before this one imports such an archive and starts each project as a new one of
 its kind. An import puts a project the archive says is at "never" at "never", in the write
 that brings it; a project of a private kind (Personal notes) arrives at "never" whatever the
-archive says, and any other at "allowed" when the archive says so. An archive written before
+archive says, and any other at "allowed" when the archive says its people chose it
+(Decided, below), or not decided. An archive written before
 says it of no project: each project starts as a new one of its kind, and the notice says
 the archive did not say it (IMPORTED_MODELS_UNSAID); otherwise the notice says how many
 arrived at "never" (IMPORTED_MODELS). A value other than the two, or an archive that says it
@@ -47,6 +49,15 @@ of some projects and not of others, is refused (ValueError). An import never tar
 existing project (a name the workspace uses is refused), so it never moves one from "never".
 The workspace.imported event's detail counts the projects that arrived at "never"
 (`kept_from_models`).
+Decided (Privacy 4). A project's people may also have chosen "allowed", and a project nobody
+decided for is neither: version 1 grew a `models_decided` on each project, true when its
+people chose (allowed or never), false when nobody did; `models` stays "allowed" for a project
+not at "never", so a build from before reads the archive as it always did. An import puts a
+project the archive says its people chose "allowed" for at "allowed"; one nobody decided for
+arrives not decided, and so does every project not at "never" of an archive that does not say
+`models_decided` (one written before): its notice says so (IMPORTED_ALLOWED_UNSAID). A value
+other than true or false, or an archive that says it of some projects and not of others, is
+refused (ValueError).
 
 An archive to import is hostile input. It is never extracted to disk: entries are read into
 memory, at most ARCHIVE_ENTRIES_MAX of them, each at most ENTRY_BYTES_MAX bytes, and the
@@ -130,7 +141,13 @@ from pydantic import ValidationError
 
 from cairn.kinds import KINDS
 from cairn.spans import Span, chunk
-from cairn.store.access import _MODELS_NAMES, MODELS, MODELS_PREFIX, _keep_from_models
+from cairn.store.access import (
+    _MODELS_CHOICES,
+    MODELS,
+    MODELS_PREFIX,
+    _choose_models,
+    _keep_from_models,
+)
 from cairn.store.audit import ACTOR_NAME_MAX, WRITER_KINDS, person_name
 from cairn.store.base import (
     _PROJECT_COLUMNS,
@@ -219,7 +236,13 @@ IMPORTED_OWNERS_ONLY = (
 IMPORTED_MODELS = "{kept} of the {projects} projects imported arrived at Models never."
 IMPORTED_MODELS_UNSAID = (
     "The archive does not say which projects were kept from models, so each arrived at Models"
-    " as a new project of its kind does: Personal notes at never, the others at allowed."
+    " as a new project of its kind does: Personal notes at never, the others not decided."
+)
+# What an import says when the archive says which projects are at "never" and not which ones
+# their people allowed (Privacy 4: one written before exports carried it).
+IMPORTED_ALLOWED_UNSAID = (
+    "The archive does not say which projects' people allowed a model, so every project not at"
+    " never arrived at Models not decided."
 )
 
 
@@ -273,13 +296,12 @@ class PortableMethods(StoreBase):
                     (account.id,),
                 )
             ]
-            never = {  # M4: the projects at "never", in the same read
-                project_id
-                for (project_id,) in con.execute(
-                    _MODELS_NAMES,
+            chosen = dict(  # M4, Privacy 4: each project's choice, in the same read
+                con.execute(
+                    _MODELS_CHOICES,
                     (account.id, json.dumps([p.id for p in projects]), MODELS_PREFIX),
-                )
-            }
+                ).fetchall()
+            )
             held = [
                 _Held(
                     project,
@@ -336,7 +358,8 @@ class PortableMethods(StoreBase):
                     "created_at": h.project.created_at,
                     "notes": len(h.notes),
                     "pages": len(h.slugs()),
-                    "models": MODELS[1] if h.project.id in never else MODELS[0],
+                    "models": chosen.get(h.project.id, MODELS[0]),
+                    "models_decided": h.project.id in chosen,
                 }
                 for h in held
             ],
@@ -455,6 +478,8 @@ class PortableMethods(StoreBase):
                 if KINDS[planned.kind].private or planned.models == MODELS[1]:
                     _keep_from_models(con, self._account_id, project_id, _iso(at))
                     kept += 1
+                elif planned.models == MODELS[0] and planned.decided:  # Privacy 4: chosen
+                    _choose_models(con, self._account_id, project_id, MODELS[0], _iso(at))
                 for note, spans in planned.notes:
                     # A1: the writer its line gives; a line that gives none, the importer's.
                     writer = planned.writers.get(note.id, self.writer)  # type: ignore[attr-defined]
@@ -494,6 +519,8 @@ class PortableMethods(StoreBase):
         notice = IMPORTED_OWNERS_ONLY if self._user_id is None else IMPORTED_PRIVATE
         if plan.models_said:
             said = IMPORTED_MODELS.format(kept=kept, projects=len(plan.projects))
+            if not plan.decided_said:
+                said = f"{said} {IMPORTED_ALLOWED_UNSAID}"
         else:
             said = IMPORTED_MODELS_UNSAID
         return summary.model_copy(update={"notice": f"{notice} {said}"})
@@ -751,12 +778,16 @@ class _PlannedProject:
     # Whether the archive says the project is at "never" (M4): "allowed" or "never", or None
     # for an archive written before exports carried the choice.
     models: str | None = None
+    # Whether its people chose (Privacy 4): True or False, or None for an archive that does
+    # not say (one written before).
+    decided: bool | None = None
 
 
 @dataclass
 class _Plan:
     projects: list[_PlannedProject]
     models_said: bool = True  # whether the archive says each project's Models choice (M4)
+    decided_said: bool = True  # whether it says which projects' people chose (Privacy 4)
 
     def summary(self) -> ExportSummary:
         return ExportSummary(
@@ -887,6 +918,10 @@ def _plan(entries: dict[str, bytes]) -> _Plan:
     if len(said) > 1:  # an archive cairn writes says it of every project, or of none
         raise ValueError("export.json says the models choice of some projects and not of others")
     plan.models_said = said != {False}
+    decided = {project.decided is not None for project in plan.projects}
+    if len(decided) > 1:
+        raise ValueError("export.json says models_decided of some projects and not of others")
+    plan.decided_said = decided != {False}
     return plan
 
 
@@ -1010,12 +1045,16 @@ def _manifest_project(entry: dict[str, Any]) -> _PlannedProject:
         raise ValueError(
             f"the project {name!r} has a models choice other than {' or '.join(MODELS)}"
         )
+    decided = entry.get("models_decided")
+    if "models_decided" in entry and not isinstance(decided, bool):
+        raise ValueError(f"the project {name!r} has a models_decided other than true or false")
     return _PlannedProject(
         name=name,
         description=_text(entry["description"], f"the description of {name!r}"),
         kind=entry["kind"],
         created_at=_time(entry["created_at"], f"the creation time of {name!r}"),
         models=models,
+        decided=decided,
     )
 
 

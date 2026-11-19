@@ -159,18 +159,18 @@ def test_opt_in_sends_only_a_project_whose_people_chose_allowed(store):
     assert store.get_page(undecided, SLUG).metrics["arranged_by"] == "cairn"  # tidied instead
 
 
-def test_opt_in_with_a_store_that_cannot_say_who_chose_sends_nothing(store):
+def test_opt_in_sends_a_project_once_its_people_chose_allowed_in_the_store(store):
     project_id = page(store, "plain")
     model = Recorder()
     said = arrange_page(store, project_id, SLUG, model, opt_in=True)
     assert said.status == "undecided" and model.requests == []
     assert said.problem == UNDECIDED and said.version == said.previous
-    # The store at this commit records "allowed" as no row: a project switched to never and
-    # back is still undecided to the arranger (the store change the report asks for).
+    # The store records "allowed" as a choice of its own: a project switched to never and back
+    # is chosen, and sent.
     store.set_project_models(project_id, "never")
     store.set_project_models(project_id, "allowed")
-    assert arrange_page(store, project_id, SLUG, model, opt_in=True).status == "undecided"
-    assert model.requests == []
+    assert arrange_page(store, project_id, SLUG, model, opt_in=True).status == "arranged"
+    assert len(model.requests) == 1
 
 
 def test_opt_in_never_sends_a_kept_project_and_still_holds_the_sources(store):

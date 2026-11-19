@@ -125,21 +125,13 @@ def test_the_guides_say_the_opt_in_setting_as_cairn_reads_it(store):
     (done,) = asyncio.run(arranger.run_once())
     assert done.status == "undecided"
     assert store.get_page(undecided, "drift-sync").metrics["arranged_by"] == "cairn"
-    # The other half: a project whose people chose "allowed" is sent, by a store that can say
-    # so (the third item of page_for_model the report asks the store for).
+    # The other half: a project whose people chose "allowed" is sent (the store says so in
+    # page_for_model's third item).
     chosen = page(store, "chosen")
+    store.set_project_models(chosen, "allowed")
     claims = len(store.get_page(chosen, "drift-sync").claims)
     model = FakeModel([json.dumps({"order": list(range(claims, 0, -1)), "same": []})])
-
-    class Chosen:
-        def __getattr__(self, name):
-            return getattr(store, name)
-
-        def page_for_model(self, project_id, slug):
-            found = store.page_for_model(project_id, slug)
-            return None if found is None else (*found, project_id == chosen)
-
-    said = arrange_page(Chosen(), chosen, "drift-sync", model, opt_in=True)
+    said = arrange_page(store, chosen, "drift-sync", model, opt_in=True)
     assert said.status == "arranged" and len(model.requests) == 1
 
 

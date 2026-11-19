@@ -67,8 +67,7 @@ class Compactor:
         self._ticks = ticks  # the monotonic clock every interval is measured on
         self._running = threading.Lock()
         self._began: float | None = None  # on `ticks`: this process's last run that ran
-        self._placed: tuple[str, float] | None = None  # a stored compacted_at, on `ticks`
-        self._ran = False  # the next compacted_at seen is this process's own run's
+        self._placed: tuple[str | None, float] | None = None  # a stored compacted_at, on `ticks`
 
     def due(self) -> bool:
         """A workspace was deleted since the last compaction and the interval has passed
@@ -78,8 +77,9 @@ class Compactor:
         That time is stored, on the wall clock: the first decision that sees it places it on
         the monotonic clock (its age on the wall clock, from 0 for a time later than now up
         to the interval), and every later decision measures from there, so a wall clock that
-        steps afterwards changes nothing; the time of this process's own run is where that
-        run began."""
+        steps afterwards changes nothing. A rewrite of this process's own is placed where its
+        run began, right after it; one by another process (the command line's `compact`) is
+        a time not seen before, placed by its age."""
         if not self.every:
             return False
         now, every = self._ticks(), self.every.total_seconds()
@@ -93,12 +93,8 @@ class Compactor:
         if state.compacted_at is None:
             return True
         if self._placed is None or self._placed[0] != state.compacted_at:
-            if self._ran and self._began is not None:
-                began = self._began
-            else:
-                age = (self._clock() - datetime.fromisoformat(state.compacted_at)).total_seconds()
-                began = now - min(max(age, 0.0), every)
-            self._placed, self._ran = (state.compacted_at, began), False
+            age = (self._clock() - datetime.fromisoformat(state.compacted_at)).total_seconds()
+            self._placed = (state.compacted_at, now - min(max(age, 0.0), every))
         return now - self._placed[1] >= every
 
     def run_once(self) -> bool:
@@ -117,8 +113,9 @@ class Compactor:
                     outcome = f"done ({ONLY_LOG})"
                 else:
                     self._store.compact()
+                    self._place(began)
                     outcome = "done"
-                self._began, self._ran = began, True
+                self._began = began
             except NoRoom as room:  # nothing was changed; the next poll checks again
                 with contextlib.suppress(Exception):
                     access_log.info(
@@ -135,7 +132,8 @@ class Compactor:
                     outcome += f" ({ONLY_LOG})"
                 elif error.rewrote:
                     outcome += " (rewritten; the write-ahead log was not emptied)"
-                self._began, self._ran = began, True  # the next try waits the interval
+                    self._place(began)
+                self._began = began  # the next try waits the interval, not the next poll
             except Exception as error:  # its type only: a message can quote the database
                 outcome, status = f"failed: {type(error).__name__}", 500
             elapsed = (time.perf_counter() - start) * 1000
@@ -149,6 +147,12 @@ class Compactor:
             return status == 200
         finally:
             self._running.release()
+
+    def _place(self, began: float) -> None:
+        """The time the rewrite just made stored (compacted_at), placed where its run began
+        on the monotonic clock; left to `due` to place by its age if it cannot be read."""
+        with contextlib.suppress(Exception):
+            self._placed = (self._store.compaction_state().compacted_at, began)
 
     async def loop(self) -> None:
         """Take the decision every POLL_SECONDS (or the interval, when shorter), and compact

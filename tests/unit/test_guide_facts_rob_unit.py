@@ -203,3 +203,33 @@ def test_the_compaction_runbook_tells_a_rewrite_from_a_try_at_the_log_alone():
     assert "`store.compacted_at` is when the last rewrite began" in said
     assert "each one rewrote the whole database" not in MONITORING
     assert "the first after a deletion rewrote the whole database" in MONITORING
+
+
+def test_the_compact_command_without_room_says_both_numbers_and_exits_1(
+    tmp_path, monkeypatch, capsys
+):
+    """`compact` checks first; without the room it does not rewrite the file (the old
+    versions it removed stay removed), says how many bytes are free and how many a rewrite
+    needs, and exits 1."""
+    from cairn.web import cli
+
+    said = one_line(RUN)
+    assert (
+        "`compact` checks first; without the room it does not rewrite the file (the old"
+        " versions it removed stay removed), says how many bytes are free and how many a"
+        " rewrite needs, and exits 1." in said
+    )
+    db = tmp_path / "cairn.db"
+    store = Store(db)
+    store.delete_account(store.create_account("Gone").id)
+    store.close()
+    monkeypatch.setattr(portable.shutil, "disk_usage", lambda folder: Usage(1, 1, 7))
+    capsys.readouterr()
+    assert cli.main(["compact", "--db", str(db)]) == 1
+    err = capsys.readouterr().err
+    assert re.search(r"the database's disk has 7 bytes free, a rewrite needs \d+", err)
+    store = Store(db)
+    try:
+        assert store.compaction_state().deleted_at is not None
+    finally:
+        store.close()

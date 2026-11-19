@@ -791,7 +791,7 @@ def test_the_runbook_names_the_commit_that_fixed_the_retry_and_how_to_check_the_
     workflow = (REPO / ".github" / "workflows" / "ci-cd.yml").read_text(encoding="utf-8")
     assert "CAIRN_COPY_TAG: sha-${{ github.sha }}" in workflow
     compactor = (REPO / "src" / "cairn" / "web" / "compactor.py").read_text(encoding="utf-8")
-    assert "self._began, self._ran = began, True  # the next try waits the interval" in compactor
+    assert "self._began = began  # the next try waits the interval, not the next poll" in compactor
 
 
 # --- the runbook of host.sh compact -----------------------------------------------------------

@@ -143,6 +143,7 @@ from cairn.store.base import (
     _find_account,
     _iso,
     _require_account,
+    _transaction,
 )
 from cairn.store.memory import (
     _NOTE_COLUMNS,
@@ -525,21 +526,31 @@ class PortableMethods(StoreBase):
         own (base.Readers). Another process writing to the file waits too.
 
         The record (compaction_state): the rewrite and the emptying of the log are kept
-        apart. Before the rewrite, compacted_at is set and the deletion record
-        (store.compact_due) is marked as covered by this rewrite; the rewrite copies both.
-        When the rewrite fails, both go back to what they were and CompactIncomplete
-        (`rewrote` False) says so. When the rewrite succeeded and another connection held
-        the log (a replica service always does), CompactIncomplete with `rewrote` True: the
-        deletion stays recorded, as rewritten, so what stays due is emptying the log
-        (empty_log), never a second rewrite for it. Once the log is emptied the record goes,
-        unless a deletion came meanwhile."""
+        apart. Once VACUUM has returned, under the same hold of the lock and in one
+        transaction, compacted_at is set to when the rewrite began and the deletion record
+        (store.compact_due) is marked as covered by it; a rewrite that did not happen,
+        whatever stopped it, records nothing (CompactIncomplete, `rewrote` False, when the
+        file was busy). When the rewrite succeeded and another connection held the log (a
+        replica service always does), CompactIncomplete with `rewrote` True: the deletion
+        stays recorded, as rewritten, so what stays due is emptying the log (empty_log),
+        never a second rewrite for it. Once the log is emptied the record goes, unless a
+        deletion came meanwhile."""
         if not self._owner:
             raise PermissionError("only the store that opened the database compacts it")
-        self._state.compacting = True  # the health check's longer bound (Store.health)
-        try:
-            self._compact()
-        finally:
-            self._state.compacting = False
+        self._room()
+        began = self._stamp()
+        with self._holding() as con:
+            try:
+                con.execute("VACUUM")
+            except sqlite3.OperationalError as error:
+                raise _incomplete(f"the database could not be compacted: {error}", False) from None
+            with _transaction(con):  # every deletion recorded so far is the rewrite's
+                _set_row(con, COMPACTED_AT, began)
+                con.execute(
+                    "UPDATE settings SET updated_at = ? WHERE account_id = ? AND name = ?",
+                    (REWRITTEN, DEFAULT_ACCOUNT_ID, COMPACT_DUE),
+                )
+        self._empty_log(rewrote=True)
 
     def empty_log(self) -> None:
         """What a rewrite left due (compaction_state().rewritten): copy the write-ahead log
@@ -550,49 +561,25 @@ class PortableMethods(StoreBase):
         call, as compact (PermissionError on any view)."""
         if not self._owner:
             raise PermissionError("only the store that opened the database compacts it")
-        self._state.compacting = True
-        try:
-            self._empty_log(rewrote=False)
-        finally:
-            self._state.compacting = False
+        self._empty_log(rewrote=False)
 
-    def _compact(self) -> None:
-        self._room()
-        with self._write() as con:  # first, so the file holds the record as it will be after
-            before = con.execute(
-                "SELECT value FROM settings WHERE account_id = ? AND name = ?",
-                (DEFAULT_ACCOUNT_ID, COMPACTED_AT),
-            ).fetchone()
-            _set_row(con, COMPACTED_AT, self._stamp())
-            con.execute(  # every deletion recorded so far is the rewrite's (REWRITTEN)
-                "UPDATE settings SET updated_at = ? WHERE account_id = ? AND name = ?",
-                (REWRITTEN, DEFAULT_ACCOUNT_ID, COMPACT_DUE),
-            )
-        try:
-            with self._locked() as con:  # StoreUnusable, not an incomplete compaction
-                try:
-                    con.execute("VACUUM")
-                except sqlite3.OperationalError as error:
-                    raise CompactIncomplete(
-                        f"the database could not be compacted: {error}"
-                    ) from None
-        except CompactIncomplete as error:
-            error.rewrote = False
-            with self._write() as con:  # not rewritten: the record says so again
-                _set_row(con, COMPACTED_AT, before[0] if before else None)
-                con.execute(  # unless a deletion came meanwhile, which stamped its time
-                    "UPDATE settings SET updated_at = value"
-                    " WHERE account_id = ? AND name = ? AND updated_at = ?",
-                    (DEFAULT_ACCOUNT_ID, COMPACT_DUE, REWRITTEN),
-                )
-            raise
-        self._empty_log(rewrote=True)
+    @contextlib.contextmanager
+    def _holding(self) -> Iterator[sqlite3.Connection]:
+        """The writer, under the lock, marked as compacting while it is held (and only
+        then: a compaction waiting for a stuck writer does not lengthen its bound,
+        Store.health)."""
+        with self._locked() as con:  # StoreUnusable, not an incomplete compaction
+            self._state.compacting = True
+            try:
+                yield con
+            finally:
+                self._state.compacting = False
 
     def _empty_log(self, rewrote: bool) -> None:
         """Truncate the write-ahead log; then the record of a deletion the rewrite covered
         goes, and the log is truncated once more for that record's own change (if another
         connection holds it by then, the log keeps that change only)."""
-        with self._locked() as con:
+        with self._holding() as con:
             try:
                 busy = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
             except sqlite3.OperationalError as error:

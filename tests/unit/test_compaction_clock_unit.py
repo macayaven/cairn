@@ -156,3 +156,26 @@ def test_the_slack_loop_waits_on_the_event_loops_monotonic_clock(store):
         assert before <= loop.time() <= time.monotonic()
     finally:
         loop.close()
+
+
+def test_a_rewrite_by_another_process_is_not_taken_for_this_ones(store, db, clocks):
+    """serve rewrites with the log held; the nightly job (another process) rewrites again
+    three hours later and finishes; a deletion follows. The interval runs from the nightly
+    rewrite, not from serve's own."""
+    c = compactor(store, clocks)
+    deleted(store)
+    reader = held_log(db)
+    try:
+        assert c.run_once() is False  # rewritten at T0, the log held
+    finally:
+        reader.close()
+    clocks.wall += timedelta(hours=3)
+    clocks.mono += 3 * HOUR
+    store.compact()  # as `host.sh compact`, from another process
+    deleted(store)
+    clocks.wall += timedelta(hours=21)
+    clocks.mono += 21 * HOUR  # 24 hours since serve's rewrite, 21 since the nightly one
+    assert not c.due()
+    clocks.wall += timedelta(hours=3)
+    clocks.mono += 3 * HOUR
+    assert c.due()

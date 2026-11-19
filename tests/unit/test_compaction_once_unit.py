@@ -169,3 +169,54 @@ def test_what_a_write_waits_for_is_said_with_its_bound(store):
     flat = " ".join(compactor.__doc__.split())
     assert "during a rewrite, the whole of it under the store's lock" in flat
     assert "Reads do not wait" in flat
+
+
+class _Failing:
+    """The store's writer, but VACUUM raises `error`: a rewrite stopped half way."""
+
+    def __init__(self, real, error) -> None:
+        self._real, self._error = real, error
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def execute(self, sql, *args):
+        if sql == "VACUUM":
+            raise self._error
+        return self._real.execute(sql, *args)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("stopped"), sqlite3.OperationalError("busy")])
+def test_a_rewrite_that_did_not_happen_is_never_recorded_as_done(store, monkeypatch, error):
+    """Whatever stops the rewrite (a busy file, or anything else), the record is as it was:
+    the deletion is still due for a rewrite, never taken for one that only needs its log."""
+    deleted(store)
+    before = store.compaction_state()
+    monkeypatch.setattr(store, "_con", _Failing(store._con, error))
+    with pytest.raises(type(error)):
+        store.compact()
+    monkeypatch.undo()
+    assert store.compaction_state() == before
+    assert before.rewritten is False and before.deleted_at is not None
+
+
+def test_compacting_is_never_marked_while_waiting_for_the_writer(store, db, monkeypatch):
+    """The longer bound is for a compaction that holds the writer, not one queued behind a
+    stuck one: at every attempt to take the lock the mark is off."""
+    from cairn.store.base import WriterLock
+
+    seen: list[bool] = []
+    real = WriterLock.acquire
+
+    def acquire(lock, *args, **kwargs):
+        seen.append(store._state.compacting)
+        return real(lock, *args, **kwargs)
+
+    deleted(store)
+    monkeypatch.setattr(WriterLock, "acquire", acquire)
+    with replica(db), pytest.raises(CompactIncomplete):
+        store.compact()
+    with replica(db), pytest.raises(CompactIncomplete):
+        store.empty_log()
+    store.empty_log()
+    assert seen and not any(seen)

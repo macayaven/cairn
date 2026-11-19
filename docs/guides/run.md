@@ -278,7 +278,7 @@ docker exec cairn python -m cairn.server compact --db /data/cairn.db
 
 Its first line says how many versions it removed and by what rule. On a database no `serve` of this version has run on, it removes no version and says so. With plans, each workspace keeps what its plan keeps; a workspace on a plan the plans file does not name keeps every version, and `compact` names it on a line of its own.
 
-A compaction needs twice the database's size free on its disk: a second copy, and as much again as a margin. `compact` checks first; without the room it changes nothing, says how many bytes are free and how many a rewrite needs, and exits 1.
+A compaction needs twice the database's size free on its disk: a second copy, and as much again as a margin. `compact` checks first; without the room it does not rewrite the file (the old versions it removed stay removed), says how many bytes are free and how many a rewrite needs, and exits 1.
 
 After a workspace, a project or a note is deleted, `serve` compacts the database by itself, at most once every `--compact-every` hours (24 by default; `0` never). Each run is one line on its log:
 

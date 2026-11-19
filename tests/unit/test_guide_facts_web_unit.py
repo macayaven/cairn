@@ -291,7 +291,7 @@ def test_a_member_sees_and_ends_only_their_own_agents_and_an_admin_or_owner_all(
         def page(who: str) -> tuple[set[str], set[str]]:
             text = client.get("/agents", headers=cookie(team.sessions[who])).text
             shown = set(re.findall(r"\b(?:ada|brook|cy|dee)-agent\b", text))
-            ends = set(re.findall(r'action="/agents/([^"/]+)/revoke"', text))
+            ends = set(re.findall(r'href="/agents/([^"/]+)/revoke"', text))
             return shown, ends
 
         def end(who: str, grant: str) -> int:

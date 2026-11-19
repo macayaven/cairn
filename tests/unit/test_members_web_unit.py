@@ -211,7 +211,7 @@ def test_an_invite_is_shown_once_and_can_be_revoked(env):
     (pending,) = env.store.list_invites()
     listed = env.client.get("/members", headers=ada).text
     assert "zed@example.test" in listed
-    assert f'action="/members/invites/{pending.id}/revoke"' in listed
+    assert f'href="/members/invites/{pending.id}/revoke"' in listed
     assert send(env, as_(env, env.cy), f"/members/invites/{pending.id}/revoke").status_code == 403
     gone = send(env, ada, f"/members/invites/{pending.id}/revoke")
     assert gone.status_code == 303 and gone.headers["location"] == "/members"

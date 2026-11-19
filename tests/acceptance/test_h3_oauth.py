@@ -655,7 +655,7 @@ def test_connected_agents_are_listed_and_revocable(tmp_path):
         assert first.access not in page.text and world.ada.key not in page.text
         assert (await raw.get("/agents")).status_code == 303  # the page needs a session
 
-        actions = sorted(set(re.findall(r'action="(/agents/[^"/]+/revoke)"', page.text)))
+        actions = sorted(set(re.findall(r'href="(/agents/[^"/]+/revoke)"', page.text)))
         assert len(actions) == 2, actions
         outsider = await brook.http.post(actions[0], headers=SAME_ORIGIN)
         assert outsider.status_code == 404  # another account cannot revoke it
@@ -668,7 +668,7 @@ def test_connected_agents_are_listed_and_revocable(tmp_path):
         assert sorted(results.values()) == [200, 401]  # exactly one grant ended
         ended = first if results["first"] == 401 else second
         assert (await refresh(raw, ended.client_id, ended.refresh)).status_code == 400
-        left = re.findall(r'action="(/agents/[^"/]+/revoke)"', (await ada.http.get("/agents")).text)
+        left = re.findall(r'href="(/agents/[^"/]+/revoke)"', (await ada.http.get("/agents")).text)
         assert left == [actions[1]]
 
     play(tmp_path, scenario)

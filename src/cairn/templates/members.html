@@ -55,9 +55,9 @@
             <option value="{{ role }}"{% if role == member.role %} selected{% endif %}>{{ role }}</option>
             {% endfor %}
           </select>
-          <button type="submit" class="link">Change role</button>
+          <button type="submit" class="link" aria-label="Change the role of {{ member.name }}">Change role</button>
         </form>
-        <form method="post" action="/members/{{ member.user_id|seg }}/remove" class="inline"><button type="submit" class="link">Remove</button></form>
+        <a href="/members/{{ member.user_id|seg }}/remove" aria-label="Remove {{ member.name }}">Remove</a>
       </td>
       {% endif %}
     </tr>
@@ -78,7 +78,7 @@
       <td data-label="Email" class="email">{{ invite.email }}</td>
       <td data-label="Role">{{ invite.role }}</td>
       <td data-label="Until"><time datetime="{{ invite.expires_at }}">{{ invite.expires_at|day }}</time></td>
-      <td data-label="Action" class="act"><form method="post" action="/members/invites/{{ invite.id|seg }}/revoke"><button type="submit" class="link">Revoke</button></form></td>
+      <td data-label="Action" class="act"><a href="/members/invites/{{ invite.id|seg }}/revoke" aria-label="Revoke the invitation for {{ invite.email }}">Revoke</a></td>
     </tr>
   {% endfor %}
   </tbody>

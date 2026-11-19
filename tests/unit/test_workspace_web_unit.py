@@ -77,7 +77,7 @@ def current(html: str) -> list[str]:
     return re.findall(r'href="([^"]+)" aria-current="page"', block)
 
 
-CRUMB = '<p class="meta"><a href="/workspace">Workspace</a> /</p>'
+CRUMB = '<nav class="crumbs" aria-label="Breadcrumb"><a href="/workspace">Workspace</a> /</nav>'
 
 
 def test_the_navigation_marks_where_the_reader_is(env):

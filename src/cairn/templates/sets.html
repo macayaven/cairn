@@ -41,7 +41,7 @@
       <button type="submit" class="quiet">Save</button>
     </div>
   </form>
-  <form method="post" action="/sets/{{ group.id|seg }}/delete"><button type="submit" class="link">Delete the set {{ group.name }}</button></form>
+  <p class="ending"><a href="/sets/{{ group.id|seg }}/delete" aria-label="Delete the set {{ group.name }}">Delete the set {{ group.name }}</a></p>
   {% endif %}
 </section>
 {% endfor %}

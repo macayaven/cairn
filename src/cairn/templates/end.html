@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% from "_components.html" import crumbs %}
+{# The page before an ending a list offers (a key revoked, a person removed, an invitation
+   revoked, an agent disconnected, a set deleted): what ends and what stops working with it,
+   the one form that does it, and the way back. Writes nothing. #}
+{% block title %}{{ title }}{% endblock %}
+{% block main %}
+{{ crumbs(trail) }}
+<h1>{{ title }}</h1>
+{% for sentence in said %}
+<p>{{ sentence }}</p>
+{% endfor %}
+<section class="sheet" aria-label="{{ title }}">
+<form method="post" action="{{ action }}" class="row">
+  <button type="submit" class="danger">{{ button }}</button>
+  <a class="keep" href="{{ back }}">{{ keep }}</a>
+</form>
+</section>
+{% endblock %}

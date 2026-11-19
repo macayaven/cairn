@@ -144,6 +144,20 @@ from cairn.web.templating import _page, brand_of
 from cairn.web.workspace import part
 
 UI_HITS = 30
+# What ends with each ending a list offers, said on the page before it (end.html).
+KEY_ENDS = (
+    "Every script and agent that sends this key stops working at once, and every web session"
+    " opened with it ends."
+)
+MEMBER_ENDS = (
+    "Their sessions here end, and the agents they approved and the keys they made stop"
+    " working, at once."
+)
+MEMBER_KEEPS = "What they wrote stays, and they leave every project's list of people."
+INVITE_ENDS = "The link stops working: {email} cannot join with it."
+AGENT_ENDS = "It stops working at once: its tokens are refused from then on."
+SET_ENDS = "Every key and agent that reaches the set stops reaching its projects."
+SET_KEEPS = "The projects stay as they are."
 KEY_LABEL_MAX = 80  # characters, for a key made in the UI
 _NOT_KEYS_MANAGER = (
     "Only an owner or an admin of this workspace can make or revoke its keys, or change its sets."
@@ -829,6 +843,24 @@ def _ui(request: Request, name: str, status_code: int = 200, **context: Any) -> 
     )
 
 
+def _ended(
+    request: Request,
+    *,
+    title: str,
+    trail: tuple[tuple[str, str], ...],
+    said: tuple[str, ...],
+    action: str,
+    button: str,
+    back: str,
+) -> Response:
+    """The page before an ending a list offers (end.html): `title`, what ends (`said`), the
+    one form, posting to `action`, and the way back to the list at `back`."""
+    return _ui(
+        request, "end.html", title=title, trail=trail, said=said, action=action,
+        button=button, back=back, keep="No, keep it",
+    )  # fmt: skip
+
+
 def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
     """`sign_in`: people sign in through a provider, so the pages speak to them, not to the
     operator of a homelab."""
@@ -929,6 +961,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         return _ui(
             request,
             "setup.html",
+            app_url=app_url,  # this server's own address, or a placeholder without one
             mcp_url=mcp_url,
             public_url=public_url,
             oauth=by_url,
@@ -1009,6 +1042,19 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         page = await run_in_threadpool(key_page, _memory(request), created)
         return _ui(request, "keys.html", **page)
 
+    def ask_revoke_key(request: Request) -> Response:
+        """GET /keys/<label>/revoke: the page before a key is revoked (key_revoke.html), its
+        one form, or both when the key made anything still live (A1). For whoever may manage
+        keys (403 else); 404 for no such key. Writes nothing."""
+        memory = _memory(request)
+        if not may_manage_credentials(memory):
+            raise Forbidden(_NOT_KEYS_MANAGER)
+        label = request.path_params["label"]
+        if not any(key.label == label for key in memory.store.list_keys()):
+            raise NotFound(f"no key labelled {label!r}")
+        made = memory.store.made_by(label)
+        return _ui(request, "key_revoke.html", label=label, made=made, key_ends=KEY_ENDS)
+
     async def revoke_key(request: Request) -> Response:
         """Revoke the keys of a label. A1: when they made anything still live
         (Store.made_by), and the form chose neither "keep" nor "take" in `made`, a page that
@@ -1021,7 +1067,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         if choice not in ("keep", "take"):
             made = await run_in_threadpool(store.made_by, label)
             if made:
-                return _ui(request, "key_revoke.html", label=label, made=made)
+                return _ui(request, "key_revoke.html", label=label, made=made, key_ends=KEY_ENDS)
         revoke = functools.partial(store.revoke_key, label, with_made=choice == "take")
         if not await run_in_threadpool(revoke):
             raise NotFound(f"no key labelled {label!r}")
@@ -1066,6 +1112,25 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         except ValueError as error:
             raise BadRequest(f"That set cannot be changed: {error}.") from None
         return RedirectResponse("/sets", status_code=303)
+
+    def ask_delete_set(request: Request) -> Response:
+        """GET /sets/<id>/delete: the page before a set is deleted. For whoever may manage
+        sets (403 else); 404 for no such set. Writes nothing."""
+        memory = _memory(request)
+        if not may_manage_credentials(memory):
+            raise Forbidden(_NOT_KEYS_MANAGER)
+        found = memory.store.get_set(request.path_params["set"])
+        if found is None or found.id != request.path_params["set"]:
+            raise NotFound(f"no set {request.path_params['set']!r}")
+        return _ended(
+            request,
+            title=f"Delete the set {found.name}",
+            trail=(("/workspace", "Workspace"), ("/sets", "Sets")),
+            said=(SET_ENDS, SET_KEEPS),
+            action=f"/sets/{quote(found.id, safe='')}/delete",
+            button=f"Delete the set {found.name}",
+            back="/sets",
+        )
 
     async def delete_set(request: Request) -> Response:
         store = await managed_store(request)
@@ -1417,6 +1482,69 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         allows = list(limit_sentences(memory.plan[1]).values()) if memory.plan else []
         return _ui(request, "usage.html", usage=memory.usage(), names=USAGE_NAMES, allows=allows)
 
+    def ask_disconnect(request: Request) -> Response:
+        """GET /agents/<grant>/revoke: the page before an agent is disconnected; 404 for an
+        agent the caller does not see on /agents (Store.list_grants). Writes nothing."""
+        grant_id = request.path_params["grant"]
+        found = next((g for g in _memory(request).store.list_grants() if g.id == grant_id), None)
+        if found is None:
+            raise NotFound(f"no connected agent {grant_id!r}")
+        return _ended(
+            request,
+            title=f"Disconnect {found.client_name}",
+            trail=(("/workspace", "Workspace"), ("/agents", "Connected agents")),
+            said=(AGENT_ENDS,),
+            action=f"/agents/{quote(found.id, safe='')}/revoke",
+            button=f"Disconnect {found.client_name}",
+            back="/agents",
+        )
+
+    def ask_remove_member(request: Request) -> Response:
+        """GET /members/<user>/remove (its POST is cairn.web.members'): the page before a
+        person is removed. For whoever manages people (403 else); 404 for no such member.
+        Writes nothing."""
+        from cairn.web.members import NOT_A_MANAGER  # it imports this module
+
+        store = _memory(request).store
+        if not store.manages():
+            raise Forbidden(NOT_A_MANAGER)
+        user_id = request.path_params["user"]
+        found = next((m for m in store.list_members() if m.user_id == user_id), None)
+        if found is None:
+            raise NotFound(f"no member {user_id!r}")
+        return _ended(
+            request,
+            title=f"Remove {found.name}",
+            trail=(("/workspace", "Workspace"), ("/members", "Members")),
+            said=(MEMBER_ENDS, MEMBER_KEEPS),
+            action=f"/members/{quote(found.user_id, safe='')}/remove",
+            button=f"Remove {found.name}",
+            back="/members",
+        )
+
+    def ask_revoke_invite(request: Request) -> Response:
+        """GET /members/invites/<id>/revoke (its POST is cairn.web.members'): the page before
+        an invitation is revoked. For whoever manages people (403 else); 404 for no open
+        invitation. Writes nothing."""
+        from cairn.web.members import NOT_A_MANAGER  # it imports this module
+
+        store = _memory(request).store
+        if not store.manages():
+            raise Forbidden(NOT_A_MANAGER)
+        invite_id = request.path_params["invite"]
+        found = next((i for i in store.list_invites() if i.id == invite_id), None)
+        if found is None:
+            raise NotFound(f"no open invitation {invite_id!r}")
+        return _ended(
+            request,
+            title=f"Revoke the invitation for {found.email}",
+            trail=(("/workspace", "Workspace"), ("/members", "Members")),
+            said=(INVITE_ENDS.format(email=found.email),),
+            action=f"/members/invites/{quote(found.id, safe='')}/revoke",
+            button="Revoke the invitation",
+            back="/members",
+        )
+
     async def disconnect(request: Request) -> Response:
         grant_id = request.path_params["grant"]
         if not await run_in_threadpool(_memory(request).store.revoke_grant, grant_id):
@@ -1434,14 +1562,21 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         Route("/setup", setup),
         Route("/welcome", welcome),
         Route("/agents", agents),
+        Route("/agents/{grant}/revoke", ask_disconnect, methods=["GET"]),
         Route("/agents/{grant}/revoke", disconnect, methods=["POST"]),
         Route("/keys", keys, methods=["GET"]),
         Route("/keys", create_key, methods=["POST"]),
+        Route("/keys/{label:path}/revoke", ask_revoke_key, methods=["GET"]),
         Route("/keys/{label:path}/revoke", revoke_key, methods=["POST"]),
         Route("/sets", sets, methods=["GET"]),
         Route("/sets", create_set, methods=["POST"]),
         Route("/sets/{set}", update_set, methods=["POST"]),
+        Route("/sets/{set}/delete", ask_delete_set, methods=["GET"]),
         Route("/sets/{set}/delete", delete_set, methods=["POST"]),
+        # The pages before removing a person and revoking an invitation; the POSTs that do
+        # them are cairn.web.members'.
+        Route("/members/{user}/remove", ask_remove_member, methods=["GET"]),
+        Route("/members/invites/{invite}/revoke", ask_revoke_invite, methods=["GET"]),
         Route("/audit", audit, methods=["GET"]),
         *compose_routes(),
         *start_routes(mcp_url, oauth=by_url),

@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% from "_components.html" import crumbs %}
 {% block title %}{{ note.title or "Note" }}{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ explorer_stylesheet }}">{% endblock %}
 {% block main %}
-<p class="crumbs"><a href="/b/{{ note.project|seg }}">{{ note.project }}</a> / <a href="{{ graph_link }}">Graph notes</a> /</p>
+{{ crumbs((("/b/" ~ (note.project|seg), note.project), (graph_link, "Graph notes"))) }}
 <h1>{{ note.title or "Note" }}</h1>
 <dl class="facts">
   <dt>source_ref</dt>

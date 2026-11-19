@@ -1360,9 +1360,10 @@ def test_the_agents_page(world):
     assert 'href="/agents"' in browser.get("/workspace").text  # on the workspace page
     grant = connected(world, world.ada)
     page = browser.get("/agents")
-    (action,) = re.findall(r'action="(/agents/[^"/]+/revoke)"', page.text)
+    (action,) = re.findall(r'href="(/agents/[^"/]+/revoke)"', page.text)
     assert "unit-agent" in page.text and grant.access not in page.text
-    assert browser.get(action).status_code == 405
+    asked = browser.get(action)  # the page before it: its one form, and nothing ended
+    assert asked.status_code == 200 and f'action="{action}"' in asked.text
     cross = browser.post(action, headers={"sec-fetch-site": "cross-site"})
     assert cross.status_code == 403 and mcp(world.raw, **bearer(grant.access)).status_code == 200
     unknown = browser.post("/agents/grant_000000000000/revoke", headers=SAME_ORIGIN)

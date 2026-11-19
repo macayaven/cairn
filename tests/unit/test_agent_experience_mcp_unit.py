@@ -277,3 +277,35 @@ def test_no_words_is_never_every_word():
     assert searched(facts)["said"] == NO_WORDS != NOTHING_LEFT_OUT
     one = facts.model_copy(update={"words_searched": 1})
     assert searched(one)["said"] == NOTHING_LEFT_OUT
+
+
+def test_no_refusal_an_agent_can_get_tells_it_to_forget_or_delete(env):
+    """Every refusal sentence the tools can answer with names only what an agent can do:
+    forgetting a note and deleting a project are a person's, never a tool's."""
+    from datetime import date
+
+    from cairn import memory as m
+    from cairn.store.access import READ_ONLY_PROJECT
+    from cairn.store.reach import LIMITED, READ_ONLY
+    from cairn.store.usage import OverLimit
+
+    monthly = OverLimit("notes_per_month", 3, 3, date(2099, 3, 1))
+    sentences = [
+        str(m.FiledOnce("ops", "deploy")),
+        str(m.NoteForgotten("ops")),
+        str(m.PageFull.full("ops", "deploy", 9)),
+        str(m.PageFull.alone(9)),
+        str(m.PageFull.full_chars("ops", "deploy", 9)),
+        str(m.PageFull.alone_chars(9)),
+        str(m.PageFull.kept("ops", "deploy")),
+        str(m.OverQuota(monthly, "free", "Free")),
+        *m._WITHHELD.values(),
+        m.UNWRITABLE, m.OUT_OF_SERVICE, m.HITS_RANGE, m.WAITS, m.NO_PAGE,
+        READ_ONLY, READ_ONLY_PROJECT, LIMITED,
+        refusal(env.client, env.key, "page", project="ops", slug="Deploy"),
+    ]  # fmt: skip
+    for said in sentences:
+        folded = said.casefold()
+        for act in ("forget", "delete", "erase", "remove it"):
+            if act in folded:
+                assert "a person" in folded, said

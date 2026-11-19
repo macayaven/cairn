@@ -36,12 +36,13 @@ Secrets ("secrets" and "secrets+personal"):
   a digit; the others are keys whatever their characters.
 - jwt: a JSON Web Token: three base64url parts, the first two starting "eyJ", signed.
 - cairn_credential: cairn's own OAuth access and refresh tokens.
-- cairn_api_key: cairn's own API keys made since keys have their prefix (KEY_PREFIX and 43
+- server_api_key: cairn's own API keys made since keys have their prefix (KEY_PREFIX and 43
   letters, digits, "_" and "-", capitals and small letters among them). A key made before,
   and a session token, have no prefix and cannot be told from other random text: only
   assigned_secret catches one, when it is assigned to a secret's name.
 - credential_url: a URL with a password in its authority (scheme://user:password@host, any
-  scheme), the password not a placeholder (<password>, ***, ${VAR}, xxxx).
+  scheme), the password not a placeholder (<password>, ***, ${VAR}, xxxx) nor the word
+  documentation writes in its place (password, pass, passwd, pwd, secret).
 - auth_header: an `Authorization: Bearer` or `Authorization: Basic` header (any case, ":" or
   "=", quoted or not) whose value is 8 or more token characters of two kinds at least, and
   not a placeholder or a variable's name (<token>, $TOKEN, YOUR_API_TOKEN).
@@ -253,9 +254,15 @@ def _literal(match: re.Match[str]) -> bool:
     return any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
 
 
+# The words documentation writes where a URL's password goes (postgres://user:password@host).
+_URL_TEMPLATE_WORDS = frozenset({"password", "pass", "passwd", "pwd", "secret"})
+
+
 def _url_password(match: re.Match[str]) -> bool:
-    """A URL's password that is one, not a placeholder (<password>, ***, ${VAR}, xxxx)."""
-    return not _placeholder(match.group("pw"))
+    """A URL's password that is one, not a placeholder (<password>, ***, ${VAR}, xxxx) or the
+    word documentation writes in its place (password, pass, passwd, pwd, secret)."""
+    password = match.group("pw")
+    return not _placeholder(password) and password.lower() not in _URL_TEMPLATE_WORDS
 
 
 def _header_value(match: re.Match[str]) -> bool:
@@ -290,7 +297,7 @@ SECRET_RULES = (
     "model_api_key",
     "jwt",
     "cairn_credential",
-    "cairn_api_key",
+    "server_api_key",
     "credential_url",
     "auth_header",
     "assigned_secret",
@@ -358,7 +365,7 @@ RULES: tuple[Rule, ...] = (
         _compile(rf"(?<![A-Za-z0-9_.-])(?:{_CAIRN_PREFIXES}){_TOKEN_TAIL}(?![A-Za-z0-9_-])"),
     ),
     Rule(
-        "cairn_api_key",
+        "server_api_key",
         "secret",
         _compile(
             rf"(?<![A-Za-z0-9_.-]){re.escape(KEY_PREFIX)}[A-Za-z0-9_-]{{43}}(?![A-Za-z0-9_-])"
@@ -468,7 +475,7 @@ SAID = {
     "model_api_key": "a model provider's API key",
     "jwt": "a signed JSON Web Token",
     "cairn_credential": "a {product} access or refresh token",
-    "cairn_api_key": "a {product} API key",
+    "server_api_key": "a {product} API key",
     "credential_url": "a password in a URL",
     "auth_header": "an Authorization header with its value",
     "assigned_secret": "a value assigned to a name like password, token or API key",

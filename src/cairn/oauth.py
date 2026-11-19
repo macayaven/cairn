@@ -335,7 +335,9 @@ class RateLimit:
 
     def _over(self, hits: deque[float], now: float) -> bool:
         """Whether an address with `hits` is at its limit at `now` (it would be refused).
-        A count holds at most `limit` times, oldest first."""
+        A count holds at most `limit` times, oldest first; a limit below 1 refuses all."""
+        if self._limit < 1:
+            return True
         return len(hits) >= self._limit and hits[-self._limit] > now - self._window
 
     def _victim(self, now: float) -> str:

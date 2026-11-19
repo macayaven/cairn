@@ -276,7 +276,7 @@ NEAR_MISSES = {
     "model_api_key": "sk-" + "a" * 251 + " ",
     "jwt": "eyJ" + "a" * 4096 + ".eyJ" + "a" * 8192 + "." + "a" * 4097 + " ",
     "cairn_credential": "cairn.at." + "a" * 65 + " ",
-    "cairn_api_key": "cairn_" + "a" * 44 + " ",  # one longer than a key is
+    "server_api_key": "cairn_" + "a" * 44 + " ",  # one longer than a key is
     "credential_url": "a" * 31 + "://" + "a" * 128 + ":" + "b" * 257 + " ",  # no "@" after
     "auth_header": "authorization: bearer " + "a" * 4097 + " ",
     "assigned_secret": "password" * 30 + " =        '" + "a" * 300 + " ",  # never closed

@@ -37,7 +37,7 @@ def test_the_default_guard_refuses_what_the_guide_lists():
         " whatever it holds, words and spaces included.",
     )
     key = KEY_PREFIX + secrets.token_urlsafe(32)
-    assert refused(key) == ["cairn_api_key"]
+    assert refused(key) == ["server_api_key"]
     assert refused("postgres://ada" + ":Fable2026works@10.0.0.4/notes") == ["credential_url"]
     assert refused("Authorization: Bearer " + "Zx9Qw3Er7Ty1Ui5O") == ["auth_header"]
     assert refused('password = "the quiet fable ' + 'works at dawn"') == ["assigned_secret"]

@@ -5,6 +5,8 @@ without "+", a labelled date of birth and a labelled medical record number. Each
 built at run time, so this file holds nothing that looks like a live credential, and each
 is one no other rule catches, so a finding names the rule that was added for it."""
 
+import html
+import json
 import secrets
 
 import pytest
@@ -108,14 +110,14 @@ def test_a_new_key_starts_with_the_fixed_prefix_and_the_guard_refuses_one(tmp_pa
     assert key.startswith(KEY_PREFIX) and len(key) == len(KEY_PREFIX) + 43
     assert "." not in key  # so no key can be taken for an access or refresh token
     assert at_line_three(f"CAIRN_API_KEY={key}") != []
-    assert at_line_three(f"the key is {key}, keep it") == [("cairn_api_key", 3)]
-    assert at_line_three(key) == [("cairn_api_key", 3)]
+    assert at_line_three(f"the key is {key}, keep it") == [("server_api_key", 3)]
+    assert at_line_three(key) == [("server_api_key", 3)]
 
 
 @pytest.mark.parametrize("seed", range(20))
 def test_any_key_the_store_could_make_is_refused(seed):
     key = KEY_PREFIX + secrets.token_urlsafe(32)
-    assert ("cairn_api_key", 1) in rules(f"use {key} here")
+    assert ("server_api_key", 1) in rules(f"use {key} here")
 
 
 @pytest.mark.parametrize(
@@ -133,8 +135,8 @@ def test_names_that_only_start_like_a_key_are_left_alone(text):
 
 
 def test_a_rule_for_people_names_the_product():
-    assert rule_words("cairn_api_key") == "a cairn API key"
-    assert rule_words("cairn_api_key", "Knowledge Base") == "a Knowledge Base API key"
+    assert rule_words("server_api_key") == "a cairn API key"
+    assert rule_words("server_api_key", "Knowledge Base") == "a Knowledge Base API key"
     assert "a Knowledge Base API key" in policy_words("secrets", "Knowledge Base")
     assert rule_words("credential_url") == "a password in a URL"
     assert rule_words("auth_header") == "an Authorization header with its value"
@@ -214,7 +216,7 @@ def test_a_finding_of_a_new_rule_holds_no_part_of_what_matched():
         ("credential_url", 1),
         ("auth_header", 2),
         ("assigned_secret", 3),
-        ("cairn_api_key", 4),
+        ("server_api_key", 4),
         ("phone_number", 5),
         ("date_of_birth", 6),
         ("medical_record_number", 7),
@@ -222,3 +224,77 @@ def test_a_finding_of_a_new_rule_holds_no_part_of_what_matched():
     said = " ".join(repr(f) + f.model_dump_json() for f in found)
     for part in (password, ALNUM, "battery", key, "555-0199", "2015", "00482913"):
         assert part not in said
+
+
+def test_a_template_word_for_the_password_in_a_url_is_a_placeholder():
+    """The guide's own example, and documentation like it, is not a credential."""
+    for word in ("password", "PASSWORD", "pass", "passwd", "pwd", "secret"):
+        assert at_line_three(f"postgres://user:{word}@host/db") == [], word
+    assert at_line_three("postgres://user:" + "passw0rd-Fable@host/db") == [("credential_url", 3)]
+
+
+def test_no_new_rule_is_named_after_the_software():
+    """A refusal names its rule over REST and MCP; under a brand only the frozen
+    cairn_credential may name the software (cairn.web.brand)."""
+    from cairn import SOFTWARE
+    from cairn.guard import RULES
+
+    named = [r.name for r in RULES if SOFTWARE in r.name]
+    assert named == ["cairn_credential"]
+
+
+# 4. Through the real answers: REST, the web composer, the audit log
+
+
+@pytest.fixture
+def web(tmp_path):
+    from types import SimpleNamespace
+
+    from starlette.testclient import TestClient
+
+    from cairn.server import create_app
+    from cairn.store import Store
+
+    store = Store(tmp_path / "cairn.db")
+    store.create_project("ops")
+    store.set_setting("guard.policy", "secrets+personal")
+    key = store.create_key("laptop")
+    base = "http://127.0.0.1:8765"
+    with TestClient(create_app(store, public_url=base), base_url=base) as client:
+        yield SimpleNamespace(client=client, store=store, key=key)
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "rule, kind, line",
+    [
+        ("credential_url", "secret", "postgres://quill:" + "S3cur3Pfable@10.0.0.4/works"),
+        ("auth_header", "secret", "Authorization: Bearer " + ALNUM),
+        ("medical_record_number", "personal", "MRN 00482913"),
+        ("date_of_birth", "personal", "DOB: 2015-03-12"),
+    ],
+)
+def test_a_refusal_names_the_rule_and_the_line_never_the_match(web, rule, kind, line):
+    match = line.split(" ", 1)[-1] if " " in line else line
+    note = f"# Notes\n\nSome words.\n{line}\n"
+    r = web.client.post(
+        "/api/projects/ops/notes", headers={"x-api-key": web.key}, json={"text": note}
+    )
+    assert r.status_code == 422
+    assert r.json()["findings"] == [{"rule": rule, "kind": kind, "line": 4}]
+    assert match not in r.text
+    (event, *_) = web.store.list_audit()
+    assert event.action == "note.refused" and event.detail == {"rules": [rule]}
+    assert match not in json.dumps(event.detail)
+    login = web.client.post(
+        "/login",
+        data={"key": web.key},
+        headers={"sec-fetch-site": "same-origin"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 303
+    form = {"text": note.replace("Some words", "Other words"), "project": "ops"}
+    page = web.client.post("/notes", data=form, headers={"sec-fetch-site": "same-origin"})
+    assert page.status_code == 422 and f'data-rule="{rule}"' in page.text
+    # The composer gives the note back as typed, in its text area; nowhere else.
+    assert page.text.count(html.escape(match, quote=False)) <= 1

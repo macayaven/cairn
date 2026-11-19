@@ -26,12 +26,12 @@ address (review, finding 3).
   a transport (cairn.sources.runner.source_client); tests hand in their own.
 """
 
+import asyncio
 import ipaddress
 import socket
 from collections.abc import Awaitable, Callable, Iterable
 from urllib.parse import unquote, urlsplit
 
-import anyio
 import httpx
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -178,8 +178,10 @@ UNRESOLVED = "the source's address could not be resolved"
 
 
 async def system_resolve(host: str, port: int) -> list[str]:
-    """The addresses the system resolves `host` to."""
-    found = await anyio.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    """The addresses the system resolves `host` to (an address written out is given back
+    without a lookup)."""
+    loop = asyncio.get_running_loop()
+    found = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     return [str(info[4][0]) for info in found]
 
 

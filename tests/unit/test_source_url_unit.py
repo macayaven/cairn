@@ -305,3 +305,10 @@ def test_the_security_guide_says_where_a_source_connects():
             source_client(transport=recording()[1], resolve=Resolver({"x.fable.test": ["::"]})),
             "https://x.fable.test/",
         )
+
+
+def test_the_systems_resolver_gives_back_an_address_written_out():
+    """Run with an address, so no name is looked up: the call the client makes in
+    production, without touching DNS."""
+    assert asyncio.run(u.system_resolve("127.0.0.1", 443)) == ["127.0.0.1"]
+    assert "::1" in asyncio.run(u.system_resolve("::1", 443))

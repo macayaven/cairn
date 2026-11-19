@@ -243,3 +243,10 @@ def test_choosing_stops_at_the_first_entry_not_over_its_limit(name, monkeypatch)
     read.clear()
     attempt(20)
     assert len(read) == 1
+
+
+def test_a_registration_limit_of_zero_refuses_all_and_still_has_room():
+    clock = Seconds()
+    limit = oauth.RateLimit(0, 60, clock=clock, max_addresses=2)
+    assert [limit.allow(f"192.0.2.{n}") for n in range(5)] == [False] * 5
+    assert limit.tracked == 2

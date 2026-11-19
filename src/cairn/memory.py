@@ -127,6 +127,7 @@ from cairn.compiler import (
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
 from cairn.plans import Plan, Plans, limit_sentence
+from cairn.sources import KINDS as SOURCE_KINDS
 from cairn.spans import Span, chunk
 from cairn.store import (
     MODELS,
@@ -830,8 +831,6 @@ SLACK_FILED = (
 def source_via() -> frozenset[str]:
     """The `via` of every kind of source (cairn.sources.KINDS), read now: a kind added at
     run time counts."""
-    from cairn.sources import KINDS as SOURCE_KINDS  # the sources' runner imports this module
-
     return frozenset(kind.via for kind in SOURCE_KINDS.values())
 
 

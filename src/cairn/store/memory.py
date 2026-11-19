@@ -29,6 +29,7 @@ from cairn.store.models import (
     Claim,
     Found,
     Note,
+    NoteHead,
     Page,
     PageHead,
     Project,
@@ -716,6 +717,48 @@ class MemoryMethods(StoreBase):
                 (project_id, *self._scope(con)),
             ).fetchall()
         return [_stored_note(row) for row in rows]
+
+    def notes_part(
+        self, project_id: str, limit: int, before: str | None = None
+    ) -> tuple[list[NoteHead], str | None]:
+        """At most `limit` of the project's notes stored before the note `before` (from the
+        newest when None), newest first, each as a NoteHead (never its text); and where the
+        next part starts: the last note's id when the part is full, else None (a full last
+        part's next is empty). Scoped as list_notes: nothing for a project out of reach, and
+        a `before` that is no note of the project starts nothing. One statement, which reads
+        at most `limit` rows whatever the project holds."""
+        with self._read() as con:
+            rows = con.execute(
+                "SELECT notes.id, notes.title, notes.created_at, notes.source_ref, notes.via,"
+                " COALESCE(note_writers.kind, ?), note_writers.name,"
+                " waiting.note_id IS NOT NULL,"
+                " CASE WHEN waiting.note_id IS NULL THEN page_keys.slug END"
+                " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
+                " LEFT JOIN waiting ON waiting.note_id = notes.id"
+                " LEFT JOIN page_keys ON page_keys.project_id = notes.project_id"
+                "  AND page_keys.topic_key = notes.topic_key"
+                f" WHERE notes.project_id = ? AND notes.{_OWN_PROJECT}"
+                " AND (? IS NULL OR notes.seq <"
+                "  (SELECT seq FROM notes AS cut WHERE cut.id = ? AND cut.project_id = ?))"
+                " ORDER BY notes.seq DESC LIMIT ?",
+                (
+                    UNKNOWN_WRITER,
+                    project_id,
+                    *self._scope(con),
+                    before,
+                    before,
+                    project_id,
+                    max(0, limit),
+                ),
+            ).fetchall()
+        heads = [
+            NoteHead(
+                **dict(zip(NoteHead.model_fields, (*row[:7], bool(row[7]), row[8]), strict=True))
+            )
+            for row in rows
+        ]
+        full = limit > 0 and len(heads) == limit
+        return heads, heads[-1].id if full else None
 
     def note_spans(self, note_id: str) -> list[Span]:
         """The note's spans in document order: exactly chunk(note.id, note.text)."""

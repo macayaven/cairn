@@ -708,6 +708,7 @@ NOT_A_FORMAT = "The audit log downloads as csv or json: choose one of them as th
 # A cell a spreadsheet would read as a formula starts with one of these; it is written as text.
 _FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 WEB_PAGES_AT_ONCE = 200  # Q1: the pages a project's page lists at a time, by slug
+WEB_NOTES_AT_ONCE = 50  # UI and UX 8: the notes a project's list of notes shows at a time
 # The limits /usage shows, in order, and what a person reads for each.
 USAGE_NAMES = (
     ("notes_per_month", "Notes written this month"),
@@ -993,6 +994,26 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
             # M4, Privacy 4: "allowed", "never" or None (nobody decided), in one read;
             # whoever sees `rule` may change it
             models=memory.store.models_choices([target.id]).get(target.id),
+        )
+
+    def notes(request: Request) -> Response:
+        """A project's notes, WEB_NOTES_AT_ONCE at a time, newest first (Store.notes_part:
+        never their text): the part before the note `before`, and a link to the older ones.
+        Each links the page it is filed under, or says it waits for one, and, for whoever
+        may forget notes, the page that forgets it."""
+        memory = _memory(request)
+        before = request.query_params.get("before") or None
+        target, heads, older = memory.notes_part(
+            request.path_params["project"], WEB_NOTES_AT_ONCE, before
+        )
+        return _ui(
+            request,
+            "notes.html",
+            project=target,
+            notes=[(head, writer_words(head.writer, head.writer_name)) for head in heads],
+            older=older,
+            before=before,
+            erase=memory.may_erase(target),
         )
 
     def page(request: Request) -> Response:
@@ -1704,6 +1725,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
     return [
         Route("/", _logged("projects", home)),
         Route("/b/{project}", _logged("overview", project)),
+        Route("/b/{project}/notes", _logged("notes", notes), methods=["GET"]),
         Route("/b/{project}/p/{slug}", _logged("page", page)),
         Route("/search", _logged("recall", search)),
         Route("/setup", setup),

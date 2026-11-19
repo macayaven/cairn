@@ -340,6 +340,7 @@ PROJECT_CALLS = {
     "get_note": lambda d: (d["note"],),
     "holds_note": lambda d: (d["api"], "# Retries\n\nQuill retries.\n"),
     "list_notes": lambda d: (d["api"],),
+    "notes_part": lambda d: (d["api"], 10),  # UI and UX 8: a part of the notes
     "note_spans": lambda d: (d["note"],),
     "get_spans": lambda d: ([d["span"]],),
     "spans_within": lambda d: ([d["span"]], 10_000),  # Help's narrow reads

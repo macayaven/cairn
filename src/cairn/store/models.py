@@ -389,6 +389,25 @@ class PageHead(BaseModel):
     updated_at: str
 
 
+class NoteHead(BaseModel):
+    """A note as a project's list of notes shows it (UI and UX, note 8): never its text. Who
+    wrote it by kind and name (cairn.store.audit.WRITER_KINDS, or "unknown" for a note stored
+    before writers were recorded), whether it is still waiting for its page, and the slug of
+    the page its topic is filed under once it is not (None when its topic has no page)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    title: str
+    created_at: str
+    source_ref: str | None
+    via: str | None
+    writer: str
+    writer_name: str | None
+    waiting: bool
+    page: str | None
+
+
 class SearchHit(BaseModel):
     model_config = ConfigDict(frozen=True)
 

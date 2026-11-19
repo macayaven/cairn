@@ -142,6 +142,7 @@ from cairn.store import (
     HeadingsTooLong,
     NameTaken,
     Note,
+    NoteHead,
     NoteRefused,
     Page,
     PageTooLong,
@@ -199,6 +200,7 @@ READ_EVENTS = {
     "recall": "read.search",
     "graph": "read.graph",
     "ask_forget": "read.note",  # the page that shows a note before it is forgotten
+    "notes": "read.notes",  # a part of a project's list of notes (UI and UX 8): no text
 }
 EXPORTED_EVENT = "workspace.exported"  # an export of the workspace's notes and pages
 
@@ -1599,6 +1601,17 @@ class Memory:
             return target, note, self.store.forget_preview(note.id)
         except KeyError:
             raise NotFound(f"no note {note_id!r}") from None
+
+    def notes_part(
+        self, ref: str, limit: int, before: str | None = None
+    ) -> tuple[Project, list[NoteHead], str | None]:
+        """The project and a part of its notes, newest first (Store.notes_part: never their
+        text), and where the next part starts. NotFound for a project unknown or out of reach.
+        With reads audited it is one read.notes event of the project, with no detail."""
+        target = self.project(ref)
+        heads, after = self.store.notes_part(target.id, limit, before)
+        self._read = {}  # the audit event's detail (READ_EVENTS): the project alone
+        return target, heads, after
 
     def overview(
         self, project: str, *, limit: int | None = None, after: str | None = None

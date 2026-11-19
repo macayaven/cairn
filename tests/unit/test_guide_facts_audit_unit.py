@@ -82,6 +82,7 @@ def test_security_reads_are_events_when_the_operator_says(store):
         "read.evidence",
         "read.search",
         "read.graph",
+        "read.notes",  # UI and UX 8: a part of a project's list of notes, which no sentence names
     }
     a_page(store)
     memory = Memory(store, lint_gate)

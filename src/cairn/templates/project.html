@@ -32,7 +32,7 @@
   {% endif %}
   <p class="hint">Agents that use this project are told the same.</p>
 </details>
-<p class="meta"><strong class="mono">{{ pages_total }}</strong> {{ "page" if pages_total == 1 else "pages" }} compiled from <strong class="mono">{{ notes }}</strong> {{ "note" if notes == 1 else "notes" }} · id <span class="mono">{{ project.id }}</span> · <a href="/b/{{ project.name|seg }}/graph">Graph</a>{% if rule %} · <a href="/b/{{ project.name|seg }}/access">Who reaches it</a>{% endif %}{% if erase %} · <a href="/b/{{ project.name|seg }}/delete">Delete this project</a>{% endif %}</p>
+<p class="meta"><strong class="mono">{{ pages_total }}</strong> {{ "page" if pages_total == 1 else "pages" }} compiled from <strong class="mono">{{ notes }}</strong> {{ "note" if notes == 1 else "notes" }} · id <span class="mono">{{ project.id }}</span> · <a href="/b/{{ project.name|seg }}/graph">Graph</a> · <a href="/b/{{ project.name|seg }}/notes">Notes</a>{% if rule %} · <a href="/b/{{ project.name|seg }}/access">Who reaches it</a>{% endif %}{% if erase %} · <a href="/b/{{ project.name|seg }}/delete">Delete this project</a>{% endif %}</p>
 <form class="search" method="get" action="/search" role="search">
   <input type="hidden" name="project" value="{{ project.name }}">
   <input type="search" name="q" placeholder="Search {{ project.name }}" aria-label="Search {{ project.name }}">

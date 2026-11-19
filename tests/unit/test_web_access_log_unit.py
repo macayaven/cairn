@@ -50,6 +50,7 @@ def test_each_web_read_of_memory_is_one_access_record(world, caplog):
         (f"/search?q={CANARY_QUERY}&project=team", "recall", "team"),
         ("/b/team/access", "project_access", "team"),
         ("/b/team/delete", "ask_delete_project", "team"),
+        ("/b/team/notes", "notes", "team"),  # UI and UX 8: the project's list of notes
         (f"/b/team/notes/{note.id}/forget", "ask_forget", "team"),
     ]
     for path, action, project in reads:

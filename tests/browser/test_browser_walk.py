@@ -102,6 +102,7 @@ def test_a_person_walks_from_sign_in_to_sign_out(visit: Visit, axe: Axe):
 
     page.get_by_role("navigation", name="Main").get_by_role("link", name="Workspace").click()
     expect(page.get_by_role("heading", level=1)).to_be_visible()
+    inspect(axe, page, "workspace")
     page.get_by_role("main").get_by_role("link", name="Sources", exact=True).click()
     expect(page.get_by_role("heading", level=1, name="Sources")).to_be_visible()
     inspect(axe, page, "sources")

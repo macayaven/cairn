@@ -432,13 +432,13 @@ def create_app(
     /static/graph-view.css and /b/<project>/graph/notes/<id> are 404. True or False only
     (ValueError otherwise); `app.state.graph_explorer` holds it.
     `slack` (K1; `serve --slack`; cairn.web.slack): the three addresses Slack calls, open paths
-    of Auth with their own protection, and the loop that sweeps and forgets
-    (`app.state.slack_keeper`, started in the lifespan); the set-up and linking addresses of a
-    signed-in browser and the Sources page's block (cairn.slack.setup, cairn.slack.link); the
-    store seals and opens the
-    installs' secrets with its key. It needs `sign_in` and an https:// `public_url`, and a key
-    of 32 bytes (ValueError otherwise, with the sentence `serve` says). None, the default: no
-    route, no block, no table read."""
+    of Auth with their own protection, the set-up and linking addresses of a signed-in
+    browser, the Sources page's block, and the loop that checks bot tokens. The store seals
+    and opens the installs' secrets with its key. Slack needs `sign_in`, an https://
+    `public_url`, and a key of 32 bytes (ValueError otherwise, with the sentence `serve`
+    says). With `slack=None`, the default, the server leaves Slack's routes, block and token
+    checks disabled. The local sweep and forgetting loop
+    (`app.state.slack_keeper`) runs in either case."""
     if type(graph_explorer) is not bool:
         raise ValueError("graph_explorer is True or False")
     if type(audit_reads) is not bool:
@@ -559,7 +559,7 @@ def create_app(
     keeper = (  # K1: the sweep, the bot tokens checked with Slack, the notes due forgotten
         Keeper(store, slack.every, http=slack.http or source_http, api=slack.api)
         if slack is not None
-        else None
+        else Keeper(store)
     )
     told = (  # K1b: what a Slack form came to, said once on the Sources page
         SlackOutcomes(slack.sealer(), now, secure, lambda scope: scope.get(MEMORY))
@@ -608,10 +608,12 @@ def create_app(
                 revoker = Revoker(store, google_connect.custody, app.state.source_http)
                 revoking = asyncio.create_task(revoker.loop())
                 running.push_async_callback(revoker.stopped, revoking)
-            if keeper is not None:  # K1: Slack's sweep, and the notes due to be forgotten
-                keeping = asyncio.create_task(keeper.loop())
-                running.push_async_callback(asyncio.to_thread, keeper.stop)
-                running.push_async_callback(_stopped, keeping)
+            keeping = asyncio.create_task(keeper.loop())
+            running.push_async_callback(asyncio.to_thread, keeper.stop)
+            running.push_async_callback(_stopped, keeping)
+            if slack is not None:
+                checking = asyncio.create_task(keeper.check_loop())
+                running.push_async_callback(_stopped, checking)
             if stats_log is not None:
                 logging_stats = asyncio.create_task(stats_log.loop())
                 # on the way out, last pushed first: the loop is stopped, then a pass that is
@@ -748,7 +750,7 @@ def create_app(
     app.state.credential_failures = failures
     app.state.stats_every = stats_every  # Q1: minutes; None when off
     app.state.graph_explorer = graph_explorer  # G2
-    app.state.slack_keeper = keeper  # K1: None when off
+    app.state.slack_keeper = keeper
     if google_connect is not None:  # the key and the client, for every view made from now on
         store.google_custody = google_connect.custody
     if slack is not None:  # K1: the installs' secrets, for every view made from now on

@@ -38,7 +38,14 @@ from cairn.slack import blocks, people
 from cairn.slack.dispatch import Context, on_action
 from cairn.slack.text import NotText, note_from_message
 from cairn.slack.verify import Envelope
-from cairn.store.slack import FILED, FILING, MESSAGE_TIME, SLACK_ID, TeamChanged
+from cairn.store.slack import (
+    FILED,
+    FILING,
+    MESSAGE_TIME,
+    SLACK_ID,
+    SlackInstallChanged,
+    TeamChanged,
+)
 
 
 def _place(payload: dict) -> tuple[dict, str, str] | None:
@@ -92,6 +99,8 @@ async def _filed(envelope: Envelope, context: Context) -> dict:
             await run_in_threadpool(
                 context.view.release_slack_claim, context.install.id, conversation_id, time
             )
+        except SlackInstallChanged:
+            pass
         except Exception as failed:  # its class only; a claim left is swept in ten minutes
             people.log.warning("slack: a claim was not released: %s", type(failed).__name__)
 

@@ -20,6 +20,7 @@ import uvicorn
 from guide_source import guide_source
 from starlette.testclient import TestClient
 from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, ask, said
+from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle
 from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
 
 import cairn.store.slack as store_slack
@@ -223,9 +224,10 @@ def test_run_slack_keep_the_key_apart_and_losing_it_means_setting_up_again(world
     environment file: a copy of the database holds each workspace's signing secret and bot
     token sealed, and without the key it opens neither. When the key is lost, or changed
     without the old one kept in `CAIRN_SLACK_KEY_PREVIOUS` ([below](#change-a-sealing-key)), no
-    secret sealed with the old one opens, and Slack's requests to the server are refused: each
-    workspace's owner removes Slack on the **Sources** page, sets it up again and pastes both
-    secrets.\""""
+    secret sealed with the old one opens, and Slack's requests to the server are refused.
+    To keep the same Slack workspace and its links and notes, paste both secrets again on the
+    **Sources** page. If the page only asks for the bot token and cannot open the signing
+    secret, remove Slack and set it up again as a last resort.\""""
     says(
         *RUN,
         "Keep the key apart from the database and its backups, as you keep the environment"
@@ -233,10 +235,16 @@ def test_run_slack_keep_the_key_apart_and_losing_it_means_setting_up_again(world
         " sealed, and without the key it opens neither.",
         "When the key is lost, or changed without the old one kept in"
         " `CAIRN_SLACK_KEY_PREVIOUS` ([below](#change-a-sealing-key)), no secret sealed with the"
-        " old one opens, and Slack's requests to the server are refused: each workspace's owner"
-        " removes Slack on the **Sources** page, sets it up again and pastes both secrets.",
+        " old one opens, and Slack's requests to the server are refused.",
+        "To keep the same Slack workspace and its links and notes, paste both secrets again on"
+        " the **Sources** page.",
+        "If the page only asks for the bot token and cannot open the signing secret, remove"
+        " Slack and set it up again as a last resort.",
     )
     install = ready(world)
+    world.view.link_slack_user(install.id, ADA_SLACK, world.owner)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
     held = "\n".join(sqlite3.connect(world.db).iterdump())
     assert SECRET not in held and TOKEN not in held
     assert world.store.slack_inbound(install.id).signing_secret == SECRET
@@ -245,9 +253,13 @@ def test_run_slack_keep_the_key_apart_and_losing_it_means_setting_up_again(world
     assert "secret is None or not verified(" in inspect.getsource(web_slack.slack_routes)  # 401
     assert "remove Slack and set it up again" in setup.REFUSALS["unopened"]
     view = world.store.for_account(world.account, world.owner)  # a view under the new key
-    view.remove_slack_install(install.id)
-    again = ready(world, view=view)  # set up again, both secrets pasted
-    assert again.id == install.id and world.store.slack_inbound(install.id).signing_secret == SECRET
+    again = ready(world, view=view)
+    assert again.id == install.id
+    same_secret = world.store.slack_inbound(install.id).signing_secret == SECRET
+    same_token = view.slack_bot_token(install.id) == TOKEN
+    assert same_secret and same_token
+    assert view.slack_person(install.id, ADA_SLACK).user_id == world.owner
+    assert view.get_note(note) is not None and view.slack_notes_to_forget() is None
 
 
 def test_run_slack_a_backup_taken_before_a_removal_still_holds_what_came_through(world):  # noqa: F811
@@ -839,19 +851,42 @@ def test_privacy_when_the_app_is_removed(world):  # noqa: F811
 
 
 def test_privacy_what_was_there_before_slack_is_not_slacks_to_forget(bench):
-    """privacy.md: "A note typed in Slack, or a message filed, whose text the project already
-    held stores nothing new and records nothing: what was there before Slack is not Slack's to
-    forget.\""""
+    """privacy.md: "When the project already holds a note with the same text and
+    `source_ref`, typing it again stores no new note or Slack record. Filing a matching message
+    records a tie to the existing note. Removing Slack deletes the tie and leaves the note in
+    place.\""""
     says(
         *PRIVACY,
-        "A note typed in Slack, or a message filed, whose text the project already held stores"
-        " nothing new and records nothing: what was there before Slack is not Slack's to forget.",
+        "When the project already holds a note with the same text and `source_ref`, typing it"
+        " again stores no new note or Slack record.",
+        "Filing a matching message records a tie to the existing note.",
+        "Removing Slack deletes the tie and leaves the note in place.",
     )
     bench.link(ADA_SLACK, bench.ada, bench.library)
     bench.owner.add_note(bench.library.id, "Row 4 holds the quince jars.", via="web")
     assert said(ask(bench, "note Row 4 holds the quince jars.")).startswith("Filed: ")
     assert len(bench.notes()) == 1
     assert bench.store._con.execute("SELECT COUNT(*) FROM slack_notes").fetchone() == (0,)
+    message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100", "text": "Row 4."}
+    bench.users[CEDAR] = cedar()
+    draft = note_from_message(
+        message, team_id=TEAM, team_domain="fable-works", conversation_id=CONVERSATION,
+        author="Cedar Quill", names={CEDAR: "Cedar Quill"},
+    )  # fmt: skip
+    different, _ = bench.owner.add_note(
+        bench.library.id, draft.text, title=draft.title, source_ref="doc:fable"
+    )
+    matching, _ = bench.owner.add_note(
+        bench.library.id, draft.text, title=draft.title, source_ref=draft.source_ref
+    )
+    handle(bench, message)
+    assert len(bench.notes()) == 3
+    tie = bench.store._con.execute("SELECT note_id, owns, forget_at FROM slack_notes").fetchall()
+    assert tie == [(matching.id, 0, None)]
+    bench.owner.remove_slack_install(bench.install.id)
+    assert bench.store._con.execute("SELECT COUNT(*) FROM slack_notes").fetchone() == (0,)
+    assert bench.owner.slack_notes_to_forget() is None
+    assert all(bench.owner.get_note(note.id) is not None for note in (different, matching))
 
 
 def test_privacy_a_token_slack_ended_is_removed_three_days_later(world):  # noqa: F811

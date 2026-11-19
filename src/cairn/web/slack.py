@@ -58,27 +58,23 @@ The three addresses Slack calls (`slack_routes`)
   9. cairn.slack.dispatch answers the rest; this module registers what it owns:
      `app_uninstalled` (Store.remove_slack_install, D10) and `tokens_revoked` naming the
      install's bot (Store.revoke_slack_bot); another user's token revoked changes nothing.
-- A refusal writes nothing. Each request is one record on the access log (cairn.access):
+- Each write checks the sealed signing secret used to verify the request in its own
+  transaction. A callback for an installation that has since changed is acknowledged.
+- A refusal writes nothing. Each request is recorded on the access log (cairn.access):
   its action (ACTIONS: slack_event, slack_command, slack_action), the install and the
   status, under the actor kind "slack"; never the body, a secret, the signature or a header.
-- What verifying costs is counted in statements: one read of the install by its id, then a
-  write for a challenge or an event's id (and one more to forget the id of an event whose
-  handler failed), whatever the workspace holds.
+- What verifying costs is counted in statements: one read of the install by its id, then
+  one indexed generation check in each write, whatever the workspace holds.
 
-The loop (Keeper): started in the app's lifespan with the switch on, a pass at start and then
-every `Slack.every` seconds. First, on the event loop, Slack is asked whether each bot token
-still works (auth.test, at most once every 6 hours for one install, at most 20 installs a
-pass, each within 5 seconds): two answers in a row that say Slack ended it do what
-tokens_revoked does, and anything else changes nothing. Then, on a worker thread:
+The local loop (Keeper) runs in the app's lifespan, with or without the Slack switch.
+At start and then on each pass, on a worker thread:
 Store.sweep_slack (offers past their time, event ids older than a day, claims never filed),
 every install whose bot token Slack ended more than 3 days ago removed as an owner removes
-it (Store.remove_gone_slack_installs), and every note whose day to be forgotten came
-(Store.slack_notes_due) forgotten with cairn's own forgetting (Store.forget_note, H5b) by a
-view of its workspace acting for no person. A check, a note or a pass that fails is logged by
-its error's class and the next one is done. Clocks: the one interval the loop keeps in memory
-is its wait between passes (asyncio.sleep, which the event loop measures on a monotonic
-clock); when an install was last checked, and the days before removal and forgetting, are
-stored in the database as wall-clock times."""
+it (Store.remove_gone_slack_installs), and a batch of notes whose days came forgotten by a
+view acting for no person. A pass continues from the previous batch, then wraps so any
+failed notes are tried again. Only with the switch on, a separate loop checks Slack's bot
+tokens. The wait between passes uses a monotonic clock; checks and deadlines use wall
+times recorded in the database."""
 
 import argparse
 import asyncio
@@ -120,8 +116,16 @@ from cairn.slack.verify import (
     read_body,
     verified,
 )
+from cairn.store import Store
 from cairn.store.hosted import KEY_BYTES, Sealer, previous_keys
-from cairn.store.slack import ACCEPTING, ENDED
+from cairn.store.slack import (
+    ACCEPTING,
+    DUE_AT_ONCE,
+    ENDED,
+    SlackGeneration,
+    SlackInbound,
+    SlackInstallChanged,
+)
 from cairn.web.brand import product_of
 from cairn.web.templating import NO_PAGE, _page, brand_of
 
@@ -394,24 +398,18 @@ def _logged(action: str, install: str, status: int) -> None:
 
 @dataclass(frozen=True)
 class Desk:
-    """What the addresses get of the store (as Accounts.ledger hands OAuth its part): the
-    install a request names, the challenge answered, an event seen, an event forgotten again
-    (its handler failed), and a view of a workspace acting for no person."""
+    """The installation a request names and the server's view bound to its generation."""
 
-    inbound: Callable[[str], Any]
-    verified: Callable[[str], Any]
-    seen: Callable[[str, str], bool]
-    view: Callable[[str], Any] = field(repr=False)
-    forget: Callable[[str, str], Any] = field(repr=False)
+    inbound: Callable[[str], SlackInbound | None]
+    for_callback: Callable[[SlackGeneration], Store] = field(repr=False)
 
 
-def desk_of(store: Any) -> Desk:
+def desk_of(store: Store) -> Desk:
     return Desk(
         inbound=store.slack_inbound,
-        verified=store.slack_install_verified,
-        seen=store.slack_event_seen,
-        view=lambda account_id: store.for_account(account_id).acting_as("system", None),
-        forget=lambda install_id, event_id: store.forget_slack_event(install_id, event_id),
+        for_callback=lambda generation: store.acting_as("system", None)._slack_checked_view(
+            generation.require
+        ),
     )
 
 
@@ -477,20 +475,40 @@ def slack_routes(
         if install.state == "off" and (found.type == CHALLENGE or found.name not in OFF_EVENTS):
             _logged(action, install_id, 200)  # off: acknowledged, and nothing is done
             return Response(status_code=200)
+        generation = inbound.generation
+        assert generation is not None  # the verified secret was opened from this stored value
+        ledger = desk.for_callback(generation)
         if found.type == CHALLENGE:
-            await run_in_threadpool(desk.verified, install.id)
+            with contextlib.suppress(SlackInstallChanged):
+                await run_in_threadpool(ledger.slack_install_verified, install.id)
             _logged(action, install_id, 200)
             return PlainTextResponse(found.payload["challenge"])
-        if found.event_id is not None and not await run_in_threadpool(
-            desk.seen, install.id, found.event_id
-        ):
-            _logged(action, install_id, 200)  # done once already
+        event_id = found.event_id
+        try:
+            first = event_id is None or await run_in_threadpool(
+                ledger.slack_event_seen, install.id, event_id
+            )
+        except SlackInstallChanged:
+            first = False
+        if not first:
+            _logged(action, install_id, 200)
             return Response(status_code=200)
-        view = await run_in_threadpool(desk.view, install.account_id)
+        try:
+            view = await run_in_threadpool(ledger.for_account, install.account_id)
+        except KeyError:  # the workspace was deleted after verification
+            _logged(action, install_id, 200)
+            return Response(status_code=200)
+
+        def for_person(user_id: str) -> Memory | None:
+            memory = memory_for(install.account_id, user_id)
+            if memory is not None:
+                memory.store = memory.store._slack_checked_view(generation.require)
+            return memory
+
         context = Context(
             install=install,
             view=view,
-            memory_for=lambda user_id: memory_for(install.account_id, user_id),
+            memory_for=for_person,
             http=http,
             public_url=public_url,
             now=now,
@@ -501,17 +519,21 @@ def slack_routes(
         )
         try:
             answer = await dispatch(found, context)
+        except SlackInstallChanged:
+            answer = Response(status_code=200)
         except Exception as failed:  # its class only: a message can quote what a person wrote
             log.warning("slack: a handler failed: %s", type(failed).__name__)
-            if found.event_id is not None:  # so that Slack's next delivery runs it again
+            status = 500
+            if event_id is not None:  # so that Slack's next delivery runs it again
                 try:
-                    await run_in_threadpool(desk.forget, install.id, found.event_id)
+                    await run_in_threadpool(ledger.forget_slack_event, install.id, event_id)
+                except SlackInstallChanged:
+                    status = 200
                 except Exception as unforgotten:
                     log.warning(
                         "slack: a failed event was not forgotten: %s", type(unforgotten).__name__
                     )
-            _logged(action, install_id, 500)
-            return Response(status_code=500)
+            answer = Response(status_code=status)
         _logged(action, install_id, answer.status_code)
         return answer
 
@@ -541,7 +563,7 @@ async def _revoked(found: Any, context: Context) -> None:
 
 
 class Keeper:
-    """The background loop (the module). `check()`: on the event loop, before each pass, the
+    """The background loops (the module). `check()`: on the event loop,
     installs whose bot token is due a check (Store.take_slack_checks: those that hold one, at
     most once every CHECK_EVERY for one install, at most CHECKS_AT_ONCE in one pass) are each
     asked of Slack with auth.test (SlackClient.auth_test), through one short-lived client from
@@ -550,15 +572,15 @@ class Keeper:
     anything else (a timeout, no connection, 429, a 5xx, another error, not JSON) "unclear".
     How many were asked; without `http`, none. `run_once()`: one pass on a worker thread,
     never two at once, none once stopped: Store.sweep_slack, Store.remove_gone_slack_installs,
-    then every note due forgotten; (rows swept, notes forgotten), or None when it did not run
-    or failed. A check or a note that fails is logged by its error's class and the next one is
-    done; no token, note text or database text is in a log line."""
+    then one batch of notes due forgotten. Returns (rows swept, notes forgotten), or None
+    when the pass did not run or failed. A failed check or note logs only its error's class
+    and the next one is done."""
 
     CHECK_WITHIN = 5.0  # seconds one check of a bot token takes in all
 
     def __init__(
         self,
-        store: Any,
+        store: Store,
         every: float = KEEP_EVERY,
         wait: Callable[[float], Any] | None = None,
         *,
@@ -571,7 +593,9 @@ class Keeper:
         self._http = http
         self._api = api
         self._running = threading.Lock()
+        self._checking = threading.Lock()
         self._stopped = threading.Event()
+        self._after: tuple[str, str] | None = None
 
     async def check(self) -> int:
         if self._http is None or self._stopped.is_set():
@@ -603,9 +627,9 @@ class Keeper:
         return asked
 
     def _held(self, call: Callable[..., Any], *args: Any) -> Any:
-        """`call` on this worker thread while holding the pass's lock, so stop() waits for
+        """`call` on this worker thread while holding the check's lock, so stop() waits for
         it; None, and nothing called, once stopped."""
-        with self._running:
+        with self._checking:
             return None if self._stopped.is_set() else call(*args)
 
     async def _ask(self, slack: SlackClient, token: str) -> str:
@@ -619,17 +643,23 @@ class Keeper:
         return "works"
 
     def run_once(self) -> tuple[int, int] | None:
-        if self._stopped.is_set() or not self._running.acquire(blocking=False):
+        if not self._running.acquire(blocking=False):
             return None
         try:
+            if self._stopped.is_set():
+                return None
             swept = self._store.sweep_slack()
             self._store.remove_gone_slack_installs()
             forgotten = 0
-            for account_id, note_id in self._store.slack_notes_due():
+            batch = self._store._slack_due_notes(after=self._after)
+            self._after = (
+                (batch[-1].forget_at, batch[-1].note_id) if len(batch) == DUE_AT_ONCE else None
+            )
+            for note in batch:
                 try:
-                    self._store.for_account(account_id).forget_note(note_id)
-                    forgotten += 1
-                except KeyError:  # the note or its workspace is gone, its record with it
+                    view = self._store.for_account(note.account_id)
+                    forgotten += view._forget_slack_note(note)
+                except KeyError:  # the workspace is gone, its records with it
                     pass
                 except Exception as failed:  # its class only; the others are still forgotten
                     log.warning("slack: a note was not forgotten: %s", type(failed).__name__)
@@ -642,14 +672,18 @@ class Keeper:
 
     async def loop(self) -> None:
         while True:
-            await self.check()  # never raises: what fails is logged by its class
             await asyncio.to_thread(self.run_once)
             await self.wait(self.every)
 
+    async def check_loop(self) -> None:
+        while True:
+            await self.check()
+            await self.wait(self.every)
+
     def stop(self) -> None:
-        """No pass starts from now on, and one running ends before this returns."""
+        """Stop new work and wait for any store call still running."""
         self._stopped.set()
-        with self._running:
+        with self._running, self._checking:
             pass
 
 

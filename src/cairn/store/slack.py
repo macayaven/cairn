@@ -108,18 +108,24 @@ table is exported (cairn.store.portable); a deleted workspace, a removed person,
 project and a forgotten note each take their rows with them (cairn.store.accounts, people,
 erasure)."""
 
+import copy
 import hashlib
 import hmac
 import json
 import re
 import secrets
 import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from cairn.store.base import StoreBase, _iso, _require_account
 from cairn.store.hosted import Sealer
+
+if TYPE_CHECKING:
+    from cairn.store import Store
 
 INSTALL_ID = re.compile(r"sl_[0-9a-f]{12}")
 STATES = ("pending", "ready", "on", "off", "removed")
@@ -174,6 +180,10 @@ class TeamChanged(ValueError):
         super().__init__("this install's Slack team is no longer the one this was written for")
 
 
+class SlackInstallChanged(Exception):
+    """The installation that verified the callback has since changed."""
+
+
 class NotItsTeam(ValueError):
     """Secrets of another Slack team than the one an install that is ready, on or off holds:
     the install belongs to its team, so nothing is written; connecting another Slack team
@@ -223,12 +233,30 @@ class SlackInstall:
 
 
 @dataclass(frozen=True)
+class SlackGeneration:
+    """The sealed signing secret changes at each set-up or credential replacement."""
+
+    install_id: str
+    account_id: str
+    sealed: str = field(repr=False)
+
+    def require(self, con: sqlite3.Connection) -> None:
+        row = con.execute(
+            "SELECT 1 FROM slack_installs WHERE id = ? AND account_id = ? AND signing_secret = ?",
+            (self.install_id, self.account_id, self.sealed),
+        ).fetchone()
+        if row is None:
+            raise SlackInstallChanged()
+
+
+@dataclass(frozen=True)
 class SlackInbound:
     """What a request to one of the three addresses needs: the install, and its signing
     secret opened (None: none held, or it does not open under this key)."""
 
     install: SlackInstall
     signing_secret: str | None = field(repr=False)
+    generation: SlackGeneration | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -276,6 +304,20 @@ class SlackDue:
     install_id: str
     notes: int
     at: datetime
+
+
+class SlackForgetting(NamedTuple):
+    """One owned note and the deadline and installation seen when it was selected."""
+
+    account_id: str
+    note_id: str
+    install_id: str
+    made_at: str
+    forget_at: str
+
+
+class _ForgettingCancelled(Exception):
+    """The selected note is no longer eligible for this erasure."""
 
 
 _INSTALL_COLUMNS = (
@@ -353,6 +395,26 @@ def _when(text: str) -> datetime:
 
 class SlackMethods(StoreBase):
     slack_sealer: Sealer | None = None  # set on the root store by create_app; views copy it
+    _slack_view_check: Callable[[sqlite3.Connection], None] | None = None
+
+    def _slack_checked_view(self, check: Callable[[sqlite3.Connection], None]) -> "Store":
+        """A request's view, with a condition checked inside every write it makes."""
+        view = copy.copy(self)
+        view._owner = False
+        view._slack_view_check = check
+        return cast("Store", view)
+
+    def _check_slack_view(self, con: sqlite3.Connection) -> None:
+        if self._slack_view_check is not None:
+            self._slack_view_check(con)
+
+    @contextmanager
+    def _write(self, **options: bool) -> Iterator[sqlite3.Connection]:
+        # BEGIN IMMEDIATE is already held, so no other writer can change the checked row
+        # before the operation commits. This also covers a note's separate page save.
+        with super()._write(**options) as con:
+            self._check_slack_view(con)
+            yield con
 
     def _slack_sealer(self) -> Sealer:
         if self.slack_sealer is None:
@@ -390,6 +452,8 @@ class SlackMethods(StoreBase):
             stamp = self._stamp()
             if row is not None:
                 install_id = row[0]
+                # Distinguish set-ups even if the wall clock has stayed put or gone back.
+                stamp = max(stamp, _iso(_when(row[9]) + timedelta(microseconds=1)))
                 con.execute(
                     "UPDATE slack_installs SET state = 'pending', command = ?, made_by = ?,"
                     " made_at = ?, checked_at = NULL, dead_checks = 0, bot_gone_at = NULL"
@@ -572,6 +636,7 @@ class SlackMethods(StoreBase):
         it does not open under this key. KeyError: no such install here; NoSlackKey."""
         sealer = self._slack_sealer()
         with self._read() as con:
+            self._check_slack_view(con)
             self._slack_row(con, install_id)
             (sealed,) = con.execute(
                 "SELECT bot_token FROM slack_installs WHERE id = ?", (install_id,)
@@ -594,11 +659,13 @@ class SlackMethods(StoreBase):
         if row is None:
             return None
         install = _install(row[:14])
+        sealed = row[14]
         secret = None
-        if row[14] is not None and self.slack_sealer is not None:
+        if sealed is not None and self.slack_sealer is not None:
             associated = _associated("signing_secret", install.id, install.account_id)
-            secret = self.slack_sealer.open(row[14], associated)
-        return SlackInbound(install, secret)
+            secret = self.slack_sealer.open(sealed, associated)
+        generation = SlackGeneration(install.id, install.account_id, sealed) if sealed else None
+        return SlackInbound(install, secret, generation)
 
     # Notes, and forgetting them (D10)
 
@@ -789,15 +856,58 @@ class SlackMethods(StoreBase):
     def slack_notes_due(self, limit: int = DUE_AT_ONCE) -> list[tuple[str, str]]:
         """The server's: (workspace, note) of each note whose time to be forgotten came, the
         oldest first, at most `limit`."""
+        return [(note.account_id, note.note_id) for note in self._slack_due_notes(limit=limit)]
+
+    def _slack_due_notes(
+        self, *, limit: int = DUE_AT_ONCE, after: tuple[str, str] | None = None
+    ) -> list[SlackForgetting]:
+        """One page of eligible notes, ordered by deadline then note id."""
+        position = " AND (n.forget_at, n.note_id) > (?, ?)" if after is not None else ""
         with self._read() as con:
             found = con.execute(
-                "SELECT slack_installs.account_id, slack_notes.note_id FROM slack_notes"
-                " JOIN slack_installs ON slack_installs.id = slack_notes.install_id"
-                " WHERE forget_at IS NOT NULL AND forget_at <= ? AND note_id IS NOT NULL"
-                " AND owns = 1 ORDER BY forget_at, note_id LIMIT ?",
-                (self._stamp(), limit),
+                "SELECT i.account_id, n.note_id, n.install_id, i.made_at, n.forget_at"
+                " FROM slack_notes AS n JOIN slack_installs AS i ON i.id = n.install_id"
+                " WHERE n.forget_at <= ? AND n.note_id IS NOT NULL AND n.owns = 1"
+                f"{position} ORDER BY n.forget_at, n.note_id LIMIT ?",
+                (self._stamp(), *(after or ()), limit),
             ).fetchall()
-        return [(account, note) for account, note in found]
+        return [SlackForgetting(*row) for row in found]
+
+    def _require_slack_forget_owner(self, con: sqlite3.Connection) -> None:
+        if self._user_id is not None and self._role_in(con) != "owner":
+            raise PermissionError(NOT_AN_OWNER)
+
+    def _forget_slack_note(self, note: SlackForgetting, *, now: bool = False) -> bool:
+        """Forget only while Slack still owns the note under the selected deadline."""
+
+        def still_due(con: sqlite3.Connection) -> None:
+            params: tuple[str, ...] = (
+                note.note_id,
+                note.install_id,
+                self._account_id,
+                note.made_at,
+                note.forget_at,
+            )
+            if now:
+                self._require_slack_forget_owner(con)
+                condition = "i.state = 'removed'"
+            else:
+                condition = "n.forget_at <= ?"
+                params += (self._stamp(),)
+            row = con.execute(
+                "SELECT 1 FROM slack_notes AS n JOIN slack_installs AS i ON i.id = n.install_id"
+                " WHERE n.note_id = ? AND n.install_id = ? AND i.account_id = ?"
+                f" AND i.made_at = ? AND n.forget_at = ? AND n.owns = 1 AND {condition}",
+                params,
+            ).fetchone()
+            if row is None:
+                raise _ForgettingCancelled()
+
+        try:
+            self._slack_checked_view(still_due).forget_note(note.note_id)
+        except (_ForgettingCancelled, KeyError):  # a cancelled deadline or a note gone already
+            return False
+        return True
 
     def forget_slack_notes_now(self, install_id: str) -> int:
         """ "Forget them now": every note of the removed install that is due to be forgotten,
@@ -805,27 +915,20 @@ class SlackMethods(StoreBase):
         KeyError; ValueError (the install is not removed); PermissionError for anyone but an
         owner or a view acting for no person, who may forget any note of the workspace."""
         with self._read() as con:
-            if self._user_id is not None and self._role_in(con) != "owner":
-                raise PermissionError(NOT_AN_OWNER)
-            if self._slack_row(con, install_id)[2] != "removed":
+            self._require_slack_forget_owner(con)
+            install = _install(self._slack_row(con, install_id))
+            if install.state != "removed":
                 raise ValueError("only a removed install's notes are forgotten")
             notes = [
-                note
-                for (note,) in con.execute(
-                    "SELECT note_id FROM slack_notes WHERE install_id = ?"
+                SlackForgetting(self._account_id, note_id, install_id, install.made_at, deadline)
+                for note_id, deadline in con.execute(
+                    "SELECT note_id, forget_at FROM slack_notes WHERE install_id = ?"
                     " AND forget_at IS NOT NULL AND note_id IS NOT NULL AND owns = 1"
                     " ORDER BY note_id",
                     (install_id,),
                 )
             ]
-        forgotten = 0
-        for note in notes:
-            try:
-                self.forget_note(note)
-                forgotten += 1
-            except KeyError:  # forgotten meanwhile: its record went with it
-                pass
-        return forgotten
+        return sum(self._forget_slack_note(note, now=True) for note in notes)
 
     # The bot token checked with Slack, and an install whose token Slack ended
 
@@ -958,6 +1061,7 @@ class SlackMethods(StoreBase):
     def slack_person(self, install_id: str, slack_user_id: str) -> SlackPerson | None:
         """The person the install's Slack user is linked to, with their project; None."""
         with self._read() as con:
+            self._check_slack_view(con)
             self._slack_row(con, install_id)
             return self._person(con, install_id, slack_user_id)
 

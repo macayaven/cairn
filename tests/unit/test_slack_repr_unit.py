@@ -19,7 +19,16 @@ INSTALL = SlackInstall(
     made_by=None, made_at="2031-03-04T09:00:00.000000+00:00", removed_at=None,
     holds_secrets=True, holds_bot_token=True,
 )  # fmt: skip
-SECRET_NAMES = ("key", "signing_secret", "bot_token", "token", "secret", "payload", "view")
+SECRET_NAMES = (
+    "key",
+    "signing_secret",
+    "sealed",
+    "bot_token",
+    "token",
+    "secret",
+    "payload",
+    "view",
+)
 
 
 def test_the_switch_does_not_print_its_key():

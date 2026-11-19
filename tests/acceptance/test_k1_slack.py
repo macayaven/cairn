@@ -95,6 +95,7 @@ import json
 import logging
 import sqlite3
 import zipfile
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -111,6 +112,7 @@ from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.slack import dispatch
 from cairn.store import Claim, Store
+from cairn.store.hosted import Sealer
 from cairn.web import slack as web_slack
 from cairn.web.slack import KEY_VARIABLE, Keeper, Slack
 from cookie_names import session_cookie
@@ -870,6 +872,101 @@ def test_a_failed_event_whose_id_cannot_be_forgotten_is_still_500_and_logged_by_
         "slack: a handler failed: OperationalError",
         "slack: a failed event was not forgotten: OperationalError",
     ]
+
+
+@pytest.mark.parametrize("change", ["reinstall", "replace_secrets"])
+@pytest.mark.parametrize("callback", ["app_uninstalled", "tokens_revoked", "challenge"])
+def test_verified_lifecycle_callback_leaves_the_replacement_alone(
+    world, monkeypatch, change, callback
+):
+    install = world.install()
+    replacements = []
+
+    def replace():
+        with closing(Store(world.db, clock=world.clock)) as other:
+            other.slack_sealer = Sealer(KEY)
+            view = other.for_account(world.ada.account_id, world.ada.id)
+            team = TEAM
+            if change == "reinstall":
+                view.remove_slack_install(install.id)
+                team = OTHER_TEAM
+            new = world.install(secret=OTHER_SECRET, token=OTHER_TOKEN, team=team, view=view)
+            assert new.id == install.id
+            view.link_slack_user(new.id, ADA_SLACK, world.ada.id)
+            note, _ = view.add_note(world.project.id, "The quill is on the desk.")
+            view.record_slack_note(new.id, note.id, how="typed", brought_by=world.ada.id)
+            replacements.append((new, the_state(world, new.id)))
+
+    if callback == "challenge":
+        check = web_slack.verified
+
+        def after_verifying(*args):
+            valid = check(*args)
+            if valid:
+                replace()
+            return valid
+
+        monkeypatch.setattr(web_slack, "verified", after_verifying)
+        body, reply = challenge("fable-check"), b"fable-check"
+    else:
+        method = "remove_slack_install" if callback == "app_uninstalled" else "revoke_slack_bot"
+        write = getattr(Store, method)
+
+        def before_writing(self, *args, **kwargs):
+            if self._con is world.store._con:
+                replace()
+            return write(self, *args, **kwargs)
+
+        monkeypatch.setattr(Store, method, before_writing)
+        body, reply = event(callback, "Ev0STALE001", **revoked()), b""
+
+    response = world.post(install.id, "events", body)
+    assert (response.status_code, response.content) == (200, reply)
+    [(new, state)] = replacements
+    assert world.ada.view.get_slack_install() == new
+    assert the_state(world, new.id) == state
+
+
+def test_replaced_signing_secret_cannot_admit_an_event(world, monkeypatch):
+    install = world.install()
+    check = web_slack.verified
+
+    def after_verifying(*args):
+        valid = check(*args)
+        if valid:
+            with closing(Store(world.db, clock=world.clock)) as other:
+                other.slack_sealer = Sealer(KEY)
+                view = other.for_account(world.ada.account_id, world.ada.id)
+                # Pasting the same secrets still replaces the sealed values.
+                world.install(view=view)
+        return valid
+
+    monkeypatch.setattr(web_slack, "verified", after_verifying)
+    body = event("fable_ping", "Ev0BEFORE01")
+    assert world.post(install.id, "events", body).status_code == 200
+    assert rows(world.db, "SELECT event_id FROM slack_events") == []
+
+
+def test_a_failed_stale_handler_cannot_clear_the_event_record(world):
+    install = world.install()
+    event_id = "Ev0AFTER001"
+
+    @dispatch.on_event("fable_ping")
+    async def ping(envelope, context):
+        with closing(Store(world.db, clock=world.clock)) as other:
+            other.slack_sealer = Sealer(KEY)
+            view = other.for_account(world.ada.account_id, world.ada.id)
+            world.install(secret=OTHER_SECRET, token=OTHER_TOKEN, view=view)
+            other.forget_slack_event(install.id, event_id)
+            other.slack_event_seen(install.id, event_id)
+        raise RuntimeError("a fault")
+
+    try:
+        response = world.post(install.id, "events", event("fable_ping", event_id))
+        assert rows(world.db, "SELECT event_id FROM slack_events") == [(event_id,)]
+        assert response.status_code == 200
+    finally:
+        dispatch.unregister("event", "fable_ping")
 
 
 class Made:

@@ -4,19 +4,24 @@ goes to an httpx.MockTransport; the clock is the store's. Every name is made up.
 
 import asyncio
 import logging
+import threading
+from contextlib import closing
 from datetime import timedelta
 
 import httpx
 import pytest
-from test_slack_store_unit import TOKEN, a_note, ready, workspaces, world  # noqa: F401
+from starlette.testclient import TestClient
+from test_slack_store_unit import KEY, OTHER_TEAM, TOKEN, a_note, ready, workspaces, world  # noqa: F401
 from test_store_unit import rows
 
 from cairn.store import Store
-from cairn.store.slack import CHECK_EVERY, CHECKS_AT_ONCE, FORGET_AFTER, GONE_AFTER
+from cairn.store.hosted import Sealer
+from cairn.store.slack import CHECK_EVERY, CHECKS_AT_ONCE, DUE_AT_ONCE, FORGET_AFTER, GONE_AFTER
 from cairn.web import slack as web_slack
 from cairn.web.slack import Keeper
 
 API = "https://slack.test/api"
+BASE = "https://cairn.example.test"
 
 
 class Slack:
@@ -223,13 +228,179 @@ def test_a_note_that_cannot_be_forgotten_is_logged_and_skipped(
     assert notes[0] not in caplog.text
 
 
+def test_restart_with_slack_off_forgets_only_what_is_due(world, monkeypatch):  # noqa: F811
+    from cairn.server import create_app
+
+    install = ready(world)
+    due, early = a_note(world), a_note(world, "The desk is by the north window.")
+    world.view.record_slack_note(install.id, due, how="typed", brought_by=world.owner)
+    world.view.remove_slack_install(install.id)
+    world.clock.now += timedelta(days=1)
+    ready(world, team=OTHER_TEAM)
+    world.view.record_slack_note(install.id, early, how="typed", brought_by=world.owner)
+    world.view.remove_slack_install(install.id)
+    world.clock.now += FORGET_AFTER - timedelta(days=1)
+
+    ran = threading.Event()
+    run_once = Keeper.run_once
+
+    def pass_at_start(self):
+        try:
+            return run_once(self)
+        finally:
+            ran.set()
+
+    def no_http():
+        pytest.fail("the local pass needs no HTTP client")
+
+    monkeypatch.setattr(Keeper, "run_once", pass_at_start)
+    with closing(Store(world.db, clock=world.clock)) as restarted:
+        app = create_app(restarted, clock=world.clock, source_http=no_http)
+        with TestClient(app):
+            if app.state.slack_keeper is not None:
+                assert ran.wait(5)
+        view = restarted.for_account(world.account)
+        missing = view.get_note(due) is None
+        kept = view.get_note(early) is not None
+        assert missing and kept
+
+
+def test_failed_batch_retries_without_starving_the_next_note(world, monkeypatch):  # noqa: F811
+    install = ready(world)
+    first = {a_note(world, f"The quill is on desk {n}.") for n in range(DUE_AT_ONCE)}
+    for note in first:
+        world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    world.view.remove_slack_install(install.id)
+    world.clock.now += timedelta(days=1)
+    ready(world, team=OTHER_TEAM)
+    later = a_note(world, "The quill is on the top shelf.")
+    world.view.record_slack_note(install.id, later, how="typed", brought_by=world.owner)
+    world.view.remove_slack_install(install.id)
+    world.clock.now += FORGET_AFTER
+    tried = []
+    forget = Store.forget_note
+
+    def fails_for_first_batch(self, note_id):
+        tried.append(note_id)
+        if note_id in first:
+            raise sqlite_error()
+        return forget(self, note_id)
+
+    monkeypatch.setattr(Store, "forget_note", fails_for_first_batch)
+    loop = Keeper(world.store)
+    assert loop.run_once() == (0, 0)
+    assert set(tried) == first
+    assert loop.run_once() == (0, 1)
+    assert world.view.get_note(later) is None
+    tried.clear()
+    assert loop.run_once() == (0, 0)
+    assert set(tried) == first
+
+
+@pytest.mark.parametrize("path", ["scheduled", "owner", "owner_after_another_removal"])
+def test_reconnection_between_selection_and_erasure_cancels_that_forgetting(
+    world,  # noqa: F811
+    monkeypatch,
+    path,
+):
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    world.view.remove_slack_install(install.id)
+    if path == "scheduled":
+        world.clock.now += FORGET_AFTER
+    forget = Store.forget_note
+    reconnected = []
+
+    def reconnect_before_forgetting(self, note_id):
+        with closing(Store(world.db, clock=world.clock)) as other:
+            other.slack_sealer = Sealer(KEY)
+            view = other.for_account(world.account, world.owner)
+            ready(world, view=view)
+            if path == "owner_after_another_removal":
+                # The wall clock has stayed at the first removal's time.
+                view.remove_slack_install(install.id)
+            reconnected.append(True)
+        return forget(self, note_id)
+
+    monkeypatch.setattr(Store, "forget_note", reconnect_before_forgetting)
+    if path == "scheduled":
+        assert Keeper(world.store).run_once() == (0, 0)
+    else:
+        assert world.view.forget_slack_notes_now(install.id) == 0
+    assert reconnected == [True]
+    assert world.view.get_note(note) is not None
+
+
+def test_automatic_forgetting_checks_the_deadline_again_in_its_write(
+    world,  # noqa: F811
+    monkeypatch,
+):
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    world.view.remove_slack_install(install.id)
+    world.clock.now += FORGET_AFTER
+    forget = Store.forget_note
+
+    def clock_steps_back(self, note_id):
+        world.clock.now -= timedelta(microseconds=1)
+        return forget(self, note_id)
+
+    monkeypatch.setattr(Store, "forget_note", clock_steps_back)
+    assert Keeper(world.store).run_once() == (0, 0)
+    assert world.view.get_note(note) is not None
+
+
+def test_local_forgetting_runs_while_slack_has_not_answered(world, monkeypatch):  # noqa: F811
+    from cairn.identity import GitHub
+    from cairn.server import SignIn, create_app
+
+    install = ready(world)
+    due = a_note(world)
+    world.view.record_slack_note(install.id, due, how="typed", brought_by=world.owner)
+    world.view.remove_slack_install(install.id)
+    ready(world, team=OTHER_TEAM)
+    world.clock.now += FORGET_AFTER
+
+    async def exercise():
+        asked, forgotten = asyncio.Event(), asyncio.Event()
+        loop = asyncio.get_running_loop()
+        forget = Store.forget_note
+
+        def record_forgetting(self, note_id):
+            answer = forget(self, note_id)
+            loop.call_soon_threadsafe(forgotten.set)
+            return answer
+
+        async def unanswered(request):
+            asked.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(Store, "forget_note", record_forgetting)
+        sign_in = SignIn(
+            providers=(GitHub("gh-id", "gh-secret"),),
+            http=lambda: httpx.AsyncClient(transport=httpx.MockTransport(unanswered)),
+            join="personal",
+        )
+        switch = web_slack.Slack(key=KEY, http=sign_in.http, api=API)
+        app = create_app(world.store, public_url=BASE, sign_in=sign_in, clock=world.clock,
+                         slack=switch)  # fmt: skip
+        async with app.router.lifespan_context(app), asyncio.timeout(3):
+            await asked.wait()
+            await forgotten.wait()
+            assert world.view.get_note(due) is None
+
+    asyncio.run(exercise())
+
+
 def sqlite_error() -> Exception:
     import sqlite3
 
     return sqlite3.OperationalError("database text: The tide turns.")
 
 
-def test_the_loop_checks_before_each_pass(world, slack):  # noqa: F811
+def test_the_polling_loop_checks_before_waiting(world, slack):  # noqa: F811
     ready(world)
     world.clock.now += CHECK_EVERY
     done = []
@@ -241,7 +412,7 @@ def test_the_loop_checks_before_each_pass(world, slack):  # noqa: F811
     loop = keeper(world, slack)
     loop.wait = stop
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(loop.loop())
+        asyncio.run(loop.check_loop())
     assert len(slack.calls) == 1 and done == [loop.every]
 
 
@@ -306,19 +477,19 @@ def test_a_check_that_fails_as_a_whole_is_logged_and_the_pass_still_runs(world, 
     def no_client():
         raise RuntimeError(f"no client for {TOKEN}")
 
-    passes = []
     loop = Keeper(world.store, http=no_client, api=API)
+    passes = []
     loop.run_once = lambda: passes.append(1)
 
     async def stop(seconds):
         raise asyncio.CancelledError
 
     loop.wait = stop
-    with (
-        caplog.at_level(logging.WARNING, logger="cairn.slack"),
-        pytest.raises(asyncio.CancelledError),
-    ):
-        asyncio.run(loop.loop())
+    with caplog.at_level(logging.WARNING, logger="cairn.slack"):
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(loop.check_loop())
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(loop.loop())
     assert passes == [1]
     assert [r.getMessage() for r in caplog.records] == [
         "slack: the checks of bot tokens failed: RuntimeError"

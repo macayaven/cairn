@@ -7,7 +7,7 @@ import secrets
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 
@@ -38,6 +38,17 @@ from cairn.store.models import (
 from cairn.store.schema import _create_index, _secure_index
 from cairn.store.usage import PASSAGE_KINDS, charge_of, path_bytes
 from cairn.topics import topic_key
+
+
+class NoteOrigin(NamedTuple):
+    """Who wrote a note and how it came (MemoryStore.note_origins)."""
+
+    kind: str
+    name: str | None
+    via: str | None
+    created_at: str
+    filed_message: bool  # a Slack message someone filed, which created the note
+
 
 PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 TITLE_MAX = 80
@@ -673,15 +684,28 @@ class MemoryMethods(StoreBase):
         its name, the note's via). A note stored before writers were recorded has the
         kind audit.UNKNOWN_WRITER and no name. Unknown ids, and notes out of reach or of
         another workspace, are left out. A read."""
+        return {note_id: origin[:3] for note_id, origin in self.note_origins(note_ids).items()}
+
+    def note_origins(self, note_ids: Iterable[str]) -> dict[str, NoteOrigin]:
+        """note_writers' answer and, in the same one statement, when each note was written
+        (its `created_at`, as stored) and whether it is a Slack message someone filed (a
+        `slack_notes` row of how "filed" that created the note; a tie to a note the project
+        held already is not). A read."""
         wanted = json.dumps(list(dict.fromkeys(note_ids)))
         with self._read() as con:
             rows = con.execute(
-                "SELECT notes.id, note_writers.kind, note_writers.name, notes.via"
+                "SELECT notes.id, note_writers.kind, note_writers.name, notes.via,"
+                " notes.created_at,"
+                " COALESCE(slack_notes.how = 'filed' AND slack_notes.owns = 1, 0)"
                 " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
+                " LEFT JOIN slack_notes ON slack_notes.note_id = notes.id"
                 f" WHERE notes.id IN (SELECT value FROM json_each(?)) AND {_OWN_PROJECT}",
                 (wanted, *self._scope(con)),
             ).fetchall()
-        return {note_id: (kind or UNKNOWN_WRITER, name, via) for note_id, kind, name, via in rows}
+        return {
+            note_id: NoteOrigin(kind or UNKNOWN_WRITER, name, via, created_at, bool(filed))
+            for note_id, kind, name, via, created_at, filed in rows
+        }
 
     def list_notes(self, project_id: str) -> list[Note]:
         """Oldest first."""

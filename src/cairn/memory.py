@@ -143,7 +143,7 @@ from cairn.store import (
 )
 from cairn.store.access import NOT_THE_MAKER
 from cairn.store.audit import UNKNOWN_WRITER
-from cairn.store.memory import PAGE_CHARS_MAX, PAGE_CLAIMS_MAX, claim_chars
+from cairn.store.memory import PAGE_CHARS_MAX, PAGE_CLAIMS_MAX, NoteOrigin, claim_chars
 from cairn.store.models import shown_metrics
 from cairn.store.reach import REACH_MAX, reach_too_wide
 from cairn.store.usage import (
@@ -663,6 +663,10 @@ NARROW = (  # more than one project searched
     " hold it first."
 )
 RARER = "Add a rarer word to rank the claims that hold it first."  # one project searched
+NO_WORDS = (  # 8.4: a query of nothing but spaces or punctuation
+    "Nothing was searched: the query holds no words, only spaces or punctuation. Search with"
+    " words of letters or digits."
+)
 
 
 def _cut(word: str) -> str:
@@ -679,7 +683,8 @@ def searched(facts: Searched) -> dict[str, Any]:
     """Q2: what a search left out, as `recall` answers it under `searched`: the facts, each
     word left out cut to NAME_SHOWN characters (the store keeps the first WORDS_SHOWN, 5), and
     `said`, one or two sentences from those facts alone that say what was left out and what
-    to do about it, or NOTHING_LEFT_OUT. The advice follows the search: searching one project
+    to do about it, or NOTHING_LEFT_OUT; NO_WORDS for a query that held no word to search
+    (8.4: never "every word was searched"). The advice follows the search: searching one project
     is advised only to a search of more than one (NARROW), never to one that covered one
     project, named or the only one reached (RARER). The search page shows `said` as it is."""
     sentences = []
@@ -727,7 +732,7 @@ def searched(facts: Searched) -> dict[str, Any]:
         "claims_matched": facts.claims_matched,
         **stopped,
         "claims_ranked": facts.claims_ranked,
-        "said": " ".join(sentences) or NOTHING_LEFT_OUT,
+        "said": " ".join(sentences) or (NOTHING_LEFT_OUT if facts.words_searched else NO_WORDS),
     }
 
 
@@ -770,9 +775,9 @@ def is_outside(kind: str, via: str | None) -> bool:
     return kind == UNKNOWN_WRITER and via is not None and via in source_via()
 
 
-def _written(note: str, writer: tuple[str, str | None, str | None]) -> dict[str, Any]:
+def _written(note: str, origin: NoteOrigin) -> dict[str, Any]:
     """One entry of a hit's `written_by`."""
-    kind, name, via = writer
+    kind, name, via = origin[:3]
     return {
         "note": note,
         "kind": kind,
@@ -780,6 +785,12 @@ def _written(note: str, writer: tuple[str, str | None, str | None]) -> dict[str,
         "via": via,
         "outside": is_outside(kind, via),
     }
+
+
+def _newest(times: Iterable[str]) -> str | None:
+    """8.1: when the newest of a claim's notes was written (the store's ISO times sort as
+    times), or None when none of its notes is held."""
+    return max(times, default=None)
 
 
 def _source(span: Span, note: Note) -> dict[str, Any]:
@@ -1210,16 +1221,17 @@ class Memory:
 
     def _written_by(
         self, claims: Iterable[Iterable[str]]
-    ) -> tuple[list[list[dict[str, Any]]], dict[str, Span]]:
-        """written_by's answer, and the spans it read to make it."""
+    ) -> tuple[list[list[dict[str, Any]]], dict[str, Span], dict[str, NoteOrigin]]:
+        """written_by's answer, the spans it read to make it, and the origin of each note
+        they come from (when it was written: 8.1), read in the same statement."""
         cited = [list(span_ids) for span_ids in claims]
         spans = self.store.get_spans(i for span_ids in cited for i in span_ids)
-        writers = self.store.note_writers(span.source_id for span in spans.values())
+        origins = self.store.note_origins(span.source_id for span in spans.values())
         answers = []
         for span_ids in cited:
             notes = dict.fromkeys(spans[i].source_id for i in span_ids if i in spans)
-            answers.append([_written(note, writers[note]) for note in notes if note in writers])
-        return answers, spans
+            answers.append([_written(note, origins[note]) for note in notes if note in origins])
+        return answers, spans, origins
 
     def recall(self, query: str, project: str | None = None, limit: int = 8) -> dict[str, Any]:
         """The best hits for `query`, each with who wrote what its claim cites (A1), and what
@@ -1230,8 +1242,9 @@ class Memory:
         project_ids = [self.project(project).id] if project else None
         found = self.store.find(query, project_ids, limit)
         hits = found.hits
+        writers, _, origins = self._written_by(h.span_ids for h in hits)
         answers = []
-        for hit, entries in zip(hits, self.written_by(h.span_ids for h in hits), strict=True):
+        for hit, entries in zip(hits, writers, strict=True):
             answer = {
                 "project": hit.project,
                 "page": hit.slug,
@@ -1243,6 +1256,7 @@ class Memory:
                 "score": hit.score,
                 "outside": any(entry["outside"] for entry in entries),
                 "written_by": entries[:WRITTEN_BY_MAX],
+                "written_at": _newest(origins[entry["note"]].created_at for entry in entries),
             }
             if len(entries) > WRITTEN_BY_MAX:
                 answer["written_by_more"] = len(entries) - WRITTEN_BY_MAX
@@ -1264,7 +1278,7 @@ class Memory:
         once with the writers), so a version stored under an earlier rendering reads as now."""
         target = self.project(project)
         page = self.find_page(target, slug, version)
-        writers, spans = self._written_by(claim.span_ids for claim in page.claims)
+        writers, spans, origins = self._written_by(claim.span_ids for claim in page.claims)
         versions, total, _, following = self.versions_of(target, page.slug, limit, before)
         answer = {
             "project": target.name,
@@ -1274,7 +1288,11 @@ class Memory:
             "versions": versions,
             "body": render_body(page.title, page.claims, spans),
             "claims": [
-                {**_claim(claim), "outside": any(entry["outside"] for entry in entries)}
+                {
+                    **_claim(claim),
+                    "outside": any(entry["outside"] for entry in entries),
+                    "written_at": _newest(origins[entry["note"]].created_at for entry in entries),
+                }
                 for claim, entries in zip(page.claims, writers, strict=True)
             ],
             "metrics": shown_metrics(page.metrics),
@@ -1328,6 +1346,7 @@ class Memory:
                     "written_by": {"kind": kind, "name": name},  # A1: who wrote its note
                     "via": via,
                     "outside": is_outside(kind, via),
+                    "written_at": note.created_at,  # 8.1: the row read already holds it
                 }
             )
         return {"claim": _claim(claim), "version": page.version, "passages": passages}

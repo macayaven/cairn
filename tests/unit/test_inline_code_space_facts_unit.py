@@ -5,6 +5,10 @@ One finder of code spans (cairn.spans.code_spans) serves the gate's reading and 
 normalize. It pairs backticks within a block, as CommonMark does, so a stray backtick in one
 paragraph never moves the code of the next, and a fenced block is code lines, not a span."""
 
+import random
+
+import pytest
+
 from cairn import facts, gate, spans
 from cairn.compiler import CONTENT_KINDS, CandidatePage, extractive, render_body
 from cairn.facts import extract_facts, normalize
@@ -98,3 +102,45 @@ def test_a_body_after_a_tab_closer_reads_its_code_as_its_passages_do():
     assert "\t```\n```\n" in body  # the renderer's own closer
     result = lint_gate(CandidatePage(slug="f", title="Files", body=body, claims=claims), held)
     assert (result.passed, result.violations) == (True, [])
+
+
+# Fences Markdown and the fact reader may read apart: open in a quote, opened on a list
+# marker's line, indented four spaces (text to Markdown), left open, tildes. Whatever the
+# shape, the note after it keeps its inline code on a page of verbatim claims.
+SHAPES = [
+    "```\nsample text\n\t```",
+    "> ```\n> x = 1",
+    "- ```sh\n  make deploy\n  ```",
+    "- ```sh\n  make deploy",
+    "Run:\n    ```\nthen stop.",
+    "~~~\nsample text\n    ~~~",
+    "```python\nx = 1",
+    "```sh\necho `date  +%s`\n```",
+    "- Steps:\n\n  ```sh\n  make  deploy\n  ```",
+]
+
+
+def verbatim_page(texts: list[str]) -> tuple[CandidatePage, dict[str, Span]]:
+    held, claims = {}, []
+    for n, text in enumerate(texts):
+        found = chunk(f"cap_{n:012x}", text)
+        held.update({s.id: s for s in found})
+        claims.extend(extractive("Files", [s for s in found if s.kind in CONTENT_KINDS]).claims)
+    body = render_body("Files", claims, held)
+    return CandidatePage(slug="f", title="Files", body=body, claims=claims), held
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_note_after_any_fence_keeps_its_inline_code_on_the_page(shape):
+    candidate, held = verbatim_page([shape, SPACED, "Then `c  d` too."])
+    result = lint_gate(candidate, held)
+    assert (result.passed, result.violations) == (True, [])
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_pages_of_notes_in_any_order_pass_the_fact_check(seed):
+    rng = random.Random(seed)
+    texts = rng.sample([*SHAPES, SPACED, ONE_SPACE, "Use `x\ty` and `p  q`."], rng.randint(2, 6))
+    candidate, held = verbatim_page(texts)
+    result = lint_gate(candidate, held)
+    assert (result.passed, result.violations) == (True, []), texts

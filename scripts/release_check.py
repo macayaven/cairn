@@ -27,6 +27,7 @@ anything is published; job `release` runs it with --notes for the text of the Gi
 It reads the two files, and runs git and gh only for their flags. It needs only the standard
 library, so the runner's python3 runs it before any environment is installed.
 """
+
 from __future__ import annotations
 
 import argparse

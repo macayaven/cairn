@@ -5,6 +5,7 @@ at least one entry. The section is the release's text."""
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -185,4 +186,133 @@ def test_the_script_needs_nothing_but_the_standard_library():
         for line in source.splitlines()
         if line.startswith(("import ", "from "))
     }
-    assert imported <= {"__future__", "argparse", "datetime", "pathlib", "re", "sys", "tomllib"}
+    allowed = {"__future__", "argparse", "datetime", "pathlib", "re", "sys", "tomllib"}
+    # git and gh are what a runner has; the script runs them with the standard library.
+    assert imported <= allowed | {"json", "subprocess"}
+
+
+# --- the tag's place in the history: on main, and where it ranks among the versions --------
+# The job checks out the whole history; these tests make a small repository instead.
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """A repository with the two files: main has two commits, branch `work` one more of its
+    own from the first. Git reads no configuration of this machine."""
+    for name, value in {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.test",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.test",
+    }.items():
+        monkeypatch.setenv(name, value)
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+    (root / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
+
+    def git(*args: str) -> str:
+        done = subprocess.run(
+            ["git", "-C", str(root), *args], stdout=subprocess.PIPE, text=True, check=True
+        )
+        return done.stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("add", ".")
+    git("commit", "-q", "-m", "first")
+    first = git("rev-parse", "HEAD")
+    git("commit", "-q", "--allow-empty", "-m", "second")
+    git("checkout", "-q", "-b", "work", first)
+    git("commit", "-q", "--allow-empty", "-m", "never merged")
+    git("checkout", "-q", "main")
+    return root, git
+
+
+def test_a_tag_on_main_or_an_ancestor_of_its_head_passes(repo, capsys):
+    root, git = repo
+    for commit in (git("rev-parse", "main"), git("rev-parse", "main~1")):
+        git("tag", "-f", "v1.2.3", commit)
+        argv = ["v1.2.3", "--root", str(root), "--commit", commit, "--branch", "main"]
+        assert release_check.main(argv) == 0, capsys.readouterr().err
+
+
+def test_a_tag_whose_commit_is_not_on_main_is_refused(repo, capsys):
+    root, git = repo
+    commit = git("rev-parse", "work")
+    git("tag", "v1.2.3", commit)
+    argv = ["v1.2.3", "--root", str(root), "--commit", commit, "--branch", "main"]
+    assert release_check.main(argv) == 1
+    assert capsys.readouterr().err == (
+        f"release refused: the tag's commit {commit} is not on main:"
+        " it is neither its head nor one of its ancestors\n"
+    )
+
+
+def test_a_commit_or_branch_git_cannot_find_is_refused(repo, capsys):
+    root, git = repo
+    head = git("rev-parse", "main")
+    git("tag", "v1.2.3", head)
+    for commit, branch in ((head, "origin/main"), ("f" * 40, "main")):
+        argv = ["v1.2.3", "--root", str(root), "--commit", commit, "--branch", branch]
+        assert release_check.main(argv) == 1
+        assert capsys.readouterr().err == (
+            f"release refused: git could not tell whether {commit} is on {branch}\n"
+        )
+
+
+def test_commit_and_branch_come_together():
+    for argv in (["v1.2.3", "--commit", "c" * 40], ["v1.2.3", "--branch", "main"]):
+        with pytest.raises(SystemExit) as caught:
+            release_check.main(argv)
+        assert caught.value.code == 2
+
+
+def test_latest_is_the_highest_plain_version_compared_as_numbers():
+    highest = release_check.is_highest
+    # The first tag.
+    assert highest("v0.1.0", ["v0.1.0"]) is True
+    # A patch on an older line while a higher version exists: X.Y moves, latest does not.
+    assert highest("v0.1.1", ["v0.1.0", "v0.2.0", "v0.1.1"]) is False
+    # A higher version.
+    assert highest("v0.2.0", ["v0.1.0", "v0.1.1", "v0.2.0"]) is True
+    # Numbers, not text: 0.10.0 is above 0.9.0.
+    assert highest("v0.10.0", ["v0.9.0", "v0.10.0"]) is True
+    assert highest("v0.9.1", ["v0.9.0", "v0.10.0"]) is False
+    # Tags that are not plain versions are ignored; the tag counts even if not listed.
+    assert highest("v0.1.0", ["v9", "v9.0", "v9.0.0-rc1", "v09.0.0", "release-9", "x"]) is True
+
+
+def test_a_tag_lower_than_another_of_its_line_is_refused():
+    with pytest.raises(release_check.Refused) as caught:
+        release_check.is_highest("v0.1.1", ["v0.1.0", "v0.1.2", "v0.2.0", "v0.1.1"])
+    assert str(caught.value) == (
+        "v0.1.2 is a higher version of 0.1 than v0.1.1: a release never goes backwards"
+        " within its line"
+    )
+
+
+def test_main_reads_the_tags_and_writes_latest_for_the_job(repo, tmp_path, capsys):
+    root, git = repo
+    head = git("rev-parse", "main")
+    outputs = tmp_path / "github_output"
+    argv = ["--root", str(root), "--commit", head, "--branch", "main"]
+    argv += ["--github-output", str(outputs)]
+    git("tag", "v1.2.3", head)
+    assert release_check.main(["v1.2.3", *argv]) == 0
+    assert outputs.read_text() == "latest=true\n"
+    assert capsys.readouterr().out == (
+        "v1.2.3 may be released: it is the version, CHANGELOG.md has its section,"
+        " its commit is on main, and it is the highest version, so it is also latest\n"
+    )
+    git("tag", "v1.3.0", "main~1")
+    assert release_check.main(["v1.2.3", *argv]) == 0
+    assert outputs.read_text() == "latest=true\nlatest=false\n"
+    assert capsys.readouterr().out.endswith(
+        "its commit is on main, and v1.3.0 is higher, so latest stays where it is\n"
+    )
+    git("tag", "v1.2.4", "main~1")
+    assert release_check.main(["v1.2.3", *argv]) == 1
+    assert capsys.readouterr().err.startswith("release refused: v1.2.4 is a higher version of 1.2")
+    assert outputs.read_text() == "latest=true\nlatest=false\n"  # nothing for a refused tag

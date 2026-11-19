@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 import tomllib
 from datetime import UTC, date, datetime
@@ -97,6 +98,52 @@ def check(tag: str, pyproject: str, changelog: str, today: date | None = None) -
     return version
 
 
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,  # the refusal is one line of its own
+        text=True,
+        check=False,
+    )
+
+
+def on_branch(root: Path, commit: str, branch: str) -> None:
+    """Refuses COMMIT unless it is BRANCH's head or one of its ancestors."""
+    found = _git(root, "merge-base", "--is-ancestor", commit, branch).returncode
+    if found == 1:
+        raise Refused(
+            f"the tag's commit {commit} is not on {branch}:"
+            " it is neither its head nor one of its ancestors"
+        )
+    if found != 0:
+        raise Refused(f"git could not tell whether {commit} is on {branch}")
+
+
+def _number(tag: str) -> tuple[int, int, int] | None:
+    found = PLAIN.fullmatch(tag[1:]) if tag.startswith("v") else None
+    return tuple(int(part) for part in found.groups()) if found else None
+
+
+def is_highest(tag: str, tags: list[str]) -> bool:
+    """Whether TAG is the highest of TAGS that are plain versions (`vMAJOR.MINOR.PATCH`,
+    compared as numbers; other tags are ignored), and so is also published as `latest`.
+    A tag lower than another of its own MAJOR.MINOR is refused."""
+    mine = _number(tag)
+    versions = {number: name for name in tags if (number := _number(name))}
+    for number, name in sorted(versions.items(), reverse=True):
+        if number[:2] == mine[:2] and number > mine:
+            raise Refused(
+                f"{name} is a higher version of {mine[0]}.{mine[1]} than {tag}:"
+                " a release never goes backwards within its line"
+            )
+    return all(number <= mine for number in versions)
+
+
+def _highest(tags: list[str]) -> str:
+    return max((name for name in tags if _number(name)), key=_number)
+
+
 def notes(version: str, changelog: str) -> str:
     """VERSION's section of the changelog, for the release's text."""
     return _section(version, changelog) + "\n"
@@ -112,7 +159,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--today", type=date.fromisoformat, help="YYYY-MM-DD, in place of the UTC date"
     )
+    parser.add_argument("--commit", help="the tag's commit; with --branch")
+    parser.add_argument(
+        "--branch",
+        help="refuse the tag unless --commit is this branch's head or an ancestor of it,"
+        " and say whether the tag is the highest version (latest)",
+    )
+    parser.add_argument(
+        "--github-output", type=Path, help="append latest=true|false here (with --branch)"
+    )
     args = parser.parse_args(argv)
+    if (args.commit is None) != (args.branch is None):
+        parser.error("--commit and --branch come together")
     try:
         texts = []
         for name in ("pyproject.toml", "CHANGELOG.md"):
@@ -121,13 +179,31 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refused(f"there is no {name}")
             texts.append(path.read_text(encoding="utf-8"))
         version = check(args.tag, *texts, today=args.today)
+        said = ["it is the version", "CHANGELOG.md has its section"]
+        latest = None
+        if args.branch is not None:
+            on_branch(args.root, args.commit, args.branch)
+            said.append(f"its commit is on {args.branch}")
+            tags = _git(args.root, "tag", "--list", "v*")
+            if tags.returncode != 0:
+                raise Refused("git could not list the repository's tags")
+            names = tags.stdout.split()
+            latest = is_highest(args.tag, names)
     except Refused as refusal:
         print(f"release refused: {refusal}", file=sys.stderr)
         return 1
+    if latest is not None:
+        if latest:
+            said.append("it is the highest version, so it is also latest")
+        else:
+            said.append(f"{_highest(names)} is higher, so latest stays where it is")
+        if args.github_output is not None:
+            with args.github_output.open("a", encoding="utf-8") as out:
+                out.write(f"latest={'true' if latest else 'false'}\n")
     if args.notes:
         sys.stdout.write(notes(version, texts[1]))
     else:
-        print(f"{args.tag} may be released: it is the version, and CHANGELOG.md has its section")
+        print(f"{args.tag} may be released: {', '.join(said[:-1])}, and {said[-1]}")
     return 0
 
 

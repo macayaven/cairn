@@ -91,7 +91,7 @@ def test_under_a_brand_behind_the_wall_the_flag_shows_nothing_but_the_sign_in_pa
         assert page.status_code == 200
         shown = b1.Page(page.text)
         assert shown.title == b1.BRAND and shown.h1 == [b1.BRAND]
-        assert set(shown.texts) == {b1.BRAND, "Continue with GitHub"}
+        assert set(shown.texts) == {b1.SKIP_TEXT, b1.BRAND, "Continue with GitHub"}
 
         cancelled = b1.fresh(app)
         sent = b1.start_sign_in(cancelled)

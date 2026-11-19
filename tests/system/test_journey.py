@@ -344,8 +344,12 @@ def test_a_person_and_two_agents_share_memory_end_to_end(install):
                 await anyone.post("/api/projects", headers=worker, json={"name": "x"})
             ).status_code == 403
 
-            # Disconnecting the agent ends its access at once.
-            action = agents.text.split('action="/agents/')[1].split('"')[0]
+            # Disconnecting the agent ends its access at once: its row links a page that says
+            # what stops working, and that page's button disconnects it.
+            ask = agents.text.split('href="/agents/')[1].split('"')[0]
+            asked = await person.get(f"/agents/{ask}")
+            assert asked.status_code == 200, asked.text
+            action = asked.text.split('action="/agents/')[1].split('"')[0]
             gone = await person.post(f"/agents/{action}", headers=SAME_ORIGIN)
             assert gone.status_code == 303
             dead = await anyone.post(

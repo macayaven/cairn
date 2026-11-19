@@ -134,6 +134,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+import cairn.sources.runner
 from cairn.server import main
 from cairn.sources import HELD_CREDENTIALS, KINDS, SourceError, holds_secret, markup, run_source
 from cairn.store import Store
@@ -2049,6 +2050,12 @@ def test_the_command_line_adds_switches_on_and_syncs_without_showing_a_secret(
         return await routed.handle_async_request(request)
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", through_the_stand_in)
+
+    async def a_public_address(host: str, port: int) -> list[str]:  # no lookup leaves the test
+        return ["192.0.2.10"]
+
+    # The command line's client resolves each name before a request (cairn.sources.url)
+    monkeypatch.setattr(cairn.sources.runner, "system_resolve", a_public_address)
     said: list[str] = []
 
     def cli(*argv: str) -> int:

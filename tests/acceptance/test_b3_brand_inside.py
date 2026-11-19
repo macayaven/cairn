@@ -775,7 +775,14 @@ class Crawl:
         r = self.browser.get(address, follow_redirects=False)
         self.seen[address] = r
         api = address.startswith(("/api", "/mcp"))
-        self.found += [f"GET {address}: {it}" for it in problems(r, address, api=api)]
+        if r.headers.get("content-disposition", "").startswith("attachment"):
+            # Rule 4: what is inside a file a person downloads is data (the audit log's
+            # downloads hold rule ids and model names as recorded); rule 5 still holds.
+            found = [f"header {h}: {v}" for h, v in r.headers.multi_items()
+                     if names_software(h) or names_software(v)]  # fmt: skip
+        else:
+            found = problems(r, address, api=api)
+        self.found += [f"GET {address}: {it}" for it in found]
         if "html" in r.headers.get("content-type", ""):
             self.pages += 1
             path = urlsplit(address).path

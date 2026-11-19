@@ -974,8 +974,22 @@ def test_nothing_of_a_message_a_search_or_a_note_is_in_a_log_line(world, caplog)
     prompt = said(private(world.command("find hazelnut", user=BROOK_SLACK)))
     value = re.search(r"link\?t=([A-Za-z0-9_-]+)", prompt).group(1)
 
+    def said_of(record) -> str:
+        """A record's message; for a line of the audit log's copy ("cairn.audit", one JSON
+        object per stored event), the event without the page it names: a page's name is made
+        from its note's title, and the stored event and its line keep it, as the security
+        guide says."""
+        if record.name != "cairn.audit":
+            return record.getMessage()
+        event = json.loads(record.getMessage())
+        event["detail"].pop("page", None)
+        return json.dumps(event)
+
     def logged(records) -> str:
-        return "\n".join(f"{r.getMessage()} {sorted(vars(r).items())}" for r in records)
+        def rest(r) -> list:
+            return sorted((k, v) for k, v in vars(r).items() if k not in ("msg", "message"))
+
+        return "\n".join(f"{said_of(r)} {rest(r)}" for r in records)
 
     assert caplog.records
     for word in ("marmalade", "quince", LOOKS_SECRET, "persimmon", "fig tree", "walnut",

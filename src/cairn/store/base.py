@@ -360,9 +360,9 @@ class StoreBase:
         the file (`serve --audit-keep`; AUDIT_KEEP_ROW, so a command-line write on the same
         file prunes by it too), else AUDIT_KEEP (100,000); None: every event. Setting it
         records it in the file (unless the file already reads it: a file that records none
-        reads AUDIT_KEEP, so a restart with the same number writes nothing) and holds it for every view of this connection; a view bound
-        to a person or narrowed is refused (PermissionError). ValueError: not None or a whole
-        number of at least 1."""
+        reads AUDIT_KEEP, so a restart with the same number writes nothing) and holds it for
+        every view of this connection; a view bound to a person or narrowed is refused
+        (PermissionError). ValueError: not None or a whole number of at least 1."""
         with self._read() as con:
             return self._kept(con)
 

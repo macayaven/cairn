@@ -434,9 +434,10 @@ The note guard and the logs (frozen by tests/acceptance/test_g1_guard.py; cairn/
   None) and `status` (200, or the RequestError's status, or 500). Never a query, note text, a
   credential or a project the caller named that does not resolve. Reads are recorded there,
   the web view's too, and with `serve --audit-reads` also in the audit log (read.page,
-  read.evidence, read.search, read.graph, read.note; Memory.access): each GET of a page that shows memory is one record, named as
-  the MCP tool that reads the same (/ "projects", /b/<project> "overview", /b/<project>/p/<slug>
-  "page", /search "recall") or after what it asks (/b/<project>/access "project_access",
+  read.evidence, read.search, read.graph, read.note; Memory.access): each GET of a page
+  that shows memory is one record, named as the MCP tool that reads the same (/ "projects",
+  /b/<project> "overview", /b/<project>/p/<slug> "page", /search "recall") or after what it
+  asks (/b/<project>/access "project_access",
   /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The pages of the
   workspace's settings, people and credentials, and the composer's empty form, are not on
   it; what the web view writes is in the audit log. A request to /api or /mcp refused

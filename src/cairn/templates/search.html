@@ -24,7 +24,7 @@
 {% for hit in hits %}
   {% set claim_url = "/b/" ~ (hit.project|seg) ~ "/p/" ~ (hit.page|seg) ~ "#" ~ hit.claim_id %}
   <li class="hit">
-    <p class="hit-where"><a href="/b/{{ hit.project|seg }}">{{ hit.project }}</a> / <a class="title" href="{{ claim_url }}">{{ hit.title }}</a>{% if hit.outside %} <span class="outside">outside text</span>{% endif %}</p>
+    <p class="hit-where"><a href="/b/{{ hit.project|seg }}">{{ hit.project }}</a> / <a class="title" href="{{ claim_url }}">{{ hit.title }}</a>{% if hit.outside %} <span class="outside">outside text</span>{% endif %}{% for said in hit.filed %} <span class="writer">{{ said }}</span>{% endfor %}</p>
     <div class="claim-text md">{{ hit.text|truncate(600)|md|marked(query) }}</div>
     <p class="hit-where"><a href="{{ claim_url }}">See where this comes from</a></p>
   </li>

@@ -32,6 +32,7 @@
     <span>written <time datetime="{{ source.note.created_at }}">{{ source.note.created_at|when }}</time></span>
     {% if source.writer is defined %}<span class="writer">{{ source.writer }}</span>{% endif %}
     {% if source.outside %}<span class="outside">outside text</span>{% endif %}
+    {% if source.filed %}<span class="writer">{{ source.filed }}</span>{% endif %}
     {% if forget %}<a href="{{ forget }}" aria-label="Forget the note {{ source.note.title or 'Untitled note' }}">Forget this note</a>{% endif %}
   </figcaption>
   <div class="source-lines margin-grid">{% for n, line, cited in source.numbered %}<div class="in-margin{% if cited %} is-cited{% endif %}">{{ n }}</div><div class="source-line{% if cited %} is-cited{% endif %}">{{ line }}</div>{% endfor %}</div>

@@ -94,6 +94,7 @@ from cairn import oauth
 from cairn.compiler import render_body, section_headings
 from cairn.kinds import GENERAL
 from cairn.memory import (
+    SLACK_FILED,
     BadRequest,
     Conflict,
     Forbidden,
@@ -761,15 +762,33 @@ def writer_words(kind: str, name: str | None) -> str:
     return "writer not recorded"
 
 
+def search_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """recall's hits as the search page shows them: each with `filed`, who filed each Slack
+    message it holds and that its words are its author's (8.5), as the page view says it."""
+    return [
+        {
+            **hit,
+            "filed": [
+                f"{writer_words(entry['kind'], entry['name'])}: {entry['filed_message']}"
+                for entry in hit.get("written_by", ())
+                if entry.get("filed_message")
+            ],
+        }
+        for hit in hits
+    ]
+
+
 def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
     """The claims in the body's order, each under the section headings the body gives it
     (compiler.section_headings) and linked to numbered sources; then every cited source,
     shown only when it is a span of `project`, with the numbers of the claims that cite it,
-    who wrote its note (writer_words) and whether that note is outside text (A1,
-    memory.is_outside); then the checks, in words (CHECKS)."""
+    who wrote its note (writer_words), whether that note is outside text and, for a Slack
+    message someone filed, that its words are its author's (`filed`: SLACK_FILED), by the
+    rule the agent tools use (A1, 8.5: memory.is_outside on Store.note_origins); then the
+    checks, in words (CHECKS)."""
     span_ids = list(dict.fromkeys(i for claim in page.claims for i in claim.span_ids))
     found = memory.sources(project, span_ids)
-    writers = memory.store.note_writers(note.id for _, note in found.values())
+    origins = memory.store.note_origins(note.id for _, note in found.values())
     number = {span_id: n for n, span_id in enumerate(span_ids, 1)}
     cited_by: dict[str, list[tuple[str, int]]] = {span_id: [] for span_id in span_ids}
     top: list[dict[str, Any]] = []
@@ -798,15 +817,14 @@ def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
     sources = []
     for span_id in span_ids:
         span, note = found.get(span_id, (None, None))
-        kind, name, via = (
-            writers.get(note.id, (UNKNOWN_WRITER, None, note.via))
-            if note
-            else (UNKNOWN_WRITER, None, None)
-        )
+        origin = origins.get(note.id) if note else None
+        kind, name, via = origin[:3] if origin else (UNKNOWN_WRITER, None, note and note.via)
+        filed = origin is not None and origin.filed_message
         sources.append(
             {
                 "writer": writer_words(kind, name),
-                "outside": note is not None and is_outside(kind, via),
+                "outside": note is not None and is_outside(kind, via, filed_message=filed),
+                "filed": SLACK_FILED if filed else None,
                 "id": span_id,
                 "n": number[span_id],
                 "span": span,
@@ -1011,7 +1029,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         project = memory.project(ref) if ref else None  # resolve once; search by id, not by name
         scope = project.name if project else ""
         found = memory.recall(query, project.id if project else None, UI_HITS) if query else {}
-        hits = found.get("hits", [])
+        hits = search_hits(found.get("hits", []))
         projects = memory.store.list_projects()
         return _ui(
             request,

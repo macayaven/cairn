@@ -5,7 +5,10 @@ can serve, and 503 and exactly `{"status":"unavailable"}` when it cannot: the st
 closed, unusable (a rollback failed), cannot be read or holds a schema version this code
 does not know. Nothing else is said, no path and no error. It is Accounts.serving, one
 bounded read of the store that writes nothing (Store.health): a store whose lock another
-call holds past the bound, as compact holds it on purpose, is busy and alive, so 200. The
+call holds past the bound, as compact holds it on purpose, is busy and alive, so 200; once
+one holder has kept that lock (the writer) for longer than a minute (an hour while a
+compaction runs), the store is stuck: 503 and exactly `{"status":"stuck"}`, until the lock is
+obtained again. Reads may still work then; no write can, and a restart is what ends it. The
 read runs on threads of its own (HEALTH_THREADS), so writes waiting for the store's lock do
 not hold up the answer (every write waits for it; reads do not). Docker's probe, the hosted
 updater and the uptime alert read it.
@@ -207,14 +210,16 @@ async def _on_store_error(request: Request, exc: Exception) -> Response:
 HEALTH_THREADS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cairn-healthz")
 HEALTHY = {"status": "ok"}
 UNHEALTHY = {"status": "unavailable"}
+STUCK = {"status": "stuck"}
 
 
 def _healthz(accounts: Accounts) -> Callable[[Request], Any]:
     async def healthz(request: Request) -> Response:
         loop = asyncio.get_running_loop()
-        if await loop.run_in_executor(HEALTH_THREADS, accounts.serving):
+        status = await loop.run_in_executor(HEALTH_THREADS, accounts.serving)
+        if status in ("ok", "busy"):
             return JSONResponse(HEALTHY)
-        return JSONResponse(UNHEALTHY, status_code=503)
+        return JSONResponse(STUCK if status == "stuck" else UNHEALTHY, status_code=503)
 
     return healthz
 

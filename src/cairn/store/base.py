@@ -143,6 +143,7 @@ class ConnectionState:
     __slots__ = (
         "audit_keep",
         "audit_out",
+        "compacting",
         "keep_versions",
         "observers",
         "readers",
@@ -163,6 +164,47 @@ class ConnectionState:
         self.reads_audited = False  # cairn.memory: whether reads are events (serve --audit-reads)
         self.readers: Readers | None = None
         self.observers = Observers()
+        # Whether Store.compact (or the emptying of the log it left due) is running: the
+        # health check then gives the writer's holder the longer bound (COMPACT_STUCK_AFTER).
+        self.compacting = False
+
+
+class WriterLock:
+    """The store's lock (the writer), which records when its holder took it, on `ticks`
+    (a monotonic clock: time.monotonic, injected for tests), so that the health check can
+    tell one holder that has kept it for long from short writes one after another. As
+    threading.Lock otherwise: acquire, release, a `with` block, locked."""
+
+    __slots__ = ("_inner", "_ticks", "held_since")
+
+    def __init__(self, ticks: Callable[[], float]) -> None:
+        self._inner = threading.Lock()
+        self._ticks = ticks
+        self.held_since: float | None = None  # on `ticks`, while held
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        got = self._inner.acquire(blocking, timeout)
+        if got:
+            self.held_since = self._ticks()
+        return got
+
+    def release(self) -> None:
+        self.held_since = None
+        self._inner.release()
+
+    def locked(self) -> bool:
+        return self._inner.locked()
+
+    def held_for(self) -> float | None:
+        """How long its holder has held it, on `ticks`; None while nobody does."""
+        since = self.held_since
+        return None if since is None else self._ticks() - since
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
 
 
 # The most read-only connections one store opens (Readers). Reads are short (each is one

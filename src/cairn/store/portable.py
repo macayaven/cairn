@@ -494,6 +494,13 @@ class PortableMethods(StoreBase):
         reader is done finishes the job."""
         if not self._owner:
             raise PermissionError("only the store that opened the database compacts it")
+        self._state.compacting = True  # the health check's longer bound (Store.health)
+        try:
+            self._compact()
+        finally:
+            self._state.compacting = False
+
+    def _compact(self) -> None:
         with self._write() as con:  # first, so the file holds the record as it will be after
             before = _compaction_rows(con)
             con.execute(

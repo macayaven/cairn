@@ -1038,7 +1038,7 @@ has run out by tests/acceptance/test_h5c_expiry.py):
 """
 
 import sqlite3
-import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -1078,6 +1078,7 @@ from cairn.store.base import (
     ConnectionState,
     Readers,
     StoreUnusable,
+    WriterLock,
     _transaction,
 )
 from cairn.store.credentials import KEY_PREFIX, CredentialMethods
@@ -1212,7 +1213,11 @@ from cairn.store.usage import (
 # Store.health: how long it waits for the store's lock, and for SQLite's, before it answers.
 # Docker's probe and the hosted updater's give up after 3 seconds; this answers within 2.
 HEALTH_WAIT = 1.0
-Health = Literal["ok", "busy", "unavailable"]
+# Store.health: how long one holder may keep the store's lock (the writer) before the store
+# is stuck rather than busy; while a compaction runs, the longer bound.
+STUCK_AFTER = 60.0
+COMPACT_STUCK_AFTER = 3600.0
+Health = Literal["ok", "busy", "stuck", "unavailable"]
 _HELD = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)  # another connection holds the file
 
 __all__ = [
@@ -1230,6 +1235,7 @@ __all__ = [
     "CANNOT_WRITE",
     "CLIENT_NAME_MAX",
     "CODE_TTL",
+    "COMPACT_STUCK_AFTER",
     "DEFAULT_ACCOUNT_ID",
     "DEFAULT_GUARD_POLICY",
     "DESCRIPTION_MAX",
@@ -1271,6 +1277,7 @@ __all__ = [
     "SET_ID_PREFIX",
     "SHARE_MAX",
     "SOURCE_CLAIM_TTL",
+    "STUCK_AFTER",
     "TITLE_MAX",
     "UNUSABLE",
     "UNUSED_CLIENT_TTL",
@@ -1385,8 +1392,13 @@ class Store(
 ):
     """One account's view of the SQLite database that holds every account."""
 
-    def __init__(self, path: str | Path, clock: Callable[[], datetime] | None = None) -> None:
-        self._lock = threading.Lock()
+    def __init__(
+        self,
+        path: str | Path,
+        clock: Callable[[], datetime] | None = None,
+        ticks: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._lock = WriterLock(ticks)  # `ticks`: when its holder took it (Store.health)
         self._state = ConnectionState()  # shared with every view, as the lock is
         self._owner = True  # of the connection: views share it and never close it
         self._clock_fn = clock  # every view made from this store shares it
@@ -1415,30 +1427,41 @@ class Store(
             self._con.close()
             raise
 
-    def health(self, wait: float = HEALTH_WAIT) -> Health:
+    def health(self, wait: float | None = None, stuck_after: float = STUCK_AFTER) -> Health:
         """Whether the store can serve, from one bounded read that writes nothing (what
         /healthz answers, through cairn.web.auth.Accounts):
 
         - "ok": the read worked and the file holds the schema this code knows
           (`PRAGMA user_version` is SCHEMA_VERSION, and the default account's row reads).
         - "busy": the store is alive and held on purpose. Either this process holds the
-          store's lock for longer than `wait` seconds (a write holds it; compact holds it
-          for a whole rewrite of the file, and every write waits behind it), or another
-          connection holds the file past `wait` (SQLite's busy wait is held to `wait` for
-          this read, then put back). Each wait is bounded, so the call returns within about
-          twice `wait`.
+          store's lock (the writer) for longer than `wait` seconds (HEALTH_WAIT unless given,
+          read at each call; a write holds it, and compact holds it for a whole rewrite of
+          the file, every write waiting behind it), or another connection holds the file
+          past `wait` (SQLite's busy wait is held to `wait` for this read, then put back).
+          Each wait is bounded, so the call returns within about twice `wait`.
+        - "stuck": the lock was not obtained within `wait`, and the one holding it has held
+          it for longer than `stuck_after` seconds (STUCK_AFTER, 60, unless given) or, while
+          a compaction runs (ConnectionState.compacting), for longer than
+          COMPACT_STUCK_AFTER (an hour). Measured at the lock, from when its holder took it,
+          on the store's monotonic clock (`ticks`), so short writes one after another are
+          never stuck. Reads do not need the lock and may still work: the store is stuck
+          all the same, since no write can be made. "ok" again at the first call that
+          obtains the lock. Another process holding the file is "busy", never "stuck".
         - "unavailable": the store is closed, unusable (base.StoreUnusable), the read
           failed with any other error, or the file holds another schema version.
 
         Busy is told from broken by who answers: a lock that is held means some other call
         is at work on a connection that worked when it began; a broken connection is
         reported only by a read that ran and failed, or by the store's own record that it
-        is unusable, which is read without the lock. A call that held the lock forever
-        would read as busy: the store cannot tell a long call from a stuck one."""
+        is unusable, which is read without the lock."""
+        if wait is None:
+            wait = HEALTH_WAIT
         if self._state.unusable:
             return "unavailable"
         if not self._lock.acquire(timeout=wait):
-            return "busy"
+            held = self._lock.held_for()
+            bound = COMPACT_STUCK_AFTER if self._state.compacting else stuck_after
+            return "stuck" if held is not None and held > bound else "busy"
         try:
             if self._state.unusable:
                 return "unavailable"

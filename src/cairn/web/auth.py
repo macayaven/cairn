@@ -647,14 +647,15 @@ class Accounts:
         self._plans = plans
         self._saved = saved  # (account id, project id, slug) after a request's note saves a page
 
-    def serving(self) -> bool:
-        """Whether this server can serve (/healthz): the store's bounded read worked, or
-        found the store busy at work (Store.health). False for anything else, an error
-        this does not know included: a probe is told the store cannot serve, never why."""
+    def serving(self) -> str:
+        """Whether this server can serve (/healthz), as Store.health answers: "ok" or "busy"
+        (it can), "stuck" (one holder has kept the store's writer past the bound) or
+        "unavailable" for anything else, an error this does not know included: a probe is
+        told the store cannot serve, never why."""
         try:
-            return self._store.health() != "unavailable"
+            return self._store.health()
         except Exception:
-            return False
+            return "unavailable"
 
     def principal(self, request: HTTPConnection) -> tuple[Principal, str | None] | None:
         found = self._found(request)

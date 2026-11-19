@@ -45,7 +45,9 @@ both use read_item, examine, ask and check_url)
   the run's reason once it holds neither the secret (as `holds_secret` looks) nor anything
   the note guard's "secrets" rules find; nothing else of an error's body is ever read
   beyond ERROR_BYTES, shown or kept.
-- Transport (check_url): https, or http only to 127.0.0.1 or localhost; no user or password
+- Transport (check_url): https, or http only to 127.0.0.1 or localhost; never an address
+  inside this machine's network plumbing (cairn.sources.url, the check every source shares,
+  which the source client repeats on each request's resolved addresses); no user or password
   in the address and no fragment; written as the HTTP client sends it (so the request goes
   to the config's `url` exactly); at most 2,048 characters; nothing in it that looks like a
   credential (in a host label, a path segment or a query value). Every request runs under
@@ -132,6 +134,7 @@ from cairn.sources import (
     fit,
     holds_secret,
 )
+from cairn.sources import url as source_url
 from cairn.sources.timing import limit
 from cairn.store.memory import FIELD_MAX, is_project_name
 
@@ -150,7 +153,9 @@ ERROR_BYTES = 64 * 1024  # of an error answer's body, read only for its sentence
 URL_MAX = 2_048
 ANSWERS_PER_RUN = 20  # answers one pull asks for at most
 PULL_BYTES = 16 * 1024 * 1024  # of answers one pull holds at most before it stops asking
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
+# http goes only to these two names of this machine (not [::1]: the rule the guide states).
+NAMED_LOOPBACK = frozenset({"127.0.0.1", "localhost"})
+_HTTP_ONLY_TO_THIS_MACHINE = "only to 127.0.0.1 or localhost (this machine)"
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})")
@@ -233,10 +238,15 @@ def check_url(value: object) -> str:
             " named by secret_env"
         )
     scheme = parts.scheme.lower()
-    if not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("url is https, or http only to 127.0.0.1 or localhost (this machine)")
-    if not host:
-        raise ValueError("url is not a URL: it names no host")
+    source_url.check_transport(
+        "url",
+        scheme,
+        host,
+        loopback=NAMED_LOOPBACK,
+        http_said=_HTTP_ONLY_TO_THIS_MACHINE,
+        no_host="url is not a URL: it names no host",
+    )
+    assert host is not None  # check_transport refused an address without one
     if parts.fragment or "#" in value:
         raise ValueError("url has no fragment")
     pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]

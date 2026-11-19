@@ -279,7 +279,11 @@ class SignatureFailures:
     CredentialFailures): one IPv6 /64 is one address, and requests without a usable address
     share one. What is kept is bounded whatever arrives: at most `keys` pairs, each with at
     most `limit` times, so at most keys x limit times in all (10,000 x 20 by default); when
-    the table is full, the pair seen longest ago is forgotten, never a new one refused. The
+    the table is full, the pair forgotten is one not at its limit, the one seen longest ago of
+    those; a pair being refused is forgotten only when every pair is, and then the one seen
+    longest ago. A new one is never refused. Choosing reads the pairs seen longest ago first
+    and stops at the first not at its limit: at most `keys` of them. The counts start again
+    when the server restarts. The
     time is `clock()` in seconds (the app's clock), never earlier than a pair's last failure,
     so a clock that steps back frees nothing. Thread-safe."""
 
@@ -304,7 +308,7 @@ class SignatureFailures:
             failures = self._failures.pop(key, None) or deque()
             self._failures[key] = failures  # now the most recent
             while len(self._failures) > self.keys:
-                self._failures.popitem(last=False)
+                del self._failures[self._victim(key, self._clock())]
             now = max(self._clock(), failures[-1]) if failures else self._clock()
             while failures and failures[0] <= now - self._window:
                 failures.popleft()
@@ -312,6 +316,24 @@ class SignatureFailures:
                 return max(1, math.ceil(failures[0] + self._window - now))
             failures.append(now)
             return 0
+
+    def _over(self, failures: deque[float], now: float) -> bool:
+        """Whether a pair with `failures` is at its limit at `now` (it would be refused). A
+        pair holds at most `limit` times, oldest first."""
+        return len(failures) >= self._limit and failures[-self._limit] > now - self._window
+
+    def _victim(self, key: tuple[str, str], now: float) -> tuple[str, str]:
+        """The pair to forget, never `key`: the one seen longest ago that is not at its
+        limit, else the one seen longest ago."""
+        oldest = None
+        for pair, failures in self._failures.items():  # seen longest ago first
+            if pair == key:
+                continue
+            if not self._over(failures, now):
+                return pair
+            oldest = oldest or pair
+        assert oldest is not None  # more than one is kept, so another than `key` is
+        return oldest
 
     def tracked(self) -> int:
         """How many (install, address) pairs are kept."""

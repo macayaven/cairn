@@ -19,6 +19,12 @@ from cairn.store.reach import (
 
 NOT_A_KEY_MANAGER = "only the workspace's owners and admins make or revoke its keys"
 KEY_REVOKED = "this key was revoked: it opens no session"
+# Every key made from now on starts with this, so the note guard and anyone's secret scanner
+# can recognise one. It holds no ".", so a key is never taken for an OAuth token (grants'
+# prefixes hold one). It is the software's under any brand, as the token prefixes are
+# (cairn.web.brand). A key made before has no prefix and keeps working: a key is looked up
+# by the digest of the whole value, whatever its shape.
+KEY_PREFIX = "cairn_"
 
 
 # A1: what a key made. A row of made_with names a key, an agent's grant, or an approval no
@@ -72,7 +78,7 @@ class CredentialMethods(StoreBase):
         acts for them, and is revoked when they leave the workspace. A key made by a view
         that came with a key (`made_through`, A1: a web session opened with one) records
         that key's id, in the same write; revoke_key(..., with_made=True) takes it."""
-        key = secrets.token_urlsafe(32)
+        key = KEY_PREFIX + secrets.token_urlsafe(32)
         key_id = "key_" + secrets.token_hex(6)
         now = self._stamp()
         with self._write() as con:

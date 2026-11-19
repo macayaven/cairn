@@ -192,6 +192,7 @@ from cairn.sources import (
     holds_secret,
     names,
 )
+from cairn.sources import url as source_url
 from cairn.sources.fit import cut, fenced  # noqa: F401 (the cuts this kind makes, by name)
 from cairn.sources.timing import limit
 from cairn.store.memory import FIELD_MAX, is_project_name
@@ -215,7 +216,6 @@ SETTINGS = (
 SETTLE_MINUTES = (30, 0, 1440)  # the default, the least, the most
 LOOKBACK_DAYS = (30, 1, 365)
 BACKFILL_DAYS = (0, 0, 365)
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 # GitHub's account names: letters, digits and single hyphens, not at either end, at most 39.
@@ -348,29 +348,15 @@ def _check_items(config: Mapping[str, Any]) -> list[str]:
 
 
 def _check_base_url(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 2048:
-        raise ValueError("base_url is the address of GitHub's API")
-    try:
-        parts = urlsplit(value.strip())
-        host = parts.hostname
-    except ValueError:
-        raise ValueError("base_url is not a URL") from None
-    if "@" in parts.netloc:
-        raise ValueError(
-            "base_url must not hold a user or password: the token comes from the environment"
-        )
-    scheme = parts.scheme.lower()
-    if not host or not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("base_url is https, or http on this machine")
-    if parts.query or parts.fragment or "?" in value or "#" in value:
-        raise ValueError("base_url has no query or fragment")
-    pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]
-    if any(_looks_like_a_credential(piece) for piece in pieces if piece):
-        raise ValueError(
-            "base_url looks like it holds a token: the token comes from the environment, named"
-            " by token_env"
-        )
-    return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    return source_url.check_base_url(
+        value,
+        what="GitHub's API",
+        comes_from="the token comes from the environment",
+        named_by="token_env",
+        holds="a token",
+        http_said="on this machine",
+        looks_like=_looks_like_a_credential,
+    )
 
 
 def describe(config: Mapping[str, Any]) -> str:

@@ -310,10 +310,13 @@ class RateLimit:
     """At most `limit` allowed requests per client address in any `window` seconds, counted in
     memory. One IPv6 /64 is one address (it is one subscriber), and requests without a usable
     address share one count. No more than `max_addresses` are tracked: when the table is full,
-    the address seen longest ago is forgotten and the new one admitted, so a flood from many
-    addresses neither grows the table nor shuts out an address only because the table is
-    full. The price is that a forgotten address starts a fresh count. Each call is O(1).
-    Called on the event loop only."""
+    the address forgotten is one not at its limit, the one seen longest ago of those, and the
+    new one is admitted; an address being refused is forgotten only when every address is,
+    and then the one seen longest ago. So a flood from many addresses neither grows the table,
+    nor frees the addresses it holds back, nor shuts out an address only because the table is
+    full. The price is that a forgotten address starts a fresh count. A call is O(1), except
+    that a new address at a full table reads, oldest first, until it finds one not at its
+    limit: at most `max_addresses` entries. Called on the event loop only."""
 
     def __init__(
         self,
@@ -330,12 +333,27 @@ class RateLimit:
     def tracked(self) -> int:
         return len(self._hits)
 
+    def _over(self, hits: deque[float], now: float) -> bool:
+        """Whether an address with `hits` is at its limit at `now` (it would be refused).
+        A count holds at most `limit` times, oldest first; a limit below 1 refuses all."""
+        if self._limit < 1:
+            return True
+        return len(hits) >= self._limit and hits[-self._limit] > now - self._window
+
+    def _victim(self, now: float) -> str:
+        """The address to forget: the one seen longest ago that is not at its limit, else the
+        one seen longest ago."""
+        for address, hits in self._hits.items():  # seen longest ago first
+            if not self._over(hits, now):
+                return address
+        return next(iter(self._hits))
+
     def allow(self, address: str | None) -> bool:
         now, key = self._clock(), _network(address)
         hits = self._hits.get(key)
         if hits is None:
             while len(self._hits) >= self._max:
-                self._hits.popitem(last=False)
+                del self._hits[self._victim(now)]
             hits = self._hits[key] = deque()
         else:
             self._hits.move_to_end(key)

@@ -134,7 +134,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote
 
 import httpx
 
@@ -150,6 +150,7 @@ from cairn.sources import (
     fit,
     holds_secret,
 )
+from cairn.sources import url as source_url
 from cairn.sources.timing import limit
 from cairn.store.memory import is_project_name
 
@@ -176,7 +177,6 @@ VIA = "langfuse"
 LABEL = "langfuse"
 CONFIG_KEYS = ("base_url", "projects", "public_key_env", "secret_key_env", "score_name")
 REQUIRED_KEYS = CONFIG_KEYS[:4]
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 CURSOR_VERSION = 2  # 1: `seen` held the ids themselves; read, and written back as 2
 SCORE_ID = re.compile(r"[!-~]{1,128}")  # printable ASCII, no whitespace
@@ -272,31 +272,15 @@ def check_config(config: object) -> dict[str, Any]:
 
 
 def _check_base_url(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 2048:
-        raise ValueError("base_url is the address of the Langfuse server")
-    try:
-        parts = urlsplit(value.strip())
-        host = parts.hostname
-    except ValueError:
-        raise ValueError("base_url is not a URL") from None
-    if "@" in parts.netloc:
-        raise ValueError(
-            "base_url must not hold a user or password: the keys come from the environment"
-        )
-    scheme = parts.scheme.lower()
-    if not host or not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("base_url is https, or http on a loopback host")
-    if parts.query or parts.fragment or "?" in value or "#" in value:
-        raise ValueError("base_url has no query or fragment")
-    # The address as a whole, and each host label and path segment on its own: a key the
-    # URL carries is caught where it sits, not only at the start of the string.
-    pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]
-    if any(_looks_like_a_credential(piece) for piece in pieces if piece):
-        raise ValueError(
-            "base_url looks like it holds a credential: the keys come from the environment,"
-            " named by public_key_env and secret_key_env"
-        )
-    return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    return source_url.check_base_url(
+        value,
+        what="the Langfuse server",
+        comes_from="the keys come from the environment",
+        named_by="public_key_env and secret_key_env",
+        holds="a credential",
+        http_said="on a loopback host",
+        looks_like=_looks_like_a_credential,
+    )
 
 
 def _looks_like_a_credential(value: str) -> bool:

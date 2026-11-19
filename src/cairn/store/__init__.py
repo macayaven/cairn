@@ -241,9 +241,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   look at has expired.
 - API keys, UI session tokens, authorization codes and OAuth tokens are random
   (`secrets.token_urlsafe(32)`), returned in plaintext exactly once, and stored only as
-  SHA-256 hex digests. An access token starts with ACCESS_TOKEN_PREFIX and a refresh token
-  with REFRESH_TOKEN_PREFIX; both hold a ".", which a key or session token never does, so
-  none of them can be taken for another.
+  SHA-256 hex digests. An API key made now starts with KEY_PREFIX ("cairn_"), so a scanner
+  can recognise one; a key made before has none and works as it did, since a key is found
+  by the digest of its whole value. An access token starts with ACCESS_TOKEN_PREFIX and a
+  refresh token with REFRESH_TOKEN_PREFIX; both hold a ".", which a key or session token
+  never does, so none of them can be taken for another.
 - OAuth clients belong to no account and are not scoped. `register_client(name,
   redirect_uris) -> OAuthClient` (id "client_" + 32 hex chars; ValueError for a blank name
   or one over 80 characters, for no URI or more than 10, or for a URI that is empty or over
@@ -1069,7 +1071,7 @@ from cairn.store.base import (
     StoreUnusable,
     _transaction,
 )
-from cairn.store.credentials import CredentialMethods
+from cairn.store.credentials import KEY_PREFIX, CredentialMethods
 from cairn.store.erasure import ErasureMethods
 from cairn.store.expiry import ExpiryMethods
 from cairn.store.grants import (
@@ -1231,6 +1233,7 @@ __all__ = [
     "HISTORY_FACTOR",
     "INVITE_TTL",
     "JOINS",
+    "KEY_PREFIX",
     "LEVELS",
     "LIMITED",
     "LIMITS",

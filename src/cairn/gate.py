@@ -54,11 +54,12 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   passage the claim is not (and the line, where the claim adds structure), never text, and
   says what to do. A cited id the gate was not given is passed over here (the strict gate
   reports it as provenance.unknown_passage) and never repeated; a claim left with no passage
-  is refused. A claim that is its passages whole but leaves a code fence open (it copies
-  a passage of a note that never closes one) is refused as before, naming the line, since it
-  would leave the page's fence open. Violations follow strict_lint_gate's; the metrics are
-  strict_lint_gate's. The extractive draft passes by construction, and for it the result
-  equals strict_lint_gate's, except for a passage that leaves a code fence open.
+  is refused. A claim that is its passages whole and leaves a code fence open (it copies
+  a passage of a note that never closes one) passes, as lint_gate passes it when the note is
+  saved: the body closes the fence where the claim ends (compiler.render_body), so a page
+  that holds one is tidied and arranged again (review 7.2). Violations follow
+  strict_lint_gate's; the metrics are strict_lint_gate's. The extractive draft passes by
+  construction, and for it the result equals strict_lint_gate's.
 - Cost: a passage is read once per gate call however many claims cite it, and a claim once
   however many passages it cites, so the work is linear in their text.
 - What it cannot do: it keeps a passage whole; it does not keep two passages together. A
@@ -86,7 +87,6 @@ _WHITESPACE = re.compile(r"[ \t\r\n]+")
 _LEADS = re.compile(r"[-*+](?: |$)|>")
 _MARKERS_ALONE = re.compile(r"(?:[-*+](?: |$)|> ?)+")
 _QUOTED = re.compile(r"^[ \t]*(?:> ?)+")  # a line's quote markers, set aside to find code
-_FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)")  # a code fence and its info string
 _ITEM = re.compile(r"(?:[-*+]|\d{1,9}[.)])(?: |$)")  # a list item's marker, at its text's start
 # A line's text (indentation and quote markers aside) that Markdown reads as structure.
 _STRUCTURE = re.compile(
@@ -230,8 +230,6 @@ def _not_verbatim(
                 f"{_WHOLE}; line {at} adds a line break, a rule or indentation that "
                 f"{span_id} does not have: keep the lines of {span_id} as they are",
             )
-    if bad := _open_fence(lines):
-        return _refusal(claim, f"line {bad} opens a code fence the claim never closes")
     return None
 
 
@@ -319,24 +317,6 @@ def _structure(lines: Iterable[str]) -> int | None:
                 return number  # an item with no text on its line, or with code or a rule
             items.append(column + item.end())
     return None
-
-
-def _open_fence(lines: Iterable[str]) -> int | None:
-    """The number of the line whose code fence the text leaves open, or None. A fence is three
-    or more backticks or tildes at a line's start, and only a run of the same character at
-    least as long, with nothing after it, closes it (CommonMark)."""
-    opened: tuple[int, str] | None = None  # (line number, fence)
-    for number, line in enumerate(lines, 1):
-        fence = _FENCE.fullmatch(line.rstrip(" \t\r"))
-        if not fence:
-            continue
-        run, rest = fence[1], fence[2]
-        if opened is None:
-            if not (run[0] == "`" and "`" in rest):  # "```a```" is inline code, not a fence
-                opened = (number, run)
-        elif run[0] == opened[1][0] and len(run) >= len(opened[1]) and not rest.strip(" \t"):
-            opened = None
-    return opened[0] if opened else None
 
 
 def _refusal(claim: Claim, message: str) -> str:

@@ -9,7 +9,10 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
   claim in order and appends claims for spans it does not cite yet. Nothing new: "unchanged".
 - The body is "# <title>" followed by the claim texts in claim order, separated by blank
   lines. A claim whose span's heading path differs from the previous claim's is preceded by
-  "## <last heading path segment>" (skipped when that segment equals the title).
+  "## <last heading path segment>" (skipped when that segment equals the title). A claim
+  whose text opens a code fence it never closes (it copies a note that never closes one) is
+  followed by a line that closes it, the opener's own indentation and run, so the claim after
+  it is never read as code (review 7.2); the claim's text is never changed.
 - Before saving, the candidate page and the spans its claims cite go through a gate. A
   failing gate saves nothing and returns status "rejected" with the gate's result. The gate's
   metrics are saved with the page version.
@@ -93,6 +96,8 @@ SAVE_TRIES = 3  # reads of a page that keeps moving before a compile gives up
 STALE_PAGE = "compile.stale_page"  # the code of a compile that lost its page SAVE_TRIES times
 TAG_SIZES = (8, 12, 16)  # hex characters of the tag a colliding topic's slug ends with
 _ADDRESS_BATCH = 8  # slugs looked up in one read when choosing a new page's address
+# A code fence, three or more backticks or tildes after any indentation, and its info string.
+_FENCE = re.compile(r"([ \t]*)(`{3,}|~{3,})(.*)")
 
 
 class GateResult(BaseModel):
@@ -262,12 +267,31 @@ def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) 
         path = next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
         section, headings = section_headings(title, path, previous)
         if not section:
-            top.append(claim.text)
+            top.append(_closed(claim.text))
             continue
         rest.extend(f"{'#' * level} {text}" for level, text in headings)
-        rest.append(claim.text)
+        rest.append(_closed(claim.text))
         previous = section
     return "\n\n".join([*top, *rest]) + "\n"
+
+
+def _closed(text: str) -> str:
+    """`text`, and when it leaves a code fence open, a line that closes it: the opener's own
+    indentation and run, so it closes inside a list item too. A fence is three or more
+    backticks or tildes at a line's start ("```a```" is inline code), and only a run of the
+    same character at least as long, with nothing after it, closes it (CommonMark)."""
+    opened: tuple[str, str] | None = None  # (indentation, run)
+    for line in text.split("\n"):
+        fence = _FENCE.fullmatch(line.rstrip(" \t\r"))
+        if not fence:
+            continue
+        indent, run, rest = fence.groups()
+        if opened is None:
+            if not (run[0] == "`" and "`" in rest):
+                opened = (indent, run)
+        elif run[0] == opened[1][0] and len(run) >= len(opened[1]) and not rest.strip(" \t"):
+            opened = None
+    return text if opened is None else f"{text}\n{opened[0]}{opened[1]}"
 
 
 def previous_render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) -> str:

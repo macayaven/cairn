@@ -487,7 +487,8 @@ class PortableMethods(StoreBase):
         The operator's call, not a workspace's: only the store that opened the database may
         run it (PermissionError on any view), and a narrowed view is refused as for any
         management call. It costs a full rewrite of the file, every workspace's data, and it
-        holds the store's lock throughout, so every other call of this process waits; another
+        holds the writer's lock throughout, so every other write of this process waits
+        (reads do not: they have connections of their own, base.Readers); another
         process writing to the file waits too, and one reading it makes the checkpoint
         incomplete: then sqlite3.OperationalError says so, and running it again once that
         reader is done finishes the job."""

@@ -3,11 +3,12 @@ small helpers they share: the clock, digests, transactions and account rows.
 
 A transaction that fails (R1). Beginning, the body and the commit are under one handler
 (_transaction): whatever fails, the transaction is rolled back before the error goes on, so
-the one connection every view shares is never left inside a transaction and the next call
-works as if nothing had happened once the cause is gone; nothing of the failed write is
-kept. SQLite rolls some failures back by itself (a full disk, an I/O error); then there is
-nothing left to roll back. Whether a rollback is needed, and whether it worked, is read from
-the connection (`in_transaction`), never guessed from which statement raised.
+no connection the views share (the writer, a reader of the pool) is left inside a
+transaction and the next call works as if nothing had happened once the cause is gone;
+nothing of the failed write is kept. SQLite rolls some failures back by itself (a full
+disk, an I/O error); then there is nothing left to roll back. Whether a rollback is needed,
+and whether it worked, is read from the connection (`in_transaction`), never guessed from
+which statement raised.
 
 If the rollback itself fails, the store does not go on in an unknown state: it is unusable.
 The call that found it raises StoreUnusable, the connection is closed (SQLite rolls back

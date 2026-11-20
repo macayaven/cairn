@@ -1270,6 +1270,9 @@ class Memory:
         }
         if lost_race(result):  # N1: stored, and waiting for serve to file it
             answer |= {"status": WAITING, "message": WAITS}
+        elif result.status == "rejected":  # its topic's page, if any, was refused it
+            slug = self._page_of(note)[0]  # the Notes page's rule, as FiledOnce answers
+            answer |= {"page": slug, "version": result.version if slug else None}
         return answer
 
     def file_waiting(self, note_id: str) -> str | None:

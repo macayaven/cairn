@@ -848,6 +848,10 @@ class Accounts:
         data. Each is looked up on the store when it is called."""
 
         def operation(name: str) -> Any:
+            if name == "rotate_refresh_token":
+                return lambda *args, **named: self._store.rotate_refresh_token(
+                    *args, allowed=self._allowed, **named
+                )
             return lambda *args, **named: getattr(self._store, name)(*args, **named)
 
         names = [field.name for field in dataclasses.fields(oauth.Ledger)]

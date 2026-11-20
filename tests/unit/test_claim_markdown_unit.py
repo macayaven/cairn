@@ -7,7 +7,8 @@ with its own citations, under the headings of its own passages.
 
 Below that, the other limits of a body that is the notes' own Markdown, each shown by parsing
 the assembled body and each with what does not happen: one note's link definition makes a
-link of a bracketed word in another's claim; a claim that begins with indentation, after a
+link of a bracketed word in another's claim, and of two notes that define one label the
+first is the address of every use; a claim that begins with indentation, after a
 claim that ends in a list, is read as part of that list's last item; and for a reader with
 raw HTML on, an HTML block a note leaves open holds the claims after it. Every claim's text
 is still exact in the claims list, and the web view shows each claim by itself
@@ -135,6 +136,26 @@ def test_a_link_definition_in_one_claim_makes_a_link_of_a_word_in_another(filed,
     assert render(DEFINITION) == ""
     assert render("    " + DEFINITION) == f"<pre><code>{DEFINITION}\n</code></pre>\n"
     assert all("<a " not in render(claim.text) for claim in page.claims)
+
+
+def test_when_two_notes_define_one_label_every_use_in_the_body_takes_the_first(filed):
+    """Muse's third reading, finding 3. A link definition holds for the whole document, and
+    of two for one label CommonMark takes the first: the second note's word, which in its
+    own text points at the second address, is a link to the first in the body."""
+    first = "[quill]: https://first.example.invalid/\nSee [quill] one."
+    second = "[quill]: https://second.example.invalid/\nSee [quill] two."
+    page = filed([first, second])
+    for reader in (BODY, HTML_ON):
+        shown = read(page.body, reader)
+        assert ("p", 0, "See [quill] one.", "https://first.example.invalid/") in shown
+        assert ("p", 0, "See [quill] two.", "https://first.example.invalid/") in shown
+        assert not any("second.example.invalid" in str(block[3:]) for block in shown)
+    # what does not happen: the claims list holds each note's text, and each claim by itself,
+    # as the web view shows it, links to the address its own note gives
+    assert [claim.text for claim in page.claims] == [first, second]
+    for alone, address in ((first, "first"), (second, "second")):
+        (link,) = re.findall(r'<a href="([^"]*)"', render(alone))
+        assert link == f"https://{address}.example.invalid/"
 
 
 @pytest.mark.parametrize(

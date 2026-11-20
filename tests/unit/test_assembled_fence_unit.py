@@ -764,7 +764,8 @@ def test_a_forget_that_brings_1997_such_fences_together_renders_eighteen_times_a
     indented fences, which after the margin note are indented text. Forgetting the margin
     note makes each of them a fence that closes or opens the next. The body closes sixteen;
     the claim then left open leaves and the rest is rendered again, sixteen times; past
-    that, the claim named leaves with every claim after it that holds a backtick or a tilde.
+    that, the claim named leaves with every claim the body writes after it that can open a
+    fence (store.erasure._with_it; test_forget_ceiling_order_unit.py).
     So a note's author cannot make a forget cost a render for each claim."""
     fences = [f"    ~~~\n    sample {n}" for n in range(1997)]
     answers = [
@@ -785,7 +786,8 @@ def test_a_forget_that_brings_1997_such_fences_together_renders_eighteen_times_a
         == []
     )
     # each claim alone once; then eighteen renders, each every claim left alone and the body
-    # at most seventeen times: no more, whatever the note holds
+    # at most seventeen times: no more, whatever the note holds (within it, since the fourth
+    # report: one line of each claim after the one named, once, in the seventeenth render)
     assert count <= 1997 + (CLOSERS_MAX + 2) * (1997 + CLOSERS_MAX + 1)
     assert store.get_note(answers[2]["note_id"]) is not None  # the note stays stored
 

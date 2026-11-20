@@ -27,6 +27,7 @@ import hashlib
 import io
 import json
 import random
+import re
 
 import pytest
 from markdown_it import MarkdownIt
@@ -224,15 +225,10 @@ def fences_cross(page) -> list[str]:
     return found
 
 
-def rows(text: str) -> list[str]:
-    """The rule, stated here on its own: the text's lines, each without a CR and the spaces
-    and tabs at its end, with the blank lines at the two ends dropped."""
-    out = [line.rstrip(" \t\r") for line in text.split("\n")]
-    while out and not out[0]:
-        out.pop(0)
-    while out and not out[-1]:
-        out.pop()
-    return out
+def rows(text: str) -> str:
+    """The rule, stated here on its own and not as the code writes it: every run of spaces,
+    tabs and CRs that ends a line deleted, then every line feed at the two ends."""
+    return re.sub(r"[ \t\r]+$", "", text, flags=re.MULTILINE).strip("\n")
 
 
 def faults(store: Store, project_id: str) -> list[str]:

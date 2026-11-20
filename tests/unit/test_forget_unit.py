@@ -130,7 +130,7 @@ def test_a_claim_that_joins_sentences_of_a_forgotten_note_goes_with_it(store):
 
 
 def test_kept_claims_keep_order_ids_and_text():
-    span = chunk("n", "Lumen  keeps\nits rule.")[0]  # a passage, which the gate reads by kind
+    span = chunk("n", "Lumen keeps its rule.  ")[0]  # its words, as the gate compares them
     claims = [
         Claim(id="cl_1", text="Gone.", span_ids=("sp_a",)),
         Claim(id="cl_2", text="Lumen keeps its rule.", span_ids=("sp_a", "sp_b")),

@@ -9,8 +9,8 @@ Matching
   around it are not [0-9a-z_], so "--json" is not in "--jsonl" and "5" is not in "15". An
   empty norm always occurs. normalize() reads a text alone, never as Markdown.
 - A code_block fact is matched line by line: each entry of its `lines`.
-- A claim is in the page body when its whitespace-collapsed text is a substring of the
-  whitespace-collapsed body.
+- A claim of a page of the `lint` command is in its body when its whitespace-collapsed text
+  is a substring of the whitespace-collapsed body (a rendered page: below).
 - A rendered page (lint_pages(..., rendered=True), what every gate asks, cairn.gate: its
   body is what compiler.render_body writes of its claims, checked byte for byte) is read
   by its claims, never by its body as one document (CORE5): retention, the plain metrics

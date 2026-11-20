@@ -9,6 +9,7 @@ citation, through a tidy, an export and an import. Made-up notes."""
 
 import io
 import itertools
+import re
 
 import pytest
 
@@ -182,18 +183,13 @@ def one_edit(text: str):
 
 
 def ignored(first: str, second: str) -> bool:
-    """The rule, written out here on its own: the same rows once each loses a CR and the
-    spaces and tabs at its end, with the blank rows at the two ends dropped."""
+    """The rule, written out here on its own and not as the code writes it: delete every run of
+    spaces, tabs and CRs that ends a line, then every line feed at the two ends."""
 
-    def rows(text: str) -> list[str]:
-        out = [row.rstrip(" \t\r") for row in text.split("\n")]
-        while out and not out[0]:
-            out.pop(0)
-        while out and not out[-1]:
-            out.pop()
-        return out
+    def kept(text: str) -> str:
+        return re.sub(r"[ \t\r]+$", "", text, flags=re.MULTILINE).strip("\n")
 
-    return rows(first) == rows(second)
+    return kept(first) == kept(second)
 
 
 @pytest.mark.parametrize("text", TEXTS)
@@ -233,9 +229,10 @@ def test_a_draft_that_copies_one_passage_twice_with_a_space_is_refused(store):
 
 
 def again_with(suffix: str, copies: int = 1):
-    """A composer, as LLMComposer may answer (its ids are a hash of text and citations, so
-    claims that differ only by spaces at a line's end are kept): the passage, then `copies`
-    more claims of it, each with `suffix` added once more."""
+    """A composer that copies one passage `copies` more times, each with `suffix` added once
+    more. With a space or a tab it is what LLMComposer may answer (its ids are a hash of text
+    and citations, so claims that differ only at a line's end are kept); with no suffix it is
+    not (LLMComposer drops a claim the same as an earlier one), and stands for any composer."""
 
     def compose(title: str, spans) -> Draft:
         (span,) = spans

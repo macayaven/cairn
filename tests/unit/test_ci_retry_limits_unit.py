@@ -12,7 +12,9 @@ run them. Job by job, after the five days:
   main's image again), while `release_check` still passes the tag;
 - once the version is published and until the release exists, `verify` and `package` take no
   artifact, and `package` re-run alone builds the files again, followed by `attest` and
-  `release`;
+  `release`; `package` runs only after a `verify` that passed, so when `verify` failed it is
+  the failed jobs that are re-run, and `package` follows `verify` (fifth report, on the
+  README's recovery sentences);
 - once the release exists, `release_check` refuses a whole re-run; `aliases` takes no
   artifact, re-runs alone, and runs only after a `release` that passed; a candidate has no
   `aliases`;
@@ -30,7 +32,7 @@ from pathlib import Path
 import pytest
 from test_ci_promote_unit import Runner, digest, manifest, run_aliases
 from test_ci_release_unit import CANDIDATE
-from test_ci_workflow_unit import JOBS, TAG, jobs_that_run, release_check, rerun
+from test_ci_workflow_unit import JOBS, TAG, jobs_that_run, needs, release_check, rerun
 
 README = " ".join(
     (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8").split()
@@ -69,11 +71,21 @@ def test_the_jobs_that_take_an_artifact_are_the_ones_the_readme_names():
 def test_until_the_release_exists_a_tag_is_finished_whole_or_from_package():
     assert (
         "On a tag, after the five days: while the tag has no GitHub release, re-run all its"
-        " jobs, or, once its image is published, job `package` alone, which builds the files"
-        " again and which `attest` and `release` follow; either way a draft an earlier attempt"
-        " left is published when it holds exactly the files built again, and otherwise stops"
-        " `release` with its line and is deleted by hand." in CI
+        " jobs, or, once its image is published and `verify` has passed, job `package` alone,"
+        " which builds the files again and which `attest` and `release` follow (`package` runs"
+        " only after a `verify` that passed: when `verify` failed, re-run the failed jobs, and"
+        " `package` follows it); either way a draft an earlier attempt left is published when"
+        " its title and notes are this run's and it holds exactly the files built again, and"
+        " otherwise stops `release` with its line and is deleted by hand." in CI
     )
+    # `package` needs `verify`, and is skipped while `verify` has failed; `verify` takes no
+    # artifact, so it can be re-run after the five days, and `package` is among the jobs
+    # GitHub then runs after it.
+    assert needs(JOBS["package"]) == {"release_check", "publish", "verify"}
+    assert "package" in jobs_that_run(TAG, RELEASED)
+    assert "package" not in jobs_that_run(TAG, RELEASED, failed=frozenset({"verify"}))
+    assert "verify" not in takes("image") | takes("release")
+    assert {"package", "attest", "release"} <= rerun({"verify"})
     # (Whole: test_ci_one_build_unit.test_a_tag_run_re_run_whole_promotes_the_same_digest...;
     # the draft: test_ci_release_retry_unit, "this run's draft with exactly this run's files
     # is published", "with the names and other bytes is not published", and

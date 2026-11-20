@@ -854,11 +854,12 @@ def test_the_draft_s_stop_has_its_row_and_the_row_says_what_the_tests_above_run(
     assert next_step == (
         "Delete it on the repository's releases page and re-run the job, which makes the release"
         " again (once the five days the run's files are kept have passed, re-run `package`"
-        " instead, which `release` follows). Do not publish it by hand: the job then finds a"
-        " public release it cannot finish."
+        " instead, which runs only after a `verify` that passed and which `release` follows). Do"
+        " not publish it by hand: the job then finds a public release it cannot finish."
     )
-    # `package` re-run alone is followed by `release`, which then finds no release and makes it.
-    assert "release" in rerun({"package"})
+    # `package` re-run alone is followed by `release`, which then finds no release and makes it;
+    # it needs `verify` (test_ci_retry_limits_unit runs what a failed `verify` does to it).
+    assert "release" in rerun({"package"}) and "verify" in JOBS["package"]["needs"]
 
 
 def test_a_look_that_does_not_show_the_job_s_own_write_has_its_row(tmp_path):

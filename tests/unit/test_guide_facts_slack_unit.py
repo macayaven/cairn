@@ -754,8 +754,9 @@ def test_connect_the_page_shows_the_title_and_the_author_as_the_note_writes_them
     says(
         *CONNECT,
         "Its page shows that title, and the heading with the author's name, as the note writes "
-        "them for Markdown: where they hold a character Markdown reads, such as `[`, `&` or `*`, "
-        "the backslash or entity that keeps it text shows there.",
+        "them for Markdown: where they hold a character Markdown reads, such as `[` or `&`, the"
+        " backslash or entity that keeps it text shows there, and bold text shows its"
+        " asterisks.",
     )
     bench = Bench(tmp_path)
     try:
@@ -764,9 +765,9 @@ def test_connect_the_page_shows_the_title_and_the_author_as_the_note_writes_them
         )
         bench.link(ADA_SLACK, bench.ada, bench.library)
         message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100"}
-        asyncio.run(handle(bench, {**message, "text": "Q&amp;A [notes]"}).background())
+        asyncio.run(handle(bench, {**message, "text": "Q&amp;A [notes] *now*"}).background())
         (listed,) = bench.owner.list_pages(bench.library.id)
-        assert listed.title == "Q&amp;A \\[notes\\]"
+        assert listed.title == "Q&amp;A \\[notes\\] **now**"
         session = bench.store.sign_in(
             "sso", "sub-ada", "ada@example.test", "Ada", issuer="https://sso.example.test",
             join="personal",
@@ -775,7 +776,7 @@ def test_connect_the_page_shows_the_title_and_the_author_as_the_note_writes_them
         with TestClient(app, base_url=BASE) as client:
             client.cookies.set(session_cookie("https"), session.token)
             html = client.get(f"/b/library/p/{listed.slug}").text
-        assert "Q&amp;amp;A \\[notes\\]" in html and "Ana &amp;amp; Bo \\[x\\]" in html
+        assert "Q&amp;amp;A \\[notes\\] **now**" in html and "Ana &amp;amp; Bo \\[x\\]" in html
     finally:
         bench.store.close()
 

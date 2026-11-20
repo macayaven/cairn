@@ -165,3 +165,20 @@ def test_the_reply_names_the_note_as_slack_displayed_it(tmp_path):
             assert label_of(reply) == "Q&A [notes] now for the ledger #4", reply
     finally:
         bench.store.close()
+
+
+def test_a_title_costs_a_bounded_number_of_readings(monkeypatch):
+    """The cut reads the whole first line once, then at most TITLE_MAX cuts of a title's
+    length, and the reply's form of it once more: TITLE_MAX + 2 parses at most, however long
+    the message. A first line all bold is the worst: no cut of it displays the start of what
+    it displays, and each is tried before it is written as its plain characters."""
+    from cairn.slack import text as slack_text
+
+    read, parse = [], slack_text._PARSER.parse
+    monkeypatch.setattr(
+        slack_text._PARSER, "parse", lambda t, *a: read.append(len(t)) or parse(t, *a)
+    )
+    title = slack_text._title("*" + "a" * 4000 + "*\nRow 4.", {}, [])
+    slack_text.displayed_title(title)
+    assert title == "a" * TITLE_MAX
+    assert len(read) <= TITLE_MAX + 2 and sorted(read)[-2] <= TITLE_MAX + 3, read

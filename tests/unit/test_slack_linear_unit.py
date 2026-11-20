@@ -49,6 +49,10 @@ SHAPES = {
     "indented": "a\n    b\n",
     "brackets": "[",
     "mentions": "<@U0CEDAR01>",
+    "hashes": "#",  # a title's closing run (_CLOSING)
+    "list marks": "- ",  # what may stand before a fence of tildes (_FENCE_LEAD)
+    "escaped brackets": "\\[",  # a title's escapes (_ATOM)
+    "bold words": "*a* ",  # a title no cut keeps
 }
 
 

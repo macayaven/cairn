@@ -718,15 +718,46 @@ def test_a_title_whose_words_stand_far_apart_is_given_by_the_first_of_the_match(
     assert (there.line, there.line_cut) == (apart[:LINE_MAX], True)
 
 
-@pytest.mark.parametrize("mark", relating.MARKS)
-def test_a_claim_whose_text_holds_a_mark_of_the_index_gives_no_line(store, ops, mark):
+NO_LINE = [
+    *((mark, where) for mark in relating.MARKS for where in ("before the title", "after it")),
+    *(("\x00", where) for where in ("before the title", "after it", "between its words")),
+]
+
+
+@pytest.mark.parametrize(("mark", "where"), NO_LINE)
+def test_a_claim_whose_text_holds_a_mark_of_the_index_or_a_null_gives_no_line(
+    store, ops, mark, where
+):
     """The index says where it matched by putting two marks around the match (relating.MARKS,
     two characters Unicode keeps out of every text exchanged). In a claim that holds one of
-    them the place cannot be told from the marks, and no line is given: the claim is cut,
-    says so, and `page` gives it whole."""
-    whole = "Ada waits for the nightly log. " * 30 + f"She opens {mark} the Quill ledger."
+    them the place cannot be told from the marks; and SQLite's own reading of a text stops
+    at a null character, so of a claim that holds one the place and the part handed back
+    would be wrong. Neither gives a line: the claim is cut, says so, and `page` gives it
+    whole. (A claim may hold any of the three: a note is stored as it is written. Between
+    the title's words a mark makes one word of the two, and there is no mention.)"""
+    named = {
+        "before the title": f"She opens {mark} the Quill ledger.",
+        "after it": f"She opens the Quill ledger {mark} at noon.",
+        "between its words": f"She opens the Quill{mark}ledger at noon.",
+    }[where]
+    whole = "Ada waits for the nightly log. " * 30 + named
     there = mention(store, ops, whole)
     assert (there.cut, there.line, there.line_cut) == (True, None, False)
+    (held,) = store.get_page(ops.id, "long").claims
+    assert held.text == whole  # stored whole, the character with it
+
+
+@pytest.mark.parametrize(
+    "lead", ["\U0001f600" * 500, "\u20ac" * 300 + "\u00e9" * 300, "\x01" * 500]
+)
+def test_the_place_of_a_mention_is_counted_in_characters(store, ops, lead):
+    """Characters of four, three, two and one bytes before the title, on its own long line:
+    the line given is the rule's, at the place the title stands in characters."""
+    whole = "Ada waits for the nightly log. " * 30 + "\n" + lead + " the Quill ledger at noon."
+    start = whole.index("Quill ledger")
+    there = mention(store, ops, whole)
+    assert (there.line, there.line_cut) == relations.line_of(whole, start, start + 12)
+    assert there.line_cut and "Quill ledger" in there.line
 
 
 def test_one_claim_cut_gives_each_term_its_own_line(store, ops):

@@ -390,7 +390,10 @@ def _named(
     statement's plan).
 
     A claim whose own text holds one of the MARKS has no line here: the first mark would not
-    say where the match is. It stays as it was read, cut and saying so. One statement."""
+    say where the match is. Nor has one that holds a null character, where SQLite's reading
+    of a text stops: its place and the part handed back would be wrong (its bytes are asked
+    for the null, which the text's own functions do not see). Such a claim stays as it was
+    read, cut and saying so. One statement."""
     before = relations.LINE_MAX
     found = {}
     for row, start, until, part, own in con.execute(
@@ -398,7 +401,7 @@ def _named(
         " placed.until - max(1, placed.start - ?3),"
         " substr(held.text, max(1, placed.start - ?3),"
         " placed.until + ?3 - max(1, placed.start - ?3)),"
-        " instr(held.text, ?4) + instr(held.text, ?5)"
+        " instr(held.text, ?4) + instr(held.text, ?5) + instr(CAST(held.text AS BLOB), X'00')"
         " FROM (SELECT row, instr(marked, ?4) AS start,"
         " min(instr(marked, ?5) - 1, instr(marked, ?4) + ?3 + 1) AS until"
         f" FROM (SELECT {index}.rowid AS row, highlight({index}, 5, ?4, ?5) AS marked"

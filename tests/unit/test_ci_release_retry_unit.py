@@ -437,8 +437,7 @@ GH_LINES = [
     ' | contains(\\"$mark\\")), (.name | . == null or . == \\"\\" or . =='
     ' \\"$GITHUB_REF_NAME\\"), ((.body // \\"\\") | @base64), ([.assets[].name] | sort |'
     ' join(\\" \\"))] | @tsv"',
-    'gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || refuse "its files could'
-    ' not be downloaded to compare"',
+    'gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || unread',
     'gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME"'
     ' --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"',
     'gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"',
@@ -665,13 +664,100 @@ def test_a_release_this_run_cannot_finish_stops_the_job_in_one_sentence(
     assert said in error
 
 
-def test_a_published_release_whose_files_cannot_be_read_is_refused(tmp_path):
-    existing = made_earlier("v1.2.3", False)
-    done, calls = run(
-        tmp_path, "v1.2.3", "", existing, attached("v1.2.3"), DOWNLOAD_FAILS="published"
+UNREAD = (
+    "::error::the files of the GitHub release for {tag}, {state}, could not be downloaded, so"
+    " they were not compared and nothing shows that they differ; re-run this job, and delete"
+    " nothing"
+)
+
+
+@pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
+@pytest.mark.parametrize("existing", [None, "draft"], ids=["made now", "left by an attempt"])
+def test_a_download_that_fails_before_the_publication_is_not_a_draft_that_differs(
+    tmp_path, tag, candidate, existing
+):
+    """A download that fails says nothing about the files. The step used to answer it with the
+    line of a release this run cannot finish, which tells a person to delete the release, when
+    a plain re-run finishes. Now it says so in a line of its own, publishes nothing, and the
+    re-run compares the draft and publishes it."""
+    held_ = made_earlier(tag, candidate == "true", draft=True) if existing else None
+    assets = attached(tag) if existing else None
+    done, calls = run(tmp_path, tag, candidate, held_, assets, DOWNLOAD_FAILS="draft")
+    assert done.returncode == 1
+    assert the_error(done) == UNREAD.format(tag=tag, state="a draft")
+    assert [line.split()[1:3] for line in writes(calls)] == (
+        [] if existing else [["release", "create"]]
     )
-    assert done.returncode == 1 and writes(calls) == []
-    assert "its files could not be downloaded to compare" in the_error(done)
+    (draft,) = held(tmp_path)
+    assert draft["draft"] is True and calls[-1].startswith("gh release download")
+    done, calls = attempt(tmp_path, tag, candidate)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [line.split()[1:3] for line in writes(calls)] == [["api", "--method"]]
+    assert held(tmp_path) == [{**draft, "draft": False}]
+
+
+@pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
+@pytest.mark.parametrize("existing", [None, "draft", "published"])
+def test_a_download_that_fails_after_the_publication_is_not_a_release_that_differs(
+    tmp_path, tag, candidate, existing
+):
+    """The same after the publication, and on a release an earlier attempt published: the line
+    says the release is public, nothing is written after the failure, and the re-run compares
+    the published release and succeeds, unwritten."""
+    held_ = None
+    if existing:
+        held_ = made_earlier(tag, candidate == "true", draft=existing == "draft")
+    assets = attached(tag) if existing else None
+    done, calls = run(tmp_path, tag, candidate, held_, assets, DOWNLOAD_FAILS="published")
+    assert done.returncode == 1
+    assert the_error(done) == UNREAD.format(tag=tag, state="public")
+    assert [line.split()[1:3] for line in writes(calls)] == {
+        None: [["release", "create"], ["api", "--method"]],
+        "draft": [["api", "--method"]],
+        "published": [],
+    }[existing]
+    (public,) = held(tmp_path)
+    assert public["draft"] is False and calls[-1].startswith("gh release download")
+    done, calls = attempt(tmp_path, tag, candidate)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert writes(calls) == [] and held(tmp_path) == [public]
+
+
+def test_the_line_of_a_download_that_fails_tells_nobody_to_delete_and_has_its_row():
+    for state in ("a draft", "public"):
+        line = UNREAD.format(tag="v1.2.3", state=state)
+        assert "delete it" not in line and line.endswith("re-run this job, and delete nothing")
+    means, next_step = cells(
+        "the files of the GitHub release for …, …, could not be downloaded, so they were not"
+        " compared and nothing shows that they differ"
+    )
+    assert means == (
+        "GitHub did not give the job the release's files to compare, before the publication"
+        " (the line says a draft) or after it (public): that says nothing about the files"
+    )
+    assert next_step == (
+        "Re-run the job, which starts from what is listed then: it compares this run's draft and"
+        " publishes it, or compares the published release. Delete nothing, unless a draft's"
+        " download fails at every re-run: such a draft may hold a file whose upload was cut,"
+        " which GitHub may not serve, and is then deleted on the releases page and the job"
+        " re-run, as for an unfinished draft."
+    )
+
+
+def test_a_draft_whose_download_fails_at_every_re_run_is_deleted_and_made_again(tmp_path):
+    """The row's exception, done. Whether GitHub serves a file whose upload was cut is not
+    known here (the row says "may"); what is run is that the line repeats, writes nothing, and
+    that the draft deleted by hand is made again by the re-run."""
+    existing = made_earlier("v1.2.3", False, draft=True)
+    setup(tmp_path, "v1.2.3", existing, attached("v1.2.3"))
+    for _ in range(2):
+        done, calls = attempt(tmp_path, "v1.2.3", "", DOWNLOAD_FAILS="draft")
+        assert done.returncode == 1 and writes(calls) == [] and held(tmp_path) == [existing]
+        assert the_error(done) == UNREAD.format(tag="v1.2.3", state="a draft")
+    by_hand(tmp_path, "delete")
+    done, calls = attempt(tmp_path, "v1.2.3", "")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [(r["id"], r["draft"]) for r in held(tmp_path)] == [(88, False)]
 
 
 def test_a_release_of_another_tag_is_none_of_this_one_s(tmp_path):

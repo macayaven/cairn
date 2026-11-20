@@ -1795,6 +1795,10 @@ jobs:
             echo "::error::the GitHub release for $GITHUB_REF_NAME is a draft that an earlier attempt of run $GITHUB_RUN_ID left unfinished, which this job neither deletes nor publishes; delete it on the repository's releases page and re-run this job, which makes the release again"
             exit 1
           }
+          unread() {
+            echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing"
+            exit 1
+          }
           differs() {
             echo "::error::the GitHub release for $GITHUB_REF_NAME, $state, carries run $GITHUB_RUN_ID's mark and differs from what that run wrote in its $1; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job"
             exit 1
@@ -1822,11 +1826,11 @@ jobs:
             [ -z "$what" ] || differs "$what"
           }
           # Its files against the ones this run attested: the names listed, then the names and
-          # the bytes downloaded into $2. $1 is what a difference does.
+          # the bytes downloaded into $2. $1 is what a difference does. A download that fails
+          # is not a difference: the job stops and says so, and a re-run compares again.
           same_files() {
             [ "$names" = "$want" ] || "$1" "its files are [$names], not [$want]"
-            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" \
-              || refuse "its files could not be downloaded to compare"
+            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || unread
             names="$(ls -A "$RUNNER_TEMP/$2" | LC_ALL=C sort | tr '\n' ' ')"
             [ "${names% }" = "$want" ] || "$1" "its files are [${names% }], not [$want]"
             for name in "${files[@]}"; do

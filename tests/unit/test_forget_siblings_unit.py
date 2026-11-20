@@ -285,9 +285,9 @@ def test_past_the_ceiling_a_claim_before_the_fault_leaves_when_the_class_uncover
     covers the tail, and it leaves as a claim at fault does: in the body the forget writes
     it is one. It stands before the fault, so it is not of the class.
 
-    Why it is not removed: the first render past the ceiling must take the later claims
-    without a look ahead (the fifth-round page allows eighteen renders and 306 parses, and
-    is at both), so it cannot know the example is safe where it stands."""
+    Not removed in this round. Past its ceiling the forget takes a later claim that can
+    open a fence without asking whether it is at fault where it would stand: that is the
+    declared class, and this page is what the class costs one claim further."""
     tail = "        tail at eight"
     separator = past_the_ceiling(store, [WIDE, *narrow(1), CLOSED, tail])
     kept = ["- item", *RUNNING[:CLOSERS_MAX], RUNNING[-1], "- parent"]

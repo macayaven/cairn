@@ -1,5 +1,7 @@
-"""Past the ceiling on its renders, a forget takes only claims the body puts after the fence
-that runs on and that can open one (fourth report, must-fix 2).
+"""Past the ceiling on its renders, a forget takes with the claim named the claims the body
+puts after it that can open a fence (fourth report, must-fix 2); and, in every render, the
+claims directly before it that the parser shows holding what follows (CORE9A:
+test_forget_siblings_unit.py). No other claim leaves for a fence, however often it renders.
 
 A forget that brings more code fences together than a body closes (spans.CLOSERS_MAX) drops
 the claim whose fence runs on and renders again, CLOSERS_MAX times; past that it took the

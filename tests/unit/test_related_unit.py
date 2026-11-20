@@ -618,13 +618,13 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
         "`terms_looked_up`: the page's terms looked up, 256 at most, the shortest first.",
         "`terms_not_looked_up`: its terms past those.",
         "`claims_read`: claims of other pages read for those terms.",
-        "`claims_not_read`: such claims not read, past 512 claims or a million bytes of their"
+        "`claims_not_read`: such claims not read, past 512 claims or 250,000 bytes of their"
         " passages; a term with a claim not read gives no reason.",
         "`pages_left_out`: related pages past `limit`.",
         "`complete` is true when those three counts of what was left out are 0.",
     ):
         assert line in said, line
-    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 1_000_000)
+    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 250_000)
     for gone in ("pages_exact", "terms_cut", "title_cut", "terms_searched", "terms_left_out"):
         assert gone not in said, gone
     for word in ("written_by", "written_at", "outside", "quoted text"):
@@ -683,6 +683,18 @@ NINE = [
     "graph",
     "related",
 ]
+
+
+def test_the_contract_states_the_bounds_of_a_read_as_the_store_has_them():
+    """The server's contract says what `searched` counts past each bound, by its number."""
+    import cairn.server
+
+    said = " ".join(cairn.server.__doc__.split())
+    assert (
+        "counts each: the page's terms past the first 256, the claims of other pages past the"
+        " 512 claims and the 250,000 bytes of passages read, the related pages past `limit`."
+    ) in said
+    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 250_000)
 
 
 def test_the_contract_counts_and_names_the_tools_there_are():

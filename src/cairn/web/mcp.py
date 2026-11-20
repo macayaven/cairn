@@ -447,7 +447,7 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         says what was left out, in counts. `terms_looked_up`: the page's terms looked up, 256 at
         most, the shortest first. `terms_not_looked_up`: its terms past those. `claims_read`:
         claims of other pages read for those terms. `claims_not_read`: such claims not read,
-        past 512 claims or a million bytes of their passages; a term with a claim not read gives
+        past 512 claims or 250,000 bytes of their passages; a term with a claim not read gives
         no reason. `pages_left_out`: related pages past `limit`. `complete` is true when those
         three counts of what was left out are 0."""
         with _call(ctx, "related") as memory:

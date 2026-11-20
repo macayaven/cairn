@@ -57,6 +57,19 @@ Bounded work, whoever asks, and nothing left out silently. What can be left out 
 - The related pages past the `limit` asked for: `pages_left_out`.
 `complete` is true only when all three are nothing.
 
+BYTES_MAX is set from a measurement (an Apple M5, 2026-11-20, under a load of 7 to 14): a
+read's time goes to reading the terms of passages (relations.placed, 97% of it), not to the
+index or to reading the rows (1% each), at about 0.7 microseconds a byte of text dense with
+flags, paths and versions. The worst read built, 256 terms with 512 candidate claims whose
+passages are 2,000 bytes of such text, took 0.70 to 0.89 s at a million bytes and 0.18 to
+0.21 s at 250,000; 512 candidates of short passages take 0.03 s, so CLAIMS_MAX is not what
+costs. What it costs in completeness, on this repository's own documents filed as 32 pages:
+complete answers 27 at a million bytes, 3 at 250,000; pairs of pages related 164 and 124;
+reasons left out by the bounds 255 and 1,177 of 1,889. Nearly all of it is one passage, the
+table of decisions, of 322,326 bytes: no page that shares a term with it reads it now. The
+page's own passages are not counted in BYTES_MAX: a page of 380,000 characters dense with
+facts costs 0.35 s alone.
+
 What is given is bounded too, and a claim says when it is not whole (`Stated`). A claim's
 text is read to relations.TEXT_MAX characters and no further, by a handle on the value the
 index stores (`_text`), so of a claim of any length no more is handed back than of a short
@@ -116,7 +129,7 @@ from cairn.store import ranking
 
 TERMS_MAX = 256  # terms of a page that are looked up; it counts the rest
 CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
-BYTES_MAX = 1_000_000  # bytes of those claims' passages, as stored, read in all
+BYTES_MAX = 250_000  # bytes of those claims' passages, as stored, read in all (measured)
 AT_ONCE = 64  # terms one statement asks the index for
 # The two marks the index is asked to put around what it matched of a title in a claim's
 # text (`_named`): characters Unicode keeps for a program's own use and out of every text

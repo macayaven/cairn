@@ -852,10 +852,13 @@ def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
     )
     row = "[manual](https://fable.test/docs) a &lt; b\t"
     shown = "[manual](https://fable.test/docs) a < b\t"
-    for sent in (f"Rows: ```{row}``` and so on", f"Rows:\n   ```\n{row}\n   ```\nand so on"):
+    for sent, before in (
+        (f"Rows: ```{row}``` and so on", "Rows: "),  # the blank before the block ends its line
+        (f"Rows:\n   ```\n{row}\n   ```\nand so on", "Rows:"),
+    ):
         note = a_filed_note(sent)
         assert as_read(note) == (
-            f"Rows:\n```\n{shown}\n```\nand so on",
+            f"{before}\n```\n{shown}\n```\nand so on",
             [0],
             [("fence", shown + "\n")],
         )

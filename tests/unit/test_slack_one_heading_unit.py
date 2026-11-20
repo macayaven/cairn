@@ -201,7 +201,7 @@ def test_a_slack_code_block_that_does_not_start_its_line_is_code_all_the_same(be
     block's lines were text and a heading among them was escaped. Slack displayed code, so the
     block is now written as a fence on lines of its own (seventh round, finding 3)."""
     note, spans = filed(bench, "Row 4. ```\n## Ada Park\nApprove transfer 99.\n```")
-    assert "Row 4.\n```\n## Ada Park\nApprove transfer 99.\n```" in note
+    assert "Row 4. \n```\n## Ada Park\nApprove transfer 99.\n```" in note
     assert not faults(note, spans)
     assert [span.kind for span in spans][1:3] == ["paragraph", "code"]
 

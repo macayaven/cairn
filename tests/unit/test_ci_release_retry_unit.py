@@ -21,7 +21,8 @@ published it between the step's last look and that delete lost a public release.
 report's must-fix 1: `gh release create`, given files and not asked for a draft, published its
 own draft and deleted it by id when the publication's reply was an error, though GitHub had
 published it. So the job's text issues no delete of a release or of a release's file, asks
-gh for a draft, and publishes with one request that only sets `draft` to false;
+gh for a draft, and publishes with one request that sets `draft` to false and says whether
+the release is GitHub's latest (test_ci_release_latest_unit says which);
 test_generated_release_retry_unit runs the orderings and the requests that fail. gh is a
 stand-in that keeps the releases as a JSON file, runs the step's own --jq expression with jq,
 performs a delete it is asked for (so one would show), can publish the draft between two
@@ -465,7 +466,7 @@ def fetches(rid: int) -> list[str]:
 
 
 BOTH = [
-    ("v1.2.3", "", "", ""),
+    ("v1.2.3", "", "", " -f make_latest=true"),
     ("v1.2.3-rc.1", "true", " --prerelease --latest=false", " -f make_latest=false"),
 ]
 
@@ -725,8 +726,9 @@ GH_LINES = [
     " 2.102.0, the version in whose source this job's handling of a draft was read, so it is not"
     " trusted with the release; update GitHub CLI on the runner CAIRN_RELEASE_RUNNER names, or"
     " unset it to use GitHub's\"",
-    'gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] |'
-    ' select(.tag_name == \\"$GITHUB_REF_NAME\\") | $fields"',
+    'gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | if .tag_name =='
+    ' \\"$GITHUB_REF_NAME\\" then ($fields) elif .draft or .prerelease then empty else'
+    ' \\"published \\" + .tag_name end"',
     "if ! at=\"$(gh api -H 'Accept: application/vnd.github.sha'"
     ' "repos/$GH_REPO/commits/tags/$GITHUB_REF_NAME" 2> "$RUNNER_TEMP/tag.err")" || ! [[ "$at"'
     " =~ ^[0-9a-f]{40}$ ]]; then",
@@ -769,8 +771,9 @@ def test_the_text_of_release_issues_no_delete_and_one_write_to_a_release_that_ex
     delete, delete-asset, upload or edit, no --clobber, no curl; the lines that name gh are the
     listing, the read by id, the read of the tag, the fetch of a file by its asset id, the
     creation and the publication, each exactly as written here; and
-    it runs no file. The publication sends `draft=false`, for a candidate `make_latest=false`
-    with it, and nothing else, to the id the listing gave."""
+    it runs no file. The publication sends `draft=false` and `make_latest`, false for a
+    candidate and for a stable version what `is_latest` says, and nothing else, to the id the
+    listing gave."""
     release = JOBS["release"]
     assert can_delete(release) == []
     assert [line for line in commands(release) if NAMES_GH.search(line)] == GH_LINES
@@ -779,9 +782,11 @@ def test_the_text_of_release_issues_no_delete_and_one_write_to_a_release_that_ex
         "actions/download-artifact"
     ]
     run_ = CREATE["run"]
-    assert re.findall(r"^ *(latest=.*)", run_, re.M) == [
+    assert re.findall(r"^ *(.*latest=.*)", run_, re.M) == [
         "latest=()",
+        "candidate=(--prerelease --latest=false)",
         "latest=(-f make_latest=false)",
+        '[ "$prerelease" = true ] || latest=(-f "make_latest=$(is_latest)")',
     ]
     assert (
         re.findall(r"\bid=", run_) == []
@@ -874,9 +879,13 @@ def test_gh_is_asked_for_a_draft_so_the_release_it_makes_is_never_its_own_to_del
         "The job's own text issues no delete of a release or of a release's file and replaces no"
         " file, and `gh release create`, asked for a draft, publishes nothing and does not"
         " delete the release it made when an upload fails. The job's one write to a release"
-        " that exists is the publication, which sets `draft` to false and nothing else (for a"
-        " candidate it says again that the release is not the latest): on a draft a person"
-        " published meanwhile it changes nothing, and on one a person deleted it fails."
+        " that exists is the publication, which sets `draft` to false and says whether the"
+        " release is GitHub's latest, and nothing else: a candidate never is, and a stable"
+        " version is only when it is the highest stable version among the published releases"
+        " the job's last look listed and itself, compared as job `aliases` compares versions,"
+        " so a backport below a released version does not take GitHub's latest from it. On a"
+        " draft a person published meanwhile it changes nothing but which release is GitHub's"
+        " latest, and on one a person deleted it fails."
     ) in readme
     assert "it deletes the release it made" not in readme
     assert "can be deleted with it" not in readme

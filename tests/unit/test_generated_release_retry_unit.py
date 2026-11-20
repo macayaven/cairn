@@ -126,7 +126,7 @@ FAULTS = (
 )
 
 GH = r"""
-import copy, json, subprocess, sys
+import copy, json, re, subprocess, sys
 from pathlib import Path
 
 here, args = Path(sys.argv[1]), sys.argv[2:]
@@ -279,10 +279,24 @@ if args[0] == "api":
     fields = [[a, args[i + 1]] for i, a in enumerate(args) if a in flags]
     path = next(a for a in args if a.startswith("repos/"))
     rid = next((r["id"] for r in state["releases"] if path.endswith(f"/releases/{r['id']}")), 0)
-    publishes = (
-        method == "PATCH"
-        and ["-F", "draft=false"] in fields
-        and all(f in (["-F", "draft=false"], ["-f", "make_latest=false"]) for f in fields)
+    # The publication: draft=false and whether it is GitHub's latest: a candidate never, a
+    # release when no other tag's published release that is not a pre-release is a higher
+    # version (the other tag's release never changes here, so what GitHub holds now is what
+    # the step listed). Any other PATCH is another write.
+    def version(name):
+        m = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", name)
+        return tuple(map(int, m.groups())) if m else None
+
+    mine = version(state["tag"])
+    higher = [
+        r for r in state["releases"]
+        if r["tag_name"] != state["tag"] and not r["draft"] and not r["prerelease"]
+        and version(r["tag_name"]) is not None and mine is not None
+        and version(r["tag_name"]) > mine
+    ]
+    latest = "true" if mine is not None and not higher else "false"
+    publishes = method == "PATCH" and sorted(fields) == sorted(
+        [["-F", "draft=false"], ["-f", f"make_latest={latest}"]]
     )
     wrote("publish" if publishes else "other", by_id(rid), fields)
     how = request("publication" if publishes else "other")
@@ -523,6 +537,13 @@ def fetched(given: list[dict], rid: int) -> dict[str, str]:
     return {g["name"]: g["data"] for g in given if g["id"] == rid}
 
 
+def for_the_tag(listed: dict) -> str:
+    """What a listing showed of the tag's releases: its lines but those of other tags' published
+    releases."""
+    lines = listed["out"].splitlines(keepends=True)
+    return "".join(line for line in lines if not line.startswith("published "))
+
+
 def faults(runs: list) -> list[str]:
     state = runs[-1][1]
     tag = state["tag"]
@@ -538,7 +559,7 @@ def faults(runs: list) -> list[str]:
     for write in state["writes"]:
         listed, given, target = write["listed"], write["given"], write["target"]
         if write["kind"] == "create":
-            if listed is None or listed["out"] != "":
+            if listed is None or for_the_tag(listed) != "":
                 found.append("made a release though its listing did not show none for the tag")
             if write["attempt"] in made:
                 found.append("made a release twice in one attempt")

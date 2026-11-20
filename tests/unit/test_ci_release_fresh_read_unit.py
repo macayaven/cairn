@@ -233,7 +233,7 @@ def test_the_read_by_id_is_the_last_read_of_the_release_before_the_publication_a
     # first, and then what the fetches and the comparison of two reads take.
     (listing,) = {line for line in calls if line.startswith(LISTING)}
     (asked,) = {line for line in calls if line.startswith(read)}
-    fields = listing.split(" | ", 2)[2]
+    fields = listing.split(" then (", 1)[1].rsplit(") elif ", 1)[0]
     assert asked.startswith(read + f'select(.tag_name == "{tag}") | ({fields}), ')
 
 

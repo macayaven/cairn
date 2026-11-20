@@ -232,7 +232,7 @@ PRIVILEGED_DEFINITIONS = {
         "90094caae1a5888d5fcdce1e5bb80a92c0cb7539a7db7fd131655532ed5c4e83",
         "1a6b7627d1ef6deb2d94425608ef7bae00108989018ac6ac819381746041cbe0",
         "8306689dab0ead439f5f7fd02a80289fa3c8492078e2f988a4a993978ed26baa",
-        "a494380ef5e74b3f32a7075e134120ee726c3b8a0d321bacf7f6ef2c83ab37cc",
+        "15967f2834f514881a03bd3e915a940bf0e8cada04ea0e9bab8c6490556b8d11",
     ],
     "attest": [
         "c131c0a395998bfe5cc8c174d51ff4369af022467b11be44b08ef7229b36955b",
@@ -252,7 +252,7 @@ PRIVILEGED_DEFINITIONS = {
         "6153b4d908585eb1ba57111b2d53e509fce748ccd5770de0447b66079fe1fd48",
         "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
         "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
-        "130ad2c0a35aae1726d742ff1b681ff6ca0603a4834fc4b8319fabf6de1c4735",
+        "3490113a43f7385748606415f2b5d87b937c2539b87c00ddb340376220e66681",
     ],
     "deploy": [
         "401510e913f6e37136331eeefa6d88fce27bbba126b17c42793f7694b9600454",
@@ -544,7 +544,7 @@ COMMIT = "1a2b3c4d" * 5  # the run's commit, which the tag names
 
 def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_path):
     create, publish = run_create(tmp_path, "v1.2.3", "")
-    assert publish == [*PUBLICATION, "draft=false"]
+    assert publish == [*PUBLICATION, "draft=false", "-f", "make_latest=true"]
     assert create == [
         "release",
         "create",

@@ -1805,9 +1805,16 @@ jobs:
           # stops the job, which says what a person does. (3) The draft
           # is published by a request of its own, to the id the look gave. That is the job's
           # one write to a release that exists, and it is safe: it sets draft to false and
-          # nothing else (for a candidate it says again, as the creation did, that it is not
-          # the latest), so a draft a person published meanwhile is already what it would
-          # make it, one a person removed makes it fail, and the files were compared first.
+          # says whether the release is GitHub's latest, and nothing else, so a draft a person
+          # published meanwhile is already what it would make it but for which release is the
+          # latest, one a person removed makes it fail, and the files were compared first. It
+          # always says it, since GitHub's `make_latest` "Defaults to `true` for newly
+          # published releases" (GitHub's REST reference, "Update a release"), which made a
+          # stable backport, v1.2.3 published while v1.3.0 is, the repository's latest
+          # release. A candidate never is, as the creation said too; a stable version is only
+          # when it is the highest stable version among the published releases the last look
+          # listed and itself, as `stable_versions` orders them, the function job `aliases`
+          # orders versions with, word for word.
           # When GitHub publishes and the reply is lost, the job fails and nothing is undone:
           # the re-run finds the release published. (4) After each write the job looks again.
           # It ends well only on a published release that holds exactly the files this run
@@ -1860,8 +1867,22 @@ jobs:
           # compare two reads by (its tag, title, notes, flags, and each asset's id, name,
           # state, size and update time), and then a line for each asset: name, id, state, size.
           details="([.tag_name, .name, .draft, .prerelease, .body, ([.assets[] | [.id, .name, .state, .size, .updated_at]] | sort)] | tojson | @base64), (.assets[] | [.name, .id, .state, .size] | @tsv)"
+          # The listing prints those fields for each release of this tag, and `published <tag>`
+          # for each other release that is neither a draft nor a pre-release.
           listing() {
-            gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | $fields"
+            gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | if .tag_name == \"$GITHUB_REF_NAME\" then ($fields) elif .draft or .prerelease then empty else \"published \" + .tag_name end"
+          }
+          # The stable versions among the tags on stdin, without their `v`, lowest first: job
+          # `aliases` has this function too, word for word.
+          stable_versions() {
+            awk '/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { print substr($0, 2) }' | sort -t. -k1,1n -k2,2n -k3,3n
+          }
+          # Whether this tag is the highest stable version among the published releases the
+          # last look listed and itself: true or false, what the publication sends.
+          is_latest() {
+            local top
+            top="$( { printf '%s\n' "$released"; printf '%s\n' "$GITHUB_REF_NAME"; } | stable_versions | tail -n 1)"
+            if [ "v$top" = "$GITHUB_REF_NAME" ]; then echo true; else echo false; fi
           }
           unlisted() {
             echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
@@ -1922,9 +1943,13 @@ jobs:
             cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md" || what="${what:+$what and }notes"
             [ -z "$what" ] || differs "$what"
           }
-          # What GitHub lists for the tag now: nothing (found is empty), or this run's release.
+          # What GitHub lists for the tag now: nothing (found is empty), or this run's release;
+          # and the other tags' published releases ($released).
           look() {
-            found="$(listing)" || unlisted
+            local all
+            all="$(listing)" || unlisted
+            found="$(awk '!/^published /' <<< "$all")"
+            released="$(awk '/^published / { print $2 }' <<< "$all")"
             [ -n "$found" ] || return 0
             count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
             [ "$count" = 1 ] || refuse "there are $count releases for it"
@@ -2016,6 +2041,7 @@ jobs:
           fresh
           if [ "$draft" = true ]; then
             same_files unfinished draft
+            [ "$prerelease" = true ] || latest=(-f "make_latest=$(is_latest)")
             tagged
             gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
             look_after published
@@ -2083,12 +2109,15 @@ jobs:
             exit 1
           fi
           oras repo tags "$image" > "$RUNNER_TEMP/published"
-          versions="$(printf '%s\n' "$released" | awk -v list="$RUNNER_TEMP/published" '
+          # The stable versions among the tags on stdin, without their `v`, lowest first: job
+          # `release` has this function too, word for word, and says by it which release is
+          # GitHub's latest.
+          stable_versions() {
+            awk '/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { print substr($0, 2) }' | sort -t. -k1,1n -k2,2n -k3,3n
+          }
+          versions="$(printf '%s\n' "$released" | stable_versions | awk -v list="$RUNNER_TEMP/published" '
             BEGIN { while ((getline tag < list) > 0) published[tag] = 1 }
-            /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ {
-              version = substr($0, 2)
-              if (version in published) print version
-            }' | sort -t. -k1,1n -k2,2n -k3,3n)"
+            $0 in published')"
           if [ -z "$versions" ]; then
             echo "No released version is in the registry: latest and X.Y stay where they are."
             exit 0

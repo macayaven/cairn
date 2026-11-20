@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 
 import pytest
-from test_rt2_explore import LAGS, Execution, check, execute, render
+from test_rt2_explore import LAGS, Execution, check, execute, lags, render
 from test_rt2_github import (
     HEAD_SHA,
     KINDS,
@@ -184,3 +184,16 @@ def test_the_job_makes_its_draft_beside_a_person_s_draft_its_first_look_missed()
         lag=LAGS["person one behind"],
     )
     assert not broken(ex, "6"), trace(ex)
+
+
+# --- 5: a stop line that names the listing's state, not GitHub's -------------------------------
+
+
+def test_a_title_edited_in_the_stated_race_is_reported_on_a_draft_that_is_public():
+    """The documented race: a person edits the title between the last read by id and the
+    publication. The look after the publication, its listing one look behind the publication
+    and current on the person's edit, stops on the title, and the line says 'a draft' of a
+    release that is public. Its advice ('delete it ... if it is still a draft, or put back what
+    the run wrote') stays safe. Invariant 5 (the line is true of GitHub's state)."""
+    ex = replay([(r"person, before PATCH", "edits the title")], lag=lags(publish=1))
+    assert not broken(ex, "5"), trace(ex)

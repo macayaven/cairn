@@ -78,8 +78,8 @@
 # request and every push, with no path condition, and `publish` needs it.
 # Nothing is published from a pull request or a manual run.
 # A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
-# gate runs as before, and nothing is published, verified, released or deployed. Unset, it
-# publishes.
+# gate runs as before, and nothing is published, verified, released or deployed; a v* tag's
+# run stops in image_build, since main published no sha-<commit>. Unset, it publishes.
 # A push to main then deploys that image, by digest, to the hosted VM (job `deploy`), when the
 # repository is configured for it; otherwise that job is skipped. It runs in the environment
 # `production`; whether it waits for approval is that environment's setting, which this file

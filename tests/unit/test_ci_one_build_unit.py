@@ -356,3 +356,14 @@ def test_a_tag_run_re_run_whole_promotes_the_same_digest_again_and_finishes(tmp_
         assert not fetched
     assert "is this build already" in decided.stdout
     assert runner.tags() == {"sha-ccccccc": main, "1.2.3": main}
+
+
+def test_with_publishing_off_a_tag_still_reads_main_s_image_and_so_stops():
+    """The README's CAIRN_PUBLISH sentence: `publish` is off on main, so main writes no
+    sha-<commit>, and nothing in image_build's tag steps looks at the variable, so a tag's run
+    reads the registry and stops as a tag main has not published does."""
+    assert "CAIRN_PUBLISH" in JOBS["publish"]["if"]
+    job = JOBS["image_build"]
+    assert "CAIRN_PUBLISH" not in str(job.get("if", ""))
+    fetch_step = next(s for s in job["steps"] if s.get("name") == FETCH)
+    assert fetch_step["if"] == "github.ref_type == 'tag'"

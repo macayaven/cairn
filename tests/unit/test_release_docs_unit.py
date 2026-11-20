@@ -60,8 +60,8 @@ def test_the_security_policy_says_which_versions_get_fixes_as_the_workflow_tags_
     # They move after the release is made, not with it: the interval is said.
     assert (
         "The tag `0.1` moves to each newer `0.1.x`, and `latest` names the highest release,"
-        " each once job `aliases` has run after the release is made: until then they still"
-        " name the release before it." in fixes
+        " each once job `aliases` has run after the release is made: until then they name"
+        " what they named before, nothing before the first release." in fixes
     )
     workflow = yaml.safe_load(read(".github/workflows/ci-cd.yml"))
     assert "release" in workflow["jobs"]["aliases"]["needs"]

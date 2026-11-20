@@ -90,7 +90,10 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         "`X.Y.Z` never moves",
         "A push to `main` is published as `main` and `sha-<commit>`, never `latest`, and"
         " `sha-<commit>` is written once",
-        "the gate runs as before, and items 5 to 7 are skipped.",
+        "the gate runs as before on pull requests and on `main`, and items 5 to 7 are"
+        " skipped; a `v*` tag's run stops in `image_build`, since `main` published no"
+        " `sha-<commit>` for it.",
+        "(a change to documents alone, `CHANGELOG.md` included, or an earlier commit of a push)",
         "6. **Verify and deploy:** on `main` and on tags, the published image is smoke-tested."
         " In a public repository the image is first pulled with no login, as the run guide"
         " does (a tag's version, or on `main` the commit's own tag), and must"

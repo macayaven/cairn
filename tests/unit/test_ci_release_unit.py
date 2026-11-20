@@ -544,9 +544,16 @@ def test_the_readme_s_two_limits_are_the_numbers_the_workflow_and_the_script_use
     assert (
         "`release_check.py` and job `aliases` each ask GitHub for at most 1,000 releases"
         " (`release_check.py` counts candidates' pre-releases too): a listing that reaches"
-        " 1,000 stops the job and says so, publishing nothing and moving no alias, and a person"
-        " then raises both numbers together." in ci
+        " 1,000 stops the job and says so, and a person then raises both numbers together." in ci
     )
+    # The two stop at different points: release_check before anything is published, aliases
+    # after the version and its GitHub release are, so a release made at 999 whose aliases
+    # then list 1,000 is published with `latest` and X.Y not moved.
+    assert (
+        "`release_check.py` stops before anything is published; `aliases` stops after the"
+        " version and its GitHub release are, moving neither `latest` nor `X.Y`." in ci
+    )
+    assert "release_check" in needs(JOBS["publish"]) and "release" in needs(JOBS["aliases"])
     assert release_check.RELEASES_ASKED == 1000
     aliases = next(s for s in JOBS["aliases"]["steps"] if "gh release list" in s.get("run", ""))
     assert "--limit 1000 " in aliases["run"] and "-ge 1000 ]" in aliases["run"]

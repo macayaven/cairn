@@ -412,3 +412,29 @@ def test_the_security_guide_says_what_a_forget_and_an_import_do_to_a_page():
     )
     for name in ("test_forget_import_check_unit", "test_old_fold_rebuild_unit"):
         assert (ROOT / "tests" / "unit" / f"{name}.py").is_file(), name
+
+
+def test_the_guides_say_what_a_stored_page_reads_as_and_what_a_reused_name_shows():
+    """security.md: a version stored with more fences than a body closes is read with its
+    claims and no body, and an export keeps its Markdown as stored
+    (test_stored_fence_read_unit.py runs both). privacy.md: a page that went and whose name a
+    later note takes again starts at version 1 (test_forget_slug_reuse_unit.py)."""
+    says(
+        "security",
+        "## What the checks on pages catch",
+        "A page an earlier version stored with more such fences than a body closes is read with"
+        " every claim exact and one sentence in its body's place, never with the fence running"
+        " on; an export copies a version's Markdown as stored, so such a fence stays in the"
+        " exported `.md` until the page is saved again.",
+    )
+    privacy = " ".join(guide_source("privacy").split())
+    assert (
+        privacy.count(
+            "A later note can make a page of the same name; it starts again at version 1, so an"
+            " address kept for a version of the page that went shows the new page's version of"
+            " that number, or nothing."
+        )
+        == 1
+    )
+    for name in ("test_stored_fence_read_unit", "test_forget_slug_reuse_unit"):
+        assert (ROOT / "tests" / "unit" / f"{name}.py").is_file(), name

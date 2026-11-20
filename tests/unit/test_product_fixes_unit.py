@@ -270,7 +270,7 @@ def test_welcome_without_oauth_links_to_unified_connect_page(tmp_path):
         store.close()
 
 
-def test_project_chrome_separates_buttons_condenses_readonly_models_and_moves_id_and_delete(
+def test_project_chrome_separates_buttons_says_models_whole_to_a_member_and_moves_id_and_delete(
     tmp_path,
 ):
     from pathlib import Path
@@ -312,13 +312,14 @@ def test_project_chrome_separates_buttons_condenses_readonly_models_and_moves_id
             foot = owner_html.split('class="project-foot meta"', 1)[1].split("</div>", 1)[0]
             assert ops.id in foot and 'href="/b/ops/delete"' in foot
 
-            # Member who cannot change Models gets short one-sentence Models note
+            # Member who cannot change Models reads what the owner reads, without the form
             client.cookies.set(cookie_name, sam_s.token)
             member_html = client.get("/b/ops").text
             models_block = member_html.split('class="row models"', 1)[1].split("</div>", 1)[0]
             assert "Models: not decided." in models_block
-            assert "Models decides only" not in models_block
-            assert "unless the operator sends only" not in models_block
+            assert "Models decides only" in models_block
+            assert "unless the operator sends only" in models_block
+            assert 'action="/b/ops/models"' not in member_html
 
         css = (Path(__file__).resolve().parents[2] / "src/cairn/static/cairn.css").read_text(
             encoding="utf-8"

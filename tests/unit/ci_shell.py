@@ -41,9 +41,13 @@ def run_step(
 
 # gh for a test of what the last step of job `release` asks of it on a first attempt. GitHub
 # lists no release for the tag until `gh release create` is asked for one; then that one, with
-# this run's mark and the files the step holds, a draft until the publication is sent. Each
-# write's arguments are kept, one a line, in $RUNNER_TEMP/gh-create and $RUNNER_TEMP/gh-publish.
+# the title and the text the step gave it and the files the step holds, a draft until the
+# publication is sent, through the step's own --jq expression (its last argument). Each write's
+# arguments are kept, one a line, in $RUNNER_TEMP/gh-create and $RUNNER_TEMP/gh-publish.
 FIRST_ATTEMPT_GH = r"""#!/bin/sh
+given() {  # the argument of the creation that follows $1
+  awk -v flag="$1" 'found { print; exit } $0 == flag { found = 1 }' "$RUNNER_TEMP/gh-create"
+}
 case "$1 $2" in
   "release create") printf '%s\n' "$@" > "$RUNNER_TEMP/gh-create" ;;
   "api --method") printf '%s\n' "$@" > "$RUNNER_TEMP/gh-publish" ;;
@@ -54,8 +58,12 @@ case "$1 $2" in
     [ ! -e "$RUNNER_TEMP/gh-publish" ] || draft=false
     pre=false
     ! grep -qx -- --prerelease "$RUNNER_TEMP/gh-create" || pre=true
-    names="$(ls cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS | LC_ALL=C sort | tr '\n' ' ')"
-    printf '7\t%s\t%s\ttrue\t%s\n' "$draft" "$pre" "${names% }" ;;
+    while [ $# -gt 1 ]; do shift; done
+    ls cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS | jq -R '{name: .}' | jq -s \
+      --arg tag "$(sed -n 3p "$RUNNER_TEMP/gh-create")" --arg title "$(given --title)" \
+      --rawfile body "$(given --notes-file)" --argjson draft "$draft" --argjson pre "$pre" \
+      '[{id: 7, tag_name: $tag, name: $title, draft: $draft, prerelease: $pre, body: $body,
+         assets: .}]' | jq -r "$1" ;;
   *) exit 2 ;;
 esac
 """

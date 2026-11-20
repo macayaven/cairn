@@ -16,8 +16,10 @@ archive of other bytes. Every such release is enumerated, 96 of them, and a seed
 draws pairs of them and a release of another tag beside one. A person does nothing, or, just
 before the n-th request of the first attempt, for every n it has but the first: publishes the
 tag's drafts (GitHub keeps a release's id when it is published), deletes the tag's releases,
-replaces a file, attaches a file, or changes the text. What a person did before the first
-request is another state of the grammar (the last test here shows it). A fault strikes one
+replaces a file, attaches a file, changes the text, edits the notes around the mark, which
+stays, or edits the title (the fifth report's must-fix 2: a re-run published such a draft).
+What a person did before the first request is another state of the grammar (the last test
+here shows it). A fault strikes one
 request of the first attempt: the creation refused, or done and its reply lost; the upload
 cut after the first file; the publication refused, or done and its reply lost; the listing
 after a write still showing what was there before it. Each fault is run alone and with a
@@ -48,22 +50,25 @@ on a release's id with `draft=false` publishes that release, as `publishRelease`
 What must hold, whatever the state, the person, the fault and the moment:
 - the step's writes are the creation, only when its own listing showed no release for the
   tag and once an attempt, and the publication, only of the one release its last listing
-  showed as this run's draft with the tag's flag and its files' names, and after a download
-  later than that listing gave exactly the files this run attested: nothing else, so no
-  delete, no upload onto a release that exists and no other edit;
+  showed as this run's draft with the tag's flag, the tag as its title, the notes this run
+  wrote, byte for byte, and its files' names, and after a download later than that listing
+  gave exactly the files this run attested: nothing else, so no delete, no upload onto a
+  release that exists and no other edit;
 - a release that is published at any moment is there at the end with the same id, text, flag
   and files, unless the person deleted or changed it (or published the draft `gh release
   create` had just made before that command's own upload, which then reaches it);
 - an attempt that succeeds saw, in its last listing, one release for the tag, published, with
-  the tag's flag, this run's mark and the files' names, and got from the download after it
-  exactly the files this run attested; that is what GitHub holds at the end, unless the person
-  acted after that listing, and then the step wrote nothing after the person;
+  the tag's flag, this run's mark, the tag as its title, the notes this run wrote and the
+  files' names, and got from the download after it exactly the files this run attested; that
+  is what GitHub holds at the end, unless the person acted after that listing, and then the
+  step wrote nothing after the person;
 - the releases the step made never leave two for the tag;
 - an attempt that stops says why in exactly one `::error::` line of one sentence, unless a
   call to gh failed by itself.
 
 Seeded, so every run checks the same cases. Made-up repository, run and files."""
 
+import base64
 import itertools
 import json
 import random
@@ -89,7 +94,15 @@ WHEEL, SOURCE, SUMS = (
     "SHA256SUMS",
 )
 HELD = ("all files", "no file", "a file cut off", "a file of other bytes")
-PEOPLE = ("publish", "delete", "replace a file", "attach a file", "change the text")
+PEOPLE = (
+    "publish",
+    "delete",
+    "replace a file",
+    "attach a file",
+    "change the text",
+    "edit the notes",
+    "edit the title",
+)
 FAULTS = (
     ("made", "refused"),
     ("made", "lost"),
@@ -138,8 +151,13 @@ def person():
             attach(release, state["source"], b"put there by hand".hex())
         elif now["person"] == "attach a file":
             attach(release, "by-hand.txt", b"put there by hand".hex())
-        elif now["person"] == "change the text":
-            release["body"] = "edited by hand\n"
+        elif now["person"] in ("change the text", "edit the notes", "edit the title"):
+            if now["person"] == "change the text":
+                release["body"] = "edited by hand\n"
+            elif now["person"] == "edit the notes":  # around the mark, which stays
+                release["body"] = release["body"].replace("the notes", "notes edited by hand")
+            else:
+                release["name"] = "edited by hand"
             if not release["draft"]:  # theirs to change, as the files above
                 state["public"][str(release["id"])] = copy.deepcopy(release)
 
@@ -249,6 +267,7 @@ if args[:2] == ["release", "create"]:
     state["releases"].append({
         "id": made,
         "tag_name": args[2],
+        "name": args[args.index("--title") + 1] if "--title" in args else None,  # create.go, 453
         "draft": asked or while_uploading,
         "prerelease": "--prerelease" in args,
         "body": Path(args[notes]).read_text(),
@@ -310,6 +329,7 @@ def release(rid, tag, files, draft, flag, mark, held) -> dict:
     return {
         "id": rid,
         "tag_name": tag,
+        "name": tag,
         "draft": draft,
         "prerelease": ("-rc." in tag) == flag,
         "body": f"the notes\n\n{MARKS[mark]}\n",
@@ -347,6 +367,7 @@ def states() -> dict[str, list[tuple]]:
 STATES = states()
 FILES = attested(random.Random(SEED))
 WHOLE = {name: data.hex() for name, data in FILES.items()}
+WROTE = "the notes\n\n" + MARKS["this run's mark"] + "\n"  # notes.md, an empty line, the mark
 DRAFT = "draft, its flag, this run's mark, all files"
 PUBLISHED = "published, its flag, this run's mark, all files"
 
@@ -437,7 +458,8 @@ def faults(runs: list) -> list[str]:
     names = " ".join(sorted(WHOLE))
 
     def listed_as(draft: str, rid) -> str:
-        return f"{rid}\t{draft}\t{flag}\ttrue\t{names}\n"
+        notes = base64.b64encode(WROTE.encode()).decode()
+        return f"{rid}\t{draft}\t{flag}\ttrue\ttrue\t{notes}\t{names}\n"
 
     found = []
     made = set()
@@ -487,9 +509,8 @@ def faults(runs: list) -> list[str]:
             if any(w["attempt"] == n + 1 and w["at"] >= now["acted"] - 1 for w in state["writes"]):
                 found.append("wrote after the person had changed what it last listed")
         elif [
-            (r["id"], r["draft"], r["prerelease"], MARKS["this run's mark"] in r["body"])
-            for r in ours(state)
-        ] != [(int(rid), False, "-rc." in tag, True)] or ours(state)[0]["files"] != WHOLE:
+            (r["id"], r["draft"], r["prerelease"], r["name"], r["body"]) for r in ours(state)
+        ] != [(int(rid), False, "-rc." in tag, tag, WROTE)] or ours(state)[0]["files"] != WHOLE:
             found.append("succeeded without exactly one published release of this run's files")
     return found
 

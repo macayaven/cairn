@@ -250,7 +250,7 @@ PRIVILEGED_DEFINITIONS = {
         "5165d1610aa4638259b10262874a992db6b2b557007a329103fbbd9dcba655d4",
         "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
         "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
-        "833a0790984bdf777cfc0e503581c400f95f8a7dd7772b493406575ae5842407",
+        "446fd37a30c9fcbc6320571c07ad833931f4764e20e6364559f5e86ab69e531d",
     ],
     "deploy": [
         "401510e913f6e37136331eeefa6d88fce27bbba126b17c42793f7694b9600454",
@@ -660,7 +660,11 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
         "`--source-ref` checks which ref that run was for: a release candidate tagged on the"
         " same commit builds and attests a wheel of its own under the same name, so the wheel's"
         " command names `refs/tags/vX.Y.Z`, and `refs/tags/vX.Y.Z-rc.N` when the file is a"
-        " candidate's. A pass for the wheel proves that these bytes were built and attested by"
+        " candidate's. Use `gh` 2.102.0 or later: from that version it compares `--source-ref`"
+        " with the attestation's ref exactly and `--signer-workflow` with the whole workflow"
+        " path, where earlier versions ignored the ref's case and took the workflow as a prefix"
+        " (GHSA-4mq3-hpgx-9cx8, GHSA-wjmr-j3rp-mh2g). A pass for the wheel proves that these"
+        " bytes were built and attested by"
         " this repository's `ci-cd.yml` in a run of the tag `vX.Y.Z` at that commit, unchanged"
         " since; it does not prove that they are the files the release attaches, since a re-run"
         " of job `package` builds files of its own and `attest` attests those too. A pass for"
@@ -694,6 +698,13 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     (check,) = [s for s in ATTEST["steps"] if s.get("name") == "Check the files"]
     assert 'version="${version%-rc.*}"' in check["run"]
     assert "attest" in rerun({"package"})
+    # The version the guides ask for is the one the tag's run refuses to go below, for the
+    # same two advisories (GitHub's own words, read on 2026-11-20: GHSA-4mq3-hpgx-9cx8, "`gh`
+    # now compares the `--source-ref` value against the certificate's source ref exactly",
+    # patched in v2.102.0; GHSA-wjmr-j3rp-mh2g, "`gh` now requires the `--signer-workflow`
+    # value to match the complete workflow path in the SAN", patched in v2.102.0).
+    assert '[ "$major" = 2 ] && [ "$minor" -lt 102 ]' in tag_check["run"]
+    assert "GHSA-wjmr-j3rp-mh2g and GHSA-4mq3-hpgx-9cx8" in tag_check["run"]
     # The flag the guides give is the one the tag's run checks main's attestation with.
     assert "--source-ref refs/heads/main" in tag_check["run"]
     # The image the guide names is the one `publish` tags and `attest` attests by digest.

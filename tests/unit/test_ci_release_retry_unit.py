@@ -201,12 +201,8 @@ def test_this_run_s_published_release_is_recognised_and_left_as_it_is(tmp_path, 
 DRAFT = (
     "::error::the GitHub release for {tag} is a draft that an earlier attempt of run "
     + RUN_ID
-    + " left unfinished, which this job neither deletes nor publishes; look at it on the"
-    " repository's releases page and either delete it there and re-run this job, which makes"
-    " the release again, or, only if it holds exactly [SHA256SUMS"
-    " cairn_memory-1.2.3-py3-none-any.whl cairn_memory-1.2.3.tar.gz] and each cairn_memory file"
-    " has the SHA-256 its SHA256SUMS lists, publish it there and re-run this job, which then"
-    " compares its files with the ones this run attested"
+    + " left unfinished, which this job neither deletes nor publishes; delete it on the"
+    " repository's releases page and re-run this job, which makes the release again"
 )
 CUT_OFF = {"cairn_memory-1.2.3.tar.gz": b"a sou"}
 
@@ -244,22 +240,7 @@ def test_a_draft_a_person_publishes_while_the_job_looks_at_it_is_not_touched(tmp
     assert held(tmp_path) == [{**existing, "draft": False}]
 
 
-# --- what the line tells a person to do, done ----------------------------------------------------
-
-
-def whole(tag: str, assets: dict[str, bytes]) -> bool:
-    """The check the line gives a person before publishing a draft by hand: exactly the three
-    files, and each cairn_memory file has the SHA-256 its SHA256SUMS lists."""
-    listed = dict(
-        reversed(line.split("  ", 1))
-        for line in assets.get("SHA256SUMS", b"").decode().splitlines()
-        if "  " in line
-    )
-    return set(assets) == set(attached(tag)) and all(
-        listed.get(name) == hashlib.sha256(data).hexdigest()
-        for name, data in assets.items()
-        if name.startswith("cairn_memory")
-    )
+# --- what the line tells a person to do, done; and what the job does if they publish instead ----
 
 
 def left_a_draft(tmp_path, tag: str, candidate: str, assets: dict[str, bytes]) -> None:
@@ -283,10 +264,11 @@ def test_the_draft_a_person_deletes_is_made_again_by_the_re_run(tmp_path, tag, c
 
 
 @pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
-def test_the_whole_draft_a_person_publishes_is_compared_and_kept_by_the_re_run(
+def test_a_whole_draft_a_person_published_anyway_is_compared_and_kept_by_the_re_run(
     tmp_path, tag, candidate
 ):
-    assert whole(tag, attached(tag))
+    """The line does not offer it (no short check tells a person the files are whole), but a
+    draft published by hand is a published release like any other to the job."""
     left_a_draft(tmp_path, tag, candidate, attached(tag))
     by_hand(tmp_path, "publish")
     before = held(tmp_path)
@@ -301,34 +283,30 @@ SUMS_CUT = attached("v1.2.3")["SHA256SUMS"].splitlines(keepends=True)
 
 
 @pytest.mark.parametrize(
-    ("assets", "passes_the_person_s_check", "said"),
+    ("assets", "said"),
     [
         (
             {**attached("v1.2.3"), **CUT_OFF},
-            False,
             "cairn_memory-1.2.3.tar.gz is not the file this run attested",
         ),
         (
             {n: d for n, d in attached("v1.2.3").items() if n != "SHA256SUMS"},
-            False,
             "its files are [cairn_memory-1.2.3-py3-none-any.whl cairn_memory-1.2.3.tar.gz], not",
         ),
-        # The check a person can make does not see SHA256SUMS cut off after the two lines it
-        # reads; the job's comparison of every byte does.
+        # Both files whole and SHA256SUMS cut off after their two lines: a person who checked
+        # each file against it would have seen nothing wrong.
         (
             {**attached("v1.2.3"), "SHA256SUMS": b"".join(SUMS_CUT[:2])},
-            True,
             "SHA256SUMS is not the file this run attested",
         ),
     ],
     ids=["a file cut off", "a file missing", "the checksums cut off"],
 )
-def test_a_draft_published_by_hand_that_is_not_whole_is_refused_by_the_re_run_and_stays(
-    tmp_path, assets, passes_the_person_s_check, said
+def test_a_draft_published_by_hand_that_is_not_whole_is_a_public_release_the_job_cannot_finish(
+    tmp_path, assets, said
 ):
-    """The re-run's comparison is the last word, and by then the release is public: it is
-    refused in the sentence every release this run cannot finish gets, and nothing is deleted."""
-    assert whole("v1.2.3", assets) is passes_the_person_s_check
+    """Why the row says not to publish it: the job's comparison is refused in the sentence every
+    release this run cannot finish gets, the release is public by then, and nothing is deleted."""
     left_a_draft(tmp_path, "v1.2.3", "", assets)
     by_hand(tmp_path, "publish")
     before = held(tmp_path)
@@ -540,11 +518,10 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
         " and the job succeeds, so that a release tag's `aliases` runs (a candidate's run has"
         " none); a draft, which `gh release create` leaves when its runner is lost while it"
         " uploads, stops the job, and a person deletes it on the releases page and re-runs the"
-        " job, which makes the release again, or publishes it there if its files are whole and"
-        " re-runs the job, which then compares them (the table below has the line). Any other"
-        " release for the tag stops the job. The job's own text issues no delete of a release or"
-        " of a release's file and no write to a release that exists, since a person can publish"
-        " a draft between any look at it and a write, and a published release keeps its id; its"
+        " job, which makes the release again (the table below has the line). Any other release"
+        " for the tag stops the job. The job's own text issues no delete of a release or of a"
+        " release's file and no write to a release that exists, since a person can publish a"
+        " draft between any look at it and a write, and a published release keeps its id; its"
         " one write is `gh release create`, reached only when the listing showed no release for"
         " the tag."
     ) in readme
@@ -565,13 +542,43 @@ def test_the_draft_s_stop_has_its_row_and_the_row_says_what_the_tests_above_run(
         " draft carries this run's mark and may hold none of them, some, or one cut off"
     )
     assert next_step == (
-        "Look at it on the repository's releases page. Delete it there and re-run the job,"
-        " which makes the release again (once the five days the run's files are kept have"
-        " passed, re-run `package` instead, which `release` follows). Or publish it there, only"
-        " if it holds exactly the wheel, the source archive and `SHA256SUMS` and both files"
-        " have the SHA-256 that `SHA256SUMS` lists, and re-run the job within those five days:"
-        " it compares every byte with the files this run attested and stops if one differs,"
-        " with the release already public, so when in doubt delete the draft."
+        "Delete it on the repository's releases page and re-run the job, which makes the release"
+        " again (once the five days the run's files are kept have passed, re-run `package`"
+        " instead, which `release` follows). Do not publish it by hand: its files may be cut"
+        " off, and the job then finds a public release it cannot finish. And do not publish or"
+        " edit this tag's release by hand while the `release` job runs: `gh release create`"
+        " deletes the release it made when an upload or the publication fails."
     )
     # `package` re-run alone is followed by `release`, which then finds no release and makes it.
     assert "release" in rerun({"package"})
+
+
+def test_the_readme_states_what_gh_release_create_does_to_the_release_it_made():
+    """A limit, stated and not built around: the job's one write is gh's own command, and gh's
+    source (cli/cli, trunk, read on 2026-11-20,
+    https://raw.githubusercontent.com/cli/cli/trunk/pkg/cmd/release/create/create.go) says of
+    it: `if hasAssets && !opts.Draft {` ... `// Save the release initially as draft and publish
+    it after all assets have finished uploading` ... `params["draft"] = true`; then
+    `shared.ConcurrentUpload(...)` and, `if err != nil`, `return cleanupDraftRelease(err)`; then
+    `publishRelease(..., newRelease.APIURL, ...)` and the same on its error; and
+    `cleanupDraftRelease` calls `deleteRelease(httpClient, baseRepo.RepoHost(),
+    safeurl.NewImmutableSafeURL(newRelease.APIURL))`, an HTTP DELETE of the address GitHub gave
+    the release it made (create/http.go), which names that release's id, whatever its state
+    by then. No flag turns that off; `--draft` skips it and publishes nothing. So a person who
+    publishes that draft while the files upload can lose it if an upload then fails. Nothing
+    here can run gh's code: the test holds the sentence and the two conditions it rests on in
+    the job's line, files given and no --draft."""
+    readme = " ".join(README.split())
+    assert (
+        "`gh release create` itself, given files, makes the release as a draft, uploads them"
+        " and then publishes it, and when an upload or the publication fails it deletes the"
+        " release it made, by the address GitHub gave that release, not by its tag: so do not"
+        " publish or edit this tag's release by hand while the `release` job runs, or a draft"
+        " published by hand in that time can be deleted with it." in readme
+    )
+    create = GH_LINES[-1]
+    assert create.startswith("gh release create ") and create.endswith('"${files[@]}"')
+    assert not re.search(r"(^|\s)(--draft|-d)(\s|=|$)", create)
+    assert "the GitHub CLI deletes the draft it made itself when an upload or the" in " ".join(
+        CREATE["run"].replace("#", "").split()
+    )

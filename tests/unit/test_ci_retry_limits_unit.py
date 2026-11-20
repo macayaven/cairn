@@ -171,3 +171,29 @@ def test_when_nothing_can_be_re_run_the_next_patch_version_is_tagged():
         with pytest.raises(release_check.Refused, match=r"v1\.2\.3 already has a GitHub release"):
             release_check.not_released(tag, listing("v1.2.3"), "1.2.3")
     assert "a tag's run is re-run whole" not in CI
+
+
+def test_both_uploads_replace_an_artifact_of_the_same_name_so_their_jobs_can_be_re_run():
+    """actions/upload-artifact's README at the commit the workflow pins (cf430e03, v7.0.2,
+    https://raw.githubusercontent.com/actions/upload-artifact/cf430e030ddbb5b0abf93d22962f4752f3646cd9/README.md)
+    says of `overwrite`: "If true, an artifact with a matching name will be deleted before a new
+    one is uploaded. If false, the action will fail if an artifact for the given name already
+    exists. Does not fail if the artifact does not exist. Optional. Default is 'false'". It
+    names no exception for a re-run of the job, so without it `package`, re-run while its
+    first attempt's `release` artifact is still kept, would stop at its upload, and the
+    README's "re-run `package`" and "a re-run of job `package` builds files of its own and
+    `attest` attests those too" would hold only after the five days. Both uploads set it."""
+    uploads = {
+        step["with"]["name"]: (job, step["with"].get("overwrite"))
+        for job, definition in JOBS.items()
+        for step in definition["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    }
+    assert uploads == {"image": ("image_build", True), "release": ("package", True)}
+    assert {
+        step["uses"]
+        for definition in JOBS.values()
+        for step in definition["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    } == {"actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"}
+    assert JOBS["package"]["permissions"] == {}  # the upload uses the runner's own token

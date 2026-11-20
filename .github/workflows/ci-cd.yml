@@ -1572,6 +1572,8 @@ jobs:
           cd "$RUNNER_TEMP/release"
           sha256sum cairn_memory-*.whl cairn_memory-*.tar.gz notes.md > SHA256SUMS
       # Hidden files stay out (the action's default), so the .gitignore uv writes there does too.
+      # A re-run of this job replaces the artifact (overwrite): without it the action stops
+      # when an artifact of the name exists, so the job could not be re-run within the five days.
       - name: Keep them for the release
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -1579,6 +1581,7 @@ jobs:
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
           retention-days: 5
+          overwrite: true
 
   # A build provenance attestation, signed with this run's identity, for each file `package`
   # built (the wheel, the source archive and SHA256SUMS) and for the image `publish` pushed, by
@@ -1733,7 +1736,8 @@ jobs:
           # release or of a release's file and no write to a release that exists: a person can
           # publish a draft between any look at it and a write, and a published release keeps
           # its id. The one write is the creation at the end, reached only when the listing
-          # showed no release for the tag.
+          # showed no release for the tag; the GitHub CLI deletes the draft it made itself when
+          # an upload or the publication fails, so it is not to be published by hand meanwhile.
           listing() {
             gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
               --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), ([.assets[].name] | sort | join(\" \"))] | @tsv"
@@ -1753,12 +1757,12 @@ jobs:
             IFS=$'\t' read -r _ draft pre ours names <<< "$found"
             [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
             [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
-            want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
-            want="${want% }"
             if [ "$draft" = true ]; then
-              echo "::error::the GitHub release for $GITHUB_REF_NAME is a draft that an earlier attempt of run $GITHUB_RUN_ID left unfinished, which this job neither deletes nor publishes; look at it on the repository's releases page and either delete it there and re-run this job, which makes the release again, or, only if it holds exactly [$want] and each cairn_memory file has the SHA-256 its SHA256SUMS lists, publish it there and re-run this job, which then compares its files with the ones this run attested"
+              echo "::error::the GitHub release for $GITHUB_REF_NAME is a draft that an earlier attempt of run $GITHUB_RUN_ID left unfinished, which this job neither deletes nor publishes; delete it on the repository's releases page and re-run this job, which makes the release again"
               exit 1
             fi
+            want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+            want="${want% }"
             [ "$names" = "$want" ] || refuse "its files are [$names], not [$want]"
             gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published" \
               || refuse "its files could not be downloaded to compare"

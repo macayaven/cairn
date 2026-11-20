@@ -1448,6 +1448,7 @@ def test_package_builds_with_hashed_build_requirements_and_keeps_the_files_brief
         "path": "${{ runner.temp }}/release/",
         "if-no-files-found": "error",
         "retention-days": 5,
+        "overwrite": True,
     }
 
 

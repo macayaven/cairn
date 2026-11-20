@@ -1024,20 +1024,28 @@ def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
     """connect.md: "A code block of Slack's own is a fence on lines of its own in the note,
     whatever stood beside it on its lines in the message, and holds what Slack displayed, the
     white space that ends a line included, but that a code block in a quotation is written
-    without the quotation's mark that starts each of its lines; ...\" The exception is the
-    tester's second attack, finding 4, a limit: its model says Slack shows `> x` in the block
-    of `&gt; ```&gt; x````, and Slack's page does not say."""
+    without the quotation's mark that starts each of its lines, and only that: ...\" The
+    exception is the tester's second attack, finding 4, a limit; its last finding on SL8 was
+    the `>` after a block's opening backticks taken for that mark (`&gt; ```&gt; x```` held
+    `x`), and it is the block's text."""
     says(
         *CONNECT,
         "A code block of Slack's own is a fence on lines of its own in the note, whatever stood"
         " beside it on its lines in the message, and holds what Slack displayed, the white space"
         " that ends a line included, but that a code block in a quotation is written without"
-        " the quotation's mark that starts each of its lines; that white space is kept at the"
-        " end of the message too, where the last line is code.",
+        " the quotation's mark that starts each of its lines, and only that: what stands after"
+        " its opening backticks is its text, a `>` included, and of each later line only a"
+        " `>` that starts it, with the blanks before it and one after, is the quotation's,"
+        " Slack's page saying nothing of how those lines are marked; that white space is kept"
+        " at the end of the message too, where the last line is code.",
     )
-    for sent in ("&gt; ```&gt; x```", "&gt; ```\n&gt; x\n&gt; y```"):
+    for sent, block in (
+        ("&gt; ```&gt; x```", ["> x"]),
+        ("&gt; ```\n&gt; x\n&gt; y```", ["x", "y"]),
+        ("&gt; ```&gt; x\n&gt; &gt; y```", ["> x", "> y"]),
+    ):
         lines = as_read(a_filed_note(sent))[0].split("\n")
-        assert lines[1:] == ["```", "x", *(["y"] if "y" in sent else []), "```"], sent
+        assert lines[1:] == ["```", *block, "```"], sent
     row = "[manual](https://fable.test/docs) a &lt; b\t"
     shown = "[manual](https://fable.test/docs) a < b\t"
     for sent, before in (

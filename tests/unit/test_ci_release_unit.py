@@ -636,7 +636,8 @@ def test_the_readme_s_two_limits_are_the_numbers_the_workflow_and_the_script_use
     assert (
         "`release_check.py` and job `aliases` each ask GitHub for at most 1,000 releases"
         " (`release_check.py` counts candidates' pre-releases too): a listing that reaches"
-        " 1,000 stops the job and says so, and a person then raises both numbers together." in ci
+        " 1,000 stops the job and says so, and a person then raises both numbers together,"
+        " before the next tag." in ci
     )
     # The two stop at different points: release_check before anything is published, aliases
     # after the version and its GitHub release are, so a release made at 999 whose aliases
@@ -675,3 +676,25 @@ def test_the_readme_lists_the_scans_and_the_quick_checks_in_items_1_and_2():
     assert "`build-constraints.txt`" in item_1 and "redacted" in item_1
     item_2 = ci.split("2. **")[1].split("3. **")[0]
     assert "`infra/quick/aws`, `infra/quick/gcp`" in item_2 and "job `quick`" in item_2
+
+
+def test_aliases_alone_re_run_in_any_release_s_run_does_what_a_superseded_one_would_have():
+    """A waiting `aliases` replaced by a newer one that then fails leaves the aliases as they
+    were. Its step reads nothing of the run that started it (no `needs` output, ref or commit),
+    only the releases and the registry as they are, so re-running that job alone in any
+    release's run moves every alias where it belongs; the README says so."""
+    point = next(s for s in JOBS["aliases"]["steps"] if "gh release list" in s.get("run", ""))
+    said = yaml.safe_dump(point)
+    for run_s_own in ("needs.", "GITHUB_REF", "GITHUB_SHA", "github.ref", "github.sha"):
+        assert run_s_own not in said, run_s_own
+    ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
+    assert (
+        "When a waiting `aliases` is replaced by a newer one that then fails, `latest` and"
+        " `X.Y` stay where they were: re-run the job `aliases` alone in any release's run, which"
+        " decides from the releases and the registry as they are then and so moves every alias"
+        " where it belongs." in ci
+    )
+    assert (
+        "A run re-run later keeps the workflow of its own commit, and with it the cap that"
+        " commit had." in ci
+    )

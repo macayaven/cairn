@@ -662,7 +662,7 @@ def test_a_revoked_token_is_asked_for_again_and_the_signing_secret_is_not(world)
     world.system().revoke_slack_bot(install)
     ada = world.browser(world.ada)
     page = said(ada, secrets(ada, secret=None, token=NEW_TOKEN))
-    assert setup.SAID["ready"] in page
+    assert setup.SAID["token_kept"] in page and setup.SAID["ready"] not in page
     found = world.view(world.ada).get_slack_install()
     assert found.state == "ready" and found.holds_secrets
     assert world.view(world.ada).slack_bot_token(install) == NEW_TOKEN

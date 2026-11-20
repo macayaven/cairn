@@ -90,7 +90,7 @@
   <p>The Slack user <code>{{ slack_user }}</code>: what it does through the bot acts as you here, with what you reach.</p>
   <form method="post" action="/integrations/slack/unlink" class="ending">
     <input type="hidden" name="slack_user" value="{{ slack_user }}">
-    <button type="submit" class="quiet">Unlink</button>
+    <button type="submit" class="quiet" aria-label="Unlink {{ slack_user }}">Unlink</button>
   </form>
   {% endfor %}
   {% endif %}

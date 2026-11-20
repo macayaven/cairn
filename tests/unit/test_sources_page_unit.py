@@ -865,3 +865,22 @@ def test_the_buttons_are_explained_only_when_there_is_a_source(world):
     assert "Choose something new" in bare  # the form is still there
     world.ada.view.add_source_from("again", "ada-mail", {"label": "to-team"}, {}, "decisions")
     assert "What each button does" in main(get(world, world.ada).text)
+
+
+def test_every_source_action_button_names_its_source(world):
+    off_block = section(main(get(world, world.ada).text), "source-ada-labelled")
+    for label in (
+        "Preview ada-labelled",
+        "Switch on ada-labelled",
+        "Remove the source ada-labelled",
+    ):
+        assert f'aria-label="{label}"' in off_block
+    world.ada.view.enable_source("ada-labelled", ["decisions"])
+    on_block = section(main(get(world, world.ada).text), "source-ada-labelled")
+    for label in (
+        "Switch off ada-labelled",
+        "Preview ada-labelled",
+        "Write ada-labelled here from now on",
+        "Remove the source ada-labelled",
+    ):
+        assert f'aria-label="{label}"' in on_block

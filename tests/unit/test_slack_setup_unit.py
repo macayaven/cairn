@@ -356,3 +356,22 @@ def test_an_access_record_holds_who_the_install_and_the_outcome_only(world, capl
     for record in records:
         said = record.getMessage() + repr(record.__dict__)
         assert SECRET not in said and TOKEN not in said
+
+
+def test_a_revoked_install_speaks_only_of_its_bot_token_and_unlink_labels_its_user(world):
+    install = ready(world.view(world.ada))
+    world.view(world.ada).link_slack_user(install, "U0ADA01", world.ada["id"])
+    ada = world.browser(world.ada)
+    linked = html.unescape(ada.get("/sources").text)
+    assert 'aria-label="Unlink U0ADA01"' in linked
+    world.store.for_account(world.ada["account"]).acting_as("system", None).revoke_slack_bot(
+        install
+    )
+    blank = ada.post(setup.SECRETS_PATH, data={"bot_token": ""}, follow_redirects=False)
+    blank_page = page_after(ada, blank)
+    assert setup.REFUSALS["blank_token"] in blank_page and setup.REFUSALS["blank"] not in blank_page
+    kept = ada.post(
+        setup.SECRETS_PATH, data={"bot_token": "xoxb-fresh-token"}, follow_redirects=False
+    )
+    kept_page = page_after(ada, kept)
+    assert setup.SAID["token_kept"] in kept_page and setup.SAID["ready"] not in kept_page

@@ -11,7 +11,7 @@
     <tr>
       <td data-label="Workspace">{{ place.name }}</td>
       <td data-label="Your role">{{ place.role }}</td>
-      <td data-label="Action" class="act">{% if place.account_id == here %}You are here{% else %}<form method="post" action="/workspaces/{{ place.account_id|seg }}/switch"><button type="submit" class="link">Go there</button></form>{% endif %}</td>
+      <td data-label="Action" class="act">{% if place.account_id == here %}You are here{% else %}<form method="post" action="/workspaces/{{ place.account_id|seg }}/switch"><button type="submit" class="link" aria-label="Go to {{ place.name }}">Go there</button></form>{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

@@ -105,7 +105,7 @@
   <div class="switch">
     <p class="state is-on"><strong>On since <time datetime="{{ source.enabled_at }}">{{ source.enabled_at|when }}</time></strong></p>
     <form method="post" action="/integrations/{{ source.name|seg }}/off">
-      <button type="submit" class="quiet">Switch off</button>
+      <button type="submit" class="quiet" aria-label="Switch off {{ source.name }}">Switch off</button>
     </form>
   </div>
   {% else %}
@@ -139,7 +139,7 @@
     <input type="number" id="{{ days_field }}" name="days" min="1" max="{{ preview_days_max }}" value="{{ preview_days }}" inputmode="numeric" aria-describedby="{{ days_field }}-hint">
     <p class="hint" id="{{ days_field }}-hint">From 1 to {{ preview_days_max }}.{% if source.kind == "langfuse" %} Langfuse reads the marks of the last 7 days whatever the number.{% endif %}</p>
     {% endif %}
-    <button type="submit" class="quiet">Preview</button>
+    <button type="submit" class="quiet" aria-label="Preview {{ source.name }}">Preview</button>
   </form>
   {% endif %}
   {% if preview and preview["source"] == source.name %}
@@ -155,20 +155,20 @@
     <summary>Change where it writes</summary>
     <form method="post" action="/integrations/{{ source.name|seg }}/on" class="stack">
       {{ choose(field, named, row.projects, proposed[source.name]["new"], row.decides) }}
-      <button type="submit">Write here from now on</button>
+      <button type="submit" aria-label="Write {{ source.name }} here from now on">Write here from now on</button>
     </form>
   </details>
   {% else %}
   <form method="post" action="/integrations/{{ source.name|seg }}/on" class="stack switch-on">
     {{ choose(field, named, row.projects, proposed[source.name]["new"], row.decides) }}
-    <button type="submit">Switch on</button>
+    <button type="submit" aria-label="Switch on {{ source.name }}">Switch on</button>
   </form>
   {% endif %}
   {% if not row.linked %}
   <p class="hint">Added on the server's command line. {{ removed_there }}</p>
   {% elif row.disconnected or (row.routes and not (source.unreached and not row.decides)) %}
   <form method="post" action="/integrations/{{ source.name|seg }}/remove" class="stack ending">
-    <button type="submit" class="quiet">Remove the source</button>
+    <button type="submit" class="quiet" aria-label="Remove the source {{ source.name }}">Remove the source</button>
   </form>
   {% endif %}
 </section>

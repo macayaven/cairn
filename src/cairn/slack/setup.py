@@ -168,6 +168,7 @@ STATES = {  # the install's state, and what is left to do
 SAID = {  # what the block says after a form, by the code in the outcome
     "made": "Set up started: create the app at Slack, then paste its two secrets here.",
     "ready": "Slack accepted the bot token: both secrets are kept, sealed, and never shown again.",
+    "token_kept": "Slack accepted your bot token: it is kept, sealed, and never shown again.",
     "off": "Switched off: nothing was deleted.",
     "on": "Switched on.",
     "removed": "Removed.",
@@ -176,6 +177,7 @@ SAID = {  # what the block says after a form, by the code in the outcome
 REFUSALS = {  # each one sentence; none quotes what was typed
     "none": "Set Slack up first; nothing was kept.",
     "blank": "Paste the signing secret and the bot token as Slack shows them; nothing was kept.",
+    "blank_token": "Paste your bot token as Slack shows it; nothing was kept.",
     "not_accepted": "Slack did not accept this bot token, so nothing was kept.",
     "unreachable": "Slack could not be reached, so nothing was kept; try again later.",
     "not_a_bot": "This is not the app's bot token, so nothing was kept.",
@@ -445,12 +447,13 @@ def setup_routes(
         if install is None or install.state == "removed":
             return await told(memory, noted, "none")
         account = memory.store.account_id
-        if not secret and install.needs_bot_token:
+        token_only = not secret and install.needs_bot_token
+        if token_only:
             secret = await run_in_threadpool(office.kept_secret, install.id, account) or ""
             if not secret:
                 return await told(memory, noted, "unopened")
         if not (SECRET_VALUE.fullmatch(secret) and SECRET_VALUE.fullmatch(token)):
-            return await told(memory, noted, "blank")
+            return await told(memory, noted, "blank_token" if token_only else "blank")
         try:
             async with http() as client:
                 answer = await SlackClient(client, api=api).call(
@@ -482,7 +485,7 @@ def setup_routes(
             return await told(memory, noted, "other_team")
         except ValueError:
             return await told(memory, noted, "unkept")
-        return await told(memory, noted, "ready")
+        return await told(memory, noted, "token_kept" if token_only else "ready")
 
     def switch(on: bool) -> Handler:
         async def switching(request: Request, memory: Memory, noted: Noted) -> Response:

@@ -133,3 +133,12 @@ def test_the_read_is_on_the_access_log_and_with_audit_reads_an_event(store, clie
     (event,) = [e for e in store.list_audit() if e.action.startswith("read.")]
     assert (event.action, event.project, event.detail) == ("read.notes", "ops", {})
     assert "Relay" not in str(event.model_dump()) and SECRET_LINE not in str(event.model_dump())
+
+
+def test_a_note_without_a_title_falls_back_to_untitled_note(store, client):
+    project = store.create_project("ops")
+    note = add(store, project, 1, "---\n")
+    assert note.title == ""
+    main = main_of(client.get("/b/ops/notes").text)
+    assert "Untitled note" in visible(main)
+    assert f'href="/b/ops/notes/{note.id}/forget" aria-label="Forget Untitled note"' in main

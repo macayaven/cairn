@@ -537,3 +537,26 @@ def test_a_gate_renders_once_when_the_body_is_as_written(monkeypatch):
     # not as written: one more rendering, to find the line
     assert parses(monkeypatch, lambda: unclaimed_violations(other, spans)) == 2 * 201 + 200
     assert parses(monkeypatch, lambda: render_body("Ops", *made(REVIEWER))) == 3
+
+
+# A stated limit, not this change's: a reader with raw HTML on
+
+
+@pytest.mark.parametrize(
+    "opener",
+    ["<!-- kept", "<script>", "<pre>", "<?php", "<!DOCTYPE quill", "<![CDATA[ kept"],
+    ids=["comment", "script", "pre", "processing", "declaration", "cdata"],
+)
+def test_an_html_block_a_note_leaves_open_holds_the_next_claim_for_a_reader_with_html_on(
+    memory, store, opener
+):
+    """The package's parser has raw HTML off: for it the note is a paragraph and so is the
+    claim after it, and no check of the body sees more. A reader that takes raw HTML reads
+    every such block to the end of the body, the claims after it inside."""
+    page = filed(memory, store, [opener, "After."])
+    assert page.body == f"# Ops\n\n{opener}\n\nAfter.\n"
+    off, on = (reader.parse(page.body) for reader in READERS.values())
+    assert [t.content for t in off if t.type == "inline"] == ["Ops", opener, "After."]
+    (held,) = [t.content for t in on if t.type == "html_block"]
+    assert held == f"{opener}\n\nAfter.\n"
+    assert [t.content for t in on if t.type == "inline"] == ["Ops"]

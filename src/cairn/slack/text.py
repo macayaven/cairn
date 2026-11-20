@@ -154,6 +154,20 @@ def _link_target(target: str) -> str | None:
     return quote(target, safe=":/?#%=&+@,;~-._")
 
 
+def _special(target: str, label: str) -> str | None:
+    """What Slack displays for one of its special forms, `<!target|label>`, as its page on
+    message text describes them and nothing else: "@here", "@channel" and "@everyone"; a
+    user group's mention or a date as the fallback text the message gives (`label`), and
+    without one "[user group]" or "[date]", since the page leaves what Slack shows then to
+    Slack. None for any other reference."""
+    if target in ("!here", "!channel", "!everyone"):
+        return "@" + target[1:]
+    for form, word in (("!subteam^", "[user group]"), ("!date^", "[date]")):
+        if target.startswith(form):
+            return label or word
+    return None
+
+
 def _headings(text: str) -> dict[int, str]:
     """Each line after the first that makes a heading in `text`, with the character that makes
     it one: a line's first "#", or the "=" or "-" of a line that underlines a heading. Three
@@ -598,6 +612,8 @@ def _render(
                 pieces.append("@" + _name(names.get(target[1:], target[1:]), literal))
             elif target.startswith("#"):
                 pieces.append("#" + _name(names.get(target[1:], label or target[1:]), literal))
+            elif (special := _special(target, label)) is not None:
+                pieces.append(_name(special, literal))
             else:
                 url = _link_target(target)
                 shown = literal(label if separator else target)

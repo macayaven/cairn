@@ -805,6 +805,26 @@ def test_connect_a_mention_of_anyone_but_the_author_is_their_member_id(tmp_path)
         bench.store.close()
 
 
+def test_connect_a_special_mention_is_written_as_slack_displays_it():
+    """connect.md: "Slack's special mentions are written as Slack displays them, ...\" (The
+    tester's second attack, finding 1: they were written "[link omitted]"; every form is
+    test_slack_special_mentions_unit's.)"""
+    says(
+        *CONNECT,
+        "Slack's special mentions are written as Slack displays them, `@here`, `@channel` and "
+        "`@everyone`, and a mention of a user group or a date as the fallback text the message "
+        "gives for it, else as `[user group]` or `[date]`: none of them is a link.",
+    )
+    lines, _, _ = as_read(
+        a_filed_note(
+            "<!here> <!channel> <!everyone> <!subteam^S0DESIGN1|@designers>"
+            " <!date^1900000000^{date}^https://fable.test/cal|Mar 17>"
+            " <!subteam^S0DESIGN1> <!date^1900000000^{date}>"
+        )
+    )
+    assert lines == "@here @channel @everyone @designers Mar 17 \\[user group\\] \\[date\\]"
+
+
 def test_connect_a_line_read_as_code_in_its_passage_alone_shows_what_writes_it_as_text():
     """connect.md: "A page shows each passage of the note alone, and a line the note reads as
     text can read as code in its passage alone: ...\" A limit (the third tester, finding 5):

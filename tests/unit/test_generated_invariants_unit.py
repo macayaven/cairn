@@ -3,16 +3,27 @@
 (a) Every page the compiler, a tidy or the arranger (a fake model) saves passes every gate,
 its body is what render_body writes of its claims, no code fence in the parsed body runs
 across two claims or a heading the body writes, and filing the same notes again changes
-nothing. (b) Every such page exports and imports, and the imported page is equal. The same notes are
-also compiled by a composer that folds every passage of one text into one claim, as a model
-may (finding 5a): what it saves holds both invariants too.
+nothing, claim ids and the order of citations included. (b) Every such page exports and
+imports, and the imported page is equal, claim ids and citation order included. Every claim is
+the text of each passage it cites under the one rule (CORE5: only a CR before a line feed,
+spaces and tabs at a line's end and blank lines around the text are ignored), checked by a
+statement of that rule written here, not by the gate's function.
 
-The grammar: repeated paragraphs, one a prefix of another and one joined from the first lines of two
-earlier ones, quotes, lists and nested
-lists, fences with every closer shape, inline code with odd white space, headings to depth
-eight, titles with line breaks, no-break and other Unicode spaces. Seeded, so every run
-builds the same notes. Made-up notes."""
+The same notes are also compiled by two composers of this test, standing in for what a model
+may answer through LLMComposer (which only the evaluation script uses): one folds every
+passage of one text into one claim (finding 5a), one reuses a passage, as a second claim with
+the same text or with a space before it (the cross-reader's item 6). What either saves holds
+both invariants; a draft the gate refuses saves nothing.
 
+The grammar: repeated paragraphs, one a prefix of another and one joined from the first lines
+of two earlier ones, quotes and lazy lines after quotes and lists, lists and nested lists with
+varying indentation, fences with every closer shape, inline code with odd white space, links
+with backticks in their destinations and titles, escaped backticks, setext headings, link
+definitions, private-use and non-character code points, headings to depth eight, titles with
+line breaks, no-break and other Unicode spaces. Seeded, so every run builds the same notes.
+Made-up notes."""
+
+import hashlib
 import io
 import json
 import random
@@ -39,6 +50,8 @@ SEED, CASES = 20261120, 300
 GATES = (provenance_gate, lint_gate, strict_lint_gate, verbatim_gate)
 SPACES = [" ", "  ", "\t", "\u00a0", "\u2003", "\u3000", " \u00a0"]
 WORDS = ["Ada", "Brook", "Quill", "keeps", "the", "nightly", "log", "Fable", "Works", "port"]
+# The old probe character, other private-use and non-character code points.
+ODD = ["\ue000", "\uf8ff", "\ufdd0", "\ufffe", "\U000f0000", "\U0010fffd"]
 OPENERS = ["```", "~~~", "````", "``` sh", "~~~~"]
 BODY = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
 
@@ -78,7 +91,7 @@ def fence(rng: random.Random) -> str:
 
 
 def block(rng: random.Random, made: list[str]) -> str:
-    kind = rng.randrange(14)
+    kind = rng.randrange(16)
     if kind == 0 and made:
         return rng.choice(made)  # a paragraph repeated
     if kind == 1 and made:
@@ -109,7 +122,56 @@ def block(rng: random.Random, made: list[str]) -> str:
         spaced = rng.choice(["a  b.txt", "a\tb.txt", "a \u00a0b.txt"])
         lead = rng.choice(["", "> Stray `\n>\n> "])  # a backtick a quote leaves as text
         return f"{lead}Keep `{spaced}` here.\n\n{lead}Keep `a b.txt` here."
+    if kind in (13, 14):  # the shapes that got through before CORE5, each next to its twin
+        shape = rng.choice([link, escaped, lazy, nested, definition, odd])
+        one = shape(rng)
+        return one + "\n\n" + spaced_once(rng, one)
     return words(rng)
+
+
+def link(rng: random.Random) -> str:
+    """Backticks in a link's destination and title, around inline code (finding 1)."""
+    inside = rng.choice(["a  b.txt", "a b.txt", "a\tb.txt"])
+    title = rng.choice(["", ' "t`"', " 'x`y'"])
+    return f"[x](a`{title}) `{inside}` [y](b`)"
+
+
+def escaped(rng: random.Random) -> str:
+    """A literal backtick before code-like text (finding 4)."""
+    return f"Keep \\`{rng.choice(['a  b.txt', 'a b.txt'])}` here."
+
+
+def lazy(rng: random.Random) -> str:
+    """A lazy line after a quote or a list item (finding 2)."""
+    mark = rng.choice(["> ", "- ", "1. "])
+    return f"{mark}Stray `\n{rng.choice(['x  y', 'x y'])}` z` q``w``"
+
+
+def nested(rng: random.Random) -> str:
+    """Nested lists with varying indentation (finding 8 of the cross-reader)."""
+    lines, depth = ["- " + words(rng, 1)], 0
+    for _ in range(rng.randint(1, 3)):
+        depth = rng.choice([depth, depth + 2, depth + 4, max(depth - 2, 0)])
+        lines.append(" " * depth + "- " + words(rng, 1))
+    return "\n".join(lines)
+
+
+def definition(rng: random.Random) -> str:
+    return f"[{rng.choice(['x', 'ref'])}]: /target{rng.choice(['', ' "t"', '`'])}"
+
+
+def odd(rng: random.Random) -> str:
+    return f"{words(rng, 2)}{rng.choice(ODD)}{rng.choice([' ', '  ', '\u00a0'])}{words(rng, 1)}"
+
+
+def spaced_once(rng: random.Random, text: str) -> str:
+    """The text with one white-space edit inside it: a space doubled, a no-break space for a
+    space, or a line's indentation changed. The twin must stay a claim of its own."""
+    places = [n for n, char in enumerate(text) if char == " " and 0 < n < len(text) - 1]
+    if not places:
+        return text + " " + words(rng, 1)
+    at = rng.choice(places)
+    return text[:at] + rng.choice(["  ", "\u00a0", "\t"]) + text[at + 1 :]
 
 
 def note(rng: random.Random) -> str:
@@ -133,7 +195,7 @@ def snapshot(store: Store, project_id: str) -> dict:
     pages = {}
     for slug in sorted(p.slug for p in store.list_pages(project_id)):
         page = store.get_page(project_id, slug)
-        claims = [(c.text, tuple(sorted(c.span_ids))) for c in page.claims]
+        claims = [(c.id, c.text, c.span_ids) for c in page.claims]
         pages[slug] = (page.title, page.body, claims, page.version)
     return pages
 
@@ -162,15 +224,15 @@ def fences_cross(page) -> list[str]:
     return found
 
 
-def code_read(text: str) -> list[str]:
-    """The inline code the parser reads in a passage, by the parser alone."""
-    return [
-        child.content
-        for token in BODY.parse(text)
-        if token.type == "inline"
-        for child in token.children or ()
-        if child.type == "code_inline"
-    ]
+def rows(text: str) -> list[str]:
+    """The rule, stated here on its own: the text's lines, each without a CR and the spaces
+    and tabs at its end, with the blank lines at the two ends dropped."""
+    out = [line.rstrip(" \t\r") for line in text.split("\n")]
+    while out and not out[0]:
+        out.pop(0)
+    while out and not out[-1]:
+        out.pop()
+    return out
 
 
 def faults(store: Store, project_id: str) -> list[str]:
@@ -189,15 +251,18 @@ def faults(store: Store, project_id: str) -> list[str]:
                 codes = [v.split(":")[0] for v in verdict.violations]
                 out.append(f"{slug}: {gate.__name__} {codes}")
         out.extend(f"{slug}: a fence runs on, {where}" for where in fences_cross(page))
-        for claim in page.claims:  # a fold: passages whose code the parser reads the same
-            if len({tuple(code_read(spans[i].text)) for i in claim.span_ids}) > 1:
-                out.append(f"{slug}: {claim.id} folds passages whose inline code differs")
+        for claim in page.claims:  # each claim is each passage it cites, under the rule
+            if any(rows(spans[i].text) != rows(claim.text) for i in claim.span_ids):
+                out.append(f"{slug}: {claim.id} is not the text of a passage it cites")
+        if len({c.id for c in page.claims}) != len(page.claims):
+            out.append(f"{slug}: a claim id is doubled")
     return out
 
 
 def reversed_order(page) -> Reply:
     """The claims in reverse, and as "same" every group whose texts are equal but for white
-    space, as a model may call them (the gate refuses such a fold unless it is whole)."""
+    space, as a model may call them (the arranger refuses such a group unless its texts are
+    the same under the rule, and the page stays as it was)."""
     numbers = list(range(len(page.claims), 0, -1))
     groups: dict[str, list[int]] = {}
     for n, claim in enumerate(page.claims, 1):
@@ -221,6 +286,32 @@ def folding(title: str, spans) -> Draft:
     return Draft(claims=claims, stats=DraftStats(composer="folding"))
 
 
+def reusing(title: str, spans) -> Draft:
+    """A composer as a model may answer, with LLMComposer's ids (a hash of text and citations,
+    so a claim the same as an earlier one is dropped): each passage as a claim, and each text
+    that several passages say once more, as a claim that cites them all (a reuse the gate
+    and the import take). A note with no such text reuses its first passage instead, with a
+    space before it (` X.` beside `X.`) or after it (`X. `, the whole passage, but past what
+    the import takes of one version): the gate refuses the draft, and nothing is saved."""
+    claims = {}
+
+    def add(text: str, cited: tuple[str, ...]) -> None:
+        made = "cl_" + hashlib.sha256(json.dumps([text, cited]).encode()).hexdigest()[:16]
+        claims.setdefault(made, Claim(id=made, text=text, span_ids=cited))
+
+    by_text: dict[str, list[str]] = {}
+    for span in spans:
+        add(span.text, (span.id,))
+        by_text.setdefault(span.text, []).append(span.id)
+    repeated = [(text, ids) for text, ids in by_text.items() if len(ids) > 1]
+    for text, ids in repeated:
+        add(text, tuple(ids))
+    if not repeated:
+        first = spans[0]
+        add(f" {first.text}" if len(spans) % 2 else f"{first.text} ", (first.id,))
+    return Draft(claims=tuple(claims.values()), stats=DraftStats(composer="reusing"))
+
+
 def build(store: Store) -> dict[str, int]:
     """File every case's notes, check, tidy, check, arrange, check, file again; then compile
     the same notes in a project of their own with a composer that folds, and check. The
@@ -228,6 +319,7 @@ def build(store: Store) -> dict[str, int]:
     memory = Memory(store, lint_gate)
     counts = {"cases": 0, "notes": 0, "refused": 0, "pages": 0, "tidied": 0, "arranged": 0}
     counts |= {"composed": 0, "folds saved": 0, "arranger refused a fold": 0}
+    counts |= {"reuses saved": 0, "reuses refused": 0}
     for name, page_title, notes in cases(SEED, CASES):
         project = store.create_project(name)
         counts["cases"] += 1
@@ -272,6 +364,20 @@ def build(store: Store) -> dict[str, int]:
         counts["folds saved"] += sum(
             len(c.span_ids) > 1 for p in store.list_pages(composed.id) for c in p.claims
         )
+        reused = store.create_project(f"{name}-reused")
+        for text in filed:
+            note, _ = store.add_note(reused.id, text, title=page_title, topic=page_title)
+            result = compile_note(store, note, compose=reusing)
+            assert result.status in ("saved", "unchanged", "rejected"), name
+            counts["reuses saved"] += result.status == "saved"
+            if result.status == "rejected":  # only a space around a reused passage
+                codes = {v.split(":")[0] for v in result.gate.violations}
+                assert codes <= {"grounding.not_verbatim", "grounding.passage_repeated"}, (
+                    name,
+                    codes,
+                )
+                counts["reuses refused"] += 1
+        assert faults(store, reused.id) == [], (name, "reused")
     return counts
 
 
@@ -287,6 +393,7 @@ def test_every_saved_page_passes_every_gate_and_filing_again_changes_nothing(sto
     assert counts["cases"] == CASES and counts["pages"] > CASES // 2, counts
     assert counts["tidied"] and counts["arranged"], counts  # both paths saved pages
     assert counts["composed"] and counts["folds saved"], counts
+    assert counts["reuses saved"] and counts["reuses refused"], counts
 
 
 def test_every_saved_page_exports_and_imports_equal(store, tmp_path):
@@ -296,7 +403,11 @@ def test_every_saved_page_exports_and_imports_equal(store, tmp_path):
     target = Store(tmp_path / "imported.db")
     try:
         target.import_export(io.BytesIO(archive.getvalue()))
-        names = [n for name, _, _ in cases(SEED, CASES) for n in (name, f"{name}-composed")]
+        names = [
+            n
+            for name, _, _ in cases(SEED, CASES)
+            for n in (name, f"{name}-composed", f"{name}-reused")
+        ]
         for name in names:
             source, imported = store.get_project(name), target.get_project(name)
             mine = {s: p[:3] for s, p in snapshot(store, source.id).items()}

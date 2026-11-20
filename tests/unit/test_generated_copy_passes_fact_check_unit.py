@@ -6,7 +6,7 @@ cites it. Grounding and retention can only refuse such a page by reading a fact 
 passage and another way where they compare it. The report's case: a URL the extractor ended
 before `>`, whose final underscore was then read with nothing after it.
 
-Four families of made-up notes, each case filed in a project of its own:
+Five families of made-up notes, each case filed in a project of its own:
 - `ends`, the whole product, nothing drawn: a URL that ends in a number, a version or a
   date, in angle brackets, in a link, in parentheses, in quotes, bare and before a tag,
   ending in or followed by nothing, each of `_ * ~ ` ) ] > . , ; : ! ?`, each pair of them

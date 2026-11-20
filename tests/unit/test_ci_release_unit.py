@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from ci_shell import run_step
+from ci_shell import first_attempt_gh, run_step
 from test_ci_workflow_unit import (
     JOBS,
     MAIN_PUSH,
@@ -250,7 +250,7 @@ PRIVILEGED_DEFINITIONS = {
         "5165d1610aa4638259b10262874a992db6b2b557007a329103fbbd9dcba655d4",
         "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
         "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
-        "446fd37a30c9fcbc6320571c07ad833931f4764e20e6364559f5e86ab69e531d",
+        "167181cf39c2565c6fc2c6e56cb2d132b8a0d02593156136effab28dc20153c2",
     ],
     "deploy": [
         "401510e913f6e37136331eeefa6d88fce27bbba126b17c42793f7694b9600454",
@@ -518,27 +518,34 @@ def run_create(tmp_path, tag: str, candidate: str):
     }
     (tmp_path / "release").mkdir()
     (tmp_path / "release" / "notes.md").write_text("the notes\n")
+    for name in ("cairn_memory-1.2.3-py3-none-any.whl", "cairn_memory-1.2.3.tar.gz", "SHA256SUMS"):
+        (tmp_path / "release" / name).write_text(name)
     bin_ = tmp_path / "bin"
     bin_.mkdir()
-    # No release for the tag yet: the listing of releases holds none, as on a first attempt.
-    (bin_ / "gh").write_text('#!/bin/sh\nif [ "$1" = api ]; then exit 0; fi\nprintf "%s\\n" "$@"\n')
-    (bin_ / "gh").chmod(0o755)
+    first_attempt_gh(bin_)  # no release for the tag yet, then the draft the step asks for
     env = {
         "PATH": f"{bin_}:/usr/bin:/bin",
         "RUNNER_TEMP": str(tmp_path),
         "GITHUB_REF_NAME": tag,
+        "GH_REPO": "owner/repo",
         "CANDIDATE": candidate,
     }
     done = bash(step["run"], tmp_path, env)
-    assert done.returncode == 0, done.stderr
-    return done.stdout.splitlines()
+    assert done.returncode == 0, done.stdout + done.stderr
+    return [(tmp_path / f"gh-{write}").read_text().splitlines() for write in ("create", "publish")]
+
+
+PUBLICATION = ["api", "--method", "PATCH", "repos/owner/repo/releases/7", "--silent", "-F"]
 
 
 def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_path):
-    assert run_create(tmp_path, "v1.2.3", "") == [
+    create, publish = run_create(tmp_path, "v1.2.3", "")
+    assert publish == [*PUBLICATION, "draft=false"]
+    assert create == [
         "release",
         "create",
         "v1.2.3",
+        "--draft",
         "--verify-tag",
         "--title",
         "v1.2.3",
@@ -551,10 +558,15 @@ def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_pat
 
 
 def test_a_candidate_is_a_pre_release_never_marked_latest(tmp_path):
-    assert run_create(tmp_path, "v1.2.3-rc.2", "true") == [
+    """Said when the draft is made and again when it is published, as `gh release create`
+    itself said it in both of its requests."""
+    create, publish = run_create(tmp_path, "v1.2.3-rc.2", "true")
+    assert publish == [*PUBLICATION, "draft=false", "-f", "make_latest=false"]
+    assert create == [
         "release",
         "create",
         "v1.2.3-rc.2",
+        "--draft",
         "--verify-tag",
         "--title",
         "v1.2.3-rc.2",

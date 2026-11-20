@@ -71,10 +71,13 @@ def test_until_the_release_exists_a_tag_is_finished_whole_or_from_package():
         "On a tag, after the five days: while the tag has no GitHub release, re-run all its"
         " jobs, or, once its image is published, job `package` alone, which builds the files"
         " again and which `attest` and `release` follow; either way a draft an earlier attempt"
-        " left is deleted by hand first, as its line says." in CI
+        " left is published when it holds exactly the files built again, and otherwise stops"
+        " `release` with its line and is deleted by hand." in CI
     )
     # (Whole: test_ci_one_build_unit.test_a_tag_run_re_run_whole_promotes_the_same_digest...;
-    # the draft: test_ci_release_retry_unit.test_the_draft_a_person_deletes_is_made_again...)
+    # the draft: test_ci_release_retry_unit, "this run's draft with exactly this run's files
+    # is published", "with the names and other bytes is not published", and
+    # test_the_draft_a_person_deletes_is_made_again...)
     assert rerun({"package"}) == {"package", "attest", "release", "aliases"}
     assert not rerun({"package"}) & {"release_check", "image_build", "publish", "verify"}
     package = JOBS["package"]

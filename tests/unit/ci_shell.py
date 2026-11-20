@@ -37,3 +37,30 @@ def run_step(
         text=True,
         check=False,
     )
+
+
+# gh for a test of what the last step of job `release` asks of it on a first attempt. GitHub
+# lists no release for the tag until `gh release create` is asked for one; then that one, with
+# this run's mark and the files the step holds, a draft until the publication is sent. Each
+# write's arguments are kept, one a line, in $RUNNER_TEMP/gh-create and $RUNNER_TEMP/gh-publish.
+FIRST_ATTEMPT_GH = r"""#!/bin/sh
+case "$1 $2" in
+  "release create") printf '%s\n' "$@" > "$RUNNER_TEMP/gh-create" ;;
+  "api --method") printf '%s\n' "$@" > "$RUNNER_TEMP/gh-publish" ;;
+  "release download") mkdir "$5" && cp cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS "$5"/ ;;
+  "api --paginate")
+    [ -e "$RUNNER_TEMP/gh-create" ] || exit 0
+    draft=true
+    [ ! -e "$RUNNER_TEMP/gh-publish" ] || draft=false
+    pre=false
+    ! grep -qx -- --prerelease "$RUNNER_TEMP/gh-create" || pre=true
+    names="$(ls cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS | LC_ALL=C sort | tr '\n' ' ')"
+    printf '7\t%s\t%s\ttrue\t%s\n' "$draft" "$pre" "${names% }" ;;
+  *) exit 2 ;;
+esac
+"""
+
+
+def first_attempt_gh(bin_: Path) -> None:
+    (bin_ / "gh").write_text(FIRST_ATTEMPT_GH)
+    (bin_ / "gh").chmod(0o755)

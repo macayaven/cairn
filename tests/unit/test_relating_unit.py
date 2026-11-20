@@ -205,7 +205,15 @@ def test_a_page_that_is_not_there_and_a_project_out_of_reach_answer_nothing(stor
     assert store.related_pages(ops.id, "nowhere") is None
     assert store.related_pages("br_000000000000", deploy) is None
     other = store.create_project("other")
-    assert store.narrow(projects=(other.id,)).related_pages(ops.id, deploy) is None
+    seen: list[str] = []
+    store._observe(trace=seen.append)
+    try:
+        assert store.narrow(projects=(other.id,)).related_pages(ops.id, deploy) is None
+    finally:
+        store._observe(trace=None)
+    # out of reach: its reach and the page's head are asked, and no claim, passage or index
+    assert not [s for s in seen if "claim_search" in s or "spans" in s or "search_claims" in s]
+    assert sum("page_heads" in s for s in seen) == 1
     assert store.narrow(projects=(ops.id,), access="read").related_pages(ops.id, deploy).pages == ()
 
 

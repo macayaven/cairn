@@ -131,7 +131,7 @@ cd /opt/cairn/deploy && . /opt/cairn/quick.env
 docker compose stop
 name="cairn-cold-$(date -u +%Y%m%dT%H%M%SZ).tgz"
 tar -czf "/root/$name" -C "$(docker volume inspect cairn_cairn-data -f '{{.Mountpoint}}')" --exclude=.cairn.db-litestream .
-aws s3 cp "/root/$name" "${LITESTREAM_REPLICA_URL%/cairn}/cold/$name" --region "$AWS_REGION"
+/snap/bin/aws s3 cp "/root/$name" "${LITESTREAM_REPLICA_URL%/cairn}/cold/$name" --region "$AWS_REGION"
 ls -l "/root/$name" && sha256sum "/root/$name"
 ```
 

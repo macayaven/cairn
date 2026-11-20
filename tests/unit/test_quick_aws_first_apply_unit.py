@@ -345,6 +345,9 @@ def test_the_cold_copy_commands_put_the_stopped_database_under_cold_and_start_ag
     stack is started after."""
     section = readme_section("AWS cold copy", "###")
     on_vm, on_laptop, back_on_vm = re.findall(r"```sh\n(.*?)```", section, re.S)
+    # On the VM the CLI is a snap, and the boot script itself adds /snap/bin to its PATH:
+    # the guide names the path, so that the command cannot fail with the stack stopped.
+    assert "\n/snap/bin/aws s3 cp " in on_vm and "\naws " not in on_vm
     state = tmp_path / "state"
     (state / "volume" / ".cairn.db-litestream").mkdir(parents=True)
     (state / "volume" / ".cairn.db-litestream" / "position").write_text("of the old replica")
@@ -370,8 +373,10 @@ def test_the_cold_copy_commands_put_the_stopped_database_under_cold_and_start_ag
     env = {"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin", "HOME": str(tmp_path)}
 
     def run(commands, cwd):
-        script = commands.replace("/opt/cairn", str(tmp_path / "opt")).replace(
-            "/root", str(tmp_path / "root")
+        script = (
+            commands.replace("/opt/cairn", str(tmp_path / "opt"))
+            .replace("/root", str(tmp_path / "root"))
+            .replace("/snap/bin/aws", str(tmp_path / "bin" / "aws"))
         )
         done = subprocess.run(
             ["/bin/bash", "-euc", script],

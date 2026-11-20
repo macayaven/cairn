@@ -535,11 +535,17 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     owner = "<owner>/<repo>"
     workflow = f"--repo {owner} --signer-workflow {owner}/.github/workflows/ci-cd.yml"
     expected = {
-        f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}",
+        f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}"
+        " --source-digest <commit>",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow}",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow} --source-ref"
-        " refs/heads/main",
+        " refs/heads/main --source-digest <commit>",
     }
+    commit = (
+        "`<commit>` is the full commit the tag `vX.Y.Z` names (`git rev-parse"
+        " 'vX.Y.Z^{commit}'`): `--source-digest` checks that the attestation was made by a run"
+        " of that commit, which is what ties the files and the image to the release's commit."
+    )
     ci = README[README.index("## CI/CD") : README.index("## Planned")]
     update = DEPLOY_GUIDE[DEPLOY_GUIDE.index("## Update") :]
     update = update[: update.index("\n## ")]
@@ -555,6 +561,7 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     for guide in (ci, update):
         assert set(VERIFY.findall(guide)) == expected
         assert proof in flat(guide)
+        assert commit in flat(guide)
         assert "A pass proves that these bytes are the ones" not in flat(guide)
     # The flag the guides give is the one the tag's run checks main's attestation with.
     tag_check = next(
@@ -597,7 +604,8 @@ def test_the_readme_says_what_a_change_of_documents_alone_still_runs_and_how_tag
         "When the registry has no `sha-<commit>` for the tag's commit, the tag's run stops"
         " before publishing anything and says to run it again once `main`'s run for that"
         " commit has published it;",
-        "After a release, job `aliases` points `latest` at the highest released version and each"
+        "After a release, and never after a candidate, job `aliases` points `latest` at the"
+        " highest released version and each"
         " `X.Y` at its newest `X.Y.z`, one such job at a time across all runs, deciding from the"
         " releases and the registry as they are when it runs, so overlapping releases cannot"
         " move either backwards.",
@@ -704,6 +712,14 @@ def test_aliases_alone_re_run_in_any_release_s_run_does_what_a_superseded_one_wo
         " `X.Y` stay where they were: re-run the job `aliases` alone in any release's run, which"
         " decides from the releases and the registry as they are then and so moves every alias"
         " where it belongs." in ci
+    )
+    # It moves latest first and then each X.Y, so a stop between them leaves a part done.
+    run_ = point["run"]
+    assert run_.index("point latest") < run_.index("for line in")
+    assert (
+        "Job `aliases` moves `latest` first and then each `X.Y`: if it stops in between,"
+        " `latest` has moved and an `X.Y` may not have, and running it again finishes the job."
+        in ci
     )
     assert (
         "A run re-run later keeps the workflow of its own commit, and with it the cap that"

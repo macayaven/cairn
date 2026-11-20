@@ -380,6 +380,23 @@ def test_a_claim_reworded_from_its_passage_mentions_as_the_index_says(store, ops
         ops.id, "outside", "Outside", "", [Claim(id="cl_o", text=said, span_ids=[theirs])]
     )
     assert named_by(store, ops, deploy) == ["outside", "reworded", "uncited"]
+    # and a long one of them is given by its head: no place of it is known to be prose, so
+    # there is no line to give (here the title's only place is the path)
+    long = "Ada waits for the nightly log. " * 30 + said
+    store.save_page(
+        ops.id, "reworded", "Reworded", "", [Claim(id="cl_r", text=long, span_ids=[span])]
+    )
+    (there,) = [
+        page.why[0].there
+        for page in related(store, ops.id, deploy).pages
+        if page.slug == "reworded"
+    ]
+    assert (there.text, there.cut, there.line, there.line_cut) == (
+        long[:TEXT_MAX],
+        True,
+        None,
+        False,
+    )
     # the same words as the text of its own passage: not named
     store.save_page(
         ops.id,

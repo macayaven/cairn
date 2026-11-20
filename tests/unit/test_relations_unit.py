@@ -297,43 +297,6 @@ def test_a_match_on_two_lines_is_given_with_both():
     assert line(text, "Quill\nledger") == ("Ada opens the Quill\nledger at noon.", False)
 
 
-def test_the_line_is_the_same_read_from_the_part_of_a_text_around_the_match():
-    """What the store asks the index for, of a claim too long to read whole: LINE_MAX
-    characters before the match, and LINE_MAX after it (after its first LINE_MAX + 1, of a
-    longer match). `line_of` on that part gives what it gives on the whole text, wherever
-    the line ends fall: on the part's edges, one character inside them, one outside."""
-    import random
-
-    rng = random.Random(20261120)
-    most, checked, cut = relations.LINE_MAX, 0, 0
-    lengths = [0, 1, 2, most - 12, most - 11, most - 10, most - 1, most, most + 1, 3 * most]
-    for before in lengths:
-        for after in lengths:
-            for held in (1, 10, most, most + 1, most + 2, 2 * most):
-                for lead, tail in (("", ""), ("x\n", "\ny"), ("x" * 900 + "\n", "\n" + "y" * 900)):
-                    text = lead + "b" * before + "M" * held + "a" * after + tail
-                    start = len(lead) + before
-                    end = start + held
-                    until = min(end, start + most + 1)
-                    lo, hi = max(0, start - most), until + most
-                    whole = relations.line_of(text, start, end)
-                    assert relations.line_of(text[lo:hi], start - lo, until - lo) == whole
-                    assert len(whole[0]) <= most
-                    checked += 1
-                    cut += whole[1]
-    for _ in range(2_000):  # and texts of lines of any length, a match anywhere
-        text = "".join(rng.choice("ab \n") if rng.random() < 0.02 else "c" for _ in range(1_500))
-        start = rng.randrange(len(text))
-        end = min(len(text), start + rng.choice([1, 5, 40, most, most + 5]))
-        until = min(end, start + most + 1)
-        lo, hi = max(0, start - most), until + most
-        whole = relations.line_of(text, start, end)
-        assert relations.line_of(text[lo:hi], start - lo, until - lo) == whole
-        assert len(whole[0]) <= most
-        cut += whole[1]
-    assert checked == 1_800 and cut > 1_000
-
-
 # A title named in prose: the stretches of a passage that are no prose
 
 

@@ -15,8 +15,8 @@ A read (Store.related_pages) runs, T being the terms looked up (at most relating
 So 13 statements for a page of 10 terms, and 16 for one of 200 and for one of 3,000: past
 TERMS_MAX terms the count is the same, whatever the page holds. A claim of another page that
 holds the title's words is read as a candidate is, and one statement more asks the index
-where it matched the title; a last one, the 18th at most, asks it for the line of a claim
-given cut whose text is not its passage's (the last tests). One statement more, once
+where it matched the title: 17 at the most, as before, since no statement asks for the
+line of a claim given cut any more (the last tests). One statement more, once
 (SETTINGS): the first time a connection uses a workspace's index FTS5 loads its settings, as
 tests/unit/test_search_cost_unit.py says.
 The rows, C being the page's claims: 2 + 2C + the claims listed (each term's own claim among
@@ -28,8 +28,6 @@ of the page's words.
 """
 
 import contextlib
-import sqlite3
-from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -395,25 +393,17 @@ def test_what_it_costs_to_know_that_a_claim_names_the_title(tmp_path, monkeypatc
         store.close()
 
 
-def test_a_reworded_claim_that_mentions_costs_one_statement_more_and_a_part_of_its_text(tmp_path):
+def test_a_reworded_claim_that_mentions_costs_no_statement_more_and_nothing_of_its_text(tmp_path):
     """A claim of 60,000 characters saved by hand, whose text is not its passage's: the
     mention stands as the index has it. Nothing of the claim is handed back to know that
-    (the statement that would give its marks finds another text and gives none), and the
-    line is asked of the index in one statement more, the 14th, which hands back no more of
-    the claim than a line can come from: 3 * LINE_MAX + 1 characters. The index marks the
-    claim once a row there: the SELECT that asks it is run apart from the one that reads the
-    marks twice, not folded into it."""
+    (the statement that would give its marks finds another text and gives none), and no
+    line is asked for: the claim is given by its head, read by a handle to the bound. The
+    same 13 statements, and the longest text handed back is the short passage."""
     store, project_id = mentioned(tmp_path, LONG + "Then she opens the Quill ledger.", by_hand=True)
     with watched(store) as seen:
         found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
     (reason,) = found.pages[0].why
-    assert reason.kind == "mentioned_by" and reason.there.cut and reason.there.line_cut
-    assert reason.there.line.endswith("Then she opens the Quill ledger.")
-    assert len(seen.statements) - settings_loaded(seen.statements) == 14
-    asked = [s for s in seen.statements if "highlight(" in s]
-    assert len(asked) == 2 and seen.longest <= 3 * relations.LINE_MAX + 1
-    (line,) = [s for s in asked if "LIMIT -1" in s]
-    with closing(sqlite3.connect(tmp_path / "cairn.db")) as con:
-        plan = [step[-1] for step in con.execute("EXPLAIN QUERY PLAN " + line)]
-    assert [step for step in plan if step.startswith(("CO-ROUTINE", "MATERIALIZE"))]
+    assert reason.kind == "mentioned_by" and reason.there.cut and reason.there.line is None
+    assert len(seen.statements) - settings_loaded(seen.statements) == 13
+    assert len([s for s in seen.statements if "highlight(" in s]) == 1 and seen.longest < 100
     store.close()

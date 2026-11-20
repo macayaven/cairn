@@ -141,12 +141,7 @@ def line_of(text: str, start: int, end: int) -> tuple[str, bool]:
     Of more, LINE_MAX characters that hold the match, as near their middle as the line's
     ends let it be; and of a match itself longer than that, its first LINE_MAX. So what is
     given is LINE_MAX characters at most, whatever is asked. Nothing is searched for: the
-    place is the caller's.
-
-    It reads no further than LINE_MAX characters before `start` and after `end` (after
-    `start + LINE_MAX + 1`, of a longer match), so the same answer comes from that part of
-    a text alone: text[lo:hi] with the places counted from `lo`
-    (cairn.store.relating._named asks the index for no more of a long claim)."""
+    place is the caller's."""
     first = text.rfind("\n", 0, start) + 1
     last = text.find("\n", end)
     last = len(text) if last < 0 else last

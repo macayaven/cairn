@@ -348,7 +348,7 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cairn.compiler import CandidatePage, DraftStats, render_body
+from cairn.compiler import CandidatePage, DraftStats, rebuilt_folds, render_body
 from cairn.gate import text_reading, verbatim_gate
 from cairn.guard import Guard
 from cairn.llm import ChatModel, LLMError, draw_tag, failure_text, new_boundary
@@ -763,6 +763,8 @@ def arrange_page(
         return outcome("large", page.version)
     if spans is None:
         spans = view.get_spans(cited)
+    if rebuilt_folds(page.claims, spans) is not page.claims:  # finding 5b: no model needed
+        return tidy_page(view, project_id, slug)
     headings = (" > ".join(span.heading_path) for span in spans.values())
     quoted = (page.title, *(claim.text for claim in page.claims), *headings)
     if view.screen("\n\n".join(quoted)):  # everything the request quotes, sections too
@@ -927,6 +929,9 @@ def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
         problem = f"the page names claim {repeated} more than once"
         return outcome("invalid page", page.version, problem=problem)
     spans = view.get_spans([i for claim in page.claims for i in claim.span_ids])
+    claims = rebuilt_folds(page.claims, spans)  # finding 5b: an old fold, from its passages
+    if rebuilt := claims is not page.claims:
+        page = page.model_copy(update={"claims": claims})
     sections = {claim.id: _section_of(claim, spans) for claim in page.claims}
     same = [
         [page.claims[n - 1].id for n in group] for group in repeat_groups(page.claims, sections)
@@ -934,7 +939,7 @@ def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
     folded = {claim_id for group in same for claim_id in group[1:]}
     current = [claim.id for claim in page.claims]
     order = tree_order([claim_id for claim_id in current if claim_id not in folded], sections)
-    if not same and order == current:
+    if not same and order == current and not rebuilt:
         return outcome("unchanged", page.version)
     return _save_plan(view, project_id, page, spans, order, same, by=TIDY, outcome=outcome)
 

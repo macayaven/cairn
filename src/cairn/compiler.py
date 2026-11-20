@@ -91,7 +91,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from cairn.candidate import CandidatePage, GateResult
-from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate
+from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate, whole
 from cairn.spans import Span, claim_id, fence_closes, fence_opener, open_fence_closer
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
 from cairn.topics import one_line, topic_tag
@@ -549,6 +549,8 @@ def compile_note(
         if not new_spans:
             return CompileResult(**outcome, status="unchanged", version=version, draft=stats)
         spans = store.get_spans([*cited, *(s.id for s in new_spans)])
+        if existing is not None and (again := rebuilt_folds(existing.claims, spans)) is not claims:
+            existing = existing.model_copy(update={"claims": again})  # finding 5b
         if draft is None or drafted != [s.id for s in new_spans]:
             try:
                 draft = compose(title, new_spans)
@@ -593,6 +595,31 @@ def compile_note(
         draft=stats,
         candidate=candidate,
     )
+
+
+def rebuilt_folds(claims: tuple[Claim, ...], spans: Mapping[str, Span]) -> tuple[Claim, ...]:
+    """`claims`, each fold that is not the whole of every passage it cites by today's rule, or
+    folds passages under different headings, rebuilt from its passages in its place: one claim
+    for each passage `spans` holds, its text the passage's and its id claim_id(passage), as
+    the extractive compile writes it (second report, finding 5b: a fold a tidy made under an
+    older inline-code rule). The same tuple when none is; only a claim that cites more than
+    one passage is read. A tidy and an arrangement save the rebuilt claims as the page's next
+    version, a note compiles onto them, and an import rebuilds each version that holds such
+    a fold (store.portable)."""
+    if all(len(claim.span_ids) < 2 for claim in claims):
+        return claims
+    out: dict[str, Claim] = {}
+    for claim in claims:
+        cited = [span_id for span_id in claim.span_ids if span_id in spans]
+        paths = {spans[span_id].heading_path for span_id in cited}
+        if len(claim.span_ids) < 2 or (len(paths) < 2 and whole(claim, spans)):
+            out.setdefault(claim.id, claim)
+            continue
+        for span_id in cited:
+            again = Claim(id=claim_id(span_id), text=spans[span_id].text, span_ids=(span_id,))
+            out.setdefault(again.id, again)
+    rebuilt = tuple(out.values())
+    return claims if rebuilt == claims else rebuilt
 
 
 def _verbatim_gate() -> Gate:

@@ -134,12 +134,14 @@ class Sampling(sqlite3.Connection):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.most = 0
+        self.sampled = 0  # rows at which the producer's frame was read
 
     def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
         def taken():
             for row in parameters:
                 frame = getattr(parameters, "gi_frame", None)
                 if frame is not None:
+                    self.sampled += 1
                     held = sum(
                         len(value)
                         for name, value in frame.f_locals.items()
@@ -164,13 +166,13 @@ def with_workspaces(db: Path, workspaces: int, each: int = 2) -> None:
         con.commit()
 
 
-def most_held(db: Path) -> int:
+def most_held(db: Path) -> tuple[int, int]:
     con = sqlite3.connect(db, factory=Sampling, isolation_level=None)
     try:
         con.execute("BEGIN")
         schema._MIGRATIONS[31](con)
         con.execute("COMMIT")
-        return con.most
+        return con.most, con.sampled
     finally:
         con.close()
 
@@ -179,7 +181,9 @@ def test_step_31_holds_the_same_whatever_the_number_of_workspaces(tmp_path):
     few, many = tmp_path / "few.db", tmp_path / "many.db"
     with_workspaces(few, 3)
     with_workspaces(many, 600)
-    assert most_held(many) == most_held(few)
+    (most_few, seen_few), (most_many, seen_many) = most_held(few), most_held(many)
+    assert (seen_few, seen_many) == (3 * 2, 600 * 2)  # every row taken was sampled
+    assert most_many == most_few
 
 
 def test_each_workspace_still_chains_from_the_start(tmp_path):

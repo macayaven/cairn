@@ -509,11 +509,12 @@ jobs:
             exit 1
           fi
           # GHSA-wjmr-j3rp-mh2g and GHSA-4mq3-hpgx-9cx8: before 2.102.0, gh matched
-          # --signer-workflow as a prefix and --source-ref without case.
-          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+          # --signer-workflow as a prefix and --source-ref without case. The version is three
+          # numbers and then a space or the end of the line: 2.102.0-rc.1 is not 2.102.0.
+          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p')"
           IFS=. read -r major minor _ <<< "${version:-0.0.0}"
           if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 102 ]; }; then
-            echo "::error::gh on this runner is ${version:-of a version it does not print}, before 2.102.0, which fixed how gh attestation verify matches --signer-workflow and --source-ref, so it is not trusted with main's attestation; update GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
+            echo "::error::gh on this runner is ${version:-of a version it does not print as three plain numbers}, before 2.102.0, which fixed how gh attestation verify matches --signer-workflow and --source-ref, so it is not trusted with main's attestation; update GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
             exit 1
           fi
           # Off a terminal gh prints only its error. These are its words, in 2.102.0 and
@@ -1692,18 +1693,19 @@ jobs:
       # What this job does with a draft was read in the GitHub CLI's source at v2.102.0 (the
       # last step's comment quotes it) and in no earlier version, and this runner's CLI is not
       # the one image_build checked on the gate's runner. So an earlier one is refused here,
-      # read and compared as image_build does, before anything is fetched or written. The
-      # step is given no token: the CLI prints its version without one.
+      # read and compared as image_build does, before anything is fetched or written (three
+      # numbers and then a space or the end of the line: a pre-release of the tool is not
+      # that release). The step is given no token: the CLI prints its version without one.
       - name: Check the GitHub CLI
         run: |
           if ! command -v gh > /dev/null; then
             echo "::error::gh is not on this runner, so the GitHub release for $GITHUB_REF_NAME cannot be made; install GitHub CLI 2.102.0 or later on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
             exit 1
           fi
-          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p')"
           IFS=. read -r major minor _ <<< "${version:-0.0.0}"
           if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 102 ]; }; then
-            echo "::error::gh on this runner is ${version:-of a version it does not print}, before 2.102.0, the version in whose source this job's handling of a draft was read, so it is not trusted with the release; update GitHub CLI on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
+            echo "::error::gh on this runner is ${version:-of a version it does not print as three plain numbers}, before 2.102.0, the version in whose source this job's handling of a draft was read, so it is not trusted with the release; update GitHub CLI on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
             exit 1
           fi
       - name: Fetch what package built
@@ -1797,8 +1799,7 @@ jobs:
           # replaces no file.
           # The mark alone does not make a release this run's: a person can change the title,
           # and the notes around the mark. So each look also reads both, and the step compares
-          # them with what it wrote, before it publishes a draft and again on what the look
-          # after the publication shows; a release that differs stops the job, which then
+          # them with what it wrote; a release that differs stops the job, which then
           # writes nothing more. The creation sends the title only when one is given, and the
           # notes as the file holds them (cli/cli at v2.102.0,
           # pkg/cmd/release/create/create.go, 453 to 458: `if opts.Name != "" {`,
@@ -1806,14 +1807,25 @@ jobs:
           # 193 to 198: `b, err := cmdutil.ReadFile(notesFile, opts.IO.In)`,
           # `opts.Body = string(b)`), so this step names the tag as the title itself. The title
           # must be the tag, exactly, or missing or empty: an empty title is not an edited
-          # one. It is compared in the listing's own expression and never printed. The notes
+          # one. It is compared in the jq expression itself and never printed. The notes
           # are compared byte for byte, and nothing
-          # is normalised: the listing gives them as base64, which the step decodes into a file
+          # is normalised: they come as base64, which the step decodes into a file
           # and compares with the file it wrote, so no reading here drops a line end or changes
           # a byte (a command substitution would drop the line ends at the end).
+          # The listing finds the release and shows whether the tag has more than one; it can
+          # be behind a write, a person's as much as this job's, so nothing is compared on it.
+          # What is compared is read by the release's id, which was measured to show each
+          # write at once: after the look that gave the id, as the last request before the
+          # publication, and as the last request before this step says the release is
+          # finished. Each such read judges the tag, the mark, the two flags, the title, the
+          # notes and the file names. Each look still stops at once on what it shows of a
+          # missing mark, another flag, another title or other notes, in a wait too. The
+          # files' bytes are compared by download. A file replaced between the download and
+          # the publication is published as replaced: that is the stated race, and the
+          # comparison after the publication stops on it.
+          fields="[.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), (.name | . == null or . == \"\" or . == \"$GITHUB_REF_NAME\"), ((.body // \"\") | @base64), ([.assets[].name] | sort | join(\" \"))] | @tsv"
           listing() {
-            gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
-              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), (.name | . == null or . == \"\" or . == \"$GITHUB_REF_NAME\"), ((.body // \"\") | @base64), ([.assets[].name] | sort | join(\" \"))] | @tsv"
+            gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | $fields"
           }
           unlisted() {
             echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
@@ -1828,26 +1840,59 @@ jobs:
             exit 1
           }
           unread() {
-            echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing"
+            echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing unless the releases page shows a file of the draft missing or unfinished"
             exit 1
           }
           differs() {
             echo "::error::the GitHub release for $GITHUB_REF_NAME, $state, carries run $GITHUB_RUN_ID's mark and differs from what that run wrote in its $1; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job"
             exit 1
           }
+          unseen() {
+            echo "::error::GitHub does not list the release for $GITHUB_REF_NAME as this job has just left it; re-run this job, which starts from what is listed then"
+            exit 1
+          }
+          # One release, as a look or a read by its id gave it: this run's by its mark and
+          # its flag, with the title and the notes this run wrote. The notes are the sixth
+          # field, empty only when the release has no text, and then it has no mark and the
+          # job has stopped before it reads further.
+          judge() {
+            local what=""
+            IFS=$'\t' read -r id draft pre ours titled notes names <<< "$1"
+            [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
+            [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
+            state=public
+            [ "$draft" = false ] || state="a draft"
+            [ "$titled" = true ] || what=title
+            printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
+            cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md" || what="${what:+$what and }notes"
+            [ -z "$what" ] || differs "$what"
+          }
           # What GitHub lists for the tag now: nothing (found is empty), or this run's release.
-          # The notes are the sixth field, empty only when the release has no text, and then
-          # it has no mark and the job has stopped before it reads further.
           look() {
             found="$(listing)" || unlisted
             [ -n "$found" ] || return 0
             count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
             [ "$count" = 1 ] || refuse "there are $count releases for it"
-            IFS=$'\t' read -r id draft pre ours titled notes names <<< "$found"
-            [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
-            [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
-            state=public
-            [ "$draft" = false ] || state="a draft"
+            judge "$found"
+          }
+          # The release the look found, read by its id: what it is now, whatever the listing
+          # shows, with its file names. A read that fails is not a release that differs: the
+          # CLI ends the line it prints for an HTTP error with `(HTTP <status>)`
+          # (pkg/cmd/api/api.go, 553 to 557 and 685), and a 404 is a release that is not there.
+          fresh() {
+            local now
+            if ! now="$(gh api "repos/$GH_REPO/releases/$id" --jq "select(.tag_name == \"$GITHUB_REF_NAME\") | $fields" 2> "$RUNNER_TEMP/read.err")"; then
+              cat "$RUNNER_TEMP/read.err" >&2
+              if grep -q 'HTTP 404' "$RUNNER_TEMP/read.err"; then
+                echo "::error::the GitHub release for $GITHUB_REF_NAME, which the listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then"
+              else
+                echo "::error::the GitHub release for $GITHUB_REF_NAME could not be read by its id, as the lines above say, so nothing was compared; re-run this job, and delete nothing"
+              fi
+              exit 1
+            fi
+            [ -n "$now" ] || refuse "read by its id it is not a release for this tag"
+            judge "$now"
+            [ "$names" = "$want" ] || { [ "$draft" = false ] || unfinished; refuse "its files are [$names], not [$want]"; }
           }
           # Whether the names listed are some of this run's three files, not all, and no other.
           some_files() {
@@ -1866,7 +1911,7 @@ jobs:
           # is made), this run's release still a draft after the publication (published).
           # After the creation it also waits while the listing shows this run's draft with
           # some, not all, of its three file names and no other, since the uploads take about
-          # as long as the listing is behind; then the files are compared as before.
+          # as long as the listing is behind; the read by its id then says what it holds.
           # Nothing else is waited for: any other state stops the job inside look, at once,
           # and no release after the publication is none of the two.
           look_after() {
@@ -1883,22 +1928,14 @@ jobs:
               look
             done
           }
-          # Its title against the tag, and its notes against the text this run wrote.
-          same_text() {
-            local what=""
-            [ "$titled" = true ] || what=title
-            printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
-            cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md" || what="${what:+$what and }notes"
-            [ -z "$what" ] || differs "$what"
-          }
-          # Its files against the ones this run attested: the names listed, then the names and
-          # the bytes downloaded into $2. $1 is what a difference does. A download that fails
-          # is not a difference: the job stops and says so, and a re-run compares again.
+          # Its files against the ones this run attested, downloaded into $2: the names, then
+          # the bytes. $1 is what a difference does. A download that fails is not a
+          # difference: the job stops and says so, and a re-run compares again.
           same_files() {
-            [ "$names" = "$want" ] || "$1" "its files are [$names], not [$want]"
+            local name got
             gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || unread
-            names="$(ls -A "$RUNNER_TEMP/$2" | LC_ALL=C sort | tr '\n' ' ')"
-            [ "${names% }" = "$want" ] || "$1" "its files are [${names% }], not [$want]"
+            got="$(ls -A "$RUNNER_TEMP/$2" | LC_ALL=C sort | tr '\n' ' ')"
+            [ "${got% }" = "$want" ] || "$1" "its files are [${got% }], not [$want]"
             for name in "${files[@]}"; do
               cmp -s "$name" "$RUNNER_TEMP/$2/$name" || "$1" "$name is not the file this run attested"
             done
@@ -1908,19 +1945,19 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
               --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
             look_after made
+            [ -n "$found" ] || unseen
           fi
-          if [ -n "$found" ] && [ "$draft" = true ]; then
-            same_text
+          fresh
+          if [ "$draft" = true ]; then
             same_files unfinished draft
+            fresh
             gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
             look_after published
+            { [ -n "$found" ] && [ "$draft" = false ]; } || unseen
           fi
-          if [ -z "$found" ] || [ "$draft" = true ]; then
-            echo "::error::GitHub does not list the release for $GITHUB_REF_NAME as this job has just left it; re-run this job, which starts from what is listed then"
-            exit 1
-          fi
-          same_text
           same_files refuse published
+          fresh
+          [ "$draft" = false ] || unseen
           echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with the title and the notes this run wrote and exactly the files this run attested."
 
   # Points `latest` at the highest released version and each X.Y at the highest released

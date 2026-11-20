@@ -67,7 +67,7 @@ out; follow it. Write about a repository in the project named after it.
 - Before you answer a question about earlier work, decisions, errors or setup, call `recall` \
 with a few distinctive words. Pass `project` to search one project; leave it out to search all.
 - At the end of a task, call `note` for each durable fact, decision (with its reason) or \
-error (with its root cause): one note per insight, written to stand on its own, with an \
+error (with its root cause): one note per insight, written to stand on its own, with a \
 `source_ref` saying where it came from (a session, commit or file; for a note copied from a \
 mail thread, a meeting, a calendar, a document or a to-do list, `mail:`, `meeting:`, \
 `calendar:`, `doc:` or `todo:` and the item's id). A note is compiled and \

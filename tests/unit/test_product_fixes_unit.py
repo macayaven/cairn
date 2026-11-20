@@ -330,3 +330,36 @@ def test_project_chrome_separates_buttons_condenses_readonly_models_and_moves_id
         assert ".project-foot" in css
     finally:
         store.close()
+
+
+def test_guard_choices_have_short_headings_without_repeating_shapes_three_times(tmp_path):
+    store = Store(tmp_path / "cairn.db")
+    try:
+        key = store.create_key("owner")
+        with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+            _login(client, key)
+            html = client.get("/workspace").text
+        guard = html.split('id="guard"', 1)[1].split("</section>", 1)[0]
+        assert '<strong class="option-title">Off</strong>' in guard
+        assert '<strong class="option-title">Secrets</strong>' in guard
+        assert '<strong class="option-title">Secrets and personal data</strong>' in guard
+        assert guard.count("in a shape the guard recognises") == 1
+    finally:
+        store.close()
+
+
+def test_docs_sources_summary_and_mcp_source_ref_article_are_clean(tmp_path):
+    from cairn.web.mcp import build_mcp
+
+    instructions = build_mcp().instructions or ""
+    assert "with a `source_ref`" in instructions
+    assert "with an `source_ref`" not in instructions
+
+    store = Store(tmp_path / "cairn.db")
+    try:
+        with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+            docs_html = client.get("/docs").text
+        assert "Sources: meetings, mail, calendar, documents and to-dos</p>" not in docs_html
+        assert "sources the server reads on a timer" in docs_html
+    finally:
+        store.close()

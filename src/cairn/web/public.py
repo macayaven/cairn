@@ -50,7 +50,8 @@ SUMMARIES = {
     " or a script, by URL or with an API key.",
     "patterns": "Lay out projects and connections: many agents with one project, many projects, and"
     " sets of projects per use.",
-    "sources": "Sources: meetings, mail, calendar, documents and to-dos",
+    "sources": "Bring in meetings, mail, calendar events, documents, issues and to-dos, through"
+    " connected agents or sources the server reads on a timer.",
     "security": "Who can reach what, how sign-in and agent connections work, what the checks"
     " catch and what they do not.",
     "privacy": "What {{name}} stores and where, what it never stores, and how export, deletion"

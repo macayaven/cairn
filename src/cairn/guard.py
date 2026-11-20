@@ -139,6 +139,28 @@ def policy_words(policy: str, product: str = SOFTWARE) -> str:
     return POLICY_SAID[policy].format(product=product)
 
 
+# Short heading and summary for each radio choice on /workspace, so managers can compare options
+# without repeating the full _SHAPES catalogue three times under POLICY_SAID.
+POLICY_CHOICES: dict[str, tuple[str, str]] = {
+    "off": ("Off", "Nothing is checked: notes are kept whatever they hold."),
+    "secrets": (
+        "Secrets",
+        "Refuses notes that hold a secret in a recognised shape (keys, tokens, credential URLs,"
+        " auth headers and assigned secrets). Personal data is not checked.",
+    ),
+    "secrets+personal": (
+        "Secrets and personal data",
+        "Refuses secrets in a recognised shape plus emails, phone numbers, US SSNs, payment"
+        " cards, IBANs, and labelled dates of birth or medical record numbers.",
+    ),
+}
+
+
+def policy_choice(policy: str) -> tuple[str, str]:
+    """A short heading and summary for one policy radio choice on /workspace."""
+    return POLICY_CHOICES[policy]
+
+
 FINDINGS_PER_RULE = 20  # lines reported per rule: enough to refuse, bounded on any note
 
 Kind = Literal["secret", "personal"]

@@ -95,7 +95,10 @@ def test_a_claim_no_closer_closes_is_refused_with_a_reason_of_its_own(store, mon
             raise FenceLeftOpen
         return None
 
+    import cairn.gate
+
     monkeypatch.setattr(cairn.compiler, "open_fence_closer", unclosable)
+    monkeypatch.setattr(cairn.gate, "open_fence_closer", unclosable)
     project = store.create_project("alpha")
     note, _ = store.add_note(project.id, "Fine.\n\n```\nNever closed", title="Ops")
     result = compile_note(store, note, gate=lint_gate)
@@ -104,3 +107,59 @@ def test_a_claim_no_closer_closes_is_refused_with_a_reason_of_its_own(store, mon
     assert violation.startswith("compile.fence_left_open: cl_")
     assert "Never" not in violation
     assert store.get_page(project.id, "ops") is None
+
+
+def test_every_gate_refuses_a_page_that_holds_such_a_claim(monkeypatch):
+    """The same stand-in: a tidy, an arrangement or a compile is gated, and every gate names
+    the claim, never its text, so no path saves a page whose next claim would read as code."""
+    import cairn.gate
+    from cairn.compiler import CandidatePage, provenance_gate
+    from cairn.gate import strict_lint_gate, verbatim_gate
+
+    def unclosable(text: str) -> str | None:
+        if "Never closed" in text:
+            raise FenceLeftOpen
+        return None
+
+    spans = {s.id: s for s in [*chunk("n1", "```\nNever closed"), *chunk("n2", "After.")]}
+    claims = tuple(
+        cairn.compiler.Claim(id=f"cl_{n:016x}", text=s.text, span_ids=(s.id,))
+        for n, s in enumerate(spans.values())
+    )
+    page = CandidatePage(slug="t", title="T", body=render_body("T", claims, spans), claims=claims)
+    monkeypatch.setattr(cairn.gate, "open_fence_closer", unclosable)
+    for gate in (provenance_gate, lint_gate, strict_lint_gate, verbatim_gate):
+        verdict = gate(page, spans)
+        assert not verdict.passed, gate.__name__
+        assert [v for v in verdict.violations if v.startswith("compile.fence_left_open")] == [
+            f"compile.fence_left_open: {claims[0].id}: the passage leaves a code fence open"
+            " that no closing line after it closes, so the claims after it would read as code"
+        ], gate.__name__
+        assert not any("Never" in v for v in verdict.violations)
+
+
+def test_an_import_refuses_a_version_that_holds_such_a_claim(store, tmp_path, monkeypatch):
+    import io
+
+    import cairn.gate
+
+    store.create_project("alpha")
+    memory = Memory(store, lint_gate)
+    assert memory.note("alpha", "```\nNever closed\n```", title="Ops", topic="Ops")["status"] == (
+        "saved"
+    )
+    archive = io.BytesIO()
+    store.export(archive)
+    monkeypatch.setattr(
+        cairn.gate,
+        "open_fence_closer",
+        lambda text: (_ for _ in ()).throw(FenceLeftOpen) if "Never" in text else None,
+    )
+    target = Store(tmp_path / "imported.db")
+    try:
+        with pytest.raises(ValueError) as refused:
+            target.import_export(io.BytesIO(archive.getvalue()))
+        assert "'ops' version 1" in str(refused.value)
+        assert "Never" not in str(refused.value)
+    finally:
+        target.close()

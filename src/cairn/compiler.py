@@ -15,8 +15,9 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
   as Markdown reads it (it copies a note that never closes one, or closes it deeper than
   Markdown's limit) is followed by a line that closes it, the opener's own indentation and
   run, so the claim after it is never read as code (review 7.2, should-fix 8); the claim's
-  text is never changed. Each gate checks that the body is what this function writes of the
-  claims (gate.unclaimed_line: equality with a re-render).
+  text is never changed. A claim no such line closes is refused, by compile_note and by
+  every gate (gate.FENCE_LEFT_OPEN), never rendered. Each gate checks that the body is what
+  this function writes of the claims (gate.unclaimed_line: equality with a re-render).
 - Before saving, the candidate page and the spans its claims cite go through a gate. A
   failing gate saves nothing and returns status "rejected" with the gate's result. The gate's
   metrics are saved with the page version.
@@ -93,7 +94,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from cairn.candidate import CandidatePage, GateResult
-from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate, whole
+from cairn.gate import (
+    BREADCRUMB,
+    fence_left_open,
+    unclaimed_violations,
+    verbatim_gate,
+    whole,
+)
 from cairn.spans import (
     FenceLeftOpen,
     Span,
@@ -109,7 +116,6 @@ CONTENT_KINDS = frozenset({"paragraph", "bullet", "code", "table", "quote"})
 SLUG_MAX = 64
 SAVE_TRIES = 3  # reads of a page that keeps moving before a compile gives up
 STALE_PAGE = "compile.stale_page"  # the code of a compile that lost its page SAVE_TRIES times
-FENCE_LEFT_OPEN = "compile.fence_left_open"  # a new claim leaves a fence no closer closes
 TAG_SIZES = (8, 12, 16)  # hex characters of the tag a colliding topic's slug ends with
 _ADDRESS_BATCH = 8  # slugs looked up in one read when choosing a new page's address
 # A code fence, three or more backticks or tildes after any indentation and any list marker
@@ -367,28 +373,12 @@ def _closed(text: str) -> str:
     fence is open when it covers a line written after the claim. The claim's text is never
     changed; a text that holds no backtick or tilde is not parsed. A text no closer closes
     (FenceLeftOpen) is written as it is: compile_note refuses a note that would add one
-    (FENCE_LEFT_OPEN), so only a page saved before can hold one."""
+    (gate.FENCE_LEFT_OPEN), and every gate and the import refuse a page that holds one."""
     try:
         closer = open_fence_closer(text)
     except FenceLeftOpen:
         return text
     return text if closer is None else f"{text}\n{closer}"
-
-
-def _left_open(claims: Sequence[Claim]) -> list[str]:
-    """FENCE_LEFT_OPEN, once for each claim whose text leaves a code fence open that no closer
-    closes (cairn.spans.FenceLeftOpen), naming the claim, never its text."""
-    out = []
-    for claim in claims:
-        try:
-            open_fence_closer(claim.text)
-        except FenceLeftOpen:
-            out.append(
-                f"{FENCE_LEFT_OPEN}: {claim.id}: the passage leaves a code fence open that no"
-                " closing line after it closes, so the claims after it would read as code:"
-                " close the fence in the note"
-            )
-    return out
 
 
 def _closed_before_review_three(text: str) -> str:
@@ -577,7 +567,7 @@ def compile_note(
             return CompileResult(**outcome, status="unchanged", version=version, draft=stats)
         spans = store.get_spans([*cited, *(s.id for s in new_spans)])
         if existing is not None and (again := rebuilt_folds(existing.claims, spans)) is not claims:
-            existing = existing.model_copy(update={"claims": again})  # finding 5b
+            existing = existing.model_copy(update={"claims": again})  # an old fold (CORE5)
         if draft is None or drafted != [s.id for s in new_spans]:
             try:
                 draft = compose(title, new_spans)
@@ -590,7 +580,7 @@ def compile_note(
                     draft=_add_stats(stats, error.stats),
                 )
             drafted, stats = [s.id for s in new_spans], _add_stats(stats, draft.stats)
-        if left_open := _left_open(draft.claims):
+        if left_open := fence_left_open(draft.claims):
             return CompileResult(
                 **outcome,
                 status="rejected",

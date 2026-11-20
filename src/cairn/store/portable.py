@@ -67,7 +67,9 @@ passes a larger `max_bytes` (counted on the bytes actually read, whatever the ar
 claims); only stored or deflated, not encrypted, and every name must be one of the
 layout's, once. Every file must be named by the manifest or an index line, and every line's
 file must be there with its sha256. Every claim must cite spans of its own project's notes,
-and say, whitespace aside, what one of the spans it cites says (as the compiler writes it).
+and be the whole of each span it cites, under the verbatim gate's rule (gate.whole) or under
+the rule of the code before CORE5 (store.before_core5), so a version a tidy folded then
+imports unchanged; and it must leave no code fence open that no line closes.
 A version has at least one claim; a claim's id is shaped as cairn makes one (CLAIM_ID) and
 it cites each span once. A span is cited from one page of its project only, across every
 version, and the claims of
@@ -1418,7 +1420,8 @@ def _page_version(
     could fold passages that differ only by white space, and its version is imported as it
     is, never rewritten; the next tidy or compile rebuilds the latest (compiler.rebuilt_folds).
     """
-    from cairn.gate import whole as copied  # the gate builds on the store
+    from cairn.gate import fence_left_open  # the gate builds on the store
+    from cairn.gate import whole as copied
     from cairn.store.before_core5 import whole_before_core5
 
     where = f"a line of {root}pages.jsonl"
@@ -1469,6 +1472,11 @@ def _page_version(
             raise ValueError(  # its place, never its text or id (the archive's, not cairn's)
                 f"claim {n} of {slug!r} version {expected} in {root} does not say what a"
                 " passage it cites says"
+            )
+        if fence_left_open([claim]):
+            raise ValueError(  # never the text
+                f"claim {n} of {slug!r} version {expected} in {root} leaves a code fence open"
+                " that no closing line closes"
             )
         if len({spans[span_id].heading_path for span_id in claim.span_ids}) > 1:
             raise ValueError(  # never a heading: the archive's text

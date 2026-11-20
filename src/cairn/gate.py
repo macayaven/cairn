@@ -10,7 +10,10 @@ Contract (frozen by tests/acceptance/test_w3_gate.py):
   provenance.unclaimed_line when the body is not what compiler.render_body writes of the
   page's claims and the passages given (`unclaimed_line`, review blocker 1 and the second
   report's finding 1: the reverse of the claim-in-body check, by equality with a re-render;
-  no statement, as the gate reads nothing from the store).
+  no statement, as the gate reads nothing from the store); and compile.fence_left_open for
+  each claim that leaves a code fence open that no line the body could write after it
+  closes (`fence_left_open`; none is known), naming the claim, never its text. Every gate
+  asks both (`unclaimed_violations`), and the import refuses such a claim too.
 - metrics: {"claims": claim count, "spans_cited": distinct cited span count,
   "retention": plain retention overall, "code_line_retention": plain code-line retention,
   "span_coverage": cairn span coverage, "omission_rate": cairn omission rate}.
@@ -46,15 +49,18 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   is cited by no claim.
 - A claim that breaks the rule is one violation, "grounding.not_verbatim: <claim id>: ...". It
   says in plain words that a claim must be the whole of each passage it cites, names the first
-  passage the claim is not (and the line, where the claim adds structure), never text, and
-  says what to do. A cited id the gate was not given is passed over here (the strict gate
-  reports it as provenance.unknown_passage) and never repeated; a claim left with no passage
+  passage the claim is not, never text, and says what to do. A cited id the gate was not
+  given is passed over here (the strict gate reports it as provenance.unknown_passage) and
+  never repeated; a claim left with no passage
   is refused. A fold of passages under different headings is refused too, as an import
   refuses it (the second report's finding 5a); the message names no heading. A claim that
   is its passages whole and leaves a code fence open (it copies a passage of a note that
   never closes one) passes, as lint_gate passes it when the note is saved: the body closes
   the fence where the claim ends (compiler.render_body), so a page that holds one is tidied
-  and arranged again (review 7.2). Violations follow
+  and arranged again (review 7.2). When every claim is whole, claims that together copy their
+  passages more than the import takes of one version (store.portable: CLAIM_TEXT_FACTOR,
+  CITATION_FACTOR; a passage copied again with a space at a line's end, say) are one
+  violation, "grounding.passage_repeated: -: ...", counts only. Violations follow
   strict_lint_gate's; the metrics are strict_lint_gate's. The extractive draft passes by
   construction, and for it the result equals strict_lint_gate's.
 - Cost: a passage is read once per gate call however many claims cite it, and a claim once
@@ -70,7 +76,7 @@ from collections.abc import Iterable, Mapping
 
 from cairn.candidate import CandidatePage, GateResult
 from cairn.lint import ClaimInput, PageInput, lint_pages
-from cairn.spans import Span, compared_text
+from cairn.spans import FenceLeftOpen, Span, compared_text, open_fence_closer
 from cairn.store import Claim
 
 PROSE_KINDS = frozenset({"paragraph", "bullet", "quote"})
@@ -139,8 +145,10 @@ def strict_lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResu
 
 def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     """strict_lint_gate, plus grounding.not_verbatim for each claim that is not one passage,
-    whole: one violation per claim, naming a passage id or a line number, never text. The
-    metrics are strict_lint_gate's. The default gate for every composer but the extractive
+    whole: one violation per claim, naming a passage id or a line number, never text; when
+    every claim is whole, grounding.passage_repeated once if together they copy their
+    passages more than the import takes of one version (counts only). The metrics are
+    strict_lint_gate's. The default gate for every composer but the extractive
     one.
 
     The rule: a claim is one passage, whole. Its text is the text of every passage it cites,
@@ -259,17 +267,37 @@ def _refusal(claim: Claim, message: str) -> str:
 BREADCRUMB = " > "  # between the headings past the sixth level, in its one heading
 
 
+FENCE_LEFT_OPEN = "compile.fence_left_open"  # a claim leaves a fence no closer closes
+
+
 def unclaimed_violations(page: CandidatePage, spans: Mapping[str, Span]) -> list[str]:
     """provenance.unclaimed_line, once, for the first line of the body that is not what
-    render_body writes there (`unclaimed_line`), naming its number, never its text; [] when
-    there is none."""
+    render_body writes there (`unclaimed_line`), naming its number, never its text; then
+    FENCE_LEFT_OPEN for each claim the body cannot close (`fence_left_open`). Every gate
+    asks this, so no compile, tidy or arrangement saves such a page."""
     at = unclaimed_line(page, spans)
-    if at is None:
-        return []
-    return [
+    unclaimed = [
         f"provenance.unclaimed_line: -: line {at} of the body is not in a claim, nor a heading"
         " or fence the body writes"
     ]
+    return [*(unclaimed if at is not None else []), *fence_left_open(page.claims)]
+
+
+def fence_left_open(claims: Iterable[Claim]) -> list[str]:
+    """FENCE_LEFT_OPEN, once for each claim whose text leaves a code fence open that no line
+    render_body could write after it closes (cairn.spans.FenceLeftOpen), naming the claim,
+    never its text. No such text has been found; the check stands so that one is refused,
+    never rendered."""
+    out = []
+    for claim in claims:
+        try:
+            open_fence_closer(claim.text)
+        except FenceLeftOpen:
+            out.append(
+                f"{FENCE_LEFT_OPEN}: {claim.id}: the passage leaves a code fence open that no"
+                " closing line after it closes, so the claims after it would read as code"
+            )
+    return out
 
 
 def unclaimed_line(page: CandidatePage, spans: Mapping[str, Span]) -> int | None:

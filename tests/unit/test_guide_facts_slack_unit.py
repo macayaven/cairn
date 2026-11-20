@@ -63,6 +63,7 @@ from cairn.store.slack import (
 from cairn.web import cli_arrange
 from cairn.web import slack as web_slack
 from cairn.web.brand import product_of
+from cairn.web.markdown import render
 
 PRODUCT = product_of(None)
 RULE = "github_token"  # the note guard's rule, as cairn names it
@@ -760,15 +761,16 @@ def test_connect_a_rule_gets_no_backslash():
 
 def test_connect_a_line_read_as_code_holds_what_slack_displayed():
     """connect.md: "A line holds what Slack displayed where both the note and its passage read
-    it as code, fenced or indented: none of the backslashes and doubled asterisks that keep
-    the other lines from reading as Markdown are written in it, while a mention is still the
-    person's name, a link is still `[its words](its address)`, and an email address is still
+    it as indented code: none of the backslashes and doubled asterisks that keep the other
+    lines from reading as Markdown are written in it, while a mention is still the person's
+    name, a link is still `[its words](its address)`, and an email address is still
     removed.\" The passage is the line's own, as the note is split into them: what a page
-    shows of a claim."""
+    shows of a claim. (It said "fenced or indented" until the third tester's finding 3: a
+    fence is now a code block of Slack's own, the sentence on those.)"""
     says(
         *CONNECT,
-        "A line holds what Slack displayed where both the note and its passage read it as code,"
-        " fenced or indented: none of the backslashes and doubled asterisks that keep the other"
+        "A line holds what Slack displayed where both the note and its passage read it as"
+        " indented code: none of the backslashes and doubled asterisks that keep the other"
         " lines from reading as Markdown are written in it, while a mention is still the"
         " person's name, a link is still `[its words](its address)`, and an email address is"
         " still removed.",
@@ -784,19 +786,13 @@ def test_connect_a_line_read_as_code_holds_what_slack_displayed():
         [0],
         [("code_block", shown + "\n")],
     )
-    assert as_read(a_filed_note(f"Settings:\n~~~\n{sent}\n~~~")) == (
-        f"Settings:\n~~~\n{shown}\n~~~",
-        [0],
-        [("fence", shown + "\n")],
-    )
     assert as_read(a_filed_note(f"Settings:\n    {sent}")) == (f"Settings:\n    {prose}", [0], [])
-    # Code to the note alone: the closing line of its fence of tildes is indented four, which
-    # ends the block for the passages and not for the note. Its passage is a paragraph: prose.
-    note = a_filed_note(f"Settings:\n ~~~\nrows\n    ~~~\n{sent}")
-    held, headings, ((kind, code),) = as_read(note)
-    assert (held, headings, kind) == (f"Settings:\n ~~~\nrows\n    ~~~\n{prose}", [0], "fence")
-    assert prose in code
-    assert [span.kind for span in chunk("", note)][1:4] == ["paragraph", "code", "paragraph"]
+    # Code to its passage alone: behind a tab the note reads the line into the quotation; the
+    # line is a passage of its own, and alone the parser reads it as indented code. Prose.
+    note = a_filed_note(f"&gt; Row 4.\n\t{sent}")
+    assert as_read(note) == (f"> Row 4.\n\t{prose}", [0], [])
+    passage = [span.text for span in chunk("", note)][2]
+    assert MarkdownIt("commonmark").parse(passage)[0].type == "code_block"
 
 
 def test_connect_the_two_limits_of_what_a_filed_message_holds():
@@ -821,21 +817,21 @@ def test_connect_the_two_limits_of_what_a_filed_message_holds():
     assert as_read(note) == (as_text + "\\# Shelf 8\n\n\\---\n\n    items[0]\n\nRow 4.", [0], code)
     assert as_read(note.replace("\\---", "---"))[1:] == ([0], [("hr", ""), *code])
 
-    ends = "<nowhere|~~~>"  # a link's words: "~~~" as displayed, with backslashes as prose
-    assert as_read(a_filed_note(f"Settings:\n~~~\n{ends}\nitems[0]\n~~~")) == (
-        "Settings:\n~~~\n\\~\\~\\~\nitems\\[0\\]\n~~~",
+    # A link's words: "~~~" as displayed, with backslashes as prose. In a list item's indented
+    # code the passages read it as a fence the item keeps whole, so as displayed they would
+    # read the rest of the note as code. (The example was a fence of tildes the message opened
+    # until the third tester's finding 3.)
+    opens = "- Row 4.\n\n      <nowhere|~~~>\n      items[0]\n\nRow 5."
+    assert as_read(a_filed_note(opens)) == (
+        "- Row 4.\n\n      \\~\\~\\~\n      items\\[0\\]\n\nRow 5.",
         [0],
-        [("fence", "\\~\\~\\~\nitems\\[0\\]\n")],
+        [("code_block", "\\~\\~\\~\nitems\\[0\\]\n")],
     )
-    assert as_read(a_filed_note("Settings:\n~~~\nitems[0]\n~~~")) == (
-        "Settings:\n~~~\nitems[0]\n~~~",
+    assert as_read(a_filed_note(opens.replace("<nowhere|~~~>", "rows"))) == (
+        "- Row 4.\n\n      rows\n      items[0]\n\nRow 5.",
         [0],
-        [("fence", "items[0]\n")],
+        [("code_block", "rows\nitems[0]\n")],
     )
-    # Three backticks that Slack paired with no others, in a list item's fence of tildes that
-    # the note reads on: as displayed they would open a fence where the passages are cut.
-    opens = "- ~~~\n  rows\n~~~\n```\nitems[0]"
-    assert as_read(a_filed_note(opens))[0] == "- ~~~\n  rows\n~~~\n\\`\\`\\`\nitems\\[0\\]"
 
 
 def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
@@ -870,22 +866,29 @@ def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
     assert as_read(a_filed_note("Rows:\n5\tplum\t \n"))[0] == "Rows:\n5\tplum"
 
 
-def test_connect_a_block_that_cannot_be_one_fence_is_plain_characters():
-    """connect.md: "A block the note could not hold as one fence, because a fence of tildes
-    stands about it and a line of tildes in it, is written as plain characters, backticks and
-    all.\""""
+def test_connect_a_line_of_tildes_is_text():
+    """connect.md: "Slack has no fence of tildes: where a line of the message would open one, a
+    backslash before its first tilde keeps it text, as Slack displayed it.\" It replaced the
+    sentence on a block that could not be one fence because a fence of tildes stood about it
+    (the third tester's finding 3); every place a line of tildes can stand is
+    test_slack_tildes_unit's."""
     says(
         *CONNECT,
-        "A block the note could not hold as one fence, because a fence of tildes stands about it"
-        " and a line of tildes in it, is written as plain characters, backticks and all.",
+        "Slack has no fence of tildes: where a line of the message would open one, a backslash"
+        " before its first tilde keeps it text, as Slack displayed it.",
     )
+    for sent, held in (
+        ("Steps\n~~~\nsee the ledger", "Steps\n\\~~~\nsee the ledger"),
+        ("1. ~~~ python\n   rows", "1. \\~~~ python\n   rows"),
+        ("&gt; ~~~~\nsee the ledger", "> \\~~~~\nsee the ledger"),
+    ):
+        note = a_filed_note(sent)
+        assert as_read(note) == (held, [0], [])
+        assert "~~~" in str(render(note)) and "\\~" not in str(render(note))
+    # In a code block of Slack's own, a line of tildes is the code's and stays as it is.
     manual = "[manual](https://fable.test/docs)"
-    plain = "\\[manual\\]\\(https://fable.test/docs\\)"
-    held, headings, _ = as_read(a_filed_note(f"~~~\n```\n~~~\n{manual}\n```\n~~~\nRow 4."))
-    assert (held, headings) == (f"~~~\n\\`\\`\\`\n\\~\\~\\~\n{plain}\n\\`\\`\\`\n~~~\nRow 4.", [0])
-    # Without the fence of tildes about it, it is one fence, its line of tildes in it.
-    assert as_read(a_filed_note(f"```\n~~~\n{manual}\n```\nRow 4.")) == (
-        f"```\n~~~\n{manual}\n```\nRow 4.",
+    assert as_read(a_filed_note(f"~~~\n```\n~~~\n{manual}\n```\nRow 4.")) == (
+        f"\\~~~\n```\n~~~\n{manual}\n```\nRow 4.",
         [0],
         [("fence", f"~~~\n{manual}\n")],
     )

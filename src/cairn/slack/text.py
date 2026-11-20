@@ -50,6 +50,9 @@ _SECOND_ROW = re.compile(r"[ \t>]*[|:-][|: \t-]*")
 # sends it; and a quotation's mark at the start of a line, as Slack displayed it.
 _QUOTED = re.compile(r"(?:[ \t]*&gt;)+[ \t]*")  # each blank one place it can stand
 _QUOTE_MARK = re.compile(r"^[ \t]*>[ \t]?")
+# What may stand before a fence on its line: blanks, a quotation's marks, a list item's.
+_MARKS = " \t>*+-0123456789.)"
+_FENCE_LEAD = re.compile(r"^([ \t>*+\-0-9.)]*+)~(?=~~)", re.MULTILINE)
 _CODE_NODES = 10_000  # see _displayed_code
 _PASSES = 8  # see _one_heading
 
@@ -92,15 +95,25 @@ def _name(name: str, literal: Callable[[str], str] = _literal) -> str:
     return literal(" ".join(name.splitlines()))
 
 
-def _prose(text: str) -> str:
+def _prose(text: str, clear: bool = True) -> str:
     """Text Slack displayed as prose, as Markdown that displays the same. A backtick here is
     one Slack paired with no other and displayed as it is: left bare, Markdown would pair it
-    with the backtick that opens a code span (_render) and read that span's code as prose."""
+    with the backtick that opens a code span (_render) and read that span's code as prose.
+
+    Slack has no fence of tildes, so a run of three tildes or more that only blanks and the
+    marks of a quotation or a list item stand before on its line (_FENCE_LEAD: where a
+    reader could take it for a fence, at any indentation and in any container) gets a
+    backslash before its first tilde. `clear`: whether what was written on the line before
+    `text` is such marks alone, or nothing."""
     text = _redact(_decode(text))
     text = text.replace("&", "&amp;").replace("<", "&lt;")
     text = re.sub(r"([\\\[\]()!`])", r"\\\1", text)
     text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"**\1**", text)
-    return re.sub(r"(?<!~)~([^~\n]+)~(?!~)", r"~~\1~~", text)
+    text = re.sub(r"(?<!~)~([^~\n]+)~(?!~)", r"~~\1~~", text)
+    if clear:
+        return _FENCE_LEAD.sub(r"\1\\~", text)
+    first, feed, rest = text.partition("\n")
+    return first + feed + _FENCE_LEAD.sub(r"\1\\~", rest)
 
 
 def _link_target(target: str) -> str | None:
@@ -510,7 +523,11 @@ def _render(
     line between the backticks it was sent with), with the same lines. The code blocks whose
     place among the message's is in `plain` are written as plain characters, backticks and
     all, on the same lines; the fences of the others are given in `wrote`."""
-    prose, literal = (_shown, _shown) if displayed else (_prose, _literal)
+    literal = _shown if displayed else _literal
+
+    def prose(text: str) -> str:
+        return _shown(text) if displayed else _prose(text, clear)
+
     tokens: list[tuple[int, int, str, object]] = []
     # A block's line: where it starts, read once (`read`: up to where), and where the marks
     # of a quotation that start it end (`quotes`), read once a line.
@@ -535,10 +552,12 @@ def _render(
     held = [what for _, _, kind, what in tokens if kind == "code" and isinstance(what, str)]
     ticks = "`" * (1 + max(map(len, re.findall("`+", "\n".join(held))), default=0))
     pieces: list[str] = []
-    offset, below, fresh, place = 0, False, True, -1  # fresh: nothing is written on the line
+    # fresh: nothing is written on the line; clear: only what may stand before a fence (_prose)
+    offset, below, fresh, clear, place = 0, False, True, True, -1
     for start, end, kind, what in tokens[:-1]:
         pieces.append(prose(_apart(text[offset:start], below, kind == "block", True, fresh)))
         fresh = pieces[-1].endswith("\n") if pieces[-1] else fresh
+        clear = _clear(clear, pieces[-1])
         if isinstance(what, list):
             place += 1
             if place in plain:
@@ -575,8 +594,16 @@ def _render(
                 else:
                     pieces.append("[link omitted]")
         offset, below, fresh = end, kind == "block", fresh and not pieces[-1]
+        clear = _clear(clear, pieces[-1])
     pieces.append(prose(_apart(text[offset:], below, False, False, fresh)))
     return "".join(pieces)
+
+
+def _clear(clear: bool, written: str) -> bool:
+    """Whether a line holds only what may stand before a fence (_MARKS), or nothing, once
+    `written` is written on it; `clear`: whether it did before."""
+    _, feed, last = written.rpartition("\n")
+    return (clear or bool(feed)) and not last.strip(_MARKS)
 
 
 def _timestamp(value: object) -> datetime:

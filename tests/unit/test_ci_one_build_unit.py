@@ -186,6 +186,12 @@ def test_on_a_tag_the_archive_step_takes_main_s_digest_as_the_root():
 
 GH_STANDIN = r"""#!/bin/bash
 printf 'gh' >> "$CALLS"; printf ' [%s]' "$@" >> "$CALLS"; printf '\n' >> "$CALLS"
+if [ "$1" = --version ]; then
+  printf '%s\n' "${GH_VERSION-gh version 2.105.0 (2026-11-04)}"
+  printf 'https://github.com/cli/cli/releases/tag/v2.105.0\n'
+  exit 0
+fi
+[ -z "$GH_ERR" ] || printf '%s\n' "$GH_ERR" >&2
 exit "${GH_EXIT:-0}"
 """
 
@@ -208,13 +214,18 @@ def test_a_tag_promotes_only_a_digest_main_s_run_attested_for_its_commit(tmp_pat
         "MAIN": "${{ steps.main.outputs.digest }}",
     }
     done = runner.run(
-        s["run"], GITHUB_SHA=COMMIT, MAIN=digest(MAIN), GH_EXIT="0" if verified else "1"
+        s["run"],
+        GITHUB_SHA=COMMIT,
+        MAIN=digest(MAIN),
+        GH_EXIT="0" if verified else "1",
+        GH_ERR="" if verified else "no attestations found",
     )
     calls = [line for line in runner.calls.read_text().splitlines() if line.startswith("gh")]
     assert calls == [
+        "gh [--version]",
         f"gh [attestation] [verify] [{tmp_path}/main.json] [--repo] [Owner/Repo]"
         " [--signer-workflow] [github.com/Owner/Repo/.github/workflows/ci-cd.yml]"
-        f" [--source-ref] [refs/heads/main] [--source-digest] [{COMMIT}]"
+        f" [--source-ref] [refs/heads/main] [--source-digest] [{COMMIT}]",
     ]
     assert (done.returncode == 0) is verified
     if not verified:
@@ -244,6 +255,87 @@ def test_a_gate_runner_without_gh_is_told_so_and_not_that_main_s_run_attested_no
     assert error.count(". ") == 0
     assert "has no attestation" not in error
     assert "gh is not on this runner" in error and "CAIRN_GATE_RUNNER" in error
+
+
+def attestation_check(tmp_path, **env: str):
+    runner = Runner(tmp_path)
+    (runner.bin / "gh").write_text(GH_STANDIN)
+    done = runner.run(
+        step("image_build", ATTESTED)["run"], GITHUB_SHA=COMMIT, MAIN=digest(MAIN), **env
+    )
+    calls = [line for line in runner.calls.read_text().splitlines() if line.startswith("gh")]
+    errors = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+    return done, calls, errors
+
+
+@pytest.mark.parametrize("version", ["2.102.0", "2.105.0", "2.110.12", "3.0.0"])
+def test_a_gh_at_or_after_the_fix_of_both_advisories_checks_the_attestation(tmp_path, version):
+    done, calls, _ = attestation_check(tmp_path, GH_VERSION=f"gh version {version} (2026-11-01)")
+    assert done.returncode == 0
+    assert calls[0] == "gh [--version]" and calls[1].startswith("gh [attestation] [verify]")
+
+
+@pytest.mark.parametrize(
+    ("printed", "said"),
+    [
+        ("gh version 2.101.0 (2026-09-15)", "2.101.0"),
+        ("gh version 2.51.3 (2024-06-01)", "2.51.3"),
+        ("gh version 1.999.0 (2021-01-01)", "1.999.0"),
+        ("gh version (devel)", "of a version it does not print"),
+        ("", "of a version it does not print"),
+    ],
+)
+def test_a_gh_before_2_102_0_is_not_trusted_with_the_check(tmp_path, printed, said):
+    """GHSA-wjmr-j3rp-mh2g (--signer-workflow matched as a prefix, v2.51.0 to v2.101.0) and
+    GHSA-4mq3-hpgx-9cx8 (--source-ref matched without case, v2.68.0 to v2.101.0) were both fixed
+    in v2.102.0, as the advisories and that release's notes say."""
+    done, calls, errors = attestation_check(tmp_path, GH_VERSION=printed)
+    assert done.returncode == 1
+    assert calls == ["gh [--version]"]  # nothing is asked of it
+    assert errors == [
+        f"::error::gh on this runner is {said}, before 2.102.0, which fixed how gh attestation"
+        " verify matches --signer-workflow and --source-ref, so it is not trusted with main's"
+        " attestation; update GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to"
+        " use GitHub's"
+    ]
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "no attestations found",
+        "expected SourceRepositoryRef to be refs/heads/main, got refs/tags/v1.2.3",
+        "expected SourceRepositoryDigest to be 0123, got 4567",
+        'verifying with issuer "sigstore.dev"',
+    ],
+)
+def test_no_attestation_that_matches_is_said_apart_from_a_failure_of_the_tool(tmp_path, said):
+    """gh prints nothing but the error off a terminal (its handler writes only to a TTY), and
+    these are the errors of v2.102.0 and v2.105.0 for no attestation, and for one that is not
+    main's at this commit or not signed as the workflow says."""
+    done, _, errors = attestation_check(tmp_path, GH_EXIT="1", GH_ERR=said)
+    assert done.returncode == 1
+    (error,) = errors
+    assert error.startswith(f"::error::{digest(MAIN)} has no attestation signed by")
+    assert said in done.stdout + done.stderr  # gh's own words stay in the log
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "HTTP 502: Bad Gateway (https://api.github.com/repos/Owner/Repo/attestations/sha256:1)",
+        "error connecting to api.github.com",
+        "HTTP 401: Bad credentials",
+        "",
+    ],
+)
+def test_a_tool_or_api_failure_is_not_taken_for_a_missing_attestation(tmp_path, said):
+    done, _, errors = attestation_check(tmp_path, GH_EXIT="1", GH_ERR=said)
+    assert done.returncode == 1
+    assert errors == [
+        f"::error::gh attestation verify could not check {digest(MAIN)}: the tool failed or"
+        " GitHub's API could not be reached, as its own words above say; re-run this job"
+    ]
 
 
 def test_main_s_run_attests_its_published_image_with_nothing_but_the_signing_rights():

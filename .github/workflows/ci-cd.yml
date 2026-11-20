@@ -89,7 +89,11 @@
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
 # jobs and of `package`, which runs the build backend; CAIRN_RELEASE_RUNNER names the runner
 # of publish, verify, attest_main, attest, release, aliases and deploy, which no job of a pull
-# request uses and which runs no build. docs/decisions.md, decision 150, says why there are two.
+# request uses and which runs no build. Five jobs run the GitHub CLI, gh, which GitHub's runners
+# have: release_check and image_build, on a tag, on the runner CAIRN_GATE_RUNNER names, and
+# publish, on a push to main, release and aliases, on the runner CAIRN_RELEASE_RUNNER names.
+# image_build refuses a gh before 2.102.0, which fixed how gh attestation verify matches
+# --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8). docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
 # pinned (resolved with git ls-remote on 2026-11-10; actions/attest read with gh api on
@@ -489,10 +493,26 @@ jobs:
             echo "::error::gh is not on this runner, so main's attestation of $MAIN cannot be checked; install GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
             exit 1
           fi
+          # GHSA-wjmr-j3rp-mh2g and GHSA-4mq3-hpgx-9cx8: before 2.102.0, gh matched
+          # --signer-workflow as a prefix and --source-ref without case.
+          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+          IFS=. read -r major minor _ <<< "${version:-0.0.0}"
+          if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 102 ]; }; then
+            echo "::error::gh on this runner is ${version:-of a version it does not print}, before 2.102.0, which fixed how gh attestation verify matches --signer-workflow and --source-ref, so it is not trusted with main's attestation; update GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
+          # Off a terminal gh prints only its error. These are its words, in 2.102.0 and
+          # 2.105.0, for no attestation of the digest and for one that does not match the policy;
+          # anything else is the tool or the API.
           if ! gh attestation verify "$RUNNER_TEMP/main.json" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci-cd.yml" \
-              --source-ref refs/heads/main --source-digest "$GITHUB_SHA"; then
-            echo "::error::$MAIN has no attestation signed by this repository's ci-cd.yml for a run on refs/heads/main at $GITHUB_SHA, so nothing shows it is main's image of this commit; run this tag's workflow again once main's run for that commit has attested it (job attest_main), or tag a commit whose main run did"
+              --source-ref refs/heads/main --source-digest "$GITHUB_SHA" 2> "$RUNNER_TEMP/verify.err"; then
+            cat "$RUNNER_TEMP/verify.err" >&2
+            if grep -Eq 'no attestations found|verifying with issuer|expected [A-Za-z]+ to be ' "$RUNNER_TEMP/verify.err"; then
+              echo "::error::$MAIN has no attestation signed by this repository's ci-cd.yml for a run on refs/heads/main at $GITHUB_SHA, so nothing shows it is main's image of this commit; run this tag's workflow again once main's run for that commit has attested it (job attest_main), or tag a commit whose main run did"
+            else
+              echo "::error::gh attestation verify could not check $MAIN: the tool failed or GitHub's API could not be reached, as its own words above say; re-run this job"
+            fi
             exit 1
           fi
       # The same step every scan runs on its runner's registry, so each pull request proves

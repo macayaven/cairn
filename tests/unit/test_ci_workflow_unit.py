@@ -1736,3 +1736,32 @@ def test_no_step_names_a_shell_so_every_step_runs_as_the_tests_run_it():
         assert "defaults" not in job, name
         for step in job.get("steps", []):
             assert "shell" not in step, (name, step.get("name"))
+
+
+GH_JOBS = {"release_check", "image_build", "publish", "release", "aliases"}
+
+
+def test_the_jobs_that_run_gh_are_named_with_their_runner_in_the_header_and_the_readme():
+    """A runner of the operator's own needs the GitHub CLI for these jobs; GitHub's have it."""
+    found = {
+        name
+        for name, job in JOBS.items()
+        for s in job.get("steps", [])
+        if re.search(r"(^|[\s(;|&$])gh\s", s.get("run", ""))
+        or "release_check.py" in s.get("run", "")
+    }
+    assert found == GH_JOBS | {
+        "package"
+    }  # package runs release_check.py --notes, which needs no gh
+    assert "def run_gh" in (REPO / "scripts" / "release_check.py").read_text()
+    said = (
+        "Five jobs run the GitHub CLI, gh, which GitHub's runners have: release_check and"
+        " image_build, on a tag, on the runner CAIRN_GATE_RUNNER names, and publish, on a push"
+        " to main, release and aliases, on the runner CAIRN_RELEASE_RUNNER names. image_build"
+        " refuses a gh before 2.102.0, which fixed how gh attestation verify matches"
+        " --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8)."
+    )
+    header = " ".join(RAW_WORKFLOW.split("\nname:")[0].replace("# ", "").split())
+    assert said in header
+    readme = " ".join((REPO / "README.md").read_text().replace("`", "").split())
+    assert said in readme

@@ -331,11 +331,11 @@ def a_code_block(rng: random.Random) -> Lines:
     if shape == 2:
         return [(f"   ```\n{sent}\n   ```", fence)]
     if shape == 3:
-        return [(f"Row 4 ```{sent}``` Row 5", f"Row 4\n{fence}\nRow 5")]
+        return [(f"Row 4 ```{sent}``` Row 5", f"Row 4 \n{fence}\nRow 5")]
     if shape == 4:
-        return [(f"Row 4. ```\n{sent}\n```", f"Row 4.\n{fence}")]
+        return [(f"Row 4. ```\n{sent}\n```", f"Row 4. \n{fence}")]
     if shape == 5:
-        return [(f"&gt; ```\n{sent}\n```", f">\n{fence}")]
+        return [(f"&gt; ```\n{sent}\n```", f"> \n{fence}")]
     if shape == 6:
         return [(f"- Row 5.\n  ```\n{sent}\n  ```", f"- Row 5.\n{fence}")]
     if shape == 7:
@@ -526,6 +526,9 @@ def faults_of(lines: Lines, before: str, after: str, as_prose: str) -> tuple[lis
     closes = any(FENCE.fullmatch(shown[n]) and shown[n] != prose[n] for n in range(len(shown)))
     for as_prose in (True, False) if closes else (False,):  # prose first: its marks are its own
         wanted = [prose[n] if as_prose or n not in code else shown[n] for n in range(len(held))]
+        for n in code:  # kept as prose, a line still ends with the white space displayed
+            if shown[n].startswith(prose[n]) and not shown[n][len(prose[n]) :].strip():
+                wanted[n] = shown[n]
         columns = [backslashes(was, now) for was, now in zip(wanted, held, strict=True)]
         if None not in columns:
             break
@@ -958,14 +961,17 @@ NOT_ONE_FENCE = {
 
 
 @pytest.mark.parametrize("kind", NOT_ONE_FENCE)
-def test_a_code_block_that_cannot_be_one_fence_is_written_as_prose_is(bench, kind):  # noqa: F811
-    """Asked of the finished note: each block must be a fence to the parser and one passage
-    of code to the splitter, line for line. One that is not is written again as plain
-    characters, backticks and all, and nothing it holds is markup."""
+def test_a_code_block_that_cannot_be_one_fence_is_written_as_prose_is(bench, monkeypatch, kind):  # noqa: F811
+    """Each block must be a fence to the parser and one passage of code to the splitter, line
+    for line: asked of the message as written, before the note is made of it, and of the
+    finished note. One that is not is written as plain characters, backticks and all, and
+    nothing it holds is markup. Asking costs no reading: the note is made once."""
     text, lines = NOT_ONE_FENCE[kind]
+    asked = passes(monkeypatch)
     note, spans, links = shown_by_the_product(bench, text)
     assert body(note) == lines
     assert set(links) <= {SOURCE} and one_heading(note) and not faults(note, spans)
+    assert len(asked) == 2  # the note as prose, and with its code as displayed: no heading
 
 
 @pytest.mark.parametrize(
@@ -1148,6 +1154,16 @@ def test_white_space_at_the_end_of_a_line_both_read_as_code_is_kept(bench, notes
     (listed,) = bench.owner.list_pages(bench.library.id)
     claims = bench.owner.get_page(bench.library.id, listed.slug).claims
     assert [claim.text for claim in claims][1] == "    4\tquince\t\n    5\tplum\t"
+    # A code block of Slack's own on the row's line goes to lines of its own, and the white
+    # space before it ends the row.
+    assert body(notes("Rows:\n\n    5\tplum\t ```Row 4.```")[1]) == (
+        "Rows:\n\n    5\tplum\t \n```\nRow 4.\n```"
+    )
+    # Where the note keeps the marks of prose in its code (a label that would end the fence
+    # of tildes as displayed), the row still ends as it was displayed.
+    assert body(notes("Rows:\n~~~\n<x|~~~>\nitems[0]\n~~~\n\n    5\tplum\t")[1]) == (
+        "Rows:\n~~~\n\\~\\~\\~\nitems\\[0\\]\n~~~\n\n    5\tplum\t"
+    )
     # Elsewhere the end of the message is cut as before: a last line of prose, and blank lines.
     assert body(notes("Row 4.\t \n \n")[1]) == "Row 4."
     assert body(notes("Rows:\n\n    5\tplum\t  \n\n \t\n")[1]) == "Rows:\n\n    5\tplum\t  "

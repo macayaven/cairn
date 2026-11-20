@@ -263,8 +263,9 @@ def _code_as_shown(text: str, shown: str) -> str:
     it as they read the first, passage for passage and line for line: a link's label of
     tildes is "~~~" as displayed and would end the fence it stands in. Then, or should the
     second making refuse or the two texts not have the same lines, the note is the first, as
-    prose throughout. One making when no such line differs between the two texts; so the
-    readings of _one_heading, or twice them."""
+    prose throughout, but for the white space that ends a line of it both read as code (the
+    message's last: prose is cut there), if they then read it as before. One making when no
+    such line differs between the two texts; so the readings of _one_heading, or twice them."""
     first = _one_heading(text)
     written, displayed = text.split("\n"), shown.split("\n")
     if len(written) != len(displayed):
@@ -279,21 +280,31 @@ def _code_as_shown(text: str, shown: str) -> str:
             "\n".join(displayed[at] if at in code else line for at, line in enumerate(written))
         )
     except ValueError:
-        return first
-    return second if _read(second) == read else first
+        second = None
+    if second is not None and _read(second) == read:
+        return second
+    kept = first.split("\n")
+    for at in code:
+        ends = displayed[at][len(written[at]) :]
+        if displayed[at].startswith(written[at]) and not ends.strip():
+            kept[at] += ends
+    ended = "\n".join(kept)
+    return ended if ended != first and _read(ended) == read else first
 
 
-def _apart(text: str, below: bool, above: bool, more: bool) -> str:
+def _apart(text: str, below: bool, above: bool, more: bool, fresh: bool) -> str:
     """`text`, what a message holds between two of its tokens, with a code block of Slack's
     own kept on lines of its own: when one stands above it (`below`), the blanks that follow
     the block on its last line go and, if anything follows (`more`), it starts a line; when
-    one stands under it (`above`), the blanks before the block on its first line go (_render
-    then ends the line, whatever is written on it)."""
+    one stands under it (`above`), the blanks before the block go if nothing else is on its
+    line (`fresh`: nothing was written on it before `text`). Else they end that line, as
+    they were displayed, and _render ends it."""
     if below:
         text = text.lstrip(" \t")
         if (text or more) and not text.startswith("\n"):
             text = "\n" + text
-    return text.rstrip(" \t") if above else text
+    before, feed, blanks = text.rpartition("\n")
+    return before + feed if above and not blanks.strip(" \t") and (feed or fresh) else text
 
 
 def _lines(text: str) -> str:
@@ -387,6 +398,8 @@ def _not_one_fence(note: str, wrote: list[tuple[int, str]]) -> set[int]:
     among them and its fence, in order) `note` does not hold as one block of code for both
     readers: a fence to the Markdown parser and one passage of code to the splitter, on the
     same lines. A line of only backticks is such a fence's in the note, or part of none."""
+    if not wrote:
+        return set()
     lines = note.split("\n")
     read = {
         tuple(token.map) for token in _PARSER.parse(note) if token.type == "fence" and token.map
@@ -443,15 +456,12 @@ def _render(
     held = [what for _, _, kind, what in tokens if kind == "code" and isinstance(what, str)]
     ticks = "`" * (1 + max(map(len, re.findall("`+", "\n".join(held))), default=0))
     pieces: list[str] = []
-    offset, below, fresh = 0, False, True  # fresh: nothing is written yet on the line
+    offset, below, fresh, place = 0, False, True, -1  # fresh: nothing is written on the line
     for start, end, kind, what in tokens[:-1]:
-        pieces.append(prose(_apart(text[offset:start], below, kind == "block", True)))
+        pieces.append(prose(_apart(text[offset:start], below, kind == "block", True, fresh)))
         fresh = pieces[-1].endswith("\n") if pieces[-1] else fresh
         if isinstance(what, list):
-            place = sum(
-                kind == "block"
-                for _, _, kind, _ in tokens[: tokens.index((start, end, kind, what))]
-            )
+            place += 1
             if place in plain:
                 fence = "\n".join(["```", *what, "```"])
                 fence = fence if displayed else "\n".join(map(_plain, fence.split("\n")))
@@ -486,7 +496,7 @@ def _render(
                 else:
                     pieces.append("[link omitted]")
         offset, below, fresh = end, kind == "block", fresh and not pieces[-1]
-    pieces.append(prose(_apart(text[offset:], below, False, False)))
+    pieces.append(prose(_apart(text[offset:], below, False, False, fresh)))
     return "".join(pieces)
 
 
@@ -550,9 +560,10 @@ def note_from_message(
     # readers read as code holds it (_code_as_shown), and prose never did.
     ended = raw.strip() + raw[len(raw.rstrip()) :].split("\n", 1)[0]
     plain: Collection[int] = ()
-    for last in (False, False, True):
-        # The first code block the finished note does not hold as one fence (_not_one_fence)
-        # is written again as plain characters; should one fail then, they all are.
+    for every in (False, False, True, True):
+        # Each code block must be one fence for both readers (_not_one_fence): the message as
+        # written is asked first, and the first block that is none is written again as plain
+        # characters; should one fail then, they all are. The finished note is asked too.
         wrote: list[tuple[int, str]] = []
         body = _render(raw.strip(), names, code=code, plain=plain, wrote=wrote).strip()
         if not body:
@@ -563,13 +574,15 @@ def note_from_message(
             for above, row in pairwise(rows)
         ):  # it may hold a table
             body = _render(raw.strip(), names, bars=False, code=code, plain=plain).strip()
-        shown = _render(ended, names, displayed=True, code=code, plain=plain).lstrip().split("\n")
-        while not shown[-1].strip():
-            del shown[-1]
-        text = _code_as_shown(heading + body + link, heading + "\n".join(shown) + link)
-        missing = _not_one_fence(text, wrote)
+        missing = _not_one_fence(heading + body + link, wrote)
         if not missing:
-            break
-        plain = range(len(raw)) if plain or last else {min(missing)}
+            shown = _render(ended, names, displayed=True, code=code, plain=plain)
+            lines = shown.lstrip().split("\n")
+            while not lines[-1].strip():
+                del lines[-1]
+            text = _code_as_shown(heading + body + link, heading + "\n".join(lines) + link)
+            if not _not_one_fence(text, wrote):
+                break
+        plain = range(len(raw)) if plain or every or not missing else {min(missing)}
     title = next(line.strip() for line in text.split("\n")[1:] if line.strip())
     return Draft(title, text, source)

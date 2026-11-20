@@ -78,6 +78,7 @@ from cairn.web.graph_view import (
 )
 from cairn.web.rest import _logged, _query, _whole_number
 from cairn.web.templating import brand_of
+from cairn.web.turns import RELATED_READS
 
 
 def _graph(request: Request, project: str, limit: int | None) -> dict:
@@ -221,7 +222,9 @@ def graph_routes(explorer: bool = False) -> list[Route]:
             Route("/api/graph", _logged("graph", api)),
             Route("/b/{project}/graph", _logged("graph", page)),
         ]
-    a_view, related_view = _logged("graph", explore), _logged("related", related)
+    # a related view waits for the one read of related pages at a time, holding no thread
+    a_view = _logged("graph", explore)
+    related_view = _logged("related", related, RELATED_READS)
 
     async def explorer_page(request: Request) -> Response:
         """The explorer's one address: a view of the graph, recorded as `graph`; or a page's

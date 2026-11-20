@@ -17,6 +17,7 @@ from cairn import oauth
 from cairn.web.compose import compose_routes
 from cairn.web.rest import _logged
 from cairn.web.start import start_routes
+from cairn.web.turns import RELATED_READS
 from cairn.web.ui.common import _ended, _ui
 from cairn.web.ui.memory_pages import (
     CHECKS,
@@ -157,7 +158,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         Route("/b/{project}", _logged("overview", project)),
         Route("/b/{project}/notes", _logged("notes", notes), methods=["GET"]),
         Route("/b/{project}/p/{slug}", _logged("page", page)),
-        Route("/b/{project}/p/{slug}/related", _logged("related", related)),
+        Route("/b/{project}/p/{slug}/related", _logged("related", related, RELATED_READS)),
         Route("/search", _logged("recall", search)),
         Route("/setup", setup),
         Route("/welcome", welcome),

@@ -57,18 +57,14 @@ Bounded work, whoever asks, and nothing left out silently. What can be left out 
 - The related pages past the `limit` asked for: `pages_left_out`.
 `complete` is true only when all three are nothing.
 
-BYTES_MAX is set from a measurement (an Apple M5, 2026-11-20, under a load of 7 to 14): a
-read's time goes to reading the terms of passages (relations.placed, 97% of it), not to the
-index or to reading the rows (1% each), at about 0.7 microseconds a byte of text dense with
-flags, paths and versions. The worst read built, 256 terms with 512 candidate claims whose
-passages are 2,000 bytes of such text, took 0.70 to 0.89 s at a million bytes and 0.18 to
-0.21 s at 250,000; 512 candidates of short passages take 0.03 s, so CLAIMS_MAX is not what
-costs. What it costs in completeness, on this repository's own documents filed as 32 pages:
-complete answers 27 at a million bytes, 3 at 250,000; pairs of pages related 164 and 124;
-reasons left out by the bounds 255 and 1,177 of 1,889. Nearly all of it is one passage, the
-table of decisions, of 322,326 bytes: no page that shares a term with it reads it now. The
-page's own passages are not counted in BYTES_MAX: a page of 380,000 characters dense with
-facts costs 0.35 s alone.
+BYTES_MAX is set from a table of measurements (beside it): a read's time goes to reading the
+terms of passages (relations.placed, 97% of it), not to the index or to reading the rows (1%
+each), at about half a microsecond to 0.7 of one a byte of text dense with flags, paths and
+versions; 512 candidates of short passages take 0.03 s, so CLAIMS_MAX is not what costs.
+Since one read of related pages runs at a time (Store.related_pages), a slow read delays
+the next read of related pages, not page views. The page's own passages are not counted in
+BYTES_MAX: they are read whole, as `page` reads them, and a page of 380,000 characters dense
+with facts costs 0.35 s alone.
 
 What is given is bounded too, and a claim says when it is not whole (`Stated`). A claim's
 text is read to relations.TEXT_MAX characters and no further, by a handle on the value the
@@ -129,7 +125,22 @@ from cairn.store import ranking
 
 TERMS_MAX = 256  # terms of a page that are looked up; it counts the rest
 CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
-BYTES_MAX = 250_000  # bytes of those claims' passages, as stored, read in all (measured)
+# BYTES_MAX, measured on one laptop (an Apple M5) on 2026-11-20, under a load of 5 to 9: this
+# repository's documents filed as 32 pages, each asked at limit 20, and the worst read built
+# (256 terms; 512 candidate claims of 2,000 bytes of flags, paths and versions each). Time is
+# the middle of three runs; the worst page, of three such rounds (0.56 to 0.88 s at 750,000
+# under a load of 9).
+#   bytes       complete  pairs  reasons lost  worst of the 32  worst page built
+#   250,000     3 of 32   124    1,177 of 1,889    0.19 s          0.13 s
+#   400,000     3 of 32   138      852             0.37 s          0.21 s
+#   500,000    20 of 32   159      388             0.37 s          0.26 s
+#   750,000    27 of 32   164      255             0.31 s          0.37 s
+#   1,000,000  27 of 32   164      255             0.34 s          0.51 s
+# The rule: the smallest value whose worst read is at most half a second and which keeps 24
+# of the 32 answers complete. Below 750,000 the table of decisions, one passage of 322,326
+# bytes, is not read; with that page left out, 250,000 already gives 24 of 31 and 400,000
+# and more 26 of 31 (of 30 with no bound), pairs 141 then 142 of 142.
+BYTES_MAX = 750_000  # bytes of those claims' passages, as stored, read in all
 AT_ONCE = 64  # terms one statement asks the index for
 # The two marks the index is asked to put around what it matched of a title in a claim's
 # text (`_named`): characters Unicode keeps for a program's own use and out of every text

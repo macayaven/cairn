@@ -123,7 +123,7 @@ def counted(store: Store, project_id: str):
 
 
 def test_the_stated_bounds():
-    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 250_000)
+    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 750_000)
     assert (relating.AT_ONCE, relations.CLAIMS_COMMON, relations.COMMON) == (64, 64, 5)
     assert not hasattr(relating, "HERE_MAX") and not hasattr(relating, "LISTED_MAX")
 
@@ -133,17 +133,20 @@ def test_the_fact_reader_is_handed_the_pages_passages_and_the_bound_in_bytes_of_
 ):
     """Where a read's time goes: reading the terms of passages (cairn.facts.extract_facts on
     each passage whole). The page's own first passages are read, and the candidates' to
-    BYTES_MAX bytes and no further. Eight pages of 40 passages of about 2,000 bytes, each
-    stating one of the page's 256 terms: a read at the largest limit hands the reader the
-    page's passages and BYTES_MAX bytes at most of the others', within 17 statements, and
-    counts the claims it did not read."""
+    BYTES_MAX bytes and no further. Pages of 40 passages of about 2,000 bytes, each stating
+    one of the page's 256 terms, more of them than BYTES_MAX holds and fewer claims than
+    CLAIMS_MAX: a read at the largest limit hands the reader the page's passages and
+    BYTES_MAX bytes at most of the others', within 17 statements, and counts the claims it
+    did not read."""
     store = Store(tmp_path / "cairn.db")
     project = store.create_project("ops")
     memory = Memory(store, lint_gate)
     filler = "Brook keeps the ledger and Ada reads it at dawn; " * 40
     asked = "\n\n".join(" ".join(term(n) for n in range(f, f + 8)) for f in range(0, 256, 8))
     memory.note("ops", asked + "\n", title="Asked", topic="Asked")
-    for k in range(8):
+    pages = relating.BYTES_MAX // (40 * 2_000) + 3
+    assert 40 * pages <= relating.CLAIMS_MAX  # the bytes bind, not the count of claims
+    for k in range(pages):
         lines = [f"Page {k} sets {term((32 * k + i) % 256)} here. {filler}" for i in range(40)]
         memory.note("ops", "\n\n".join(lines) + "\n", title=f"Other {k}", topic=f"Other {k}")
     own = {claim.span_ids[0] for claim in store.get_page(project.id, "asked").claims}
@@ -164,7 +167,7 @@ def test_the_fact_reader_is_handed_the_pages_passages_and_the_bound_in_bytes_of_
     others = sum(size for span_id, size in handed.items() if span_id not in own)
     assert relating.BYTES_MAX - 2_100 < others <= relating.BYTES_MAX, others
     assert found.left.claims_read == len(handed) - len(own) <= relating.CLAIMS_MAX
-    assert found.left.claims_not_read == 8 * 40 - found.left.claims_read > 0
+    assert found.left.claims_not_read == pages * 40 - found.left.claims_read > 0
     assert len(seen.statements) - settings_loaded(seen.statements) <= 17
 
 

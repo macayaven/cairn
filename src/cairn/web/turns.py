@@ -120,7 +120,7 @@ def compile_turn(request: HTTPConnection) -> AbstractAsyncContextManager[Any]:
 
 
 # One read of related pages at a time in a process (Store.related_pages), taken the same way:
-# over REST and MCP a read waits for it on the event loop, holding no thread and no
+# over REST, MCP and the web view a read waits for it on the event loop, holding no thread and no
 # connection, and its worker thread then takes the store's own turn with nobody ahead of it.
 # A read that waits long waits; none is refused for it.
 RELATED_READS = Compiles(1)

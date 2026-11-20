@@ -389,24 +389,25 @@ def test_claims_of_322_320_characters_on_both_sides_at_limit_20_are_under_the_bo
     assert as_rest(answer) < 120 * TABLE // 100  # and no hundredth of the claims it rests on
 
 
-def test_as_shipped_no_such_claim_is_read_and_the_answer_says_so(tables):
-    """The bytes of passages read hold no claim of 322,320 characters: no page is related,
-    the twenty claims not read are counted, and their terms give no reason."""
-    assert relating.BYTES_MAX < TABLE
+def test_as_shipped_the_bytes_read_stop_at_two_such_claims_and_the_answer_says_so(tables):
+    """750,000 bytes of passages read hold two claims of 322,320 characters: two pages are
+    related, the eighteen claims not read are counted, and their terms give no reason."""
+    assert 2 * TABLE <= relating.BYTES_MAX < 3 * TABLE
     answer = both(tables, "asked", 20)
-    assert answer["related"] == []
+    assert [len(page["why"]) for page in answer["related"]] == [3, 3]
     assert answer["searched"] == {
         "complete": False,
         "terms_looked_up": 60,
         "terms_not_looked_up": 0,
-        "claims_read": 0,
-        "claims_not_read": 20,
+        "claims_read": 2,
+        "claims_not_read": 18,
         "pages_left_out": 0,
     }
-    # asked of one of the others, whose one candidate is the first page's claim: not read
+    assert faults(answer, 20) == []
+    # asked of one of the others, whose one candidate is the first page's claim: complete
     back = both(tables, "page-00", 5)
-    assert back["related"] == [] and back["searched"]["claims_not_read"] == 1
-    assert back["searched"]["complete"] is False
+    assert back["searched"]["complete"] is True and len(back["related"]) == 1
+    assert faults(back, 5) == []
 
 
 # The largest answer the shipped bounds reach

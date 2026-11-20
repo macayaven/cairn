@@ -296,19 +296,33 @@ def test_the_run_guide_links_dockers_install_pages_beside_the_engine_it_asks_for
 
 
 def test_the_security_guide_says_a_body_is_the_notes_own_markdown_and_the_web_view_reads_html_off():
-    """security.md: "A page's body is the notes' own Markdown: ... Read the body with raw HTML
-    off, as the web view does: ..." The behaviour is pinned in test_claim_markdown_unit.py;
-    here, that the web view's parser has raw HTML off, which the second sentence rests on."""
+    """security.md: "A page's body is the notes' own Markdown, ... Read the body with raw HTML
+    off, as the web view does: ..." The behaviour is pinned in test_claim_markdown_unit.py
+    (what one note's Markdown does to another's in the body, and each claim by itself in the
+    web view) and in test_assembled_fence_unit.py (a fence closed where its claim ends, and
+    the seventeenth refused); here, that the web view's parser has raw HTML off, which the
+    last sentence rests on."""
     says(
         "security",
         "## What the checks on pages catch",
-        "A page's body is the notes' own Markdown: a setext heading in a note puts the claims"
-        " after it under that heading, and a link definition shows nothing; the web view shows"
-        " each claim by itself, with its own source.",
-        "Read the body with raw HTML off, as the web view does: with it on, a comment a note"
-        " opens and does not close hides what follows.",
+        "A page's body is the notes' own Markdown, one note after another, so one note's"
+        " Markdown can change how the body shows another's: a setext heading puts the claims"
+        " after it under that heading; a link definition shows nothing and turns a matching"
+        " bracketed word in any other claim into a link to its address; and a claim that begins"
+        " with indentation, after a claim that ends in a list, is read as part of that list's"
+        " last item, so text that alone is indented code can read there as a paragraph or a"
+        " heading.",
+        "A code fence does not run from one claim into the next: the body closes it where its"
+        " claim ends, sixteen such fences on a page at most, and a note that would make a"
+        " seventeenth is refused.",
+        "Each claim's own text and source are exact in the claims list and in the web view,"
+        " which shows each claim by itself.",
+        "Read the body with raw HTML off, as the web view does: with it on, an HTML block a"
+        " note opens and does not close (a comment, a script, a processing instruction) holds"
+        " every claim after it.",
     )
     source = (ROOT / "src" / "cairn" / "web" / "markdown.py").read_text(encoding="utf-8")
     parsers = [line for line in source.splitlines() if "MarkdownIt(" in line]
     assert parsers and all('"html": False' in line for line in parsers), parsers
     assert (ROOT / "tests" / "unit" / "test_claim_markdown_unit.py").is_file()
+    assert (ROOT / "tests" / "unit" / "test_assembled_fence_unit.py").is_file()

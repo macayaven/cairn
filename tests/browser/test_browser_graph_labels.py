@@ -23,11 +23,17 @@ TITLES = [
     for number in range(PAGES)
 ]
 
-# The box each label is drawn in: its text, cut by the label's own frame.
+# The box each label is drawn in: its text, cut by the label's own frame; and each node's mark.
 LABELS = """() => {
   const boxes = [];
+  const marks = [];
   let hidden = 0;
   for (const node of document.querySelectorAll('[data-graph-interactive] g[data-graph-node]')) {
+    const mark = node.querySelector('.graph-mark');
+    if (mark) {
+      const m = mark.getBoundingClientRect();
+      marks.push([node.dataset.graphNode, [m.left, m.top, m.right, m.bottom]]);
+    }
     const frame = node.querySelector('svg'), text = frame.querySelector('text');
     if (getComputedStyle(frame).visibility === 'hidden') { hidden++; continue; }
     const a = frame.getBoundingClientRect(), b = text.getBoundingClientRect();
@@ -40,7 +46,13 @@ LABELS = """() => {
     const [p, a] = boxes[i], [q, b] = boxes[j];
     if (a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]) crossing.push([p, q]);
   }
-  return {shown: boxes.length, hidden, crossing};
+  const mark_crossing = [];
+  for (const [p, a] of boxes) for (const [q, b] of marks) {
+    if (p !== q && a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]) {
+      mark_crossing.push([p, q]);
+    }
+  }
+  return {shown: boxes.length, hidden, crossing, mark_crossing};
 }"""
 
 
@@ -62,6 +74,7 @@ def labels(page: Page) -> dict:
 def assert_apart(page: Page, when: str, fewest: int) -> dict:
     seen = labels(page)
     assert seen["crossing"] == [], (when, seen)
+    assert seen["mark_crossing"] == [], (when, seen)
     assert seen["shown"] >= fewest, (when, seen)
     return seen
 
@@ -150,5 +163,28 @@ def test_with_scripts_off_the_drawing_is_as_sent_and_hides_no_label(
         expect(page.get_by_role("button", name="3D view")).to_be_hidden()
         seen = labels(page)
         assert seen["hidden"] == 0 and seen["shown"] == 21, seen
+    finally:
+        close_visit(visit)
+
+
+def test_no_label_covers_a_mark_in_3d_at_375px(browser: Browser, explorer_server: Server):
+    with explorer_server.api() as api:
+        assert api.post("/api/projects", json={"name": "alpha-ops"}).status_code == 201
+        for title, body in (
+            ("Deploy", "Run deploy checks before promoting."),
+            ("Ports guide", "Open port 443 for the proxy."),
+        ):
+            made = api.post("/api/projects/alpha-ops/notes", json={"title": title, "text": body})
+            assert made.status_code == 201, made.text
+    visit = open_visit(browser, explorer_server, viewport={"width": 375, "height": 812})
+    try:
+        visit.sign_in()
+        visit.go("/b/alpha-ops/graph")
+        page = visit.page
+        three_d = page.get_by_role("button", name="3D view")
+        expect(three_d).to_be_visible()
+        three_d.click()
+        expect(three_d).to_have_attribute("aria-pressed", "true")
+        assert_apart(page, "375px in 3D", fewest=1)
     finally:
         close_visit(visit)

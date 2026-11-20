@@ -9,8 +9,8 @@
    full title is a link in the "Graph content" list below the drawing, which the Tab key
    reaches. After every draw the labels are placed in turn: the focus's first, then the
    others nearest the viewer first (in 2D, in the order of the markup). A label whose box
-   would cross one already placed is hidden; the next draw where it crosses none shows it
-   again. Only labels are hidden: every mark, line and link stays. */
+   would cross another node's mark or a label already placed is hidden; the next draw where
+   it crosses none shows it again. Only labels are hidden: every mark, line and link stays. */
 (() => {
   for (const root of document.querySelectorAll('[data-graph-interactive]')) {
     const svg = root.querySelector('svg');
@@ -18,6 +18,7 @@
     let box = svg && svg.viewBox.baseVal;
     const nodes = [...root.querySelectorAll('g[data-graph-node]')].map(element => ({
       element, id: element.dataset.graphNode, label: element.querySelector(':scope > svg'),
+      mark: element.querySelector(':scope > .graph-mark'),
       x: Number(element.dataset.x), y: Number(element.dataset.y), z: Number(element.dataset.z),
     }));
     if (!svg || !box || !box.width || !box.height || !nodes.length ||
@@ -97,13 +98,58 @@
       return {left: n.px + 9, top: n.py - 8, right: n.px + 9 + n.labelWidth, bottom: n.py + 14};
     };
     const crosses = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const textBox = n => {
+      if (n.textRect === undefined) {
+        const text = n.label && n.label.querySelector('text');
+        if (text && typeof text.getBBox === 'function') {
+          const b = text.getBBox();
+          n.textRect = {
+            left: 9 + Math.max(0, b.x),
+            top: -8 + Math.max(0, b.y),
+            right: 9 + Math.min(190, b.x + b.width),
+            bottom: -8 + Math.min(22, b.y + b.height),
+          };
+        } else {
+          const fallback = labelBox(n);
+          n.textRect = {left: fallback.left - n.px, top: -8, right: fallback.right - n.px, bottom: 8};
+        }
+      }
+      return {
+        left: n.px + n.textRect.left,
+        top: n.py + n.textRect.top,
+        right: n.px + n.textRect.right,
+        bottom: n.py + n.textRect.bottom,
+      };
+    };
+    const markBox = n => {
+      if (n.markRect === undefined) {
+        if (n.mark && typeof n.mark.getBBox === 'function') {
+          const b = n.mark.getBBox();
+          const pad = n.mark.classList.contains('graph-cross') ? 2 : 1;
+          n.markRect = {
+            left: b.x - pad, top: b.y - pad,
+            right: b.x + b.width + pad, bottom: b.y + b.height + pad,
+          };
+        } else {
+          n.markRect = {left: -7, top: -7, right: 7, bottom: 7};
+        }
+      }
+      return {
+        left: n.px + n.markRect.left,
+        top: n.py + n.markRect.top,
+        right: n.px + n.markRect.right,
+        bottom: n.py + n.markRect.bottom,
+      };
+    };
     const placeLabels = () => {
       const order = [focus, ...others.slice().sort((a, b) => a.depth - b.depth)];
       const placed = [];
       for (const n of order) {
         if (!n.label) continue;
         const own = labelBox(n);
-        if (placed.some(other => crosses(own, other))) n.label.setAttribute('data-graph-label-hidden', '');
+        const ink = textBox(n);
+        const hitsMark = nodes.some(other => other !== n && crosses(ink, markBox(other)));
+        if (hitsMark || placed.some(other => crosses(own, other))) n.label.setAttribute('data-graph-label-hidden', '');
         else { n.label.removeAttribute('data-graph-label-hidden'); placed.push(own); }
       }
     };

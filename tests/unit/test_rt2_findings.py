@@ -1,27 +1,26 @@
-"""The shortest traces the checker (test_rt2_explore.py) found in job `release`'s step "Create
-the release" after the fix that reads the release by its id (42be3760), each replayed as a
-schedule written in words, and each asserting the invariant it breaks. They fail while the fault
-is there; the trace is in the message. Made-up repository, run, commits and files.
+"""The tester's findings in job `release`'s step "Create the release", restated to the
+implementer's decisions of round rl8 (7e89e04e): each case is replayed as a schedule written in
+words. A finding a decision fixes is held as fixed (the test asserts the invariant holds); a
+finding the README states as a limit is pinned by the README's sentence that states it (the
+test asserts the sentence is there and the step does what it says); a finding neither fixes nor
+states fails, with its trace in the message. Made-up repository, run, commits and files.
 """
 
 from __future__ import annotations
 
-import copy
+import re
 
 import pytest
 from test_rt2_explore import LAGS, Execution, check, execute, lags, render
 from test_rt2_github import (
-    HEAD_SHA,
     KINDS,
     OTHER_SHA,
+    REPO_ROOT,
     RUN_SHA,
     TAGS,
     Config,
-    Hub,
-    Scheduler,
     Script,
     current_run,
-    run_attempt,
 )
 
 
@@ -30,193 +29,235 @@ def replay(steps, tag=TAGS["release"], **config) -> Execution:
 
 
 def trace(ex: Execution) -> str:
-    violations, _ = check(ex)
-    return "\n".join([*map(str, violations), *render(ex)])
+    violations, notes = check(ex)
+    return "\n".join([*map(str, violations), *notes, *render(ex)])
 
 
 def broken(ex: Execution, invariant: str) -> list[str]:
     return [str(v) for v in check(ex)[0] if v.invariant == invariant]
 
 
-# --- 1. the git tag: never read, and made again by the publication ------------------------------
+def readme_says(*fragments: str) -> None:
+    """The README, its lines joined, holds each fragment as written."""
+    text = re.sub(r"\s+", " ", (REPO_ROOT / "README.md").read_text())
+    for fragment in fragments:
+        assert fragment in text, f"the README no longer says: {fragment}"
+
+
+def public(ex: Execution) -> list[int]:
+    return [r["id"] for r in ex.hub.releases_for(ex.hub.truth) if not r["draft"]]
+
+
+# --- decision 1: the tag is judged (held as fixed) ----------------------------------------------
 
 
 @pytest.mark.parametrize("tag", TAGS.values())
-def test_a_draft_whose_git_tag_a_person_deleted_is_published_and_the_tag_made_on_main(tag):
-    """Attempt 1: the look finds nothing, the draft is made with its files (--verify-tag sees the
-    tag), the listing shows it, the read by id judges it. A person deletes the git tag (to
-    withdraw the version, say). The download and the second read by id see nothing of it: a
-    draft keeps its tag name, which is only a string. The publication, sent without a tag name,
-    makes GitHub create the tag on the default branch's head, where the release's files were
-    not built, and the job ends well. Invariants 1 (a git tag made), 2 (published past a read by
-    id that came after the deletion) and 3 (exit 0 on a release whose tag is not the run's
-    commit)."""
-    ex = replay([(r"person, before GET releases/tags", "deletes the git tag")], tag=tag)
-    assert ex.attempts[0].code != 0 or ex.hub.truth["tags"].get(tag) == RUN_SHA, trace(ex)
-    assert not broken(ex, "1") and not broken(ex, "2"), trace(ex)
+def test_held_a_tag_deleted_before_the_publication_stops_the_job_and_nothing_is_published(tag):
+    """Was: a person deletes the git tag after the draft is judged; the publication made GitHub
+    create the tag on the default branch's head and the job ended well. Now the job reads the
+    tag as its last request before the publication and stops: nothing is published, no tag is
+    made, and the line says the tag could not be read as a commit."""
+    ex = replay([(r"person, before GET commits/tags", "deletes the git tag", 2)], tag=tag)
+    assert ex.attempts[0].code != 0, trace(ex)
+    assert not public(ex) and tag not in ex.hub.truth["tags"], trace(ex)
+    assert not check(ex)[0], trace(ex)
 
 
-def test_a_re_run_after_the_git_tag_was_deleted_publishes_the_draft_onto_main_s_head():
-    """The same across a re-run, with nothing racing: attempt 1 stops (a read by id gets no
-    answer, so it says to re-run and delete nothing); the person deletes the git tag, meaning
-    to withdraw the version; a re-run of the failed job later publishes the draft, and the
-    publication makes the tag on the default branch's head. Nobody edits the release while the
-    job runs, so the README's limit ('do not edit this tag's release by hand while the
-    `release` job runs') does not cover it. That a publication makes a missing tag was seen in
-    round 6 (a draft whose tag did not exist, published by the job's PATCH, got its tag);
-    that the tag lands on the default branch's head is GitHub's documented default for a
-    release with no target, not measured here."""
+def test_held_a_re_run_after_the_tag_was_deleted_publishes_nothing():
+    """Was: attempt 1 stops on a read by id that got no answer; the person deletes the tag to
+    withdraw the version; a re-run published the draft and made the tag on the default branch's
+    head. Now the re-run's first request reads the tag and stops, writing nothing."""
     ex = replay(
         [
             (r"fate of GET releases/88$", "fails", 2),
-            (r"person, before GET releases page 1", "deletes the git tag"),
+            (r"person, before GET commits/tags", "deletes the git tag"),
         ],
         follow_advice=False,
     )
-    assert ex.hub.truth["tags"].get(TAGS["release"]) in (RUN_SHA, None), trace(ex)
-    assert [a.code for a in ex.attempts][1] != 0, trace(ex)
+    assert ex.attempts[1].code != 0, trace(ex)
+    assert TAGS["release"] not in ex.hub.truth["tags"] and not public(ex), trace(ex)
+    assert not check(ex)[0], trace(ex)
 
 
 @pytest.mark.parametrize("tag", TAGS.values())
-def test_a_tag_moved_to_another_commit_before_the_job_gets_the_run_s_files_and_exit_0(tag):
-    """A forced push moves the tag before the step's first request (the tag's new run waits in
-    the same concurrency group). The step makes its draft on the moved tag, compares title,
-    notes and files, publishes and ends well: the public release holds files built from a
-    commit its tag no longer names, and `gh attestation verify --source-digest` on the tag's
-    commit, as the README says to check, then fails. Invariant 3."""
-    ex = replay([(r"person, before GET releases page 1", "moves the git tag")], tag=tag)
+def test_held_a_tag_moved_before_the_job_starts_stops_it_before_any_write(tag):
+    """Was: a forced push moved the tag before the step's first request; the job made, compared
+    and published its draft on the moved tag and ended well. Now its first request reads the
+    tag, names the other commit and stops before writing."""
+    ex = replay([(r"person, before GET commits/tags", "moves the git tag")], tag=tag)
     assert ex.hub.truth["tags"][tag] == OTHER_SHA
     assert ex.attempts[0].code != 0, trace(ex)
-
-
-# --- 3. the last read by id covers names, not bytes --------------------------------------------
+    assert not ex.hub.releases_for(ex.hub.truth), trace(ex)
+    assert not check(ex)[0], trace(ex)
 
 
 @pytest.mark.parametrize("tag", TAGS.values())
-def test_a_file_replaced_between_the_last_download_and_the_last_read_by_id_ends_well(tag):
-    """After the publication the job downloads the files, compares them, and then reads the
-    release by its id as its last request, which judges the file names only. A wheel replaced
-    between that download and that read keeps its name: the read passes and the job ends well
-    on a release whose wheel is not the run's, although its own last request was made after the
-    replacement and GitHub's answer to it carries the new asset's id and size. The README: 'it
-    succeeds only on a published release that ... holds exactly those files, byte for byte',
-    and the read by id is 'its last request before it succeeds'. Invariant 3 (narrow)."""
-    ex = replay([(r"person, before GET releases/88$", "replaces the wheel", 3)], tag=tag)
+def test_held_a_draft_is_made_with_the_run_s_commit_as_its_target(tag):
+    ex = replay([], tag=tag)
+    (r,) = ex.hub.releases_for(ex.hub.truth)
+    assert r["target_commitish"] == RUN_SHA and not r["draft"], trace(ex)
+
+
+@pytest.mark.parametrize("tag", TAGS.values())
+def test_held_an_annotated_tag_reads_as_its_commit(tag):
+    """GET commits/tags/T resolves the ref to a commit, so an annotated tag (an object of its
+    own naming the commit) answers the commit as a lightweight one does."""
+    ex = replay([], tag=tag, annotated=True)
+    assert [a.code for a in ex.attempts] == [0, 0, 0] and not check(ex)[0], trace(ex)
+
+
+@pytest.mark.parametrize("tag", TAGS.values())
+def test_pinned_a_tag_deleted_after_its_last_read_is_made_again_on_the_run_s_commit(tag):
+    """The README: a person who deletes the tag between the last read and the publication
+    'makes GitHub create it again, meant to be on the run's commit ... which is not measured'.
+    The model makes it from target_commitish, the run's commit (GitHub's REST docs)."""
+    readme_says("makes GitHub create it again, meant to be on the run's commit")
+    ex = replay([(r"person, before PATCH", "deletes the git tag")], tag=tag)
+    assert ex.hub.truth["tags"].get(tag) == RUN_SHA, trace(ex)
+    assert ex.attempts[0].code == 0 and not check(ex)[0], trace(ex)
+
+
+# --- decision 2: the bytes compared are the judged release's own (held as fixed) ----------------
+
+
+@pytest.mark.parametrize("tag", TAGS.values())
+@pytest.mark.parametrize("nth", [2, 4])
+def test_held_a_file_replaced_after_its_download_and_before_the_next_read_stops_the_job(tag, nth):
+    """Was: a wheel replaced (same name) between the last download and the last read by id
+    passed that read, which judged names only, and the job ended well. Now the read after the
+    fetches must equal the read before them (asset ids, sizes, update times): before the
+    publication (2nd read) nothing is published; after it (4th) the job does not succeed."""
+    ex = replay([(r"person, before GET releases/88$", "replaces the wheel", nth)], tag=tag)
     assert ex.attempts[0].code != 0, trace(ex)
+    assert "changed between this job's two reads" in ex.attempts[0].errors[0], trace(ex)
+    if nth == 2:  # nothing published in that attempt
+        assert not [e for e in ex.hub.events if e.attempt == 1 and e.kind == "patch"], trace(ex)
+    assert not check(ex)[0], trace(ex)
 
 
-# --- 1 (outside the documented latest flag): a stable backport becomes GitHub's Latest ---------
-
-
-def test_publishing_a_stable_release_below_the_highest_makes_it_github_s_latest():
-    """release_check takes v1.2.3 while v1.3.0 is released (it refuses only a lower version of
-    the same X.Y). The publication sends draft=false alone, and GitHub's make_latest defaults
-    to true for a release newly published, so v1.2.3 becomes the repository's Latest release
-    and v1.3.0 stops being it, while job `aliases` points the image's `latest` at 1.3.0. The
-    README: the publication 'sets draft to false and nothing else (for a candidate it says
-    again that the release is not the latest)'."""
-    hub = Hub(Config(tag=TAGS["release"]), Scheduler())
-    higher = {
-        "id": 40,
-        "tag_name": "v1.3.0",
-        "draft": False,
-        "prerelease": False,
-        "name": "v1.3.0",
-        "body": "the notes of 1.3.0\n",
-        "assets": [],
-        "target_commitish": "main",
-    }
-    for state in (hub.truth, hub.initial):
-        state["releases"][40] = copy.deepcopy(higher)
-        state["tags"]["v1.3.0"] = HEAD_SHA
-        state["latest"] = 40
-    hub.attempt = 1
-    done = run_attempt(current_run(), hub, hub.files)
-    assert done.code == 0, done.stdout + done.stderr
-    assert hub.truth["latest"] == 40, "the publication made v1.2.3 GitHub's Latest release"
-
-
-# --- 6: a listing behind across a re-run makes a second draft ------------------------------------
-
-
-def test_a_re_run_whose_first_look_is_behind_makes_a_second_draft():
-    """Switch: the listing still behind when the re-run starts (one look; measured 2.6 s, so
-    only for a re-run that starts within seconds). Attempt 1's creation is done and its reply
-    lost: the job stops on the CLI's own error, with a draft and no files. The re-run's first
-    look does not show it, and the step makes a second draft. README: 'It never makes a second
-    release in one attempt': true of the step's own releases, and this is two attempts."""
-    ex = replay(
-        [(r"fate of POST", "reply lost")],
-        persist_lag=True,
-        lag=dict.fromkeys(KINDS, 1),
-    )
-    assert not broken(ex, "6"), trace(ex)
-
-
-# --- a person's draft the listing does not show yet: "Any other release for the tag stops the job"
-
-
-def test_a_draft_a_person_makes_during_the_job_is_not_seen_and_the_job_ends_well():
-    """The listing one look behind a person's write (the README: 'a person's as much as the
-    job's'). A person makes a second draft for the tag while the job downloads its draft's
-    files; the look after the publication does not show it, and the job ends well with two
-    releases for the tag. The README: 'Any other release for the tag stops the job.' The re-run
-    then stops on the job's own whole public release with 'there are 2 releases for it'.
-    Invariant 3 (one release for the tag)."""
-    ex = replay(
-        [
-            (
-                r"person, before GET releases/88 \(draft lookup\)",
-                "second release for the tag, a draft",
-            )
-        ],
-        lag=LAGS["person one behind"],
-    )
-    assert not broken(ex, "3"), trace(ex)
-
-
-def test_the_job_makes_its_draft_beside_a_person_s_draft_its_first_look_missed():
-    """The same lag before the first look: the look shows nothing, the job makes its draft
-    beside the person's, and stops at the next look on 'there are 2 releases for it'. Nothing
-    is lost; the step's own count of releases stays one."""
-    ex = replay(
-        [(r"person, before GET releases page 1", "second release for the tag, a draft")],
-        lag=LAGS["person one behind"],
-    )
-    assert not broken(ex, "6"), trace(ex)
-
-
-# --- 5: a stop line that names the listing's state, not GitHub's -------------------------------
-
-
-def test_a_title_edited_in_the_stated_race_is_reported_on_a_draft_that_is_public():
-    """The documented race: a person edits the title between the last read by id and the
-    publication. The look after the publication, its listing one look behind the publication
-    and current on the person's edit, stops on the title, and the line says 'a draft' of a
-    release that is public. Its advice ('delete it ... if it is still a draft, or put back what
-    the run wrote') stays safe. Invariant 5 (the line is true of GitHub's state)."""
-    ex = replay([(r"person, before PATCH", "edits the title")], lag=lags(publish=1))
-    assert not broken(ex, "5"), trace(ex)
-
-
-# --- 2: the bytes compared are found by tag, the release published by id ------------------------
-
-
-def test_a_re_run_publishes_the_cut_draft_after_comparing_the_bytes_of_its_own_new_one():
-    """Switch: the listing still behind attempt 1's draft when the re-run starts (measured
-    2.6 s behind; the README's own 'unseen' row allows more than the 27 s the job waits).
-    Attempt 1's upload of the wheel is cut, so draft 88 holds an unfinished wheel and the CLI
-    stops. The re-run's first look shows nothing, it makes draft 89, whole, and its next look
-    shows 88 (not yet 89), with all three names. The read of 88 by id passes (names only);
-    `gh release download <tag>` finds the newest draft, 89, and its bytes are the run's; the
-    step reads 88 again and publishes 88, with the cut wheel, whose bytes it never downloaded.
-    The README: 'what the job compares it reads by the release's id'. Invariant 2. Rests on
-    two things not measured: the listing that far behind, and GraphQL `release(tagName:)`
-    answering the newer of two drafts that share a tag (modelled so; if it answers the older,
-    the download meets the cut wheel and the job stops safely)."""
+def test_held_a_re_run_never_publishes_a_cut_draft_it_did_not_fetch_from():
+    """Was (switch: the listing behind across re-runs): the re-run compared the bytes of its own
+    new draft, found by tag, and published the cut one by id. Now every file is fetched by the
+    asset id the judged release's read gives, once that read shows it uploaded and of the size
+    of the run's file."""
     ex = replay(
         [(r"fate of upload \S+\.whl to 88", "cut")],
         persist_lag=True,
         lag=dict.fromkeys(KINDS, 1),
     )
-    assert not broken(ex, "2"), trace(ex)
+    assert not broken(ex, "2") and not broken(ex, "3"), trace(ex)
+
+
+# --- decision 4: the publication says latest or not (held as fixed) ----------------------------
+
+
+def test_held_a_stable_backport_below_the_highest_leaves_github_s_latest_where_it_is():
+    """Was: the publication sent draft=false alone, so GitHub's make_latest default (true for a
+    release newly published) made the backport v1.2.3 Latest over v1.3.0."""
+    ex = replay([], existing=("v1.3.0",))
+    assert ex.attempts[0].code == 0, trace(ex)
+    assert ex.hub.truth["latest"] == 40, trace(ex)
+    assert not check(ex)[0], trace(ex)
+
+
+# --- new: Latest taken from a higher version published after the last look ----------------------
+
+
+@pytest.mark.parametrize("gap", [r"person, before GET commits/tags", r"person, before GET asset"])
+def test_a_higher_version_published_after_the_last_look_loses_latest_to_this_release(gap):
+    """Another tag's run publishes v1.3.0 (and, rightly, makes it Latest) after this job's last
+    look and before its publication: between the look and the PATCH the job reads the release
+    twice, fetches three files and reads the tag, which takes seconds. Its `released` is that
+    look's, so is_latest says true and the PATCH sends make_latest=true: GitHub's Latest moves
+    to v1.2.3, below v1.3.0, and the job ends well. The README states only 'a higher version
+    published seconds before the job's last look can be missing from it'. Invariant: GitHub's
+    Latest is the highest stable version."""
+    ex = replay(
+        [(gap, "another run publishes v1.3.0", 2 if "commits" in gap else 1)],
+        existing=("v1.2.2",),
+        other_runs=("v1.3.0",),
+    )
+    assert not broken(ex, "L"), trace(ex)
+
+
+def test_pinned_a_higher_version_missing_from_the_last_look_lets_this_release_take_latest():
+    """The stated limit: the listing one look behind another run's publication."""
+    readme_says(
+        "a higher version published seconds before the job's last look can be missing from it, "
+        "and a backport is then said to be the latest"
+    )
+    ex = replay(
+        [(r"person, before GET releases page 1", "another run publishes v1.3.0", 2)],
+        existing=("v1.2.2",),
+        other_runs=("v1.3.0",),
+        lag=LAGS["person one behind"],
+    )
+    _, notes = check(ex)
+    assert ex.attempts[0].code == 0 and ex.hub.truth["latest"] == 88, trace(ex)
+    assert any(n.startswith("L (stated limit)") for n in notes), trace(ex)
+    assert not broken(ex, "L"), trace(ex)
+
+
+# --- decision 6: a second release missing from the listing (pinned limits) ----------------------
+
+SECOND = (
+    "one a person makes while the job runs, or the draft of an earlier attempt just before a "
+    "re-run, can be missing from the listing, which can be seconds behind a write, so the job "
+    "does not see it and can make or publish its own release beside it: that is a stated limit"
+)
+
+
+def test_pinned_a_re_run_whose_first_look_is_behind_makes_a_second_draft():
+    """Attempt 1's creation is done and its reply lost; the re-run's first look, one look behind
+    (the switch: the listing still behind when the re-run starts), shows nothing, and the step
+    makes a second draft beside the earlier attempt's."""
+    readme_says(SECOND)
+    ex = replay([(r"fate of POST", "reply lost")], persist_lag=True, lag=dict.fromkeys(KINDS, 1))
+    assert any("6 (stated limit)" in n and "an earlier attempt" in n for n in check(ex)[1]), trace(
+        ex
+    )
+
+
+def test_pinned_a_draft_a_person_makes_during_the_job_is_not_seen_and_the_job_ends_well():
+    readme_says(SECOND)
+    ex = replay(
+        [(r"person, before GET asset", "second release for the tag, a draft")],
+        lag=LAGS["person one behind"],
+    )
+    assert ex.attempts[0].code == 0, trace(ex)
+    assert any("3 (stated limit)" in n for n in check(ex)[1]), trace(ex)
+
+
+def test_pinned_the_job_makes_its_draft_beside_a_person_s_draft_its_first_look_missed():
+    readme_says(SECOND)
+    ex = replay(
+        [(r"person, before GET releases page 1", "second release for the tag, a draft")],
+        lag=LAGS["person one behind"],
+    )
+    assert any("6 (stated limit)" in n and "a person" in n for n in check(ex)[1]), trace(ex)
+
+
+# --- not a stated limit: a stop line that names the listing's state, not GitHub's --------------
+
+
+def test_a_title_edited_in_the_stated_race_is_reported_on_a_draft_that_is_public():
+    """The stated race lets a title edited between the last read by id and the publication be
+    published as changed, and says the job then 'stops on a difference it sees'. The look
+    after the publication judges the listing's row, one look behind the publication and current
+    on the person's edit, and its line says 'a draft' of a release GitHub holds public. The
+    README's row: 'The line says which, and whether the release is a draft or public'. The
+    advice ('delete it ... if it is still a draft, or put back what the run wrote') stays safe.
+    Invariant 5 (every line true)."""
+    ex = replay([(r"person, before PATCH", "edits the title")], lag=lags(publish=1))
+    assert not broken(ex, "5"), trace(ex)
+
+
+def test_a_draft_a_person_changed_in_the_first_attempt_is_said_left_by_an_earlier_attempt():
+    """A person replaces the draft's wheel with a file of the same size before the job's first
+    read of it by id. The fetch by the new asset's id gives other bytes, and the job stops on
+    'is a draft that an earlier attempt of run ... left unfinished' in the run's first attempt,
+    which made that draft itself; no upload was cut. The advice (delete it and re-run) is safe.
+    Invariant 5 (every line true); the README row gives the cause as a cut upload."""
+    ex = replay([(r"person, before GET releases/88$", "replaces the wheel")])
+    assert "left unfinished" in ex.attempts[0].errors[0], trace(ex)
+    assert not broken(ex, "5"), trace(ex)

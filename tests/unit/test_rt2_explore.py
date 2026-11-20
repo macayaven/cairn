@@ -57,6 +57,7 @@ from test_rt2_github import (
     Write,
     body_text,
     current_run,
+    highest_stable,
     pinned_run,
     run_attempt,
     run_files,
@@ -93,6 +94,7 @@ class Execution:
     hub: Hub
     attempts: list
     follows: list = field(default_factory=list)
+    stopped: bool = False  # the person, as a line said, re-runs no more
 
 
 _MEMO: dict = {}
@@ -115,6 +117,10 @@ def _key(run: str, hub: Hub) -> tuple:
         c.starter_download,
         c.per_page,
         repr(sorted(c.lag.items())),
+        c.existing,
+        c.other_runs,
+        hub.next_other,
+        c.annotated,
     )
 
 
@@ -130,7 +136,7 @@ def attempt(run: str, hub: Hub, budget_spent: bool):
     )
     key = _key(run, hub) if memo_ok else None
     if key is not None and key in _MEMO:
-        done, events, end, listings, next_id, next_asset, unmodelled = _MEMO[key]
+        done, events, end, listings, next_id, next_asset, next_other, unmodelled = _MEMO[key]
         offset = len(hub.events)
         for e in events:
             e2 = copy.deepcopy(e)
@@ -142,7 +148,7 @@ def attempt(run: str, hub: Hub, budget_spent: bool):
         )
         hub._truth = copy.deepcopy(end)
         hub.listings += listings
-        hub.next_id, hub.next_asset = next_id, next_asset
+        hub.next_id, hub.next_asset, hub.next_other = next_id, next_asset, next_other
         hub.unmodelled.extend(unmodelled)
         return copy.deepcopy(done)
     start_events, start_listings, start_unmodelled = (
@@ -162,6 +168,7 @@ def attempt(run: str, hub: Hub, budget_spent: bool):
             hub.listings - start_listings,
             hub.next_id,
             hub.next_asset,
+            hub.next_other,
             list(hub.unmodelled[start_unmodelled:]),
         )
     return done
@@ -184,6 +191,8 @@ def execute(
         hub.command = 0
         if n > 1:
             follow(hub, ex)
+            if ex.stopped:
+                break
             # the re-run starts later: by then the listing shows every write, the person's too
             if not config.persist_lag:
                 hub.catch_up()
@@ -318,6 +327,16 @@ def focus(events: list[Event]):
 
 
 def classify(line: str) -> tuple[str, dict]:
+    if re.search(r"the tag \S+ could not be read as a commit of the repository", line):
+        return "tag-unread", {}
+    m = re.search(r"the tag \S+ names commit (\S+), not this run's commit", line)
+    if m:
+        return "tag-moved", {"sha": m[1]}
+    m = re.search(
+        r"the GitHub release for \S+, (a draft|public), changed between this job's two reads", line
+    )
+    if m:
+        return "changed", {"state": m[1]}
     m = re.search(r"is a draft that an earlier attempt of run \d+ left unfinished", line)
     if m:
         return "unfinished", {}
@@ -360,7 +379,15 @@ def follow(hub: Hub, ex: Execution) -> None:
     whole_public = r is not None and not faults(truth, rid, hub, last.files)
     did = "re-runs"
     before = hub.snap()
-    if kind in ("unfinished",) and r is not None and not whole_public:
+    if kind in ("tag-unread", "tag-moved") and truth["tags"].get(hub.tag) != RUN_SHA:
+        # the version is withdrawn, or the tag is not the run's: publish nothing, delete the
+        # run's release if there is one (and nobody should publish it), re-run no more
+        mine = [x["id"] for x in hub.releases_for(truth) if MARK in (x["body"] or "")]
+        for d in mine:
+            hub.write("person", ("delete", d), "person")
+        ex.stopped = True
+        did = f"deletes {mine or 'nothing'} and re-runs no more, as the line says"
+    elif kind in ("unfinished",) and r is not None and not whole_public:
         hub.write("person", ("delete", rid), "person")
         did = f"deletes release {rid}, as the line says, and re-runs"
     elif kind == "differs" and r is not None:
@@ -427,24 +454,30 @@ def check(ex: Execution) -> tuple[list[Violation], list[str]]:
         files = files_of.get(e.attempt, hub.files)
         # 1. writes
         if e.kind == "patch":
-            allowed = [{"draft": False}]
-            if hub.config.candidate:
-                allowed = [{"draft": False, "make_latest": "false"}]
+            allowed = [{"draft": False, "make_latest": "false"}]
+            if not hub.config.candidate:
+                allowed.append({"draft": False, "make_latest": "true"})
             if e.shown not in allowed:
                 out.append(Violation("1", f"the publication sent {e.shown}"))
+            latest_after_patch(e, events, hub, out, notes)
             before = e.truth_before["releases"].get(e.rid)
             if before is not None and MARK not in (before["body"] or ""):
                 out.append(
                     Violation("1", "the step wrote to a release that does not carry its mark")
                 )
             if e.truth_after["tags"].get(tag) != e.truth_before["tags"].get(tag):
-                out.append(
-                    Violation(
-                        "1",
-                        "the publication made a git tag (on the default "
-                        "branch's head): the draft's tag was gone",
+                if e.truth_after["tags"].get(tag) == RUN_SHA:
+                    notes.append(
+                        "1 (stated, not measured): the tag deleted after the last tag read is "
+                        "made again by the publication, on its target, the run's commit"
                     )
-                )
+                else:
+                    out.append(
+                        Violation(
+                            "1",
+                            "the publication made the git tag on a commit not the run's",
+                        )
+                    )
             # 2. what it published
             was = e.truth_before["releases"].get(e.rid)
             if was is None or not was["draft"]:
@@ -485,17 +518,25 @@ def check(ex: Execution) -> tuple[list[Violation], list[str]]:
                         else:
                             notes.append("2 (stated race): a file replaced after the last read")
                 elif comp == "git tag":
-                    if last_byid is not None and t < last_byid:
+                    tagreads = [x.seq for x in same if x.kind == "tag" and x.fate == "ok"]
+                    if not tagreads or t < tagreads[-1]:
                         out.append(
                             Violation(
                                 "2",
-                                "published a draft whose git tag was gone or "
-                                "moved before its read by id, which does not "
-                                "show git tags",
+                                "published a draft whose git tag was gone or moved before "
+                                "its last read of the tag",
                             )
                         )
+                    elif e.truth_before["tags"].get(tag) is None:
+                        notes.append(
+                            "2 (stated race): the tag deleted after the last tag read, before "
+                            "the publication"
+                        )
                     else:
-                        notes.append("2 (race): the git tag went or moved after the last read")
+                        notes.append(
+                            "2 (README says not published): the tag moved after the last tag "
+                            "read, before the publication, is published on the moved tag"
+                        )
                 else:
                     if last_byid is not None and t < last_byid:
                         out.append(Violation("2", f"published a {comp} its read by id had shown"))
@@ -526,6 +567,17 @@ def check(ex: Execution) -> tuple[list[Violation], list[str]]:
                 rid = last.rid if byid else (rels[0]["id"] if rels else None)
                 bad = faults(state, rid, hub, files)
                 how = "its last read by id" if byid else "its last request (no read by id)"
+                tagreads = [e for e in reqs if e.kind == "tag" and e.fate == "ok"]
+                end_state = next(e for e in mine if e.what == "exit").truth_before
+                if "git tag" in bad:
+                    bad.remove("git tag")
+                if not tagreads or tagreads[-1].shown != RUN_SHA:
+                    out.append(
+                        Violation("3", "exit 0 although its last tag read was not the run's commit")
+                    )
+                elif end_state["tags"].get(tag) != RUN_SHA:
+                    notes.append("3 (race): the tag went or moved after the last tag read")
+                latest_at_exit(a, mine, end_state, rid, hub, out, notes)
                 for comp in bad:
                     if comp == "bytes":
                         kinds = set()
@@ -559,13 +611,15 @@ def check(ex: Execution) -> tuple[list[Violation], list[str]]:
                 looks = [e for e in reqs if e.kind == "listing" and e.fate == "ok"]
                 if looks:
                     held = hub.releases_for(looks[-1].truth_before)
-                    if len(held) != 1:
+                    if len(held) != 1 and len(looks[-1].shown or []) > 1:
                         out.append(
-                            Violation(
-                                "3",
-                                f"exit 0 with {len(held)} releases for the tag "
-                                f"when it last listed them",
-                            )
+                            Violation("3", "exit 0 although its last look listed two releases")
+                        )
+                    elif len(held) != 1:
+                        # decision 6: missing from the listing, a stated limit
+                        notes.append(
+                            f"3 (stated limit): exit 0 with {len(held)} releases for the tag "
+                            f"when it last listed them"
                         )
                     elif len(rels) != 1:
                         notes.append("3 (race): a second release made after the last listing")
@@ -577,7 +631,9 @@ def check(ex: Execution) -> tuple[list[Violation], list[str]]:
             else:
                 out.extend(claim(a, mine, hub, files))
         # 6. a re-run that makes things worse
-        start = next((e for e in mine if e.what == "request"), None)
+        # judged from the re-run's first listing: a person who deletes the run's release after
+        # the tag read and before that listing leaves the step nothing it could have seen
+        start = next((e for e in mine if e.kind == "listing" and e.truth_before is not None), None)
         end = next((e for e in mine if e.what == "exit"), None)
         if start is not None and end is not None and a.number > 1:
             whole = [
@@ -612,12 +668,13 @@ def check(ex: Execution) -> tuple[list[Violation], list[str]]:
                     )
                     else "a person"
                 )
-                out.append(
-                    Violation(
-                        "6",
-                        f"the step made a second release for the tag; its "
-                        f"look did not show the one {by} made",
-                    )
+                # decision 6: one a person makes while the job runs, or the draft of an earlier
+                # attempt just before a re-run, missing from the listing: a stated limit
+                if before[-1].shown:
+                    out.append(Violation("6", "made a second release its look had listed"))
+                notes.append(
+                    f"6 (stated limit): the step made a second release for the tag; its "
+                    f"look did not show the one {by} made"
                 )
         if any("more often than the limit" in u for u in hub.unmodelled):
             out.append(Violation("6", "an attempt did not end"))
@@ -651,6 +708,11 @@ def claim(a, mine: list[Event], hub: Hub, files: dict) -> list[Violation]:
             false("the release is public")
         elif not ({"names", "bytes"} & set(bad)):
             false("the draft holds exactly the run's files")
+        elif not any(
+            e.kind == "create" and e.took_effect and e.rid == rid and e.attempt < a.number
+            for e in hub.events
+        ):
+            false("no earlier attempt made the draft: this attempt did, and a person changed it")
         if whole_public:
             out.append(
                 Violation(
@@ -696,7 +758,118 @@ def claim(a, mine: list[Event], hub: Hub, files: dict) -> list[Violation]:
             )
     elif kind == "gone" and r is not None:
         false("the release is there")
+    elif kind == "tag-unread":
+        reads = [e for e in mine if e.kind == "tag"]
+        if reads and reads[-1].fate == "ok" and reads[-1].shown is not None:
+            false("the tag was read as a commit")
+    elif kind == "tag-moved":
+        reads = [e for e in mine if e.kind == "tag" and e.fate == "ok"]
+        if not reads or reads[-1].shown != parts["sha"] or parts["sha"] == RUN_SHA:
+            false(f"the tag's last read showed {reads[-1].shown if reads else None}")
+    elif kind == "changed":
+        reads = [e for e in mine if e.kind == "byid" and e.fate == "ok" and e.shown]
+        if len(reads) < 2:
+            false("there were not two reads by id")
+        else:
+            a1, a2 = (compared(x.truth_before, x.rid) for x in reads[-2:])
+            if a1 == a2:
+                false("the release was the same at both reads")
+            r2 = reads[-1].truth_before["releases"].get(reads[-1].rid)
+            if r2 is not None and (parts["state"] == "a draft") != r2["draft"]:
+                false(f"it says {parts['state']}")
     return out
+
+
+def compared(state, rid):
+    """What the step's two reads by id compare: files (ids, names, sizes), title, notes, flags."""
+    r = state["releases"].get(rid)
+    if r is None:
+        return None
+    files = sorted(
+        (a["id"], a["name"], a["state"], a.get("size", len(a["data"]))) for a in r["assets"]
+    )
+    return (r["tag_name"], r["name"], r["draft"], r["prerelease"], r["body"], files)
+
+
+def published_at(events, rid) -> int:
+    """The seq of the event that published release RID (another run's, or a person's act)."""
+    for e in events:
+        if e.truth_before is None or e.truth_after is None:
+            continue
+        was = e.truth_before["releases"].get(rid)
+        now = e.truth_after["releases"].get(rid)
+        if now is not None and not now["draft"] and (was is None or was["draft"]):
+            return e.seq
+    return -1
+
+
+def latest_cause(e_seq, events, attempt, state, rid) -> tuple[str, str]:
+    """Why release RID was made Latest at E_SEQ although a higher one was published: a higher
+    one published before the attempt's last look and missing from it (stated), or after it."""
+    higher = highest_stable(state)
+    when = published_at(events, higher)
+    looks = [
+        x.seq
+        for x in events[:e_seq]
+        if x.attempt == attempt and x.kind == "listing" and x.fate == "ok"
+    ]
+    last_look = looks[-1] if looks else -1
+    if last_look >= 0 and state["releases"][higher]["tag_name"] in events[last_look].others:
+        return "listed", "its last look listed the higher version"
+    if when < last_look:
+        return "stated", "a higher version published before the last look was missing from it"
+    return "new", "a higher version published after the job's last look, before its publication"
+
+
+def same_version(state, a, b) -> bool:
+    """Releases A and B are of one version (two releases for a tag tie for the highest)."""
+    ra, rb = state["releases"].get(a), state["releases"].get(b)
+    return ra is not None and rb is not None and ra["tag_name"] == rb["tag_name"]
+
+
+def latest_after_patch(e, events, hub, out, notes):
+    """GitHub's Latest is the highest stable version, as the publication leaves it."""
+    after = e.truth_after
+    want = highest_stable(after)
+    if (
+        after["latest"] == want
+        or hub.config.candidate
+        or same_version(after, after["latest"], want)
+    ):
+        return
+    if after["latest"] == e.rid and e.truth_before["latest"] != e.rid:
+        how, why = latest_cause(e.seq, events, e.attempt, after, e.rid)
+        label = f"the publication made a lower version GitHub's Latest: {why}"
+        if how == "stated":
+            notes.append("L (stated limit) " + label)
+        else:
+            out.append(Violation("L", label))
+    elif want == e.rid:
+        out.append(Violation("L", "the publication left Latest on a lower version"))
+
+
+def latest_at_exit(a, mine, state, rid, hub, out, notes):
+    want = highest_stable(state)
+    if state["latest"] == want or same_version(state, state["latest"], want):
+        return
+    held = state["releases"].get(state["latest"])
+    if held is None or held["draft"]:
+        # GitHub's choice of Latest after its Latest is deleted or made a draft is not modelled
+        notes.append("L (not modelled): Latest's release was deleted or made a draft")
+        return
+    moved = [
+        e
+        for e in hub.events
+        if e.kind == "patch"
+        and e.took_effect
+        and e.truth_after["latest"] != e.truth_before["latest"]
+    ]
+    if rid is not None and state["latest"] == rid and moved:
+        notes.append("L (see the publication's): exit 0 with its release Latest below a higher one")
+    elif rid is not None and want == rid:
+        out.append(Violation("L", "exit 0 with its release the highest and not GitHub's Latest"))
+    else:
+        notes.append("L (another's act): Latest is not the highest at exit 0")
 
 
 # --- exploring ------------------------------------------------------------------------------------
@@ -882,13 +1055,22 @@ def test_the_checker_finds_the_sixth_round_fault_by_itself_in_the_step_it_was_fo
 
 WITHIN = [name for name in LAGS if name != "beyond the bound"]
 
+# The three kinds of tag the step publishes, each with the stable versions GitHub already holds
+# and the versions another tag's run may publish while the step runs (higher and lower).
+SCENARIOS = {
+    "release": dict(tag=TAGS["release"], existing=("v1.2.2",), other_runs=("v1.3.0", "v1.2.1")),
+    "candidate": dict(tag=TAGS["candidate"], existing=("v1.2.2",), other_runs=("v1.3.0",)),
+    # v1.10.0 above v1.2.3 only when versions are compared as numbers
+    "backport": dict(tag=TAGS["release"], existing=("v1.10.0",), other_runs=("v1.10.1", "v1.2.2")),
+}
 
-@pytest.mark.parametrize("tag", TAGS)
+
+@pytest.mark.parametrize("scenario", SCENARIOS)
 @pytest.mark.parametrize("lag", WITHIN)
-def test_lag_alone_within_the_ten_looks_never_stops_a_run(tag, lag):
+def test_lag_alone_within_the_ten_looks_never_stops_a_run(scenario, lag):
     """Invariant 4: nothing wrong but a listing behind each kind of write by up to nine looks
     (the tenth look shows it): the first attempt succeeds, and so does each re-run."""
-    ex = execute(current_run(), Config(tag=TAGS[tag], lag=LAGS[lag]), {}, 0)
+    ex = execute(current_run(), Config(lag=LAGS[lag], **SCENARIOS[scenario]), {}, 0)
     assert [a.code for a in ex.attempts] == [0, 0, 0], "\n".join(render(ex))
     assert not check(ex)[0]
 
@@ -897,73 +1079,70 @@ def test_lag_alone_drawn_at_random_within_the_ten_looks_never_stops_a_run():
     rng = random.Random(20261120)
     for _ in range(budget(24)):
         lag = {kind: rng.randrange(0, 10) for kind in KINDS}
-        tag = rng.choice(list(TAGS.values()))
-        ex = execute(current_run(), Config(tag=tag, lag=lag), {}, 0)
+        scenario = rng.choice(list(SCENARIOS))
+        ex = execute(current_run(), Config(lag=lag, **SCENARIOS[scenario]), {}, 0)
         assert [a.code for a in ex.attempts] == [0, 0, 0], "\n".join(render(ex))
 
 
-@pytest.mark.parametrize("tag", TAGS)
+@pytest.mark.parametrize("scenario", SCENARIOS)
 @pytest.mark.parametrize("lag", list(LAGS))
-def test_every_schedule_of_one_deviation_keeps_the_invariants(tag, lag):
+def test_every_schedule_of_one_deviation_keeps_the_invariants(scenario, lag):
     """Every request of three attempts may fail, lose its reply or be cut; before every request
-    a person may do any one thing the menu holds; between attempts the person may skip the
-    line's advice; the CLI's lookups may answer in either order. One of these at a time."""
-    report = explore(current_run(), Config(tag=TAGS[tag], lag=LAGS[lag]), k=budget(1))
+    a person may do any one thing the menu holds, and another run may publish its version;
+    between attempts the person may skip the line's advice. One of these at a time."""
+    config = Config(lag=LAGS[lag], **SCENARIOS[scenario])
+    report = explore(current_run(), config, k=budget(1))
     assert not report.found, summary(report)
 
 
 SWITCHES = {
     "the listing stays behind across re-runs": dict(persist_lag=True, lag=LAGS["one behind"]),
-    "the lookups by tag read the listing": dict(bytag="listing", lag=LAGS["one behind"]),
     "package re-run after five days": dict(rebuild_between=True),
     "two published releases for a tag allowed": dict(
         unique_published=False, lag=LAGS["person one behind"]
     ),
+    "an annotated tag": dict(annotated=True),
 }
 
 
 @pytest.mark.parametrize("switch", list(SWITCHES))
 def test_one_deviation_under_what_was_not_measured(switch):
-    config = Config(tag=TAGS["release"], person_menu="small", **SWITCHES[switch])
+    config = Config(person_menu="small", **SCENARIOS["release"], **SWITCHES[switch])
     report = explore(current_run(), config, k=budget(1))
     assert not report.found, summary(report)
 
 
-@pytest.mark.parametrize("tag", TAGS)
-def test_random_schedules_past_the_bound(tag):
-    report = wander(current_run(), Config(tag=TAGS[tag]), walks=budget(60), seed=7, rate=0.03)
+@pytest.mark.parametrize("scenario", SCENARIOS)
+def test_random_schedules_past_the_bound(scenario):
+    config = Config(**SCENARIOS[scenario])
+    report = wander(current_run(), config, walks=budget(60), seed=7, rate=0.03)
     assert not report.found, summary(report)
 
 
-def main() -> None:  # pragma: no cover - the full run, outside pytest: python test_rt2_explore.py
+def main() -> None:  # pragma: no cover - the full run, outside pytest
+    """python test_rt2_explore.py SCENARIO[,SCENARIO] LAG[,LAG] [K]: each exploration's
+    violations as soon as it ends, then the whole summary."""
     import sys
 
-    which = sys.argv[1] if len(sys.argv) > 1 else "current"
-    run = pinned_run(PRE_FIX) if which == "pre-fix" else current_run()
-    k = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    total = Report()
-    for tag in TAGS.values():
-        for name, lag in LAGS.items():
-            r = explore(run, Config(tag=tag, lag=lag), k=k)
+    scenarios = sys.argv[1].split(",") if len(sys.argv) > 1 else list(SCENARIOS)
+    lag_names = sys.argv[2].split(",") if len(sys.argv) > 2 else ["current"]
+    k = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+    run, total = current_run(), Report()
+    for scenario in scenarios:
+        for name in lag_names:
+            if scenario.startswith("switch:"):
+                switch = SWITCHES[scenario[7:]]
+                config = Config(person_menu="small", **SCENARIOS["release"], **switch)
+            else:
+                config = Config(lag=LAGS[name], **SCENARIOS[scenario])
+            r = explore(run, config, k=k)
             print(
-                f"{tag} {name}: {r.executions} executions, {len(r.found)} violations, "
+                f"{scenario} {name}: {r.executions} executions, {len(r.found)} violations, "
                 f"{r.seconds:.0f} s",
                 flush=True,
             )
             print("".join(f"   {v}\n" for v in sorted(map(str, r.found))), end="", flush=True)
             total.merge(r)
-    for name, switch in SWITCHES.items():
-        r = explore(run, Config(tag=TAGS["release"], person_menu="small", **switch), k=k)
-        print(f"switch {name}: {r.executions} executions, {len(r.found)} violations", flush=True)
-        print("".join(f"   {v}\n" for v in sorted(map(str, r.found))), end="", flush=True)
-        total.merge(r)
-    for tag in TAGS.values():
-        r = wander(
-            run, Config(tag=tag), walks=int(os.environ.get("RT2_WALKS", 400)), seed=7, rate=0.03
-        )
-        print(f"random {tag}: {r.executions} executions, {len(r.found)} violations", flush=True)
-        print("".join(f"   {v}\n" for v in sorted(map(str, r.found))), end="", flush=True)
-        total.merge(r)
     print(summary(total))
 
 

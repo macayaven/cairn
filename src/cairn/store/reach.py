@@ -158,6 +158,7 @@ MANAGEMENT = frozenset(
         "import_export",  # makes projects
         "compact",  # the operator's: it rewrites every workspace's file (and only the root may)
         "empty_log",  # the operator's: what a rewrite left due
+        "compacting",  # the operator's: one compaction at a time holds the database
         "compaction_state",  # the operator's: whether any workspace was deleted
         "bound_history",  # the operator's (Q1): how many versions every page keeps
         "record_history_bound",
@@ -613,6 +614,7 @@ OTHER_WORKSPACES = frozenset(
         "session_key",
         "compact",
         "empty_log",
+        "compacting",
         "compaction_state",
         "bound_history",
         "record_history_bound",

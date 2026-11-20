@@ -24,8 +24,12 @@ _spec.loader.exec_module(oci_archive)
 
 INDEX = "application/vnd.oci.image.index.v1+json"
 MANIFEST = "application/vnd.oci.image.manifest.v1+json"
-PROVENANCE = "https://slsa.dev/provenance/v1"
+PROVENANCE = "https://slsa.dev/provenance/v0.2"
 SBOM = "https://spdx.dev/Document"
+INTOTO = "application/vnd.in-toto+json"
+# buildkit v0.26.0 writes in-toto-golang's StatementInTotoV01; Docker's attestation-storage
+# page shows Statement/v1.
+STATEMENT = "https://in-toto.io/Statement/v0.1"
 
 
 class Layout:
@@ -61,39 +65,60 @@ class Layout:
         return path
 
 
-def image(layout: Layout, arch: str, built_for: str | None = None) -> dict:
+def image(
+    layout: Layout,
+    arch: str,
+    built_for: str | None = None,
+    variant: str | None = None,
+    off: int = 0,
+) -> dict:
     config = layout.doc(
         {"architecture": built_for or arch, "os": "linux"},
         "application/vnd.oci.image.config.v1+json",
     )
-    layer = layout.blob(f"a layer of {arch}".encode())
-    manifest = {
-        "schemaVersion": 2,
-        "mediaType": MANIFEST,
-        "config": config,
-        "layers": [
-            {"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": layer, "size": 1}
-        ],
+    data = f"a layer of {arch}".encode()
+    layer = {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": layout.blob(data),
+        "size": len(data) + off,
     }
-    return layout.doc(manifest, MANIFEST, platform={"architecture": arch, "os": "linux"})
+    manifest = {"schemaVersion": 2, "mediaType": MANIFEST, "config": config, "layers": [layer]}
+    platform = {"architecture": arch, "os": "linux"}
+    if variant is not None:
+        platform["variant"] = variant
+    return layout.doc(manifest, MANIFEST, platform=platform)
 
 
-def attestation(layout: Layout, of: dict, predicates=(PROVENANCE, SBOM)) -> dict:
-    layers = [
-        {
-            "mediaType": "application/vnd.in-toto+json",
-            "digest": layout.blob(f"{predicate} of {of['digest']}".encode()),
-            "size": 1,
+def statement(of: dict, predicate: str, kind: str = STATEMENT) -> dict:
+    """An in-toto statement as buildx writes one in an attestation layer: the image as its
+    subject, by digest."""
+    return {
+        "_type": kind,
+        "predicateType": predicate,
+        "subject": [{"name": "_", "digest": {"sha256": of["digest"].split(":")[1]}}],
+        "predicate": {},
+    }
+
+
+def attestation(
+    layout: Layout, of: dict, predicates=(PROVENANCE, SBOM), body=statement, layer_type=INTOTO,
+    platform=("unknown", "unknown"),
+) -> dict:  # fmt: skip
+    layers = []
+    for predicate in predicates:
+        data = json.dumps(body(of, predicate)).encode()
+        layers.append({
+            "mediaType": layer_type,
+            "digest": layout.blob(data),
+            "size": len(data),
             "annotations": {"in-toto.io/predicate-type": predicate},
-        }
-        for predicate in predicates
-    ]
+        })  # fmt: skip
     config = layout.doc({}, "application/vnd.oci.image.config.v1+json")
     manifest = {"schemaVersion": 2, "mediaType": MANIFEST, "config": config, "layers": layers}
     return layout.doc(
         manifest,
         MANIFEST,
-        platform={"architecture": "unknown", "os": "unknown"},
+        platform={"architecture": platform[0], "os": platform[1]},
         annotations={
             "vnd.docker.reference.digest": of["digest"],
             "vnd.docker.reference.type": "attestation-manifest",
@@ -103,18 +128,41 @@ def attestation(layout: Layout, of: dict, predicates=(PROVENANCE, SBOM)) -> dict
 
 def build(tmp_path, arches=("amd64", "arm64"), predicates=(PROVENANCE, SBOM), attest=True,
           entries=None, tamper=None, built_for=None, drop=None, twice=False,
-          stray=None) -> tuple[Path, str]:  # fmt: skip
+          stray=None, variants=None, proof=None, index_extra=None, oras=None,
+          resize=None, layer_off=0) -> tuple[Path, str]:  # fmt: skip
     layout = Layout()
-    images = [image(layout, arch, (built_for or {}).get(arch)) for arch in arches]
+    images = [
+        image(
+            layout,
+            arch,
+            (built_for or {}).get(arch),
+            (variants or {}).get(arch),
+            layer_off if arch == "amd64" else 0,
+        )
+        for arch in arches
+    ]
     manifests = list(images)
-    attestations = [attestation(layout, one, predicates) for one in images] if attest else []
+    attestations = (
+        [attestation(layout, one, predicates, **(proof or {})) for one in images] if attest else []
+    )
     manifests += attestations
     if twice:  # a second attestation entry for the first image
         manifests.append(attestation(layout, images[0], (PROVENANCE, SBOM, "https://made.up/x")))
     if stray is not None:
         manifests.append(stray(layout, images))
-    index = layout.doc({"schemaVersion": 2, "mediaType": INDEX, "manifests": manifests}, INDEX)
+    if resize is not None:  # a descriptor whose size is not its blob's, its digest unchanged
+        which_one = {"image": manifests[-len(attestations) - 1], "attestation": manifests[-1]}
+        which_one[resize]["size"] += 1
+    document = {
+        "schemaVersion": 2,
+        "mediaType": INDEX,
+        "manifests": manifests,
+        **(index_extra or {}),
+    }
+    index = layout.doc(document, INDEX)
     index["annotations"] = {"org.opencontainers.image.ref.name": "latest"}
+    if oras is not None:
+        entries = oras(index, manifests)
     layout.index_json = {"schemaVersion": 2, "manifests": [index] if entries is None else entries}
     which = {"index": index["digest"], "layer": images[0]["digest"]}.get(tamper, tamper)
     gone = None
@@ -132,10 +180,24 @@ def build(tmp_path, arches=("amd64", "arm64"), predicates=(PROVENANCE, SBOM), at
     return layout.tar(tmp_path / "cairn.oci.tar", tamper=which, drop=gone), index["digest"]
 
 
-def run(path: Path, tmp_path) -> tuple[int, str, str, str]:
+def as_oras_writes(index: dict, manifests: list[dict], tag: str = "main") -> list[dict]:
+    """index.json as `oras cp --to-oci-layout REF@DIGEST DIR:TAG` leaves it (oras 1.3.6, which
+    pins oras-go v2.7.0): content/oci/oci.go's Push tags every manifest it stores by its digest
+    (IsManifest counts image manifests and indexes), Tag adds TAG to the root, and saveIndex
+    writes one entry per tagged descriptor, first those tagged by name, with the annotation
+    org.opencontainers.image.ref.name set to the name, then the rest without it. The rest are
+    the descriptors as the index lists them (platform and annotations kept), and the order of
+    each part is a Go map's, so not fixed: the root is put last here."""
+    root = {k: v for k, v in index.items() if k != "annotations"}
+    root["annotations"] = {"org.opencontainers.image.ref.name": tag}
+    return [*reversed(manifests), root]
+
+
+def run(path: Path, tmp_path, root: str | None = None) -> tuple[int, str, str, str]:
     output = tmp_path / "github_output"
     out, err = io.StringIO(), io.StringIO()
-    code = oci_archive.main([str(path), "--github-output", str(output)], out=out, err=err)
+    extra = [] if root is None else ["--root", root]
+    code = oci_archive.main([str(path), *extra, "--github-output", str(output)], out=out, err=err)
     return code, out.getvalue(), err.getvalue(), output.read_text() if output.exists() else ""
 
 
@@ -230,27 +292,10 @@ def test_exactly_the_build_s_descriptors_and_every_blob_they_name(tmp_path, case
 
 def test_an_arm64_image_with_its_variant_is_the_arm64_image(tmp_path):
     """buildx may write `variant: v8` beside linux/arm64; that is still the arm64 image."""
-    path, digest = build(tmp_path)
-    with tarfile.open(path) as archive:
-        members = {m.name: archive.extractfile(m).read() for m in archive if m.isfile()}
-    index = json.loads(members[f"blobs/sha256/{digest.split(':')[1]}"])
-    for entry in index["manifests"]:
-        if entry["platform"]["architecture"] == "arm64":
-            entry["platform"]["variant"] = "v8"
-    data = json.dumps(index).encode()
-    changed = "sha256:" + hashlib.sha256(data).hexdigest()
-    members[f"blobs/sha256/{changed.split(':')[1]}"] = data
-    members["index.json"] = json.dumps(
-        {"schemaVersion": 2, "manifests": [{"mediaType": INDEX, "digest": changed, "size": 1}]}
-    ).encode()
-    with tarfile.open(path, "w") as archive:
-        for name, body in members.items():
-            info = tarfile.TarInfo(name)
-            info.size = len(body)
-            archive.addfile(info, io.BytesIO(body))
+    path, digest = build(tmp_path, variants={"arm64": "v8"})
     code, out, err, _ = run(path, tmp_path)
     assert (code, err) == (0, ""), err
-    assert out.splitlines()[0] == f"image index {changed}"
+    assert out.splitlines()[0] == f"image index {digest}"
 
 
 def test_a_missing_archive_is_refused(tmp_path):
@@ -266,3 +311,124 @@ def test_the_script_needs_nothing_but_the_standard_library():
         if line.startswith(("import ", "from "))
     }
     assert imported <= {"__future__", "argparse", "hashlib", "json", "sys", "tarfile", "pathlib"}
+
+
+# --- a layout oras wrote: the root chosen by the digest the run was told to import ------------
+
+
+def test_a_layout_oras_wrote_is_checked_from_the_root_it_was_told(tmp_path):
+    """A tag run copies main's index into a fresh layout with oras, whose index.json lists the
+    index and every manifest under it; the script takes the root by the digest it was given
+    and checks the same as for a build's archive."""
+    (tmp_path / "built").mkdir()
+    (tmp_path / "copied").mkdir()
+    built, digest = build(tmp_path / "built")
+    expected = run(built, tmp_path / "built")
+    path, same = build(tmp_path / "copied", oras=as_oras_writes)
+    assert same == digest
+    code, out, err, output = run(path, tmp_path / "copied", root=digest)
+    assert (code, err) == (0, ""), err
+    assert out == expected[1]
+    assert output.split("archive=")[0] == expected[3].split("archive=")[0]
+    assert output.splitlines()[2:] == expected[3].splitlines()[2:]
+
+
+def stranger(index: dict, manifests: list[dict]) -> list[dict]:
+    """oras's entries and one more manifest the root does not hold."""
+    other = {"mediaType": MANIFEST, "digest": STRANGER, "size": 2}
+    return [*as_oras_writes(index, manifests), other]
+
+
+ELSE = "sha256:" + "a" * 64
+STRANGER = "sha256:" + "e" * 64
+
+
+@pytest.mark.parametrize(
+    ("case", "root", "said"),
+    [
+        ({"oras": as_oras_writes}, None, "index.json names 5 manifests, not one image index"),
+        ({"oras": as_oras_writes}, ELSE, f"index.json does not list {ELSE}"),
+        (
+            {"oras": stranger},
+            "ROOT",
+            f"index.json lists {STRANGER}, which the image index does not",
+        ),
+        ({}, ELSE, f"index.json does not list {ELSE}"),
+    ],
+)
+def test_a_layout_is_refused_unless_it_holds_the_root_and_only_what_it_names(
+    tmp_path, case, root, said
+):
+    path, digest = build(tmp_path, **case)
+    code, _, err, output = run(path, tmp_path, root=digest if root == "ROOT" else root)
+    assert code == 1 and output == ""
+    assert err.count("\n") == 1 and err.startswith("::error::the build's archive is refused: ")
+    assert said in err
+
+
+# --- every descriptor is what a runtime and a verifier take it for -----------------------------
+
+
+def nested_index(layout: Layout, images: list[dict]) -> dict:
+    inner = {"schemaVersion": 2, "mediaType": INDEX, "manifests": [images[0]]}
+    return layout.doc(inner, INDEX, platform={"architecture": "amd64", "os": "linux"})
+
+
+def docker_list(layout: Layout, images: list[dict]) -> dict:
+    kind = "application/vnd.docker.distribution.manifest.list.v2+json"
+    return layout.doc({"schemaVersion": 2, "mediaType": kind, "manifests": [images[0]]}, kind,
+                      platform={"architecture": "amd64", "os": "linux"})  # fmt: skip
+
+
+def other_subject(of: dict, predicate: str) -> dict:
+    return statement({"digest": "sha256:" + "d" * 64}, predicate)
+
+
+def other_predicate(of: dict, predicate: str) -> dict:
+    return statement(of, "https://made.up/predicate")
+
+
+def other_statement(of: dict, predicate: str) -> dict:
+    return statement(of, predicate, kind="https://made.up/Statement")
+
+
+NOT_AN_IMAGE = "not an image manifest"
+HYBRID = "the image index has a config or layers"
+SIZE = "is not the size its descriptor says"
+
+
+@pytest.mark.parametrize(
+    ("case", "said"),
+    [
+        ({"variants": {"arm64": "v9"}}, "the index lists linux/arm64 with variant v9"),
+        ({"variants": {"amd64": "v3"}}, "the index lists linux/amd64 with variant v3"),
+        ({"stray": nested_index}, f"is a {INDEX}, {NOT_AN_IMAGE}"),
+        ({"stray": docker_list}, f"manifest.list.v2+json, {NOT_AN_IMAGE}"),
+        ({"index_extra": {"config": {"digest": "sha256:" + "c" * 64}}}, HYBRID),
+        ({"index_extra": {"layers": []}}, HYBRID),
+        ({"resize": "image"}, SIZE),
+        ({"resize": "attestation"}, SIZE),
+        ({"layer_off": 1}, SIZE),
+        ({"proof": {"platform": ("arm64", "linux")}}, "listed as linux/arm64, not unknown/unknown"),
+        ({"proof": {"body": other_subject}}, "whose subject is not the image for linux/amd64"),
+        ({"proof": {"body": other_predicate}}, "predicate type is not its annotation's"),
+        ({"proof": {"body": other_statement}}, "is not an in-toto statement"),
+        ({"proof": {"layer_type": "application/octet-stream"}}, f"not {INTOTO}"),
+    ],
+)
+def test_each_descriptor_is_checked_for_its_kind_size_platform_and_statement(tmp_path, case, said):
+    path, _ = build(tmp_path, **case)
+    code, _, err, output = run(path, tmp_path)
+    assert code == 1 and output == ""
+    assert err.count("\n") == 1 and err.startswith("::error::the build's archive is refused: ")
+    assert said in err, err
+
+
+@pytest.mark.parametrize("kind", [STATEMENT, "https://in-toto.io/Statement/v1"])
+def test_both_in_toto_statement_versions_are_statements(tmp_path, kind):
+    def written(of: dict, predicate: str) -> dict:
+        return statement(of, predicate, kind=kind)
+
+    path, _ = build(tmp_path, proof={"body": written})
+    code, _, err, _ = run(path, tmp_path)
+    assert (code, err) == (0, ""), err

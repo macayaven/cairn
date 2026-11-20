@@ -61,26 +61,34 @@ NAMES = {
 # The notes of the generated messages that hold no backtick (and of every fourth of the
 # others, without its lines that hold one), as the prose rules wrote them on 22f498b6, before
 # a heading became text: sha256 of them all, each followed by a NUL.
-PROSE_ON_22F498B6 = "806b3de73672fcdcfcd8db0f577b45aa014367fe9fb7d4dddb3d8e0af7e46a81"
+PROSE_ON_22F498B6 = "ad3d2c518b9d1929204ce131048c065c5201df7fe8e4057253c8bf8550ef96c0"
 
 
 @pytest.fixture
 def notes(monkeypatch):
     """From a message's text to its note as the prose rules write it, before its headings
     become text, and to the note that is filed. `as_prose` is then the note made of that
-    prose alone, as 8c502b3c filed it."""
+    prose alone, as 8c502b3c filed it. (A message is written again when a code block of it
+    is not one fence in the finished note: the prose is then that of the last writing.)"""
     seen, made, make_text = [], [], slack_text._one_heading
+    written, put = [0], getattr(slack_text, "_code_as_shown", None)
 
     def watched(note: str) -> str:
         seen.append("\n".join(note.splitlines()))
         made.append(make_text(note))
         return made[-1]
 
+    def putting(text: str, shown: str) -> str:
+        written.append(len(seen))
+        return put(text, shown)
+
     monkeypatch.setattr(slack_text, "_one_heading", watched)
+    monkeypatch.setattr(slack_text, "_code_as_shown", putting, raising=False)
 
     def convert(text: str) -> tuple[str, str]:
         seen.clear()
         made.clear()
+        written[:] = [0]
         draft = slack_text.note_from_message(
             {"text": text, "ts": "1900000000.000100"},
             team_id="T0FABLE01",
@@ -89,8 +97,8 @@ def notes(monkeypatch):
             author="Cedar Quill",
             names=NAMES,
         )
-        convert.as_prose = made[0]  # the note made of the prose alone
-        return seen[0], draft.text
+        convert.as_prose = made[written[-1]]  # the note made of the prose alone
+        return seen[written[-1]], draft.text
 
     return convert
 
@@ -307,6 +315,9 @@ def under(lead: str, line: tuple[str, str]) -> Lines:
 def a_code_block(rng: random.Random) -> Lines:
     """A code block of Slack's own, in one of the shapes a message gives it, and the fence
     the note holds for it: at the margin, on lines of its own, what Slack displayed between."""
+    if not rng.randrange(25):  # a line of tildes in it would close the fence of tildes about it
+        sent, shown = rng.choice(MARKED[:9])
+        return [(f"~~~\n```\n~~~\n{sent}\n```\n~~~", f"~~~\n```\n~~~\n{shown}\n```\n~~~")]
     shape = rng.randrange(12)
     solid = shape in (3, 8, 9, 10, 11)  # its first and last lines touch the backticks
     inside = [
@@ -559,7 +570,7 @@ def test_generated_messages_hold_code_as_displayed_and_only_the_backslashes_aske
     wrong.sort(key=lambda found: len(found[0]))
     assert not wrong, f"{len(wrong)} of {few + many}: {wrong[:6]}"
     assert few > CASES / 4 and many > CASES / 4 and written > CASES / 4 and in_code > CASES / 8
-    assert 0 < kept_as_prose < CASES / 10  # the limit is run, and is the exception
+    assert 0 < kept_as_prose < CASES / 6  # the limit is run, and is the exception
     assert digest.hexdigest() == PROSE_ON_22F498B6
 
 
@@ -923,6 +934,40 @@ def test_a_code_block_of_slacks_own_is_one_fence_to_both_readers(bench, kind):  
     assert all(token.type == "fence" for passage in passages for token in READER.parse(passage))
 
 
+# Where a code block of Slack's own cannot be one fence to both readers, it is written as
+# prose is. Each row: the message, and the note's lines between the heading and the link.
+NOT_ONE_FENCE = {
+    # A fence of tildes is open about it, and a line of tildes in it would close that fence
+    # and leave the rest of the block outside any.
+    "in a fence of tildes, a line of tildes in it": (
+        f"~~~\n```\n~~~\n{MANUAL}\n```\n{MANUAL}",
+        "~~~\n\\`\\`\\`\n\\~\\~\\~\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`\n"
+        "\\[manual\\]\\(https://fable.test/docs\\)",
+    ),
+    "the same, and under the fence of tildes a second block, which is one fence": (
+        f"~~~\n```\n~~~\n{MANUAL}\n```\n~~~\nRow 4.\n```{MANUAL}```",
+        "~~~\n\\`\\`\\`\n\\~\\~\\~\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`\n"
+        f"~~~\nRow 4.\n```\n{MANUAL}\n```",
+    ),
+    "two such blocks: both as prose": (
+        f"~~~\n```\n~~~\n{MANUAL}\n```\n```\n~~~\n{MANUAL}\n```",
+        "~~~\n\\`\\`\\`\n\\~\\~\\~\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`\n"
+        "\\`\\`\\`\n\\~\\~\\~\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`",
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", NOT_ONE_FENCE)
+def test_a_code_block_that_cannot_be_one_fence_is_written_as_prose_is(bench, kind):  # noqa: F811
+    """Asked of the finished note: each block must be a fence to the parser and one passage
+    of code to the splitter, line for line. One that is not is written again as plain
+    characters, backticks and all, and nothing it holds is markup."""
+    text, lines = NOT_ONE_FENCE[kind]
+    note, spans, links = shown_by_the_product(bench, text)
+    assert body(note) == lines
+    assert set(links) <= {SOURCE} and one_heading(note) and not faults(note, spans)
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -1247,7 +1292,8 @@ def test_the_message_as_prose_and_as_displayed_have_the_same_lines(notes, monkey
             before, after = notes("\n".join(sent for sent, _ in lines))
         except slack_text.NotText:
             continue
-        prose, shown = (text.split("\n") for text in seen.pop())
+        prose, shown = (text.split("\n") for text in seen[-1])  # the last writing's
+        seen.clear()
         assert len(prose) == len(shown) == len(after.split("\n"))
         assert (prose[:2], prose[-2:]) == (shown[:2], shown[-2:]) and "\n".join(prose) == before
     assert not seen

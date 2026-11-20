@@ -18,7 +18,7 @@ one.
 """
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import pairwise
@@ -60,10 +60,14 @@ def _shown(text: str) -> str:
     return _redact(_decode(text))
 
 
-def _literal(text: str) -> str:
-    text = _redact(_decode(text))
+def _plain(text: str) -> str:
+    """Text as Slack displayed it, written so that Markdown displays each character as it is."""
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return re.sub(r"([\\`*_\[\]()!#~])", r"\\\1", text)
+
+
+def _literal(text: str) -> str:
+    return _plain(_redact(_decode(text)))
 
 
 def _name(name: str, literal: Callable[[str], str] = _literal) -> str:
@@ -370,11 +374,35 @@ def _block_lines(text: str, start: int, token: str) -> list[str]:
 
 def _fence(lines: list[str]) -> str:
     """A code block of Slack's own as a Markdown fence that the parser and the splitter both
-    read as one block of code, wherever it stands: the opening and the closing fence on lines
-    of their own (_apart) and at the margin, longer than any run of backticks inside, and
-    between them the lines Slack displayed."""
+    read as one block of code: the opening and the closing fence on lines of their own
+    (_apart) and at the margin, longer than any run of backticks inside, and between them the
+    lines Slack displayed. Whether both do read it so is asked of the finished note
+    (_not_one_fence): a fence of tildes open about it may not let them."""
     fence = "`" * max(3, 1 + max(map(len, re.findall("`+", "\n".join(lines))), default=0))
     return "\n".join([fence, *lines, fence])
+
+
+def _not_one_fence(note: str, wrote: list[tuple[int, str]]) -> set[int]:
+    """Which of the fences written for a message's code blocks (`wrote`: each block's place
+    among them and its fence, in order) `note` does not hold as one block of code for both
+    readers: a fence to the Markdown parser and one passage of code to the splitter, on the
+    same lines. A line of only backticks is such a fence's in the note, or part of none."""
+    lines = note.split("\n")
+    read = {
+        tuple(token.map) for token in _PARSER.parse(note) if token.type == "fence" and token.map
+    }
+    read &= {
+        (span.start_line - 1, span.end_line) for span in chunk("", note) if span.kind == "code"
+    }
+    missing, at = set(), 0
+    for place, fence in wrote:
+        rows = fence.split("\n")
+        ends = (n + len(rows) for n in range(at, len(lines)) if lines[n : n + len(rows)] == rows)
+        end = next(ends, None)
+        if end is None or (end - len(rows), end) not in read:
+            missing.add(place)
+        at = end or at
+    return missing
 
 
 def _render(
@@ -383,6 +411,8 @@ def _render(
     displayed: bool = False,
     bars: bool = True,
     code: list[tuple[bool, str]] | None = None,
+    plain: Collection[int] = (),
+    wrote: list[tuple[int, str]] | None = None,
 ) -> str:
     """`text` as the note holds it: its prose by _prose and a name or a link's label by
     _literal; a code block of Slack's own as a fence (_fence); and code within a line between
@@ -392,7 +422,9 @@ def _render(
     backticks of the text bound. Without `bars`, code within a line that holds a bar is
     written by _literal, backticks and all: a table's row is cut at its bars before its code
     is read. `displayed`: the whole of it as Slack displayed it (_shown, and code within a
-    line between the backticks it was sent with), with the same lines."""
+    line between the backticks it was sent with), with the same lines. The code blocks whose
+    place among the message's is in `plain` are written as plain characters, backticks and
+    all, on the same lines; the fences of the others are given in `wrote`."""
     prose, literal = (_shown, _shown) if displayed else (_prose, _literal)
     tokens: list[tuple[int, int, str, object]] = []
     offset = 0
@@ -416,7 +448,18 @@ def _render(
         pieces.append(prose(_apart(text[offset:start], below, kind == "block", True)))
         fresh = pieces[-1].endswith("\n") if pieces[-1] else fresh
         if isinstance(what, list):
-            pieces.append(_fence(what) if fresh else "\n" + _fence(what))
+            place = sum(
+                kind == "block"
+                for _, _, kind, _ in tokens[: tokens.index((start, end, kind, what))]
+            )
+            if place in plain:
+                fence = "\n".join(["```", *what, "```"])
+                fence = fence if displayed else "\n".join(map(_plain, fence.split("\n")))
+            else:
+                fence = _fence(what)
+                if wrote is not None:
+                    wrote.append((place, fence))
+            pieces.append(fence if fresh else "\n" + fence)
         elif kind == "code" and isinstance(what, str):
             if displayed:
                 pieces.append(_shown(text[start:end]))
@@ -500,23 +543,33 @@ def note_from_message(
         if root != timestamp:
             source += "?" + urlencode({"thread_ts": root, "cid": conversation_id})
     raw, code = _lines(raw), _displayed_code(message)
-    body = _render(raw.strip(), names, code=code).strip()
-    if not body:
-        raise NotText("The selected message has no text")
-    rows = body.split("\n")
-    if any(
-        "|" in above and "-" in row and _SECOND_ROW.fullmatch(row) for above, row in pairwise(rows)
-    ):
-        body = _render(raw.strip(), names, bars=False, code=code).strip()  # it may hold a table
     who = _literal(" ".join((author or "Unknown author").split()))
     heading = f"## {who} · {when:%Y-%m-%d %H:%M:%S} UTC\n\n"
     link = f"\n\n[Source in Slack]({source})"
     # As displayed, the white space that ends the message's last line is kept: a line both
     # readers read as code holds it (_code_as_shown), and prose never did.
     ended = raw.strip() + raw[len(raw.rstrip()) :].split("\n", 1)[0]
-    shown = _render(ended, names, displayed=True, code=code).lstrip().split("\n")
-    while not shown[-1].strip():
-        del shown[-1]
-    text = _code_as_shown(heading + body + link, heading + "\n".join(shown) + link)
+    plain: Collection[int] = ()
+    for last in (False, False, True):
+        # The first code block the finished note does not hold as one fence (_not_one_fence)
+        # is written again as plain characters; should one fail then, they all are.
+        wrote: list[tuple[int, str]] = []
+        body = _render(raw.strip(), names, code=code, plain=plain, wrote=wrote).strip()
+        if not body:
+            raise NotText("The selected message has no text")
+        rows = body.split("\n")
+        if any(
+            "|" in above and "-" in row and _SECOND_ROW.fullmatch(row)
+            for above, row in pairwise(rows)
+        ):  # it may hold a table
+            body = _render(raw.strip(), names, bars=False, code=code, plain=plain).strip()
+        shown = _render(ended, names, displayed=True, code=code, plain=plain).lstrip().split("\n")
+        while not shown[-1].strip():
+            del shown[-1]
+        text = _code_as_shown(heading + body + link, heading + "\n".join(shown) + link)
+        missing = _not_one_fence(text, wrote)
+        if not missing:
+            break
+        plain = range(len(raw)) if plain or last else {min(missing)}
     title = next(line.strip() for line in text.split("\n")[1:] if line.strip())
     return Draft(title, text, source)

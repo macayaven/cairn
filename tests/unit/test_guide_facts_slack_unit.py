@@ -867,6 +867,27 @@ def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
     assert as_read(a_filed_note("Rows:\n5\tplum\t \n"))[0] == "Rows:\n5\tplum"
 
 
+def test_connect_a_block_that_cannot_be_one_fence_is_plain_characters():
+    """connect.md: "A block the note could not hold as one fence, because a fence of tildes
+    stands about it and a line of tildes in it, is written as plain characters, backticks and
+    all.\""""
+    says(
+        *CONNECT,
+        "A block the note could not hold as one fence, because a fence of tildes stands about it"
+        " and a line of tildes in it, is written as plain characters, backticks and all.",
+    )
+    manual = "[manual](https://fable.test/docs)"
+    plain = "\\[manual\\]\\(https://fable.test/docs\\)"
+    held, headings, _ = as_read(a_filed_note(f"~~~\n```\n~~~\n{manual}\n```\n~~~\nRow 4."))
+    assert (held, headings) == (f"~~~\n\\`\\`\\`\n\\~\\~\\~\n{plain}\n\\`\\`\\`\n~~~\nRow 4.", [0])
+    # Without the fence of tildes about it, it is one fence, its line of tildes in it.
+    assert as_read(a_filed_note(f"```\n~~~\n{manual}\n```\nRow 4.")) == (
+        f"```\n~~~\n{manual}\n```\nRow 4.",
+        [0],
+        [("fence", f"~~~\n{manual}\n")],
+    )
+
+
 def test_connect_code_within_a_line_stays_between_its_backticks():
     """connect.md: "Code within a line stays between its backticks, and a backtick that Slack
     paired with no other gets a backslash; in a message that could hold a table, code within a

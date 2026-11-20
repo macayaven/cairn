@@ -370,3 +370,19 @@ def test_a_narrowed_key_and_a_read_only_key_are_told_when_too(env):
         )
         assert hit["written_at"] == claim["written_at"] == when
         assert [p["written_at"] for p in found["passages"]] == [when]
+
+
+@pytest.mark.parametrize("query", ["_", "___", "___ --- ???"])
+def test_underscore_only_recall_queries_report_no_words_searched(env, query):
+    call(env, "note", project="ops", text="# Deploy\n\nThe deploy runs at noon.\n")
+    mcp_answer = call(env, "recall", query=query)
+    assert mcp_answer["hits"] == []
+    assert mcp_answer["searched"]["words_searched"] == 0
+    assert mcp_answer["searched"]["said"] == NO_WORDS
+
+    rest = env.client.get("/api/search", params={"q": query}, headers=env.h)
+    assert rest.status_code == 200
+    rest_answer = rest.json()
+    assert rest_answer["hits"] == []
+    assert rest_answer["searched"]["words_searched"] == 0
+    assert rest_answer["searched"]["said"] == NO_WORDS

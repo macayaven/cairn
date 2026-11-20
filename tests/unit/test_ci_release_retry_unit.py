@@ -276,7 +276,7 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
     assert (
         "A re-run of `release` lists the repository's releases, drafts included (a listing that"
         " fails stops the job), and takes the one for its tag as this run's when it has this"
-        " tag's pre-release flag and every file it holds is byte for byte one this run"
+        " tag's pre-release flag and each file it holds is byte for byte one this run"
         " attested: a published one that holds them all is left as it is, and a draft, which"
         " gh leaves when its runner is lost while it uploads, gets the files it lacks and is"
         " published; either way `aliases` runs. Any other release for the tag stops the job."

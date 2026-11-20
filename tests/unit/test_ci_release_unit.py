@@ -538,18 +538,30 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     expected = {
         f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow}",
+        f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow} --source-ref"
+        " refs/heads/main",
     }
     ci = README[README.index("## CI/CD") : README.index("## Planned")]
     update = DEPLOY_GUIDE[DEPLOY_GUIDE.index("## Update") :]
     update = update[: update.index("\n## ")]
     proof = (
-        "A pass proves that these bytes are the ones this repository's `ci-cd.yml` built and"
-        " attested in GitHub Actions, unchanged since; it does not prove that the code or its"
-        " dependencies are free of flaws"
+        "A pass for the wheel proves that these bytes are the ones this repository's"
+        " `ci-cd.yml` built and attested in the tag's run, unchanged since. A pass for the"
+        " image proves less by itself, since the tag's run, which promotes the image and does"
+        " not build it, attests its digest too; with `--source-ref refs/heads/main` a pass"
+        " proves that `main`'s run of `ci-cd.yml` published and attested that digest, the run"
+        " that built it, as the tag's run checked before it promoted it. Neither proves that"
+        " the code or its dependencies are free of flaws"
     )
     for guide in (ci, update):
         assert set(VERIFY.findall(guide)) == expected
         assert proof in flat(guide)
+        assert "A pass proves that these bytes are the ones" not in flat(guide)
+    # The flag the guides give is the one the tag's run checks main's attestation with.
+    tag_check = next(
+        s for s in JOBS["image_build"]["steps"] if s.get("name", "").startswith("Check that main")
+    )
+    assert "--source-ref refs/heads/main" in tag_check["run"]
     # The image the guide names is the one `publish` tags and `attest` attests by digest.
     meta = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "meta")
     assert meta["with"]["images"] == "ghcr.io/${{ github.repository }}"

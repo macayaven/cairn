@@ -369,21 +369,8 @@ def _small_pages() -> dict[str, str]:
     }
 
 
-# The bound of each small page's ratio to 0856d6b (see the test's docstring).
-BOUND = {"fixtures": 2.5, "short_passages": 1.3}
-
-
 @pytest.mark.parametrize("name", sorted(_small_pages()))
 def test_a_small_page_lints_about_as_fast_as_before_p1(name):
-    """The reference is 0856d6b's facts and lint (tests/unit/reference), timed in this process
-    beside the current modules on the same page. The short_passages page keeps its bound of
-    1.3. The fixtures page's bound moved from 1.3 to 2.5, once and on purpose: since the
-    second review, inline code and open fences are read by the Markdown parser, which costs
-    one reading of each text a lint meets that holds a backtick (the body, and each passage
-    once); the fixture page holds backticks in most of its passages. Measured alone, three
-    times each, its ratio was 0.94, 0.93 and 0.93 at the release head fe47cfd6, before the
-    parser, and 1.91, 1.89 and 1.87 with it; 2.5 is about 1.3 times that, for a loaded
-    machine. The short_passages page, which holds no backtick, measured 0.82 with it."""
     old_facts, old_lint = _reference("facts_before_p1"), _reference("lint_before_p1")
     old_lint.Fact, old_lint.extract_facts, old_lint.normalize = (
         old_facts.Fact,
@@ -414,4 +401,4 @@ def test_a_small_page_lints_about_as_fast_as_before_p1(name):
     finally:
         gc.enable()
     ratio = times["now"] / times["before"]
-    assert ratio <= BOUND[name], f"{ratio:.2f}x the time of 0856d6b ({times})"
+    assert ratio <= 1.3, f"{ratio:.2f}x the time of 0856d6b ({times})"

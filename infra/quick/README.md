@@ -112,6 +112,44 @@ For secret-only changes, reload the settings in the Session Manager shell.
 sudo systemctl restart cairn-quick.service
 ```
 
+### AWS cold copy
+
+The VM takes no `scp`, so a cold copy leaves it through the bucket, under `cold/`, a prefix of
+its own. Litestream reads and writes only under `cairn/`. The VM's role can add an object under
+`cold/` and can neither read nor delete one there. The bucket's lifecycle rule removes only what
+was deleted or overwritten, so a cold copy stays until you delete it.
+
+In the Session Manager session, open a root shell (`sudo -i`), stop the stack, pack the data
+volume and send it:
+
+```sh
+cd /opt/cairn/deploy && . /opt/cairn/quick.env
+docker compose stop
+name="cairn-cold-$(date -u +%Y%m%dT%H%M%SZ).tgz"
+tar -czf "/root/$name" -C "$(docker volume inspect cairn_cairn-data -f '{{.Mountpoint}}')" --exclude=.cairn.db-litestream .
+aws s3 cp "/root/$name" "${LITESTREAM_REPLICA_URL%/cairn}/cold/$name" --region "$AWS_REGION"
+ls -l "/root/$name" && sha256sum "/root/$name"
+```
+
+On your machine, in the AWS stack directory, fetch the copy and compare its size and digest
+with the two lines the VM printed, substituting the name it printed:
+
+```sh
+aws s3 cp "s3://$(tofu output -raw backup_bucket)/cold/cairn-cold-20261120T101500Z.tgz" . --region "$(tofu output -raw region)"
+ls -l cairn-cold-20261120T101500Z.tgz && shasum -a 256 cairn-cold-20261120T101500Z.tgz
+```
+
+When both are the same, start the stack again in the root shell and remove the VM's own copy:
+
+```sh
+systemctl restart cairn-quick.service
+rm /root/cairn-cold-20261120T101500Z.tgz
+```
+
+The archive holds the data volume as it was while nothing ran: the database with its
+write-ahead log, and any file you wrote beside it. A cold copy you delete from your machine
+(`aws s3 rm`) stays restorable for 7 days, like anything deleted in the bucket.
+
 ### AWS teardown
 
 Save the bucket and region before destroying the stack. The destroy operation refuses to delete
@@ -126,7 +164,7 @@ tofu destroy
 ```
 
 To remove a retained bucket too, record that the backups may go and retry the destroy. OpenTofu
-then empties the bucket itself, every version in it. This deletes the backups.
+then empties the bucket itself, every version in it. This deletes the backups and the cold copies.
 
 ```sh
 tofu apply -target=aws_s3_bucket.replica -var delete_backups=true
@@ -339,7 +377,8 @@ This example uses Google sign-in at `cairn.example.net` and admits accounts from
 ## Upgrade
 
 Save a [cold copy of the database](../../docs/guides/run.md#back-it-up) from the Compose
-`cairn` service's `/data` volume off the VM and note the running image, then set `image` in
+`cairn` service's `/data` volume off the VM (on AWS, through the bucket: [AWS cold copy](#aws-cold-copy))
+and note the running image, then set `image` in
 `terraform.tfvars` to the next release or check out its tag in this clone and run `tofu apply`
 (run `tofu init` first if the lock changed).
 OpenTofu replaces the VM when the rendered boot configuration changes, keeping the address and

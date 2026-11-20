@@ -209,6 +209,14 @@ resource "aws_iam_role_policy" "app" {
         Resource = "${aws_s3_bucket.replica.arn}/cairn/*"
       },
       {
+        # A cold copy is added under a prefix of its own, where the VM can neither read
+        # nor delete: the guide's "AWS cold copy".
+        Sid      = "ColdCopies"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${aws_s3_bucket.replica.arn}/cold/*"
+      },
+      {
         Sid      = "Settings"
         Effect   = "Allow"
         Action   = ["secretsmanager:ListSecretVersionIds", "secretsmanager:GetSecretValue"]

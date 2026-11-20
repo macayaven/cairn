@@ -1,9 +1,13 @@
 """Check the AWS quick deployment against what a first apply to a real account meets."""
 
+import io
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
+import tarfile
 
 import pytest
 import yaml
@@ -265,3 +269,149 @@ def test_the_recovery_guide_says_where_a_failed_read_or_start_explains_itself():
         assert f"`cairn-quick: {label}:`" in recovery, label
     assert 'print(f"cairn-quick: {label}: {line}")' in script
     assert "They never hold a setting's value" in recovery
+
+
+def test_the_vm_may_add_a_cold_copy_and_nothing_else_under_its_prefix(tmp_path):
+    """A cold copy leaves the VM through the bucket, under `cold/`. The role gets the one
+    action that takes: it can add an object there, and cannot read, list by version or
+    delete one. Litestream's statement stays on `cairn/`, so neither reaches the other."""
+    statements = {statement["Sid"]: statement for statement in role_policy(tmp_path)}
+    bucket = "arn:aws:s3:::example-replica"
+    assert statements["ColdCopies"] == {
+        "Sid": "ColdCopies",
+        "Effect": "Allow",
+        "Action": ["s3:PutObject"],
+        "Resource": f"{bucket}/cold/*",
+    }
+    assert statements["ReplicaObjects"]["Resource"] == f"{bucket}/cairn/*"
+    reaching_cold = [
+        sid
+        for sid, statement in statements.items()
+        if any(
+            resource in (f"{bucket}/cold/*", f"{bucket}/*", "*")
+            for resource in [statement["Resource"]]
+        )
+    ]
+    assert reaching_cold == ["ColdCopies"]
+
+
+STANDINS = {
+    "docker": r"""
+if args == ["compose", "stop"]:
+    (state / "stopped").touch()
+elif args[:2] == ["volume", "inspect"]:
+    assert args[2:] == ["cairn_cairn-data", "-f", "{{.Mountpoint}}"]
+    print(state / "volume")
+else:
+    sys.exit(2)
+""",
+    "aws": r"""
+assert args[:2] == ["s3", "cp"] and args[4:] == ["--region", "us-east-1"], args
+source, target = args[2:4]
+if target.startswith("s3://"):  # from the VM, with its role: only under cold/
+    assert target.startswith("s3://example-replica/cold/"), target
+    target = state / "bucket" / target.removeprefix("s3://example-replica/")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(Path(source).read_bytes())
+else:  # to a person's machine, with their own credentials
+    assert source.startswith("s3://example-replica/cold/"), source
+    found = state / "bucket" / source.removeprefix("s3://example-replica/")
+    (Path(target) / found.name).write_bytes(found.read_bytes())
+""",
+    "tofu": r"""
+assert args[:2] == ["output", "-raw"]
+sys.stdout.write({"backup_bucket": "example-replica", "region": "us-east-1"}[args[2]])
+""",
+    "systemctl": r"""
+assert args == ["restart", "cairn-quick.service"]
+assert not (state / "stopped").exists() or (state / "bucket" / "cold").is_dir()
+(state / "restarted").touch()
+""",
+    "sha256sum": r"""
+import hashlib
+for name in args:
+    print(hashlib.sha256(Path(name).read_bytes()).hexdigest(), "", name)
+""",
+}
+STANDINS["shasum"] = STANDINS["sha256sum"].replace("for name in args:", "for name in args[2:]:")
+
+
+def test_the_cold_copy_commands_put_the_stopped_database_under_cold_and_start_again(tmp_path):
+    """The guide's own commands for a cold copy on AWS, run as written against stand-ins:
+    the stack is stopped before the volume is packed, the archive goes under `cold/` and
+    nowhere else, what a person fetches has the size and digest the VM printed, and the
+    stack is started after."""
+    section = readme_section("AWS cold copy", "###")
+    on_vm, on_laptop, back_on_vm = re.findall(r"```sh\n(.*?)```", section, re.S)
+    state = tmp_path / "state"
+    (state / "volume" / ".cairn.db-litestream").mkdir(parents=True)
+    (state / "volume" / ".cairn.db-litestream" / "position").write_text("of the old replica")
+    (state / "volume" / "cairn.db").write_bytes(b"synthetic database\n" * 64)
+    (state / "volume" / "cairn.db-wal").write_bytes(b"synthetic log\n")
+    (state / "bucket" / "cairn" / "ltx" / "0").mkdir(parents=True)
+    (state / "bucket" / "cairn" / "ltx" / "0" / "0001.ltx").write_bytes(b"replica")
+    for folder in ("bin", "opt/deploy", "root", "laptop"):
+        (tmp_path / folder).mkdir(parents=True)
+    (tmp_path / "opt" / "quick.env").write_text(
+        "LITESTREAM_REPLICA_URL=s3://example-replica/cairn\nAWS_REGION=us-east-1\n"
+    )
+    for name, body in STANDINS.items():
+        stub = tmp_path / "bin" / name
+        stub.write_text(
+            f"#!{sys.executable}\nimport os, sys\nfrom pathlib import Path\n"
+            f"args = sys.argv[1:]\nstate = Path({str(state)!r})\n"
+            f"with (state / 'calls').open('a') as log:\n"
+            f"    log.write({name!r} + ' ' + ' '.join(args) + '\\n')\n"
+            f"{body}"
+        )
+        stub.chmod(0o755)
+    env = {"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin", "HOME": str(tmp_path)}
+
+    def run(commands, cwd):
+        script = commands.replace("/opt/cairn", str(tmp_path / "opt")).replace(
+            "/root", str(tmp_path / "root")
+        )
+        done = subprocess.run(
+            ["/bin/bash", "-euc", script],
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+        assert done.returncode == 0, done.stdout
+        return done.stdout
+
+    said = run(on_vm, tmp_path)
+    (archive,) = (state / "bucket" / "cold").iterdir()
+    assert re.fullmatch(r"cairn-cold-\d{8}T\d{6}Z\.tgz", archive.name)
+    digest, size = re.search(r"^([0-9a-f]{64}) ", said, re.M)[1], archive.stat().st_size
+    assert f" {size} " in said
+    with tarfile.open(fileobj=io.BytesIO(archive.read_bytes())) as packed:
+        names = {os.path.normpath(name) for name in packed.getnames()}
+    assert {"cairn.db", "cairn.db-wal"} <= names
+    assert not any(".cairn.db-litestream" in name for name in names)
+    # Litestream's prefix is as it was, and nothing was started yet.
+    assert [p.name for p in (state / "bucket" / "cairn" / "ltx" / "0").iterdir()] == ["0001.ltx"]
+    assert not (state / "restarted").exists()
+    calls = (state / "calls").read_text().splitlines()
+    assert calls[0] == "docker compose stop" and calls[1].startswith("docker volume inspect")
+
+    placeholder = re.search(r"cairn-cold-\d{8}T\d{6}Z\.tgz", on_laptop)[0]
+    fetched = run(on_laptop.replace(placeholder, archive.name), tmp_path / "laptop")
+    assert digest in fetched and f" {size} " in fetched
+
+    run(back_on_vm.replace(placeholder, archive.name), tmp_path)
+    assert (state / "restarted").exists()
+    assert not list((tmp_path / "root").iterdir())
+
+
+def test_the_upgrade_guide_sends_aws_to_its_cold_copy_and_keeps_the_other_way():
+    upgrade = readme_section("Upgrade")
+    assert "[cold copy of the database](../../docs/guides/run.md#back-it-up)" in upgrade
+    assert "[AWS cold copy](#aws-cold-copy)" in upgrade
+    cold = " ".join(readme_section("AWS cold copy", "###").split())
+    # How the copies are kept apart from Litestream and from the rule that expires versions.
+    assert "Litestream reads and writes only under `cairn/`" in cold
+    assert "removes only what was deleted or overwritten" in cold

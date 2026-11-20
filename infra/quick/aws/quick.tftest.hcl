@@ -134,23 +134,25 @@ run "identity_is_scoped_to_the_replica_and_settings" {
   assert {
     condition = (
       toset([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Sid]) ==
-      toset(["ReplicaBucket", "ReplicaObjects", "Settings"]) &&
+      toset(["ReplicaBucket", "ReplicaObjects", "ColdCopies", "Settings"]) &&
       alltrue([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Effect == "Allow"]) &&
       one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Resource if statement.Sid == "ReplicaBucket"]) == aws_s3_bucket.replica.arn &&
       one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Resource if statement.Sid == "ReplicaObjects"]) == "${aws_s3_bucket.replica.arn}/cairn/*" &&
+      one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Resource if statement.Sid == "ColdCopies"]) == "${aws_s3_bucket.replica.arn}/cold/*" &&
       one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Resource if statement.Sid == "Settings"]) == aws_secretsmanager_secret.settings.arn
     )
-    error_message = "The workload policy must be scoped to the one replica bucket, its cairn prefix and the one secret."
+    error_message = "The workload policy must be scoped to the one replica bucket, its cairn and cold prefixes and the one secret."
   }
 
   assert {
     condition = (
       toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ReplicaBucket"])) == toset(["s3:GetBucketLocation", "s3:ListBucket"]) &&
       toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ReplicaObjects"])) == toset(["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]) &&
+      toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ColdCopies"])) == toset(["s3:PutObject"]) &&
       toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "Settings"])) == toset(["secretsmanager:ListSecretVersionIds", "secretsmanager:GetSecretValue"]) &&
       aws_iam_role_policy_attachment.ssm.policy_arn == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
     )
-    error_message = "The VM gets the Litestream, settings-read and SSM permissions it needs."
+    error_message = "The VM gets the Litestream, cold-copy, settings-read and SSM permissions it needs."
   }
 
   assert {

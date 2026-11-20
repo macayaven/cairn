@@ -1794,9 +1794,9 @@ jobs:
           # `params["name"] = opts.Name`, `if opts.Body != "" {`, `params["body"] = opts.Body`;
           # 193 to 198: `b, err := cmdutil.ReadFile(notesFile, opts.IO.In)`,
           # `opts.Body = string(b)`), so this step names the tag as the title itself. The title
-          # must be the tag, exactly, or missing or empty: GitHub shows the tag for a release
-          # with no title, so a reader sees what this step set. It is compared in the listing's
-          # own expression and never printed. The notes are compared byte for byte, and nothing
+          # must be the tag, exactly, or missing or empty: an empty title is not an edited
+          # one. It is compared in the listing's own expression and never printed. The notes
+          # are compared byte for byte, and nothing
           # is normalised: the listing gives them as base64, which the step decodes into a file
           # and compares with the file it wrote, so no reading here drops a line end or changes
           # a byte (a command substitution would drop the line ends at the end).

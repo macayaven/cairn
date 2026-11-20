@@ -11,7 +11,7 @@ Now each look reads the notes from the listing it already makes, as base64, and 
 compares them, as files, with the text it wrote: the version's notes, an empty line and the
 mark. Nothing is normalised: a line end written CR LF, a space or a line end more or less at
 the end, are differences. The title is read in the same listing: it must be the tag, exactly,
-or missing, null or empty, since GitHub shows the tag for a release with no title. The step
+or missing, null or empty, since an empty title is not an edited one. The step
 compares before it publishes a draft, and again on what the listing shows after the
 publication. A release that differs stops the job in one line that says whether it is a draft
 or public and what differs, and the job writes nothing more.
@@ -24,6 +24,7 @@ import json
 
 import pytest
 from test_ci_release_retry_unit import (
+    CREATE,
     MARK,
     README,
     RUN_ID,
@@ -38,7 +39,7 @@ from test_ci_release_retry_unit import (
     the_error,
     writes,
 )
-from test_ci_workflow_unit import TAG, jobs_that_run
+from test_ci_workflow_unit import RAW_WORKFLOW, TAG, jobs_that_run
 
 WROTE = f"the notes\n\n{MARK}\n"  # as test_ci_release_retry_unit's files give it: notes.md, then
 EDITED = f"other notes\n\n{MARK}\n"  # the mark; and a person's text around the same mark
@@ -258,9 +259,10 @@ def titled(release: dict, name) -> dict:
 def test_a_release_with_no_title_counts_as_titled_with_the_tag(
     tmp_path, tag, candidate, draft, name
 ):
-    """GitHub shows the tag for a release with no title, so a reader sees what the step would
-    have set: a reply with no `name`, with null or with an empty one is finished like one
-    titled with the tag, and its title is left as it is."""
+    """An empty title is not an edited one: a reply with no `name`, with null or with an empty
+    one is finished like one titled with the tag, and its title is left as it is. (The
+    coordinator's measurement of 2026-11-20: a title set to empty through GitHub's API reads
+    back as the empty string.)"""
     existing = titled(made_earlier(tag, candidate == "true", draft=draft), name)
     done, calls = run(tmp_path, tag, candidate, existing, attached(tag))
     assert done.returncode == 0, done.stdout + done.stderr
@@ -362,9 +364,13 @@ def test_the_readme_says_what_is_compared_and_the_row_says_what_the_tests_above_
         " before it is published and a public one as it is: nothing is normalised, so a draft"
         " saved again in GitHub's web form can count as changed, since the form may rewrite its"
         " line ends. The title is compared as well: missing or empty it counts as the tag, since"
-        " GitHub shows the tag for a release with no title, and any other title that is not the"
-        " tag stops the job, before and after the publication (the table has the line for both)."
+        " an empty title is not an edited one, and any other title that is not the tag stops the"
+        " job, before and after the publication (the table has the line for both)."
     ) in readme
+    # The rule's reason is its own: what GitHub's pages show for a release with no title is
+    # not documented anywhere this repository points at, so no sentence leans on it.
+    for said in (readme, " ".join(CREATE["run"].split()), " ".join(RAW_WORKFLOW.split())):
+        assert "shows the tag for a release" not in said
     means, next_step = cells(
         "the GitHub release for …, …, carries run …'s mark and differs from what that run wrote"
         " in its …"

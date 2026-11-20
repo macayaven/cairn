@@ -47,6 +47,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -147,24 +148,29 @@ class Scheduler:
 
 class Script(Scheduler):
     """A schedule written as words: each (point, option) pair is taken at the first choice point
-    after the previous one whose label contains POINT and that offers an option containing
-    OPTION; every other point takes the default. For the tests that replay a found trace."""
+    after the previous one whose label POINT matches (a regular expression, searched) and
+    that offers an option containing
+    OPTION; every other point takes the default. A third element N takes the N-th such point
+    (from 1). For the tests that replay a found trace."""
 
-    def __init__(self, steps: list[tuple[str, str]]):
+    def __init__(self, steps: list[tuple]):
         super().__init__()
-        self.steps = list(steps)
+        self.steps = [(*s, 1) if len(s) == 2 else tuple(s) for s in steps]
 
     def choose(self, label: str, options: list[str]) -> int:
         index = len(self.points)
         self.points.append((label, list(options)))
         pick = 0
         if self.steps:
-            point, option = self.steps[0]
+            point, option, nth = self.steps[0]
             hits = [i for i, o in enumerate(options) if option in o]
-            if point in label and hits:
-                pick = hits[0]
-                self.steps.pop(0)
-                self.plan[index] = pick
+            if re.search(point, label) and hits:
+                if nth > 1:
+                    self.steps[0] = (point, option, nth - 1)
+                else:
+                    pick = hits[0]
+                    self.steps.pop(0)
+                    self.plan[index] = pick
         self.taken.append(pick)
         return pick
 

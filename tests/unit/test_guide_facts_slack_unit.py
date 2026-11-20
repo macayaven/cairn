@@ -804,6 +804,30 @@ def test_connect_a_mention_of_anyone_but_the_author_is_their_member_id(tmp_path)
         bench.store.close()
 
 
+def test_connect_a_line_read_as_code_in_its_passage_alone_shows_what_writes_it_as_text():
+    """connect.md: "A page shows each passage of the note alone, and a line the note reads as
+    text can read as code in its passage alone: ...\" A limit (the third tester, finding 5):
+    the note cannot write such a line both ways, and the note whole is what the readers agree
+    on."""
+    says(
+        *CONNECT,
+        "A page shows each passage of the note alone, and a line the note reads as text can read "
+        "as code in its passage alone, a line indented with a tab under a quotation for instance: "
+        "there it shows the backslashes and entities that write it as text, and not the blanks "
+        "that end it.",
+    )
+    for sent, code in (
+        ("&gt; Readings\n\t[x] &amp; y", "\\[x\\] &amp; y\n"),
+        ("&gt; Readings\n\tnorth\tblue\t", "north\tblue\n"),
+    ):
+        note = a_filed_note(sent)
+        assert as_read(note)[2] == []  # text to the note whole
+        alone = [span.text for span in chunk("", note)][2]
+        assert [(t.type, t.content) for t in MarkdownIt("commonmark").parse(alone)] == [
+            ("code_block", code)
+        ]
+
+
 def a_filed_note(text: str) -> str:
     return note_from_message(
         {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text},

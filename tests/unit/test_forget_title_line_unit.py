@@ -18,8 +18,8 @@ loop's. Made-up notes."""
 import sys
 
 import pytest
-from test_forget_cost_unit import RENDERS_OVER, alternating
-from test_rt1_harness import Run, expected
+from test_forget_cost_unit import RENDERS_OVER, alternating, older
+from test_rt1_harness import Note, Plan, Run, expected
 
 from cairn.spans import CLOSERS_MAX
 
@@ -54,5 +54,39 @@ def test_claims_leave_together_while_a_new_title_moves_nothing_below_it(name):
             assert (renders, [kind for _, kind, _ in run.faults]) == (plain, ["work-renders"])
         else:
             assert (renders, run.faults) == (2, [])
+    finally:
+        run.close()
+
+
+def headed(count: int, at: int, heading: str) -> Plan:
+    """`alternating` with no aside, and the sibling at `at` under `## heading` in its own
+    note: the claim whose heading says a spelling is one of those that leave."""
+    inner = older()
+    for n in range(count):
+        text = f"    - ~~~\n      sample {n}"
+        if n == at:
+            text = f"## {heading}\n\n{text}"
+        inner = [Note(f"s{n}", text, ("Ops", "OPS")[n % 2], inner=inner)]
+    return Plan([*inner, Note("sep", "Between.", "Ops"), Note("tail", "        End.", "Ops")], [])
+
+
+@pytest.mark.parametrize("heading", ["Ops", "OPS"])
+def test_a_heading_counts_while_its_claim_is_on_the_page(heading):
+    """The heading that says a spelling is over the twelfth sibling from the margin. Until
+    that sibling leaves, every new title moves it (into the run or under its heading after
+    the tail), and each sibling nearer the tail leaves in a render of its own, as in the
+    plain loop; from the step at which it leaves no claim left has such a heading, so the
+    rest leave with it. Thirteen renders, against the plain loop's twenty-four or
+    twenty-five (under `## Ops`, fourteen were the headings counted over the whole render
+    and not over the claims left at each step)."""
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 20_000))
+    run = Run(headed(COUNT, 12, heading), check_restore=True)
+    try:
+        assert set(run.status.values()) == {"saved"}, run.status
+        plain = sum(len(e.titles) for e in expected(run.store, run.pid, run.ids["sep"]).values())
+        run.forget(0, run.ids["sep"])
+        renders = run.stats[-1]["renders"]
+        assert (renders, run.faults) == (COUNT - 11, [])
+        assert renders <= plain + RENDERS_OVER and plain >= COUNT
     finally:
         run.close()

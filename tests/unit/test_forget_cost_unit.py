@@ -169,10 +169,11 @@ def test_the_worst_case_renders_once_a_claim_as_the_plain_loop_does(count):
     written, then left out) and the plain loop renders once for each sibling. The forget
     renders as often, and no more. The plain loop is run beside it on a hundred.
 
-    Measured once on one machine (the forget call, the middle of three runs on the page
-    as filed; counts are asserted, never time): a hundred notes, 101 renders, 1,079 bodies
-    of parser input, 3.0 s; three hundred, 301, 2,948 bodies, 18 s; a thousand, 1,001,
-    9,519 bodies, 100 s (98 to 107 s), and nine minutes to file the page."""
+    Measured on one machine shared with other work (the forget call, the middle of three
+    runs on the page as filed; counts are asserted, never time): a hundred notes, 101
+    renders, 1,079 bodies of parser input, 0.9 s; three hundred, 301, 2,948 bodies, 6.3 s;
+    a thousand, 1,001, 9,519 bodies, 74 s (69 to 85 s), and nine minutes to file the page.
+    The release before this rule did the same renders and parsing on this page."""
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20_000))
     run = Run(alternating(count, ["Ops"]), check_restore=False)
     try:

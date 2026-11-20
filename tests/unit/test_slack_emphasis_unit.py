@@ -84,3 +84,25 @@ def test_emphasis_slack_shows_is_written_as_emphasis(text, body, shown, styles):
     draft = filed(text)
     assert body_of(draft) == body
     assert page_reads(body) == (shown, styles)
+
+
+def test_a_reference_that_shows_nothing_is_as_if_it_were_not_there():
+    """`<x|>` shows nothing, so the marks about it touch: `*a*<x|>*b*` was written
+    `**a****b**`, whose asterisks a page shows (found trying the fix)."""
+    body = body_of(filed("*a*<x|>*b* and 2 <x|> * 3"))
+    assert body == "**ab** and 2  * 3"
+    assert page_reads(body) == ("ab and 2  * 3", ["strong_open"])
+
+
+@pytest.mark.parametrize(
+    ("text", "body"),
+    [
+        ("*see <https://fable.test/x|docs>*", "\\*see [docs](https://fable.test/x)\\*"),
+        ("_from <@U0BIRCH01>_", "\\_from @U0BIRCH01\\_"),
+        ("*run `make` now*", "\\*run `make` now\\*"),
+    ],
+)
+def test_a_mark_whose_partner_is_past_a_link_a_mention_or_code_is_typed(text, body):
+    """The limit: marks are paired between Slack's links, mentions and code, not across
+    them, so these show as typed, where Slack shows the span styled (the guide says so)."""
+    assert body_of(filed(text)) == body

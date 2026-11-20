@@ -684,10 +684,18 @@ def _render(
     ticks = "`" * (1 + max(map(len, re.findall("`+", "\n".join(held))), default=0))
     pieces: list[str] = []
     # fresh: nothing is written on the line; clear: only what may stand before a fence (_prose)
-    offset, below, fresh, clear, place = 0, False, True, True, -1
+    # gap: the text before a reference that shows nothing, which is as if it were not there
+    offset, below, fresh, clear, place, gap = 0, False, True, True, -1, ""
     for start, end, kind, what in tokens[:-1]:
-        pieces.append(prose(_apart(text[offset:start], below, kind == "block", True, fresh)))
-        fresh = pieces[-1].endswith("\n") if pieces[-1] else fresh
+        reference = None
+        if not kind and text[start] != "`":
+            reference = _reference(text[start + 1 : end - 1], names, literal, title)
+            if not reference:
+                gap, offset = gap + text[offset:start], end
+                continue
+        before = gap + text[offset:start]
+        pieces.append(prose(_apart(before, below, kind == "block", True, fresh)))
+        gap, fresh = "", pieces[-1].endswith("\n") if pieces[-1] else fresh
         clear = _clear(clear, pieces[-1])
         if isinstance(what, list):
             place += 1
@@ -711,31 +719,39 @@ def _render(
             else:  # a space each side where Markdown would take one, or read a longer run
                 pad = " " if what.strip(" ") and (what[0] in "` " or what[-1] in "` ") else ""
                 pieces.append(f"{ticks}{pad}{what}{pad}{ticks}")
-        elif text[start] == "`":
+        elif reference is not None:
+            pieces.append(reference)
+        else:  # two backticks with no code between them
             pieces.append(prose(text[start:end]))
-        else:
-            target, separator, label = text[start + 1 : end - 1].partition("|")
-            if target.startswith("@"):
-                pieces.append("@" + _name(names.get(target[1:], target[1:]), literal))
-            elif target.startswith("#"):
-                pieces.append("#" + _name(names.get(target[1:], label or target[1:]), literal))
-            elif (special := _special(target, label)) is not None:
-                pieces.append(_name(special, literal))
-            else:
-                url = _link_target(target)
-                shown = literal(label if separator else target)
-                if url and title:
-                    pieces.append(shown)
-                elif url:
-                    pieces.append(f"[{shown}]({url})")
-                elif separator:
-                    pieces.append(shown)
-                else:
-                    pieces.append(_plain("[link omitted]") if title else "[link omitted]")
         offset, below, fresh = end, kind == "block", fresh and not pieces[-1]
         clear = _clear(clear, pieces[-1])
-    pieces.append(prose(_apart(text[offset:], below, False, False, fresh)))
+    pieces.append(prose(_apart(gap + text[offset:], below, False, False, fresh)))
     return "".join(pieces)
+
+
+def _reference(
+    inner: str, names: Mapping[str, str], literal: Callable[[str], str], title: bool
+) -> str:
+    """What the note writes for a reference, `<inner>` (_render): a mention as "@" and a
+    name, a conversation as "#" and its name, one of Slack's special forms as Slack displays
+    it (_special), a link as `[its words](its address)` (its words alone in a title), a
+    reference to no address as its words, and else "[link omitted]"."""
+    target, separator, label = inner.partition("|")
+    if target.startswith("@"):
+        return "@" + _name(names.get(target[1:], target[1:]), literal)
+    if target.startswith("#"):
+        return "#" + _name(names.get(target[1:], label or target[1:]), literal)
+    if (special := _special(target, label)) is not None:
+        return _name(special, literal)
+    url = _link_target(target)
+    shown = literal(label if separator else target)
+    if url and title:
+        return shown
+    if url:
+        return f"[{shown}]({url})"
+    if separator:
+        return shown
+    return _plain("[link omitted]") if title else "[link omitted]"
 
 
 def _clear(clear: bool, written: str) -> bool:

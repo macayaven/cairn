@@ -1095,17 +1095,19 @@ def test_connect_emphasis_is_written_only_where_slack_shows_it():
         "Bold, italic and struck text are Slack's only where its marks make them: a `*`, `_` or"
         " `~` with neither a blank nor a mark after it and neither a letter nor a digit before"
         " it, up to the next same mark on its line with no blank before it and neither a letter"
-        " nor a digit after it; Slack's page does not say where they open and close, and this is"
-        f" {PRODUCT.name}'s reading of it. There bold is written `**bold**` and italic `_italic_`;"
-        " every other `*` and `_` is the character typed, with a backslash before it unless it"
-        " is a `*` between two blanks with more than blanks before it on its line, or a `_`"
-        " between two letters or digits, so `2 * 3 * 4` and `snake_case` are written as typed.",
+        " nor a digit after it, and no link, mention or code between them; Slack's page does not"
+        f" say where they open and close, and this is {PRODUCT.name}'s reading of it."
+        " There bold is written `**bold**` and italic `_italic_`; every other `*` and `_` is"
+        " the character typed, with a backslash before it unless it is a `*` between two"
+        " blanks with more than blanks before it on its line, or a `_` between two letters or"
+        " digits, so `2 * 3 * 4` and `snake_case` are written as typed.",
     )
     for sent, written in (
         ("*bold* _italic_ ~struck~", "**bold** _italic_ ~struck~"),
         ("2 * 3 * 4 and snake_case", "2 * 3 * 4 and snake_case"),
         ("* item a*b*c *open _x", "\\* item a\\*b\\*c \\*open \\_x"),
         ("*a\nb* *c *d*", "\\*a\nb\\* **c \\*d**"),
+        ("*see <https://fable.test/x|docs>*", "\\*see [docs](https://fable.test/x)\\*"),
     ):
         assert as_read(a_filed_note(sent))[0] == written, sent
 

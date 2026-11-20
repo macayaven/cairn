@@ -188,12 +188,14 @@ def test_the_bucket_keeps_what_is_deleted_or_overwritten_for_seven_days():
     assert expiration.split() == ["expired_object_delete_marker", "=", "true"]
     unfinished = re.search(r"abort_incomplete_multipart_upload \{(.*?)\}", lifecycle, re.S)[1]
     assert unfinished.split() == ["days_after_initiation", "=", "7"]
-    # A rule on a bucket without versions would keep nothing: versions first, and both
-    # before the VM that writes.
+    # A rule on a bucket without versions would keep nothing: versions first, and they before
+    # the VM that writes. The VM does not wait for the rule, which acts a week after a delete:
+    # the provider says such a configuration "may take some time to fully propagate", and a
+    # slow one must not hold up or fail the VM.
     assert "depends_on = [aws_s3_bucket_versioning.replica]" in lifecycle
     waits = block("resource", "aws_instance", "app").split("depends_on = [")[1].split("]")[0]
     assert "aws_s3_bucket_versioning.replica," in waits
-    assert "aws_s3_bucket_lifecycle_configuration.replica," in waits
+    assert "aws_s3_bucket_lifecycle_configuration" not in waits
 
 
 def test_both_clouds_keep_deletions_as_long_and_the_guide_says_so_in_the_same_words():

@@ -281,7 +281,6 @@ resource "aws_instance" "app" {
     aws_s3_bucket_public_access_block.replica,
     aws_s3_bucket_server_side_encryption_configuration.replica,
     aws_s3_bucket_versioning.replica,
-    aws_s3_bucket_lifecycle_configuration.replica,
     aws_iam_role_policy.app,
     aws_iam_role_policy_attachment.ssm,
   ]

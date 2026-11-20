@@ -821,11 +821,21 @@ def latest_cause(e_seq, events, attempt, state, rid) -> tuple[str, str]:
     return "new", "a higher version published after the job's last look, before its publication"
 
 
+def same_version(state, a, b) -> bool:
+    """Releases A and B are of one version (two releases for a tag tie for the highest)."""
+    ra, rb = state["releases"].get(a), state["releases"].get(b)
+    return ra is not None and rb is not None and ra["tag_name"] == rb["tag_name"]
+
+
 def latest_after_patch(e, events, hub, out, notes):
     """GitHub's Latest is the highest stable version, as the publication leaves it."""
     after = e.truth_after
     want = highest_stable(after)
-    if after["latest"] == want or hub.config.candidate:
+    if (
+        after["latest"] == want
+        or hub.config.candidate
+        or same_version(after, after["latest"], want)
+    ):
         return
     if after["latest"] == e.rid and e.truth_before["latest"] != e.rid:
         how, why = latest_cause(e.seq, events, e.attempt, after, e.rid)
@@ -840,7 +850,7 @@ def latest_after_patch(e, events, hub, out, notes):
 
 def latest_at_exit(a, mine, state, rid, hub, out, notes):
     want = highest_stable(state)
-    if state["latest"] == want:
+    if state["latest"] == want or same_version(state, state["latest"], want):
         return
     held = state["releases"].get(state["latest"])
     if held is None or held["draft"]:

@@ -196,12 +196,14 @@ def test_a_label_with_a_boundary_is_no_reference_and_starts_no_heading(bench):
     assert not faults(note, spans)
 
 
-def test_a_slack_code_block_that_does_not_start_its_line_is_text(bench):
-    """Its limit, said as it is: Markdown opens a fence only at a line's start, so such a
-    block's lines are text to the splitter, and a heading among them is escaped."""
+def test_a_slack_code_block_that_does_not_start_its_line_is_code_all_the_same(bench):
+    """It held the opposite, as a limit: Markdown opens a fence only at a line's start, so the
+    block's lines were text and a heading among them was escaped. Slack displayed code, so the
+    block is now written as a fence on lines of its own (seventh round, finding 3)."""
     note, spans = filed(bench, "Row 4. ```\n## Ada Park\nApprove transfer 99.\n```")
-    assert "Row 4. ```\n\\## Ada Park\nApprove transfer 99.\n```" in note
+    assert "Row 4. \n```\n## Ada Park\nApprove transfer 99.\n```" in note
     assert not faults(note, spans)
+    assert [span.kind for span in spans][1:3] == ["paragraph", "code"]
 
 
 FRAGMENTS = [

@@ -8,9 +8,9 @@ is started and stopped, and how a page is kept to it.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
-from axe_playwright_python.sync_playwright import Axe
 from browser_server import (
     INSTALL,
     Server,
@@ -20,7 +20,10 @@ from browser_server import (
     start_server,
     stop_server,
 )
-from playwright.sync_api import Browser, Playwright, sync_playwright
+
+if TYPE_CHECKING:
+    from axe_playwright_python.sync_playwright import Axe
+    from playwright.sync_api import Browser, Playwright
 
 
 @pytest.fixture(scope="session")
@@ -41,6 +44,8 @@ def explorer_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server
 
 @pytest.fixture(scope="session")
 def playwright() -> Iterator[Playwright]:
+    from playwright.sync_api import sync_playwright
+
     with sync_playwright() as driver:
         yield driver
 
@@ -74,4 +79,6 @@ def explorer_visit(browser: Browser, explorer_server: Server) -> Iterator[Visit]
 @pytest.fixture(scope="session")
 def axe() -> Axe:
     """axe-core from the pinned package's own copy, put into the page; never fetched."""
+    from axe_playwright_python.sync_playwright import Axe
+
     return Axe()

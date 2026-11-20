@@ -55,3 +55,27 @@ def test_the_flag_collects_them_without_starting_a_browser():
     run = collect("tests/browser", "--run-browser")
     assert run.returncode == 0, (run.stdout[-2000:], run.stderr[-2000:])
     assert "tests/browser/test_browser_walk.py" in run.stdout
+
+
+def test_collection_without_the_flag_does_not_import_playwright_or_axe():
+    script = (
+        "import sys\n"
+        "from importlib.abc import MetaPathFinder\n"
+        "class Blocker(MetaPathFinder):\n"
+        "    def find_spec(self, fullname, path=None, target=None):\n"
+        "        if fullname.split('.')[0] in {'playwright', 'axe_playwright_python'}:\n"
+        "            raise ModuleNotFoundError(fullname)\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Blocker())\n"
+        "import pytest\n"
+        "sys.exit(pytest.main(['--collect-only', '-q', 'tests/browser']))\n"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert run.returncode == 5, (run.returncode, run.stdout[-2000:], run.stderr[-2000:])
+    assert "ModuleNotFoundError" not in run.stdout + run.stderr

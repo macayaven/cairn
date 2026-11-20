@@ -26,19 +26,28 @@ def test_a_negating_passage_does_not_hold_up_the_claim_it_contains():
     assert kept_claims([claim], frozenset({gone.id}), {negating.id: negating}) == ()
 
 
-def test_a_fold_of_the_same_passage_rewrapped_goes_with_the_note_whose_words_it_holds():
-    """CORE5: a line break is not a space, so such a fold (one a tidy made before) is not the
-    whole of the passage left: it goes, as any claim that says other words does."""
+def test_a_fold_of_the_same_passage_rewrapped_outlives_the_note_whose_words_it_holds():
+    """A line break is not a space (CORE5), so such a fold, one a tidy of an earlier build
+    made, is not the whole of the passage left by today's rule. It went with the forgotten
+    note until the last outside reading showed what that does on a database the public build
+    made: the claim was lost though the other note still said it. It is the whole of that
+    passage by the rule its fold was made under, so it stays, as the other note's own text;
+    none of the forgotten note's spelling stays with it."""
     gone, again = (
         one("n1", "Brook rotates the keys\nevery month."),
         one("n2", "Brook rotates the keys every month."),
     )
     claim = Claim(id="cl_fold", text=gone.text, span_ids=(gone.id, again.id))
-    assert kept_claims([claim], frozenset({gone.id}), {again.id: again}) == ()
+    (kept,) = kept_claims([claim], frozenset({gone.id}), {again.id: again})
+    assert (kept.text, kept.span_ids) == (again.text, (again.id,))
     same = one("n3", "Brook rotates the keys\nevery month.")
     fold = Claim(id="cl_fold", text=gone.text, span_ids=(gone.id, same.id))
     (kept,) = kept_claims([fold], frozenset({gone.id}), {same.id: same})
     assert (kept.text, kept.span_ids) == (gone.text, (same.id,))
+    # and still not a claim whose words are only part of the passage left, by either rule
+    longer = one("n4", "Brook rotates the keys every month, and Ada checks.")
+    part = Claim(id="cl_part", text=gone.text, span_ids=(gone.id, longer.id))
+    assert kept_claims([part], frozenset({gone.id}), {longer.id: longer}) == ()
 
 
 def test_code_kept_by_the_gates_equality_not_by_containment():

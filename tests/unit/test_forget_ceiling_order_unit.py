@@ -21,7 +21,7 @@ from markdown_it import MarkdownIt
 import cairn.compiler
 from cairn.gate import lint_gate
 from cairn.memory import Memory
-from cairn.spans import CLOSERS_MAX
+from cairn.spans import CLOSERS_MAX, FenceLeftOpen, open_fence_closer
 from cairn.store import Store, erasure
 
 STEPS = "## Steps\n\n"
@@ -122,13 +122,17 @@ SAFE_AFTER = {
     "three backticks, then one more in the line": "```a`b is how Quill writes it.",
     "a fence in a quotation, which ends with it": "> ~~~\n> Quill keeps the log.",
     "an indented quotation": "    > ~~~\n    > Quill keeps the log.",
+    "a fenced block at the margin": FENCED,
+    "a fence at the margin that its claim leaves open": "~~~text\nBrook owns the rollback.",
+    "a list item at the margin that holds a fence": "- ~~~\n  Brook owns the rollback.",
 }
 
 
 @pytest.mark.parametrize("name", list(SAFE_AFTER))
-def test_a_claim_after_the_fence_that_can_open_none_stays(store, memory, tmp_path, name):
+def test_a_claim_after_the_fence_that_can_open_none_there_stays(store, memory, tmp_path, name):
     """Filed last under the same heading, so the body writes it after every snippet: past
-    the ceiling it stays, since no line of it opens a fence that could run past it."""
+    the ceiling it stays. No line of it opens a fence that could run past it; or it starts
+    at the margin, where no list item reaches it and it is read as it is alone, closed."""
     separator, blocks, _ = one_list(memory, STEPS + SAFE_AFTER[name])
     assert texts(store)[-1] == SAFE_AFTER[name]
     assert store.forget_note(separator).rebuilt == ("ops",)
@@ -136,20 +140,22 @@ def test_a_claim_after_the_fence_that_can_open_none_stays(store, memory, tmp_pat
     assert restored(store, tmp_path) == texts(store)
 
 
-def test_what_the_ceiling_still_takes_is_a_claim_after_the_fence_that_can_open_one(
+def test_what_the_ceiling_still_takes_is_an_indented_claim_after_the_fence_that_can_open_one(
     store, memory, tmp_path
 ):
-    """The cost that is left, exactly: a claim the body writes after the fence that runs on
-    leaves when a line of it opens a fence, though that fence closes in the claim. Its note
-    stays stored, and sending it again files it on the page."""
-    separator, blocks, last = one_list(memory, STEPS + FENCED)
+    """The cost that is left, exactly: a claim the body writes after the fence that runs
+    on, that starts with indentation and has a line that opens a fence, leaves, though here
+    its fence would close in the claim. Its note stays stored, and sending it again files
+    it on the page."""
+    indented = "    ~~~text\n    Brook owns the rollback.\n    ~~~"
+    separator, blocks, last = one_list(memory, STEPS + indented)
     assert store.forget_note(separator).rebuilt == ("ops",)
     assert texts(store) == ["- item", *blocks[:CLOSERS_MAX]]
     assert restored(store, tmp_path) == texts(store)
     assert store.get_note(last) is not None
-    again = memory.note("alpha", STEPS + FENCED, title="Ops", topic="Ops")
+    again = memory.note("alpha", STEPS + indented, title="Ops", topic="Ops")
     assert (again["note_id"], again["created"], again["status"]) == (last, False, "saved")
-    assert texts(store) == ["- item", *blocks[:CLOSERS_MAX], FENCED]
+    assert texts(store) == ["- item", *blocks[:CLOSERS_MAX], indented]
 
 
 # How many renders
@@ -295,31 +301,48 @@ def runs_past(blocks: list[str], at: int) -> bool:
 
 
 def test_a_claim_said_to_open_no_fence_opens_none_that_runs_past_it_in_any_body():
-    """20,000 generated claims, each after a list item, nested ones, a quotation or
-    nothing, and before a block at one of six indentations: whenever the Markdown parser reads a
-    fence that starts in the claim and covers the next block, `_may_open_a_fence` said it
-    could. Were it wrong once, a note's author could make a forget cost a render for that
-    claim."""
+    """60,000 generated claims, each written as a body writes it (closed where alone it
+    leaves a fence open), after a list item, nested ones, a quotation or nothing, and before
+    a block at one of six indentations: whenever the Markdown parser reads a fence that
+    starts in the claim and covers the next block, `_may_open_a_fence` said it could. Were
+    it wrong once, a note's author could make a forget cost a render for that claim. Half
+    the claims start at the margin: none of those runs past, with a fence in thousands;
+    of the others, some hundreds do."""
     rng = random.Random(20261120)
-    ran_past, said_no = 0, 0
-    for _ in range(20_000):
+    ran_past, said_no, fenced_at_the_margin = 0, 0, 0
+    for n in range(60_000):
         claim = some_claim(rng)
-        blocks = ["# Ops", *rng.choice(BEFORE), claim, rng.choice(AFTER)]
+        if n % 2:
+            claim = claim.lstrip(" \t\r\n") or "~~~"
+        try:
+            closer = open_fence_closer(claim)
+        except FenceLeftOpen:  # no line closes it: the import's check refuses the claim
+            continue
+        written = claim if closer is None else f"{claim}\n{closer}"  # as compiler._closed
+        blocks = ["# Ops", *rng.choice(BEFORE), written, rng.choice(AFTER)]
         may = erasure._may_open_a_fence(claim)
         said_no += not may
+        if n % 2:
+            assert not may
+            fenced_at_the_margin += any(t.type == "fence" for t in READER.parse(written))
         if runs_past(blocks, len(blocks) - 2):
             ran_past += 1
             assert may, (blocks, claim)
-    assert ran_past > 1000 and said_no > 5000  # both answers are asked for, many times
+    # both answers are asked for, many times
+    assert ran_past > 400 and said_no > 20_000 and fenced_at_the_margin > 6000
 
 
 @pytest.mark.parametrize(
     ("text", "may"),
     [
         ("    ~~~\n    sample", True),  # indented text alone, a fence after a list item
-        ("~~~text\nclosed\n~~~", True),  # it closes its own, and after another it opens one
+        ("    ~~~text\n    closed\n    ~~~", True),  # the fence would close: still True
         ("\t```", True),
-        ("- ~~~", True),
+        (" - ~~~", True),
+        ("\n~~~", True),  # a first line that is empty is not one at the margin
+        ("~~~text\nclosed\n~~~", False),  # starts at the margin: as it is alone, closed
+        ("~~~text\nleft open", False),  # the body writes its closer after it
+        ("- ~~~", False),
         ("Ada keeps `port 80` open.", False),
         ("even ~~~ in prose", False),
         ("```a`b", False),  # a backtick after the run: the parser reads no fence

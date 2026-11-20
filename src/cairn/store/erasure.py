@@ -401,19 +401,21 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     the body is another. A render for each such claim, CLOSERS_MAX times, so that a note's
     author cannot make a forget cost a render for each claim. Past that, the claim then
     named leaves with the claims that the body writes after it and that can open a fence
-    (`_with_it`; fourth report, must-fix 2): what the body writes before it the parser has
-    read and found whole, and it stays, wherever the stored list holds it, and so does a
-    claim after it that can open none, such as one with inline code. What that still takes:
-    a claim after it whose own fence closes. Then no fence opens after that claim, so the
-    next render finds none: eighteen renders, in whatever order the lists were stored. One
-    more for each fence that had ended with its list item and now covers the block that
-    follows, the claim before the one that left: one for each item nested in another, and
-    the parser reads a fence in eight of those, so twenty-six. And whatever a page holds,
-    past twice CLOSERS_MAX renders every claim that holds a backtick or a tilde leaves with
-    the one named, so no fence is left (no page is known to come to that): 2 * CLOSERS_MAX
-    + 2 renders when fences are all that is at fault. It reads the project's page versions,
-    never the rest of the
-    database."""
+    there (`_with_it`; fourth report, must-fix 2): what the body writes before it the
+    parser has read and found whole, and it stays, wherever the stored list holds it; so
+    does a claim after it that can open none, such as one with inline code; and so does one
+    that starts at the margin, a fenced block as it is commonly written, since it reads
+    there as it does alone. What that still takes: a claim after it that starts with
+    indentation and has a line that opens a fence, though the fence would close in the
+    claim. Then no fence runs on after that claim, so the next render finds none: eighteen
+    renders, in whatever order the lists were stored. One more for each fence that had
+    ended with its list item and now covers the block that follows, the claim before the
+    one that left: one for each item nested in another, and the parser reads a fence in
+    eight of those, so twenty-six. And whatever a page holds, past twice CLOSERS_MAX
+    renders every claim that holds a backtick or a tilde leaves with the one named, so no
+    fence is left (no page is known to come to that): 2 * CLOSERS_MAX + 2 renders when
+    fences are all that is at fault. It reads the project's page versions, never the rest
+    of the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
 
     gone = frozenset(
@@ -485,19 +487,25 @@ def _with_it(
 
 
 def _may_open_a_fence(text: str) -> bool:
-    """Whether a line of `text` opens a code fence that can run past the claim, wherever a
-    body writes it: the Markdown parser's answer, of each line read alone and without its
-    indentation (its tabs first read to the next stop of four, as the parser reads them),
-    to the question spans.open_fence_closer asks, whether a fence that starts there covers
-    a line written after a blank one. One parse for a line; a line without three backticks
-    or three tildes in a row is not parsed. What stands before a claim reaches into it in
-    one way: a list item holds what is indented under it, across the blank line, so a line
-    of the claim can lose indentation there and nothing else; and a line that opens no
-    fence with none of its indentation opens none with part of it. A fence in a quotation
-    ends with the quotation, at the blank line after the claim at the latest, and is not
-    counted. So a claim this is False of opens no fence that covers the block after it
-    (inline code is not a fence), and one it is True of may open none where it stands, or
-    one that closes in the claim."""
+    """Whether a claim of this text can open a code fence that runs past it, somewhere a
+    body writes it. The Markdown parser's answers, never a reading of its lines here.
+
+    What stands before a claim reaches into it in one way: a list item holds what is
+    indented under it, across the blank line. So a claim whose first line starts at the
+    margin is read in every body as it is alone, where the body writes it closed
+    (compiler._closed; one that no line closes, the import's check has refused by then):
+    False. Of any other, each line is asked alone and without its indentation (its tabs
+    first read to the next stop of four, as the parser reads them), the question
+    spans.open_fence_closer asks: whether a fence that starts there covers a line written
+    after a blank one. A line can lose indentation to a list item and nothing else, and one
+    that opens no fence with none of its indentation opens none with part of it; a fence in
+    a quotation ends with the quotation, at the blank line after the claim at the latest,
+    and is not counted. One parse for a line, and a line without three backticks or three
+    tildes in a row is not parsed. So a claim this is False of opens no fence that covers
+    the block after it (inline code is not a fence), and one it is True of may open none
+    where it stands, or one that closes in the claim."""
+    if text[:1] not in ("", " ", "\t", "\n", "\r"):
+        return False
     alone = (line.expandtabs(4).lstrip(" ") for line in _PARSER_LINES.split(text))
     return any(
         _covering_fence(line, 1, [line]) is not None

@@ -415,9 +415,7 @@ def run_create(tmp_path, tag: str, candidate: str):
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     # No release for the tag yet: the listing of releases holds none, as on a first attempt.
-    (bin_ / "gh").write_text(
-        '#!/bin/sh\nif [ "$1" = api ]; then exit 0; fi\nprintf "%s\\n" "$@"\n'
-    )
+    (bin_ / "gh").write_text('#!/bin/sh\nif [ "$1" = api ]; then exit 0; fi\nprintf "%s\\n" "$@"\n')
     (bin_ / "gh").chmod(0o755)
     env = {
         "PATH": f"{bin_}:/usr/bin:/bin",

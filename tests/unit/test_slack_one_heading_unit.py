@@ -307,6 +307,27 @@ def test_a_heading_only_a_list_item_makes_costs_a_third_reading(bench, monkeypat
     assert not faults(note, spans) and len(asked) == 3
 
 
+def test_the_underline_rule_only_saves_readings(bench, monkeypatch):
+    """With the rule matching nothing, the splitter and the parser alone still leave one
+    heading: each underline is then found by a reading of its own."""
+    import re
+
+    from cairn.slack import text as slack_text
+
+    monkeypatch.setattr(slack_text, "_UNDERLINE", re.compile(r"(?!)"))
+    asked = passes(monkeypatch)
+    note, spans = filed(bench, "Totals\n-\n-\n-\nRow 4.")
+    assert "Totals\n\\-\n\\-\n\\-\nRow 4." in note
+    assert not faults(note, spans) and len(asked) == 4
+
+
+def test_indented_code_below_a_heading_is_not_spared(bench):
+    """Its limit: only a code fence keeps a line of dashes below a heading that became text."""
+    note, spans = filed(bench, "# Settings\n\n    ---\n    port: 8811\n\nRow 4.")
+    assert "\\# Settings\n\n    \\---\n    port: 8811\n\nRow 4." in note
+    assert not faults(note, spans)
+
+
 def test_a_message_without_a_heading_is_read_once(bench, monkeypatch):
     asked = passes(monkeypatch)
     note, _ = filed(bench, "Row 4.\n- one\n- two\n\n&gt; quoted\n```\n## inside code\n```")

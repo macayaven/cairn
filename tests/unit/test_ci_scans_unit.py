@@ -464,24 +464,32 @@ def test_the_image_scan_scans_both_platforms_of_the_build_and_fails_on_a_fixed_h
     job = JOBS["image_scan"]
     platforms = [entry["platform"] for entry in job["strategy"]["matrix"]["include"]]
     assert sorted(platforms) == ["linux/amd64", "linux/arm64"]
-    assert job["env"] == {"LOCAL": "cairn:scan"}
+    assert job["env"] == {
+        "IMAGE": "localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}",
+        "PLATFORM": "${{ matrix.platform }}",
+        "ARCH": "${{ matrix.arch }}",
+    }
     text = runs("image_scan")
-    # It builds nothing: it pulls this leg's platform of the build, by the index's digest.
-    assert "docker build" not in text
+    # It builds nothing and pulls nothing into the engine: Trivy reads this leg's platform of
+    # the build from the registry on the runner, by that platform's own manifest digest (Trivy
+    # loads a linux/amd64 image unless told otherwise, and ignores --platform for an image that
+    # is one platform already, so the digest is what decides).
+    assert "docker build" not in text and "docker pull" not in text
     assert not any(s.get("uses", "").startswith("docker/build-push") for s in job["steps"])
-    assert 'docker pull --platform "$PLATFORM" "localhost:5000/cairn@$DIGEST"' in text
     flat = " ".join(text.split())
+    remote = "trivy image --image-src remote --insecure"
     assert (
-        "trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed"
-        " --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 1 --no-progress cairn:scan"
+        f"{remote} --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed"
+        ' --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 1 --no-progress "$IMAGE"'
         in flat
     )
     # The unfixed are listed in the job's summary and fail nothing.
     assert (
-        "trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-status fixed"
+        f"{remote} --scanners vuln --severity HIGH,CRITICAL --ignore-status fixed"
         " --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 0 --no-progress"
-        " --format table cairn:scan" in flat
+        ' --format table "$IMAGE"' in flat
     )
+    assert flat.count("trivy image ") == flat.count(remote) == 2
     assert '>> "$GITHUB_STEP_SUMMARY"' in text
     assert "publish" not in needs(job) and "image_scan" in needs(JOBS["publish"])
 

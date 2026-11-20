@@ -69,8 +69,13 @@ case "${args[0]} ${args[1]}" in
   "repo tags")
     [ -z "$TAGS_FAIL" ] || exit 1
     ls "$REG" ;;
+  "manifest fetch-config")
+    printf '%s' "$IMAGE_CONFIG" ;;
   "manifest fetch")
     ref="${args[2]}"
+    if [ -n "$IMAGE_MANIFEST" ] && [ "$ref" = "$IMAGE" ]; then
+      printf '%s' "$IMAGE_MANIFEST"; exit 0
+    fi
     if [[ $ref == *@* ]]; then f="$(by_digest "${ref#*@}")" || exit 1; cat "$f"
     elif [ -n "$FETCH_OTHER" ]; then printf 'other bytes'
     else [ -e "$REG/${ref##*:}" ] || exit 1; cat "$REG/${ref##*:}"; fi ;;
@@ -181,6 +186,8 @@ def test_image_build_builds_once_reads_only_and_hands_on_one_archive():
     assert job["outputs"] == {
         "digest": "${{ steps.archive.outputs.digest }}",
         "archive": "${{ steps.archive.outputs.archive }}",
+        "amd64": "${{ steps.archive.outputs.amd64 }}",
+        "arm64": "${{ steps.archive.outputs.arm64 }}",
     }
     upload = job["steps"][-1]
     assert upload["uses"].startswith("actions/upload-artifact@")
@@ -213,12 +220,91 @@ def test_the_scan_and_the_image_check_receive_the_build_with_one_step():
         "ARCHIVE": "${{ needs.image_build.outputs.archive }}",
         "NATIVE": "${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}",
     }
-    pull = "Pull this platform of the build"
-    assert step("image_scan", pull) == step("image", pull)
+    assert step("image_scan", CHECK) == step("image", CHECK)
     for job in ("image_scan", "image"):
         names = [s.get("name") for s in JOBS[job]["steps"]]
-        assert names.index("Fetch the build") < names.index(RECEIVE) < names.index(pull)
+        assert names.index("Fetch the build") < names.index(RECEIVE) < names.index(CHECK)
         assert "image_build" in needs(JOBS[job])
+        # This leg's platform is named by its own manifest digest, which holds one image.
+        assert JOBS[job]["env"]["IMAGE"] == (
+            "localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}"
+        )
+        assert JOBS[job]["env"]["PLATFORM"] == "${{ matrix.platform }}"
+        assert JOBS[job]["env"]["ARCH"] == "${{ matrix.arch }}"
+        arches = {entry["arch"] for entry in JOBS[job]["strategy"]["matrix"]["include"]}
+        assert arches == {"amd64", "arm64"} <= set(JOBS["image_build"]["outputs"])
+    # Only the image check runs the image, so only it pulls one into the engine.
+    assert not any("docker pull" in s.get("run", "") for s in JOBS["image_scan"]["steps"])
+    pull = step("image", "Pull this platform of the build")
+    assert lines(pull["run"]) == [
+        'docker pull --platform "$PLATFORM" "$IMAGE"',
+        'docker tag "$IMAGE" "$LOCAL"',
+        'test "$(docker image inspect --format \'{{.Architecture}}\' "$LOCAL")" = "$ARCH"',
+    ]
+    names = [s.get("name") for s in JOBS["image"]["steps"]]
+    assert names.index(CHECK) < names.index("Pull this platform of the build")
+
+
+CHECK = "Check that this platform's image is built for it"
+IMAGE_INDEX = "application/vnd.oci.image.index.v1+json"
+IMAGE_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+
+
+def check_platform(runner: Runner, media_type: str, os_arch: tuple[str, str]):
+    image = "localhost:5000/cairn@sha256:" + "b" * 64
+    return runner.run(
+        step("image_scan", CHECK)["run"],
+        IMAGE=image,
+        PLATFORM="linux/arm64",
+        IMAGE_MANIFEST=f'{{"mediaType": "{media_type}"}}',
+        IMAGE_CONFIG=f'{{"os": "{os_arch[0]}", "architecture": "{os_arch[1]}"}}',
+    )
+
+
+def test_the_platform_check_reads_the_registry_and_not_the_engine(tmp_path):
+    """The check reads the manifest and config of exactly IMAGE from the registry, so its answer
+    does not depend on the runner's own platform."""
+    runner = Runner(tmp_path)
+    done = check_platform(runner, IMAGE_MANIFEST, ("linux", "arm64"))
+    assert done.returncode == 0, done.stdout + done.stderr
+    image = "localhost:5000/cairn@sha256:" + "b" * 64
+    assert runner.oras_calls() == [
+        f"manifest fetch --plain-http {image}",
+        f"manifest fetch-config --plain-http {image}",
+    ]
+    assert "docker " not in runner.calls.read_text()
+
+
+@pytest.mark.parametrize(
+    ("media_type", "os_arch", "said"),
+    [
+        (IMAGE_MANIFEST, ("linux", "amd64"), "is built for linux/amd64, not linux/arm64"),
+        (IMAGE_INDEX, ("linux", "arm64"), f"is a {IMAGE_INDEX}, not one image"),
+    ],
+)
+def test_an_image_of_another_platform_or_an_index_stops_the_job_in_one_line(
+    tmp_path, media_type, os_arch, said
+):
+    done = check_platform(Runner(tmp_path), media_type, os_arch)
+    assert done.returncode == 1
+    (error,) = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+    assert said in error
+
+
+def test_no_step_takes_one_platform_by_the_index_digest_and_a_flag():
+    """A platform is never selected from the index by a flag: what is pulled, tagged, inspected,
+    scanned or run for one platform is named by that platform's own digest."""
+    acting = re.compile(
+        r"\b(docker (pull|tag|run|image inspect|inspect)|trivy image|smoke_container)"
+    )
+    for name, job in JOBS.items():
+        for s in job["steps"]:
+            for line in lines(s.get("run", "")):
+                if not acting.search(line):
+                    continue
+                assert "$DIGEST" not in line or "--platform" not in line, (name, line)
+                if name in ("image_scan", "image"):
+                    assert "$DIGEST" not in line, (name, line)
 
 
 def lines(run: str) -> list[str]:
@@ -300,7 +386,10 @@ def test_publish_fetches_checks_and_pushes_and_nothing_more():
         "ARCHIVE": "${{ needs.image_build.outputs.archive }}",
         "TAGS": "${{ steps.meta.outputs.tags }}",
     }
-    assert job["outputs"] == {"digest": "${{ steps.push.outputs.digest }}"}
+    assert job["outputs"] == {
+        "digest": "${{ steps.push.outputs.digest }}",
+        "amd64": "${{ needs.image_build.outputs.amd64 }}",
+    }
     assert "image_build" in needs(job)
 
 

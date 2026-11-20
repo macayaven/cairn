@@ -176,7 +176,9 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
     # The unchanged registry-name assignment needs Bash 4 on Linux. Supply its result
     # here so macOS Bash 3 can exercise the actual pull/smoke body and environment.
     assignment, _, commands = smoke["run"].partition("\n")
-    assert assignment == 'image="ghcr.io/${GITHUB_REPOSITORY,,}@$DIGEST"'
+    # The amd64 image's own digest: the index's, with a platform flag, would leave the
+    # inspect and the smoke check to pick a platform from the index.
+    assert assignment == 'image="ghcr.io/${GITHUB_REPOSITORY,,}@$AMD64"'
     # The shell's pull selection and the smoke script's docker children must agree.
     for command in ("docker", "python3"):
         tool = tmp_path / command
@@ -184,6 +186,7 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
             "#!/bin/sh\n"
             'test "$DOCKER_DEFAULT_PLATFORM" = linux/amd64 || exit 77\n'
             f'printf "{command} %s\\n" "$*" >> "$CALLS"\n'
+            + ('case "$1" in image) echo amd64 ;; esac\n' if command == "docker" else "")
         )
         tool.chmod(0o755)
     calls = tmp_path / "calls"
@@ -203,8 +206,10 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
     assert result.returncode == 0, result.stderr
     assert calls.read_text().splitlines() == [
         f"docker pull --quiet --platform linux/amd64 ghcr.io/owner/repo@{digest}",
+        f"docker image inspect --format {{{{.Architecture}}}} ghcr.io/owner/repo@{digest}",
         f"python3 scripts/smoke_container.py ghcr.io/owner/repo@{digest}",
     ]
+    assert job["env"]["AMD64"] == "${{ needs.publish.outputs.amd64 }}"
 
 
 GUIDE_PULL = "Pull the image as the run guide does, with no login"

@@ -29,7 +29,7 @@
 # once every job of the gate has passed: the tests, the infrastructure checks, the image
 # check, the stack rehearsal and the host rehearsal. A failed infrastructure check stops
 # the publication too. What `publish` pushes is image_build's archive, checked against the
-# SHA-256 the scan and the image check checked, by the index digest they pulled: it builds
+# SHA-256 the scan and the image check checked, by the index digest they pushed: it builds
 # nothing, checks out nothing and runs no image, and no job that may write to the registry
 # or holds an identity token builds or runs the repository's code (deploy runs its one deploy
 # script).
@@ -386,10 +386,13 @@ jobs:
   # of materials for each (attestation manifests in the image index), written as one OCI layout
   # archive. It runs on every change, drafts and documents included, may read the repository
   # and nothing more, and logs in to no registry. scripts/oci_archive.py refuses an archive
-  # without both platforms and their attestations, and gives its SHA-256 and the index's
-  # digest as outputs; the archive is kept as artifact `image` of the run for five days. The
-  # scan, the image check and `publish` each check that SHA-256 and push that digest, so the
-  # image scanned and smoke-tested is the image published, both platforms.
+  # without both platforms and their attestations, or with an image whose config is of another
+  # platform, and gives its SHA-256, the index's digest and each platform's own manifest digest
+  # (`amd64`, `arm64`) as outputs; the archive is kept as artifact `image` of the run for five
+  # days. The scan, the image check and `publish` each check that SHA-256 and push the index's
+  # digest, so the image scanned and smoke-tested is the image published, both platforms; a job
+  # that takes one platform names it by that platform's own digest, never by the index's and a
+  # platform flag.
   image_build:
     name: build the image (linux/amd64 and linux/arm64)
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
@@ -398,6 +401,8 @@ jobs:
     outputs:
       digest: ${{ steps.archive.outputs.digest }}
       archive: ${{ steps.archive.outputs.archive }}
+      amd64: ${{ steps.archive.outputs.amd64 }}
+      arm64: ${{ steps.archive.outputs.arm64 }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -437,9 +442,12 @@ jobs:
           overwrite: true
           compression-level: 0
 
-  # Both platforms of the build image_build made, each pulled by the index's digest from a
+  # Both platforms of the build image_build made, each scanned by its own manifest digest from a
   # registry on the runner after the archive's SHA-256 is checked: what is scanned is what
-  # `publish` pushes. Trivy fails the job on a HIGH or CRITICAL vulnerability that has a fixed
+  # `publish` pushes. Trivy reads the image from that registry (--image-src remote; --insecure
+  # for the runner's plain-HTTP registry), not from the engine: it loads a linux/amd64 image
+  # unless told otherwise and ignores --platform for an image that is one platform already, so
+  # the digest decides, and the step before it checks that digest is this leg's platform. Trivy fails the job on a HIGH or CRITICAL vulnerability that has a fixed
   # version; the unfixed ones are listed in the job's summary and fail nothing. It runs on every
   # change, drafts and documents included, as image_build does.
   image_scan:
@@ -457,7 +465,9 @@ jobs:
           - platform: linux/arm64
             arch: arm64
     env:
-      LOCAL: cairn:scan
+      IMAGE: localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}
+      PLATFORM: ${{ matrix.platform }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -519,16 +529,26 @@ jobs:
               exit 1
             fi
           done
-      # This leg's platform of that index, by its digest, into the engine as LOCAL.
-      - name: Pull this platform of the build
-        env:
-          DIGEST: ${{ needs.image_build.outputs.digest }}
-          PLATFORM: ${{ matrix.platform }}
-          ARCH: ${{ matrix.arch }}
+      # This leg's image, named by its own manifest digest, read from the registry: one image
+      # (not an index), whose config says it is built for this leg's platform. The registry
+      # answers for exactly that digest, whatever the runner's own platform.
+      - name: Check that this platform's image is built for it
         run: |
-          docker pull --platform "$PLATFORM" "localhost:5000/cairn@$DIGEST"
-          docker tag "localhost:5000/cairn@$DIGEST" "$LOCAL"
-          test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = "$ARCH"
+          set -o pipefail
+          oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+          import json, os, sys
+          manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+          image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+          kind = manifest.get("mediaType")
+          if kind != "application/vnd.oci.image.manifest.v1+json":
+              sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+          built_for = f"{config.get('os')}/{config.get('architecture')}"
+          if built_for != platform:
+              sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+          print(f"{image} is one image, built for {platform}")
+          CHECK
       - name: Install trivy
         run: |
           base="https://github.com/aquasecurity/trivy/releases/download/v0.76.2/"
@@ -547,15 +567,16 @@ jobs:
           {
             echo "### Image: HIGH and CRITICAL with no fixed version (listed, not failing)"
             echo '```'
-            trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-status fixed \
+            trivy image --image-src remote --insecure --scanners vuln --severity HIGH,CRITICAL --ignore-status fixed \
               --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 0 --no-progress \
-              --format table cairn:scan
+              --format table "$IMAGE"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Fail on a HIGH or CRITICAL that has a fixed version
         run: >-
-          trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed
-          --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 1 --no-progress cairn:scan
+          trivy image --image-src remote --insecure --scanners vuln --severity HIGH,CRITICAL
+          --ignore-unfixed --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 1
+          --no-progress "$IMAGE"
 
   # The quick deploy's OpenTofu definitions (infra/quick/aws and infra/quick/gcp), with no
   # cloud credentials: formatting, init from the committed lock files (read-only, no
@@ -621,8 +642,9 @@ jobs:
       - name: Browser tests
         run: uv run pytest tests/browser --run-browser
 
-  # The smoke test of each platform of the build image_build made, pulled by the index's digest
-  # as image_scan pulls it; the non-native platform runs under QEMU.
+  # The smoke test of each platform of the build image_build made, pulled by that platform's own
+  # manifest digest after the same check image_scan makes; the non-native platform runs under
+  # QEMU.
   image:
     name: image smoke (${{ matrix.platform }})
     needs: [test, changes, image_build]
@@ -640,6 +662,9 @@ jobs:
             arch: arm64
     env:
       LOCAL: cairn:ci
+      IMAGE: localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}
+      PLATFORM: ${{ matrix.platform }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -706,15 +731,32 @@ jobs:
               exit 1
             fi
           done
-      # This leg's platform of that index, by its digest, into the engine as LOCAL.
-      - name: Pull this platform of the build
-        env:
-          DIGEST: ${{ needs.image_build.outputs.digest }}
-          PLATFORM: ${{ matrix.platform }}
-          ARCH: ${{ matrix.arch }}
+      # This leg's image, named by its own manifest digest, read from the registry: one image
+      # (not an index), whose config says it is built for this leg's platform. The registry
+      # answers for exactly that digest, whatever the runner's own platform.
+      - name: Check that this platform's image is built for it
         run: |
-          docker pull --platform "$PLATFORM" "localhost:5000/cairn@$DIGEST"
-          docker tag "localhost:5000/cairn@$DIGEST" "$LOCAL"
+          set -o pipefail
+          oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+          import json, os, sys
+          manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+          image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+          kind = manifest.get("mediaType")
+          if kind != "application/vnd.oci.image.manifest.v1+json":
+              sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+          built_for = f"{config.get('os')}/{config.get('architecture')}"
+          if built_for != platform:
+              sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+          print(f"{image} is one image, built for {platform}")
+          CHECK
+      # This leg's image, by its own digest, into the engine as LOCAL: one image, so the engine
+      # has no platform to choose.
+      - name: Pull this platform of the build
+        run: |
+          docker pull --platform "$PLATFORM" "$IMAGE"
+          docker tag "$IMAGE" "$LOCAL"
           test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = "$ARCH"
       - name: Smoke test
         env:
@@ -884,6 +926,8 @@ jobs:
     outputs:
       # The digest of the multi-arch index just pushed: the one thing `deploy` deploys.
       digest: ${{ steps.push.outputs.digest }}
+      # The amd64 image of that index, by its own digest, for `verify`'s smoke test.
+      amd64: ${{ needs.image_build.outputs.amd64 }}
     steps:
       - name: Fetch the build
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -992,6 +1036,7 @@ jobs:
       packages: read
     env:
       DIGEST: ${{ needs.publish.outputs.digest }}
+      AMD64: ${{ needs.publish.outputs.amd64 }}
       DOCKER_DEFAULT_PLATFORM: linux/amd64
     steps:
       - name: Check out
@@ -1008,6 +1053,10 @@ jobs:
         run: |
           if [[ ! $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::The publish job reported no image digest"
+            exit 1
+          fi
+          if [[ ! $AMD64 =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The publish job reported no digest for the amd64 image"
             exit 1
           fi
       # The run guide's own commands, as a reader runs them: logged out, the image pulled by
@@ -1047,8 +1096,9 @@ jobs:
         env:
           CAIRN_SMOKE_HEALTH_TIMEOUT: ${{ runner.arch == 'ARM64' && '300' || '90' }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}@$DIGEST"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}@$AMD64"
           docker pull --quiet --platform linux/amd64 "$image"
+          test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
           python3 scripts/smoke_container.py "$image"
 
   # On a v* tag whose image was published and smoke-tested, builds the wheel and the source

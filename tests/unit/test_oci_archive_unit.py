@@ -59,9 +59,10 @@ class Layout:
         return path
 
 
-def image(layout: Layout, arch: str) -> dict:
+def image(layout: Layout, arch: str, built_for: str | None = None) -> dict:
     config = layout.doc(
-        {"architecture": arch, "os": "linux"}, "application/vnd.oci.image.config.v1+json"
+        {"architecture": built_for or arch, "os": "linux"},
+        "application/vnd.oci.image.config.v1+json",
     )
     layer = layout.blob(f"a layer of {arch}".encode())
     manifest = {
@@ -99,9 +100,9 @@ def attestation(layout: Layout, of: dict, predicates=(PROVENANCE, SBOM)) -> dict
 
 
 def build(tmp_path, arches=("amd64", "arm64"), predicates=(PROVENANCE, SBOM), attest=True,
-          entries=None, tamper=None) -> tuple[Path, str]:  # fmt: skip
+          entries=None, tamper=None, built_for=None) -> tuple[Path, str]:  # fmt: skip
     layout = Layout()
-    images = [image(layout, arch) for arch in arches]
+    images = [image(layout, arch, (built_for or {}).get(arch)) for arch in arches]
     manifests = list(images)
     if attest:
         manifests += [attestation(layout, one, predicates) for one in images]
@@ -124,8 +125,12 @@ def test_a_build_of_both_platforms_with_their_attestations_is_described(tmp_path
     code, out, err, output = run(path, tmp_path)
     assert (code, err) == (0, "")
     archive = hashlib.sha256(path.read_bytes()).hexdigest()
-    assert output == f"digest={digest}\narchive={archive}\n"
     lines = out.splitlines()
+    amd64, arm64 = lines[1].split()[1].rstrip(":"), lines[2].split()[1].rstrip(":")
+    # Each platform's own manifest digest, so a job that takes one platform names it by its own
+    # digest and never by the index's and a platform flag.
+    assert output == f"digest={digest}\narchive={archive}\namd64={amd64}\narm64={arm64}\n"
+    assert amd64 != arm64 and digest not in (amd64, arm64)
     assert lines[0] == f"image index {digest}"
     assert lines[1].startswith("linux/amd64 sha256:") and lines[2].startswith("linux/arm64 sha256:")
     assert all("provenance and bill of materials attested" in line for line in lines[1:3])
@@ -145,6 +150,10 @@ def test_a_build_of_both_platforms_with_their_attestations_is_described(tmp_path
         ({"tamper": "index"}, "is not the bytes its name says"),
         ({"tamper": "layer"}, "is not the bytes its name says"),
         ({"entries": []}, "index.json names 0 manifests, not one image index"),
+        (
+            {"built_for": {"arm64": "amd64"}},
+            "the image listed for linux/arm64 is built for linux/amd64",
+        ),
     ],
 )
 def test_anything_else_is_refused_in_one_line(tmp_path, case, said):

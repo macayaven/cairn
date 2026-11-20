@@ -57,6 +57,15 @@ def page_query(request: Request) -> Mapping[str, str]:
 
 def render_graph(project: str, graph: dict[str, Any], *, brand: Any, person: Any) -> HTMLResponse:
     """Render the exact nodes and edges of a projection, with only same-server page links."""
+    box_w, box_h = 216, 32
+    col_step, margin_x = 280, 24
+    width = margin_x * 2 + 4 * col_step + box_w  # 5 columns fit in 1384 with symmetric margins
+    col_by_id = {item["id"]: _COLUMNS[item["kind"]] for item in graph["nodes"]}
+    skip_total = sum(
+        1 for item in graph["edges"] if abs(col_by_id[item["to"]] - col_by_id[item["from"]]) > 1
+    )
+    top_pad = 32 if skip_total == 0 else 24 + min(skip_total, 20) * 6 + 12
+
     rows = [0] * 5
     positions = {}
     by_id = {}
@@ -64,7 +73,9 @@ def render_graph(project: str, graph: dict[str, Any], *, brand: Any, person: Any
     for number, item in enumerate(graph["nodes"]):
         column = _COLUMNS[item["kind"]]
         rows[column] += 1
-        x, y = 130 + column * 260, 55 + (rows[column] - 1) * 80
+        box_x = margin_x + column * col_step
+        box_y = top_pad + (rows[column] - 1) * 72
+        x, y = box_x + 12, box_y + box_h // 2
         positions[item["id"]] = (x, y)
         href = None
         if item["kind"] in {"page", "claim"}:
@@ -73,18 +84,57 @@ def render_graph(project: str, graph: dict[str, Any], *, brand: Any, person: Any
         display = label if len(label) <= 24 else label[:23] + "…"
         prepared = {
             **item,
+            "column": column,
             "x": x,
             "y": y,
+            "box_x": box_x,
+            "box_y": box_y,
+            "box_w": box_w,
+            "box_h": box_h,
+            "label_x": box_x + 22,
+            "label_y": box_y + 4,
+            "label_w": 186,
             "href": href,
             "anchor": f"graph-node-{number}",
             "display": display,
         }
         nodes.append(prepared)
         by_id[item["id"]] = prepared
+
     edges = []
+    skip_idx = 0
     for number, item in enumerate(graph["edges"]):
-        x1, y1 = positions[item["from"]]
-        x2, y2 = positions[item["to"]]
+        source, target = by_id[item["from"]], by_id[item["to"]]
+        c1, c2 = source["column"], target["column"]
+        if c1 == c2:
+            x1, y1 = source["box_x"] + box_w, source["y"]
+            x2, y2 = target["box_x"] + box_w, target["y"]
+            gutter = x1 + 16
+            path = f"M {x1} {y1} L {gutter} {y1} L {gutter} {y2} L {x2} {y2}"
+        elif abs(c2 - c1) == 1:
+            if c1 < c2:
+                x1, y1 = source["box_x"] + box_w, source["y"]
+                x2, y2 = target["box_x"], target["y"]
+            else:
+                x1, y1 = source["box_x"], source["y"]
+                x2, y2 = target["box_x"] + box_w, target["y"]
+            path = f"M {x1} {y1} L {x2} {y2}"
+        else:
+            lane_y = 14 + (skip_idx % 20) * 6
+            slot = 14 + (skip_idx % 5) * 6
+            skip_idx += 1
+            if c1 < c2:
+                x1, y1 = source["box_x"] + box_w, source["y"]
+                x2, y2 = target["box_x"], target["y"]
+                x_exit, x_enter = x1 + 14, x2 - slot
+            else:
+                x1, y1 = source["box_x"], source["y"]
+                x2, y2 = target["box_x"] + box_w, target["y"]
+                x_exit, x_enter = x1 - 14, x2 + slot
+            path = (
+                f"M {x1} {y1} L {x_exit} {y1} L {x_exit} {lane_y}"
+                f" L {x_enter} {lane_y} L {x_enter} {y2} L {x2} {y2}"
+            )
         edges.append(
             {
                 **item,
@@ -93,10 +143,12 @@ def render_graph(project: str, graph: dict[str, Any], *, brand: Any, person: Any
                 "y1": y1,
                 "x2": x2,
                 "y2": y2,
-                "source": by_id[item["from"]],
-                "target": by_id[item["to"]],
+                "path": path,
+                "source": source,
+                "target": target,
             }
         )
+    height = max(180, top_pad + max(rows, default=0) * 72 + 24)
     return _page(
         "graph.html",
         brand=brand,
@@ -106,7 +158,8 @@ def render_graph(project: str, graph: dict[str, Any], *, brand: Any, person: Any
         nodes=nodes,
         edges=edges,
         truncated=graph["truncated"],
-        height=max(150, max(rows, default=0) * 80 + 40),
+        width=width,
+        height=height,
     )
 
 

@@ -814,3 +814,6 @@ details.kind ul { padding-left: 1.2rem; }
   overflow-x: auto;
   margin-bottom: 1.5rem;
 }
+.graph-diagram > svg { display: block; width: 100%; max-width: 100%; height: auto; }
+.graph-node-box { fill: var(--sheet); stroke: var(--rule); stroke-width: 1; }
+.graph-edge { stroke: var(--ink-soft); stroke-width: 1.25; fill: none; }

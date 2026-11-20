@@ -197,3 +197,26 @@ def test_a_title_edited_in_the_stated_race_is_reported_on_a_draft_that_is_public
     the run wrote') stays safe. Invariant 5 (the line is true of GitHub's state)."""
     ex = replay([(r"person, before PATCH", "edits the title")], lag=lags(publish=1))
     assert not broken(ex, "5"), trace(ex)
+
+
+# --- 2: the bytes compared are found by tag, the release published by id ------------------------
+
+
+def test_a_re_run_publishes_the_cut_draft_after_comparing_the_bytes_of_its_own_new_one():
+    """Switch: the listing still behind attempt 1's draft when the re-run starts (measured
+    2.6 s behind; the README's own 'unseen' row allows more than the 27 s the job waits).
+    Attempt 1's upload of the wheel is cut, so draft 88 holds an unfinished wheel and the CLI
+    stops. The re-run's first look shows nothing, it makes draft 89, whole, and its next look
+    shows 88 (not yet 89), with all three names. The read of 88 by id passes (names only);
+    `gh release download <tag>` finds the newest draft, 89, and its bytes are the run's; the
+    step reads 88 again and publishes 88, with the cut wheel, whose bytes it never downloaded.
+    The README: 'what the job compares it reads by the release's id'. Invariant 2. Rests on
+    two things not measured: the listing that far behind, and GraphQL `release(tagName:)`
+    answering the newer of two drafts that share a tag (modelled so; if it answers the older,
+    the download meets the cut wheel and the job stops safely)."""
+    ex = replay(
+        [(r"fate of upload \S+\.whl to 88", "cut")],
+        persist_lag=True,
+        lag=dict.fromkeys(KINDS, 1),
+    )
+    assert not broken(ex, "2"), trace(ex)

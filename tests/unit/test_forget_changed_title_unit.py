@@ -397,8 +397,9 @@ def test_a_new_title_can_uncover_a_fence_within_the_number_of_renders_promised(d
     eighteen was the most seen until then). Sixteen fences are named one by one and the
     seventeenth claim is the oldest note's. Without it the page is titled OPS, and a tail
     whose heading says OPS, written under that heading until then, is written with none,
-    after a claim whose fence covers it: an eighteenth claim to name. What ends the loop
-    is only that a render which names a claim takes it."""
+    after a claim whose fence covers it: an eighteenth claim to name. Within the caps, what
+    ends the loop is that a render which names a claim takes it; the guide's number holds
+    whatever the page (test_forget_render_cap_unit.py)."""
 
     def others():
         nonlocal separator

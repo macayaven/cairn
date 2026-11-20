@@ -511,8 +511,9 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
 
     What it costs. Until a forget has named CLOSERS_MAX claims, each render is one the plain
     rule makes too and takes at least the claim it names, so a forget renders no more often
-    than the plain rule; past that the second kind can change the body, and what ends the
-    loop is only that a render which names a claim takes it. Where the title changes at
+    than the plain rule; past that the second kind can change the body, and up to
+    RENDERS_HARD what ends the loop is that a render which names a claim takes it; past it,
+    the number does. Where the title changes at
     every step and a first heading says one of its spellings, so that the body differs at
     each step, a forget takes one claim a render as the plain rule does, and the third kind
     ends that at RENDERS_MAX + 2 renders (a hundred, three hundred or a thousand notes: 26

@@ -72,9 +72,9 @@ CAPPED = (
     " fence leave too, whatever the title does."
 )
 PAGED = (
-    "At the 33rd, it leaves with every claim on the page that can open a code fence, though"
-    " some would have stayed, and with any claim the next reading would find at fault for"
-    " another reason, so the next reading finds none."
+    "At the 33rd, the claim at fault leaves with every claim on the page that can open a code"
+    " fence, though some would have stayed, and with any claim the next reading would find at"
+    " fault for another reason, so the next reading finds none."
 )
 NEVER = (
     "A claim that cannot open a code fence, such as a paragraph with inline code or a fenced"
@@ -385,6 +385,32 @@ def test_at_the_render_after_the_second_cap_every_claim_that_can_open_a_fence_le
         closed = [text for text in SPENT_CLAIMS if opens_a_fence_line(text)]
         assert kept == [text for text in plain if text not in closed]
         assert len(made) == HARD + 2 and len(closed) == CLOSERS_MAX
+
+
+def test_with_the_pages_class_leave_the_claims_the_next_render_would_name_for_another_fault(
+    monkeypatch,
+):
+    """With both caps at 0 the first render that names a claim is the page's. Its claims
+    leave, and with them each claim the next render would name for a fault other than a
+    fence, asked without that render (version_faults with no fence; here a reader that
+    names the aside so, as a bound on citations would): the next render names none, and
+    the end, which would take the fenced block at the margin, is not reached. HARD + 2
+    renders, HARD being 0."""
+    monkeypatch.setattr(erasure, "RENDERS_MAX", 0)
+    monkeypatch.setattr(erasure, "RENDERS_HARD", 0)
+    real, aside = erasure.version_faults, "An aside."
+
+    def faults(claims, spans, **asked):
+        yield from real(claims, spans, **asked)
+        if asked["run_on"] is None and not asked.get("ask_alone", True):
+            yield from (
+                (n, erasure.Refusal.CITATIONS) for n, c in enumerate(claims, 1) if c.text == aside
+            )
+
+    monkeypatch.setattr(erasure, "version_faults", faults)
+    plain, _, kept, made, _ = forgotten(cascade(1, example=AT_THE_MARGIN))
+    assert {aside, AT_THE_MARGIN} <= set(plain)
+    assert aside not in kept and AT_THE_MARGIN in kept and len(made) == 2
 
 
 # (the two caps, seeds, the claims each class took that the plain loop keeps, and the pages

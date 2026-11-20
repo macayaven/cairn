@@ -11,9 +11,11 @@ when a later listing showed the title restored.
 
 Now the listing finds the release and shows whether the tag has more than one. What is
 compared is read by the release's id, which was measured to show each write at once: once
-after the listing gave the id, before any download; again as the last request before the
-publication; and again as the last request before the step says it is finished. The mark, the
-tag, the two flags, the title, the notes and the file names are judged on each such read.
+after the listing gave the id, before any download; again as the last read of the release
+before the publication; and again as the last before the step says it is finished. Only the
+tag's read comes after each (test_ci_release_tag_unit), and the tests here leave it out. The
+mark, the tag, the two flags, the title, the notes and the file names are judged on each such
+read.
 Every look, a wait's among them, still stops at once on a missing mark, another flag, another
 title or other notes. A read that fails stops the step in a line of its own, one for a release
 that is not found and one for a read that got no answer, and nothing is written after it.
@@ -24,6 +26,7 @@ listing can show another record for k looks, behind the step's write or behind a
 import json
 
 import pytest
+import test_ci_release_retry_unit as retry
 from test_ci_release_listing_lag_unit import APART, LOOKS, WHEEL, slept
 from test_ci_release_notes_title_unit import DIFFERS, WROTE
 from test_ci_release_retry_unit import (
@@ -34,13 +37,12 @@ from test_ci_release_retry_unit import (
     README,
     REFUSED,
     attached,
-    attempt,
     cells,
     held,
     looks,
     made_earlier,
-    run,
     the_error,
+    untagged,
     writes,
 )
 
@@ -65,6 +67,17 @@ STALE = (
     "::error::GitHub does not list the release for {tag} as this job has just left it; re-run"
     " this job, which starts from what is listed then"
 )
+
+
+def run(*args, **env):
+    """test_ci_release_retry_unit's run, its calls without the tag's reads."""
+    done, calls = retry.run(*args, **env)
+    return done, untagged(calls)
+
+
+def attempt(*args, **env):
+    done, calls = retry.attempt(*args, **env)
+    return done, untagged(calls)
 
 
 def reads(calls: list[str]) -> list[int]:
@@ -195,7 +208,7 @@ def test_a_draft_an_earlier_attempt_left_whole_and_listed_short_is_published(
 
 
 @pytest.mark.parametrize(("tag", "candidate"), BOTH)
-def test_the_read_by_id_is_the_last_request_before_the_publication_and_before_success(
+def test_the_read_by_id_is_the_last_read_of_the_release_before_the_publication_and_success(
     tmp_path, tag, candidate
 ):
     done, calls = run(tmp_path, tag, candidate)
@@ -415,8 +428,9 @@ def test_the_step_s_comment_and_the_readme_say_what_is_read_where():
         "The listing finds the release and shows whether the tag has more than one; it can be"
         " behind a write, a person's as much as this job's, so nothing is compared on it. What"
         " is compared is read by the release's id, which was measured to show each write at"
-        " once: after the look that gave the id, as the last request before the publication,"
-        " and as the last request before this step says the release is finished."
+        " once: after the look that gave the id, as the last read of the release before the"
+        " publication, and as the last read of it before this step says the release is finished"
+        " (only the tag's read comes after each)."
     ) in comment
     assert (
         "A file replaced between the download and the publication is published as replaced:"
@@ -427,7 +441,7 @@ def test_the_step_s_comment_and_the_readme_say_what_is_read_where():
         "The listing only finds the release and shows whether the tag has more than one: what"
         " the job compares it reads by the release's id, which shows a write at once where the"
         " listing can be seconds behind one, a person's as much as the job's. It reads it after"
-        " the look that gave the id, as its last request before the publication, and as its"
-        " last request before it succeeds."
+        " the look that gave the id, as its last read of the release before the publication,"
+        " and as its last before it succeeds."
     ) in readme
     assert WROTE.endswith("\n")

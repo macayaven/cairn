@@ -33,7 +33,9 @@ and stopped would read the same again.
 
 GitHub and gh are a stand-in `gh` that keeps the releases as data. The listing and the read
 of one release by its id each go through the step's own --jq expression, run by jq; the read
-answers from what is there, which a fault can refuse. `gh release download` gives a
+answers from what is there, which a fault can refuse. The tag, read as
+the commit it names, is the run's: nobody here deletes or moves it (test_ci_release_tag_unit
+does). `gh release download` gives a
 release's files, a draft's too (shared/fetch.go, 182 to 270: `FetchRelease` "finds a
 published repository release by its tagName, or a draft release by its pending tag name"),
 and refuses to write over a
@@ -55,6 +57,7 @@ on a release's id with `draft=false` publishes that release, as `publishRelease`
 What must hold, whatever the state, the person, the fault and the moment:
 - the step's writes are the creation, only when its own listing showed no release for the
   tag and once an attempt, and the publication, only when the request before it was a read
+  of the tag that gave the run's commit and the one before that a read
   of that release by its id which showed it as this run's, with the tag's flag, the tag as
   its title, the notes this run wrote, byte for byte, and its files' names, and after a
   download later than the last listing gave exactly the files this run attested: nothing
@@ -62,7 +65,8 @@ What must hold, whatever the state, the person, the fault and the moment:
 - a release that is published at any moment is there at the end with the same id, text, flag
   and files, unless the person deleted or changed it (or published the draft `gh release
   create` had just made before that command's own upload, which then reaches it);
-- an attempt that succeeds made, as its last request, a read by id that showed the release
+- an attempt that succeeds made, as its last request, a read of the tag that gave the run's
+  commit, and before it a read by id that showed the release
   published, with the tag's flag, this run's mark, the tag as its title, the notes this run
   wrote and the files' names, and got from the download after its last listing exactly the
   files this run attested; that is what GitHub holds at the end, unless the person acted
@@ -87,6 +91,7 @@ from test_ci_workflow_unit import JOBS
 (STEP,) = [s for s in JOBS["release"]["steps"] if s.get("name") == "Create the release"]
 SEED, PAIRS = 20261120, 8
 RUN_ID = "4242"
+COMMIT = "1a2b3c4d" * 5
 MARKS = {
     "this run's mark": f"<!-- cairn-ci-cd run {RUN_ID} -->",
     "another run's mark": f"<!-- cairn-ci-cd run {RUN_ID}0 -->",
@@ -210,10 +215,19 @@ def wrote(kind, target=None, fields=()):
         "listed": now["listed"][-1] if now["listed"] else None,
         "given": now["given"][-1] if now["given"] else None,
         "read": now["read"][-1] if now["read"] else None,
+        "tagged": now["tagged"][-1] if now["tagged"] else None,
     })
     now["stale"] = copy.deepcopy(state["releases"])
 
 
+if args[:2] == ["api", "-H"]:
+    # The tag, read as the commit it names: the run's, which no person here moves.
+    request("tag")
+    asked = ["Accept: application/vnd.github.sha", f"repos/owner/repo/commits/tags/{state['tag']}"]
+    if args[2:] != asked:
+        answer(2)
+    now["tagged"].append(now["requests"])
+    answer(0, state["commit"])
 if args[0] == "api" and "--jq" in args and "--paginate" not in args:
     # One release read by its id: what is there now, whatever a listing shows.
     how = request("read")
@@ -423,8 +437,8 @@ def attempt(gh: Path, where: Path, state: dict, person="nobody", before=-1, faul
     re-run of a job gets: the files `package` built and nothing else."""
     state["attempts"].append({
         "person": person, "before": before, "fault": fault, "struck": False, "acted": None,
-        "requests": 0, "log": [], "listed": [], "given": [], "read": [], "stale": None,
-        "failed": None,
+        "requests": 0, "log": [], "listed": [], "given": [], "read": [], "tagged": [],
+        "stale": None, "failed": None,
     })  # fmt: skip
     runner = where / f"attempt-{len(state['attempts'])}"
     (runner / "release").mkdir(parents=True)
@@ -441,6 +455,7 @@ def attempt(gh: Path, where: Path, state: dict, person="nobody", before=-1, faul
             "RUNNER_TEMP": str(runner),
             "GITHUB_REF_NAME": tag,
             "GITHUB_RUN_ID": RUN_ID,
+            "GITHUB_SHA": COMMIT,
             "CANDIDATE": "true" if "-rc." in tag else "",
             "GH_REPO": "owner/repo",
         },
@@ -456,7 +471,7 @@ def history(gh: Path, where: Path, tag: str, releases: list[dict], **first):
     where.mkdir(parents=True)
     state = {
         "tag": tag, "source": SOURCE, "releases": releases, "next": 900, "attempts": [],
-        "writes": [], "removed": [],
+        "writes": [], "removed": [], "commit": COMMIT,
         "public": {str(r["id"]): r for r in releases if not r["draft"]},
     }  # fmt: skip
     runs = []
@@ -499,9 +514,13 @@ def faults(runs: list) -> list[str]:
                 found.append("made a release twice in one attempt")
             made.add(write["attempt"])
         elif write["kind"] == "publish":
-            read = write["read"]
-            if target is None or listed is None or read is None or read["at"] != write["at"]:
-                found.append("published without a read by id as the request before it")
+            read, tagged = write["read"], write["tagged"]
+            if tagged is None or tagged != write["at"]:
+                found.append("published without a read of the tag as the request before it")
+            elif listed is None or read is None or read["at"] != write["at"] - 1:
+                found.append("published without a read by id as the request before the tag's")
+            elif target is None:
+                pass  # deleted by the person after that read: GitHub answers 404, nothing is public
             elif read["out"] not in (
                 listed_as("true", target["id"]),
                 listed_as("false", target["id"]),  # a person published it meanwhile
@@ -535,8 +554,10 @@ def faults(runs: list) -> list[str]:
         read = now["read"][-1] if now["read"] else None
         rid = read["out"].split("\t")[0] if read else ""
         given = now["given"][-1] if now["given"] else None
-        if read is None or now["log"][-1] != "read" or read["at"] != now["requests"]:
-            found.append("succeeded without a read by id as its last request")
+        if not now["tagged"] or now["tagged"][-1] != now["requests"]:
+            found.append("succeeded without a read of the tag as its last request")
+        elif read is None or now["log"][-2] != "read" or read["at"] != now["requests"] - 1:
+            found.append("succeeded without a read by id as the request before the tag's")
         elif read["out"] != listed_as("false", rid):
             found.append("succeeded though its last read did not show this run's release")
         elif given is None or given["at"] < listed["at"] or given["files"] != WHOLE:
@@ -571,11 +592,12 @@ def everything_found(gh: Path, tmp_path: Path, state_name: str, tag: str) -> dic
             first = run(f"{person} before request {before}", person=person, before=before)
             assert first["acted"] == before, (state_name, person, before)
     for fault in FAULTS:
-        if fault[0] not in (log[1:] if fault[0] == "listing" else log):
-            continue  # (a second listing always follows a write)
+        after = log.index("listing") + 1 if fault[0] == "listing" else 0
+        if fault[0] not in log[after:]:
+            continue  # (a listing after the first always follows a write)
         name = f"{fault[0]} {fault[1]}"
         assert run(name, fault=list(fault))["struck"], (state_name, name)
-        for before in range(2, log.index(fault[0], 1) + 2):
+        for before in range(2, log.index(fault[0], after) + 2):
             run(f"{name}, published before request {before}", fault=list(fault), person="publish",
                 before=before)  # fmt: skip
     return found
@@ -807,7 +829,7 @@ def test_the_grammar_holds_the_reviewers_inputs_and_the_person_does_what_is_said
     def one(name, state_name, **first):
         state = {
             "tag": tag, "source": SOURCE, "releases": built(state_name, tag), "next": 900,
-            "attempts": [], "writes": [], "removed": [], "public": {},
+            "attempts": [], "writes": [], "removed": [], "public": {}, "commit": COMMIT,
         }  # fmt: skip
         (tmp_path / name).mkdir()
         done, after = attempt(gh, tmp_path / name, state, **first)

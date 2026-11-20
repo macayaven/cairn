@@ -42,6 +42,9 @@ from test_ci_workflow_unit import JOBS, rerun, stops
 (CREATE,) = [s for s in JOBS["release"]["steps"] if s.get("name") == "Create the release"]
 RUN_ID = "4242"
 MARK = f"<!-- cairn-ci-cd run {RUN_ID} -->"
+COMMIT = "1a2b3c4d" * 5  # the run's commit, which the tag names
+MAIN_HEAD = "9f8e7d6c" * 5  # the default branch's head, another commit
+OTHER = "5e5e5e5e" * 5  # a commit a person moves the tag to
 
 GH = r"""#!/bin/bash
 printf 'gh %s\n' "$*" >> "$CALLS"
@@ -71,7 +74,37 @@ writing() {
   echo "$1" > "$EXISTING/behind.from"
   echo 0 > "$EXISTING/behind.looks"
 }
+# The git tag: $EXISTING/tag holds the commit it names, nothing once it is gone, and
+# $EXISTING/tag.object the id of the tag object when it is annotated. Just before the
+# $TAG_AT_READ-th read of it a person sets it to $TAG_BECOMES (`gone` deletes it).
+retag() {
+  if [ "$1" = gone ]; then : > "$EXISTING/tag"; else printf '%s' "$1" > "$EXISTING/tag"; fi
+  rm -f "$EXISTING/tag.object"
+}
 case "$1 $2" in
+  "api -H")  # a read of the tag, with the header that asks for an id alone
+    [ "$3" = "Accept: application/vnd.github.sha" ] && [ $# = 4 ] || exit 2
+    read=$(($(cat "$EXISTING/tag.reads" 2>/dev/null || echo 0) + 1))
+    echo "$read" > "$EXISTING/tag.reads"
+    [ "$read" != "$TAG_FAILS_AT_READ" ] || {
+      echo '{"message":"Server Error"}'; echo "gh: Server Error (HTTP 502)" >&2; exit 1
+    }
+    [ "$read" != "$TAG_AT_READ" ] || retag "$TAG_BECOMES"
+    commit="$(cat "$EXISTING/tag")"
+    case "$4" in
+      # GitHub's "Get a commit": the commit a tag names, an annotated tag's too
+      "repos/owner/repo/commits/tags/$GITHUB_REF_NAME") answer="$commit" ;;
+      # "Get a reference": what the ref points to, an annotated tag's object
+      "repos/owner/repo/git/ref/tags/$GITHUB_REF_NAME")
+        answer="$(cat "$EXISTING/tag.object" 2>/dev/null || echo "$commit")" ;;
+      *) exit 2 ;;
+    esac
+    if [ -z "$commit" ]; then
+      echo "{\"message\":\"No commit found for SHA: tags/$GITHUB_REF_NAME\",\"status\":\"422\"}"
+      echo "gh: No commit found for SHA: tags/$GITHUB_REF_NAME (HTTP 422)" >&2
+      exit 1
+    fi
+    printf '%s' "$answer" ;;
   "api --paginate")
     [ -z "$LIST_FAILS" ] || { echo "HTTP 502" >&2; exit 1; }
     if [ -n "$LIST_FAILS_AFTER_A_WRITE" ] && [ -e "$EXISTING/written" ]; then
@@ -142,11 +175,25 @@ case "$1 $2" in
     id="${4##*/}"
     # a person changes it after the job compared it, before the request arrives
     [ -z "$CHANGED_BEFORE_PUBLICATION" ] || by_hand "$CHANGED_BEFORE_PUBLICATION"
+    [ -z "$TAG_BEFORE_PUBLICATION" ] || retag "$TAG_BEFORE_PUBLICATION"
     jq -e "any(.id == $id)" "$EXISTING/releases.json" > /dev/null || exit 1  # HTTP 404
     writing "$PUBLISHED_SHOWN_FROM_LOOK"
     jq "map(if .id == $id then .draft = false else . end)" "$EXISTING/releases.json" \
       > "$EXISTING/next.json"
     mv "$EXISTING/next.json" "$EXISTING/releases.json"
+    # A release published while its tag is gone gets the tag again, where the creation's
+    # target says, or on the default branch's head ("Default: the repository's default
+    # branch", GitHub's REST reference; that it is the target the draft was made with is
+    # assumed, not measured)
+    if [ ! -s "$EXISTING/tag" ]; then
+      if [ -s "$EXISTING/target" ]; then
+        cp "$EXISTING/target" "$EXISTING/tag"
+      else
+        printf '%s' "$MAIN_HEAD" > "$EXISTING/tag"
+      fi
+      touch "$EXISTING/tag.made"
+    fi
+    [ -z "$TAG_ONCE_PUBLIC" ] || retag "$TAG_ONCE_PUBLIC"
     # a person deletes it as soon as it is public, or changes it
     [ -z "$DELETED_ONCE_PUBLIC" ] || echo "[]" > "$EXISTING/releases.json"
     [ -z "$CHANGED_ONCE_PUBLIC" ] || by_hand "$CHANGED_ONCE_PUBLIC" ;;
@@ -163,11 +210,17 @@ case "$1 $2" in
     cp "$EXISTING"/assets/* "$dir"/ ;;
   "release create")  # the release asked for, as GitHub would list it, and its files
     tag="$3"; draft=false; pre=false; title=null; names=()
+    # --verify-tag: the CLI asks GitHub whether the tag exists, and stops when it does not
+    if [[ " $* " = *" --verify-tag "* ]] && [ ! -s "$EXISTING/tag" ]; then
+      echo "tag $tag doesn't exist in the repo owner/repo, aborting due to --verify-tag flag" >&2
+      exit 1
+    fi
     shift 3
     while [ $# -gt 0 ]; do
       case "$1" in
         --draft) draft=true ;;
         --prerelease) pre=true ;;
+        --target) printf '%s' "$2" > "$EXISTING/target"; shift ;;
         --notes-file) cp "$2" "$EXISTING/body"; shift ;;
         --title) title="$(jq -n --arg title "$2" '$title')"; shift ;;  # none given: no name
         --*) ;;
@@ -186,6 +239,7 @@ case "$1 $2" in
     # a person changes the draft as soon as it is made, deletes it, or makes one more
     [ -z "$CHANGED_ONCE_MADE" ] || by_hand "$CHANGED_ONCE_MADE"
     [ -z "$DELETED_ONCE_MADE" ] || echo "[]" > "$EXISTING/releases.json"
+    [ -z "$TAG_ONCE_MADE" ] || retag "$TAG_ONCE_MADE"
     if [ -n "$ANOTHER_ONCE_MADE" ]; then
       jq '. + [.[-1] + {id: 99}]' "$EXISTING/releases.json" > "$EXISTING/next.json"
       mv "$EXISTING/next.json" "$EXISTING/releases.json"
@@ -219,6 +273,7 @@ def setup(tmp_path: Path, tag: str, existing, assets: dict | None = None):
     (there / "releases.json").write_text(json.dumps(listed))
     for name, data in (assets or {}).items():
         (there / "assets" / name).write_bytes(data)
+    (there / "tag").write_text(COMMIT)  # the tag names the run's commit
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     (bin_ / "gh").write_text(GH)
@@ -241,6 +296,7 @@ def attempt(tmp_path: Path, tag: str, candidate: str, stale=None, **env: str):
     there = tmp_path / "existing"
     for lag in ("written", "behind.json", "behind.from", "behind.looks", "made.looks", "reads"):
         (there / lag).unlink(missing_ok=True)
+    (there / "tag.reads").unlink(missing_ok=True)
     for lag in ("stale.json", "stale.from", "stale.looks"):
         (there / lag).unlink(missing_ok=True)
     if stale is not None:
@@ -256,6 +312,8 @@ def attempt(tmp_path: Path, tag: str, candidate: str, stale=None, **env: str):
             "RUNNER_TEMP": str(tmp_path),
             "GITHUB_REF_NAME": tag,
             "GITHUB_RUN_ID": RUN_ID,
+            "GITHUB_SHA": COMMIT,
+            "MAIN_HEAD": MAIN_HEAD,
             "CANDIDATE": candidate,
             "CALLS": str(calls),
             "EXISTING": str(tmp_path / "existing"),
@@ -320,10 +378,18 @@ def the_error(done) -> str:
 
 LISTING = "gh api --paginate repos/owner/repo/releases?per_page=100 --jq "
 READ = "gh api repos/owner/repo/releases/{id} --jq "  # one release, by its id
+# The tag, read as the commit it names (test_ci_release_tag_unit has why and where).
+TAG_READ = "gh api -H Accept: application/vnd.github.sha repos/owner/repo/commits/tags/{tag}"
 BOTH = [
     ("v1.2.3", "", "", ""),
     ("v1.2.3-rc.1", "true", " --prerelease --latest=false", " -f make_latest=false"),
 ]
+
+
+def untagged(calls: list[str]) -> list[str]:
+    """CALLS without the reads of the tag, for a test of what the step does with the release:
+    test_ci_release_tag_unit says where the tag's reads stand."""
+    return [line for line in calls if not line.startswith(TAG_READ.split("{")[0])]
 
 
 def looks(calls: list[str]) -> list[str]:
@@ -344,20 +410,23 @@ def test_no_release_yet_makes_a_draft_compares_it_publishes_it_and_looks_again(
 ):
     done, calls = run(tmp_path, tag, candidate)
     assert done.returncode == 0, done.stdout + done.stderr
-    read = READ.format(id=88)
+    read, tag_read = READ.format(id=88), TAG_READ.format(tag=tag)
     assert looks(calls) == [
+        tag_read,
         LISTING,
-        f"gh release create {tag} --draft --verify-tag --title {tag} --notes-file"
-        f" {tmp_path}/body.md{flags} cairn_memory-1.2.3-py3-none-any.whl"
+        f"gh release create {tag} --draft --verify-tag --target {COMMIT} --title {tag}"
+        f" --notes-file {tmp_path}/body.md{flags} cairn_memory-1.2.3-py3-none-any.whl"
         " cairn_memory-1.2.3.tar.gz SHA256SUMS",
         LISTING,
         read,
         f"gh release download {tag} --dir {tmp_path}/draft",
         read,
+        tag_read,
         f"gh api --method PATCH repos/owner/repo/releases/88 --silent -F draft=false{latest}",
         LISTING,
         f"gh release download {tag} --dir {tmp_path}/published",
         read,
+        tag_read,
     ]
     (made_,) = held(tmp_path)
     assert (made_["draft"], made_["prerelease"]) == (False, candidate == "true")
@@ -395,16 +464,19 @@ def test_this_run_s_draft_with_exactly_this_run_s_files_is_published_by_its_id(
     existing = made_earlier(tag, candidate == "true", draft=True)
     done, calls = run(tmp_path, tag, candidate, existing, attached(tag))
     assert done.returncode == 0, done.stdout + done.stderr
-    read = READ.format(id=77)
+    read, tag_read = READ.format(id=77), TAG_READ.format(tag=tag)
     assert looks(calls) == [
+        tag_read,
         LISTING,
         read,
         f"gh release download {tag} --dir {tmp_path}/draft",
         read,
+        tag_read,
         f"gh api --method PATCH repos/owner/repo/releases/77 --silent -F draft=false{latest}",
         LISTING,
         f"gh release download {tag} --dir {tmp_path}/published",
         read,
+        tag_read,
     ]
     assert held(tmp_path) == [{**existing, "draft": False}]
 
@@ -424,7 +496,7 @@ def test_this_run_s_draft_with_other_names_stops_the_job_which_reads_and_writes_
     existing = made_earlier(tag, candidate == "true", draft=True, names=names)
     done, calls = run(tmp_path, tag, candidate, existing, CUT_OFF)
     assert done.returncode == 1
-    assert looks(calls) == [LISTING, READ.format(id=77)]
+    assert looks(calls) == [TAG_READ.format(tag=tag), LISTING, READ.format(id=77)]
     assert the_error(done) == DRAFT.format(tag=tag)
     assert held(tmp_path) == [existing]
 
@@ -448,6 +520,7 @@ def test_this_run_s_draft_with_the_names_and_other_bytes_is_not_published(
     done, calls = run(tmp_path, tag, candidate, existing, assets)
     assert done.returncode == 1
     assert looks(calls) == [
+        TAG_READ.format(tag=tag),
         LISTING,
         READ.format(id=77),
         f"gh release download {tag} --dir {tmp_path}/draft",
@@ -548,9 +621,10 @@ FORBIDDEN = {
 }
 # Every line of the job that names gh, whole, in the order the text has them: the first step's
 # four, which find gh and read its version, and say so when it is missing or too old; then the
-# listing and the read of one release by its id (reads: no method, field or input), the
-# download, the creation of a draft, and the publication, the one write to a release that
-# exists. Any other line that names it is one too many.
+# listing, the read of the tag as the commit it names and the line it stops on, which points
+# at gh's own words, and the read of one release by its id (reads: no method, field or input,
+# the tag's a header), the download, the creation of a draft, and the publication, the one
+# write to a release that exists. Any other line that names it is one too many.
 GH_LINES = [
     "if ! command -v gh > /dev/null; then",
     'echo "::error::gh is not on this runner, so the GitHub release for $GITHUB_REF_NAME cannot'
@@ -565,11 +639,19 @@ GH_LINES = [
     " unset it to use GitHub's\"",
     'gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] |'
     ' select(.tag_name == \\"$GITHUB_REF_NAME\\") | $fields"',
+    "if ! at=\"$(gh api -H 'Accept: application/vnd.github.sha'"
+    ' "repos/$GH_REPO/commits/tags/$GITHUB_REF_NAME" 2> "$RUNNER_TEMP/tag.err")" || ! [[ "$at"'
+    " =~ ^[0-9a-f]{40}$ ]]; then",
+    'echo "::error::the tag $GITHUB_REF_NAME could not be read as a commit of the repository (it'
+    " is gone, or GitHub did not answer: gh's own words, if any, are above), so this job writes"
+    " nothing more for its release and does not call it finished; re-run this job if the"
+    " repository's tags page shows $GITHUB_REF_NAME at this run's commit $GITHUB_SHA, and"
+    ' otherwise publish nothing for it"',
     'if ! now="$(gh api "repos/$GH_REPO/releases/$id" --jq "select(.tag_name =='
     ' \\"$GITHUB_REF_NAME\\") | $fields" 2> "$RUNNER_TEMP/read.err")"; then',
     'gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || unread',
-    'gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME"'
-    ' --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"',
+    'gh release create "$GITHUB_REF_NAME" --draft --verify-tag --target "$GITHUB_SHA" --title'
+    ' "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"',
     'gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"',
 ]
 NAMES_GH = re.compile(r"(^|[^\w.-])gh(?![\w.-])")
@@ -596,8 +678,8 @@ def can_delete(job: dict) -> list[str]:
 def test_the_text_of_release_issues_no_delete_and_one_write_to_a_release_that_exists():
     """On the job's text, so the delete cannot come back unseen: no DELETE, no gh release
     delete, delete-asset, upload or edit, no --clobber, no curl; the lines that name gh are the
-    listing, the read by id, the download, the creation and the publication, each exactly as
-    written here; and
+    listing, the read by id, the read of the tag, the download, the creation and the
+    publication, each exactly as written here; and
     it runs no file. The publication sends `draft=false`, for a candidate `make_latest=false`
     with it, and nothing else, to the id the listing gave."""
     release = JOBS["release"]

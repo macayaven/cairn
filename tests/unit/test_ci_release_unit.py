@@ -252,7 +252,7 @@ PRIVILEGED_DEFINITIONS = {
         "6153b4d908585eb1ba57111b2d53e509fce748ccd5770de0447b66079fe1fd48",
         "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
         "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
-        "59443bb2361427d9e8e38eec8eca96ff5d21af7d67be5c7ef9b4c14d642c5803",
+        "9998a7b8af19d39f6d41fda8c2bf317a9587ddc92f15b6a95d6404cd52bd1d4a",
     ],
     "deploy": [
         "401510e913f6e37136331eeefa6d88fce27bbba126b17c42793f7694b9600454",
@@ -529,6 +529,7 @@ def run_create(tmp_path, tag: str, candidate: str):
         "PATH": f"{bin_}:/usr/bin:/bin",
         "RUNNER_TEMP": str(tmp_path),
         "GITHUB_REF_NAME": tag,
+        "GITHUB_SHA": COMMIT,
         "GH_REPO": "owner/repo",
         "CANDIDATE": candidate,
     }
@@ -538,6 +539,7 @@ def run_create(tmp_path, tag: str, candidate: str):
 
 
 PUBLICATION = ["api", "--method", "PATCH", "repos/owner/repo/releases/7", "--silent", "-F"]
+COMMIT = "1a2b3c4d" * 5  # the run's commit, which the tag names
 
 
 def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_path):
@@ -549,6 +551,8 @@ def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_pat
         "v1.2.3",
         "--draft",
         "--verify-tag",
+        "--target",
+        COMMIT,
         "--title",
         "v1.2.3",
         "--notes-file",
@@ -570,6 +574,8 @@ def test_a_candidate_is_a_pre_release_never_marked_latest(tmp_path):
         "v1.2.3-rc.2",
         "--draft",
         "--verify-tag",
+        "--target",
+        COMMIT,
         "--title",
         "v1.2.3-rc.2",
         "--notes-file",

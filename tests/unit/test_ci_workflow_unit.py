@@ -1520,6 +1520,7 @@ def run_release_step(tmp_path, step: dict, files: list[str], tag: str = "v1.2.3"
             "PATH": f"{bin_}:/usr/bin:/bin",
             "RUNNER_TEMP": str(tmp_path),
             "GITHUB_REF_NAME": tag,
+            "GITHUB_SHA": "1a2b3c4d" * 5,
             "GH_REPO": "owner/repo",
         },
     )
@@ -1569,6 +1570,8 @@ def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
         "v1.2.3",
         "--draft",
         "--verify-tag",
+        "--target",
+        "1a2b3c4d" * 5,  # the run's commit, $GITHUB_SHA
         "--title",
         "v1.2.3",
         "--notes-file",

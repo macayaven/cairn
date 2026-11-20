@@ -1768,6 +1768,26 @@ jobs:
           # of the job keeps the run's id; notes.md itself is attested, so it is left as it is.
           mark="<!-- cairn-ci-cd run $GITHUB_RUN_ID -->"
           { cat notes.md; printf '\n%s\n' "$mark"; } > "$RUNNER_TEMP/body.md"
+          # The tag is part of what is judged: this run built and attested the files of
+          # $GITHUB_SHA, and a release is its tag's. A person can delete the tag or move it
+          # (a forced push) while the job runs, and a draft keeps its tag name, which is only
+          # a string, so no read of the release shows it. So the tag is read first, before
+          # anything is written; as the last request before the publication; and as the last
+          # request before this step says the release is finished; each time it must name
+          # $GITHUB_SHA, or the step stops and writes nothing more. It is read with GitHub's
+          # "Get a commit", `GET /repos/{owner}/{repo}/commits/{ref}` with the ref
+          # `tags/<tag>` and the header `Accept: application/vnd.github.sha`, which "Returns
+          # the commit's SHA-1 hash" (GitHub's REST reference): the commit, for an annotated
+          # tag as for a lightweight one ("Get a reference" gives an annotated tag's own
+          # object). And the draft is made with --target $GITHUB_SHA: the CLI sends it as the
+          # release's target (create.go, 459 to 461: `if opts.Target != "" {`,
+          # `params["target_commitish"] = opts.Target`), --verify-tag or not, and the API
+          # says of `target_commitish`: "Unused if the Git tag already exists. Default: the
+          # repository's default branch." A publication whose tag a person deleted after the
+          # last read makes GitHub create the tag (seen in round 6 for a draft whose tag did
+          # not exist); with this target it is meant to land on this run's commit, not on the
+          # default branch's head. That GitHub uses the creation's target then is not
+          # measured: that one moment is the race this step cannot close.
           # The release is made by separate requests, and nothing here takes one back. A look
           # lists every release of the repository, drafts included (GitHub lists drafts to a
           # token that may write, as this job's may); a listing that fails stops the job instead
@@ -1815,9 +1835,9 @@ jobs:
           # The listing finds the release and shows whether the tag has more than one; it can
           # be behind a write, a person's as much as this job's, so nothing is compared on it.
           # What is compared is read by the release's id, which was measured to show each
-          # write at once: after the look that gave the id, as the last request before the
-          # publication, and as the last request before this step says the release is
-          # finished. Each such read judges the tag, the mark, the two flags, the title, the
+          # write at once: after the look that gave the id, as the last read of the release
+          # before the publication, and as the last read of it before this step says the
+          # release is finished (only the tag's read comes after each). Each such read judges the tag, the mark, the two flags, the title, the
           # notes and the file names. Each look still stops at once on what it shows of a
           # missing mark, another flag, another title or other notes, in a wait too. The
           # files' bytes are compared by download. A file replaced between the download and
@@ -1850,6 +1870,21 @@ jobs:
           unseen() {
             echo "::error::GitHub does not list the release for $GITHUB_REF_NAME as this job has just left it; re-run this job, which starts from what is listed then"
             exit 1
+          }
+          # The tag, read where git keeps it: this run's only while it names this run's commit.
+          # A read that fails is a tag that may be gone; which status GitHub gives a tag that
+          # is gone was not measured, so the line says both.
+          tagged() {
+            local at
+            if ! at="$(gh api -H 'Accept: application/vnd.github.sha' "repos/$GH_REPO/commits/tags/$GITHUB_REF_NAME" 2> "$RUNNER_TEMP/tag.err")" || ! [[ "$at" =~ ^[0-9a-f]{40}$ ]]; then
+              cat "$RUNNER_TEMP/tag.err" >&2
+              echo "::error::the tag $GITHUB_REF_NAME could not be read as a commit of the repository (it is gone, or GitHub did not answer: gh's own words, if any, are above), so this job writes nothing more for its release and does not call it finished; re-run this job if the repository's tags page shows $GITHUB_REF_NAME at this run's commit $GITHUB_SHA, and otherwise publish nothing for it"
+              exit 1
+            fi
+            if [ "$at" != "$GITHUB_SHA" ]; then
+              echo "::error::the tag $GITHUB_REF_NAME names commit $at, not this run's commit $GITHUB_SHA, whose files this run built and attested, so this job writes nothing more for its release and does not call it finished; delete this run's release for it on the repository's releases page if there is one and nobody should publish it, and re-run this job only once the tag names $GITHUB_SHA again"
+              exit 1
+            fi
           }
           # One release, as a look or a read by its id gave it: this run's by its mark and
           # its flag, with the title and the notes this run wrote. The notes are the sixth
@@ -1940,10 +1975,12 @@ jobs:
               cmp -s "$name" "$RUNNER_TEMP/$2/$name" || "$1" "$name is not the file this run attested"
             done
           }
+          tagged
           look
           if [ -z "$found" ]; then
-            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
-              --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --target "$GITHUB_SHA" \
+              --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" \
+              "${files[@]}"
             look_after made
             [ -n "$found" ] || unseen
           fi
@@ -1951,6 +1988,7 @@ jobs:
           if [ "$draft" = true ]; then
             same_files unfinished draft
             fresh
+            tagged
             gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
             look_after published
             { [ -n "$found" ] && [ "$draft" = false ]; } || unseen
@@ -1958,6 +1996,7 @@ jobs:
           same_files refuse published
           fresh
           [ "$draft" = false ] || unseen
+          tagged
           echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with the title and the notes this run wrote and exactly the files this run attested."
 
   # Points `latest` at the highest released version and each X.Y at the highest released

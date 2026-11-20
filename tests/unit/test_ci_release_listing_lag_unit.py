@@ -28,6 +28,7 @@ import json
 import re
 
 import pytest
+import test_ci_release_retry_unit as retry
 from test_ci_release_notes_title_unit import DIFFERS
 from test_ci_release_retry_unit import (
     CREATE,
@@ -37,17 +38,28 @@ from test_ci_release_retry_unit import (
     README,
     REFUSED,
     attached,
-    attempt,
     cells,
     held,
     looks,
     made_earlier,
-    run,
     the_error,
+    untagged,
     writes,
 )
 
 RUN = CREATE["run"]
+
+
+def run(*args, **env):
+    """test_ci_release_retry_unit's run, its calls without the tag's reads, which
+    test_ci_release_tag_unit places."""
+    done, calls = retry.run(*args, **env)
+    return done, untagged(calls)
+
+
+def attempt(*args, **env):
+    done, calls = retry.attempt(*args, **env)
+    return done, untagged(calls)
 
 
 def value(name: str) -> int:

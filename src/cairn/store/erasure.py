@@ -81,13 +81,23 @@ LIMITED_ERASER = (
 # Why a cap: notes stored in reverse that spell the title two ways in turn, under a heading
 # that says one spelling, cost a render a note in the plain rule and in the rule without
 # it (a thousand: 1,001 renders, 74 s; with the cap at 64, 66 renders and 17 s inside the
-# write). Why 32: outside that family (test_forget_title_line_unit.py's pages are of it, 25
-# renders) a forget rendered a page at most 19 times on the pages tried: the generated
-# pages, seeds 0 to 299, where the plain rule rendered up to 37 times, and
-# test_forget_changed_title_unit.py's; runbook-style notes filed one after another, 2. So
-# the class takes nothing there, and that worst case renders RENDERS_MAX + 2 times, at any
-# size (tests/unit/test_forget_render_cap_unit.py, test_forget_cost_unit.py).
-RENDERS_MAX = 32
+# write). Why 24: outside that family (test_forget_title_line_unit.py's pages are of it, 24
+# renders that name a claim, exact at 24) a forget rendered a page at most 19 times on the
+# pages tried: the generated pages, seeds 0 to 299, where the plain rule rendered up to 37
+# times, the reviewers' and the tester's, and test_forget_changed_title_unit.py's;
+# runbook-style notes filed one after another, 2. So within it a forget is exact (the
+# plain rule, but for the class stated past CLOSERS_MAX), and that worst case renders
+# RENDERS_MAX + 2 times, at any size (tests/unit/test_forget_render_cap_unit.py,
+# test_forget_cost_unit.py).
+RENDERS_MAX = 24
+# The renders that each name a claim before the next takes every claim of the page that can
+# open a fence (_plan's third stated class), after which no claim can own a fence that runs
+# on; a render after that which still names a claim is the end. Why a second cap: each
+# class closed one chain and the same chain was rebuilt one step further out (the run, then
+# the section, then a pair a section: 300 pairs, 301 renders, 109 s inside the write), so
+# the bound is a number, whatever the page: RENDERS_HARD + 3 renders. Why 32: room for the
+# section's class to end the chains it ends (RENDERS_MAX + 2 renders), as it did at 32.
+RENDERS_HARD = 32
 # The keys of an audit event's detail made from a note: a page's slug comes from its title.
 # The other keys a project's events carry are counts, kinds, codes, rule ids, a model's name,
 # person ids and the project's own name and id (see the store contract's Audit log).
@@ -466,6 +476,23 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
       kind, every claim after it that can open a fence, whatever the title does: past the
       cap a forget is no longer exact, and a title that changes at every step must not
       hold those claims to one a render.
+    - At the render after RENDERS_HARD renders that each named a claim, whatever it names,
+      in place of the others: every claim of the page that can open a fence
+      (`_may_open_a_fence`), wherever the body writes it (the tenth round: each class had
+      closed one chain, and the same chain was rebuilt one step further out, last with each
+      pair in a section of its own). A claim of the page whose fence the body left open is
+      one of them, or one at the margin that what the claim named leaves open runs into,
+      whose own fence closes in its text: it cannot open a fence and stays, as such a claim
+      does at every level. With them leave the claims the next render would name for
+      another fault (version_faults without a fence: the claims it does not name pass
+      together). No claim left can then own a fence that runs on, by what
+      `_may_open_a_fence` is tested to mean, so the next render names none.
+    - The end, by construction. Should a render after that still name a claim (the parser
+      would have read one text two ways), every claim that holds a backtick or a tilde
+      leaves with it, and those the next render would name for another fault; a page of the
+      rest has no fence, and one more render writes it. The end is there so that a forget's
+      renders are bounded by a number and not by an argument: at most RENDERS_HARD + 3,
+      whatever the page.
 
     The kinds are chosen on the body just rendered, and the page is titled again by the
     claims left: a claim under a heading that says the title is written with no heading, so
@@ -488,22 +515,24 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     loop is only that a render which names a claim takes it. Where the title changes at
     every step and a first heading says one of its spellings, so that the body differs at
     each step, a forget takes one claim a render as the plain rule does, and the third kind
-    ends that at RENDERS_MAX + 2 renders (a hundred, three hundred or a thousand notes: 34,
-    where the plain rule renders 101, 301 and 1,001 times; and where each sibling named
-    uncovers the next across a list item at the margin, 900 claims: 34 renders and 6 s,
-    where the run before the claim named took 301 and 58 s). No number of renders is
-    promised all the same: a new title can uncover a fence the old one kept apart (nineteen renders,
-    and nineteen in the plain rule: test_forget_changed_title_unit.py), and past RENDERS_MAX
-    too. Where each claim named is the oldest note's, and its going titles the page with a
+    ends that at RENDERS_MAX + 2 renders (a hundred, three hundred or a thousand notes: 26
+    renders, and 0.5, 1.5 and 4.6 s, where the plain rule renders 101, 301 and 1,001 times;
+    and where each sibling named uncovers the next across a list item at the margin, 900
+    claims: 26 renders and 7 s, where the run before the claim named took 301 and 58 s).
+    A new title can still uncover a fence the old one kept apart (nineteen renders, and
+    nineteen in the plain rule: test_forget_changed_title_unit.py), and past RENDERS_MAX
+    too: where each claim named is the oldest note's, and its going titles the page with a
     spelling that one heading alone says, over a tail that then joins the section of the
     next claim to name, each such claim in a section of its own, nothing else of its
-    section is left open and nothing after it can open a fence: a forget renders once a
-    claim, as the plain rule does (thirty-four such claims, 35 renders; three hundred, 301
-    renders and about 110 s on a loaded machine). A
-    render parses the body whole at most CLOSERS_MAX + 2 times, each claim alone, and puts a
-    few questions of twice the body at most. On the pages tried a forget rendered at most
-    once more than the plain rule, and that only past CLOSERS_MAX, and handed the parser at
-    most 25 characters for each character of its body in each render
+    section is left open and nothing after it can open a fence, and a forget renders once a
+    claim, as the plain rule does, up to RENDERS_HARD; the fourth kind ends that at
+    RENDERS_HARD + 2 renders (thirty-four such claims: 34 renders and 1.3 s, against 35;
+    three hundred: 34 renders and 12 s, where it took 301 renders and 109 s). So a forget
+    renders at most RENDERS_HARD + 3 times, whatever the page (seconds on a loaded
+    machine). A render parses the body whole at most CLOSERS_MAX + 2 times, each claim
+    alone, and puts a few questions of twice the body at most. On the pages tried a forget
+    rendered at most once more than the plain rule, and that only past CLOSERS_MAX, and
+    handed the parser at most 25 characters for each character of its body in each render
     (tests/unit/test_forget_cost_unit.py): counts from those pages, not bounds.
     It reads the project's page versions, never the rest of the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
@@ -538,6 +567,8 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
             # fence that the claims before it open, where each time the first such claim leaves
             title = titles.of(kept)
             body, run_on = left_to_run(title, kept, spans)
+            if renders > RENDERS_HARD + 1:  # the end: no claim left holds a backtick or a tilde
+                break
             faults = list(  # each claim is asked alone once: the claims do not change
                 version_faults(kept, spans, legacy=True, run_on=run_on, ask_alone=not renders)
             )
@@ -545,10 +576,23 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
             if not named:
                 break
             renders += 1
-            if faults == [(run_on, Refusal.FENCE_RUNS_ON)]:
+            if renders > RENDERS_HARD:  # the page's class; a render after it, the end
+                takes = _fenced if renders > RENDERS_HARD + 1 else _may_open_a_fence
+                named |= {place for place, claim in enumerate(kept, 1) if takes(claim.text)}
+            elif faults == [(run_on, Refusal.FENCE_RUNS_ON)]:
                 named |= _with_it(title, kept, spans, run_on, body, renders, titles)
             kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in named)
             refused += len(named)
+            if renders > RENDERS_HARD:  # what the next render would name but for a fence, now
+                more = {
+                    place
+                    for place, _ in version_faults(
+                        kept, spans, legacy=True, run_on=None, ask_alone=False
+                    )
+                    if place
+                }
+                kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in more)
+                refused += len(more)
         planned.append((slug, version, title, kept, spans, refused, body))
     return planned
 

@@ -1,7 +1,9 @@
 """Past the ceiling on its renders, a forget takes with the claim named the claims the body
 puts after it that can open a fence (fourth report, must-fix 2); and, in every render, the
 claims directly before it that the parser shows holding what follows (CORE9A:
-test_forget_siblings_unit.py). No other claim leaves for a fence, however often it renders.
+test_forget_siblings_unit.py). No other claim leaves for a fence, however often it renders,
+but past the render caps (test_forget_render_cap_unit.py) and at the end, which only a
+reader that reads one text two ways reaches (the last test here).
 
 A forget that brings more code fences together than a body closes (spans.CLOSERS_MAX) drops
 the claim whose fence runs on and renders again, CLOSERS_MAX times; past that it took the
@@ -234,18 +236,21 @@ def test_fences_that_ended_with_their_list_items_leave_in_the_render_that_uncove
     assert restored(store, tmp_path) == texts(store)
 
 
-def test_past_twice_the_ceiling_a_render_takes_no_more_than_the_first_one_past_it(
+def test_a_reader_that_still_names_a_claim_after_the_pages_class_meets_the_end(
     store, memory, monkeypatch
 ):
-    """No last bound is left that takes more than the fault (CORE9A: past twice the ceiling
-    every claim with a backtick or a tilde left, wherever the body wrote it, and ordinary
-    notes came to that). No page is known that renders so often, so one is made up: a body
-    reader that names the claim before the last for as long as more than twelve are left.
-    Each render takes the claim named; the first past the ceiling takes with it the one
-    claim after it that can open a fence; and the renders past twice the ceiling take what
-    the others take. What the body wrote before stays: inline code, a fenced block at the
-    margin, an indented example with its own closing line. The loop ends because every
-    render takes a claim."""
+    """The end, forced (the tenth round: a bound by a number, not by an argument). No page
+    is known that renders so often, so one is made up: a body reader that names the claim
+    before the last for as long as more than twelve are left, a paragraph with inline code
+    in which the parser reads no fence (one text read two ways). Each render takes the
+    claim named; the first past sixteen takes with it the one claim after it that can open
+    a fence; the render after RENDERS_HARD every claim of the page that can open one (the
+    indented example with its own closing line); and the next, which still names a claim,
+    is the end: every claim with a backtick or a tilde leaves (inline code, a fenced block
+    at the margin, which the plain loop keeps), and the forget renders once more to write
+    the page and stops. RENDERS_HARD + 3 renders. CORE9A took every such claim past twice
+    the ceiling, and ordinary notes came to that; the end comes only after the page's
+    class, which leaves no claim that can open a fence (test_forget_render_cap_unit.py)."""
     indented = "    ~~~text\n    Brook owns the rollback.\n    ~~~"
     safe = [INLINE, FENCED, "- item", indented, "Ada keeps `port 22` shut."]
     coded = [f"Ada keeps `log {n}`." for n in range(50)]
@@ -266,12 +271,14 @@ def test_past_twice_the_ceiling_a_render_takes_no_more_than_the_first_one_past_i
     with monkeypatch.context() as patch:
         patch.setattr(cairn.compiler, "left_to_run", named_before_the_last)
         store.forget_note(other)
-    assert len(taken) > 2 * CLOSERS_MAX + 2
-    # one claim a render, but the first render past the ceiling: the claim after it too
+    hard = erasure.RENDERS_HARD
+    assert len(taken) == hard + 3
+    # one claim a render, but the first past the ceiling (the claim after it too) and the
+    # page's (the indented example), then the end
     steps = [before - after for before, after in itertools.pairwise(taken)]
-    assert steps == [1] * CLOSERS_MAX + [2] + [1] * (len(steps) - CLOSERS_MAX - 1)
-    # the claim that was last once the indented one had left stays last: none names it
-    assert texts(store) == [*safe, *coded[:6], coded[-CLOSERS_MAX - 2]]
+    assert steps[:hard] == [1] * CLOSERS_MAX + [2] + [1] * (hard - CLOSERS_MAX - 1)
+    assert steps[hard:] == [2, taken[hard + 1] - 1]
+    assert texts(store) == ["- item"]
 
 
 # Which claims can open a fence: the parser's answer, held to the parser's reading of bodies

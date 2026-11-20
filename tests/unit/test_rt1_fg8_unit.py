@@ -167,7 +167,7 @@ def test_past_the_cap_only_the_stated_classes_leave():
     run = Run(plan).run()
     try:
         assert [f for f in run.faults if f[1] not in OBSERVED] == []
-        assert (run.stats[0]["renders"], run.stats[0]["plain"]) == (34, 41)
+        assert (run.stats[0]["renders"], run.stats[0]["plain"]) == (26, 41)  # RENDERS_MAX 24
         kept = {claim.text for claim in run.store.get_page(run.pid, "ops").claims}
         assert set(AFTER) | set(BEFORE) <= kept
     finally:

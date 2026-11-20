@@ -8,8 +8,10 @@ test_rt1_harness.py). Here, what it costs beside that loop:
   past that the declared class can change the body (the security guide), and on every page
   tried it rendered at most RENDERS_OVER more often than the plain loop. It renders more
   than sixteen times only where the plain loop does too, and past erasure.RENDERS_MAX
-  (thirty-two) renders that each named a claim a second stated class ends the loop
-  (test_forget_render_cap_unit.py): on the worst case, two renders later.
+  (twenty-four) renders that each named a claim a second stated class ends the loop
+  (test_forget_render_cap_unit.py): on the worst case, two renders later. Past
+  erasure.RENDERS_HARD (thirty-two) a third ends it on every page: at most RENDERS_HARD + 3
+  renders, whatever the page.
 - Parser input. Every character handed to the Markdown parser in the whole forget, against
   its renders times its body (the largest it rendered): at most PER_RENDER. A count from the
   pages tried, not a bound: a render parses the body whole at most CLOSERS_MAX + 1 times,
@@ -171,7 +173,7 @@ def test_the_worst_case_renders_at_most_the_cap_and_two(count):
     """The stated worst case: the title alternates at every step and a heading says one of
     its spellings, so that the body really differs at each step (the aside's heading is
     written, then left out) and the plain loop renders once for each sibling. The forget
-    renders as the plain loop does up to its cap (erasure.RENDERS_MAX, thirty-two renders
+    renders as the plain loop does up to its cap (erasure.RENDERS_MAX, twenty-four renders
     that each named a claim); at the next, every sibling left before the one named is left
     open by the body and leaves with it, and one more render finds nothing: RENDERS_MAX +
     OVER_THE_CAP, and the claims the plain loop keeps (run beside it on a hundred).
@@ -181,8 +183,9 @@ def test_the_worst_case_renders_at_most_the_cap_and_two(count):
     notes, 101 renders, 1,079 bodies of parser input, 0.9 s; three hundred, 301, 2,948
     bodies, 6.3 s; a thousand, 1,001, 9,519 bodies, 74 s (69 to 85 s). With the cap at 64,
     66 renders at each size: 881, 1,094 and 1,183 bodies; 1.1 s, 4.7 s and 16.8 s. At 32,
-    34 renders: 533, 589 and 612 bodies; 0.5 s, 1.6 s and 6.0 s. Other work kept the load
-    average at four to six. Filing the thousand takes nine minutes."""
+    34 renders: 533, 589 and 612 bodies; 0.5 s, 1.6 s and 6.0 s. At 24, 26 renders: 420,
+    453 and 466 bodies; 0.5 s, 1.5 s and 4.6 s. Other work kept the load average at four to
+    six. Filing the thousand takes nine minutes."""
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20_000))
     run = Run(alternating(count, ["Ops"]), check_restore=False)
     try:

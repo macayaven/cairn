@@ -123,14 +123,20 @@ gives no reason), and the claim of this page and of the other that state it; or 
 "mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that holds
 this page's title. This version does not list the pages a page mentions. Each claim is
 {"claim_id", "text", "passage_ids", "outside", "written_by", "written_at"} (and
-`written_by_more`), as a hit of `recall` carries them, its text whole as a hit's is. No
-answer shows a weight. `searched` (`related_searched`), always: `complete`, and the three
-things a read can leave out, each counted (cairn.store.relating.Left): `terms_looked_up` and
-`terms_not_looked_up`, the page's terms past the bound on terms; `claims_read` and
-`claims_not_read`, the claims of other pages past the bounds on what is read;
-`pages_left_out`, the related pages past `limit`. Nothing of a relation is stored: the
-answer is worked out from the pages as they are, in one read of the store, with who wrote
-the notes its claims cite. A page that is not there is refused as `page` refuses it."""
+`written_by_more`), as a hit of `recall` carries them, but for its text: whole up to
+relations.TEXT_MAX characters, and past that its first TEXT_MAX and "text_cut": true (`page`
+gives the claim whole). A claim cut that states a shared term has "line" too, the line of
+the passage it cites that holds the term, taken where the term's fact stands and never by
+a search of the text; a line longer than relations.LINE_MAX is given as LINE_MAX characters
+of it that hold the term, with "line_cut": true. A claim that is not cut has none of the
+three fields, and a claim cut that mentions has no line. No answer shows a weight.
+`searched` (`related_searched`), always: `complete`, and the three things a read can leave
+out, each counted (cairn.store.relating.Left): `terms_looked_up` and `terms_not_looked_up`,
+the page's terms past the bound on terms; `claims_read` and `claims_not_read`, the claims
+of other pages past the bounds on what is read; `pages_left_out`, the related pages past
+`limit`. Nothing of a relation is stored: the answer is worked out from the pages as they
+are, in one read of the store, with who wrote the notes its claims cite. A page that is
+not there is refused as `page` refuses it."""
 
 import contextlib
 import logging
@@ -951,6 +957,18 @@ def _held_by(reason: Reason, stated: Mapping[Any, dict[str, Any]]) -> dict[str, 
     return {"pages": reason.pages, "here": stated[reason.here]}
 
 
+def _cut(claim: relating.Stated) -> dict[str, Any]:
+    """What a claim given by `related` says when its text is cut (relations.TEXT_MAX):
+    `text_cut`; for a term it states, `line`, the line of its passage that holds the term;
+    and `line_cut` when that line is given in part. Nothing for a claim given whole."""
+    said: dict[str, Any] = {"text_cut": True} if claim.cut else {}
+    if claim.line is not None:
+        said["line"] = claim.line
+    if claim.line_cut:
+        said["line_cut"] = True
+    return said
+
+
 def related_searched(left: relating.Left) -> dict[str, Any]:
     """What a read of related pages left out, as `related` answers it under `searched`:
     `complete`, then the counts of cairn.store.relating.Left under their own names."""
@@ -1512,6 +1530,7 @@ class Memory:
             claim: {
                 "claim_id": claim.claim_id,
                 "text": claim.text,
+                **_cut(claim),
                 "passage_ids": list(claim.span_ids),
                 "outside": any(entry["outside"] for entry in entries),
                 **_writers(entries),

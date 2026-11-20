@@ -38,6 +38,13 @@ heaviest first, equal weights by slug, and each with its WHY_MAX weightiest reas
 weights: a mention, then the terms by kind and text) and how many more there are. No answer
 shows a weight: the order is the answer, and each reason says how many pages hold its term.
 
+What a reason gives of a claim: its text whole up to TEXT_MAX characters, and past that
+its first TEXT_MAX, marked cut. A reader of a claim cut must still see the term stated, so
+a claim cut that states a shared term is given with the line of its passage that holds the
+term (`line_of`): the line the term's fact stands on (`placed`: the fact's own start and
+end, never a second search of the text), whole up to LINE_MAX characters, else LINE_MAX
+characters of it around the term.
+
 When a page holds more terms than are looked up (cairn.store.relating.TERMS_MAX), the
 shortest are looked up first (`looked_up_before`): the terms a few pages share are short (a
 flag, a path, a name), and the long ones (a command line with its arguments, a sentence in
@@ -57,6 +64,8 @@ COMMON = 5  # a term more pages of the project hold than this relates none
 CLAIMS_COMMON = 64  # nor does one whose words more claims of the project hold than this
 WHY_MAX = 3  # the reasons an answer gives for one related page; it counts the rest
 RELATED_MAX = 20  # the most related pages one answer gives
+TEXT_MAX = 2_000  # the characters of a claim's text an answer gives; a longer one is cut
+LINE_MAX = 400  # the characters of the line that holds a term, given beside a claim cut
 SHARES, MENTIONED_BY = "shares", "mentioned_by"  # the kinds of relation
 TITLE = "title"  # the kind of what a mention holds: the page's title
 
@@ -77,14 +86,37 @@ def specific(kind: str, text: str) -> bool:
     return len(text) >= CODE_MIN or not text.isalpha()
 
 
+def placed(span: Span) -> dict[Term, tuple[int, int]]:
+    """The terms of a passage that relate pages, each once, in the order they are read: each
+    with where its first fact stands in the passage's text, the fact's own start and end."""
+    found: dict[Term, tuple[int, int]] = {}
+    for fact in extract_facts(span):
+        if fact.kind in TERM_KINDS:
+            term = Term(fact.kind, compared(fact.as_read))
+            if specific(*term):
+                found.setdefault(term, (fact.start, fact.end))
+    return found
+
+
 def terms_of(span: Span) -> list[Term]:
     """The terms of a passage that relate pages, each once, in the order they are read."""
-    found = (
-        Term(fact.kind, compared(fact.as_read))
-        for fact in extract_facts(span)
-        if fact.kind in TERM_KINDS
-    )
-    return list(dict.fromkeys(term for term in found if specific(*term)))
+    return list(placed(span))
+
+
+def line_of(text: str, start: int, end: int) -> tuple[str, bool]:
+    """The line of a passage's `text` that holds text[start:end], a term where `placed` found
+    it (a fact is read within one line), and whether it is cut. A line of at most LINE_MAX
+    characters is given whole. A longer one is given as LINE_MAX characters of it that hold
+    the term, as near their middle as the line's ends let it be; and a term as long as that
+    or longer is given alone. Nothing is searched for: the place is the fact's own."""
+    first = text.rfind("\n", 0, start) + 1
+    last = text.find("\n", end)
+    last = len(text) if last < 0 else last
+    if last - first <= LINE_MAX:
+        return text[first:last], False
+    room = max(0, LINE_MAX - (end - start))
+    left = min(max(first, start - room // 2), last - LINE_MAX)
+    return text[left : max(left + LINE_MAX, end)], True
 
 
 def looked_up_before(term: Term) -> tuple[int, str, str]:

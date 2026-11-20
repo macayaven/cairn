@@ -57,12 +57,22 @@ Bounded work, whoever asks, and nothing left out silently. What can be left out 
 - The related pages past the `limit` asked for: `pages_left_out`.
 `complete` is true only when all three are nothing.
 
+What is given is bounded too, and a claim says when it is not whole (`Stated`). A claim's
+text is read to relations.TEXT_MAX characters and no further, by a handle on the value the
+index stores (`_text`), so a claim of any length costs what a short one does; a longer one
+is given cut. Beside a claim cut that states a shared term goes the line of its first
+passage that holds the term (relations.line_of), from the passage as this read already
+holds it and from where the term's fact stands in it: nothing is read for it, and the text
+is not searched a second time. A claim cut that mentions the page has no such line: the
+index's match has no place in a passage that this read holds.
+
 Statements, T being the terms looked up, beside the four of the caller (the page's head, the
 index's table, the notes of the passages the claims given cite, and who wrote them): 2 for
 the page's claims and their passages; ceil(T / AT_ONCE) to list the claims that hold each
 term's words; 3 for the candidates (their rows, the rows of their passages, the passages); 1
-for the title; 2 for what is given (the claims, the pages' titles and versions). A statement
-with nothing to ask is not run. At most 2 + 4 + 3 + 1 + 2 = 12, and 16 with the caller's.
+for the title; 2 for what is given (the claims, the pages' titles and versions; each claim's
+text is then read by a handle, which is no statement). A statement with nothing to ask is
+not run. At most 2 + 4 + 3 + 1 + 2 = 12, and 16 with the caller's.
 Rows: two for each claim of the page; for each term at most CLAIMS_COMMON + 1, and as many
 for the title; 3 for each candidate claim read, at most CLAIMS_MAX; and what is given, at
 most relations.RELATED_MAX pages of WHY_MAX reasons of two claims.
@@ -78,7 +88,7 @@ a term relates nothing, from either side.
 
 import json
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
 from cairn import relations
@@ -93,11 +103,18 @@ AT_ONCE = 64  # terms one statement asks the index for
 
 
 class Stated(NamedTuple):
-    """A claim of a page's latest version, as the index holds it."""
+    """A claim of a page's latest version, as the index holds it and as a reason gives it:
+    its text whole up to relations.TEXT_MAX characters, else its first TEXT_MAX and `cut`.
+    For a claim cut that states a shared term, `line` is the line of its first passage that
+    holds the term, where the term's fact stands (relations.line_of), and `line_cut` says
+    that line is given in part. A claim that is not cut, and one that mentions, has no line."""
 
     claim_id: str
     text: str
     span_ids: tuple[str, ...]
+    cut: bool = False
+    line: str | None = None
+    line_cut: bool = False
 
 
 class RelatedPage(NamedTuple):
@@ -177,7 +194,8 @@ def related(
             (account_id, project_id, slug),
         )
     }
-    held = _terms(_passages(con, project_id, [cited[0] for cited in own.values() if cited]))
+    texts: dict[str, str] = {}  # each passage read, whole: a claim cut is given a line of it
+    held = _terms(_passages(con, project_id, [cited[0] for cited in own.values() if cited]), texts)
     stating: dict[Term, set[int]] = {}  # each term of the page: its claims whose passage holds it
     for row, cited in own.items():
         for term in held.get(cited[0], ()) if cited else ():
@@ -202,7 +220,7 @@ def related(
     passages, unread = _within(
         con, project_id, list(dict.fromkeys(c[0] for c in candidates.values() if c))
     )
-    held |= _terms(passages)
+    held |= _terms(passages, texts)
     read = {row for row, cited in candidates.items() if not (cited and cited[0] in unread)}
 
     reasons: dict[str, list[Reason]] = {}
@@ -226,7 +244,7 @@ def related(
         reasons.setdefault(at, []).append(Reason(MENTIONED_BY, title, TITLE, 2, None, row))
 
     given, pages_left_out = relations.best(reasons, limit)
-    pages = _given(con, *scope, given) if given else ()
+    pages = _given(con, *scope, given, held, texts) if given else ()
     wanted = {row for _, others in asked.values() for row, _ in others}
     left = Left(
         terms_looked_up=len(looked),
@@ -264,18 +282,21 @@ def _given(
     index: str,
     project_id: str,
     given: Sequence[tuple[str, Sequence[Reason], int]],
+    held: Mapping[str, Mapping[Term, tuple[int, int]]],
+    texts: Mapping[str, str],
 ) -> tuple[RelatedPage, ...]:
     """The pages given, each with its title, its version and the claims of its reasons, read
-    by row: two statements."""
+    by row: two statements. A claim's text is read to relations.TEXT_MAX characters and no
+    further (`_text`), and a claim cut that states a term is given the line of its passage
+    that holds it, from `held`, where each term stands in each passage read, and `texts`."""
     rows = {r for _, why, _ in given for reason in why for r in (reason.here, reason.there)}
-    shown = {
-        row: Stated(claim_id, text, tuple(json.loads(span_ids)))
-        for row, claim_id, text, span_ids in con.execute(
-            f"SELECT c.row, {index}.claim_id, {index}.text, {index}.span_ids "
-            + _BY_ROW.format(index=index),
-            (json.dumps(sorted(row for row in rows if row is not None)), account_id, project_id),
-        )
-    }
+    shown = {}
+    for row, claim_id, span_ids in con.execute(
+        f"SELECT c.row, {index}.claim_id, {index}.span_ids " + _BY_ROW.format(index=index),
+        (json.dumps(sorted(row for row in rows if row is not None)), account_id, project_id),
+    ).fetchall():
+        text, cut = _text(con, index, row)
+        shown[row] = Stated(claim_id, text, tuple(json.loads(span_ids)), cut)
     heads = {
         at: (title, version)
         for at, title, version in con.execute(
@@ -284,21 +305,39 @@ def _given(
             (project_id, json.dumps([at for at, _, _ in given])),
         )
     }
+
+    def side(reason: Reason, row: int | None) -> Stated | None:
+        stated = None if row is None else shown[row]
+        if stated is None or not stated.cut or reason.kind != SHARES:
+            return stated
+        passage = stated.span_ids[0]  # the passage the claim states the term by: its first
+        place = held[passage][Term(reason.term_kind, reason.term)]
+        line, line_cut = relations.line_of(texts[passage], *place)
+        return stated._replace(line=line, line_cut=line_cut)
+
     return tuple(
         RelatedPage(
             at,
             *heads[at],
             tuple(
-                reason._replace(
-                    here=None if reason.here is None else shown[reason.here],
-                    there=shown[reason.there],
-                )
+                reason._replace(here=side(reason, reason.here), there=side(reason, reason.there))
                 for reason in why
             ),
             more,
         )
         for at, why, more in given
     )
+
+
+def _text(con: sqlite3.Connection, index: str, row: int) -> tuple[str, bool]:
+    """A claim's text to relations.TEXT_MAX characters, and whether it holds more. The index
+    keeps a row's text in its own table of what it was given; a handle on the stored value
+    reads the bytes TEXT_MAX + 1 characters can take, 4 each at most, and no more of a claim
+    however long it is. The caller has put the row in the project (`_BY_ROW`)."""
+    with con.blobopen(f"{index}_content", "c5", row, readonly=True) as stored:
+        head = stored.read(4 * (relations.TEXT_MAX + 1))
+    text = head.decode("utf-8", errors="ignore")  # a last character read in part is left out
+    return text[: relations.TEXT_MAX], len(text) > relations.TEXT_MAX
 
 
 def _passages(con: sqlite3.Connection, project_id: str, span_ids: Iterable[str]) -> list[Span]:
@@ -325,9 +364,16 @@ def _passages(con: sqlite3.Connection, project_id: str, span_ids: Iterable[str])
     ]
 
 
-def _terms(passages: Iterable[Span]) -> dict[str, frozenset[Term]]:
-    """Each passage read: the terms it holds (relations.terms_of, on the passage whole)."""
-    return {span.id: frozenset(relations.terms_of(span)) for span in passages}
+def _terms(
+    passages: Iterable[Span], texts: dict[str, str]
+) -> dict[str, dict[Term, tuple[int, int]]]:
+    """Each passage read: the terms it holds and where each stands in it (relations.placed, on
+    the passage whole). Its text is kept in `texts`."""
+    held = {}
+    for span in passages:
+        texts[span.id] = span.text
+        held[span.id] = relations.placed(span)
+    return held
 
 
 def _within(

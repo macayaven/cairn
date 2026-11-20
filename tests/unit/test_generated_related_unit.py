@@ -32,7 +32,13 @@ What is checked of every answer of `Memory.related`, for every page:
   by that term, held by as many pages;
 - and with the bounds on what is read made small enough to be met: every reason still given
   is one the whole read gives, with the same count of pages, and an answer that gives fewer
-  counts claims it did not read.
+  counts claims it did not read;
+- and with the bounds on what is given of a claim made small enough to be met (TEXT_GIVEN
+  and LINE_GIVEN characters for relations.TEXT_MAX and LINE_MAX): the answer is the whole
+  answer but for its long claims; a text cut is the first TEXT_GIVEN characters of the
+  claim's text; a line is the line of the claim's first passage on which the term's first
+  fact stands, by a fresh extract_facts and the passage split at its line ends here, whole
+  or LINE_GIVEN characters of it that hold the fact as it is written there.
 CLAIMS_COMMON is 7 for these projects, which hold at most 36 claims, so that the rule decides
 some relations; the first test counts how many.
 A failure names project and page numbers and term kinds, never a note's text.
@@ -73,6 +79,7 @@ CLAIMS_READ, BYTES_READ = (
     3,
     120,
 )  # the bounds of the second read of each page, small enough to be met
+TEXT_GIVEN, LINE_GIVEN = 24, 34  # the bounds of the third: a claim's text given, and its line
 
 
 def passage(rng: random.Random, held: str) -> str:
@@ -200,7 +207,7 @@ def expected(here: dict, slug: str) -> tuple[set, set]:
 @pytest.fixture(scope="module")
 def world():
     """Every project filed, with every page's answer, the same answer read within small
-    bounds, and what a search here finds."""
+    bounds, the same answer with little given of each claim, and what a search here finds."""
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(relations, "WHY_MAX", EVERY_REASON)
     monkeypatch.setattr(relations, "CLAIMS_COMMON", CLAIMS_COMMON)
@@ -224,6 +231,10 @@ def world():
                 bounded = {
                     slug: memory.related(name, slug, relations.RELATED_MAX) for slug in slugs
                 }
+            with pytest.MonkeyPatch.context() as bounds:
+                bounds.setattr(relations, "TEXT_MAX", TEXT_GIVEN)
+                bounds.setattr(relations, "LINE_MAX", LINE_GIVEN)
+                cut = {slug: memory.related(name, slug, relations.RELATED_MAX) for slug in slugs}
             latest = {slug: store.get_page(project.id, slug) for slug in slugs}
             cited = {i for page in latest.values() for c in page.claims for i in c.span_ids}
             found.append(
@@ -231,6 +242,7 @@ def world():
                     "name": name,
                     "answers": answers,
                     "bounded": bounded,
+                    "cut": cut,
                     "latest": latest,
                     "spans": store.get_spans(cited),
                     "here": searched_here(store, project.id, reading),
@@ -396,6 +408,81 @@ def test_a_read_within_small_bounds_gives_only_what_the_whole_read_gives_and_cou
                 wrong.append((project["name"], slug, "every claim read, another answer"))
     assert wrong == [], (len(wrong), wrong[:5])
     assert bounded_answers >= 200 and fewer >= 100, (bounded_answers, fewer)
+
+
+def first_line_of(span, kind: str, term: str) -> tuple[str, str] | None:
+    """Read here: the line of the passage on which the first fact that is the term stands,
+    and the fact as it is written there."""
+    for fact in extract_facts(span):  # in the order they stand
+        if (fact.kind, compared(fact.as_read)) == (kind, term):
+            before = span.text[: fact.start].count("\n")
+            return span.text.split("\n")[before], span.text[fact.start : fact.end]
+    return None
+
+
+def test_a_claim_given_cut_is_a_prefix_of_its_text_and_its_line_holds_the_term_as_read(world):
+    """With little given of a claim, nothing else of an answer changes; a text cut is the
+    claim's first characters; and the line beside it is the passage's own line that holds
+    the term's first fact, whole or a window of it around the fact as written."""
+    wrong, seen = [], Counter()
+    for project in world["projects"]:
+        for slug, whole in project["answers"].items():
+            cut = project["cut"][slug]
+            assert {**cut, "related": None} == {**whole, "related": None}
+            for page, full in zip(cut["related"], whole["related"], strict=True):
+                assert {**page, "why": None} == {**full, "why": None}
+                for reason, entire in zip(page["why"], full["why"], strict=True):
+                    assert {**reason, "here": None, "there": None} == {
+                        **entire,
+                        "here": None,
+                        "there": None,
+                    }
+                    for side in ("here", "there") if reason["kind"] == "shares" else ("there",):
+                        given, claim = reason[side], entire[side]
+                        where = (project["name"], slug, page["page"], reason["term_kind"], side)
+                        added = {
+                            k: given[k] for k in ("text_cut", "line", "line_cut") if k in given
+                        }
+                        if {**given, "text": claim["text"]} != {**claim, **added}:
+                            wrong.append((*where, "another field differs"))
+                        if len(claim["text"]) <= TEXT_GIVEN:
+                            seen["whole"] += 1
+                            if given != claim:
+                                wrong.append((*where, "a short claim is not given as it is"))
+                            continue
+                        seen["cut"] += 1
+                        if (
+                            given["text"] != claim["text"][:TEXT_GIVEN]
+                            or given["text_cut"] is not True
+                        ):
+                            wrong.append((*where, "not the first characters, marked"))
+                        if reason["kind"] != "shares":
+                            seen["cut, a mention"] += 1
+                            if "line" in given or "line_cut" in given:
+                                wrong.append((*where, "a mention with a line"))
+                            continue
+                        span = project["spans"][claim["passage_ids"][0]]
+                        line, written = first_line_of(span, reason["term_kind"], reason["term"])
+                        seen["of a passage of several lines"] += "\n" in span.text
+                        if len(line) <= LINE_GIVEN:
+                            seen["line whole"] += 1
+                            if given["line"] != line or "line_cut" in given:
+                                wrong.append((*where, "not the line, whole"))
+                            continue
+                        seen["line cut"] += 1
+                        seen["line cut to the term alone"] += len(written) >= LINE_GIVEN
+                        if not (
+                            given.get("line_cut") is True
+                            and len(given["line"]) == max(LINE_GIVEN, len(written))
+                            and given["line"] in line
+                            and written in given["line"]
+                        ):
+                            wrong.append((*where, "not a window of the line that holds the term"))
+    assert wrong == [], (len(wrong), wrong[:5])
+    each = ("whole", "cut", "cut, a mention", "line whole", "line cut")
+    assert min(seen[k] for k in each) >= 100, seen
+    assert seen["of a passage of several lines"] >= 300, seen
+    assert seen["line cut to the term alone"] >= 30, seen
 
 
 def test_a_relation_holds_from_both_sides(world):

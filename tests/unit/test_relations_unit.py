@@ -192,3 +192,65 @@ def test_sums_of_weights_are_exact():
         "brook": [shares("--d", 2)],
     }
     assert [slug for slug, _, _ in best(reasons, limit=8)[0]] == ["ada", "brook"]
+
+
+# A long claim: where its term stands in the passage, and the line that holds it
+
+
+def test_the_bounds_of_a_claim_given_are_stated():
+    assert (relations.TEXT_MAX, relations.LINE_MAX) == (2_000, 400)
+
+
+def test_a_term_is_placed_where_its_first_fact_stands_in_the_passage():
+    span = passage(
+        "Brook pins `quill.lock` at dawn.\n"
+        "Ada reads https://fable.example/Runbook, then `quill.lock` and `Quill.Lock` again."
+    )
+    placed = relations.placed(span)
+    assert list(placed) == terms_of(span)
+    assert {term: span.text[slice(*at)] for term, at in placed.items()} == {
+        Term("inline_code", "quill.lock"): "quill.lock",  # the first of its three, as written
+        Term("url", "https://fable.example/runbook"): "https://fable.example/Runbook",
+    }
+    assert placed[Term("inline_code", "quill.lock")] == (12, 22)
+
+
+def line(text: str, written: str) -> tuple[str, bool]:
+    start = text.index(written)
+    return relations.line_of(text, start, start + len(written))
+
+
+def test_the_line_that_holds_a_term_is_given_whole_when_it_is_short():
+    text = "Brook pins the file.\nAda reads `quill.lock` daily.\nQuill files the report."
+    assert line(text, "quill.lock") == ("Ada reads `quill.lock` daily.", False)
+    assert line(text, "Brook") == ("Brook pins the file.", False)  # the first line
+    assert line(text, "report") == ("Quill files the report.", False)  # the last, no line end
+    assert line("`quill.lock`", "quill.lock") == ("`quill.lock`", False)
+    exactly = "a" * (relations.LINE_MAX - 4) + " --x"
+    assert line("one\n" + exactly + "\ntwo", "--x") == (exactly, False)
+
+
+@pytest.mark.parametrize("before", [0, 1, 150, 199, 200, 201, 800, 1_588, 1_589, 1_590])
+def test_a_longer_line_is_given_as_a_window_of_it_that_holds_the_term(before):
+    """LINE_MAX characters of the line, the term in their middle where the line lets it be;
+    never a character of another line."""
+    written = "`quill.lock`"
+    long = "x" * before + written + "y" * (1_590 - before)
+    assert len(long) == 1_602
+    window, cut = line("first line\n" + long + "\nlast line", "quill.lock")
+    assert cut is True and len(window) == relations.LINE_MAX
+    assert window in long and "quill.lock" in window
+    lead = window.index("quill.lock")
+    room = relations.LINE_MAX - len("quill.lock")
+    assert lead == min(max(room // 2, room - (1_590 - before) - 1), before + 1)
+
+
+def test_a_term_as_long_as_the_window_or_longer_is_its_own_line():
+    """No window is ever less than the term: relations.TERM_MAX keeps a term shorter."""
+    written = "https://fable.example/" + "a" * relations.LINE_MAX
+    text = "see " * 200 + written + " and more" * 100
+    assert line(text, written) == (written, True)
+    assert line("x" + "a" * relations.LINE_MAX, "a" * relations.LINE_MAX) == (
+        "a" * relations.LINE_MAX,
+        True,
+    )

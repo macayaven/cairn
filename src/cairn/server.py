@@ -401,7 +401,11 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       more than 5 other pages name it, or more than 64 of their claims). `pages` is how
       many pages hold the term, exactly: a term whose pages are not all known gives no
       reason. `here` and `there` are claims as a hit of `recall` carries one:
-      "claim_id", "text", "passage_ids", "outside", "written_by", "written_at". `why` holds 3
+      "claim_id", "text", "passage_ids", "outside", "written_by", "written_at"; but a text
+      longer than 2,000 characters is its first 2,000 with "text_cut": true, and beside it,
+      for a claim that states the term, "line": the line of the passage it cites that holds
+      the term (400 characters of a longer line, with "line_cut": true). `page` gives the
+      claim whole; a claim that is not cut has none of the three fields. `why` holds 3
       reasons at most and `more` counts the rest; `limit` is 1 to 20, and any other is a
       tool error that says so. Worked out by rule when asked, from the pages as they are, in
       one read: nothing of a relation is stored, no model is asked, and a forgotten note is

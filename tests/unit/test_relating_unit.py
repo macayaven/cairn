@@ -10,7 +10,7 @@ import pytest
 
 from cairn.gate import lint_gate
 from cairn.memory import Memory
-from cairn.relations import CLAIMS_COMMON, COMMON, MENTIONED_BY, SHARES
+from cairn.relations import CLAIMS_COMMON, COMMON, LINE_MAX, MENTIONED_BY, SHARES, TEXT_MAX
 from cairn.store import Claim, Store, ranking, relating
 
 
@@ -539,6 +539,116 @@ def test_the_first_passage_a_claim_cites_stands_for_the_others(store, ops):
     file(store, "ops", "Brook", "Set `b.cfg`.\n")
     assert reasons(related(store, ops.id, "both")) == {"ada": [(SHARES, "a.cfg", "inline_code", 2)]}
     assert reasons(related(store, ops.id, "brook")) == {}
+
+
+# A long claim: cut at the bound, with the line of its passage that holds the term
+
+
+def test_a_claim_longer_than_the_bound_is_given_cut_with_the_line_that_holds_the_term(store, ops):
+    """The term stands past the cut, on the 92nd line of the passage: the line is taken by
+    where the fact stands, so it is the right one whatever the text given holds, and
+    whatever line holds the same letters and is no fact (the first, here)."""
+    lines = (
+        ["Brook says quill.lock twice: QUILL.LOCK."]
+        + [f"Brook checks ledger {n} at dawn." for n in range(90)]
+        + ["Ada pins `quill.lock` at noon."]
+        + [f"Quill files report {n}, where `quill.lock` is named again." for n in range(40)]
+    )
+    whole = "\n".join(lines)
+    assert len(whole) > TEXT_MAX and whole.index("`quill.lock`") > TEXT_MAX
+    long = file(store, "ops", "Long", whole + "\n")
+    short = file(store, "ops", "Short", "Ada reads `quill.lock` daily.\n")
+
+    (page,) = related(store, ops.id, short).pages
+    (reason,) = page.why
+    (held,) = store.get_page(ops.id, long).claims
+    assert held.text == whole
+    assert reason.there == relating.Stated(
+        held.id,
+        whole[:TEXT_MAX],
+        held.span_ids,
+        cut=True,
+        line="Ada pins `quill.lock` at noon.",
+        line_cut=False,
+    )
+    assert reason.here.text == "Ada reads `quill.lock` daily."
+    assert (reason.here.cut, reason.here.line, reason.here.line_cut) == (False, None, False)
+
+    (back,) = related(store, ops.id, long).pages  # asked of the long page: its own side is cut
+    assert (back.why[0].here, back.why[0].there) == (reason.there, reason.here)
+
+
+@pytest.mark.parametrize("filler", ["a", "\u00e9", "\u20ac", "\U0001f600", '"'])
+@pytest.mark.parametrize("more", [-1, 0, 1, 2])
+def test_a_claim_is_whole_to_the_bound_and_cut_one_character_past_it(store, ops, filler, more):
+    """Counted in characters, whatever bytes each is stored in."""
+    lead = "Brook pins `quill.lock` "
+    whole = lead + filler * (TEXT_MAX + more - len(lead) - 1) + "."
+    assert len(whole) == TEXT_MAX + more
+    file(store, "ops", "Long", whole + "\n")
+    short = file(store, "ops", "Short", "Ada reads `quill.lock` daily.\n")
+    there = related(store, ops.id, short).pages[0].why[0].there
+    assert (there.text, there.cut) == (whole[:TEXT_MAX], more > 0)
+    assert (there.line is not None) == (more > 0) and there.line_cut == (more > 0)
+
+
+@pytest.mark.parametrize(
+    "whole",
+    [
+        "\U0001f600" * TEXT_MAX + " Brook pins `quill.lock`.",  # 4 bytes each, to the bound
+        "Brook pins `quill.lock` x" + "\u20ac" * 3_000,  # the bytes read end inside a character
+        "Brook pins `quill.lock` " + "\U0001f600" * 3_000,  # and here between two
+    ],
+)
+def test_a_claim_is_cut_by_characters_wherever_the_bytes_read_end(store, ops, whole):
+    file(store, "ops", "Long", whole + "\n")
+    short = file(store, "ops", "Short", "Ada reads `quill.lock` daily.\n")
+    there = related(store, ops.id, short).pages[0].why[0].there
+    assert (there.text, there.cut) == (whole[:TEXT_MAX], True)
+    assert (there.line_cut, len(there.line)) == (True, LINE_MAX)
+    assert "`quill.lock`" in there.line and there.line in whole
+
+
+def test_a_long_line_is_given_as_a_window_that_holds_the_term_as_written(store, ops):
+    whole = "Brook waits for the nightly log, " * 80 + "pins `Quill.Lock` and " + "stops, " * 90
+    assert "\n" not in whole and len(whole) > TEXT_MAX
+    file(store, "ops", "Long", whole + "\n")
+    short = file(store, "ops", "Short", "Ada reads `quill.lock` daily.\n")
+    (reason,) = related(store, ops.id, short).pages[0].why
+    there = reason.there
+    assert (reason.term, there.cut, there.line_cut) == ("quill.lock", True, True)
+    assert len(there.line) == LINE_MAX and there.line in whole
+    assert "`Quill.Lock`" in there.line and "Quill.Lock" not in there.text
+
+
+def test_a_long_claim_that_mentions_the_page_is_cut_and_gives_no_line(store, ops):
+    """A mention is the index's match, which has no place in a passage that this read holds:
+    the claim says it is cut and `page` gives it whole."""
+    ledger = file(store, "ops", "Quill ledger", "Brook balances it at dusk.\n")
+    whole = "Ada waits for the nightly log, " * 80 + "then opens the Quill ledger."
+    file(store, "ops", "Long", whole + "\n")
+    (page,) = related(store, ops.id, ledger).pages
+    (reason,) = page.why
+    assert (reason.kind, reason.here) == (MENTIONED_BY, None)
+    assert (reason.there.text, reason.there.cut) == (whole[:TEXT_MAX], True)
+    assert (reason.there.line, reason.there.line_cut) == (None, False)
+
+
+def test_one_claim_cut_gives_each_term_its_own_line(store, ops):
+    lines = (
+        ["Brook pins `quill.lock` at dawn."]
+        + [f"Brook checks ledger {n} at dawn." for n in range(90)]
+        + ["Ada sets `--audit-keep` at noon."]
+    )
+    file(store, "ops", "Long", "\n".join(lines) + "\n")
+    short = file(store, "ops", "Short", "Ada reads `quill.lock` and `--audit-keep`.\n")
+    (page,) = related(store, ops.id, short).pages
+    assert {
+        r.term: (r.there.line, r.there.claim_id == page.why[0].there.claim_id) for r in page.why
+    } == {
+        "quill.lock": ("Brook pins `quill.lock` at dawn.", True),
+        "--audit-keep": ("Ada sets `--audit-keep` at noon.", True),
+    }
 
 
 def test_a_person_is_answered_for_the_projects_their_rule_reaches(store):

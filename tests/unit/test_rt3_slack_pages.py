@@ -15,9 +15,13 @@ The checks, by severity:
   marks Markdown may take as structure or emphasis.
 - source: the note's source link is a link on the page.
 - refused: a message with text is filed, or refused for a stated reason.
-- reply: the reply in Slack names the note by the first line Slack displayed, read as
-  Slack reads mrkdwn: no Slack markup, no mark doubled, nothing Slack showed as characters
-  styled.
+- reply: the reply in Slack names the note by the first line Slack displayed, with no
+  mark doubled. Where the reply says `"mrkdwn": false` its title is read as plain text, in
+  its plain-text section and in the fallback text, with `&amp;`, `&lt;` and `&gt;` read as
+  the characters they write. Nobody has checked against Slack how it decodes entities in
+  plain text, or whether it honours `"mrkdwn": false` on a reply sent to a `response_url`.
+  Else the title is read as Slack reads mrkdwn: no Slack markup, nothing Slack showed as
+  characters styled.
 - title: the body's heading of the title holds no code, link or image, and displays the
   start of the first line Slack displayed, with no mark doubled.
 - author: the author line is the author's name, as the note writes it for Markdown.
@@ -65,8 +69,10 @@ SEVERITY = [
 class Filed:
     raw: str
     author: str
-    reply: str
+    reply: str  # the reply's fallback text
     note: str | None = None
+    reply_mrkdwn: bool = True  # what the reply's own "mrkdwn" field says
+    reply_plain: list[str] = field(default_factory=list)  # its plain-text sections
     claims: list[str] = field(default_factory=list)
     body: str | None = None
     title: str | None = None
@@ -95,8 +101,13 @@ class Filer:
                 sent["blocks"] = blocks
             response = shortcuts.handle(bench, sent)
             asyncio.run(response.background())
-            (reply,) = [body["text"] for where, body in bench.calls if where == REPLY]
-            filed = Filed(raw, author, reply)
+            (reply,) = [body for where, body in bench.calls if where == REPLY]
+            filed = Filed(raw, author, reply["text"], reply_mrkdwn=reply.get("mrkdwn", True))
+            filed.reply_plain = [
+                block["text"]["text"]
+                for block in reply.get("blocks", [])
+                if block.get("text", {}).get("type") == "plain_text"
+            ]
             notes = bench.notes()
             if not notes:
                 return filed
@@ -272,6 +283,15 @@ LIMIT_PASSAGE = (  # finding 5
     "there it shows the backslashes and entities that write it as text, and not the blanks"
     " that end it"
 )
+LIMIT_PASSAGE_MARKS = (  # finding 5, its sentence completed on 3b99dc2a
+    "it shows the rest of the Markdown that writes it too, the doubled asterisks of bold, the"
+    " backticks about code within a line, a link as `[its words](its address)`"
+)
+LIMIT_QUOTED_BLOCK = (  # a code block in a quotation (ruled a stated limit on 3b99dc2a)
+    "a code block in a quotation is written without the quotation's mark that starts each of"
+    " its lines"
+)
+LIMIT_EMPHASIS = "and no link, mention or code between them"  # emphasis across them is typed
 LIMIT_HEADINGS = (  # finding 7, the page's own title and author heading
     "the backslash or entity that keeps it text shows there, and bold text shows its asterisks"
 )
@@ -281,9 +301,18 @@ LIMIT_MENTION = "a mention of anyone else is their member ID"  # finding 8
 def as_text(markdown_line: str) -> str:
     """What a line written as text shows when it is read as code instead (LIMIT_PASSAGE,
     LIMIT_HEADINGS): its backslash escapes and its three entities as the characters they
-    write. Nothing else is undone: doubled asterisks, say, are not in the guide's limit."""
+    write. Nothing else is undone: doubled asterisks, say, are not in LIMIT_HEADINGS."""
     line = re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", markdown_line)
     return re.sub(r"&(amp|lt|gt);", lambda m: {"amp": "&", "lt": "<", "gt": ">"}[m[1]], line)
+
+
+def as_passage(markdown_line: str) -> list[str]:
+    """What a line the note reads as text may show where its passage alone reads it as code
+    (LIMIT_PASSAGE, LIMIT_PASSAGE_MARKS): its escapes and entities as the characters they
+    write, and bold's doubled asterisks, read back as the one Slack was sent (a code span's
+    backticks and a link as `[words](address)` the patterns already allow)."""
+    line = as_text(markdown_line)
+    return [line, line.replace("**", "*")]
 
 
 def _note_code(note_html: str) -> set[str]:
@@ -428,9 +457,9 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
                 if (
                     view != "note"
                     and line not in in_note
-                    and any(p.fullmatch(as_text(line).rstrip(" \t")) for p in relaxed)
+                    and any(p.fullmatch(r.rstrip(" \t")) for r in as_passage(line) for p in relaxed)
                 ):
-                    continue  # read as code in its passage alone: LIMIT_PASSAGE
+                    continue  # read as code in its passage alone: LIMIT_PASSAGE(_MARKS)
                 prose = re.sub(r"\\(.)", r"\1", line).replace("**", "*")
                 if fenced and any(p.fullmatch(as_text(prose)) for p in relaxed):
                     continue  # the guide's fence exception
@@ -449,7 +478,8 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
 def _text_faults(raw: str, claims: list[str], in_note: set[str] = frozenset()) -> list[Fault]:
     """The characters the claims show against those Slack displayed; code a claim alone
     shows that the note read as text is taken as the guide's limit says it shows."""
-    seen, eased = [], []  # as shown; and with what the guide says code may show taken back
+    seen, eased, kept = [], [], []  # as shown; with what the guide says code may show taken
+    # back; and the same with bold's asterisks in a passage's own code kept doubled
     slack_code = {line for block in display(raw, names).code_blocks for line in block}
     fenced = any(
         re.match(r"[ \t>*+\-0-9.)]*(```|~~~)", row) for row in display(raw).text().split("\n")
@@ -460,6 +490,7 @@ def _text_faults(raw: str, claims: list[str], in_note: set[str] = frozenset()) -
         found = Shown(str(render(claim)))
         text = "".join(found.text)
         seen.append(text)
+        doubled = text
         for in_pre, code in found.code:
             lines = code.rstrip("\n").split("\n")
             if in_pre and all(line in slack_code for line in lines if line.strip()):
@@ -467,11 +498,15 @@ def _text_faults(raw: str, claims: list[str], in_note: set[str] = frozenset()) -
             in_both = any(line in in_note for line in lines if line.strip())
             if in_pre and fenced and in_both:  # the fence exception: the marks of prose stay
                 text = text.replace(code, as_text(code).replace("**", "*"), 1)
-            elif in_pre and not in_both:
-                text = text.replace(code, as_text(code), 1)  # LIMIT_PASSAGE
+                doubled = doubled.replace(code, as_text(code).replace("**", "*"), 1)
+            elif in_pre and not in_both:  # LIMIT_PASSAGE(_MARKS)
+                plain, single = as_passage(code)
+                text = text.replace(code, single, 1)
+                doubled = doubled.replace(code, plain, 1)
         eased.append(text)
+        kept.append(doubled)
     pages = []
-    for texts in (seen, eased):
+    for texts in (seen, eased, kept):
         page = re.sub(r"\s", "", "".join(texts))
         for written in (SOURCE_LINE, "Source in Slack"):  # the source swallowed: its own class
             if written.replace(" ", "") in page:
@@ -633,6 +668,16 @@ def _title_faults(filed: Filed, shown) -> list[Fault]:
     if said is None:
         return out
     named = said.group(1)
+    if not filed.reply_mrkdwn:  # plain text: entities read as their characters (unchecked)
+        if filed.reply_plain[-1:] != [named]:
+            out.append(("reply", "title not in its plain section", "reply", repr(named)))
+        reads = decode(named)
+        got = _squash(reads)
+        if want and (not got or not want.startswith(got) or len(got) < min(len(want), 16)):
+            out.append(("reply", "not the first line displayed", "reply", repr(reads)))
+        if reads.count("*") > line.count("*") or reads.count("~") > line.count("~"):
+            out.append(("reply", "marks doubled", "reply", repr(reads)))
+        return out
     if "<" in named:
         out.append(("reply", "Slack markup", "reply", repr(named)))
     reads = decode(named)

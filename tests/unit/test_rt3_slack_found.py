@@ -1,12 +1,19 @@
-"""What the generated messages found (test_rt3_slack_pages), each shrunk and pinned, in four
+"""What the generated messages found (test_rt3_slack_pages), each shrunk and pinned, in three
 parts:
 
 - Fixed: the third tester's findings 1, 2, 3, 4, 6, 7 (the reply in Slack) and 9, ruled
-  fixed and held as fixed on 9d1abc2f (sl8/0.1.0). Each failed on 65e1a416.
-- Stated limits: findings 5, 7 (the page's own title and author heading) and 8, which the
-  connect guide states. Each test names the guide's sentence and asserts what it says.
-- Found on 9d1abc2f: each test states what is right, so it fails while the fault stands.
-- Held since the seventh report's fix (each failed on 0d4e71a8)."""
+  fixed on 9d1abc2f (each failed on 65e1a416); and what its second attack found, ruled fixed
+  on 3b99dc2a (each failed on 9d1abc2f): special mentions, emphasis Slack does not show,
+  the reply's title in plain text, rich text's code blocks in linear time.
+- Stated limits: what the connect guide states, each test naming the guide's sentence and
+  asserting what it says: findings 5 and its sentence completed, 7 (the page's own title and
+  author heading) and 8, a code block in a quotation, emphasis across a link, a mention or
+  code.
+- Held since the seventh report's fix (each failed on 0d4e71a8).
+
+Nobody has checked against Slack how it decodes entities in a plain-text element, or whether
+it honours `"mrkdwn": false` on a reply sent to a `response_url`; the tests of the reply take
+the reply as it is sent."""
 
 import asyncio
 import re
@@ -17,10 +24,14 @@ import pytest
 import test_slack_shortcuts_unit as shortcuts
 from markdown_it import MarkdownIt
 from starlette.testclient import TestClient
+from test_rt3_slack_model import decode
 from test_rt3_slack_pages import (
+    LIMIT_EMPHASIS,
     LIMIT_HEADINGS,
     LIMIT_MENTION,
     LIMIT_PASSAGE,
+    LIMIT_PASSAGE_MARKS,
+    LIMIT_QUOTED_BLOCK,
     SOURCE,
     Filer,
     Shown,
@@ -62,7 +73,7 @@ def claim_text(filed) -> str:
 
 def filed_on_bench(tmp_path, *texts: str, users: dict | None = None):
     """The messages filed in turn on one workspace: its pages (title, body) and each reply
-    in Slack, as its sections' mrkdwn."""
+    in Slack, as sent."""
     bench = Bench(tmp_path)
     try:
         bench.users[shortcuts.CEDAR] = shortcuts.cedar()
@@ -76,11 +87,7 @@ def filed_on_bench(tmp_path, *texts: str, users: dict | None = None):
             bench.owner.get_page(bench.library.id, listed.slug)
             for listed in bench.owner.list_pages(bench.library.id)
         ]
-        replies = [
-            [block["text"]["text"] for block in body.get("blocks", []) if "text" in block]
-            for where, body in bench.calls
-            if where == REPLY
-        ]
+        replies = [body for where, body in bench.calls if where == REPLY]
         return pages, replies
     finally:
         bench.store.close()
@@ -108,11 +115,17 @@ def served(tmp_path, author: str, text: str) -> str:
         bench.store.close()
 
 
-def slack_styles(mrkdwn: str) -> list[str]:
-    """What Slack's mrkdwn would style in `mrkdwn`, outside code: *bold*, _italic_, ~strike~
-    (a mark, no blank after it, text, no blank before the closing mark)."""
-    outside = re.sub(r"`[^`\n]+`", "", mrkdwn)
-    return re.findall(r"([*_~])[^\s*_~][^\n]*?(?<!\s)\1", outside)
+def sections(reply: dict) -> list[tuple[str, str]]:
+    """A reply's sections, each as its text object's type and text."""
+    return [(b["text"]["type"], b["text"]["text"]) for b in reply.get("blocks", []) if "text" in b]
+
+
+def named(reply: dict) -> str:
+    """The title a reply names, as its plain-text section reads (entities decoded, as the
+    harness assumes; unchecked against Slack)."""
+    plain = [text for kind, text in sections(reply) if kind == "plain_text"]
+    assert reply.get("mrkdwn") is False and len(plain) == 1, reply
+    return decode(plain[0])
 
 
 # Fixed, and held as fixed (the third tester's findings, ruled fixed)
@@ -193,10 +206,16 @@ def test_6_struck_text_is_written_as_typed(filer):
 
 
 def test_7_the_reply_in_slack_shows_what_slack_displayed(tmp_path):
-    """Finding 7, the reply: it names the note by its title as Slack displayed it."""
-    _, replies = filed_on_bench(tmp_path, "Q&amp;A [notes] for Monday")
-    (sections,) = replies
-    assert "|Q&amp;A [notes] for Monday>" in sections[0], sections
+    """Finding 7, the reply: it names the note by its title as Slack displayed it, in a
+    section of plain text of its own, the reply saying `"mrkdwn": false` so that its
+    fallback text is plain too; no mrkdwn section holds the title, nor links it. (Slack's
+    decoding of entities in plain text, and its honouring of `"mrkdwn": false` on a reply
+    to a `response_url`, are unchecked.)"""
+    _, (reply,) = filed_on_bench(tmp_path, "Q&amp;A [notes] for *Monday* <!here>")
+    assert named(reply) == "Q&A [notes] for Monday @here", reply
+    assert sections(reply)[-1][0] == "plain_text", reply
+    assert not [text for kind, text in sections(reply) if kind == "mrkdwn" and "Q&" in text]
+    assert decode(reply["text"]).startswith("Filed: Q&A [notes] for Monday @here\n"), reply
 
 
 @pytest.mark.parametrize("run", ["a", "<", "`", "*a* ", "~~~\n", "- ~~~\n", "a@"])
@@ -228,6 +247,21 @@ def test_limit_5_a_line_read_as_code_in_its_passage_alone_keeps_its_escaping(fil
     assert claim_code(filed) == ["\\[x\\] &amp; y\n"], (filed.claims, claim_code(filed))
 
 
+@pytest.mark.parametrize(
+    ("message", "code"),
+    [
+        ("&gt; Readings\n\t*north* blue", "**north** blue\n"),
+        ("&gt; Readings\n\t`port` blue", "`port` blue\n"),
+    ],
+    ids=["bold", "code-span"],
+)
+def test_limit_5_the_passage_shows_the_rest_of_its_markdown(filer, message, code):
+    """The same line, read as code in its passage alone, shows the rest of the Markdown that
+    writes it too: bold's doubled asterisks, the backticks about code within a line."""
+    assert guide_says(LIMIT_PASSAGE_MARKS)
+    assert claim_code(filer(message)) == [code]
+
+
 def test_limit_7_the_page_title_and_author_heading_show_their_escapes(tmp_path):
     """The page's h1 is the title and its section heading the author's line as the note
     writes them for Markdown, shown as plain text: escapes, entities and bold's asterisks."""
@@ -253,42 +287,35 @@ def test_limit_8_a_mention_of_anyone_but_the_author_is_their_member_id(tmp_path)
     assert "@Cedar Quill" in claims
 
 
-# Found on 9d1abc2f
-
-
 @pytest.mark.parametrize(
-    ("text", "author"),
+    ("text", "author", "title"),
     [
-        ("```*draft* _v2_ ~old~\nport 8811```", "Cedar Quill"),
-        (f"<@{shortcuts.CEDAR}> standup", "*Cedar*"),
+        ("```*draft* _v2_ ~old~\nport 8811```", "Cedar Quill", "*draft* _v2_ ~old~"),
+        (f"<@{shortcuts.CEDAR}> standup", "*Cedar*", "@*Cedar* standup"),
     ],
     ids=["code-block", "author-name"],
 )
-def test_the_reply_does_not_style_what_slack_displayed_as_characters(tmp_path, text, author):
-    """The reply names the note by its title as mrkdwn (blocks._message: "verbatim" stops
-    links and mentions, not styles), so marks Slack displayed as characters are styled: the
-    first line of a code block (`*draft* _v2_ ~old~`), or a name (`@*Cedar*`). Slack's page
-    names no escape for these marks in mrkdwn."""
-    named = shortcuts.cedar(real_name=author, profile={"real_name": author, "display_name": author})
-    _, replies = filed_on_bench(tmp_path, text, users={shortcuts.CEDAR: named})
-    (sections,) = replies
-    assert slack_styles(sections[0]) == [], sections
+def test_the_reply_shows_as_characters_what_slack_displayed_so(tmp_path, text, author, title):
+    """Found on 9d1abc2f: the reply named the title in mrkdwn, which styled marks Slack had
+    shown as characters (a code block's first line; a name). It is now plain text."""
+    who = shortcuts.cedar(real_name=author, profile={"real_name": author, "display_name": author})
+    _, (reply,) = filed_on_bench(tmp_path, text, users={shortcuts.CEDAR: who})
+    assert named(reply) == title, reply
 
 
 def test_a_special_mention_shows_as_slack_displayed_it(tmp_path):
-    """Slack displays <!here> as "@here"; the note writes "[link omitted]" (text._render: a
-    reference that is no address and has no label), in the claim, the title and the reply."""
-    (page,), replies = filed_on_bench(tmp_path, "Standup <!here> at ten")
+    """Found on 9d1abc2f: Slack displays <!here> as "@here"; the note wrote "[link omitted]"
+    in the claim, the title and the reply."""
+    (page,), (reply,) = filed_on_bench(tmp_path, "Standup <!here> at ten")
     shown = "".join(text for claim in page.claims for text in Shown(str(render(claim.text))).text)
     assert "@here" in shown and "link omitted" not in shown, shown
-    assert "link omitted" not in page.title and "link omitted" not in replies[0][0], replies
+    assert "link omitted" not in page.title and named(reply) == "Standup @here at ten", reply
 
 
 def test_code_blocks_slack_names_in_rich_text_convert_in_linear_time():
-    """Each code block the rich text names is looked for in the message's text in four
-    ways, the first of which reads to the text's end when it is not there (text._known_code):
-    work grows with the square of the blocks. 40,000 characters of ```x``` take about 1.6 s
-    (0.14 s for 10,000), on a worker thread."""
+    """Found on 9d1abc2f: each code block the rich text names was looked for to the text's
+    end (text._known_code), so 40,000 characters of ```x``` took about 1.6 s against 0.14 s
+    for 10,000."""
     spent = {}
     for size in (10_000, 40_000):
         count = size // 7
@@ -307,36 +334,45 @@ def test_code_blocks_slack_names_in_rich_text_convert_in_linear_time():
 
 
 def test_asterisks_slack_did_not_pair_are_not_shown_doubled(tmp_path):
-    """Slack's `*x*` is written `**x**` even where a blank stands inside a mark, which
-    CommonMark does not take as bold: `2 * 3 * 4` shows as `2 ** 3 ** 4` in the claim, the
-    page's heading of the title and the reply. Slack shows at most the two it was sent."""
-    (page,), replies = filed_on_bench(tmp_path, "2 * 3 * 4 is 24")
+    """Found on 9d1abc2f: `2 * 3 * 4` showed as `2 ** 3 ** 4` in the claim, the page's
+    heading of the title and the reply. Slack shows the two it was sent."""
+    (page,), (reply,) = filed_on_bench(tmp_path, "2 * 3 * 4 is 24")
     shown = "".join(text for claim in page.claims for text in Shown(str(render(claim.text))).text)
     heading = "".join(Shown(READER.render(page.body.split("\n", 1)[0])).text)
     assert shown.count("*") <= 2, shown
     assert heading.count("*") <= 2, heading
-    assert replies[0][0].count("*") <= 2, replies
+    assert named(reply) == "2 * 3 * 4 is 24", reply
 
 
 @pytest.mark.parametrize(
-    ("message", "mark"),
-    [("&gt; Readings\n\t*north* blue", "**"), ("&gt; Readings\n\t`port` blue", "`")],
-    ids=["bold", "code-span"],
+    ("message", "block"),
+    [("&gt; ```\n&gt; ls\n&gt; ```", "ls\n"), ("&gt; ```ls\n&gt; &gt; out```", "ls\n> out\n")],
+    ids=["fence-lines", "one-quoted-deeper"],
 )
-def test_limit_5_as_stated_names_every_mark_its_passage_shows(filer, message, mark):
-    """The limit's sentence names the backslashes and entities a line read as code in its
-    passage alone shows; it shows the doubled asterisks of Slack's bold and the backticks
-    of Slack's code too."""
+def test_limit_a_code_block_in_a_quotation_is_written_without_its_marks(filer, message, block):
+    """A code block in a quotation loses the quotation's mark that starts each of its lines,
+    and only that: a line quoted deeper keeps the marks past the first. What Slack shows in
+    such a block is inferred (its page does not say)."""
+    assert guide_says(LIMIT_QUOTED_BLOCK)
+    assert claim_code(filer(message)) == [block]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "*see <https://good.test/a|the notes>*",
+        f"*ask <@{shortcuts.CEDAR}> now*",
+        "*run `make` now*",
+    ],
+    ids=["link", "mention", "code"],
+)
+def test_limit_emphasis_across_a_link_a_mention_or_code_is_typed(filer, message):
+    """Emphasis is Slack's only with no link, mention or code between its marks (cairn's
+    reading of Slack, whose page does not say); across one, the marks show as typed."""
+    assert guide_says(LIMIT_EMPHASIS)
     filed = filer(message)
-    assert claim_code(filed) and all(mark not in code for code in claim_code(filed)), filed.claims
-
-
-def test_a_code_block_in_a_quotation_holds_what_slack_displayed(filer):
-    """A code block that opens on a quoted line holds what Slack displayed (guide): Slack
-    shows `> x` in the block, its quotation mark being the line's first `&gt;`; the note's
-    block holds `x`, in the claim and the body."""
-    filed = filer("&gt; ```&gt; x```")
-    assert any(code.strip() == "> x" for code in claim_code(filed)), filed.claims
+    shown = "".join(Shown(str(render(filed.claims[0]))).text).strip()
+    assert shown.startswith("*") and shown.endswith("*"), filed.claims
 
 
 # Held since the seventh report's fix (each failed on 0d4e71a8)

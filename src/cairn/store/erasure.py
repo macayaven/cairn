@@ -40,7 +40,7 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 
-from cairn.spans import Span, claim_id
+from cairn.spans import CLOSERS_MAX, Span, claim_id
 from cairn.store import ranking
 from cairn.store.access import MODELS_PREFIX
 from cairn.store.audit import DELETED_PROJECT
@@ -55,7 +55,7 @@ from cairn.store.base import (
 )
 from cairn.store.memory import _SPAN_COLUMNS, _span, _write_page_version
 from cairn.store.models import Claim, Forgotten
-from cairn.store.portable import version_faults
+from cairn.store.portable import Refusal, version_faults
 
 NOT_AN_ERASER = (
     "only the project's maker and the workspace's owners can delete a project or forget its notes"
@@ -380,8 +380,11 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     that only the claims before it open and the body does not close (more than
     spans.CLOSERS_MAX of them, Refusal.FENCE_RUNS_ON): the claim that opens it leaves, the
     first in the body's order, and the rest are rendered and asked again, since without it
-    the body is another; a render for each such claim. It reads the project's page versions,
-    never the rest of the database."""
+    the body is another. A render for each such claim, CLOSERS_MAX times at most, so that a
+    note's author cannot make a forget cost a render for each claim: past that, the claim
+    then named leaves with every claim after it that holds a backtick or a tilde, and no
+    claim after it can open a fence. It reads the project's page versions, never the rest of
+    the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
 
     gone = frozenset(
@@ -408,16 +411,25 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
         claims = [Claim(**claim) for claim in json.loads(claims_json)]
         cited = [i for claim in claims for i in claim.span_ids if i not in gone]
         spans = _held_spans(con, project_id, cited)
-        kept, refused, body = kept_claims(claims, gone, spans), 0, ""
+        kept, refused, body, renders = kept_claims(claims, gone, spans), 0, "", 0
         while kept:  # until the claims left are a version an import takes: once, but for a
             # fence that the claims before it open, where each time the first such claim leaves
             # the title the page had may be the forgotten note's own
             title = _first_title(con, [i for claim in kept for i in claim.span_ids]) or slug
             body, run_on = left_to_run(title, kept, spans)
-            faults = version_faults(kept, spans, legacy=True, run_on=run_on)
+            faults = list(  # each claim is asked alone once: the claims do not change
+                version_faults(kept, spans, legacy=True, run_on=run_on, ask_alone=not renders)
+            )
             named = {place for place, _ in faults if place}
             if not named:
                 break
+            renders += 1
+            if renders > CLOSERS_MAX and faults == [(run_on, Refusal.FENCE_RUNS_ON)]:
+                named |= {  # the ceiling: no claim after it can open a fence any more
+                    place
+                    for place, claim in enumerate(kept, 1)
+                    if place > run_on and ("`" in claim.text or "~" in claim.text)
+                }
             kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in named)
             refused += len(named)
         planned.append((slug, version, title, kept, spans, refused, body))

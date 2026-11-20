@@ -54,7 +54,13 @@ from cairn.compiler import (
 from cairn.gate import importable, lint_gate, strict_lint_gate, verbatim_gate
 from cairn.spans import CLOSERS_MAX, FenceLeftOpen, Span
 from cairn.store import Store, portable
-from cairn.store.portable import Refusal, _claim_text, _page_version, version_faults
+from cairn.store.portable import (
+    Refusal,
+    _as_rendered,
+    _claim_text,
+    _page_version,
+    version_faults,
+)
 
 GATES = (provenance_gate, lint_gate, strict_lint_gate, verbatim_gate)
 REWORDED = (provenance_gate, lint_gate, strict_lint_gate)  # they take a claim in other words
@@ -234,8 +240,10 @@ def test_the_case_meets_that_reason_and_an_import_says_it(store, refusal, n):
         "metrics": {},
         "created_at": "2026-11-20T00:00:00+00:00",
     }
-    with pytest.raises(ValueError) as refused:
-        _claim_text(_page_version("projects/alpha/", line, {}, spans), spans, "projects/alpha/")
+    with pytest.raises(ValueError) as refused:  # the import's three steps, in its order
+        imported = _page_version("projects/alpha/", line, {}, spans)
+        _claim_text(imported, spans, "projects/alpha/")
+        _as_rendered(imported, spans, "projects/alpha/")
     place = faults[0][0]
     assert str(refused.value) == refusal.said("net", 1, "projects/alpha/", place, page.claims)
     assert "port 80" not in str(refused.value)

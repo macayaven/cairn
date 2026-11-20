@@ -1036,13 +1036,12 @@ def _plan(entries: dict[str, bytes]) -> _Plan:
         cited: dict[str, str] = {}  # each span cited so far, and the page that cites it
         keys: dict[str, str | None] = {}  # each page's topic key, as its lines carry it (N1)
         for line in _lines(entries, root + "pages.jsonl"):
-            written: list[str] = []  # the version's body as cairn writes it now: one render
-            page = _page_version(root, line, versions, chunks, written)
+            page = _page_version(root, line, versions, chunks)
             _cited_once(page, cited, root)
             _claim_text(page, chunks, root)
             _page_key(line, page, keys, root)
             versions[page.slug], given[page.slug] = page.version, page.body
-            project.pages.append(_as_rendered(page, chunks, root, *written))
+            project.pages.append(_as_rendered(page, chunks, root))
         latest = {page.slug: page for page in project.pages}
         _file_by_topic(project, latest, keys, cited, root)
         for slug in latest:
@@ -1423,9 +1422,9 @@ def version_faults(
     `run_on`: the place of the claim whose code fence, where the body puts it, runs into
     the next claim and the body does not close, as the caller's one render of the version
     found it (compiler.left_to_run: more than spans.CLOSERS_MAX such fences, or one no line
-    closes); None for none. It is the last fault, named only of claims that otherwise pass
-    together: without that claim the body is another, so a forget renders and asks again
-    (store.erasure._plan), and the first such claim in the body's order leaves each time.
+    closes); None for none, and from an import's first two steps. It is the last fault,
+    named only of claims that otherwise pass together: without that claim the body is
+    another, so a forget renders and asks again (store.erasure._plan).
     `ask_alone`: False when the caller asked each claim alone already whether it leaves a
     fence open that no line closes, and refused the page for it (a gate:
     gate.unclaimed_violations, which refuses a fence that runs on too, so it gives `run_on`
@@ -1435,9 +1434,11 @@ def version_faults(
     cites, and asks every other of every claim. For the gates whose contract takes a claim
     in other words than its passage (cairn.gate.importable); never an import or a forget.
 
-    An import asks in two steps, in the order it always did: everything but the bound on
-    text when it reads the version's line (_page_version, `text_bound` False), and that
-    bound after its rule across pages (_claim_text, of the same code: _past_bounds).
+    An import asks in three steps, in the order it always did, so a version it refuses
+    costs no more than before: everything but the bound on text when it reads the version's
+    line (_page_version, `text_bound` False), that bound after its rule across pages
+    (_claim_text, of the same code: _past_bounds), and the fence that runs on where it
+    renders the body it stores (_as_rendered: Refusal.FENCE_RUNS_ON of that one render).
 
     A claim fails alone when its id is not shaped as cairn makes one, it cites a span twice
     or one that is not in `spans`, it is not the whole of every span it cites, it leaves a
@@ -1538,9 +1539,7 @@ def _collapsed(text: str) -> str:
     return " ".join(text.split())
 
 
-def _as_rendered(
-    page: Page, spans: Mapping[str, Span], root: str, written: str | None = None
-) -> Page:
+def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     """The version with the body cairn writes of its claims and the spans they cite
     (cairn.compiler.render_body). The archive's must equal it, or a rendering cairn wrote
     before, whitespace aside: before fix H (previous_render_body), before review 7.2, with
@@ -1554,18 +1553,20 @@ def _as_rendered(
     naming the page and version, never the text: an import never brings a body cairn would
     not have written, and the version is stored with the current rendering. A title longer
     than cairn writes (a note's topic, FIELD_MAX) is cut to it, and the body is rendered
-    with the cut title."""
+    with the cut title. And in the body that is stored no code fence runs from one claim
+    into the next unclosed (Refusal.FENCE_RUNS_ON, of that same render): a version with more
+    than spans.CLOSERS_MAX such fences, which only the build before the body was read whole
+    could write, is refused, by page and version."""
     from cairn.compiler import (  # the compiler builds on the store
+        left_to_run,
         previous_render_body,
-        render_body,
         render_body_before_review_four,
         render_body_before_review_three,
         render_body_before_review_two,
         render_body_with_fences_open,
     )
 
-    # `written`: that rendering, when _page_version made it already for its fence question
-    body = render_body(page.title, page.claims, spans) if written is None else written
+    body, run_on = left_to_run(page.title, page.claims, spans)
     # An archive written before holds an earlier rendering: accepted, stored as now.
     given = _collapsed(page.body)
     if given != _collapsed(body) and all(
@@ -1584,16 +1585,15 @@ def _as_rendered(
         )
     title = page.title[: FIELD_MAX["topic"]]  # a page's title is its note's topic or title
     if title != page.title:
-        body = render_body(title, page.claims, spans)
+        body, run_on = left_to_run(title, page.claims, spans)
+    if run_on is not None:  # asked of the body that is stored, by its one render
+        fault = Refusal.FENCE_RUNS_ON
+        raise ValueError(fault.said(page.slug, page.version, root, run_on, page.claims))
     return page.model_copy(update={"title": title, "body": body})
 
 
 def _page_version(
-    root: str,
-    line: dict[str, Any],
-    versions: dict[str, int],
-    spans: Mapping[str, Span],
-    written: list[str] | None = None,
+    root: str, line: dict[str, Any], versions: dict[str, int], spans: Mapping[str, Span]
 ) -> Page:
     """One line of a project's pages.jsonl: the next version of its page (`versions` holds
     each page's latest so far), citing only `spans`, the spans of the project's own notes by
@@ -1606,13 +1606,7 @@ def _page_version(
     by the gate's comparison before CORE5 is accepted too (store.before_core5): a tidy then
     could fold passages that differ only by white space, and its version is imported as it
     is, never rewritten; the next tidy or compile rebuilds the latest (compiler.rebuilt_folds).
-    And no code fence of the body cairn writes of the claims now runs from one claim into the
-    next unclosed (Refusal.FENCE_RUNS_ON): a version with more than spans.CLOSERS_MAX such
-    fences, which only the build before the body was read whole could write, is refused, by
-    page and version. `written`, when given, takes that body, for _as_rendered.
     """
-    from cairn.compiler import left_to_run  # the compiler builds on the store
-
     where = f"a line of {root}pages.jsonl"
     if missing := [key for key in _PAGE_LINE if key not in line]:
         raise ValueError(f"{where} has no {missing[0]!r}")
@@ -1642,14 +1636,8 @@ def _page_version(
         )
     except (TypeError, KeyError, ValidationError):  # neither message is shown: they quote the input
         raise ValueError(f"a claim of {slug!r} in {root} is not well formed") from None
-    # One render answers whether a fence runs from one claim into the next past what the
-    # body closes (as cairn writes the body now, whatever build wrote the archive's).
-    title = line["title"] if isinstance(line["title"], str) else ""
-    body, run_on = left_to_run(title, claims, spans)
-    for n, fault in version_faults(claims, spans, legacy=True, run_on=run_on, text_bound=False):
+    for n, fault in version_faults(claims, spans, legacy=True, run_on=None, text_bound=False):
         raise ValueError(fault.said(slug, expected, root, n, claims))
-    if written is not None:
-        written.append(body)
     return Page(
         project_id="",
         slug=slug,

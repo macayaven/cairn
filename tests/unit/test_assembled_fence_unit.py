@@ -755,3 +755,59 @@ def test_a_gate_call_a_forget_and_an_import_of_200_fenced_claims_each_render_onc
         assert len(target.get_page(target.get_project("alpha").id, "ops").claims) == 200
     finally:
         target.close()
+
+
+def test_a_forget_that_brings_1997_such_fences_together_renders_eighteen_times_at_most(
+    memory, store, monkeypatch
+):
+    """Three notes any gate saves: a list item, a note at the margin, and one note of 1,997
+    indented fences, which after the margin note are indented text. Forgetting the margin
+    note makes each of them a fence that closes or opens the next. The body closes sixteen;
+    the claim then left open leaves and the rest is rendered again, sixteen times; past
+    that, the claim named leaves with every claim after it that holds a backtick or a tilde.
+    So a note's author cannot make a forget cost a render for each claim."""
+    fences = [f"    ~~~\n    sample {n}" for n in range(1997)]
+    answers = [
+        memory.note("alpha", text, title="Ops", topic="Ops")
+        for text in ("- item", "Between.", "\n\n".join(fences))
+    ]
+    assert [answer["status"] for answer in answers] == ["saved"] * 3
+    project, slug = store.get_project("alpha"), answers[0]["page"]
+    assert len(store.get_page(project.id, slug).claims) == 1999
+    count = parses(monkeypatch, lambda: store.forget_note(answers[1]["note_id"]))
+    page = store.get_page(project.id, slug)
+    assert [claim.text for claim in page.claims] == ["- item", *fences[:CLOSERS_MAX]]
+    assert (
+        unclaimed_violations(
+            CandidatePage(slug=slug, title=page.title, body=page.body, claims=page.claims),
+            store.get_spans([i for claim in page.claims for i in claim.span_ids]),
+        )
+        == []
+    )
+    # each claim alone once; then eighteen renders, each every claim left alone and the body
+    # at most seventeen times: no more, whatever the note holds
+    assert count <= 1997 + (CLOSERS_MAX + 2) * (1997 + CLOSERS_MAX + 1)
+    assert store.get_note(answers[2]["note_id"]) is not None  # the note stays stored
+
+
+def test_an_archive_refused_for_a_claim_in_other_words_is_not_parsed(memory, store, monkeypatch):
+    """The import asks of a fence that runs on where it renders the body it stores, after
+    its other rules: a version it refuses for one of them costs no Markdown parse, as
+    before."""
+    project = store.get_project("alpha")
+    note, _ = store.add_note(project.id, "Ada keeps `port 80` open.", title="Ops", topic="Ops")
+    (span,) = store.note_spans(note.id)
+    other = Claim(id=claim_id(span.id), text="Ada opens `every` port.", span_ids=(span.id,))
+    body = render_body("Ops", [other], {span.id: span})
+    store.save_page(project.id, "ops", "Ops", body, [other])  # its one version, at the store
+    archive, target = exported(store), Store(":memory:")
+    calls, parse = [], cairn.spans._PARSER.parse
+    monkeypatch.setattr(
+        cairn.spans._PARSER, "parse", lambda *a, **k: calls.append(1) or parse(*a, **k)
+    )
+    try:
+        with pytest.raises(ValueError, match="does not say what a passage it cites says"):
+            target.import_export(io.BytesIO(archive))
+    finally:
+        target.close()
+    assert calls == []

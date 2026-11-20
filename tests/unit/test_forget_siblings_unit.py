@@ -253,7 +253,8 @@ def test_sixteen_times_and_then_the_later_claims_that_can_open_a_fence_leave(sto
     )
 
 
-# What a question costs: never more than twice the body (sixth report, must-fix 4)
+# What a question costs: never more than twice the body (sixth report, must-fix 4), and a
+# long line after the claims no longer narrows what leaves (RT1, the tester's finding)
 
 
 def questions(store: Store, note_id: str, monkeypatch):
@@ -287,70 +288,67 @@ def questions(store: Store, note_id: str, monkeypatch):
     return seen
 
 
-def test_a_question_is_never_more_than_twice_the_body_and_asks_the_nearest_that_fit(
-    store, monkeypatch
-):
-    """Thirty siblings before a tail of one line of 761 characters. The line was written
-    once after each sibling asked: 23,459 characters given to the parser for a body of
-    2,121, inside the write. Now a question is the body up to the claim named and the line
-    once for each claim asked, as many of the nearest as fit in twice the body: three at
-    first, so the thirty leave in eight renders and a ninth finds nothing. The claims left
-    are the plain loop's."""
-    siblings, tail = narrow(30), "        " + "tail " * 150 + "end"
-    separator = under_steps(store, siblings, [tail])
+LONG = "        " + "tail " * 150 + "end"  # a tail of one line of 761 characters
+
+
+def test_a_long_line_is_asked_cut_and_every_sibling_leaves_in_the_first_render(store, monkeypatch):
+    """Thirty siblings before that tail. Written whole once after each sibling asked, the
+    line made a question of 23,459 characters for a body of 2,121, and the bound of twice
+    the body then let three leave a render: nine renders. Whether a fence takes the line in
+    depends on its indentation and on whether it holds anything else, never on its length
+    (spans.fences_reaching), so a line longer than the claim it follows is written cut to
+    those: the eight spaces and `t`. One question, of all twenty-nine, well within twice
+    the body; the thirty leave in the first render and a second finds nothing. The claims
+    left are the plain loop's."""
+    siblings = narrow(30)
+    separator = under_steps(store, siblings, [LONG])
     expected = plain_loop(store, separator)
     seen = questions(store, separator, monkeypatch)
     assert texts(store) == restored(store) == expected
-    assert [named for _, named, _ in seen].count(None) == 1 and len(seen) == 9
-    left = len(siblings)
-    for n, (body, named, sources) in enumerate(seen[:-1]):
-        prefix = body.index(f"{named}\n\n")  # the body up to the claim named
-        fit = (2 * len(body) - prefix) // (len(tail) + 2)
-        if n == 0:
-            assert (len(body), len(tail), fit) == (2121, 761, 3)
-            assert prefix + (left - 1) * (len(tail) + 2) == 23459  # were all of them asked
-        asked = min(fit, left - 1)
-        assert [len(source) for source in sources] == [prefix + asked * (len(tail) + 2)]
-        assert len(sources[0]) <= 2 * len(body) < len(sources[0]) + len(tail) + 2 or asked < fit
-        assert sources[0].count(f"\n\n{tail}\n\n") == asked
-        left -= asked + 1
-    assert left == 0
+    assert [named for _, named, _ in seen] == [siblings[-1], None]
+    body, _, sources = seen[0]
+    assert len(body) == 2121 and len(sources) == 1
+    prefix = body.index(f"{siblings[-1]}\n\n")  # the body up to the claim named
+    assert len(sources[0]) == prefix + 29 * len("        t\n\n") <= 2 * len(body)
+    assert sources[0].count("\n\n        t\n\n") == 29 and LONG not in sources[0]
 
 
-def test_a_long_line_after_a_hundred_claims_takes_twenty_two_renders(store, monkeypatch):
-    """What the bound costs, stated: a hundred siblings before that line leave four or five
-    at a render, in twenty-one renders, and a twenty-second finds nothing. More than
-    eighteen, with one title; the claims left are the plain loop's, which renders a hundred
-    and one times."""
-    siblings, tail = narrow(100), "        " + "tail " * 150 + "end"
+@pytest.mark.parametrize("count", [100, 1000])
+def test_a_long_line_after_many_claims_costs_two_renders(store, monkeypatch, count):
+    """A hundred siblings before that line left four or five at a render: twenty-two
+    renders. A thousand before a line of 40,000 characters left one or two: 335 renders,
+    a minute inside the write. Two renders now, one question in the first, and the claims
+    left are the plain loop's, which renders once for each sibling and once more (run
+    here for the hundred; for the thousand it is the minute)."""
+    tail = LONG if count == 100 else "        " + "tail " * 8000
+    siblings = narrow(count)
     separator = under_steps(store, siblings, [tail])
-    expected = plain_loop(store, separator)
+    expected = [INLINE, "- item", *SPENT, END, "- parent", tail]
+    if count == 100:
+        assert plain_loop(store, separator) == expected
     seen = questions(store, separator, monkeypatch)
-    assert texts(store) == expected == [INLINE, "- item", *SPENT, END, "- parent", tail]
-    assert len(seen) == 22 > CLOSERS_MAX + 2
+    assert texts(store) == expected
+    assert [len(sources) for _, _, sources in seen] == [1, 0]
     assert all(len(source) <= 2 * len(body) for body, _, sources in seen for source in sources)
     says(
         "security",
         CHECKS,
-        "A long line after many such claims lets only the nearest few leave at each reading.",
+        "How long the line after such claims is does not change how many leave together.",
     )
 
 
 def test_where_not_one_claim_fits_nothing_is_asked_and_the_claim_named_leaves_alone(
     store, monkeypatch
 ):
-    """In a body its own next line fits once, so the case is made: the question is handed a
-    line longer than twice the body. Nothing is given to the parser for it, each sibling is
-    named in its turn, and the claims left are the plain loop's."""
+    """The bound stays for what a cut line cannot make small. No claim's text makes it
+    reach here (a cut line is as deep as the claim reaches and one character more), so the
+    case is made: the line is written whole and longer than twice the body. Nothing is
+    given to the parser for it, each sibling is named in its turn, and the claims left
+    are the plain loop's."""
     siblings = narrow(3)
     separator = under_steps(store, siblings, ["        End of samples."])
     expected = plain_loop(store, separator)
-    before_it = erasure._before_it
-    monkeypatch.setattr(
-        erasure,
-        "_before_it",
-        lambda body, blocks, at, line: before_it(body, blocks, at, "x" * 9000),
-    )
+    monkeypatch.setattr(erasure, "asked_line", lambda line, block: "x" * 9000)
     seen = questions(store, separator, monkeypatch)
     assert texts(store) == expected
     assert [named for _, named, _ in seen] == [*reversed(siblings), None]

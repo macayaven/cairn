@@ -499,7 +499,9 @@ def test_every_generated_forget_leaves_what_the_plain_loop_leaves_but_the_declar
     # and more than CLOSERS_MAX; the most it dropped on one page; the pages whose title
     # changed while the forget worked, and those it rendered more than CLOSERS_MAX + 2
     # times; the most renders, and questions in a render; the claims of the declared class
-    # it took.
+    # it took. The class taken past the ceiling holds to the title's text (the eighth
+    # round): loosened like the claims before, it took one more claim on two pages (82,
+    # 199) and saved no render.
     assert (pages, refused, sites, faulted, past, most_dropped) == (PAGES, 0, 440, 113, 26, 300)
     assert (retitled, longer, largest, most_asks) == (15, 0, RENDERS_SEEN, ASKS_MAX)
     assert declared_claims == 41

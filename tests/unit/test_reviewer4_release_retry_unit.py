@@ -23,9 +23,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("gh version 2.102.0 (2026-01-01)")
+    print("https://github.com/cli/cli/releases/tag/v2.102.0")
+    sys.exit(0)
 path = Path(os.environ["RELEASE_STATE"])
 state = json.loads(path.read_text())
-args = sys.argv[1:]
 state["calls"].append(args)
 release = state["release"]
 rc = 0

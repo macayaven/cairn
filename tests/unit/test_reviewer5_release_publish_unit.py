@@ -261,6 +261,10 @@ def release_command(state, command, args):
 
 
 def gh(args):
+    if args == ["--version"]:
+        print("gh version 2.102.0 (2026-01-01)")
+        print("https://github.com/cli/cli/releases/tag/v2.102.0")
+        return 0
     path = Path(os.environ["RELEASE_STATE"])
     state = json.loads(path.read_text())
     state["calls"] += 1

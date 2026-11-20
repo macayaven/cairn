@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sys
 from pathlib import Path
 
@@ -59,9 +60,14 @@ def release_view(gh, release, args):
 def serve_gh(gh, args):
     path = Path(os.environ["RELEASE_STATE"])
     state = json.loads(path.read_text())
-    state["calls"] += 1
+    state["calls"].append(args)
     try:
-        if args[0] == "api":
+        if args == ["--version"]:
+            version = state["gh_version"]
+            print(f"gh version {version} (2026-01-01)")
+            print(f"https://github.com/cli/cli/releases/tag/v{version}")
+            rc = 0
+        elif args[0] == "api":
             rc = gh.api(state, args[1:])
         elif args[:2] == ["release", "view"]:
             rc = release_view(gh, state["release"], args[2:])
@@ -88,7 +94,7 @@ if __name__ == "__main__":
     sys.exit(serve_gh(gh, sys.argv[1:]))
 
 
-def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None):
+def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None, gh_version="2.102.0"):
     package = artifact(tmp_path)
     notes = release_check.notes("1.2.3", CHANGELOG, tag)
     (package / "notes.md").write_bytes(notes.encode())
@@ -106,7 +112,8 @@ def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None):
         json.dumps(
             remote
             | {
-                "calls": 0,
+                "gh_version": gh_version,
+                "calls": [],
                 "writes": [],
                 "unsupported": [],
                 "edit_when_public": edit_when_public,
@@ -116,11 +123,19 @@ def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None):
     )
     bin_dir = tmp_path / "bin"
     shim(bin_dir)
-    tool = bin_dir / "gh"
-    tool.write_text(f'#!/bin/sh\nexec {shlex.join([sys.executable, "-IB", __file__])} "$@"\n')
-    tool.chmod(0o755)
+    if gh_version is None:
+        # Keep the shell tools for the artifact and listing steps, even on hosts with /usr/bin/gh.
+        search_path = str(bin_dir)
+        for name in ("cat", "cut", "ls", "sed", "shasum", "sort", "tr"):
+            if executable := shutil.which(name, path=SYSTEM):
+                (bin_dir / name).symlink_to(executable)
+    else:
+        search_path = f"{bin_dir}:{SYSTEM}"
+        tool = bin_dir / "gh"
+        tool.write_text(f'#!/bin/sh\nexec {shlex.join([sys.executable, "-IB", __file__])} "$@"\n')
+        tool.chmod(0o755)
     env = {
-        "PATH": f"{bin_dir}:{SYSTEM}",
+        "PATH": search_path,
         "RUNNER_TEMP": str(tmp_path),
         "RELEASE_STATE": str(state_path),
         "GITHUB_WORKSPACE": str(REPO),
@@ -129,14 +144,40 @@ def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None):
         "GH_REPO": "wren/ledger",
         "CANDIDATE": "true" if tag == model.CANDIDATE else "",
     }
-    for step in JOBS["release"]["steps"]:
+    failed_step = None
+    for index, step in enumerate(JOBS["release"]["steps"]):
         if "run" in step:
             done = run_step(step["run"], env=env, cwd=REPO, shell=step.get("shell"))
             if done.returncode:
+                failed_step = index
                 break
     state = json.loads(state_path.read_text())
-    assert state["calls"] and not state["unsupported"], (state["unsupported"], done.stderr)
+    state["failed_step"] = failed_step
+    assert not state["unsupported"], (state["unsupported"], done.stderr)
+    if gh_version is not None:
+        assert state["calls"], done.stdout + done.stderr
     return done, state, original
+
+
+@pytest.mark.parametrize(
+    "version", ["2.101.0", "devel", None], ids=["too-old", "unreadable", "missing"]
+)
+def test_release_runner_rejects_gh_before_reading_or_writing_a_release(tmp_path, version):
+    done, state, original = retry(tmp_path, model.TAG, "draft", gh_version=version)
+    assert all(args == ["--version"] for args in state["calls"]), state["calls"]
+    assert state["release"] == original
+    output = done.stdout + "\n" + done.stderr
+    assert done.returncode != 0, output
+    assert re.search(r"^::error::.*\b2\.102\.0\b", output, re.MULTILINE), output
+    assert state["failed_step"] == 0
+
+
+@pytest.mark.parametrize("version", ["2.102.0", "2.105.0"])
+def test_release_runner_checks_supported_gh_then_publishes(tmp_path, version):
+    done, state, original = retry(tmp_path, model.TAG, "draft", gh_version=version)
+    assert state["calls"][0] == ["--version"], state["calls"]
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert state["release"] == original | {"draft": False}
 
 
 def check_diagnostic(done, field):

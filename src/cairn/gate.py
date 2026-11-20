@@ -63,10 +63,12 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   passage the claim is not (and the line, where the claim adds structure), never text, and
   says what to do. A cited id the gate was not given is passed over here (the strict gate
   reports it as provenance.unknown_passage) and never repeated; a claim left with no passage
-  is refused. A claim that is its passages whole and leaves a code fence open (it copies
-  a passage of a note that never closes one) passes, as lint_gate passes it when the note is
-  saved: the body closes the fence where the claim ends (compiler.render_body), so a page
-  that holds one is tidied and arranged again (review 7.2). Violations follow
+  is refused. A fold of passages under different headings is refused too, as an import
+  refuses it (the second report's finding 5a); the message names no heading. A claim that
+  is its passages whole and leaves a code fence open (it copies a passage of a note that
+  never closes one) passes, as lint_gate passes it when the note is saved: the body closes
+  the fence where the claim ends (compiler.render_body), so a page that holds one is tidied
+  and arranged again (review 7.2). Violations follow
   strict_lint_gate's; the metrics are strict_lint_gate's. The extractive draft passes by
   construction, and for it the result equals strict_lint_gate's.
 - Cost: a passage is read once per gate call however many claims cite it, and a claim once

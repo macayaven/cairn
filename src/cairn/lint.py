@@ -6,7 +6,9 @@ in-memory core; `lint` loads one source document and a directory of pages, then 
 
 Matching
 - normalize() keeps white space inside inline code as written, as the gate reads prose, and
-  so does an inline_code fact's norm: `a  b.txt` and `a b.txt` are two facts.
+  so does an inline_code fact's norm: `a  b.txt` and `a b.txt` are two facts. Inline code is
+  where the Markdown parser finds it (cairn.spans.code_spans, read once per text in one
+  lint_pages call); a text whose code the parser cannot place keeps all its white space.
 - A fact occurs in a text when its norm is a whole token of normalize(text): the characters
   around it are not [0-9a-z_], so "--json" is not in "--jsonl" and "5" is not in "15". An
   empty norm always occurs.

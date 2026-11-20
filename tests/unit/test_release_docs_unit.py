@@ -163,8 +163,8 @@ def test_removing_slack_says_where_the_deleted_secrets_can_stay():
         "connect",
         "## From Slack",
         "Where this install keeps a continuous backup, the deleted secrets, still sealed, can"
-        " stay in the database's log file until the operator compacts it, and in backup copies"
-        " until they expire.",
+        " stay in the database's log file until later writes reach them or the operator"
+        " compacts with the replica stopped, and in backup copies until they expire.",
     )
 
 
@@ -314,11 +314,12 @@ def test_the_security_guide_says_a_body_is_the_notes_own_markdown_and_the_web_vi
         " with indentation, after a claim that ends in a list, is read as part of that list's"
         " last item, so text that alone is indented code can read there as a paragraph or a"
         " heading.",
-        "A code fence does not run from one claim into the next: the body closes it where its"
-        " claim ends, sixteen such fences on a page at most, and a note that would make a"
-        " seventeenth is refused (forgetting a note is never refused: a claim that would then"
-        " leave such a fence open leaves the page with the forgotten note's, and its own note"
-        " stays stored).",
+        "In a body this version writes, a code fence does not run from one claim into the"
+        " next: the body closes it where its claim ends, sixteen such fences on a page at most.",
+        "A note that would leave a seventeenth open is stored but kept off the page, which"
+        " keeps its last version; and forgetting a note is never refused: a claim that would"
+        " then leave such a fence open leaves the page with the forgotten note's, and its own"
+        " note stays stored.",
         "Each claim's own text and source are exact in the claims list and in the web view,"
         " which shows each claim by itself.",
         "Read the body with raw HTML off, as the web view does: with it on, an HTML block a"
@@ -404,9 +405,10 @@ def test_the_security_guide_says_what_a_forget_and_an_import_do_to_a_page():
         "Forgetting a note is the one write that is never refused: it rewrites the pages that"
         " cited the note from the passages that remain, and a claim that could not stay leaves"
         " the page while its note stays stored.",
-        "An import takes each version as its archive holds it, checked as a save is; a claim an"
-        " earlier version of cairn folded from passages that differ only by white space is"
-        " accepted as that version made it.",
+        "An import takes each version's claims and citations as its archive holds them and"
+        " writes its body again from them, checked as a save is; a claim an earlier version of"
+        " cairn folded from passages that differ only by white space is accepted as that"
+        " version made it.",
     )
     for name in ("test_forget_import_check_unit", "test_old_fold_rebuild_unit"):
         assert (ROOT / "tests" / "unit" / f"{name}.py").is_file(), name

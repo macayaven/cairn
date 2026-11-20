@@ -2,7 +2,8 @@
 table, "Audit retention"). The number is recorded in the file by the server that sets it and
 read once by each connection: a process that has read it keeps pruning by the number it read
 when another changes it; one that has not read it yet reads the new one. Two stores on one
-file stand for two processes."""
+file stand for two processes: `serve`, which sets the number, and a command of the command
+line that opened the file before (a second `serve` on one database is refused)."""
 
 import sqlite3
 from datetime import UTC, datetime
@@ -14,10 +15,9 @@ from cairn.store import Store
 
 NOW = datetime(2026, 11, 20, 9, 30, tzinfo=UTC)
 RUN_SAYS = (
-    "A process reads the `--audit-keep` number once: one that is running when another `serve`"
-    " is started with a different number keeps pruning by the number it read until it exits, so"
-    " change it by stopping `serve` and starting it again, with no other `serve` on the same"
-    " database."
+    "A process reads the `--audit-keep` number once: a command of the command line that is"
+    " still running when `serve` is started again with a different number prunes by the number"
+    " it read until it exits."
 )
 
 

@@ -78,8 +78,8 @@ def test_removed_slack_secrets_and_links_stay_in_the_log_while_a_reader_holds_it
     guide = flat(PRIVACY)
     assert (
         "Where this install keeps a continuous backup, the deleted secrets, still sealed, and"
-        " links can stay in the database's log file until the operator compacts it, and in backup"
-        " copies until they expire."
+        " links can stay in the database's log file until later writes reach them or the"
+        " operator compacts with the replica stopped, and in backup copies until they expire."
     ) in guide
     db = tmp_path / "cairn.db"
     store = Store(db)

@@ -1193,8 +1193,10 @@ class MemoryMethods(StoreBase):
         or out of reach: the same answer for all three. Nothing of a relation is stored. One
         read: the page, the claims of the other pages, their passages and who wrote the notes
         the claims given cite are of one moment, so a write that lands meanwhile changes
-        nothing of the answer. A page read before the workspace saved any page has no index
-        to ask, and no relation."""
+        nothing of the answer. Terms are read from passages of the project alone; who wrote
+        a passage a claim cites is named for every passage the view reaches, as `page` names
+        it. A page read before the workspace saved any page has no index to ask, and no
+        relation."""
         with self._read() as con:
             scope = self._scope(con)
             head = con.execute(
@@ -1211,9 +1213,25 @@ class MemoryMethods(StoreBase):
             found = relating.related(
                 con, self._account_id, self._index, project_id, slug, *head, most
             )
-            if not found.notes_of:  # nothing given, or nothing it cites is held: no one to name
+            cited = dict.fromkeys(
+                span_id
+                for page in found.pages
+                for reason in page.why
+                for claim in (reason.here, reason.there)
+                for span_id in (claim.span_ids if claim is not None else ())
+            )
+            if not cited:  # nothing given, or nothing given cites a passage: no one to name
                 return found
-            return found._replace(origins=_origins(con, found.notes_of.values(), scope))
+            # who wrote what the claims given cite, as `page` names it: a passage in reach
+            notes_of = dict(
+                con.execute(
+                    "SELECT spans.id, spans.note_id FROM spans"
+                    f" WHERE spans.id IN (SELECT value FROM json_each(?)) AND {_OWN_SPAN}",
+                    (json.dumps(list(cited)), *scope),
+                ).fetchall()
+            )
+            origins = _origins(con, notes_of.values(), scope) if notes_of else {}
+            return found._replace(notes_of=notes_of, origins=origins)
 
     # Search
     def search(

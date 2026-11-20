@@ -364,17 +364,56 @@ def test_a_title_more_claims_hold_than_are_listed_says_so(store, ops, monkeypatc
     assert related(store, ops.id, quill).left.complete
 
 
-def test_a_passage_past_the_characters_read_leaves_its_term_cut(store, ops, monkeypatch):
+def test_a_passage_past_the_bytes_read_is_not_fetched_and_leaves_its_term_cut(
+    store, ops, monkeypatch
+):
+    """A passage is measured from its row, without its text (a handle on the stored value, as
+    cairn.graph measures one): no statement asks SQLite for a length, and a passage that does
+    not fit is never fetched. The bound is in bytes as stored: an accented letter is two."""
     asked = file(store, "ops", "Asked", "Use `a.cfg` and `b.cfg`.\n")
     file(store, "ops", "Short", "Set `a.cfg`.\n")
-    file(store, "ops", "Long", "Set `b.cfg` " + "and wait " * 40 + "then stop.\n")
-    monkeypatch.setattr(relating, "CHARS_MAX", 100)
-    found = related(store, ops.id, asked)
+    long = "Set `b.cfg` " + "é" * 60 + " then stop."  # 83 characters, 143 bytes
+    file(store, "ops", "Long", long + "\n")
+    assert (len(long), len(long.encode())) == (83, 143)
+    monkeypatch.setattr(relating, "BYTES_MAX", 100)
+    statements, rows = [], []
+    store._observe(trace=statements.append, rows=lambda cursor, row: rows.append(row) or row)
+    try:
+        found = related(store, ops.id, asked)
+    finally:
+        store._observe(trace=None, rows=None)
     assert reasons(found) == {"short": [(SHARES, "a.cfg", "inline_code", 2)]}
     assert (found.left.terms_cut, found.left.claims_read, found.left.complete) == (1, 2, False)
-    monkeypatch.setattr(relating, "CHARS_MAX", 1_000)
+    assert not [s for s in statements if "length(" in s.lower()]
+    assert not [row for row in rows if any(isinstance(v, str) and "é" in v for v in row)]
+    monkeypatch.setattr(relating, "BYTES_MAX", 143 + len("Set `a.cfg`."))
     found = related(store, ops.id, asked)
     assert set(reasons(found)) == {"short", "long"} and found.left.complete
+
+
+def test_a_claim_whose_passage_is_another_projects_states_no_term(store, ops):
+    """A page saved by hand whose claim cites a passage of another project: the passage is
+    not read for terms, whatever the claim's text says. Who wrote it is named as `page`
+    names it: for a view that reaches the other project, and not for one that does not."""
+    other = store.create_project("other")
+    mail = store.writing_as("source", "team-mail")
+    theirs, _ = mail.add_note(other.id, "# Mail\n\nUse `a.cfg` with Quill.\n", via="mail")
+    span = next(s.id for s in store.note_spans(theirs.id) if s.kind == "paragraph")
+    borrowed = Claim(id="cl_m", text="Use `a.cfg` with Quill.", span_ids=(span,))
+    store.save_page(ops.id, "mixed", "Mixed", "", [borrowed])
+    twin = file(store, "ops", "Twin", "Set `a.cfg` here.\n")
+    quill = file(store, "ops", "Quill", "Ada wrote it.\n")
+
+    assert related(store, ops.id, "mixed").left == relating.Left(0, 0, 0, False, 0, 0)
+    found = related(store, ops.id, twin)  # the index proposes the claim; its passage is not ours
+    assert found.pages == () and found.left.claims_read == 1 and found.left.complete
+    mentioned = related(store, ops.id, quill)
+    assert reasons(mentioned) == {"mixed": [(MENTIONED_BY, "Quill", "title", 2)]}
+    assert mentioned.notes_of == {span: theirs.id} and set(mentioned.origins) == {theirs.id}
+    assert mentioned.origins[theirs.id].kind == "source"
+    alone = store.narrow(projects=(ops.id,)).related_pages(ops.id, quill)
+    assert reasons(alone) == reasons(mentioned)
+    assert alone.notes_of == {} and alone.origins == {}  # out of its reach: no one is named
 
 
 def test_a_term_written_with_a_thousands_separator_relates_nothing_from_either_side(store, ops):

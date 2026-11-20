@@ -259,6 +259,27 @@ def test_a_claims_text_is_given_whole_as_a_hit_of_recall_gives_it(env):
         assert there[field] == hit[field], field
 
 
+def test_a_claim_names_its_writers_as_page_names_them_whatever_project_its_passage_is_of(env):
+    """A page saved by hand that cites another project's passage, a source's: its claim is
+    marked outside for a key that reaches that project, as `page` marks it, and names no
+    one for a key that does not, as `page` names no one."""
+    other = env.store.create_project("other")
+    mail = env.store.writing_as("source", "team-mail")
+    theirs, _ = mail.add_note(other.id, "# Mail\n\nQuill ships on Friday.\n", via="mail")
+    span = next(s.id for s in env.store.note_spans(theirs.id) if s.kind == "paragraph")
+    borrowed = Claim(id="cl_m", text="Quill ships on Friday.", span_ids=(span,))
+    env.store.save_page(env.ops.id, "mixed", "Mixed", "", [borrowed])
+    note(env, "Quill", "Ada wrote it.\n")
+    narrowed = env.store.create_key("narrow", projects=[env.ops.id])
+    for key, outside in ((env.key, True), (narrowed, False)):
+        (page,) = answer(env.client, key, "related", project="ops", slug="quill")["related"]
+        there = page["why"][0]["there"]
+        (claim,) = answer(env.client, key, "page", project="ops", slug="mixed")["claims"]
+        for field in ("outside", "written_by", "written_at"):
+            assert there[field] == claim[field], field
+        assert there["outside"] is outside and bool(there["written_by"]) is outside
+
+
 # Refusals
 
 
@@ -427,7 +448,7 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
         "`terms_searched`: the page's terms looked up, 256 at most.",
         "`terms_left_out`: its other terms.",
         "`terms_cut`: terms whose claims were not all read (64 for a term, 512 and a million"
-        " characters in all), so more pages may hold them than `pages` says.",
+        " bytes of their passages in all), so more pages may hold them than `pages` says.",
         "`title_cut`: true when more claims hold the title than the 64 read, or the title has"
         " more words than a search takes.",
         "`claims_read`: claims of other pages read.",
@@ -439,7 +460,7 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
     ):
         assert line in said, line
     assert (relating.TERMS_MAX, relating.LISTED_MAX, relating.CLAIMS_MAX) == (256, 64, 512)
-    assert (relating.CHARS_MAX, relations.COMMON, relations.WHY_MAX) == (1_000_000, 5, 3)
+    assert (relating.BYTES_MAX, relations.COMMON, relations.WHY_MAX) == (1_000_000, 5, 3)
     for word in ("written_by", "written_at", "outside", "quoted text"):
         assert word in said, word
     assert "cairn" not in said.casefold()  # B3: a tool names no product

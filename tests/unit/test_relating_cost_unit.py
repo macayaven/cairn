@@ -114,7 +114,7 @@ def counted(store: Store, project_id: str):
 
 def test_the_stated_bounds():
     assert (relating.TERMS_MAX, relating.HERE_MAX, relating.LISTED_MAX) == (256, 16, 64)
-    assert (relating.CLAIMS_MAX, relating.CHARS_MAX, relating.AT_ONCE) == (512, 1_000_000, 64)
+    assert (relating.CLAIMS_MAX, relating.BYTES_MAX, relating.AT_ONCE) == (512, 1_000_000, 64)
 
 
 @pytest.mark.parametrize(

@@ -40,8 +40,10 @@ carries):
   asked of the index, and the first LISTED_MAX claims of the project's other pages that hold
   its words are listed, by row. The claims listed are then read, the terms with the fewest
   first, a term's claims all or none, until CLAIMS_MAX claims are read; and their passages,
-  in that order, until CHARS_MAX characters are (each is measured in SQL first: one that
-  does not fit is not fetched). A term whose pages are not all known is counted
+  in that order, until BYTES_MAX bytes are (each is measured first from its row, by a
+  handle on the stored value that reads none of it, as cairn.graph measures one: a passage
+  that does not fit is neither read nor fetched). A term whose pages are not all known is
+  counted
   (`terms_cut`): more claims hold its words than were listed, a claim listed or its passage
   was not read, or none of the page's first HERE_MAX claims is found and it has more. Not so
   when more than relations.COMMON pages are already known to hold it, which settles it. What
@@ -53,13 +55,13 @@ carries):
 - The related pages past the `limit` asked for are counted (`pages_left_out`).
 `complete` is true only when all of these are nothing.
 
-Statements, T being the terms looked up, beside the three of the caller (the page's head, the
-index's table, and who wrote the notes of the claims given): 2 for the page's claims and
-their passages; ceil(T / AT_ONCE) to ask the index of the page's own claims and at most as
-many to list the other pages'; 3 for the candidates (their rows, the lengths of their
-passages, the passages); 1 for the title; 3 for what is given (the claims, the pages' titles
-and versions, the notes of the passages the claims cite). A statement with nothing to ask is
-not run. At most 2 + 4 + 4 + 3 + 1 + 3 = 17, and 20 with the caller's. Rows: two for each
+Statements, T being the terms looked up, beside the four of the caller (the page's head, the
+index's table, the notes of the passages the claims given cite, and who wrote them): 2 for
+the page's claims and their passages; ceil(T / AT_ONCE) to ask the index of the page's own
+claims and at most as many to list the other pages'; 3 for the candidates (their rows, the
+rows of their passages, the passages); 1 for the title; 2 for what is given (the claims, the
+pages' titles and versions). A statement with nothing to ask is not run. At most 2 + 4 + 4 +
+3 + 1 + 2 = 16, and 20 with the caller's. Rows: two for each
 claim of the page; for each term 1 and at most LISTED_MAX + 1, and LISTED_MAX + 1 for the
 title; 3 for each candidate claim read, at most CLAIMS_MAX; and what is given, at most
 relations.RELATED_MAX pages of WHY_MAX reasons of two claims.
@@ -87,7 +89,7 @@ TERMS_MAX = 256  # terms of a page that are looked up; it counts the rest
 HERE_MAX = 16  # the page's claims that state a term by their passage and are asked of the index
 LISTED_MAX = 64  # claims of other pages listed for one term, and for the title
 CLAIMS_MAX = 512  # candidate claims read in all
-CHARS_MAX = 1_000_000  # characters of the candidates' passages read in all
+BYTES_MAX = 1_000_000  # bytes of the candidates' passages, as stored, read in all
 AT_ONCE = 64  # terms one statement asks the index for
 
 
@@ -124,8 +126,9 @@ class Left(NamedTuple):
 
 class Related(NamedTuple):
     """The pages related to one page, best first, and what the read left out. `notes_of` is
-    the note of each passage a claim given cites (a passage the project no longer holds is
-    not in it), and `origins` who wrote those notes, which the store's read adds."""
+    the note of each passage a claim given cites, and `origins` who wrote those notes: the
+    store's read adds both, in its section, for the passages the view reaches (a passage it
+    does not reach, or that the store no longer holds, names nothing, as for `page`)."""
 
     slug: str
     title: str
@@ -229,7 +232,7 @@ def related(
         reasons.setdefault(at, []).append(Reason(MENTIONED_BY, title, TITLE, 2, None, row))
 
     given, pages_left_out = relations.best(reasons, limit)
-    pages, notes_of = _given(con, *scope, given) if given else ((), {})
+    pages = _given(con, *scope, given) if given else ()
     left = Left(
         terms=len(looked),
         terms_left_out=len(stating) - len(looked),
@@ -238,7 +241,7 @@ def related(
         claims_read=len(candidates),
         pages_left_out=pages_left_out,
     )
-    return Related(slug, title, version, pages, left, notes_of, {})
+    return Related(slug, title, version, pages, left, {}, {})
 
 
 def _given(
@@ -247,9 +250,9 @@ def _given(
     index: str,
     project_id: str,
     given: Sequence[tuple[str, Sequence[Reason], int]],
-) -> tuple[tuple[RelatedPage, ...], dict[str, str]]:
+) -> tuple[RelatedPage, ...]:
     """The pages given, each with its title, its version and the claims of its reasons, read
-    by row, and the note of each passage those claims cite: three statements."""
+    by row: two statements."""
     rows = {r for _, why, _ in given for reason in why for r in (reason.here, reason.there)}
     shown = {
         row: Stated(claim_id, text, tuple(json.loads(span_ids)))
@@ -267,7 +270,7 @@ def _given(
             (project_id, json.dumps([at for at, _, _ in given])),
         )
     }
-    pages = tuple(
+    return tuple(
         RelatedPage(
             at,
             *heads[at],
@@ -282,13 +285,6 @@ def _given(
         )
         for at, why, more in given
     )
-    cited = sorted({span_id for claim in shown.values() for span_id in claim.span_ids})
-    notes_of = dict(
-        con.execute(
-            f"SELECT spans.id, spans.note_id {_PASSAGES}", (json.dumps(cited), project_id)
-        ).fetchall()
-    )
-    return pages, notes_of
 
 
 def _passages(con: sqlite3.Connection, project_id: str, span_ids: Iterable[str]) -> list[Span]:
@@ -323,22 +319,24 @@ def _terms(passages: Iterable[Span]) -> dict[str, frozenset[Term]]:
 def _within(
     con: sqlite3.Connection, project_id: str, span_ids: Sequence[str]
 ) -> tuple[list[Span], set[str]]:
-    """The candidates' passages, in the order given, until CHARS_MAX characters are read, and
-    the ids of those of the project left unread. Their lengths are measured first, in SQL,
-    so a passage that is not read is not fetched: two statements, none for no passage."""
+    """The candidates' passages, in the order given, until BYTES_MAX bytes are read, and the
+    ids of those of the project left unread. Each is measured first from its row, by a
+    handle on its stored text that reads none of it, so a passage that does not fit is
+    neither read nor fetched: two statements, none for no passage."""
     if not span_ids:
         return [], set()
-    lengths = dict(
-        con.execute(
-            f"SELECT spans.id, length(spans.text) {_PASSAGES}", (json.dumps(span_ids), project_id)
-        ).fetchall()
-    )
-    taken, room = [], CHARS_MAX
+    sizes = {}
+    for span_id, row in con.execute(
+        f"SELECT spans.id, spans.rowid {_PASSAGES}", (json.dumps(span_ids), project_id)
+    ).fetchall():
+        with con.blobopen("spans", "text", row, readonly=True) as stored:
+            sizes[span_id] = len(stored)
+    taken, room = [], BYTES_MAX
     for span_id in span_ids:
-        if span_id in lengths and lengths[span_id] <= room:
+        if span_id in sizes and sizes[span_id] <= room:
             taken.append(span_id)
-            room -= lengths[span_id]
-    return _passages(con, project_id, taken), set(lengths) - set(taken)
+            room -= sizes[span_id]
+    return _passages(con, project_id, taken), set(sizes) - set(taken)
 
 
 def _here(

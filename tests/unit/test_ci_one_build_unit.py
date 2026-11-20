@@ -336,3 +336,23 @@ def test_a_tag_s_names_hold_no_sha_tag_even_if_asked(tmp_path):
     decided, pushed, _ = promote(runner, "v1.2.3", ["1.2.3", "sha-ccccccc"], digest(MAIN))
     assert decided.returncode == 1 and pushed is None
     assert "a tag run writes no sha- tag" in decided.stdout
+
+
+def test_a_tag_run_re_run_whole_promotes_the_same_digest_again_and_finishes(tmp_path):
+    """The README's re-run sentence for a tag: its run builds nothing, so a second attempt of
+    every job reads the same `sha-<commit>`, finds the version holding that digest and carries
+    on, where main's full re-run builds again and stops."""
+    runner = Runner(tmp_path)
+    runner.put("sha-ccccccc", MAIN)
+    (tmp_path / "image" / "cairn.oci.tar").unlink()
+    main = digest(MAIN)
+    for attempt in (1, 2):
+        assert fetch(runner).returncode == 0
+        assert (tmp_path / "github_output").read_text() == f"digest={main}\n"
+        (tmp_path / "image" / "layout").rename(tmp_path / f"layout-{attempt}")
+        decided, pushed, fetched = promote(runner, "v1.2.3", ["1.2.3"], main)
+        assert decided.returncode == 0, decided.stdout + decided.stderr
+        assert pushed.returncode == 0, pushed.stdout + pushed.stderr
+        assert not fetched
+    assert "is this build already" in decided.stdout
+    assert runner.tags() == {"sha-ccccccc": main, "1.2.3": main}

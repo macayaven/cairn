@@ -9,6 +9,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import yaml
 from starlette.testclient import TestClient
 
 import cairn
@@ -67,6 +68,7 @@ def test_the_changelog_dates_the_version_and_says_what_slack_was_tested_against(
     )
 
 
+WORKFLOW = yaml.safe_load((ROOT / ".github" / "workflows" / "ci-cd.yml").read_text())
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 
@@ -85,14 +87,17 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         " dated no later than the day of the run, the tag's commit is on `main`, no tag of its"
         " `X.Y` is a higher version, and the version has no GitHub release yet:"
         " `scripts/release_check.py` checks it first.",
-        "A tag is published as `X.Y.Z`, which never moves",
-        "A push to `main` is published as `main` and `sha-<commit>`, never `latest`.",
+        "`X.Y.Z` never moves",
+        "A push to `main` is published as `main` and `sha-<commit>`, never `latest`, and"
+        " `sha-<commit>` is written once",
         "the gate runs as before, and items 5 to 7 are skipped.",
         "6. **Verify and deploy:** on `main` and on tags, the published image is smoke-tested."
         " In a public repository the image is first pulled with no login, as the run guide"
         " does (a tag's version, or on `main` the commit's own tag), and must"
-        " be the digest just published. On `main`, a `deploy` job that waits for approval"
-        " moves the production VM to it",
+        " be the digest just published. On `main`, job `deploy` moves the production VM to it,"
+        " in the GitHub environment `production`: whether it waits for a person's approval is"
+        " that environment's setting (required reviewers), which the workflow cannot see, so"
+        " set it in the repository's settings for a deploy to wait",
         "7. **Release:** a tag whose published image passed becomes a GitHub release, with the"
         " version's section of `CHANGELOG.md` as its text and the wheel and source archive"
         " attached.",
@@ -101,11 +106,16 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         " `release`, the only one that may write to the repository, builds and installs"
         " nothing, checks that it got one wheel and one source archive of the tag's version,"
         " and makes the release. A tag never deploys.",
-        "A run that failed after publishing and before the release was made is finished by"
-        " re-running only its failed jobs: re-running every job builds again, and `publish`"
-        " then stops, since the registry holds the version as another digest.",
+        "A tag's run builds nothing, so re-running all its jobs promotes the same digest again"
+        " and finishes it, until its GitHub release exists, when `release_check` refuses the"
+        " tag.",
+        "On `main`, re-running every job builds again and `publish` stops, since"
+        " `sha-<commit>` holds another digest: re-run only the failed jobs.",
     ):
         assert sentence in ci, sentence
+    # What the deploy sentence rests on: the workflow names the environment and nothing else
+    # about it, so whether a person approves is the repository's setting.
+    assert WORKFLOW["jobs"]["deploy"]["environment"] == "production"
     assert "that `uv build` makes attached" not in ci
     assert "Tags are the version, `major.minor`, the branch and the commit." not in ci
     assert "A tag is published as `X.Y.Z`, `X.Y` and `latest`" not in ci

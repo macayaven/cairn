@@ -6,9 +6,9 @@
 - `attest` holds only what a build provenance attestation needs (an identity token and the
   right to store attestations), runs nothing from the repository or from the files, and
   attests the wheel, the source archive, SHA256SUMS and the image's digest.
-- A release candidate vX.Y.Z-rc.N runs all of it, and publishes the image as X.Y.Z-rc.N and
-  sha-<commit> only, and a GitHub pre-release that is not marked latest. It never deploys,
-  and `aliases` does not run for it.
+- A release candidate vX.Y.Z-rc.N runs all of it but `aliases`: it publishes main's image for
+  its commit as X.Y.Z-rc.N only, and a GitHub pre-release of its own that is not marked
+  latest. It never deploys.
 - No job that may write, or holds an identity token, builds or runs the repository's code,
   whether in a shell line or through an action that builds (`deploy` runs its one script)."""
 
@@ -320,7 +320,10 @@ def run_create(tmp_path, tag: str, candidate: str):
     (tmp_path / "release").mkdir()
     bin_ = tmp_path / "bin"
     bin_.mkdir()
-    (bin_ / "gh").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    # No release for the tag yet: `gh release view` finds none, as on a first attempt.
+    (bin_ / "gh").write_text(
+        '#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit 1; fi\nprintf "%s\\n" "$@"\n'
+    )
     (bin_ / "gh").chmod(0o755)
     env = {
         "PATH": f"{bin_}:/usr/bin:/bin",
@@ -427,8 +430,11 @@ def test_the_header_says_what_the_tag_path_does_for_a_release_and_a_candidate():
         " checks every file against SHA256SUMS, as `release` does, and gives the wheel, the"
         " source archive, SHA256SUMS and the image's digest each a build provenance"
         " attestation.",
-        "Its image is published as X.Y.Z-rc.N and sha-<commit> only, never X.Y, X.Y.Z or"
-        " latest, and its GitHub release is a pre-release, not marked latest.",
+        "Its image, main's for its commit, is published as X.Y.Z-rc.N only, never X.Y, X.Y.Z"
+        " or latest, and its GitHub release is a pre-release of its own, with its own files,"
+        " not marked latest;",
+        "A v* tag builds nothing: image_build reads the image main's run published for the"
+        " tag's commit as sha-<commit>, by its digest,",
         "A tag never deploys.",
     ):
         assert sentence in header, sentence
@@ -479,20 +485,30 @@ def test_the_readme_says_what_a_change_of_documents_alone_still_runs_and_how_tag
         " 2 alone and a push to `main`"
         " publishes and deploys nothing; the server keeps the image it runs. Its image is still"
         " built for both platforms and scanned, as item 1 says.",
-        "A tag is published as `X.Y.Z`, which never moves: if the registry already has that"
-        " version, the same digest is carried on and another digest stops the job.",
+        "`X.Y.Z` never moves: if the registry already has that version, the same digest is"
+        " carried on and another digest stops the job.",
+        "A `v*` tag builds no image: it promotes the digest that `main`'s run published as"
+        " `sha-<commit>` for the tag's commit to `X.Y.Z` (a candidate, to `X.Y.Z-rc.N`), and"
+        " writes no `sha-` tag, so a candidate and the release tagged on one commit carry"
+        " `main`'s image, the same digest.",
+        "When the registry has no `sha-<commit>` for the tag's commit, the tag's run stops"
+        " before publishing anything and says to run it again once `main`'s run for that"
+        " commit has published it;",
         "After a release, job `aliases` points `latest` at the highest released version and each"
         " `X.Y` at its newest `X.Y.z`, one such job at a time across all runs, deciding from the"
         " releases and the registry as they are when it runs, so overlapping releases cannot"
         " move either backwards.",
-        "re-running every job builds again, and `publish` then stops, since the registry holds"
-        " the version as another digest.",
+        "On `main`, re-running every job builds again and `publish` stops, since"
+        " `sha-<commit>` holds another digest: re-run only the failed jobs.",
         "The job that publishes it, one of the two that may write to the registry, builds"
         " nothing, checks out nothing and runs no image.",
     ):
         assert sentence in ci, sentence
     for gone in (
-        "builds no image",
+        "touches only paths no image job reads builds no image",
+        "a `deploy` job that waits for approval",
+        "are replaced by the release's",
+        "`X.Y.Z-rc.N` and `sha-<commit>`",
         "the image built for linux/amd64",
         "re-running every job would publish the version again",
         "as `latest` only when it is the highest version tagged",
@@ -505,12 +521,51 @@ def test_the_readme_says_in_two_sentences_what_a_candidate_is_for_and_what_it_pu
     assert (
         "A release candidate tag `vX.Y.Z-rc.N` (N from 1) rehearses the release of `X.Y.Z`"
         " before it is made: it needs the version `X.Y.Z` in `pyproject.toml` and its section"
-        " in `CHANGELOG.md`, runs every job a release runs, attestation included, and is"
-        " refused once `vX.Y.Z` is tagged or released. It publishes the image as `X.Y.Z-rc.N`"
-        " and `sha-<commit>` only, never `X.Y`, `X.Y.Z` or `latest`, and a GitHub"
-        " pre-release, not marked latest, whose files carry the version `X.Y.Z` and are"
-        " replaced by the release's." in ci
+        " in `CHANGELOG.md`, runs every job a release runs but `aliases`, attestation included,"
+        " and is refused once `vX.Y.Z` is tagged or released. It publishes `main`'s image for"
+        " its commit as `X.Y.Z-rc.N` only, never `X.Y`, `X.Y.Z` or `latest`, and makes a"
+        " GitHub pre-release of its own, not marked latest, with its own files, which carry the"
+        " version `X.Y.Z`. The release tagged later on the same commit publishes the same image"
+        " digest and makes a second GitHub release, with files of its own; the candidate's"
+        " pre-release stays as it was." in ci
     )
+    # What it rests on: a candidate's run skips `aliases` only, and `release` makes a release
+    # for the tag that started the run, a pre-release for a candidate.
+    ran = jobs_that_run(CANDIDATE, {"release_check": {"candidate": "true"}})
+    released = jobs_that_run(CANDIDATE, {"release_check": {"candidate": ""}})
+    assert released - ran == {"aliases"} and ran <= released
+    create = next(s for s in RELEASE["steps"] if s.get("name") == "Create the release")["run"]
+    assert 'gh release create "$GITHUB_REF_NAME"' in create
+    assert "candidate=(--prerelease --latest=false)" in create
+
+
+def test_the_readme_s_two_limits_are_the_numbers_the_workflow_and_the_script_use():
+    ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
+    assert (
+        "`release_check.py` and job `aliases` each ask GitHub for at most 1,000 releases"
+        " (`release_check.py` counts candidates' pre-releases too): a listing that reaches"
+        " 1,000 stops the job and says so, publishing nothing and moving no alias, and a person"
+        " then raises both numbers together." in ci
+    )
+    assert release_check.RELEASES_ASKED == 1000
+    aliases = next(s for s in JOBS["aliases"]["steps"] if "gh release list" in s.get("run", ""))
+    assert "--limit 1000 " in aliases["run"] and "-ge 1000 ]" in aliases["run"]
+    # release_check runs before publish, so its refusal publishes nothing.
+    assert "release_check" in needs(JOBS["publish"])
+    assert (
+        "The build's archive and the release's files are kept as artifacts of the run for five"
+        " days: re-running only the failed jobs of a run works within them; after them,"
+        " `publish` still finishes when the registry already holds the digest, and anything"
+        " that needs an artifact fails, so on `main` the next push publishes a new build, and a"
+        " tag's run is re-run whole." in ci
+    )
+    kept = {
+        s["with"]["name"]: s["with"]["retention-days"]
+        for job in JOBS.values()
+        for s in job["steps"]
+        if s.get("uses", "").startswith("actions/upload-artifact")
+    }
+    assert kept == {"image": 5, "release": 5}
 
 
 def test_the_readme_lists_the_scans_and_the_quick_checks_in_items_1_and_2():

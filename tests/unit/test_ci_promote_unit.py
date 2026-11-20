@@ -593,6 +593,29 @@ def manifest(version: str) -> bytes:
     return f"the index of {version}".encode()
 
 
+@pytest.mark.parametrize(("listed", "moves"), [(999, True), (1000, False)])
+def test_the_aliases_listing_s_cap_at_its_boundary(tmp_path, listed, moves):
+    """gh is asked for at most 1,000 stable releases: 999 are all of them and the aliases move;
+    at 1,000 a higher release may be missing, so the job stops, says why, and moves nothing."""
+    runner = Runner(tmp_path)
+    released = [f"v0.{n}.0" for n in range(listed)]
+    runner.put("0.0.0", manifest("0.0.0"))
+    runner.put(f"0.{listed - 1}.0", manifest(f"0.{listed - 1}.0"))
+    runner.put("latest", manifest("0.0.0"))
+    before = runner.tags()
+    done = run_aliases(runner, released)
+    if moves:
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert runner.tags()["latest"] == digest(manifest(f"0.{listed - 1}.0"))
+    else:
+        assert done.returncode == 1
+        assert runner.tags() == before
+        assert done.stdout.strip().splitlines()[-1] == (
+            "::error::gh listed 1000 releases, the most it asks for, so a higher one may be missing"
+        )
+    assert "--limit 1000 " in step("aliases", ALIAS)["run"]
+
+
 @pytest.mark.parametrize("case", ALIAS_CASES)
 def test_the_step_moves_the_aliases_where_release_check_says(tmp_path, case):
     released, published, expected = ALIAS_CASES[case]

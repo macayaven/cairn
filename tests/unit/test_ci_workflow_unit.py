@@ -1279,7 +1279,8 @@ def test_the_header_says_what_a_tag_must_be_and_what_it_publishes():
         " its X.Y, and a version that already has a GitHub release.",
         "A tag is published as X.Y.Z, a full version that never moves: when the registry has"
         " it already, `publish` carries on with the same digest and stops at another one.",
-        "A push to main is published as main and sha-<commit>, never latest.",
+        "A push to main is published as main and sha-<commit>, never latest, and sha-<commit>"
+        " is written once, by the same rule. A tag writes no sha- tag.",
         "After a release, job `aliases`, one at a time across all runs, points latest at the"
         " highest released version and each X.Y at its highest X.Y.z, deciding from the"
         " releases and the registry as they are when it runs.",
@@ -1509,7 +1510,10 @@ def run_release_step(tmp_path, step: dict, files: list[str], tag: str = "v1.2.3"
         'exec shasum -a 256 "$@"\n'
     )
     (bin_ / "sha256sum").chmod(0o755)
-    (bin_ / "gh").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    # No release for the tag yet: `gh release view` finds none, as on a first attempt.
+    (bin_ / "gh").write_text(
+        '#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit 1; fi\nprintf "%s\\n" "$@"\n'
+    )
     (bin_ / "gh").chmod(0o755)
     return subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
@@ -1661,9 +1665,8 @@ def test_a_failed_tag_run_is_finished_without_publishing_again():
         " archive and `publish`'s digest." in comment
     )
     assert (
-        "Re-running every job builds again, and `publish` then stops in one line, since the"
-        " registry holds the version as another digest: a full version is never pushed twice."
-        in comment
+        "A tag's run builds nothing, so re-running every job promotes the same digest again,"
+        " until the release exists and this job refuses the tag." in comment
     )
     assert "Re-running every job would publish the version again" not in comment
     assert (

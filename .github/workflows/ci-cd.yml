@@ -1,10 +1,12 @@
 # Every push and pull request runs the tests and lint, and validates the infrastructure and
 # deploy files in a job of their own. Every one also builds the image once, for linux/amd64 and
 # linux/arm64, in job `image_build`, which may only read the repository, and scans both
-# platforms of that build. A draft pull request runs only those jobs and the other scans. A pull
+# platforms of that build. A v* tag builds nothing: image_build reads the image main's run
+# published for the tag's commit as sha-<commit>, by its digest, and every later job checks
+# and promotes that digest; a tag whose commit main has not published stops there. A draft pull request runs only those jobs and the other scans. A pull
 # request that is ready for review also smoke-tests that build on linux/amd64 and linux/arm64
 # (the non-native platform under QEMU) with scripts/smoke_container.py, and rehearses the stack
-# and the host, as the next lines say. That is the gate a merge waits for. Marking a draft
+# and the host, as the next lines say, both with the build's linux/amd64 image. That is the gate a merge waits for. Marking a draft
 # ready for review starts a run. Pushes to main, v* tags and manual runs run the whole gate too.
 # Except: a change that touches only paths no image job reads (the list is NO_IMAGE_WORK in
 # scripts/ci_changes.py: docs/, tests/, evals/, examples/, the files for contributors) runs no
@@ -28,8 +30,9 @@
 # Pushes to main and v* tags then publish one multi-arch image to ghcr.io/<owner>/<repo>,
 # once every job of the gate has passed: the tests, the infrastructure checks, the image
 # check, the stack rehearsal and the host rehearsal. A failed infrastructure check stops
-# the publication too. What `publish` pushes is image_build's archive, checked against the
-# SHA-256 the scan and the image check checked, by the index digest they pushed: it builds
+# the publication too. What `publish` pushes on main is image_build's archive, checked against
+# the SHA-256 the scan and the image check checked, by the index digest they pushed (on a tag,
+# that digest is main's, already in the registry, and it is tagged there): it builds
 # nothing, checks out nothing and runs no image, and no job that may write to the registry
 # or holds an identity token builds or runs the repository's code (deploy runs its one deploy
 # script).
@@ -41,7 +44,7 @@
 # version that already has a GitHub release. A tag is published as X.Y.Z, a full version
 # that never moves: when the registry has it already, `publish` carries on with the same
 # digest and stops at another one. A push to main is published as main and sha-<commit>,
-# never latest. After a release, job `aliases`, one at a time across all runs, points latest
+# never latest, and sha-<commit> is written once, by the same rule. A tag writes no sha- tag. After a release, job `aliases`, one at a time across all runs, points latest
 # at the highest released version and each X.Y at its highest X.Y.z, deciding from the
 # releases and the registry as they are when it runs. Job `verify` smoke-tests the published image on main and on tags; in a public
 # repository it first pulls the image with no login, as the run guide does (a tag's version,
@@ -53,14 +56,18 @@
 # checks that the artifact holds one wheel and one source archive of the tag's version, and
 # makes the GitHub release with them and the version's section of CHANGELOG.md. A run that
 # failed after `publish` and before the release was made is finished by re-running only its
-# failed jobs.
+# failed jobs. A tag's run builds nothing, so re-running all of it promotes the same digest
+# again. A re-run of `release` that finds this run's release already made, with
+# the same files, goes on, so `aliases` runs.
 # `package` writes SHA256SUMS over the files it built, and the release publishes it with them.
 # Between the two, job `attest`, which holds an identity token and nothing that writes to the
 # repository, checks every file against SHA256SUMS, as `release` does, and gives the wheel, the
 # source archive, SHA256SUMS and the image's digest each a build provenance attestation.
 # A release candidate vX.Y.Z-rc.N (scripts/release_check.py says when one is taken) runs the
-# same jobs, attestation included. Its image is published as X.Y.Z-rc.N and sha-<commit> only,
-# never X.Y, X.Y.Z or latest, and its GitHub release is a pre-release, not marked latest.
+# same jobs but `aliases`, attestation included. Its image, main's for its commit, is published
+# as X.Y.Z-rc.N only, never X.Y, X.Y.Z or latest, and its GitHub release is a pre-release of
+# its own, with its own files, not marked latest; the release tagged later on that commit
+# promotes the same digest and makes a second GitHub release.
 # Four scans run on every pull request and every push, drafts and changes of documents only
 # included, and `publish` needs each: the locked dependencies (pip-audit), both platforms of
 # image_build's image (Trivy), src/ (Bandit) and the whole history checked out (gitleaks,
@@ -74,7 +81,9 @@
 # gate runs as before, and nothing is published, verified, released or deployed. Unset, it
 # publishes.
 # A push to main then deploys that image, by digest, to the hosted VM (job `deploy`), when the
-# repository is configured for it; otherwise that job is skipped. infra/gcp/README.md has the
+# repository is configured for it; otherwise that job is skipped. It runs in the environment
+# `production`; whether it waits for approval is that environment's setting, which this file
+# cannot see. infra/gcp/README.md has the
 # settings and the first-deploy checklist. A tag never deploys.
 # Where the jobs run: two repository variables, each a JSON value for runs-on, each
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
@@ -392,7 +401,8 @@ jobs:
   # days. The scan, the image check and `publish` each check that SHA-256 and push the index's
   # digest, so the image scanned and smoke-tested is the image published, both platforms; a job
   # that takes one platform names it by that platform's own digest, never by the index's and a
-  # platform flag.
+  # platform flag. On a v* tag it builds nothing: it reads main's image for the commit, as the
+  # steps below say, and the same script checks it.
   image_build:
     name: build the image (linux/amd64 and linux/arm64)
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
@@ -814,7 +824,8 @@ jobs:
   # The shipped compose files, unchanged, on the runner: Caddy in front of cairn with the
   # proxy network cairn trusts, Litestream replicating to a directory, and a lost database
   # restored from it. scripts/rehearse_stack.py says what it checks and what it cannot (a
-  # real certificate, a bucket, and the VM's own launcher).
+  # real certificate, a bucket, and the VM's own launcher). The image is image_build's
+  # linux/amd64 image, pulled by its own digest, not a build of this job's.
   stack:
     name: stack rehearsal (compose, Caddy, Litestream)
     needs: [changes, image_build]
@@ -932,7 +943,8 @@ jobs:
   # installed and its systemd units started on the runner, with a loop device for the data
   # disk and a local registry for the deploy tag. scripts/rehearse_host.py lists its
   # stand-ins and what it does not cover (Container-Optimized OS, Secret Manager, GCS,
-  # Artifact Registry, a real reboot).
+  # Artifact Registry, a real reboot). The image is image_build's linux/amd64 image, pulled by
+  # its own digest, not a build of this job's.
   host:
     name: host rehearsal (units, disk, updater)
     needs: [test, changes, image_build]
@@ -1073,9 +1085,8 @@ jobs:
   # skips it as it skips publish.
   # A run that failed after `publish` and before the release was made: re-run only its failed
   # jobs ("Re-run failed jobs"), which keeps this job's result, image_build's archive and
-  # `publish`'s digest. Re-running every job builds again, and `publish` then stops in one
-  # line, since the registry holds the version as another digest: a full version is never
-  # pushed twice. If `release` finds no files from `package` (they are kept five days), re-run
+  # `publish`'s digest. A tag's run builds nothing, so re-running every job promotes the same
+  # digest again, until the release exists and this job refuses the tag. If `release` finds no files from `package` (they are kept five days), re-run
   # `package` alone: GitHub re-runs `release` after it, and nothing that publishes.
   release_check:
     name: the tag is the version
@@ -1118,9 +1129,10 @@ jobs:
   # the scan and the image check pulled (oras copies the index and every manifest in it: both
   # platforms and their attestation manifests), and reads every tag back. It checks out
   # nothing, runs no script from the repository and no image. A tag's full version is published
-  # once: when the registry has it already, the same digest is carried on and another digest
-  # stops the job, so a re-run never moves it. The rest of its tags (sha-<commit>, main) are
-  # added to the same digest. `latest` and X.Y are job `aliases`'s, after the release.
+  # once, and on main so is sha-<commit>: when the registry has it already, the same digest is
+  # carried on and another digest stops the job, so a re-run never moves it. The rest of its
+  # tags (main) are added to the same digest. A tag's digest is main's, in the registry
+  # already, so a tag run copies no archive. `latest` and X.Y are job `aliases`'s, after the release.
   publish:
     name: publish to GHCR
     needs:
@@ -1285,8 +1297,8 @@ jobs:
   # environment secrets: nothing here can ask for a deploy token. In a public repository it
   # first pulls the image the way the run guide tells a reader to, with no login, so the
   # guide's command is tested and a package nobody may pull anonymously fails the run before
-  # the release. It does so on main too, by the commit's own tag, so that the first release
-  # repeats a step main has run already.
+  # the release. It does so on main too, by the commit's own tag, so a tag's run, whose image
+  # is main's, pulls a digest main's run has pulled already.
   verify:
     name: smoke test of the published image (linux/amd64)
     needs: publish
@@ -1429,6 +1441,8 @@ jobs:
   # code from the repository or from the files: it fetches the artifact, checks every file
   # against SHA256SUMS, as `release` does, and hands them to the pinned action. The attestations
   # stay with GitHub: nothing is pushed to the registry, so it needs no packages permission.
+  # The image's attestation is the tag run's, which promoted main's digest; the build
+  # provenance inside the image index records main's build.
   attest:
     name: build provenance of the files and the image
     needs: [publish, package]
@@ -1502,7 +1516,8 @@ jobs:
   # the release. download-artifact gets no token (its github-token has no default and is needed
   # only for another repository or run); it reaches this run's artifacts with the runner's own
   # runtime token and checks their digest. A release candidate becomes a pre-release, never
-  # marked latest. It needs the gh CLI on its runner, as GitHub's hosted runners have.
+  # marked latest. A release for the tag that already exists goes on only when it is this
+  # run's: the tag, not a draft, the same pre-release flag, the same files byte for byte. It needs the gh CLI on its runner, as GitHub's hosted runners have.
   release:
     name: GitHub release
     needs: [release_check, publish, verify, package, attest]
@@ -1546,13 +1561,39 @@ jobs:
           cd "$RUNNER_TEMP/release"
           version="${GITHUB_REF_NAME#v}"
           version="${version%-rc.*}"
+          files=("cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS)
+          prerelease=false
           candidate=()
           if [ "$CANDIDATE" = "true" ]; then
+            prerelease=true
             candidate=(--prerelease --latest=false)
           fi
+          # An earlier attempt may have made the release and been lost before the job was
+          # recorded as done. Its release is this run's only if it is for this tag, not a
+          # draft, with this tag's pre-release flag and byte for byte the files this run
+          # attested: then it is not made again, and `aliases` runs. Any other stops the job.
+          if found="$(gh release view "$GITHUB_REF_NAME" --json tagName,isDraft,isPrerelease,assets \
+            --jq '.tagName, .isDraft, .isPrerelease, ([.assets[].name] | sort | join(" "))')"; then
+            { read -r tag; read -r draft; read -r pre; read -r names; } <<< "$found"
+            want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+            want="${want% }"
+            refuse() {
+              echo "::error::a GitHub release for $GITHUB_REF_NAME exists and is not this run's: $1; a person decides what becomes of it"
+              exit 1
+            }
+            [ "$tag" = "$GITHUB_REF_NAME" ] || refuse "its tag is $tag"
+            [ "$draft" = false ] || refuse "it is a draft"
+            [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
+            [ "$names" = "$want" ] || refuse "its files are [$names], not [$want]"
+            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published"
+            for name in "${files[@]}"; do
+              cmp -s "$name" "$RUNNER_TEMP/published/$name" || refuse "$name is not the file this run attested"
+            done
+            echo "The GitHub release $GITHUB_REF_NAME is this run's, made by an earlier attempt with these files: it is not made again."
+            exit 0
+          fi
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md "${candidate[@]}" \
-            "cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS
+            --notes-file notes.md "${candidate[@]}" "${files[@]}"
 
   # Points `latest` at the highest released version and each X.Y at the highest released
   # X.Y.z, after a release is made (a release candidate moves neither). It decides from what

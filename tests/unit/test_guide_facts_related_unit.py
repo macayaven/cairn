@@ -108,7 +108,8 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
         "connect",
         "Each related page says why, with the claims the reason rests on: both pages state the"
         " same term (a URL, a path, a flag, a version, or code in backticks that is not a plain"
-        " word), or a claim of the other page holds this page's title.",
+        " word), or a claim of the other page names this page's title in its prose, not inside"
+        " code, a path, a flag or an address.",
     )
     file(
         memory,
@@ -123,6 +124,12 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
     file(memory, "Sync", "Nightly, `quill sync --all` runs.\n")
     file(memory, "Word", "Set `retries` to three.\n")  # a plain word in backticks
     file(memory, "Pointer", "Read the runbook before a deploy.\n")
+    # the title's word inside a path, a flag or an address names nothing
+    file(
+        memory,
+        "Script",
+        "Start `runbook/start.sh`, pass --runbook, see https://example.invalid/runbook.\n",
+    )
     answer = memory.related("ops", "runbook", 20)  # six pages: one more than the default gives
     assert why(answer) == {
         "address": [("shares", "https://example.invalid/quill")],
@@ -135,11 +142,16 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
     for page in answer["related"]:
         for reason in page["why"]:
             assert reason["there"]["text"] and reason["there"]["passage_ids"]
-            if reason["kind"] == "shares":
-                assert reason["term"] in reason["here"]["text"].casefold()
-                assert reason["term"] in reason["there"]["text"].casefold()
+            if reason["kind"] == "shares":  # the same term: each claim holds it as it is given
+                assert reason["term"] in reason["here"]["text"]
+                assert reason["term"] in reason["there"]["text"]
             else:
                 assert "runbook" in reason["there"]["text"]
+    # the same term is the same writing: a flag in capitals is another flag, and no page is
+    # told it states a term it does not write
+    file(memory, "Capitals", "Ada passes --DRY-RUN and reads `Quill Sync --All`.\n")
+    assert why(memory.related("ops", "capitals")) == {}
+    assert "capitals" not in why(memory.related("ops", "runbook", 20))
 
 
 def test_a_term_more_than_five_pages_hold_relates_none(memory):
@@ -196,6 +208,19 @@ def test_searched_says_whether_the_answer_is_complete_and_counts_what_it_left_ou
     }
     cut = memory.related("ops", "asked", 1)["searched"]
     assert cut == {**whole, "complete": False, "pages_left_out": 1}
+    # every term of a page is looked up or counted, whatever it is made of: one of 65 parts,
+    # more than a search's words may hold, is looked up; the 257th of a page is counted
+    long = "_".join(chr(97 + n // 26) + chr(97 + n % 26) for n in range(65))
+    file(memory, "Keys", f"The key is `{long}`.\n")
+    file(memory, "Locks", f"Set `{long}` too.\n")
+    found = memory.related("ops", "keys")
+    assert pages(found) == ["locks"] and found["searched"]["terms_looked_up"] == 1
+    assert found["searched"]["complete"] is True
+    many = " ".join(f"`t{n:03d}.x`" for n in range(relating.TERMS_MAX + 1))
+    file(memory, "Many", f"Use {many}.\n")
+    counted = memory.related("ops", "many")["searched"]
+    assert (counted["terms_looked_up"], counted["terms_not_looked_up"]) == (relating.TERMS_MAX, 1)
+    assert counted["complete"] is False
 
 
 def test_what_this_version_does_not_do(store, memory):

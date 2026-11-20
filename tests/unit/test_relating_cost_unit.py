@@ -13,9 +13,10 @@ A read (Store.related_pages) runs, T being the terms looked up (at most relating
 - 2 for what is given (the claims, the pages' heads) and 2 for the notes of the passages
   those claims cite and who wrote them (the caller's), none when nothing is related.
 So 13 statements for a page of 10 terms, and 16 for one of 200 and for one of 3,000: past
-TERMS_MAX terms the count is the same, whatever the page holds. One more, the 17th at most,
-asks the index where a claim that mentions the page names its title, when such a claim is
-given cut (the last test). One statement more, once
+TERMS_MAX terms the count is the same, whatever the page holds. A claim of another page that
+holds the title's words is read as a candidate is, and one statement more asks the index
+where it matched the title: 17 at the most, as before, since no statement asks for the
+line of a claim given cut any more (the last tests). One statement more, once
 (SETTINGS): the first time a connection uses a workspace's index FTS5 loads its settings, as
 tests/unit/test_search_cost_unit.py says.
 The rows, C being the page's claims: 2 + 2C + the claims listed (each term's own claim among
@@ -27,8 +28,6 @@ of the page's words.
 """
 
 import contextlib
-import sqlite3
-from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -328,47 +327,83 @@ def test_a_claim_of_any_length_is_read_to_the_bound_and_a_passage_is_measured_un
     store.close()
 
 
+def mentioned(folder, said: str, by_hand: bool = False) -> tuple[Store, str]:
+    """A page "Quill ledger" and a page "Other" whose one claim is `said`: the text of its
+    passage, as a note is compiled; or, `by_hand`, a claim saved with a short passage of
+    other words."""
+    store = Store(folder / "cairn.db")
+    project = store.create_project("ops")
+    memory = Memory(store, lint_gate)
+    memory.note("ops", "Ada balances it at dusk.\n", title="Quill ledger", topic="Quill ledger")
+    if by_hand:
+        note, _ = store.add_note(project.id, "# Other\n\nShe opens the Quill ledger.\n")
+        (span,) = [s.id for s in store.note_spans(note.id) if s.kind == "paragraph"]
+        store.save_page(
+            project.id, "other", "Other", "", [Claim(id="cl_h", text=said, span_ids=[span])]
+        )
+    else:
+        memory.note("ops", said + "\n", title="Other", topic="Other")
+    merge(store)
+    return store, project.id
+
+
+LONG = "Brook keeps the ledger at dawn; " * 1_900  # 60,800 characters
+
+
 @pytest.mark.parametrize(
     "named",
     ["the Quill ledger.", "the Quill" + " \u2014" * 900 + " ledger."],
     ids=["side by side", "1,800 characters apart"],
 )
-def test_a_cut_mention_costs_one_statement_more_and_hands_back_a_part_of_the_claim(tmp_path, named):
-    """A page mentioned by a claim of 60,000 characters, which names it at its end. Beside a
-    claim that mentions it in a sentence, the read runs one statement more: the one that
-    asks the index where it matched the title. The index reads the long claim whole itself,
-    once, to mark the match; no statement hands back more of it than the line needs, 3 *
-    LINE_MAX + 1 characters, however far apart the title's words stand; and the claim's text
-    is read by a handle to the bound, as any claim's."""
-    counts = {}
-    for size, filler in (("short", ""), ("long", "Brook keeps the ledger at dawn; " * 1_900)):
-        store = Store(tmp_path / f"{size}.db")
-        project = store.create_project("ops")
-        memory = Memory(store, lint_gate)
-        memory.note("ops", "Ada balances it at dusk.\n", title="Quill ledger", topic="Quill ledger")
-        memory.note("ops", filler + "Then she opens " + named + "\n", title="Other", topic="Other")
-        merge(store)
+def test_what_it_costs_to_know_that_a_claim_names_the_title(tmp_path, monkeypatch, named):
+    """A page mentioned by one claim, short or of 60,000 characters, which names it at its
+    end. The claim is read as a term's candidate is, and the index is asked once where it
+    matched: 13 statements, however long the claim. Its passage is handed back, and once
+    more as the claim's text with the index's marks: twice its bytes, which BYTES_MAX
+    counts. With less room than that the claim is not read, nothing of it is handed back,
+    the page is not said to be mentioned, and the claim is counted."""
+    for size, said in (
+        ("short", "Then she opens " + named),
+        ("long", LONG + "Then she opens " + named),
+    ):
+        (tmp_path / size).mkdir()
+        store, project_id = mentioned(tmp_path / size, said)
         with watched(store) as seen:
-            found = store.related_pages(project.id, "quill-ledger", RELATED_MAX)
+            found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
         (reason,) = found.pages[0].why
-        assert reason.kind == "mentioned_by" and reason.there.cut == (
-            size == "long" or len(named) > 500
-        )
-        counts[size] = (len(seen.statements) - settings_loaded(seen.statements), seen.longest)
+        assert reason.kind == "mentioned_by" and found.left.claims_read == 1
+        # the caller's 2; the page's claims and passages, 2; no term to list; the title, 1; its
+        # claim, the size of the claim's passage and the passage, 3; where the index matched, 1;
+        # what is given, 2; the notes of the passages given and who wrote them, 2
+        assert len(seen.statements) - settings_loaded(seen.statements) == 13
+        assert len([s for s in seen.statements if "highlight(" in s]) == 1
+        stored = len(said.encode())
+        assert len(said) <= seen.longest <= len(said) + 2  # the text, and with two marks
         if size == "long":
             assert len(reason.there.line) == relations.LINE_MAX and reason.there.line_cut
             assert reason.there.line.startswith("Quill") or reason.there.line.endswith(named)
-            asked = [s for s in seen.statements if "highlight(" in s]
-            assert len(asked) == 1 and seen.longest <= 3 * relations.LINE_MAX + 1
-            # the index marks the claim once a row: the SELECT that asks it is run apart
-            # from the one that reads the marks twice, not folded into it
-            with closing(sqlite3.connect(tmp_path / "long.db")) as con:
-                plan = [step[-1] for step in con.execute("EXPLAIN QUERY PLAN " + asked[0])]
-            assert [step for step in plan if step.startswith(("CO-ROUTINE", "MATERIALIZE"))]
+            monkeypatch.setattr(relating, "BYTES_MAX", 2 * stored - 1)
+            with watched(store) as seen:
+                found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
+            assert found.pages == () and found.left.claims_not_read == 1
+            assert seen.longest < 100 and not [s for s in seen.statements if "highlight(" in s]
+            monkeypatch.setattr(relating, "BYTES_MAX", 2 * stored)
+            assert len(store.related_pages(project_id, "quill-ledger", RELATED_MAX).pages) == 1
+            monkeypatch.undo()
         store.close()
-    if len(named) < 500:
-        # the caller's 2; the page's claims and passages, 2; no term to list; the title, 1;
-        # what is given, 2; the notes of the passages given and who wrote them, 2
-        assert counts["short"][0] == 9 and counts["long"][0] == 10
-    else:  # both claims are cut: both ask the index
-        assert counts["short"][0] == counts["long"][0] == 10
+
+
+def test_a_reworded_claim_that_mentions_costs_no_statement_more_and_nothing_of_its_text(tmp_path):
+    """A claim of 60,000 characters saved by hand, whose text is not its passage's: the
+    mention stands as the index has it. Nothing of the claim is handed back to know that
+    (the statement that would give its marks finds another text and gives none), and no
+    line is asked for: the claim is given by its head, read by a handle to the bound. The
+    same 13 statements, and the longest text handed back is the short passage."""
+    store, project_id = mentioned(tmp_path, LONG + "Then she opens the Quill ledger.", by_hand=True)
+    with watched(store) as seen:
+        found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
+    (reason,) = found.pages[0].why
+    assert reason.kind == "mentioned_by" and reason.there.cut and reason.there.line is None
+    assert len(seen.statements) - settings_loaded(seen.statements) == 13
+    assert len([s for s in seen.statements if "highlight(" in s]) == 1 and seen.longest < 100
+    store.close()

@@ -10,7 +10,9 @@ manifest under it (oras-go v2.7.0, content/oci/oci.go: each manifest it stores i
 digest, and saveIndex writes one entry per tag); with --root the image index is the entry with
 DIGEST (listed once for each name it was given, every listing alike), and any other entry must
 be a manifest that index holds, listed with the media type and size the index gives it and with
-no name. Every descriptor's media type is checked, and its size against its blob: images are
+no name. The media type is checked of the index, of every manifest it lists, of each image's
+config and of each layer of an attestation, and every descriptor's size against its blob; the
+media type of an image's layers and of an attestation's config is not checked: images are
 OCI image manifests of linux/amd64 (no variant) or linux/arm64 (no variant, or v8), the index
 has no config or layers, an attestation is listed as unknown/unknown and every one of its
 layers is an in-toto statement (Statement/v0.1, as buildkit writes it, or /v1) whose predicate

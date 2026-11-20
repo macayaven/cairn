@@ -24,7 +24,9 @@ import yaml
 from ci_shell import run_step
 from test_ci_workflow_unit import (
     JOBS,
+    MAIN_PUSH,
     RAW_WORKFLOW,
+    TAG,
     THE_GATE,
     ancestors,
     evaluate,
@@ -36,6 +38,7 @@ from test_ci_workflow_unit import (
     reaches_the_token,
     release_check,
     release_tags,
+    rerun,
 )
 
 PACKAGE, ATTEST, RELEASE = JOBS["package"], JOBS["attest"], JOBS["release"]
@@ -247,7 +250,7 @@ PRIVILEGED_DEFINITIONS = {
         "5165d1610aa4638259b10262874a992db6b2b557007a329103fbbd9dcba655d4",
         "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
         "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
-        "a32d1c955bb0e0a09ae752caca1db0b8aecc3da1ce5cd6a540982a0687e89a63",
+        "446fd37a30c9fcbc6320571c07ad833931f4764e20e6364559f5e86ab69e531d",
     ],
     "deploy": [
         "401510e913f6e37136331eeefa6d88fce27bbba126b17c42793f7694b9600454",
@@ -640,7 +643,7 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     workflow = f"--repo {owner} --signer-workflow {owner}/.github/workflows/ci-cd.yml"
     expected = {
         f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}"
-        " --source-digest <commit>",
+        " --source-ref refs/tags/vX.Y.Z --source-digest <commit>",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow}",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow} --source-ref"
         " refs/heads/main --source-digest <commit>",
@@ -654,23 +657,55 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     update = DEPLOY_GUIDE[DEPLOY_GUIDE.index("## Update") :]
     update = update[: update.index("\n## ")]
     proof = (
-        "A pass for the wheel proves that these bytes are the ones this repository's"
-        " `ci-cd.yml` built and attested in the tag's run, unchanged since. A pass for the"
-        " image proves less by itself, since the tag's run, which promotes the image and does"
+        "`--source-ref` checks which ref that run was for: a release candidate tagged on the"
+        " same commit builds and attests a wheel of its own under the same name, so the wheel's"
+        " command names `refs/tags/vX.Y.Z`, and `refs/tags/vX.Y.Z-rc.N` when the file is a"
+        " candidate's. Use `gh` 2.102.0 or later: from that version it compares `--source-ref`"
+        " with the attestation's ref exactly and `--signer-workflow` with the whole workflow"
+        " path, where earlier versions ignored the ref's case and took the workflow as a prefix"
+        " (GHSA-4mq3-hpgx-9cx8, GHSA-wjmr-j3rp-mh2g). A pass for the wheel proves that these"
+        " bytes were built and attested by"
+        " this repository's `ci-cd.yml` in a run of the tag `vX.Y.Z` at that commit, unchanged"
+        " since; it does not prove that they are the files the release attaches, since a re-run"
+        " of job `package` builds files of its own and `attest` attests those too. A pass for"
+        " the image proves less by itself, since the tag's run, which promotes the image and does"
         " not build it, attests its digest too; with `--source-ref refs/heads/main` a pass"
         " proves that `main`'s run of `ci-cd.yml` published and attested that digest, the run"
         " that built it, as the tag's run checked before it promoted it. Neither proves that"
         " the code or its dependencies are free of flaws"
+    )
+    tag_check = next(
+        s for s in JOBS["image_build"]["steps"] if s.get("name", "").startswith("Check that main")
     )
     for guide in (ci, update):
         assert set(VERIFY.findall(guide)) == expected
         assert proof in flat(guide)
         assert commit in flat(guide)
         assert "A pass proves that these bytes are the ones" not in flat(guide)
+        assert "built and attested in the tag's run" not in flat(guide)
+        # The commands' shape: every flag is one the tag's run gives gh for main's attestation.
+        for command in VERIFY.findall(guide):
+            assert set(re.findall(r"--[a-z-]+", command)) <= set(
+                re.findall(r"--[a-z-]+", tag_check["run"][tag_check["run"].index("verify") :])
+            ), command
+    # Why the wheel's command names the tag's ref: a candidate and the release tagged on one
+    # commit each run `package` and `attest`, on a tag's ref and never on main, and both name
+    # the wheel by the version alone. And a re-run of `package` is followed by `attest`.
+    for tagged in (TAG, CANDIDATE):
+        ran = jobs_that_run(tagged, {"release_check": {"candidate": ""}})
+        assert {"package", "attest"} <= ran
+    assert not {"package", "attest"} & jobs_that_run(MAIN_PUSH)
+    (check,) = [s for s in ATTEST["steps"] if s.get("name") == "Check the files"]
+    assert 'version="${version%-rc.*}"' in check["run"]
+    assert "attest" in rerun({"package"})
+    # The version the guides ask for is the one the tag's run refuses to go below, for the
+    # same two advisories (GitHub's own words, read on 2026-11-20: GHSA-4mq3-hpgx-9cx8, "`gh`
+    # now compares the `--source-ref` value against the certificate's source ref exactly",
+    # patched in v2.102.0; GHSA-wjmr-j3rp-mh2g, "`gh` now requires the `--signer-workflow`
+    # value to match the complete workflow path in the SAN", patched in v2.102.0).
+    assert '[ "$major" = 2 ] && [ "$minor" -lt 102 ]' in tag_check["run"]
+    assert "GHSA-wjmr-j3rp-mh2g and GHSA-4mq3-hpgx-9cx8" in tag_check["run"]
     # The flag the guides give is the one the tag's run checks main's attestation with.
-    tag_check = next(
-        s for s in JOBS["image_build"]["steps"] if s.get("name", "").startswith("Check that main")
-    )
     assert "--source-ref refs/heads/main" in tag_check["run"]
     # The image the guide names is the one `publish` tags and `attest` attests by digest.
     meta = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "meta")
@@ -778,10 +813,10 @@ def test_the_readme_s_two_limits_are_the_numbers_the_workflow_and_the_script_use
     assert (
         "The build's archive and the release's files are kept as artifacts of the run for five"
         " days: re-running only the failed jobs of a run works within them; after them,"
-        " `publish` still finishes when the registry already holds the digest, and anything"
-        " that needs an artifact fails, so on `main` the next push publishes a new build, and a"
-        " tag's run is re-run whole." in ci
+        " `publish` still finishes when the registry already holds the digest, and a job re-run"
+        " alone that needs an artifact fails" in ci
     )
+    # (What a tag's run recovers after them: test_ci_retry_limits_unit.)
     kept = {
         s["with"]["name"]: s["with"]["retention-days"]
         for job in JOBS.values()

@@ -71,6 +71,7 @@ def image(
     built_for: str | None = None,
     variant: str | None = None,
     off: int = 0,
+    layer_type: str = "application/vnd.oci.image.layer.v1.tar+gzip",
 ) -> dict:
     config = layout.doc(
         {"architecture": built_for or arch, "os": "linux"},
@@ -78,7 +79,7 @@ def image(
     )
     data = f"a layer of {arch}".encode()
     layer = {
-        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "mediaType": layer_type,
         "digest": layout.blob(data),
         "size": len(data) + off,
     }
@@ -107,7 +108,7 @@ def statement(of: dict, predicate: str, kind: str = STATEMENT) -> dict:
 
 def attestation(
     layout: Layout, of: dict, predicates=(PROVENANCE, SBOM), body=statement, layer_type=INTOTO,
-    platform=("unknown", "unknown"),
+    platform=("unknown", "unknown"), config_type="application/vnd.oci.image.config.v1+json",
 ) -> dict:  # fmt: skip
     layers = []
     for predicate in predicates:
@@ -118,7 +119,7 @@ def attestation(
             "size": len(data),
             "annotations": {"in-toto.io/predicate-type": predicate},
         })  # fmt: skip
-    config = layout.doc({}, "application/vnd.oci.image.config.v1+json")
+    config = layout.doc({}, config_type)
     manifest = {"schemaVersion": 2, "mediaType": MANIFEST, "config": config, "layers": layers}
     return layout.doc(
         manifest,
@@ -134,7 +135,7 @@ def attestation(
 def build(tmp_path, arches=("amd64", "arm64"), predicates=(PROVENANCE, SBOM), attest=True,
           entries=None, tamper=None, built_for=None, drop=None, twice=False,
           stray=None, variants=None, proof=None, index_extra=None, oras=None,
-          resize=None, layer_off=0) -> tuple[Path, str]:  # fmt: skip
+          resize=None, layer_off=0, layer_type=None) -> tuple[Path, str]:  # fmt: skip
     layout = Layout()
     images = [
         image(
@@ -143,6 +144,7 @@ def build(tmp_path, arches=("amd64", "arm64"), predicates=(PROVENANCE, SBOM), at
             (built_for or {}).get(arch),
             (variants or {}).get(arch),
             layer_off if arch == "amd64" else 0,
+            **({} if layer_type is None else {"layer_type": layer_type}),
         )
         for arch in arches
     ]
@@ -543,3 +545,24 @@ def test_a_statement_names_its_image_and_holds_a_predicate(tmp_path, body, passe
     path, _ = build(tmp_path, proof={"body": body})
     code, _, err, _ = run(path, tmp_path)
     assert (code == 0) is passes, err
+
+
+def test_which_media_types_are_checked_and_which_are_not(tmp_path):
+    """The third report's remark on 8c, as the script's own words now say it: the media type
+    is checked of the index, of each manifest it lists, of each image's config and of each
+    attestation's layers. An image's layer and an attestation's config are checked for being
+    there, as the bytes their digests name, at the size their descriptors say (the cases
+    above), and not for their media type: a layer or an attestation's config of another type
+    passes."""
+    said = " ".join(oci_archive.__doc__.split())
+    assert (
+        "The media type is checked of the index, of every manifest it lists, of each image's"
+        " config and of each layer of an attestation, and every descriptor's size against its"
+        " blob; the media type of an image's layers and of an attestation's config is not"
+        " checked:" in said
+    )
+    assert "Every descriptor's media type is checked" not in said
+    path, _ = build(tmp_path, layer_type="application/x-made-up")
+    assert run(path, tmp_path)[0] == 0
+    path, _ = build(tmp_path, proof={"config_type": "application/x-made-up"})
+    assert run(path, tmp_path)[0] == 0

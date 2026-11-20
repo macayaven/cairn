@@ -113,7 +113,8 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         " re-running all its jobs promotes the same digest again and finishes it, until its"
         " GitHub release exists, when `release_check` refuses the tag: from then on, re-run only"
         " the failed jobs, which GitHub follows with the jobs that need them, a failed `release`"
-        " within the five days the run's files are kept and a failed `aliases` at any time.",
+        " within the five days the run's files are kept and a failed `aliases` for as long as"
+        " GitHub re-runs the run: 30 days from its first run, and 50 re-runs at most.",
         "`main` is moved only when the run's commit is still the head of `main`, read just"
         " before it is moved: a run of an older commit, a retry among them, writes its"
         " `sha-<commit>` and leaves `main` to the newer commit's run.",

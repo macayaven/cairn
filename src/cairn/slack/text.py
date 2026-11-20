@@ -650,10 +650,13 @@ def _block_lines(token: str, quoted: bool) -> list[str]:
     next three. What stands on the opening fence's line after it, or on the closing fence's
     before it, is a line of the block unless it is blank; and in a quotation (`quoted`:
     only a quotation's marks stand before the block on its line) the mark that starts each
-    line is the quotation's."""
+    later line is the quotation's. What stands after the opening backticks is the block's, a
+    `>` included: the quotation's mark on that line stands before them (the tester's last
+    finding on SL8, `&gt; ```&gt; x```` held `x`). Slack's page does not say how a quoted
+    block's later lines are marked."""
     lines = _shown(token[3:-3]).split("\n")
     if quoted:
-        lines = [_QUOTE_MARK.sub("", line, count=1) for line in lines]
+        lines[1:] = [_QUOTE_MARK.sub("", line, count=1) for line in lines[1:]]
     for edge in (0, -1):
         if lines and not lines[edge].strip(" \t") and (len(lines) > 1 or not lines[edge]):
             del lines[edge]

@@ -28,8 +28,17 @@ from markdown_it import MarkdownIt
 
 from cairn.spans import chunk
 
-_EMAIL = re.compile(r"""(?:"[^"\n]+"|[\w.!#$%&'*+/=?^`{|}~-]+)@(?:\[[^\]\n]+\]|[\w.-]+)""")
-_TOKENS = re.compile(r"```[\s\S]*?```|`[^`\n]*`|<[^>\n]+>")
+# An email address. Every pattern here reads each character of what it is run over a bounded
+# number of times, however long the text (the third tester, finding 9): a run of the
+# characters an address may start with is read once, from its start (`(?<!...)`, possessive),
+# since a match from inside it ends where one from its start does; and a bracketed domain
+# holds no "[", so it is read up to the next one at most. _redact finds a match that starts
+# right where the last one ended, as one search from there would.
+_LOCAL = r"[\w.!#$%&'*+/=?^`{|}~-]"
+_AT = r"""@(?:\[[^\[\]\n]++\]|[\w.-]+)"""
+_EMAIL = re.compile(rf"""(?:"[^"\n]++"|(?<!{_LOCAL}){_LOCAL}++){_AT}""")
+_EMAIL_HERE = re.compile(rf"""(?:"[^"\n]++"|{_LOCAL}++){_AT}""")
+_TOKEN_START = re.compile(r"[`<]")  # where a token may start (_tokens)
 _DOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
 _TIMESTAMP = re.compile(r"[0-9]{1,12}\.[0-9]{6}")
 _PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
@@ -39,14 +48,22 @@ _UNDERLINE = re.compile(r"[ \t>]*(=+|-+)[ \t]*")
 _SECOND_ROW = re.compile(r"[ \t>]*[|:-][|: \t-]*")
 # What stands before a code block on its line when the block is in a quotation, as Slack
 # sends it; and a quotation's mark at the start of a line, as Slack displayed it.
-_QUOTED = re.compile(r"(?:[ \t]*&gt;[ \t]?)+[ \t]*")
+_QUOTED = re.compile(r"(?:[ \t]*&gt;)+[ \t]*")  # each blank one place it can stand
 _QUOTE_MARK = re.compile(r"^[ \t]*>[ \t]?")
 _CODE_NODES = 10_000  # see _displayed_code
 _PASSES = 8  # see _one_heading
 
 
 def _redact(text: str) -> str:
-    return _EMAIL.sub("[email removed]", text)
+    """`text` with each email address removed, as one substitution of the pattern from left
+    to right removes them (_EMAIL)."""
+    if "@" not in text:
+        return text
+    pieces, at = [], 0
+    while found := (at and _EMAIL_HERE.match(text, at)) or _EMAIL.search(text, at):
+        pieces += [text[at : found.start()], "[email removed]"]
+        at = found.end()
+    return "".join([*pieces, text[at:]])
 
 
 def _decode(text: str) -> str:
@@ -347,7 +364,9 @@ def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int,
     the one before: its start and end with its backticks, "block" or "code", and what it
     displayed. In the text it stands between backticks with its "&", "<" and ">" as
     entities, a block with or without a line feed after its opening and before its closing
-    fence. One that is not found so is left to the backticks of the text."""
+    fence. From the first one that is not found so, the rest is left to the backticks of the
+    text: the rich text no longer tells that text's code, and each search would read the
+    rest of the text again."""
     places: list[tuple[int, int, str, object]] = []
     at = 0
     for block, shown in code:
@@ -356,26 +375,75 @@ def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int,
             ways = [f"```{above}{sent}{below}```" for above in ("\n", "") for below in ("\n", "")]
         else:
             ways = [f"`{sent}`"] if sent and "\n" not in sent else []
-        found = min(
-            ((text.find(way, at), -len(way)) for way in ways if way in text[at:]), default=None
-        )
-        if found is not None:
-            at = found[0] - found[1]
-            lines = _redact(shown).split("\n")
-            places.append(
-                (found[0], at, "block", lines) if block else (found[0], at, "code", lines[0])
-            )
+        found = None
+        for way in ways:  # the first place, the longest way there; none read past it
+            where = text.find(way, at, len(text) if found is None else found[0] + len(way))
+            if where >= 0 and (found is None or (where, -len(way)) < found):
+                found = (where, -len(way))
+        if found is None:
+            break
+        at = found[0] - found[1]
+        lines = _redact(shown).split("\n")
+        places.append((found[0], at, "block", lines) if block else (found[0], at, "code", lines[0]))
     return places
 
 
-def _block_lines(text: str, start: int, token: str) -> list[str]:
+class _Next:
+    """Where `what` next stands in `text` before `end`, at or after a place asked for, each
+    place asked for after the one before: the text is read once, however often it is asked."""
+
+    def __init__(self, text: str, what: str, end: int) -> None:
+        self.text, self.what, self.end = text, what, end
+        self.since, self.found = end + 1, end  # nothing read yet
+
+    def __call__(self, at: int) -> int:
+        """The place, or `end` when there is none."""
+        if not self.since <= at <= self.found:
+            found = self.text.find(self.what, at, self.end)
+            self.since, self.found = at, self.end if found < 0 else found
+        return self.found
+
+
+def _tokens(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    """The start and end of each token of `text` between `start` and `end`, in order: a code
+    block (three backticks, anything, three backticks), code within a line (a backtick, no
+    backtick and no line feed, a backtick), a reference (`<`, no ">" and no line feed, `>`):
+    as the pattern ```[\\s\\S]*?```|`[^`\\n]*`|<[^>\\n]+> finds them from left to right, with
+    each character read a bounded number of times, where that pattern read the rest of a
+    line again from each "<" with no ">" after it."""
+    found: list[tuple[int, int]] = []
+    fence, tick = _Next(text, "```", end), _Next(text, "`", end)
+    feed, close = _Next(text, "\n", end), _Next(text, ">", end)
+    at = start
+    while (candidate := _TOKEN_START.search(text, at, end)) is not None:
+        at = candidate.start()
+        if text[at] == "`":
+            closer = fence(at + 3) if text.startswith("```", at, end) else end
+            if closer < end:
+                found.append((at, closer + 3))
+            elif (after := tick(at + 1)) < min(end, feed(at + 1)):
+                found.append((at, after + 1))
+            else:
+                at += 1
+                continue
+        elif at + 1 < (after := close(at + 1)) < min(end, feed(at + 1)):
+            found.append((at, after + 1))
+        else:
+            at += 1
+            continue
+        at = found[-1][1]
+    return found
+
+
+def _block_lines(token: str, quoted: bool) -> list[str]:
     """The lines a code block of Slack's own displayed, the white space at their ends
     included, as the backticks of the message's text bound it: from the first three to the
     next three. What stands on the opening fence's line after it, or on the closing fence's
-    before it, is a line of the block unless it is blank; and in a quotation the mark that
-    starts each line is the quotation's."""
+    before it, is a line of the block unless it is blank; and in a quotation (`quoted`:
+    only a quotation's marks stand before the block on its line) the mark that starts each
+    line is the quotation's."""
     lines = _shown(token[3:-3]).split("\n")
-    if _QUOTED.fullmatch(text, text.rfind("\n", 0, start) + 1, start):
+    if quoted:
         lines = [_QUOTE_MARK.sub("", line, count=1) for line in lines]
     for edge in (0, -1):
         if lines and not lines[edge].strip(" \t") and (len(lines) > 1 or not lines[edge]):
@@ -410,7 +478,11 @@ def _not_one_fence(note: str, wrote: list[tuple[int, str]]) -> set[int]:
     missing, at = set(), 0
     for place, fence in wrote:
         rows = fence.split("\n")
-        ends = (n + len(rows) for n in range(at, len(lines)) if lines[n : n + len(rows)] == rows)
+        ends = (
+            n + len(rows)
+            for n in range(at, len(lines))
+            if lines[n] == rows[0] and lines[n : n + len(rows)] == rows
+        )
         end = next(ends, None)
         if end is None or (end - len(rows), end) not in read:
             missing.add(place)
@@ -440,17 +512,24 @@ def _render(
     all, on the same lines; the fences of the others are given in `wrote`."""
     prose, literal = (_shown, _shown) if displayed else (_prose, _literal)
     tokens: list[tuple[int, int, str, object]] = []
-    offset = 0
+    # A block's line: where it starts, read once (`read`: up to where), and where the marks
+    # of a quotation that start it end (`quotes`), read once a line.
+    offset, line, read, quotes = 0, 0, 0, None
     for known in [*_known_code(text, code or []), (len(text), len(text), "", None)]:
-        for match in _TOKENS.finditer(text, offset, known[0]):
-            token = match.group()
+        for start, end in _tokens(text, offset, known[0]):
+            token = text[start:end]
             if token.startswith("```"):
-                found: tuple[str, object] = ("block", _block_lines(text, match.start(), token))
+                began, read = text.rfind("\n", read, start) + 1, start
+                if began or quotes is None:
+                    line = max(line, began)
+                    marks = _QUOTED.match(text, line)
+                    quotes = marks.end() if marks else -1
+                found: tuple[str, object] = ("block", _block_lines(token, quotes == start))
             elif token.startswith("`") and token != "``":
                 found = ("code", _shown(token[1:-1]))
             else:  # a reference, or two backticks with no code between them
                 found = ("", token)
-            tokens.append((match.start(), match.end(), *found))
+            tokens.append((start, end, *found))
         tokens.append(known)
         offset = known[1]
     held = [what for _, _, kind, what in tokens if kind == "code" and isinstance(what, str)]

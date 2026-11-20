@@ -57,12 +57,10 @@ Bounded work, whoever asks, and nothing left out silently. What can be left out 
   its row, by a handle on the stored value that reads none of it, as cairn.graph measures
   one: a passage that does not fit is neither read nor fetched). The passage of a claim
   listed for the title counts twice: its bytes are handed back once more, as the claim's
-  text with the index's marks. A term is settled when each page listed for it is known to
-  hold it or not: one of its claims states it, or all of them were read. A term that is
-  not settled gives no reason at all, unless more than COMMON pages are already known to
-  hold it, which settles it as common; and so for the title and the pages that name it. So
-  every reason given says how many pages hold its term exactly, and no reason needs a mark
-  of how far it was read.
+  text with the index's marks. A term one of whose claims was not read gives no reason at
+  all: it is not known of every page whether it states the term, nor how many do. And so
+  for the title. So every reason given says how many pages hold its term exactly, and no
+  reason needs a mark of how far it was read.
 - The related pages past the `limit` asked for: `pages_left_out`.
 `complete` is true only when all three are nothing.
 
@@ -255,16 +253,13 @@ def related(
 
     reasons: dict[str, list[Reason]] = {}
     for term, (here, others) in asked.items():
+        if any(row not in read for row, _ in others):  # a claim not read: no reason at all
+            continue
         states: dict[str, int] = {}  # each page that holds the term: its first claim that states it
-        unsettled: set[str] = set()  # pages with a claim that was not read
         for row, at in others:
-            if row not in read:
-                unsettled.add(at)
-            elif at not in states and candidates[row] and term in held.get(candidates[row][0], ()):
+            if at not in states and candidates[row] and term in held.get(candidates[row][0], ()):
                 states[at] = row
         if len(states) >= relations.COMMON:  # with this page, more than COMMON hold it
-            continue
-        if unsettled - states.keys():  # a page that may hold it or not: the term gives no reason
             continue
         shared = Reason(SHARES, term.text, term.kind, 1 + len(states), here, None)
         for at, row in states.items():
@@ -335,31 +330,28 @@ def _mentioning(
     holds a mark of the index or a null character, the places of the one say nothing of the
     other: the claim mentions the page as the index has it, and its place is None.
 
-    As for a term: a page with a claim that was not read, and no claim known to name the
-    title, leaves the title unsettled, and it gives no mention at all; nor does a title more
-    than relations.COMMON other pages name. One statement, none for no claim read."""
+    As for a term: a title one of whose claims was not read gives no mention at all; nor
+    does a title more than relations.COMMON other pages name. One statement, none for no
+    claim read."""
     asked = [
         (row, candidates[row][0])
         for row, _ in naming
         if row in read and candidates[row] and candidates[row][0] in spans
     ]
     marks = _marked(con, index, named, asked) if named and asked else {}
+    if any(row not in read for row, _ in naming):  # a claim not read: no mention at all
+        return {}
     names: dict[str, tuple[int, tuple[int, int] | None]] = {}
-    unsettled: set[str] = set()  # pages with a claim that was not read
     for row, at in naming:
-        if row not in read:
-            unsettled.add(at)
-        elif at in names:
+        if at in names:
             continue
-        elif row not in marks:  # the index's word stands
+        if row not in marks:  # the index's word stands
             names[at] = (row, None)
         elif place := relations.named_at(
             _places(marks[row]), relations.covered(spans[candidates[row][0]])
         ):
             names[at] = (row, place)
-    if len(names) > relations.COMMON or unsettled - names.keys():
-        return {}
-    return names
+    return {} if len(names) > relations.COMMON else names
 
 
 def _marked(

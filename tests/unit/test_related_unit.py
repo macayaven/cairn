@@ -619,7 +619,7 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
         "`terms_not_looked_up`: its terms past those.",
         "`claims_read`: claims of other pages read for those terms and for the title.",
         "`claims_not_read`: such claims not read, past 512 claims or a million bytes of their"
-        " passages; a term or a title with a claim not read gives no reason.",
+        " passages; a term with a claim not read gives no reason, nor does the title.",
         "`pages_left_out`: related pages past `limit`.",
         "`complete` is true when those three counts of what was left out are 0.",
     ):

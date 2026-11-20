@@ -123,15 +123,16 @@ def test_gate_names_each_violation_by_code_and_claim():
     assert result.metrics == {"claims": 3, "spans_cited": 2}
 
 
-def test_gate_compares_claim_and_body_with_whitespace_collapsed():
+def test_gate_finds_the_claim_in_the_body_as_it_is_written():
+    """CORE5: the claim's text, as it is; its words with white space collapsed are not it."""
     wrapped = span("sp_1", ("T",), "a\n  b")
     spans = {wrapped.id: wrapped}
+    written = provenance_gate(page_of([claim(wrapped)], body="# T\n\na\n  b\n"), spans)
     collapsed = provenance_gate(page_of([claim(wrapped)], body="# T\n\na b\n"), spans)
-    joined = provenance_gate(page_of([claim(wrapped)], body="# T\n\nab\n"), spans)
-    assert not any("claim_not_in_body" in v for v in collapsed.violations)
-    assert any("claim_not_in_body" in v for v in joined.violations)
-    # Neither is the body render_body writes, so the reverse check refuses both.
-    assert not collapsed.passed and not joined.passed
+    assert not any("claim_not_in_body" in v for v in written.violations)
+    assert any("claim_not_in_body" in v for v in collapsed.violations)
+    # Not the body render_body writes, so the reverse check refuses it too.
+    assert not collapsed.passed
 
 
 def test_candidate_for_a_new_page_cites_each_new_span_once():

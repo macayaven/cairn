@@ -13,7 +13,14 @@ import itertools
 import pytest
 
 from cairn.arrange import repeat_groups, tidy_page
-from cairn.compiler import CandidatePage, Draft, DraftStats, compile_note, render_body
+from cairn.compiler import (
+    CandidatePage,
+    Draft,
+    DraftStats,
+    compile_note,
+    provenance_gate,
+    render_body,
+)
 from cairn.gate import lint_gate, verbatim_gate, whole
 from cairn.memory import Memory
 from cairn.spans import chunk
@@ -270,3 +277,14 @@ def test_a_passage_copied_twice_exactly_is_what_the_import_takes_and_the_gate_ta
         assert [c.text for c in page.claims] == ["X.", "X."]
     finally:
         target.close()
+
+
+def test_the_default_gate_finds_a_claim_in_the_body_as_it_is_written():
+    """provenance_gate, serve's gate for its extractive composer: a claim is in the body when
+    its text is, not its words with their white space collapsed."""
+    (span,) = chunk("n1", "Ada keeps  the log.")
+    claim = Claim(id="cl_0000000000000001", text=span.text, span_ids=(span.id,))
+    body = render_body("Files", [claim], {span.id: span}).replace("keeps  the", "keeps the")
+    page = CandidatePage(slug="files", title="Files", body=body, claims=(claim,))
+    codes = [v.split(":")[0] for v in provenance_gate(page, {span.id: span}).violations]
+    assert "provenance.claim_not_in_body" in codes

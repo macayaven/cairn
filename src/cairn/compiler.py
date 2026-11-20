@@ -499,14 +499,13 @@ def extractive(title: str, spans: Sequence[Span]) -> Draft:
 
 def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     """The default gate. Violations: a claim with no span ids, a span id missing from `spans`,
-    a claim text (whitespace-collapsed) missing from the body, and the reverse: a body that is
+    a claim text missing from the body as it is written (CORE5), and the reverse: a body that is
     not what render_body writes of the claims and `spans` (gate.unclaimed_line, review blocker
     1 and the second report's finding 1). Metrics: {"claims": n, "spans_cited": distinct cited
     span count}.
 
     Each violation reads "<code>: <claim id>: <message>", like cairn.gate.lint_gate's."""
     violations = []
-    body = " ".join(page.body.split())
     for claim in page.claims:
         if not claim.span_ids:
             violations.append(
@@ -517,7 +516,7 @@ def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResul
             for span_id in claim.span_ids
             if span_id not in spans
         )
-        if " ".join(claim.text.split()) not in body:
+        if claim.text not in page.body:
             violations.append(
                 f"provenance.claim_not_in_body: {claim.id}: the claim text is not in the body"
             )

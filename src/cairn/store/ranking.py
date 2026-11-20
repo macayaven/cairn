@@ -446,15 +446,17 @@ def _phrases(query_words: Sequence[str]) -> str:
     return " OR ".join(f'"{word}"' for word in query_words)
 
 
-def phrase(counted: Sequence[str]) -> str | None:
-    """The match of words side by side and in this order in a claim's text, never in its
-    page's title, which the index holds beside it: one quoted FTS5 phrase behind a column
-    filter (cairn.store.relating). `counted` is words as `split` gives them, so nothing in it
-    is read as query syntax, and FTS5 splits each at "_" as it does a search's. None when
-    they hold no part: a phrase of no token matches nothing."""
-    if not _parts(counted):
-        return None
-    return f'text : "{" ".join(counted)}"'
+def quoted(text: str) -> str:
+    """The match of a text's words side by side and in order in a claim's text, never in its
+    page's title, which the index holds beside it (cairn.store.relating): the text itself as
+    one quoted FTS5 phrase behind a column filter. The index reads the phrase's words with
+    the tokenizer that read the claims', and nothing here splits them: a letter with a
+    combining accent, a word with "_", a text of any number of words are the index's to
+    read. Nothing of the text is read as query syntax, and only what a query cannot write as
+    it is is changed: a double quote is doubled, which is how a string holds one, and a null
+    character, where a query ends, is given as a space (the index reads a null as it reads
+    a space, as a separator). A text of no word is a phrase that matches nothing."""
+    return 'text : "' + text.replace('"', '""').replace("\x00", " ") + '"'
 
 
 def _frequencies(

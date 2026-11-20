@@ -117,9 +117,10 @@ Related pages (KG1; the rules are cairn.relations, the read cairn.store.relating
 whole number of 1 to relations.RELATED_MAX, any other refused, never cut), each as {"page",
 "title", "version", "why", "more"}. `why` holds at most relations.WHY_MAX reasons, the
 weightiest first, and `more` counts the rest. A reason is {"kind": "shares", "term",
-"term_kind", "pages", "here", "there"}: a term both pages state, as it is compared, its kind,
-how many pages of the project hold it (exactly: a term whose pages are not all known gives no
-reason), and the claim of this page and of the other that state it; or {"kind":
+"term_kind", "pages", "here", "there"}: a term both pages state, as it is written (two facts
+are one term when their kind and their text are the same, capitals included: cairn.relations),
+its kind, how many pages of the project hold it (exactly: a term whose pages are not all known
+gives no reason), and the claim of this page and of the other that state it; or {"kind":
 "mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that holds
 this page's title. This version does not list the pages a page mentions. Each claim is
 {"claim_id", "text", "passage_ids", "outside", "written_by", "written_at"} (and

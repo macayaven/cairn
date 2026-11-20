@@ -12,12 +12,14 @@ read:
   text); a claim whose first passage is not, or that cites none, states none. A claim is the
   whole of each passage it cites, so the first stands for the others.
 - A claim states a term when the index finds the term's words, side by side, in the claim's
-  text, and its passage holds the term. The words are those of the term as it is compared
-  (`ranking.phrase` of `ranking.words`; the first of them for a term of more words than a
-  search takes), so they are the same whichever page asks. The index only proposes a claim:
-  the flag `--audit-keep` and the words "audit keep" in a sentence are the same words to it.
-  The passage decides. A term the index has no word of, or does not find in the claim that
-  writes it (below, Limits), is stated by no claim.
+  text, and its passage holds the term. The index is given the term itself, as it is
+  compared, as one quoted phrase (`ranking.quoted`): its tokenizer alone reads the words,
+  as it read the claims', and nothing here splits them, so there is one reading and it is
+  the same whichever page asks. The index only proposes a claim: the flag `--audit-keep`
+  and the words "audit keep" in a sentence are the same words to it, and so are `-L` and
+  `-l`. The passage decides, exactly: by the term's kind and its text as written, capitals
+  included. A term the index has no word of, or does not find in the claim that writes it
+  (below, Limits), is stated by no claim.
 - For each term of the page, the claims of the whole project that hold its words are listed,
   by row, one more than relations.CLAIMS_COMMON at most: that one more says the term is
   common, and it relates none. Otherwise the list is every claim that could state the term,
@@ -36,8 +38,9 @@ read:
   place it matched the title in the claim's text (`_marked`); the claim names the title
   when one of those places lies outside every stretch of the passage that is code, a path,
   a flag, a version or an address (relations.named_at). A title more than relations.COMMON
-  other pages name is common and relates none. A title of more words than a search takes
-  (ranking.split) is not looked up, and relates none.
+  other pages name is common and relates none. The title is given to the index as a term
+  is, itself and whole; one longer than relations.TERM_MAX characters, which no title the
+  product writes is, is not looked up, and relates none.
 
 Row to project before any claim is read (as ranking.search): a match is kept only when
 `search_claims`, by primary key, puts its row in the project, and the statements that list
@@ -47,9 +50,10 @@ matches, and nothing out of the project changes an answer.
 Bounded work, whoever asks, and nothing left out silently. What can be left out is counted
 (`Left`, which every answer carries), and it is these three things and no other:
 - The page's terms past the first TERMS_MAX, the shortest first
-  (relations.looked_up_before): `terms_not_looked_up`. (The page's own claims and their
-  first passages are read whole, as `page` reads them: a page holds at most
-  cairn.store.PAGE_CLAIMS_MAX claims.)
+  (relations.looked_up_before): `terms_not_looked_up`. Every term of the page that relates
+  pages by the rule is one or the other: looked up, or counted here. (The page's own
+  claims and their first passages are read whole, as `page` reads them: a page holds at
+  most cairn.store.PAGE_CLAIMS_MAX claims.)
 - The claims of other pages listed for a term, or for the title, and not read:
   `claims_not_read`. The claims listed are read the terms with the fewest first, the title
   as one more of them, a term's claims all or none, until CLAIMS_MAX claims are read; and
@@ -97,8 +101,7 @@ claims are the account's: a match out of the project is walked and passed over.
 
 Limits. A term is found by its words as it is compared: `1,250x` is compared as `1250x`,
 which the index reads as another word, so a claim that writes the separator states no term
-the index finds; and so for a letter that is compared as other letters (the sharp s). Such
-a term relates nothing, from either side.
+the index finds. Such a term relates nothing, from either side.
 """
 
 import json
@@ -223,10 +226,9 @@ def related(
     for row, cited in own.items():
         for term in held.get(cited[0], ()) if cited else ():
             stating.setdefault(term, set()).add(row)
-    matches = {term: ranking.phrase(ranking.words(term.text)) for term in stating}
-    known = sorted((term for term in stating if matches[term]), key=relations.looked_up_before)
+    known = sorted(stating, key=relations.looked_up_before)  # every term: looked up, or counted
     looked = known[:TERMS_MAX]
-    listed = _listed(con, *scope, [matches[term] for term in looked])
+    listed = _listed(con, *scope, [ranking.quoted(term.text) for term in looked])
 
     # Each term to settle: the page's own claim that states it, and the other pages' claims
     # that hold its words. Not a term more claims hold than make it common, nor one that no
@@ -285,10 +287,11 @@ def related(
 
 
 def _title(title: str) -> str | None:
-    """What the index is asked for a page's title: its words side by side in a claim's text.
-    None for a title of no word, or of more words than a search takes (ranking.split)."""
-    counted, more_words = ranking.split(title)
-    return None if more_words else ranking.phrase(counted)
+    """What the index is asked for a page's title: the title itself, as one phrase in a
+    claim's text (ranking.quoted). None for a title longer than relations.TERM_MAX
+    characters, which is not looked up: a phrase asked of the index is no longer than a
+    term's, and no title the product writes is."""
+    return None if len(title) > relations.TERM_MAX else ranking.quoted(title)
 
 
 def _title_claims(

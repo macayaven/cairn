@@ -4,6 +4,7 @@ one project's, in one snapshot. Real stores in temporary files, notes filed thro
 Memory.note as `serve` files them; made-up names."""
 
 import json
+import unicodedata
 from contextlib import closing
 
 import pytest
@@ -55,10 +56,19 @@ def reasons(found) -> dict[str, list[tuple]]:
 # The match: ranking's own way
 
 
-def test_a_phrase_is_the_words_side_by_side_in_a_claims_text_and_never_its_title(store, ops):
-    assert ranking.phrase(["Deploy", "runbook"]) == 'text : "Deploy runbook"'
-    assert ranking.phrase(["os_login_2fa"]) == 'text : "os_login_2fa"'
-    assert ranking.phrase([]) is None and ranking.phrase(["_", "___"]) is None  # no part
+def test_the_index_is_given_the_text_itself_as_one_phrase_and_reads_its_words_alone(store, ops):
+    """What the index is asked for a term or a title: the text as it is, as one quoted phrase
+    on the text column. Nothing here splits it into words; the index's own reading of the
+    phrase decides them, as it decided the words of the claims. Only what a query cannot
+    write as it is is changed: a double quote is doubled, and a null character, where a
+    query ends, is a space (the index reads a null as a separator, as it reads a space)."""
+    assert ranking.quoted("Deploy runbook") == 'text : "Deploy runbook"'
+    assert ranking.quoted("os_login_2fa") == 'text : "os_login_2fa"'
+    assert ranking.quoted('say "hi" now') == 'text : "say ""hi"" now"'
+    assert ranking.quoted("a1\x00b2") == 'text : "a1 b2"'
+    decomposed = unicodedata.normalize("NFD", "R\u00e9sum\u00e9.cfg")
+    assert ranking.quoted(decomposed) == f'text : "{decomposed}"'  # not "Re sume cfg"
+    assert ranking.quoted("---") == 'text : "---"' and not hasattr(ranking, "phrase")
     store.save_page(
         ops.id,
         "deploy",
@@ -70,22 +80,26 @@ def test_a_phrase_is_the_words_side_by_side_in_a_claims_text_and_never_its_title
             Claim(
                 id="cl_c", text="Set os_login_2fa before the Deploy; Runbook follows.", span_ids=()
             ),
+            Claim(id="cl_d", text='Then say "hi" now, and NEAR(a b) or text : x.', span_ids=()),
         ],
     )
 
-    def held(words: list[str]) -> list[str]:
+    def held(text: str) -> list[str]:
         with store._read() as con:
             rows = con.execute(
                 f"SELECT claim_id FROM {store._index} WHERE {store._index} MATCH ? ORDER BY rowid",
-                (ranking.phrase(words),),
+                (ranking.quoted(text),),
             )
             return [row[0] for row in rows]
 
     # every row holds the title "Deploy runbook"; only the text decides, and punctuation between
     # two words is no word (the index's own reading, as a search's)
-    assert held(["deploy", "runbook"]) == ["cl_a", "cl_c"]
-    assert held(["os", "login", "2fa"]) == held(["os_login_2fa"]) == ["cl_c"]  # "_" splits
-    assert held(["runbook", "deploy"]) == []
+    assert held("deploy runbook") == held("Deploy; RUNBOOK") == ["cl_a", "cl_c"]
+    assert held("os login 2fa") == held("os_login_2fa") == ["cl_c"]  # the index splits at "_"
+    assert held("runbook deploy") == []
+    # nothing of a text is read as a query: quotes, a column, an operator are words or none
+    assert held('say "hi" now') == held("NEAR(a b)") == held("text : x") == ["cl_d"]
+    assert held("---") == held("") == held('"') == []  # no word: nothing matches, and no error
 
 
 # What relates two pages
@@ -127,6 +141,36 @@ def test_two_pages_that_state_one_term_are_related_each_with_its_claim(store, op
         reason.there.text,
         reason.here.text,
     )
+
+
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [
+        ("`-L`", "`-l`"),  # a local forward, a login name
+        ("-L", "-l"),
+        ("/srv/Quill/notes", "/srv/quill/notes"),  # a path
+        ("`Make lint`", "`make lint`"),  # code
+        ("https://Fable.example/runbook", "https://fable.example/runbook"),  # an address's host
+        ("https://fable.example/Runbook", "https://fable.example/runbook"),  # and its path
+    ],
+)
+def test_terms_that_differ_only_by_a_capital_are_two_terms(store, ops, one, other):
+    """The index proposes each page's claim to the other, reading without regard to case;
+    the passages say they are two terms, and neither page is said to state the other's.
+    One rule for every kind, an address's host included: exact."""
+    first = file(store, "ops", "First", f"Ada uses {one} here.\n")
+    second = file(store, "ops", "Second", f"Brook uses {other} there.\n")
+    for slug in (first, second):
+        found = related(store, ops.id, slug)
+        assert found.pages == () and found.left.complete and found.left.claims_read == 1
+    third = file(store, "ops", "Third", f"Quill uses {one} too.\n")
+    written = one.strip("`")
+    for slug, with_it in ((first, third), (third, first)):
+        (page,) = related(store, ops.id, slug).pages
+        (reason,) = page.why
+        assert (page.slug, reason.term, reason.pages) == (with_it, written, 2)  # as it is read
+        assert written in reason.here.text and written in reason.there.text
+    assert related(store, ops.id, second).pages == ()
 
 
 def test_the_same_text_of_another_kind_is_another_term(store, ops):
@@ -529,18 +573,95 @@ def test_a_write_in_the_middle_of_a_read_changes_nothing_of_its_answer(tmp_path,
 # The bounds, each met and each said
 
 
-def test_a_title_of_more_words_than_a_search_takes_relates_none_by_mention(store, ops):
-    long_title = " ".join(f"w{n}" for n in range(ranking.WORDS_MAX + 1))
-    store.save_page(ops.id, "long", long_title, "", [Claim(id="cl_a", text="Ada.", span_ids=())])
-    first = " ".join(f"w{n}" for n in range(ranking.WORDS_MAX))
+def test_a_title_of_many_words_is_looked_up_whole_and_one_past_the_bound_is_not(store, ops):
+    """No count of words decides: the title is given to the index as it is. 66 words in 200
+    characters are a phrase like any other; a title longer than relations.TERM_MAX characters
+    (none the product writes: a title is 200 at most) is not looked up, and relates none."""
+    words = [chr(97 + n // 26) + chr(97 + n % 26) for n in range(67)]
+    title = " ".join(words[:66]) + " zz"
+    assert len(title) == relations.TERM_MAX and len(title.split()) > ranking.WORDS_MAX
+    store.save_page(ops.id, "long", title, "", [Claim(id="cl_a", text="Ada.", span_ids=())])
     store.save_page(
-        ops.id, "other", "Other", "", [Claim(id="cl_b", text=f"{first} and more.", span_ids=())]
+        ops.id, "first", "First", "", [Claim(id="cl_b", text=f"Read {title} twice.", span_ids=())]
     )
-    found = related(store, ops.id, "long")
-    assert found.pages == ()  # its first 32 words alone would be found: that is no mention
-    assert found.left == NOTHING_LEFT_OUT  # by rule, as a title of no word: nothing was left out
-    store.save_page(ops.id, "dash", "---", "", [Claim(id="cl_c", text="Brook.", span_ids=())])
-    assert related(store, ops.id, "dash").left == NOTHING_LEFT_OUT
+    store.save_page(
+        ops.id, "most", "Most", "", [Claim(id="cl_c", text=" ".join(words[:66]), span_ids=())]
+    )
+    assert reasons(related(store, ops.id, "long")) == {"first": [(MENTIONED_BY, title, "title", 2)]}
+    longer = title + "z"
+    store.save_page(ops.id, "longer", longer, "", [Claim(id="cl_d", text="Brook.", span_ids=())])
+    store.save_page(
+        ops.id, "second", "Second", "", [Claim(id="cl_e", text=f"Read {longer} too.", span_ids=())]
+    )
+    found = related(store, ops.id, "longer")
+    assert found.pages == () and found.left == NOTHING_LEFT_OUT  # by rule: not looked up
+    store.save_page(ops.id, "dash", "---", "", [Claim(id="cl_f", text="Brook ---.", span_ids=())])
+    assert related(store, ops.id, "dash").left == NOTHING_LEFT_OUT  # no word: none matches
+
+
+COMPOSED = "R\u00e9sum\u00e9"
+DECOMPOSED = unicodedata.normalize("NFD", COMPOSED)
+
+
+@pytest.mark.parametrize("title", [COMPOSED, DECOMPOSED])
+@pytest.mark.parametrize("written", [COMPOSED, DECOMPOSED])
+def test_a_title_is_mentioned_where_the_index_matches_it_composed_or_not(
+    store, ops, title, written
+):
+    """The index reads an accented letter and the same letter with a combining accent as one
+    word, and it alone reads the title: the page is mentioned whichever way each is written."""
+    assert COMPOSED != DECOMPOSED and len(DECOMPOSED) == 8
+    asked = file(store, "ops", title, "Brook keeps the template.\n")
+    file(store, "ops", "Hiring", f"Send the {written} to Ada.\n")
+    found = related(store, ops.id, asked)
+    assert reasons(found) == {"hiring": [(MENTIONED_BY, title, "title", 2)]}
+    assert found.left.complete and found.title == title  # kept as it was written
+
+
+@pytest.mark.parametrize("form", ["NFC", "NFD"])
+def test_a_term_with_an_accent_relates_the_pages_that_write_it_the_same_way(store, ops, form):
+    """Both pages write it composed, or both decomposed: one term, found by the index's own
+    words (two words by a splitter of ours, where the index reads one). Written the other
+    way on a third page it is another term, as a capital makes another: exact, as read."""
+    term = unicodedata.normalize(form, "R\u00e9sum\u00e9.cfg")
+    other = unicodedata.normalize("NFD" if form == "NFC" else "NFC", term)
+    draft = file(store, "ops", "Draft", f"Brook edits `{term}` first.\n")
+    review = file(store, "ops", "Review", f"Ada reads `{term}` after.\n")
+    third = file(store, "ops", "Third", f"Quill reads `{other}` last.\n")
+    assert reasons(related(store, ops.id, draft)) == {review: [(SHARES, term, "inline_code", 2)]}
+    assert reasons(related(store, ops.id, review)) == {draft: [(SHARES, term, "inline_code", 2)]}
+    found = related(store, ops.id, third)
+    assert found.pages == () and found.left.complete and found.left.claims_read == 2
+
+
+def test_a_term_and_a_title_that_hold_a_quote_or_a_null_are_found_and_nothing_fails(store, ops):
+    """A double quote would end the phrase and a null the query: the one is doubled, the
+    other given as the space the index reads it as."""
+    for n, term in enumerate(['say "hi" now --x', "a1\x00b2"]):
+        one = file(store, "ops", f"One {n}", f"Ada runs `{term}` here.\n")
+        two = file(store, "ops", f"Two {n}", f"Brook runs `{term}` there.\n")
+        assert reasons(related(store, ops.id, one)) == {two: [(SHARES, term, "inline_code", 2)]}
+    for n, title in enumerate(['The "Quill" ledger', "Night\x00run"]):
+        store.save_page(
+            ops.id, f"named-{n}", title, "", [Claim(id="cl_n", text="Ada.", span_ids=())]
+        )
+        by = file(store, "ops", f"Namer {n}", f"Brook opens {title} at dusk.\n")
+        assert reasons(related(store, ops.id, f"named-{n}")) == {
+            by: [(MENTIONED_BY, title, "title", 2)]
+        }
+
+
+def test_a_term_of_many_parts_is_looked_up_like_any_other(store, ops):
+    """65 parts joined by "_", which a search's words may not hold: a term is not a search's
+    words. It is looked up as it is, the two pages are related, and nothing is left out."""
+    parts = [chr(97 + n // 26) + chr(97 + n % 26) for n in range(65)]
+    term = "_".join(parts)
+    assert len(term) == 194 and len(parts) > ranking.PARTS_MAX
+    one = file(store, "ops", "Keys one", f"The key is `{term}` here.\n")
+    two = file(store, "ops", "Keys two", f"Set `{term}` there too.\n")
+    found = related(store, ops.id, one)
+    assert reasons(found) == {two: [(SHARES, term, "inline_code", 2)]}
+    assert found.left == NOTHING_LEFT_OUT._replace(terms_looked_up=1, claims_read=1)
 
 
 def test_a_title_more_than_five_other_pages_name_relates_none_by_mention(store, ops):
@@ -829,10 +950,10 @@ def test_a_long_line_is_given_as_a_window_that_holds_the_term_as_written(store, 
     whole = "Brook waits for the nightly log, " * 80 + "pins `Quill.Lock` and " + "stops, " * 90
     assert "\n" not in whole and len(whole) > TEXT_MAX
     file(store, "ops", "Long", whole + "\n")
-    short = file(store, "ops", "Short", "Ada reads `quill.lock` daily.\n")
+    short = file(store, "ops", "Short", "Ada reads `Quill.Lock` daily.\n")
     (reason,) = related(store, ops.id, short).pages[0].why
     there = reason.there
-    assert (reason.term, there.cut, there.line_cut) == ("quill.lock", True, True)
+    assert (reason.term, there.cut, there.line_cut) == ("Quill.Lock", True, True)  # as read
     assert len(there.line) == LINE_MAX and there.line in whole
     assert "`Quill.Lock`" in there.line and "Quill.Lock" not in there.text
 

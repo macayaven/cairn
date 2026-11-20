@@ -648,6 +648,38 @@ def test_the_tools_description_says_a_long_claim_is_cut_and_that_page_gives_it_w
     assert relations.PASSAGES_MAX == 8
 
 
+def test_the_tools_description_says_a_term_is_given_as_it_is_written(env):
+    """And it is: two pages that write a flag the same way are told that flag, capitals
+    and all; two that write `-L` and `-l` are not told they share one."""
+    said = " ".join(tools()["related"].description.split())
+    assert (
+        "both pages state `term` (a URL, a path, a flag, a version, or code in backticks that"
+        " is not a plain word; it is given as it is written, capitals included: `-L` is not"
+        " `-l`)"
+    ) in said
+    assert "case folded" not in said
+    note(env, "Tunnel", "Forward a local port with `-L`.\n")
+    note(env, "Login", "Pass the remote login name with `-l`.\n")
+    note(env, "Jump", "Forward through a host with `-L` too.\n")
+    found = answer(env.client, env.key, "related", project="ops", slug="tunnel")
+    assert [(page["page"], page["why"][0]["term"]) for page in found["related"]] == [("jump", "-L")]
+    (reason,) = found["related"][0]["why"]
+    assert reason["term"] in reason["here"]["text"] and reason["term"] in reason["there"]["text"]
+    assert answer(env.client, env.key, "related", project="ops", slug="login")["related"] == []
+
+
+def test_a_term_and_a_title_that_hold_a_null_or_a_quote_answer_over_every_surface(env):
+    """A null would end the query the index is asked, and a quote its phrase: neither is an
+    error, and each relation is found, over MCP and REST alike."""
+    memory = Memory(env.store, lint_gate)
+    for n, term in enumerate(["a1\x00b2", 'say "hi" --now']):
+        memory.note("ops", f"Ada runs `{term}` here.\n", title=f"One {n}")
+        memory.note("ops", f"Brook runs `{term}` there.\n", title=f"Two {n}")
+        found = answer(env.client, env.key, "related", project="ops", slug=f"one-{n}")
+        assert rest(env, f"one-{n}").json() == found
+        assert [(p["page"], p["why"][0]["term"]) for p in found["related"]] == [(f"two-{n}", term)]
+
+
 def test_the_tools_description_says_which_terms_and_titles_relate_none():
     said = " ".join(tools()["related"].description.split())
     assert (

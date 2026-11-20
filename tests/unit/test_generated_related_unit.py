@@ -17,7 +17,8 @@ What is checked of every answer of `Memory.related`, for every page:
 - each claim it gives is a claim of the latest version of its page, word for word, with the
   passages that version cites;
 - a `shares` reason's term is a fact of a passage each of its two claims cites, by a fresh
-  cairn.facts.extract_facts on that passage, equal by kind and by facts.compared;
+  cairn.facts.extract_facts on that passage, equal by kind and by its text as it is
+  written, capitals included (`as_term`, in the rule's words);
 - a `mentioned_by` reason's claim holds the title's words side by side as the index reads
   them. The reading is FTS5's own, asked another way: the tokens it makes of a text, from an
   index of that text alone (its `fts5vocab` table), never a MATCH;
@@ -63,7 +64,7 @@ import pytest
 import test_generated_copy_passes_fact_check_unit as shapes
 
 from cairn import relations
-from cairn.facts import compared, extract_facts
+from cairn.facts import extract_facts
 from cairn.gate import lint_gate
 from cairn.memory import Memory, RequestError
 from cairn.store import Store, relating
@@ -102,9 +103,10 @@ def passage(rng: random.Random, held: str) -> str:
 
 
 def spelled(rng: random.Random, held: str) -> str:
-    """`held` as one page writes it: as drawn, in capitals, or without its commas. Two
-    spellings can be one term (facts.compared folds case and takes a thousands separator
-    out) that the index reads as the same words, or as other words."""
+    """`held` as one page writes it: as drawn, in capitals, or without its commas. In
+    capitals it is another term that the index reads as the same words; without its commas
+    it can be the same term (a thousands separator is left out of the comparison) that the
+    index reads as other words."""
     return rng.choice([held, held, held.upper(), held.replace(",", "")])
 
 
@@ -143,12 +145,19 @@ class Reading:
             self.known[text] = tuple(term for (term,) in rows)
         return self.known[text]
 
-    def holds(self, text: str, words: list[str]) -> bool:
-        """Whether `text` holds the words side by side and in order, as the index reads both."""
-        wanted, held = self.of(" ".join(words)), self.of(text)
+    def holds(self, text: str, phrase: str) -> bool:
+        """Whether `text` holds the words of `phrase` side by side and in order, as the index
+        reads both: its tokens of each, and no splitting of words done here."""
+        wanted, held = self.of(phrase), self.of(text)
         return bool(wanted) and any(
             held[at : at + len(wanted)] == wanted for at in range(len(held) - len(wanted) + 1)
         )
+
+
+def as_term(as_read: str) -> str:
+    """A fact's text as two terms are compared, in the rule's words: as it is written,
+    capitals included, less the white space at its end and a number's thousands separators."""
+    return re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", as_read.rstrip(" \t\r"))
 
 
 def relates(kind: str, text: str) -> bool:
@@ -190,13 +199,13 @@ def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
             spans = store.get_spans(claim.span_ids[:1])
             for span in spans.values():
                 for fact in extract_facts(span):
-                    term = (fact.kind, compared(fact.as_read))
-                    if relates(*term) and reading.holds(claim.text, re.findall(r"\w+", term[1])):
+                    term = (fact.kind, as_term(fact.as_read))
+                    if relates(*term) and reading.holds(claim.text, term[1]):
                         held.add(term)
         holds[slug] = held
     every = [claim for page in pages.values() for claim in page.claims]
     claims = {
-        term: sum(reading.holds(claim.text, re.findall(r"\w+", term[1])) for claim in every)
+        term: sum(reading.holds(claim.text, term[1]) for claim in every)
         for term in set().union(*holds.values())
     }
     prose = {}
@@ -206,7 +215,7 @@ def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
         prose[claim.id] = prose_of(span)
     named_by, held_by, naming = {}, {}, {}
     for slug, page in pages.items():
-        title = re.findall(r"\w+", page.title)
+        title = page.title
         theirs = {
             other: sum(reading.holds(claim.text, title) for claim in found.claims)
             for other, found in pages.items()
@@ -328,11 +337,11 @@ def test_the_generated_projects_relate_pages_in_every_way(world):
             mentions += sum(1 for _ in reasons(answer, "mentioned_by"))
             shared.update(reason["term_kind"] for _, reason in reasons(answer, "shares"))
     assert set(shared) == set(KINDS), shared  # each kind of term relates pages somewhere
-    assert min(shared.values()) >= 20 and mentions >= 200, (shared, mentions)
+    assert min(shared.values()) >= 15 and mentions >= 200, (shared, mentions)
     assert len(decided) == 6, decided
     few = "a title many pages hold and few name"  # relates now: the pages that count name it
     assert decided[few] >= 3 and decided["a title a page holds in code alone"] >= 200, decided
-    assert min(count for rule, count in decided.items() if rule != few) >= 20, decided
+    assert min(count for rule, count in decided.items() if rule != few) >= 15, decided
     assert answers >= 1_000 and complete == answers, (answers, complete)
 
 
@@ -376,7 +385,7 @@ def test_a_shared_term_is_a_fact_of_a_passage_each_claim_cites(world):
                 for claim in (reason["here"], reason["there"]):
                     checked += 1
                     facts = {
-                        (fact.kind, compared(fact.as_read))
+                        (fact.kind, as_term(fact.as_read))
                         for span_id in claim["passage_ids"]
                         for fact in extract_facts(project["spans"][span_id])
                     }
@@ -394,7 +403,7 @@ def test_a_mention_is_a_claim_that_names_the_title_in_its_prose_as_the_index_rea
     wrong, checked = [], 0
     for project in world["projects"]:
         for slug, answer in project["answers"].items():
-            title = re.findall(r"\w+", answer["title"])
+            title = answer["title"]
             for page, reason in reasons(answer, "mentioned_by"):
                 checked += 1
                 assert (reason["term"], reason["term_kind"]) == (answer["title"], "title")
@@ -475,7 +484,7 @@ def first_line_of(span, kind: str, term: str) -> tuple[str, str] | None:
     """Read here: the line of the passage on which the first fact that is the term stands,
     and the fact as it is written there."""
     for fact in extract_facts(span):  # in the order they stand
-        if (fact.kind, compared(fact.as_read)) == (kind, term):
+        if (fact.kind, as_term(fact.as_read)) == (kind, term):
             before = span.text[: fact.start].count("\n")
             return span.text.split("\n")[before], span.text[fact.start : fact.end]
     return None
@@ -492,7 +501,7 @@ def mention_fault(
     is the first place the title is named in prose; and it is whole lines of the text, or
     LINE_GIVEN characters of longer ones. (No generated claim holds a title in code before
     it names it in prose: tests/unit/test_relating_unit.py has that claim.)"""
-    words = re.findall(r"\w+", title)
+    words = title
     line = given.get("line")
     if line is None or line not in text:
         return "no line, or not a piece of the claim's text"
@@ -615,7 +624,7 @@ def test_a_claim_is_given_whole_or_by_its_line_or_by_its_head_and_never_by_both(
     assert seen["a mention after a line that holds none"] >= 200, seen
     assert seen["a mention's line of two lines"] >= 5, seen
     assert seen["of a passage of several lines"] >= 300, seen
-    assert seen["line cut to the term's start"] >= 30, seen
+    assert seen["line cut to the term's start"] >= 20, seen
 
 
 def test_the_same_holds_of_claims_that_hold_a_mark_of_the_index_or_a_null(monkeypatch):

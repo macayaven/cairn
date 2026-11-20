@@ -399,40 +399,41 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       (KG1; cairn.memory, Related pages; the rules are cairn.relations and the read
       cairn.store.relating.) The pages of the project most related to the page, best first:
       one that states a term the page states (a url, a path, a flag, a version, or inline code
-      that is not a plain word; none that more than 5 pages hold, or whose words more than 64
-      claims of the project hold, or that is longer than 200 characters), or whose claim names
-      the page's title in its prose, not inside code, a path, a flag, a version or an address
-      (the index says where the claim's text holds the title's words, and the facts of the
-      passage the claim is the text of say which of those places are prose; a claim that is
-      not its passage's text mentions as the index has it; none when more than 5 other pages
-      name it, or more than 64 of their claims). A claim that cites several passages is read
-      by its first, and a term a search does not find as it is written (`1,250x`, compared
-      without its separator) relates none, from either page. `pages` is how many pages hold
-      the term, exactly: a term whose pages are not all known gives no reason. `here` and
-      `there` are claims as a hit of `recall` carries one: "claim_id", "text", "passage_ids",
-      "outside", "written_by", "written_at"; but a claim longer than 600 characters gives
-      "text_cut": true and, in place of its "text", "line": for a claim that states the term,
-      the line of the passage it cites that holds the term; for a claim that mentions the
-      page, the line that names the title in its prose (two lines, with their line break, when
-      the title's words stand on two); 400 characters of a longer line, with "line_cut": true.
-      Only a long claim of which no line can be told (it mentions the page as the index has
-      it: its text is not its passage's, or holds a mark of the index or a null character)
-      gives its first 600 characters as "text", with "text_cut": true and no line: never a
-      head beside a line. `page` gives the claim whole; a claim within 600 characters gives
-      its "text" whole and none of the other three fields. "passage_ids" names the first 8
-      passages a claim cites, and "passage_ids_more" counts the rest, only when there are more
-      (a claim a tidy folded from many). `why` holds 3 reasons at most and `more` counts the
-      rest; `limit` is 1 to 20, and any other is a tool error that says so. Worked out by rule
-      when asked, from the pages as they are, in one read: nothing of a relation is stored, no
-      model is asked, and a forgotten note is out of it with the write that forgets it. Not in
-      this version: a relation across projects, the pages a page mentions, paths of several
-      steps, groups over a whole project, anything inferred from meaning. `searched` says what
-      the read's bounds left out, always, and counts each: the page's terms past the first
-      256, the claims of other pages, listed for a term or for the title, past the 512 claims
-      and the million bytes of passages read, the related pages past `limit`. The store's read
-      runs at most 17 statements, whatever the page and the project hold (cairn.store.relating
-      says which, and tests/unit/test_relating_cost_unit.py counts them). A read of the page
-      for the audit log (read.page), which never holds a term.
+      that is not a plain word, the same when written the same, capitals included, and given
+      as written; none that more than 5 pages hold, or whose words more than 64 claims of the
+      project hold, or that is longer than 200 characters), or whose claim names the page's
+      title in its prose, not inside code, a path, a flag, a version or an address (the index
+      says where the claim's text holds the title's words, and the facts of the passage the
+      claim is the text of say which of those places are prose; a claim that is not its
+      passage's text mentions as the index has it; none when more than 5 other pages name it,
+      or more than 64 of their claims). A claim that cites several passages is read by its
+      first, and a term a search does not find as it is written (`1,250x`, compared without
+      its separator) relates none, from either page. `pages` is how many pages hold the term,
+      exactly: a term whose pages are not all known gives no reason. `here` and `there` are
+      claims as a hit of `recall` carries one: "claim_id", "text", "passage_ids", "outside",
+      "written_by", "written_at"; but a claim longer than 600 characters gives "text_cut":
+      true and, in place of its "text", "line": for a claim that states the term, the line of
+      the passage it cites that holds the term; for a claim that mentions the page, the line
+      that names the title in its prose (two lines, with their line break, when the title's
+      words stand on two); 400 characters of a longer line, with "line_cut": true. Only a long
+      claim of which no line can be told (it mentions the page as the index has it: its text
+      is not its passage's, or holds a mark of the index or a null character) gives its first
+      600 characters as "text", with "text_cut": true and no line: never a head beside a line.
+      `page` gives the claim whole; a claim within 600 characters gives its "text" whole and
+      none of the other three fields. "passage_ids" names the first 8 passages a claim cites,
+      and "passage_ids_more" counts the rest, only when there are more (a claim a tidy folded
+      from many). `why` holds 3 reasons at most and `more` counts the rest; `limit` is 1 to
+      20, and any other is a tool error that says so. Worked out by rule when asked, from the
+      pages as they are, in one read: nothing of a relation is stored, no model is asked, and
+      a forgotten note is out of it with the write that forgets it. Not in this version: a
+      relation across projects, the pages a page mentions, paths of several steps, groups over
+      a whole project, anything inferred from meaning. `searched` says what the read's bounds
+      left out, always, and counts each: the page's terms past the first 256, the claims of
+      other pages, listed for a term or for the title, past the 512 claims and the million
+      bytes of passages read, the related pages past `limit`. The store's read runs at most 17
+      statements, whatever the page and the project hold (cairn.store.relating says which, and
+      tests/unit/test_relating_cost_unit.py counts them). A read of the page for the audit log
+      (read.page), which never holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments

@@ -95,10 +95,55 @@ def test_a_passages_terms_are_its_specific_facts_as_compared_each_once_in_the_or
         Term("inline_code", "compact --if-due"),
         Term("flag", "--audit-keep"),
         Term("version", "v1.2.3"),
-        Term("url", "https://example.invalid/a"),  # as facts.compared reads it: case folded
-        Term("path", "~/notes"),
-        Term("inline_code", "readme.md"),
+        Term("url", "https://example.invalid/A"),  # as it is written: its case is kept
+        Term("path", "~/Notes"),
+        Term("inline_code", "README.md"),
     ]
+
+
+def test_two_facts_are_one_term_only_when_they_are_written_the_same_case_included():
+    """`-L` forwards a port and `-l` names a login: two flags. A path, code and an address
+    that differ by a capital are two terms each, the host of an address like the rest (one
+    rule, exact). What is not case is as facts.compared has it: a number's thousands
+    separators and the white space at the end of the fact are left out of the comparison."""
+    span = passage(
+        "Pass -L then -l; open /srv/Quill and /srv/quill; run `Make lint` and `make lint`;"
+        " see https://Fable.example/a and https://fable.example/a."
+    )
+    assert terms_of(span) == [
+        Term("flag", "-L"),
+        Term("flag", "-l"),
+        Term("path", "/srv/Quill"),
+        Term("path", "/srv/quill"),
+        Term("inline_code", "Make lint"),
+        Term("inline_code", "make lint"),
+        Term("url", "https://Fable.example/a"),
+        Term("url", "https://fable.example/a"),
+    ]
+    same = passage("Keep `cap 1,250x` and `cap 1250x`, then `a1  ` and `a1`.")
+    assert terms_of(same) == [Term("inline_code", "cap 1250x"), Term("inline_code", "a1")]
+
+
+def test_the_text_terms_are_compared_by_is_compared_text_with_its_case_kept():
+    """facts.cased beside facts.compared, which is unchanged: folding the case of the one
+    gives the other, for every fact the generator of
+    tests/unit/test_generated_copy_passes_fact_check_unit.py draws and for texts whose
+    letters change length when folded."""
+    import random
+
+    import test_generated_copy_passes_fact_check_unit as shapes
+
+    from cairn.facts import cased, compared
+
+    rng = random.Random(20261120)
+    drawn = [shapes.fact(rng) for _ in range(500)]
+    odd = ["Stra\u00dfe 1,250", "\u0130stanbul  ", "A1\u0390 2,700,000x", "MiXed Case\t", " lead"]
+    for text in [*drawn, *(d.upper() for d in drawn), *odd]:
+        assert compared(text) == cased(text).casefold(), ascii(text)
+    assert cased("Quill.Lock 1,250  ") == "Quill.Lock 1250"
+    assert len({cased(d) for d in drawn} | {cased(d.upper()) for d in drawn}) > len(
+        {compared(d) for d in drawn}
+    )
 
 
 def test_a_term_is_the_fact_as_read_in_its_passage_never_a_piece_read_again():
@@ -200,9 +245,10 @@ def test_sums_of_weights_are_exact():
     assert [slug for slug, _, _ in best(reasons, limit=8)[0]] == ["ada", "brook"]
 
 
-def test_a_term_longer_than_the_bound_as_written_or_as_compared_is_no_term():
-    """TERM_MAX characters: of the term as it is compared, which an answer gives, and of the
-    fact as it is written in its passage, which a line given must hold."""
+def test_a_term_longer_than_the_bound_as_written_is_no_term():
+    """TERM_MAX characters of the fact as it is written in its passage, which a line given
+    must hold. The term an answer gives is never longer than that: it is the fact as
+    written, less a number's separators and the white space at its end."""
     assert relations.TERM_MAX == 200 and 2 * relations.TERM_MAX <= relations.LINE_MAX
     at_bound = "https://fable.example/" + "a" * 178
     assert terms_of(passage(f"See {at_bound} first.")) == [Term("url", at_bound)]
@@ -213,10 +259,9 @@ def test_a_term_longer_than_the_bound_as_written_or_as_compared_is_no_term():
         Term("inline_code", "a1")
     ]
     assert terms_of(passage("Run `a1" + " " * 199 + "` now.")) == []
-    # compared longer than it is written: one letter that folds to three
-    folded = "`a1" + "\u0390" * 67 + "`"
-    assert terms_of(passage(f"Run {folded} now.")) == []
-    assert len(terms_of(passage("Run `a1" + "\u0390" * 66 + "` now."))[0].text) == 200
+    # a letter that would fold to three is kept as it is: 69 characters, not 203
+    kept = "a1" + "\u0390" * 67
+    assert terms_of(passage(f"Run `{kept}` now.")) == [Term("inline_code", kept)]
 
 
 # A long claim: where its term stands in the passage, and the line that holds it
@@ -234,8 +279,9 @@ def test_a_term_is_placed_where_its_first_fact_stands_in_the_passage():
     placed = relations.placed(span)
     assert list(placed) == terms_of(span)
     assert {term: span.text[slice(*at)] for term, at in placed.items()} == {
-        Term("inline_code", "quill.lock"): "quill.lock",  # the first of its three, as written
-        Term("url", "https://fable.example/runbook"): "https://fable.example/Runbook",
+        Term("inline_code", "quill.lock"): "quill.lock",  # the first of its two
+        Term("url", "https://fable.example/Runbook"): "https://fable.example/Runbook",
+        Term("inline_code", "Quill.Lock"): "Quill.Lock",  # another term: a capital differs
     }
     assert placed[Term("inline_code", "quill.lock")] == (12, 22)
 

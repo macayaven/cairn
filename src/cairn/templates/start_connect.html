@@ -21,6 +21,7 @@
   </ul>
   {% endif %}
   {% if oauth %}
+  <p>An agent you sign in from connects once, by URL, and reaches every project you reach in this workspace, now and later; when you approve it, you can choose fewer projects, or read only.</p>
   {% include "_connect.html" %}
   <p>The agent reads each project's guidance from {{ product.name }}, so it knows what to write in which project.</p>
   {% else %}

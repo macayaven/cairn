@@ -489,13 +489,13 @@ def check(ex: Execution) -> tuple[list[Violation], list[str]]:
                         out.append(
                             Violation(
                                 "2",
-                                "published a draft whose git tag was gone "
-                                "before its read by id, which does not show "
-                                "git tags",
+                                "published a draft whose git tag was gone or "
+                                "moved before its read by id, which does not "
+                                "show git tags",
                             )
                         )
                     else:
-                        notes.append("2 (race): the git tag went after the last read")
+                        notes.append("2 (race): the git tag went or moved after the last read")
                 else:
                     if last_byid is not None and t < last_byid:
                         out.append(Violation("2", f"published a {comp} its read by id had shown"))

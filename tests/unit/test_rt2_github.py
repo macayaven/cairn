@@ -44,11 +44,13 @@ loudly where the model has a gap. Made-up repository, run, commits and files.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -969,7 +971,7 @@ def jq_eval(program: str, data: str) -> str:
 
 CLIENT = r"""#!/bin/bash
 d="$RT2_DIR"
-printf '%s\0' "${0##*/}" "$PWD" "$@" > "$d/req"
+printf '%s\0' "$(($# + 2))" "${0##*/}" "$PWD" "$@" > "$d/req"
 IFS= read -r code < "$d/resp"
 [ ! -s "$d/out" ] || cat "$d/out"
 [ ! -s "$d/err" ] || cat "$d/err" >&2
@@ -982,7 +984,7 @@ exit "$code"
 # step's text is unchanged; test_the_two_clients_give_the_same_execution holds them equal.
 PRELUDE = r"""__rt2_call() {
   local __c="" __o="" __e=""
-  printf '%s\0' "$1" "$PWD" "${@:2}" > "$RT2_DIR/req"
+  printf '%s\0' "$(($# + 1))" "$1" "$PWD" "${@:2}" > "$RT2_DIR/req"
   IFS= read -r __c < "$RT2_DIR/resp" || true
   if [ -s "$RT2_DIR/out" ]; then
     IFS= read -r -d '' __o < "$RT2_DIR/out" || true; printf '%s' "$__o"
@@ -1037,13 +1039,31 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "func
             "LC_ALL": "C",
         }
         problems: list[str] = []
+        # Requests arrive on one stream: the count of fields, then the fields, each ended by
+        # NUL. The harness holds a writer of its own open, so the stream never reaches an end
+        # between two requests, and a client's open of it never waits; the end of the attempt
+        # is a request too. (Reading each request to its end of file hung, rarely, on a loaded
+        # machine: a read that never saw the end, with no writer left.)
+        reader = os.open(work / "req", os.O_RDONLY | os.O_NONBLOCK)
+        writer = os.open(work / "req", os.O_WRONLY)
+        os.set_blocking(reader, True)
+        pending = bytearray()
+
+        def field() -> str:
+            while b"\0" not in pending:
+                chunk = os.read(reader, 65536)
+                if not chunk:
+                    raise EOFError("the request stream ended")
+                pending.extend(chunk)
+            end = pending.index(b"\0")
+            text = bytes(pending[:end]).decode()
+            del pending[: end + 1]
+            return text
 
         def serve():
             while True:
-                with open(work / "req", "rb") as f:
-                    data = f.read()
-                parts = [p.decode() for p in data.split(b"\0")[:-1]]
-                if not parts or parts[0] == "__end__":
+                parts = [field() for _ in range(int(field()))]
+                if parts[0] == "__end__":
                     return
                 prog, cwd, *args = parts
                 try:
@@ -1053,8 +1073,11 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "func
                     code, out, err = 98, "", f"model error {error!r}\n"
                 (work / "out").write_text(out)
                 (work / "err").write_text(err)
-                with open(work / "resp", "w") as f:
-                    f.write(f"{code}\n")
+                try:
+                    with open(work / "resp", "w") as f:
+                        f.write(f"{code}\n")
+                except OSError as error:  # the client was killed
+                    problems.append(f"the answer was not read: {error!r}")
 
         server = threading.Thread(target=serve, daemon=True)
         server.start()
@@ -1065,6 +1088,7 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "func
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
         try:
             out, err = proc.communicate(timeout=ATTEMPT_SECONDS)
@@ -1076,11 +1100,17 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "func
             raise Hung(text) from error
         finally:
             if proc.poll() is None:
-                proc.kill()
+                # the whole group: a subshell of the step keeps the output pipes open
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()
-            with open(work / "req", "wb") as f:
-                f.write(b"__end__\0")
+            os.write(writer, b"1\0__end__\0")
+            # a server waiting to hand an answer to a killed client gets a reader
+            poke = os.open(work / "resp", os.O_RDONLY | os.O_NONBLOCK)
             server.join(timeout=10)
+            os.close(poke)
+            os.close(writer)
+            os.close(reader)
         if problems:
             hub.unmodelled.extend(problems)
         errors = [line for line in out.splitlines() if line.startswith("::error::")]

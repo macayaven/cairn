@@ -619,7 +619,10 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
     said = " ".join(tools()["related"].description.split())
     for line in (
         "`terms_looked_up`: the page's terms looked up, 256 at most, the shortest first.",
-        "`terms_not_looked_up`: its terms past those.",
+        "`terms_not_looked_up`: its terms past those, and those not looked up once the read has"
+        " been handed 150,000 rows of the index for the terms and the title, the title then"
+        " counting as one: where other projects hold the page's terms in very many claims, an"
+        " answer can be incomplete, and says so here.",
         "`claims_read`: claims of other pages read for those terms and for the title.",
         "`claims_not_read`: such claims not read, past 512 claims or 750,000 bytes of their"
         " passages; a term with a claim not read gives no reason, nor does the title.",
@@ -629,6 +632,7 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
     ):
         assert line in said, line
     assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 750_000)
+    assert relating.ROWS_MAX == 150_000
     for gone in ("pages_exact", "terms_cut", "title_cut", "terms_searched", "terms_left_out"):
         assert gone not in said, gone
     for word in ("written_by", "written_at", "outside", "quoted text"):
@@ -734,12 +738,17 @@ def test_the_contract_states_the_bounds_of_a_read_as_the_store_has_them():
 
     said = " ".join(cairn.server.__doc__.split())
     assert (
-        "counts each: the page's terms past the first 256, the claims of other pages, listed for"
-        " a term or for the title, past the 512 claims and the 750,000 bytes of passages read,"
-        " the related pages past `limit`. The page's own passages are read whole, as `page`"
-        " reads them."
+        "counts each: the page's terms past the first 256, and those not looked up once the read"
+        " has been handed 150,000 rows of the index for the terms and the title (the title then"
+        " counting as one), the claims of other pages, listed for a term or for the title, past"
+        " the 512 claims and the 750,000 bytes of passages read, the related pages past"
+        " `limit`. The rows of the index a read is handed are bounded whatever the workspace"
+        " holds: where other projects hold a page's terms in very many claims, the answer can"
+        " be incomplete, and says so; it never says something else. The page's own passages"
+        " are read whole, as `page` reads them."
     ) in said
     assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 750_000)
+    assert relating.ROWS_MAX == 150_000
 
 
 def test_the_contract_counts_and_names_the_tools_there_are():

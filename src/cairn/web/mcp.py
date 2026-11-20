@@ -448,7 +448,10 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         gives it whole. `passage_ids` names the first 8 passages a claim cites, and
         `passage_ids_more` counts the rest. A smaller `limit` gives a smaller answer. `searched`
         says what was left out, in counts. `terms_looked_up`: the page's terms looked up, 256 at
-        most, the shortest first. `terms_not_looked_up`: its terms past those. `claims_read`:
+        most, the shortest first. `terms_not_looked_up`: its terms past those, and those not
+        looked up once the read has been handed 150,000 rows of the index for the terms and
+        the title, the title then counting as one: where other projects hold the page's terms
+        in very many claims, an answer can be incomplete, and says so here. `claims_read`:
         claims of other pages read for those terms and for the title. `claims_not_read`: such
         claims not read, past 512 claims or 750,000 bytes of their passages; a term with a
         claim not read gives no reason, nor does the title. The page's own passages are read

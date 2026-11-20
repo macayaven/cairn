@@ -45,15 +45,17 @@ read:
 Row to project before any claim is read (as ranking.search): a match is kept only when
 `search_claims`, by primary key, puts its row in the project, and the statements that list
 matches read no column of a claim. A claim of another project is never read, whatever
-matches, and nothing out of the project changes an answer.
+matches, and nothing out of the project changes what an answer says: it can leave an answer
+incomplete, which the answer says (below).
 
 Bounded work, whoever asks, and nothing left out silently. What can be left out is counted
 (`Left`, which every answer carries), and it is these three things and no other:
 - The page's terms past the first TERMS_MAX, the shortest first
-  (relations.looked_up_before): `terms_not_looked_up`. Every term of the page that relates
-  pages by the rule is one or the other: looked up, or counted here. (The page's own
-  claims and their first passages are read whole, as `page` reads them: a page holds at
-  most cairn.store.PAGE_CLAIMS_MAX claims.)
+  (relations.looked_up_before), and those not looked up past ROWS_MAX rows of the index
+  (below), the title then counting as one more: `terms_not_looked_up`. Every term of the
+  page that relates pages by the rule is one or the other: looked up, or counted here.
+  (The page's own claims and their first passages are read whole, as `page` reads them: a
+  page holds at most cairn.store.PAGE_CLAIMS_MAX claims.)
 - The claims of other pages listed for a term, or for the title, and not read:
   `claims_not_read`. The claims listed are read the terms with the fewest first, the title
   as one more of them, a term's claims all or none, until CLAIMS_MAX claims are read; and
@@ -95,32 +97,44 @@ claim that holds a mark of the index or a null character names no page (`_mentio
 
 Statements, T being the terms looked up, beside the four of the caller (the page's head, the
 index's table, the notes of the passages the claims given cite, and who wrote them): 2 for
-the page's claims and their passages; ceil(T / AT_ONCE) to list the claims that hold each
-term's words; 1 for the title; 3 for the candidates, the title's among them (their rows,
-the rows of their passages, the passages); 1 to ask the index where it matched the title in
-the claims listed for it; 2 for what is given (the claims, the pages' titles and versions;
-each claim's text is then read by a handle, which is no statement). A statement with
-nothing to ask is not run. At most 2 + 4 + 1 + 3 + 1 + 2 = 13, and 17 with the caller's.
-Rows: two for each claim of the page; for each term at most CLAIMS_COMMON + 1, and as many
-for the title; 3 for each candidate claim read, at most CLAIMS_MAX, and one more for each
-of the title's, at most CLAIMS_COMMON; and what is given, at
-most relations.RELATED_MAX pages of WHY_MAX reasons of two claims. (The caller's read of who
+the project's span with the page's claims, and their passages; ceil(T / AT_ONCE) to list
+the claims that hold each term's words; 1 for the title; 3 for the candidates, the title's
+among them (their rows, the rows of their passages, the passages); 1 to ask the index where
+it matched the title in the claims listed for it; 2 for what is given (the claims, the
+pages' titles and versions; each claim's text is then read by a handle, which is no
+statement). A statement with nothing to ask is not run, nor one that lists claims past
+ROWS_MAX rows. At most 2 + 4 + 1 + 3 + 1 + 2 = 13, and 17 with the caller's.
+Rows: one for the span and two for each claim of the page; for each term at most
+CLAIMS_COMMON + 1, and as many for the title; 3 for each candidate claim read, at most
+CLAIMS_MAX, and one more for each of the title's, at most CLAIMS_COMMON; and what is given,
+at most relations.RELATED_MAX pages of WHY_MAX reasons of two claims. (The caller's read of who
 wrote the claims given is a row for each passage they cite: one for a claim as it is
 compiled, and as many as a tidy folded into it, as a search reads them for a hit.)
 tests/unit/test_relating_cost_unit.py counts statements, rows and SQLite's steps for pages of
 10, 200 and 3,000 terms.
-The work is the page's and its project's, whatever other projects hold. The index is asked
-for the claims that hold some words within the project's rows alone, one range at a time
-(`_RUNS`): a run of the project's pages whose rows follow one another with no row of
-another project between them. So a match of another project is never walked, however many
-claims there hold the page's words (a search, ranking, walks them and passes them over);
-each page of the project costs a few seeks in each statement that lists claims, and each
-run one search of the index a term, the runs being at most the project's pages, however
-the writes of other projects fell between them. The index is asked where it matched the
-title (`_marked`) by the match and each claim's own row, a claim of the project already
-read. The same test counts the same steps beside 1,000 and 8,000 claims of another project
-that hold every word of the page and its title, saved before its pages, after them or
-between them, on each of those paths: the terms', the title's, and a mention given cut.
+The rows of the index a read is handed are bounded, whatever the workspace holds. The index
+is asked for each term once, and for the title once, over the project's span, its first row
+to its last (`_SPAN`: two seeks a page of the project, once a read, in the statement that
+reads the page's claims). A claim of another project outside the span is never walked,
+however many there hold the page's words. One inside it that holds a term's words as the
+term has them is handed over, and passed over by its project before anything of it is
+read, as ranking.search does. A term's walk stops at its CLAIMS_COMMON + 1st claim of the
+project, and every walk at the ROWS_MAX-th row handed over, the project's and others'
+together, counted as SQLite hands them over (`_Visits`): the term being asked when the
+count reaches ROWS_MAX, and every term after it, the title last, are not looked up. So
+where other projects hold a page's terms in very many claims among the project's rows, an
+answer can be incomplete, and says so (`terms_not_looked_up`); it never says something
+else: each reason it gives has the same count of pages and the same claims as with nothing
+left out. Not counted: a claim among the project's rows that holds every word of a term,
+but not side by side as the term has them, is read by the index for its places and passed
+over inside the index's own work, never handed over, so ROWS_MAX does not bound that work
+(measured beside it). The index is asked where it matched the title (`_marked`) by the
+match and each claim's own row, a claim of the project already read. The same test counts
+the steps of a read whose project's pages were saved together, and each in turn with
+another project's, at 120, 1,000 and 4,000 pages, beside 0, 8,000 and 64,000 claims of
+that project that hold the page's words, outside the span and inside it; and beside 1,000
+and 8,000 that hold every word and the title, saved before the project's pages, after
+them or between them, on each path: the terms', the title's, and a mention given cut.
 
 Limits. A term is found by its words as it is compared: `1,250x` is compared as `1250x`,
 which the index reads as another word, so a claim that writes the separator states no term
@@ -159,6 +173,22 @@ CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
 # measured, took 0.13, 0.21, 0.26, 0.37 and 0.51 s at the five values: 3.2 to 3.7 times less.
 BYTES_MAX = 750_000  # bytes of those claims' passages, as stored, read in all
 AT_ONCE = 64  # terms one statement asks the index for
+# ROWS_MAX, measured on the same laptop on 2026-11-20 under a load of 5: the worst read built,
+# a page of 256 terms in a project of 4,000 pages whose span holds 64,000 claims of another
+# project, each with the words of 8 of the terms and the title (576,516 rows handed over with
+# no bound); the index part of the read (`_listed`), the middle of three runs:
+#   rows        index merged   as FTS5 left it
+#   100,000     0.13 s         0.11 s
+#   150,000     0.19 s         0.22 s
+#   200,000     0.26 s         0.32 s
+#   250,000     0.32 s         0.33 s
+#   no bound    0.70 s         0.51 s
+# about 1.3 microseconds and 19 of SQLite's steps a row handed over. 150,000 is the value whose
+# index part is about a fifth of a second; the whole read then takes 0.20 s. Not bounded by it:
+# claims among the project's rows that hold the words of 8 of its terms apart, not side by
+# side, which the index reads and passes over without handing them over: 64,000 of them take
+# the index part from 0.006 s to 0.14 s, 256,000 to 0.55 s, and SQLite's steps do not see it.
+ROWS_MAX = 150_000  # rows of the account's index a read is handed, for its terms and title
 # The two marks the index is asked to put around what it matched of a title in a claim's
 # text (`_marked`): characters Unicode keeps for a program's own use and out of every text
 # that is exchanged, so a claim holds neither unless someone put it there.
@@ -196,7 +226,7 @@ class Left(NamedTuple):
     """What a read left out (the module's bounds): counts, and nothing else."""
 
     terms_looked_up: int  # terms of the page looked up
-    terms_not_looked_up: int  # its terms past TERMS_MAX
+    terms_not_looked_up: int  # its terms past TERMS_MAX or past ROWS_MAX rows, the title as one
     claims_read: int  # claims of other pages read for those terms
     claims_not_read: int  # such claims not read: past CLAIMS_MAX claims or BYTES_MAX bytes
     pages_left_out: int  # related pages past the limit
@@ -237,28 +267,48 @@ _BY_ROW = (
     " AND c.row = wanted.value CROSS JOIN {index} ON {index}.rowid = c.row"
     " WHERE c.project_id = ?3"
 )
-# The project's rows in the account's index, as runs: the least and the greatest row of each,
-# in order. A page's rows are its claims, indexed together in one transaction
-# (ranking.index_page), so they follow one another: each page is one range of rows, read
-# from search_claims by its page and the first row and the last, two seeks. Pages whose
-# ranges follow one another with no row of another project between them are one run: a
-# page whose first row comes right after a row of the project starts no run (one seek
-# back). So a read asks the index once a run, never for a row before the project's first
-# or between two runs, and how many runs there are is the project's: at most its pages,
-# whatever the other projects hold. ?1 the account, ?2 the project.
-_RUNS = (
-    "WITH pages AS MATERIALIZED (SELECT"
+# The project's span in the account's index, its first row and its last, as one row with no
+# claim: a page's rows are its claims, indexed together in one transaction
+# (ranking.index_page), so each page is a range of rows whose first and last are two seeks
+# of search_claims by its page. ?1 the account, ?2 the project.
+_SPAN = (
+    "SELECT NULL, NULL, min(lo), max(hi) FROM (SELECT"
     " (SELECT min(row) FROM search_claims WHERE account_id = ?1 AND project_id = ?2"
     " AND slug = heads.slug) AS lo,"
     " (SELECT max(row) FROM search_claims WHERE account_id = ?1 AND project_id = ?2"
     " AND slug = heads.slug) AS hi"
-    " FROM page_heads AS heads WHERE heads.project_id = ?2),"
-    " counted AS (SELECT lo, hi, sum(coalesce((SELECT project_id FROM search_claims"
-    " WHERE account_id = ?1 AND row < pages.lo ORDER BY row DESC LIMIT 1), '') <> ?2)"
-    " OVER (ORDER BY lo) AS run FROM pages WHERE lo IS NOT NULL),"
-    " runs AS MATERIALIZED (SELECT min(lo) AS lo, max(hi) AS hi FROM counted"
-    " GROUP BY run) "
+    " FROM page_heads AS heads WHERE heads.project_id = ?2)"
 )
+
+
+class _Visits:
+    """The rows of the account's index one read is handed for its terms and its title,
+    ROWS_MAX in all, counted as SQLite hands them over (`_listed`), by the part of a
+    statement that asked for them: a term, or the title."""
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.by: dict[int, int] = {}
+
+    def visit(self, part: int) -> int:
+        self.total += 1
+        self.by[part] = self.by.get(part, 0) + 1
+        return 1
+
+    def left(self) -> int:
+        return max(0, ROWS_MAX - self.total)
+
+
+def _counting(con: sqlite3.Connection) -> _Visits:
+    """A count of the rows this read is handed, on `con`, which serves this read alone
+    (Store.related_pages). Its two functions are given to the connection again at each read,
+    in place of the last read's; that is refused while a statement of the connection is left
+    under way, which no statement of a read is: each is read to its end (`_listed`), and one
+    that fails is ended by SQLite with it."""
+    visits = _Visits()
+    con.create_function("cairn_visited", 1, visits.visit)
+    con.create_function("cairn_rows_left", 0, visits.left)
+    return visits
 
 
 def related(
@@ -274,15 +324,22 @@ def related(
     """The pages related to the page `slug` of the project, which holds it at `version` under
     `title`, read on `con` (the module's docstring). `notes_of` and `origins` are left empty."""
     scope = (account_id, index, project_id)
-    own: Cited = {
-        row: tuple(json.loads(span_ids))
-        for row, span_ids in con.execute(
-            f"SELECT c.row, {index}.span_ids FROM search_claims AS c"
-            f" CROSS JOIN {index} ON {index}.rowid = c.row"
-            " WHERE c.account_id = ? AND c.project_id = ? AND c.slug = ? ORDER BY c.row",
+    own: Cited = {}
+    span: tuple[int, int] | None = None  # the project's first row in the index and its last
+    for row, span_ids, lo, hi in sorted(
+        con.execute(
+            _SPAN + f" UNION ALL SELECT c.row, {index}.span_ids, NULL, NULL"
+            f" FROM search_claims AS c CROSS JOIN {index} ON {index}.rowid = c.row"
+            " WHERE c.account_id = ?1 AND c.project_id = ?2 AND c.slug = ?3",
             (account_id, project_id, slug),
-        )
-    }
+        ).fetchall(),
+        key=lambda found: -1 if found[0] is None else found[0],
+    ):
+        if row is not None:
+            own[row] = tuple(json.loads(span_ids))
+        elif lo is not None:
+            span = (lo, hi)
+    visits = _counting(con)
     spans: dict[str, Span] = {}  # each passage read, whole: a line given is a line of one
     facts: dict[
         str, list[relations.Fact]
@@ -295,14 +352,15 @@ def related(
             stating.setdefault(term, set()).add(row)
     known = sorted(stating, key=relations.looked_up_before)  # every term: looked up, or counted
     looked = known[:TERMS_MAX]
-    listed = _listed(con, *scope, [ranking.quoted(term.text) for term in looked])
+    listed = _listed(con, *scope, span, visits, [ranking.quoted(term.text) for term in looked])
 
     # Each term to settle: the page's own claim that states it, and the other pages' claims
     # that hold its words. Not a term more claims hold than make it common, nor one that no
-    # claim of the page is found to state, nor one no other page holds a word of.
+    # claim of the page is found to state, nor one no other page holds a word of; nor one not
+    # looked up, past ROWS_MAX rows.
     asked: dict[Term, tuple[int, Listed]] = {}
     for term, rows in zip(looked, listed, strict=True):
-        if len(rows) > relations.CLAIMS_COMMON:
+        if rows is None or len(rows) > relations.CLAIMS_COMMON:
             continue
         here = next((row for row, at in rows if at == slug and row in stating[term]), None)
         others = [(row, at) for row, at in rows if at != slug]
@@ -311,7 +369,8 @@ def related(
     # The title is settled as a term is: the claims of other pages that hold its words are
     # read with the terms' claims, within the same bounds.
     named = _title(title)
-    naming = _title_claims(con, *scope, slug, named)
+    title_listed = _title_claims(con, *scope, span, visits, slug, named, len(looked))
+    naming = title_listed or []
     candidates = _candidates(con, *scope, [*(others for _, others in asked.values()), naming])
     passages, unread = _within(  # a passage of the page's own is held whole already
         con,
@@ -345,9 +404,10 @@ def related(
     given, pages_left_out = relations.best(reasons, limit)
     pages = _given(con, *scope, given, held, spans, places) if given else ()
     wanted = {row for _, others in asked.values() for row, _ in others} | {r for r, _ in naming}
+    terms_looked_up = sum(rows is not None for rows in listed)
     left = Left(
-        terms_looked_up=len(looked),
-        terms_not_looked_up=len(known) - len(looked),
+        terms_looked_up=terms_looked_up,
+        terms_not_looked_up=len(known) - terms_looked_up + (title_listed is None),
         claims_read=len(wanted & read),
         claims_not_read=len(wanted - read),
         pages_left_out=pages_left_out,
@@ -368,17 +428,21 @@ def _title_claims(
     account_id: str,
     index: str,
     project_id: str,
+    span: tuple[int, int] | None,
+    visits: _Visits,
     slug: str,
     named: str | None,
-) -> Listed:
+    part: int,
+) -> Listed | None:
     """The claims of other pages whose text holds the title as a phrase (`named`: `_title`),
-    by row: the index's own match, on the text column. None for a title that is not looked
-    up, and none for one more than relations.CLAIMS_COMMON such claims hold, which is common
-    and relates none. One statement at most."""
+    by row: the index's own match, on the text column, asked last, as part `part`. None when
+    it is not looked up past ROWS_MAX rows (`_listed`). No claim for a title that is not
+    looked up for its length, nor for one more than relations.CLAIMS_COMMON such claims
+    hold, which is common and relates none. One statement at most."""
     if named is None:
         return []
-    (rows,) = _listed(con, account_id, index, project_id, [named], but=slug)
-    return [] if len(rows) > relations.CLAIMS_COMMON else rows
+    (rows,) = _listed(con, account_id, index, project_id, span, visits, [named], part, but=slug)
+    return None if rows is None else [] if len(rows) > relations.CLAIMS_COMMON else rows
 
 
 def _mentioning(
@@ -613,35 +677,56 @@ def _listed(
     account_id: str,
     index: str,
     project_id: str,
+    span: tuple[int, int] | None,
+    visits: _Visits,
     matches: Sequence[str],
+    first: int = 0,
     but: str | None = None,
-) -> list[Listed]:
+) -> list[Listed | None]:
     """For each match, relations.CLAIMS_COMMON + 1 claims at most of the project that hold it
     (of its pages other than `but`, when given), as (row, the page's slug), by row: every
-    such claim when there are no more, the first by row else. One statement for every AT_ONCE
-    matches. A row is kept only when search_claims puts it in the project, and no column of a
-    claim is read.
+    such claim when there are no more, the first by row else; or None, for a match not
+    looked up. One statement for every AT_ONCE matches, none when ROWS_MAX rows are spent.
 
-    The index is asked within the project's rows (_RUNS), one run at a time, so a match of
-    another project is never walked, however many there are (those inside a run aside, which
-    a page's claims indexed together leave none of)."""
-    found: list[Listed] = [[] for _ in matches]
+    The index is asked for each match once, over the project's span (its first row to its
+    last), in order: the rows it hands over are counted (`visits`, the matches being parts
+    `first` on), and each is kept only when search_claims puts it in the project, by
+    primary key, before any column of it is read, as ranking.search does. A match's walk
+    stops at its CLAIMS_COMMON + 1st claim of the project, and every walk at the
+    ROWS_MAX-th row handed over, the project's and others' together: the match being asked
+    when the count reaches ROWS_MAX, and every match after it, are not looked up. A project
+    with no row in the index has nothing to ask."""
+    if span is None:
+        return [[] for _ in matches]
+    found: list[Listed | None] = [None] * len(matches)
     for start in range(0, len(matches), AT_ONCE):
+        if not visits.left():
+            break
         part = matches[start : start + AT_ONCE]
-        each = _RUNS + " UNION ALL ".join(
-            f"SELECT * FROM (SELECT ?{5 + 2 * n} AS term, {index}.rowid AS row, c.slug AS slug"
-            f" FROM runs CROSS JOIN {index} ON {index}.rowid BETWEEN runs.lo AND runs.hi"
-            f" CROSS JOIN search_claims AS c ON c.account_id = ?1 AND c.row = {index}.rowid"
-            f" WHERE {index} MATCH ?{6 + 2 * n} AND c.project_id = ?2"
-            f" AND (?3 IS NULL OR c.slug <> ?3) LIMIT ?4)"
+        each = " UNION ALL ".join(
+            f"SELECT * FROM (SELECT ?{7 + 2 * n} AS part, walked.row AS row, c.slug AS slug"
+            f" FROM (SELECT {index}.rowid AS row FROM {index} WHERE {index} MATCH ?{8 + 2 * n}"
+            f" AND {index}.rowid BETWEEN ?5 AND ?6 AND cairn_visited(?{7 + 2 * n})"
+            " LIMIT cairn_rows_left()) AS walked"
+            " CROSS JOIN search_claims AS c ON c.account_id = ?1 AND c.row = walked.row"
+            " WHERE c.project_id = ?2 AND (?3 IS NULL OR c.slug <> ?3) LIMIT ?4)"
             for n in range(len(part))
         )
         parameters: list[object] = [account_id, project_id, but, relations.CLAIMS_COMMON + 1]
+        parameters += span
         for n, match in enumerate(part):
-            parameters += [start + n, match]
-        for term, row, at in con.execute(each, parameters):
-            found[term].append((row, at))
-    return [sorted(rows) for rows in found]
+            parameters += [first + start + n, match]
+        handed = visits.total
+        rows = con.execute(each, parameters).fetchall()  # read to its end: nothing left under way
+        for n in range(len(part)):
+            handed += visits.by.get(first + start + n, 0)
+            if handed >= ROWS_MAX:
+                break  # this match and those after it: not looked up
+            found[start + n] = []
+        for at_part, row, at in rows:
+            if (listed := found[at_part - first]) is not None:
+                listed.append((row, at))
+    return [None if rows is None else sorted(rows) for rows in found]
 
 
 def _candidates(

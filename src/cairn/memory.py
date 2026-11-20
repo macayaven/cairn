@@ -150,7 +150,8 @@ default `limit` of 5, 76,169 and 103,915, and 295,169 and 366,715
 answers made from claims of 322,320 characters against it field by field). No answer shows a
 weight. `searched` (`related_searched`), always: `complete`, and the three things a read can
 leave out, each counted (cairn.store.relating.Left): `terms_looked_up` and
-`terms_not_looked_up`, the page's terms past the bound on terms; `claims_read` and
+`terms_not_looked_up`, the page's terms past the bound on terms or on the rows of the index a
+read is handed, the title then counting as one; `claims_read` and
 `claims_not_read`, the claims of other pages past the bounds on what is read;
 `pages_left_out`, the related pages past `limit`. Nothing of a relation is stored: the answer
 is worked out from the pages as they are, in one read of the store, with who wrote the notes

@@ -431,18 +431,23 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       a forgotten note is out of it with the write that forgets it. Not in this version: a
       relation across projects, the pages a page mentions, paths of several steps, groups over
       a whole project, anything inferred from meaning. `searched` says what the read's bounds
-      left out, always, and counts each: the page's terms past the first 256, the claims of
-      other pages, listed for a term or for the title, past the 512 claims and the 750,000
-      bytes of passages read, the related pages past `limit`. The page's own passages are read
-      whole, as `page` reads them. The store's read runs at most 17 statements, whatever the
-      page and the project hold (cairn.store.relating says which, and
-      tests/unit/test_relating_cost_unit.py counts them). One read of related pages at a time
-      in a server process, for every workspace it serves, over MCP, REST and the web view
-      alike: another waits for it holding no thread and no connection and is answered in its
-      turn, however long that takes; none is refused for waiting. A caller (a key, an agent,
-      or a person whichever session they use) has one read in that line at a time, its others
-      waiting behind it, so a read waits behind at most one read of each other caller. A read
-      of the page for the audit log (read.page), which never holds a term.
+      left out, always, and counts each: the page's terms past the first 256, and those not
+      looked up once the read has been handed 150,000 rows of the index for the terms and
+      the title (the title then counting as one), the claims of other pages, listed for a
+      term or for the title, past the 512 claims and the 750,000 bytes of passages read, the
+      related pages past `limit`. The rows of the index a read is handed are bounded whatever
+      the workspace holds: where other projects hold a page's terms in very many claims, the
+      answer can be incomplete, and says so; it never says something else. The page's own
+      passages are read whole, as `page` reads them. The store's read runs
+      at most 17 statements, whatever the page and the project hold (cairn.store.relating
+      says which, and tests/unit/test_relating_cost_unit.py counts them). One read of
+      related pages at a time in a server process, for every workspace it serves, over MCP,
+      REST and the web view alike: another waits for it holding no thread and no connection
+      and is answered in its turn, however long that takes; none is refused for waiting. A
+      caller (a key, an agent, or a person whichever session they use) has one read in that
+      line at a time, its others waiting behind it, so a read waits behind at most one read
+      of each other caller. A read of the page for the audit log (read.page), which never
+      holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments

@@ -125,8 +125,9 @@ Caller = Hashable
 def caller_of(memory: Any) -> Caller:
     """Who a read of related pages is for, as its request was admitted (Auth.admit): the
     actor the request's Memory acts as (Store.actor_id), within its workspace. That is a
-    key's id for a key and for a session opened with it, a grant's id for an agent, and a
-    person's id for every session of theirs; a view with no actor id by its kind and name."""
+    key's id for a key, and for a session opened with a key no person made; a grant's id for
+    an agent; a person's id for every session of theirs, one opened with a key they made
+    among them; and a view with no actor id, by its kind and name."""
     store = memory.store
     return (store.account_id, store.actor_id or store.actor)
 

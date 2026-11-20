@@ -315,6 +315,7 @@ _LINE_BREAK = re.compile("\n")
 _CR_LF = re.compile("\r\n")
 _PARSER_LINES = re.compile(r"\r\n?|\n")
 _TAG_START = re.compile(r"<[A-Za-z/!?]")  # where raw HTML or an autolink may start
+_BLOCK_LEAD = re.compile(r"[ \t>*+\-0-9.)]*")  # what may come before an HTML block's "<"
 
 
 def _placed_rule(rule):
@@ -402,9 +403,11 @@ def _code_spans(text: str) -> list[tuple[int, int]] | None:
     """code_spans, parsed: the text read as the parser reads it (each CR LF one line break,
     a lone CR one, NUL as U+FFFD), and each place found put back at its place in `text`."""
     src = text.replace("\r\n", "\n").replace("\r", "\n").replace("\0", "\ufffd")
-    found: list[tuple[int, int]] = []
-    for md in _PARSERS if _TAG_START.search(text) else _PARSERS[:1]:
-        read = _code_read(md, src)
+    found = _code_read(_PARSERS[0], src)
+    if found is None:
+        return None
+    if _html_may_differ(src, found):
+        read = _code_read(_PARSERS[1], src)
         if read is None:
             return None
         found.extend(read)
@@ -413,6 +416,22 @@ def _code_spans(text: str) -> list[tuple[int, int]] | None:
         found = [(_back(back, left), _back(back, right - 1) + 1) for left, right in found]
         found = [(left, right + (text[right - 1 : right + 1] == "\r\n")) for left, right in found]
     return _apart(found)
+
+
+def _html_may_differ(src: str, code: list[tuple[int, int]]) -> bool:
+    """Whether the reading with raw HTML on may place code apart from the one with it off.
+    Raw HTML changes a reading only where a tag may start ("<" and a letter, "/", "!" or "?").
+    One inside a code span of the reading with HTML off, past the span's opening run, is not
+    read as HTML by the other either: the inline rules meet the opening backticks first and
+    take the same span. A line whose "<" has only white space or container and list markers
+    before it may open an HTML block, which changes the blocks themselves, so it is read. A
+    text with no tag start at all needs no second reading."""
+    for match in _TAG_START.finditer(src):
+        at = match.start()
+        line = src[src.rfind("\n", 0, at) + 1 : at]
+        if _BLOCK_LEAD.fullmatch(line) or not any(left < at < right for left, right in code):
+            return True
+    return False
 
 
 def _back(back: list[int], at: int) -> int:

@@ -15,6 +15,7 @@ import sqlite3
 from datetime import timedelta
 from importlib.resources import files
 
+import httpx
 import pytest
 import uvicorn
 from guide_source import guide_source
@@ -27,9 +28,10 @@ import cairn.store.slack as store_slack
 from cairn import server, sources
 from cairn.arrange import Arranger
 from cairn.compiler import compile_note, extractive
+from cairn.identity import GitHub
 from cairn.llm import FakeModel
 from cairn.memory import Memory
-from cairn.server import create_app
+from cairn.server import SignIn, create_app
 from cairn.slack import (
     blocks,
     commands,
@@ -51,7 +53,6 @@ from cairn.store.slack import (
     CHECK_EVERY,
     COMMAND,
     FORGET_AFTER,
-    GONE_AFTER,
     OFFER_TTL,
     TRIES,
 )
@@ -889,36 +890,88 @@ def test_privacy_what_was_there_before_slack_is_not_slacks_to_forget(bench):
     assert all(bench.owner.get_note(note.id) is not None for note in (different, matching))
 
 
-def test_privacy_a_token_slack_ended_is_removed_three_days_later(world):  # noqa: F811
+@pytest.mark.parametrize("polling", ["on", "off", "timeout", "rate limit", "works"])
+def test_privacy_a_token_slack_ended_is_removed_three_days_later(world, polling):  # noqa: F811
     """privacy.md: "When Slack revokes the bot's token, or no longer accepts it, Slack is
     switched off and the token deleted; unless a new bot token is pasted on the **Sources**
-    page within 3 days, Slack is then removed here as above. A removal Slack did not tell this
-    server about is noticed within 12 hours, acted on 3 days later, and the notes are
-    forgotten 10 days after that.\""""
+    page within 3 days, Slack is then removed here as above. With Slack switched on, the
+    server checks the bot token at most once every 6 hours. It marks the token as ended after
+    two checks report that it has ended, and any successful check resets the count. Timeouts
+    and rate limits can delay that. The server forgets notes that are due whether or
+    not Slack is switched on.\""""
+    install = ready(world)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+    ended = httpx.Response(200, json={"ok": False, "error": "token_revoked"})
+    answer = ended
+    checks = []
+
+    def auth_test(request):
+        checks.append(world.clock.now)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def http():
+        return httpx.AsyncClient(transport=httpx.MockTransport(auth_test))
+
+    sign_in = SignIn(providers=(GitHub("gh-id", "gh-secret"),), http=http)
+    slack = web_slack.Slack(key=KEY, http=http) if polling != "off" else None
+    app = create_app(world.store, public_url=BASE, sign_in=sign_in, clock=world.clock, slack=slack)
+    keeper = app.state.slack_keeper
+    removed_at_slack = world.clock.now
+    world.clock.now += timedelta(hours=6)
+    if polling == "off":
+        assert asyncio.run(keeper.check()) == 0
+        world.clock.now += CHECK_EVERY
+        assert asyncio.run(keeper.check()) == 0
+        assert not checks and world.view.get_slack_install().state == "ready"
+        world.view.remove_slack_install(install.id)
+    else:
+        assert asyncio.run(keeper.check()) == 1
+        assert world.view.get_slack_install().holds_bot_token
+        world.clock.now += timedelta(hours=6, seconds=-1)
+        assert asyncio.run(keeper.check()) == 0
+        world.clock.now += timedelta(seconds=1)
+        if polling != "on":
+            answer = {
+                "timeout": httpx.ReadTimeout("slow"),
+                "rate limit": httpx.Response(429, headers={"retry-after": "30"}),
+                "works": httpx.Response(200, json={"ok": True}),
+            }[polling]
+            assert asyncio.run(keeper.check()) == 1
+            assert world.clock.now - removed_at_slack == timedelta(hours=12)
+            assert world.view.get_slack_install().holds_bot_token
+            world.clock.now += CHECK_EVERY
+            answer = ended
+            if polling == "works":
+                assert asyncio.run(keeper.check()) == 1
+                assert world.view.get_slack_install().holds_bot_token
+                world.clock.now += CHECK_EVERY
+        assert asyncio.run(keeper.check()) == 1
+        found = world.view.get_slack_install()
+        assert found.state == "off" and not found.holds_bot_token
+        world.clock.now += timedelta(days=3)
+        assert keeper.run_once() == (0, 0)
+        assert world.view.get_slack_install().state == "off"
+        world.clock.now += timedelta(minutes=1)
+        assert keeper.run_once() == (0, 0)
+        assert world.view.get_slack_install().state == "removed"
+    assert world.view.slack_notes_to_forget().at == world.clock.now + FORGET_AFTER
+    world.clock.now += FORGET_AFTER
+    assert keeper.run_once() == (0, 1)
+    assert world.view.get_note(note) is None
     says(
         *PRIVACY,
         "When Slack revokes the bot's token, or no longer accepts it, Slack is switched off and"
         " the token deleted; unless a new bot token is pasted on the **Sources** page within 3"
         " days, Slack is then removed here as above.",
-        "A removal Slack did not tell this server about is noticed within 12 hours, acted on 3"
-        " days later, and the notes are forgotten 10 days after that.",
+        "With Slack switched on, the server checks the bot token at most once every 6 hours.",
+        "It marks the token as ended after two checks report that it has ended, and any"
+        " successful check resets the count.",
+        "Timeouts and rate limits can delay that.",
+        "The server forgets notes that are due whether or not Slack is switched on.",
     )
-    assert timedelta(hours=12) == 2 * CHECK_EVERY and timedelta(days=3) == GONE_AFTER
-    install = ready(world)
-    note = a_note(world)
-    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
-    removed_at_slack = world.clock.now  # and Slack said nothing
-    ended = 0
-    while ended < 2:  # a check is due at most CHECK_EVERY after the last
-        world.clock.now += CHECK_EVERY
-        for check in world.store.take_slack_checks():
-            found = world.store.slack_token_checked(check, "ended")
-            ended += 1
-    assert found.state == "off" and not found.holds_bot_token
-    assert world.clock.now - removed_at_slack <= timedelta(hours=12)
-    world.clock.now += GONE_AFTER + timedelta(minutes=1)  # the loop's next pass
-    assert world.store.remove_gone_slack_installs() == [install.id]
-    assert world.view.slack_notes_to_forget().at == world.clock.now + FORGET_AFTER
 
 
 def test_privacy_backups_hold_the_notes_until_they_expire():

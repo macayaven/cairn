@@ -22,6 +22,9 @@ Contract (frozen by tests/acceptance/test_t2_facts.py and tests/gold/t2_facts_sy
   finds. A fact that holds the whole run reads as before, and so does normalize() (G2; see
   _whole_runs).
 - `value == span.text[start:end]`; facts are sorted by (start, end); output is deterministic.
+- `as_read` is the same characters of the span's text as extract_facts read it (an underscore
+  of emphasis by a fact as "*", one for one): the fact as it stands in its passage. A fact is
+  never read a second time, alone: there an underscore at its edge has other neighbours.
 - `norm = normalize(value)`: whitespace collapsed, case folded, thousands separators removed.
 - `lines`: for `code_block` facts, `normalize()` of each non-blank line of the block that is
   not a comment-only line (stripped text starting with "#" or "//"), in order. Code blocks
@@ -33,7 +36,7 @@ import re
 from collections.abc import Callable, Iterator
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from cairn.spans import Span, compared_text, fence_closes
 
@@ -156,22 +159,34 @@ class Fact(BaseModel):
     start: int  # offset into span.text, inclusive
     end: int  # offset into span.text, exclusive
     lines: tuple[str, ...] = ()  # code_block only: normalised, non-blank, non-comment lines
+    # `value` as read in the span (see the contract); it follows from the span, so no dump
+    # holds it.
+    as_read: str = Field(exclude=True)
 
 
 def normalize(value: str) -> str:
     """Normalise text for fact matching (an underscore of emphasis next to a fact reads as
     "*", as in extract_facts). It reads the text alone, never as Markdown. Where lint reads a
-    page's claims (cairn.lint), it compares a fact by its text as extracted instead."""
+    page's claims (cairn.lint), it compares a fact by its text as read in its passage
+    instead (Fact.as_read)."""
     return _plain(_emphasis(value))
 
 
 def as_extracted(value: str) -> str:
-    """`value` as lint compares a fact where it reads a page's claims (cairn.lint): as
-    normalize() reads it but with its white space as written, but for what
+    """A whole text (a passage, a claim) as lint compares it where it reads a page's claims
+    (cairn.lint): as normalize() reads it but with its white space as written, but for what
     cairn.spans.compared_text leaves out (white space at the end of a line, blank lines
     around the text), so `a  b.txt` and `a b.txt` are two facts. Case folded, thousands
-    separators taken out, an underscore of emphasis next to a fact read as "*"."""
-    return _THOUSANDS_SEPARATOR.sub("", compared_text(_emphasis(value)).casefold())
+    separators taken out, an underscore of emphasis next to a fact read as "*". One fact of a
+    passage is not read by this: it is compared(fact.as_read)."""
+    return compared(_emphasis(value))
+
+
+def compared(as_read: str) -> str:
+    """A text already read for emphasis (a Fact's `as_read`, or one line of it) as lint
+    compares it where it reads a page's claims: what as_extracted does after reading
+    emphasis, so no underscore is read again with the fact's edges for neighbours."""
+    return _THOUSANDS_SEPARATOR.sub("", compared_text(as_read).casefold())
 
 
 def _plain(value: str) -> str:
@@ -377,6 +392,7 @@ def _fact(span: Span, read: str, kind: FactKind, start: int, end: int) -> Fact:
         start=start,
         end=end,
         lines=lines,
+        as_read=as_read,
     )
 
 

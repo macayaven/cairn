@@ -328,6 +328,13 @@ OpenTofu replaces the VM when the rendered boot configuration changes, keeping t
 bucket, and the new cairn may migrate the restored database.
 Replacement also removes Caddy's local `caddy-data` certificate volume. Repeated replacements
 can hit [Let's Encrypt's limit on certificates for the same hostnames](https://letsencrypt.org/docs/rate-limits/#new-certificates-per-exact-set-of-identifiers).
+The replica holds the database and nothing else. A plans file, a logo or operator notes that you
+wrote onto the data volume (for `--plans`, `--brand-logo` or `--operator-notes`) are not on the
+new VM, and `serve` does not start while one of those options names a file it cannot read, so
+`/healthz` stays down after a replacement until each file is written again. While cairn is down,
+a container of the `data-init` service mounts the volume as cairn's own user, as in
+[Restore by hand](../../deploy/README.md#restore-by-hand). The same holds on the first boot of
+a VM whose `serve_extra_args` name such a file.
 Check the release notes before going back, because an older image can use an additive schema
 update but needs the pre-upgrade backup after an incompatible one.
 

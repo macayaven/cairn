@@ -6,7 +6,12 @@ import shutil
 import subprocess
 
 import pytest
-from test_quick_infra_unit import QUICK
+import yaml
+from test_quick_infra_unit import QUICK, REPO
+
+from cairn.web.brand import make_brand
+from cairn.web.cli import _parser, _plans
+from cairn.web.public import read_operator_notes
 
 AWS = QUICK / "aws"
 
@@ -89,3 +94,36 @@ def test_only_the_regions_own_zones_are_candidates_in_a_stable_order(tmp_path, o
 def test_the_guide_says_where_the_subnet_goes():
     section = (QUICK / "README.md").read_text().split("## AWS\n")[1].split("\n## ")[0]
     assert "the first Availability Zone that offers" in " ".join(section.split())
+
+
+def test_the_upgrade_guide_names_the_files_a_replaced_vm_does_not_get_back(tmp_path):
+    """Litestream replicates one file, the database. The deploy guide has a person write a
+    plans file, a logo and operator notes onto the same volume, and `serve` does not start
+    while one of its options names a file it cannot read. A replaced VM has a new volume, so
+    after any replacement the stack stays down until those files are written again, and the
+    guide to the quick deploy has to say so where it describes a replacement."""
+    replicated = yaml.safe_load((REPO / "deploy" / "litestream.yml").read_text())["dbs"]
+    assert [database["path"] for database in replicated] == ["/data/cairn.db"]
+    missing = str(tmp_path / "not-written-again")
+    serve = ["serve", "--db", "/data/cairn.db", "--sign-in", "google", "--brand-name", "Example"]
+    args = _parser().parse_args(
+        [*serve, "--plans", missing, "--brand-logo", missing, "--operator-notes", missing]
+    )
+    refusals = (
+        lambda: _plans(args.plans),
+        lambda: make_brand(args.brand_name, args.brand_logo, None),
+        lambda: read_operator_notes(args.operator_notes),
+    )
+    for refuse in refusals:
+        with pytest.raises(ValueError, match="read"):
+            refuse()
+    upgrade = " ".join(
+        (QUICK / "README.md").read_text().split("## Upgrade\n")[1].split("\n## ")[0].split()
+    )
+    assert "The replica holds the database and nothing else" in upgrade
+    for option in ("--plans", "--brand-logo", "--operator-notes"):
+        assert f"`{option}`" in upgrade, option
+    assert "`serve` does not start" in upgrade
+    assert "(../../deploy/README.md#restore-by-hand)" in upgrade
+    headings = (REPO / "deploy" / "README.md").read_text()
+    assert "\n### Restore by hand\n" in headings

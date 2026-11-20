@@ -26,7 +26,8 @@ def section_text(payload):
 
 
 def assert_valid(payload):
-    assert set(payload) == {"text", "blocks"}
+    assert set(payload) - {"mrkdwn"} == {"text", "blocks"}
+    assert payload.get("mrkdwn", False) is False  # only ever to say the fallback is plain
     assert payload["text"].strip()
     assert 1 <= len(payload["blocks"]) <= 50
     for block in payload["blocks"]:
@@ -155,9 +156,11 @@ def test_a_filed_reply_names_the_title_in_plain_text(where):
     and a mrkdwn section styles `*draft*` bold where Slack displayed it as characters. It
     is a plain_text text object of its own (Slack's means for text it does not format,
     "Disabling formatting" on its page on message text), escaped as every text object is;
-    the reply's own words stay mrkdwn, and none of them is the title."""
+    the reply's own words stay mrkdwn, and none of them is the title. The fallback text
+    holds the title too, and says so too: "mrkdwn" false, the message's own field for it."""
     title = "*draft* _v2_ ~old~ <!here> & @*Cedar*"
     payload = blocks.filed(title=title, project="lab", **where)
+    assert payload["mrkdwn"] is False and blocks.escape(title) in payload["text"]
     *words, named = payload["blocks"]
     assert named["text"] == {"type": "plain_text", "text": blocks.escape(title)}
     for block in words:

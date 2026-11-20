@@ -65,14 +65,17 @@ def _message(fallback: str, sections: list[str], plain: str | None = None) -> di
     """A message of mrkdwn sections, the reply's own words, and then `plain`, words of a
     message or of a name, in a section of its own as plain text: Slack's means for text it
     does not format ("Disabling formatting", on its page on message text), so nothing of it
-    is bold, a mention or a link. It is escaped as every text object is."""
+    is bold, a mention or a link. It is escaped as every text object is. The fallback text
+    then holds those words too, and the message's own "mrkdwn" field says it is not to be
+    read as mrkdwn ("Determines whether the text field is rendered according to mrkdwn")."""
     made = [
         {"type": "section", "text": {"type": "mrkdwn", "text": text, "verbatim": True}}
         for text in sections
     ]
-    if plain is not None:
-        made.append({"type": "section", "text": {"type": "plain_text", "text": plain}})
-    return {"text": fallback, "blocks": made}
+    if plain is None:
+        return {"text": fallback, "blocks": made}
+    made.append({"type": "section", "text": {"type": "plain_text", "text": plain}})
+    return {"text": fallback, "blocks": made, "mrkdwn": False}
 
 
 def _one(raw: str) -> dict:

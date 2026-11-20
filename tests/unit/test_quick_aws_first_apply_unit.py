@@ -253,3 +253,15 @@ def test_destroy_keeps_a_bucket_that_holds_backups_until_a_person_says_otherwise
     # Removing the current objects no longer empties the bucket, so the guide no longer says to.
     assert "aws s3 rm" not in teardown
     assert "every version" in said
+
+
+def test_the_recovery_guide_says_where_a_failed_read_or_start_explains_itself():
+    """The boot script puts a tool's own error in the unit's journal under one of two labels,
+    and the guide's recovery section, which sends a person to that journal, names them."""
+    script = (QUICK / "bootstrap.sh").read_text()
+    recovery = " ".join(readme_section("First-boot recovery").split())
+    for label in ("settings read", "compose"):
+        assert re.search(rf"say_errors '?{label}'? ", script), label
+        assert f"`cairn-quick: {label}:`" in recovery, label
+    assert 'print(f"cairn-quick: {label}: {line}")' in script
+    assert "They never hold a setting's value" in recovery

@@ -291,6 +291,12 @@ sudo systemctl status cairn-quick-provision.service cairn-quick.service
 sudo journalctl -b -u cairn-quick-provision.service -u cairn-quick.service -u docker.service --no-pager
 ```
 
+When the settings secret cannot be read or Compose cannot start the stack, `cairn-quick.service`
+fails, and its journal has the tool's own error on lines that start with
+`cairn-quick: settings read:` or `cairn-quick: compose:`. They never hold a setting's value: a line
+that would repeat one is left out, a syntax error in the settings file is given by its
+line number, and a `$` that Compose took for a variable is said without naming what follows it.
+
 After fixing a package problem, trigger an immediate retry.
 
 ```sh

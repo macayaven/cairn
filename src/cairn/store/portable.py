@@ -162,6 +162,7 @@ from cairn.store.base import (
     _iso,
     _require_account,
     _transaction,
+    is_rewritten,
 )
 from cairn.store.memory import (
     _NOTE_COLUMNS,
@@ -582,15 +583,16 @@ class PortableMethods(StoreBase):
                 con.execute("VACUUM")
             except sqlite3.OperationalError as error:
                 raise _incomplete(f"the database could not be compacted: {error}", False) from None
+            mark = None if generation is None else _covered(generation[0])
             with _transaction(con):  # the deletions recorded before the rewrite are its own
                 _set_row(con, COMPACTED_AT, began)
-                if generation is not None:  # unchanged, or a later deletion keeps it due
+                if mark is not None:  # unchanged, or a later deletion keeps it due
                     con.execute(
                         "UPDATE settings SET updated_at = ?"
                         " WHERE account_id = ? AND name = ? AND updated_at = ?",
-                        (REWRITTEN, DEFAULT_ACCOUNT_ID, COMPACT_DUE, generation[0]),
+                        (mark, DEFAULT_ACCOUNT_ID, COMPACT_DUE, generation[0]),
                     )
-        self._empty_log(rewrote=True)
+        self._empty_log(rewrote=True, mark=mark)
 
     def empty_log(self) -> None:
         """What a rewrite left due (compaction_state().rewritten): copy the write-ahead log
@@ -601,7 +603,7 @@ class PortableMethods(StoreBase):
         call, as compact (PermissionError on any view)."""
         if not self._owner:
             raise PermissionError("only the store that opened the database compacts it")
-        self._empty_log(rewrote=False)
+        self._empty_log(rewrote=False, mark=None)
 
     @contextlib.contextmanager
     def _holding(self) -> Iterator[sqlite3.Connection]:
@@ -615,11 +617,25 @@ class PortableMethods(StoreBase):
             finally:
                 self._state.compacting = False
 
-    def _empty_log(self, rewrote: bool) -> None:
-        """Truncate the write-ahead log; then the record of a deletion the rewrite covered
-        goes, and the log is truncated once more for that record's own change (if another
-        connection holds it by then, the log keeps that change only)."""
+    def _empty_log(self, rewrote: bool, mark: str | None) -> None:
+        """Truncate the write-ahead log; then the record goes if it still holds the rewritten
+        generation this emptying covers: `mark`, the one compact just wrote, or for
+        empty_log the one read under the lock before the truncation. One statement, which
+        changes nothing once a deletion (or another process's rewrite after another
+        deletion) has moved the record on: that one stays due.
+
+        The log is then truncated once more, for the clearing's own change. When another
+        connection holds it by then (busy), nothing is raised and the record stays as it is:
+        cleared, or moved on. The log then holds only changes made after its truncation,
+        and a deletion among them recorded itself again, so nothing it removed is left
+        without a record; the next truncation takes the rest."""
         with self._holding() as con:
+            if mark is None:
+                found = con.execute(
+                    "SELECT updated_at FROM settings WHERE account_id = ? AND name = ?",
+                    (DEFAULT_ACCOUNT_ID, COMPACT_DUE),
+                ).fetchone()
+                mark = found[0] if found and is_rewritten(found[0]) else None
             try:
                 busy = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
             except sqlite3.OperationalError as error:
@@ -632,13 +648,14 @@ class PortableMethods(StoreBase):
                 " the database; run compact again when it is done",
                 rewrote,
             )
-        with self._write() as con:
-            con.execute(
-                "DELETE FROM settings WHERE account_id = ? AND name = ? AND updated_at = ?",
-                (DEFAULT_ACCOUNT_ID, COMPACT_DUE, REWRITTEN),
-            )
+        if mark is not None:
+            with self._write() as con:
+                con.execute(
+                    "DELETE FROM settings WHERE account_id = ? AND name = ? AND updated_at = ?",
+                    (DEFAULT_ACCOUNT_ID, COMPACT_DUE, mark),
+                )
         with self._locked() as con, contextlib.suppress(sqlite3.OperationalError):
-            con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()  # busy: as above
 
     def _room_for_rewrite(self) -> None:
         """NoRoom unless the database's disk has twice the database free (its file and its
@@ -676,8 +693,14 @@ class PortableMethods(StoreBase):
         return CompactionState(
             deleted_at=due[0] if due else None,
             compacted_at=done[0] if done else None,
-            rewritten=bool(due) and due[1] == REWRITTEN,
+            rewritten=bool(due) and is_rewritten(due[1]),
         )
+
+
+def _covered(generation: str) -> str:
+    """The record's `updated_at` once a rewrite covered `generation` (base.REWRITTEN): the
+    same generation, marked; one already marked stays as it is."""
+    return generation if is_rewritten(generation) else f"{REWRITTEN}:{generation}"
 
 
 def _refuse(findings: list[tuple[str, Any]]) -> None:

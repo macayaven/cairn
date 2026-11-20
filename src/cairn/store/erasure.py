@@ -50,6 +50,7 @@ from cairn.store.base import (
     RECORD_DELETION,
     StoreBase,
     _has_table,
+    deletion_generation,
 )
 from cairn.store.memory import _SPAN_COLUMNS, _span, _write_page_version
 from cairn.store.models import Claim, Forgotten
@@ -440,7 +441,8 @@ def _unname_sources(con: sqlite3.Connection, account_id: str, name: str, project
 
 def _compaction_due(con: sqlite3.Connection, now: str) -> None:
     """Mark a compaction due (cairn.store.portable.compaction_state): its time unless one
-    already is, and in every case this deletion's time as the record's `updated_at`, so a
-    rewrite that ran before it is not taken to cover it. What was removed can leave short
-    index keys behind until a rewrite runs."""
-    con.execute(RECORD_DELETION, (DEFAULT_ACCOUNT_ID, COMPACT_DUE, now, now))
+    already is, and in every case a generation of this deletion's own as the record's
+    `updated_at` (base.deletion_generation), so a rewrite that ran or began before it is not
+    taken to cover it. What was removed can leave short index keys behind until a rewrite
+    runs."""
+    con.execute(RECORD_DELETION, (DEFAULT_ACCOUNT_ID, COMPACT_DUE, now, deletion_generation()))

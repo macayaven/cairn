@@ -17,7 +17,7 @@ updated_at), which `compaction_of` reads as Store.compaction_state does."""
 
 import sqlite3
 
-from cairn.store.base import COMPACT_DUE, COMPACTED_AT, DEFAULT_ACCOUNT_ID, REWRITTEN, StoreBase
+from cairn.store.base import COMPACT_DUE, COMPACTED_AT, DEFAULT_ACCOUNT_ID, StoreBase, is_rewritten
 from cairn.store.models import CompactionState
 
 _QUERIES = {
@@ -81,7 +81,7 @@ def compaction_of(rows: list[tuple]) -> CompactionState:
     return CompactionState(
         deleted_at=due[0] if due else None,
         compacted_at=done[0] if done else None,
-        rewritten=bool(due) and due[1] == REWRITTEN,
+        rewritten=bool(due) and is_rewritten(due[1]),
     )
 
 

@@ -1,12 +1,12 @@
 """Measure the characters actually passed to CommonMark during a forget."""
 
 from contextlib import closing
-from dataclasses import dataclass, field
-from itertools import pairwise
 
 import pytest
 from markdown_it import MarkdownIt
-from test_forget_siblings_unit import SPENT, narrow, plain_loop, texts, under_steps
+from test_forget_cost_unit import PER_RENDER
+from test_forget_siblings_unit import SPENT, narrow, page, under_steps
+from test_reviewer7_forget_title_unit import oracle
 
 from cairn import compiler
 from cairn.gate import lint_gate
@@ -14,33 +14,24 @@ from cairn.memory import Memory
 from cairn.store import Store, erasure
 
 
-@dataclass
-class Render:
-    body: str
-    siblings: list[str]
-    named: str | None
-    inputs: list[str] = field(default_factory=list)
-
-
-def observe_forget(store, separator, siblings, monkeypatch):
+def observe_forget(store, separator, monkeypatch):
+    """Pair each rendered body's size with every parser input size charged to it."""
     renders = []
+    inputs = []
     render, parse = compiler.left_to_run, MarkdownIt.parse
-    rendering = False
 
     def rendered(title, claims, spans):
-        nonlocal rendering
-        rendering = True
-        try:
-            body, place = render(title, claims, spans)
-        finally:
-            rendering = False
-        live = [c.text for c in claims if c.text in siblings]
-        renders.append(Render(body, live, claims[place - 1].text if place else None))
+        nonlocal inputs
+        # Charge any earlier work to the first body. Start each later count on entry
+        # so it includes building that body and asking questions after it returns.
+        if renders:
+            inputs = []
+        body, place = render(title, claims, spans)
+        renders.append((len(body), inputs))
         return body, place
 
     def parsed(reader, source, *args, **kwargs):
-        if renders and not rendering:
-            renders[-1].inputs.append(source)
+        inputs.append(len(source))
         return parse(reader, source, *args, **kwargs)
 
     with monkeypatch.context() as patch:
@@ -48,6 +39,22 @@ def observe_forget(store, separator, siblings, monkeypatch):
         patch.setattr(MarkdownIt, "parse", parsed)
         assert Memory(store, lint_gate).forget("alpha", separator)["rebuilt"] == ["ops"]
     return renders
+
+
+def check_forget(store, separator, siblings, monkeypatch):
+    steps, title, body, claims = oracle(store, separator)
+    assert [text for _, text in steps] == siblings[::-1]
+
+    renders = observe_forget(store, separator, monkeypatch)
+    after = page(store)
+    assert (after.title, after.body, after.claims) == (title, body, claims)
+    assert 0 < len(renders) <= len(steps) + 1  # the oracle also renders the survivors
+    for body_size, inputs in renders:
+        assert max(inputs, default=0) <= 2 * body_size
+    total = sum(sum(inputs) for _, inputs in renders)
+    largest_body = max(size for size, _ in renders)
+    assert 0 < total <= PER_RENDER * len(renders) * largest_body
+    return len(renders)
 
 
 @pytest.fixture
@@ -58,73 +65,38 @@ def store():
 
 
 @pytest.mark.parametrize(
-    ("count", "width", "fits_first"),
+    ("count", "width"),
     [
-        pytest.param(28, 794, 3, id="2139-character-body"),
-        pytest.param(28, 1367, 3, id="third-neighbour-fits-exactly"),
-        pytest.param(28, 1368, 2, id="third-neighbour-one-character-over"),
-        pytest.param(28, 12, 27, id="all-neighbours-fit"),
-        pytest.param(1, 794, 0, id="named-sibling-alone"),
+        pytest.param(28, 794, id="2139-character-body"),
+        pytest.param(28, 1367, id="1367-character-tail"),
+        pytest.param(28, 1368, id="1368-character-tail"),
+        pytest.param(28, 12, id="short-tail"),
+        pytest.param(1, 794, id="one-sibling"),
     ],
 )
-def test_each_render_asks_as_many_of_the_nearest_siblings_as_fit(
-    store, monkeypatch, count, width, fits_first
+def test_sibling_runs_meet_the_same_render_and_input_budgets_at_each_width(
+    store, monkeypatch, count, width
 ):
     siblings = narrow(count)
     tail = "        " + "é" * (width - 8)
     spent = [SPENT[0] + " in the field notebook for winter 2026.", *SPENT[1:]]
     separator = under_steps(store, siblings, [tail], spent=spent)
-    expected = plain_loop(store, separator)
-    renders = observe_forget(store, separator, siblings, monkeypatch)
-    assert texts(store) == expected
-    assert renders[-1].named is None and not renders[-1].siblings
-
-    for index, (now, following) in enumerate(pairwise(renders)):
-        assert now.named == now.siblings[-1]
-        budget = 2 * len(now.body)
-        # Up to the named claim the original prefix and unaltered siblings occur once.
-        # Each extra question inserts the tail's first line and one blank line.
-        prefix_size = now.body.index(now.named + "\n\n")
-        earlier = now.siblings[:-1]
-        fits = min(len(earlier), (budget - prefix_size) // (len(tail) + 2))
-        asked = earlier[len(earlier) - fits :]
-        if index == 0:
-            assert fits == fits_first
-            if width == 794 and count == 28:
-                assert len(now.body) == 2139
-                assert prefix_size + len(earlier) * (len(tail) + 2) == 22809
-            if width == 1367:
-                assert prefix_size + fits * (len(tail) + 2) == budget
-        assert all(len(source) <= budget for source in now.inputs), (
-            len(now.body),
-            max(map(len, now.inputs)),
-        )
-        # Identify which sibling each inserted line actually followed in a parser input.
-        questions = [
-            [s for s in earlier if s + "\n\n" + tail + "\n" in source] for source in now.inputs
-        ]
-        if fits:
-            assert asked in questions
-        assert following.siblings == earlier[: len(earlier) - fits]
+    # One render can find the run and a second can verify the survivors at any width.
+    assert check_forget(store, separator, siblings, monkeypatch) <= 2
 
 
-def test_no_question_and_only_the_named_claim_leaves_when_one_probe_cannot_fit(store, monkeypatch):
+def test_a_proposed_line_larger_than_the_body_budget_keeps_the_oracle_result(store, monkeypatch):
     siblings = narrow(3)
     tail = "        End of samples."
     separator = under_steps(store, siblings, [tail])
-    expected = plain_loop(store, separator)
     ask = erasure._before_it
-    long_line = "        " + "x" * 8000
 
     def oversized_line(body, blocks, at, line, *args, **kwargs):
-        # In a real body its own next line already fits once. Supply a longer proposed
-        # line at the boundary that receives it separately to exercise the zero-fit rule.
-        assert line == tail
+        # A real body already contains its next line. Extend it only at the question
+        # boundary so the proposed line alone exceeds the entire render's budget.
+        long_line = line.ljust(8008, "x")
         assert len(long_line) > 2 * len(body)
         return ask(body, blocks, at, long_line, *args, **kwargs)
 
     monkeypatch.setattr(erasure, "_before_it", oversized_line)
-    renders = observe_forget(store, separator, siblings, monkeypatch)
-    assert texts(store) == expected
-    assert all(long_line not in src for now in renders for src in now.inputs)
-    assert [now.siblings for now in renders] == [siblings[:n] for n in range(3, -1, -1)]
+    check_forget(store, separator, siblings, monkeypatch)

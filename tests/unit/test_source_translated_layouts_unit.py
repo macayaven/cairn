@@ -155,11 +155,23 @@ def test_plain_http_to_this_machine_is_not_sent_to_a_local_use_address(monkeypat
     assert sent == []
 
 
-def test_what_the_refusal_leaves_reachable(monkeypatch):
-    """The limit, as the guide can say it: a server on an IPv6-only network cannot read an
-    IPv4-only source through a translator of the local-use range, even with private
-    addresses allowed. A public IPv4 address through the well-known prefix, a native IPv6
-    address and an IPv4 address reached directly are read as before."""
+GUIDE = (
+    "One range stays refused with `CAIRN_SOURCE_PRIVATE_ADDRESSES=allow` too: the local-use"
+    " translation range `64:ff9b:1::/48`, which each network lays out its own way, so a server"
+    " on an IPv6-only network cannot read an IPv4-only source through such a translator."
+)
+
+
+def test_what_the_refusal_leaves_reachable_and_the_guide_says_so(monkeypatch):
+    """The limit, as the security guide says it once, after what it says of the setting. A
+    public IPv4 address through the well-known prefix, a native IPv6 address and an IPv4
+    address reached directly are read as before."""
+    from guide_source import guide_source
+
+    said = " ".join(
+        guide_source("security").split("## What cairn leaves to the operator")[1].split()
+    )
+    assert said.count(GUIDE) == 1 and f"follows no redirects. {GUIDE} The server's calls" in said
     monkeypatch.setenv(u.PRIVATE_ADDRESSES_SETTING, "allow")
     sent, get = fetch("https://t.fable.test/api", ["64:ff9b:1::a00:5"])  # 10.0.0.5, the /96 way
     with pytest.raises(u.RefusedAddress):

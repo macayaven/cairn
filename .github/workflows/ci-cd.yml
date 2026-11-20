@@ -1849,9 +1849,24 @@ jobs:
             state=public
             [ "$draft" = false ] || state="a draft"
           }
+          # Whether the names listed are some of this run's three files, not all, and no other.
+          some_files() {
+            local name left=" $want " listed=()
+            [ "$names" != "$want" ] || return 1
+            IFS=' ' read -r -a listed <<< "$names"
+            for name in "${listed[@]}"; do
+              case "$left" in
+                *" $name "*) left="${left/ $name / }" ;;
+                *) return 1 ;;
+              esac
+            done
+          }
           # The look after this job's own write, made again, $looks times at most, while the
           # listing still shows what was there before it: no release after the creation ($1
           # is made), this run's release still a draft after the publication (published).
+          # After the creation it also waits while the listing shows this run's draft with
+          # some, not all, of its three file names and no other, since the uploads take about
+          # as long as the listing is behind; then the files are compared as before.
           # Nothing else is waited for: any other state stops the job inside look, at once,
           # and no release after the publication is none of the two.
           look_after() {
@@ -1859,7 +1874,7 @@ jobs:
             look
             while [ "$n" -lt "$looks" ]; do
               if [ "$1" = made ]; then
-                [ -z "$found" ] || break
+                [ -z "$found" ] || { [ "$draft" = true ] && some_files; } || break
               else
                 { [ -n "$found" ] && [ "$draft" = true ]; } || break
               fi

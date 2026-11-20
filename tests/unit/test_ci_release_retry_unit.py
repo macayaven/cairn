@@ -77,6 +77,19 @@ case "$1 $2" in
       echo "$look" > "$EXISTING/behind.looks"
       [ "$look" -ge "$(cat "$EXISTING/behind.from")" ] || shown="$EXISTING/behind.json"
     fi
+    # The listing can be behind the uploads too: the draft this attempt made is listed with
+    # the file names $NAMES_LISTED_AT_FIRST (a JSON list), at every look after its creation
+    # or, with $NAMES_LISTED_FOR_LOOKS, at that many and then with the names it holds.
+    if [ -n "$NAMES_LISTED_AT_FIRST" ] && [ -e "$EXISTING/made.looks" ]; then
+      look=$(($(cat "$EXISTING/made.looks") + 1))
+      echo "$look" > "$EXISTING/made.looks"
+      if [ -z "$NAMES_LISTED_FOR_LOOKS" ] || [ "$look" -le "$NAMES_LISTED_FOR_LOOKS" ]; then
+        jq --argjson names "$NAMES_LISTED_AT_FIRST" 'map(if .id == 88 then
+          .assets = ($names | map({name: ., size: 1})) else . end)' "$shown" \
+          > "$EXISTING/partial.json"
+        shown="$EXISTING/partial.json"
+      fi
+    fi
     jq -r "$jq_expr" "$shown"
     if [ -n "$PUBLISHED_AFTER_FIRST_LISTING" ]; then  # a person publishes the draft meanwhile
       jq 'map(.draft = false)' "$EXISTING/releases.json" > "$EXISTING/next.json"
@@ -126,6 +139,7 @@ case "$1 $2" in
       shift
     done
     writing "$MADE_SHOWN_FROM_LOOK"
+    echo 0 > "$EXISTING/made.looks"
     jq --arg tag "$tag" --rawfile body "$EXISTING/body" --argjson draft "$draft" \
       --argjson pre "$pre" --argjson title "$title" '. + [{id: 88, tag_name: $tag, name: $title,
         draft: $draft, prerelease: $pre,
@@ -185,7 +199,8 @@ def attempt(tmp_path: Path, tag: str, candidate: str, **env: str):
     calls.write_text("")
     for downloaded in ("draft", "published"):  # a re-run's runner is a new one
         shutil.rmtree(tmp_path / downloaded, ignore_errors=True)
-    for lag in ("written", "behind.json", "behind.from", "behind.looks"):  # and it comes later
+    # ... and it comes later, when the listing has caught up with every write
+    for lag in ("written", "behind.json", "behind.from", "behind.looks", "made.looks"):
         (tmp_path / "existing" / lag).unlink(missing_ok=True)
     done = run_step(
         CREATE["run"],
@@ -898,14 +913,19 @@ def test_the_draft_s_stop_has_its_row_and_the_row_says_what_the_tests_above_run(
     assert means == (
         "A draft for the tag carries this run's mark and does not hold exactly the files this"
         " run attested: an earlier attempt's upload was cut, and it may hold none of them, some,"
-        " or one cut off"
+        " or one cut off; or the attempt that made it still saw fewer file names listed than it"
+        " uploaded, at the last of its ten looks"
     )
     assert next_step == (
         "Delete it on the repository's releases page and re-run the job, which makes the release"
         " again (once the five days the run's files are kept have passed, re-run `package`"
         " instead, which runs only after a `verify` that passed and which `release` follows). Do"
-        " not publish it by hand: the job then finds a public release it cannot finish."
+        " not publish it by hand: the job then finds a public release it cannot finish. When the"
+        " releases page shows the draft with its three files, re-run the job first: it compares"
+        " the draft and publishes it if the files are whole."
     )
+    # (The listing short of file names, and the re-run that publishes the whole draft:
+    # test_ci_release_listing_lag_unit; the re-run that publishes a draft left whole, above.)
     # `package` re-run alone is followed by `release`, which then finds no release and makes it;
     # it needs `verify` (test_ci_retry_limits_unit runs what a failed `verify` does to it).
     assert "release" in rerun({"package"}) and "verify" in JOBS["package"]["needs"]

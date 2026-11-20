@@ -9,16 +9,19 @@ see what was there before it, and stop a first run in which nothing was wrong: o
 after the creation, or on a release still a draft after the publication.
 
 Now a look that follows the step's own write is made again while the listing shows exactly
-that: no release for the tag after the creation; this run's release, still a draft, after the
-publication. At most `looks` looks, `apart` seconds apart, the two values at the top of the
-step; then the stop it had. Any other state stops at once, as before: a release that is not
-this run's, an edited one, two for the tag, a listing that fails, no release after the
-publication. The first look of a run never waits.
+that: no release for the tag after the creation, or this run's draft with some, not all, of
+its three file names (the uploads take about as long as the listing is behind); this run's
+release, still a draft, after the publication. At most `looks` looks, `apart` seconds apart,
+the two values at the top of the step; then what the step did before. Any other state stops
+at once, as before: a release that is not this run's, an edited one, two for the tag, a file
+name that is not one of the three, a listing that fails, no release after the publication.
+The first look of a run never waits.
 
 gh is test_ci_release_retry_unit's stand-in, whose listing shows what was there before a
 write until the k-th look after it. `sleep` is a stand-in on the path, as gh is: it keeps its
 call and returns at once, so no test waits and each says how often the step slept."""
 
+import json
 import re
 
 import pytest
@@ -150,6 +153,142 @@ def test_a_draft_a_person_deletes_as_soon_as_it_is_made_reads_as_one_not_listed_
     done, calls = attempt(tmp_path, "v1.2.3", "")
     assert done.returncode == 0, done.stdout + done.stderr
     assert slept(calls) == [] and [(r["id"], r["draft"]) for r in held(tmp_path)] == [(88, False)]
+
+
+# --- after the creation: the draft is listed before all its file names are ----------------------
+
+WHEEL, SOURCE, SUMS = (
+    "cairn_memory-1.2.3-py3-none-any.whl",
+    "cairn_memory-1.2.3.tar.gz",
+    "SHA256SUMS",
+)
+
+
+@pytest.mark.parametrize(("tag", "candidate"), BOTH)
+@pytest.mark.parametrize("listed", [[], [WHEEL], [SUMS, WHEEL]], ids=["none", "one", "two"])
+@pytest.mark.parametrize("for_looks", [1, 9])
+def test_a_draft_listed_with_some_of_its_file_names_is_waited_for_and_published_in_the_end(
+    tmp_path, tag, candidate, listed, for_looks
+):
+    """The three uploads take about as long as the listing is behind, so the look after the
+    creation can show this run's draft with fewer file names than were uploaded. That is a
+    write of the step's own not listed yet: it waits, within the same looks, and goes on when
+    the names are the three."""
+    done, calls = run(
+        tmp_path,
+        tag,
+        candidate,
+        NAMES_LISTED_AT_FIRST=json.dumps(listed),
+        NAMES_LISTED_FOR_LOOKS=str(for_looks),
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert slept(calls) == [f"sleep {APART}"] * for_looks
+    waited = [LISTING, *[f"sleep {APART}", LISTING] * for_looks]
+    assert after(calls, "gh release create")[: len(waited) + 1] == [
+        *waited,
+        f"gh release download {tag} --dir {tmp_path}/draft",
+    ]
+    assert [(r["id"], r["draft"]) for r in held(tmp_path)] == [(88, False)]
+
+
+@pytest.mark.parametrize(("tag", "candidate"), BOTH)
+@pytest.mark.parametrize("listed", [[], [WHEEL], [SOURCE, WHEEL]], ids=["none", "one", "two"])
+def test_a_draft_never_listed_with_its_third_file_name_ends_on_the_unfinished_line_after_the_wait(
+    tmp_path, tag, candidate, listed
+):
+    """What a draft that really lacks a file reads as. The step looks its ten times, then
+    compares exactly as before: the unfinished line, nothing downloaded and nothing published.
+    (Here the files are whole and only the listing is short, so the re-run publishes.)"""
+    done, calls = run(tmp_path, tag, candidate, NAMES_LISTED_AT_FIRST=json.dumps(listed))
+    assert done.returncode == 1
+    assert the_error(done) == DRAFT.format(tag=tag)
+    assert slept(calls) == [f"sleep {APART}"] * (LOOKS - 1)
+    assert after(calls, "gh release create") == [
+        LISTING,
+        *[f"sleep {APART}", LISTING] * (LOOKS - 1),
+    ]
+    assert [line.split()[1:3] for line in writes(calls)] == [["release", "create"]]
+    (draft,) = held(tmp_path)
+    assert (draft["id"], draft["draft"]) == (88, True)
+    done, calls = attempt(tmp_path, tag, candidate)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert slept(calls) == [] and held(tmp_path) == [{**draft, "draft": False}]
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        ["other.txt"],
+        [WHEEL, "other.txt"],
+        [SOURCE, WHEEL, "other.txt"],
+        [SUMS, SOURCE, WHEEL, "other.txt"],
+        ["cairn_memory-1.2.3-py3-none-any.whl.part"],
+        ["cairn_memory-1.2.3"],
+        ["*"],
+        ["cairn*"],
+        ["SHA256SUMS SHA256SUMS"],
+    ],
+    ids=[
+        "alone",
+        "beside one",
+        "beside two",
+        "beside the three",
+        "a longer name",
+        "a shorter name",
+        "a star",
+        "a pattern of two of them",
+        "one name twice in one",
+    ],
+)
+def test_a_file_name_that_is_not_one_of_the_three_is_no_reason_to_wait(tmp_path, listed):
+    """One step past: a name beside the three, one that begins like one of them, and names
+    the shell would read as a pattern over the step's own directory, which holds the three."""
+    done, calls = run(tmp_path, "v1.2.3", "", NAMES_LISTED_AT_FIRST=json.dumps(listed))
+    assert done.returncode == 1
+    assert the_error(done) == DRAFT.format(tag="v1.2.3")
+    assert slept(calls) == [] and after(calls, "gh release create") == [LISTING]
+    assert len(writes(calls)) == 1 and held(tmp_path)[0]["draft"] is True
+
+
+@pytest.mark.parametrize("names", [[SUMS, WHEEL], [WHEEL], []], ids=["two", "one", "none"])
+def test_a_draft_found_by_the_first_look_with_some_of_the_names_is_compared_at_once(
+    tmp_path, names
+):
+    """Only the run that has just made the draft waits for its names: one an earlier attempt
+    left is what it is, and stops on the unfinished line with no wait."""
+    existing = made_earlier("v1.2.3", False, draft=True, names=names)
+    done, calls = run(tmp_path, "v1.2.3", "", existing, {}, NAMES_LISTED_AT_FIRST=json.dumps(names))
+    assert done.returncode == 1
+    assert the_error(done) == DRAFT.format(tag="v1.2.3")
+    assert slept(calls) == [] and looks(calls) == [LISTING] and held(tmp_path) == [existing]
+
+
+def test_the_looks_for_the_draft_and_for_its_names_are_the_same_ten(tmp_path):
+    """Not listed at five looks, then listed with one name: the tenth look is the last, and
+    the step goes on to the comparison, which stops on the unfinished line."""
+    done, calls = run(
+        tmp_path,
+        "v1.2.3",
+        "",
+        MADE_SHOWN_FROM_LOOK="6",
+        NAMES_LISTED_AT_FIRST=json.dumps([WHEEL]),
+    )
+    assert done.returncode == 1 and the_error(done) == DRAFT.format(tag="v1.2.3")
+    assert len(slept(calls)) == LOOKS - 1 and len(writes(calls)) == 1
+
+
+def test_a_draft_a_person_published_with_some_of_the_names_listed_is_not_waited_for(tmp_path):
+    """The wait is for this run's draft. Published meanwhile, it is a release, and the names
+    listed for it are compared at once, as before."""
+    done, calls = run(
+        tmp_path,
+        "v1.2.3",
+        "",
+        NAMES_LISTED_AT_FIRST=json.dumps([WHEEL]),
+        CHANGED_ONCE_MADE=".draft = false",
+    )
+    assert done.returncode == 1 and slept(calls) == []
+    assert the_error(done).startswith(REFUSED.format(tag="v1.2.3") + f"its files are [{WHEEL}]")
 
 
 # --- after the publication ------------------------------------------------------------------------
@@ -350,10 +489,11 @@ def test_the_readme_says_the_wait_with_the_step_s_two_values_and_the_row_says_wh
     assert (
         "GitHub's listing of releases can be a few seconds behind a write, so the look that"
         " follows the job's own write is made again while it shows what was there before it (no"
-        " release after the creation, or this run's release still a draft after the"
-        " publication): at most ten looks, three seconds apart, and then the job stops and a"
-        " re-run starts from what is listed then. Nothing else is waited for, and the first"
-        " look of a run never waits."
+        " release after the creation, or this run's draft with some, not all, of its three file"
+        " names; this run's release still a draft after the publication): at most ten looks,"
+        " three seconds apart, and then the job goes on as it would have at once: it stops, or"
+        " compares the draft's files, and a re-run starts from what is listed then. Nothing"
+        " else is waited for, and the first look of a run never waits."
     ) in readme
     means, next_step = cells("GitHub does not list the release for … as this job has just left it")
     assert means == (

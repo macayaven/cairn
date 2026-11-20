@@ -15,7 +15,10 @@ A tag passes only when, in this order:
    real date and not after today (UTC; --today gives another), and that section has at
    least one entry: a line that starts with `- `.
    HTML comments (`<!-- ... -->`) are not part of the section: what they hide is no entry,
-   and they are left out of the notes;
+   and they are left out of the notes.
+   The section may hold no control character but line feeds and tabs (C0 otherwise, DEL and
+   C1 are refused, with the file's line): job `release` compares the notes GitHub returns
+   with the ones it sent, byte for byte;
 4. with --commit and --branch, git says the commit is the branch's head or one of its
    ancestors, and no tag of the same MAJOR.MINOR is a higher version. Of the repository's
    tags that are plain versions (`vMAJOR.MINOR.PATCH`, compared as numbers; other tags are
@@ -54,6 +57,8 @@ HEADING = re.compile(r"^## (?P<version>\S+) - (?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2
 NEXT_SECTION = re.compile(r"^#{1,2} ", re.M)
 COMMENT = re.compile(r"<!--.*?-->[ \t]*\n?", re.S)
 ENTRY = re.compile(r"^- ", re.M)
+# What a release's text may not hold: C0 but the tab and the line feed, DEL, and C1.
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 class Refused(Exception):
@@ -73,7 +78,8 @@ def version_of(pyproject: str) -> str:
 
 def _section(version: str, changelog: str, today: date | None = None) -> str:
     """The text of VERSION's section, its heading and its comments left out. With TODAY, a
-    section dated after it is refused."""
+    section dated after it is refused. A section whose text holds a control character other
+    than a tab or a line feed is refused, for the check and for the notes alike."""
     headings = [m for m in HEADING.finditer(changelog) if m["version"] == version]
     if not headings:
         raise Refused(f"CHANGELOG.md has no section '## {version} - YYYY-MM-DD'")
@@ -93,6 +99,15 @@ def _section(version: str, changelog: str, today: date | None = None) -> str:
     rest = changelog[heading.end() :]
     end = NEXT_SECTION.search(rest)
     body = rest[: end.start()] if end else rest
+    hidden = [comment.span() for comment in COMMENT.finditer(body)]
+    for found in CONTROL.finditer(body):
+        if not any(start <= found.start() < stop for start, stop in hidden):
+            line = changelog.count("\n", 0, heading.end() + found.start()) + 1
+            raise Refused(
+                f"CHANGELOG.md's section for {version} holds a control character,"
+                f" U+{ord(found[0]):04X}, on line {line} of the file: a release's text may hold"
+                " no control character but line feeds and tabs"
+            )
     return COMMENT.sub("", body).strip("\n")
 
 

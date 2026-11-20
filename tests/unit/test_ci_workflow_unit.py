@@ -1272,7 +1272,8 @@ def test_the_header_says_what_a_tag_must_be_and_what_it_publishes():
         " `publish` needs it.",
         "It refuses, in one line, a tag pushed to a private repository (a private copy of this"
         " one runs the same workflow), a tag that is not `v` and the version in pyproject.toml,"
-        " a version whose section of CHANGELOG.md is missing, has no entry or is dated after"
+        " a version whose section of CHANGELOG.md is missing, has no entry, holds a control"
+        " character other than a line feed or a tab, or is dated after"
         " the day of the run, a tag whose commit is not on main, a tag lower than another of"
         " its X.Y, and a version that already has a GitHub release.",
         "A tag is published as X.Y.Z, a full version that never moves: when the registry has"

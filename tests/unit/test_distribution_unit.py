@@ -83,7 +83,8 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         " publish one multi-arch image, with provenance and an SBOM, to"
         " `ghcr.io/<owner>/<repo>`: the build items 1 and 3 checked, by its digest.",
         "A tag is published only from a public repository, when it is `v` and the version"
-        " in `pyproject.toml`, `CHANGELOG.md` has a section for that version with an entry,"
+        " in `pyproject.toml`, `CHANGELOG.md` has a section for that version with an entry"
+        " and no control character but line feeds and tabs,"
         " dated no later than the day of the run, the tag's commit is on `main`, no tag of its"
         " `X.Y` is a higher version, and the version has no GitHub release yet:"
         " `scripts/release_check.py` checks it first.",

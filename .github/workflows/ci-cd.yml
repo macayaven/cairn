@@ -1845,12 +1845,16 @@ jobs:
           # and compares with the file it wrote, so no reading here drops a line end or changes
           # a byte (a command substitution would drop the line ends at the end).
           # What the step reads, in order, and why. (a) The tag, as the commit it names, as
-          # said above. (b) The listing, which finds the release and shows whether the tag has
-          # more than one; it can be behind a write, a person's as much as this job's, so
-          # nothing is compared on it. (c) The release, read by its id, which was measured to
-          # show each write at once: it judges the tag, the mark, the two flags, the title, the
-          # notes and the file names, and gives each file's asset id, state and size. (d) Each
-          # file, fetched by that asset id with GitHub's "Get a release asset",
+          # said above. (b) The listing, which finds the release, shows whether the tag has
+          # more than one, and lists the other tags' published releases, from which the
+          # publication says whether this release is GitHub's latest; it can be behind a write,
+          # a person's as much as this job's, so nothing of the release is compared on it, and
+          # a higher version published seconds before the last look can be missing from it, a
+          # backport then being said to be the latest. (c) The release, read by its id, which
+          # was measured to show each write at once: it judges the tag, the mark, the two
+          # flags, the title, the notes and the file names, and gives each file's asset id,
+          # state and size. (d) Each file, fetched by that asset id with GitHub's "Get a
+          # release asset",
           # `GET /repos/{owner}/{repo}/releases/assets/{asset_id}` with the header `Accept:
           # application/octet-stream`, and only once (c) shows it `uploaded` and of the size
           # of the file this run attested: the bytes of the release that was judged, and of no

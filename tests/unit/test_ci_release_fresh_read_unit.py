@@ -429,11 +429,14 @@ def test_the_two_lines_have_their_rows_and_neither_tells_anyone_to_delete():
 def test_the_step_s_comment_and_the_readme_say_what_is_read_where():
     comment = " ".join(CREATE["run"].replace("#", "").split())
     assert (
-        "(b) The listing, which finds the release and shows whether the tag has more than one;"
-        " it can be behind a write, a person's as much as this job's, so nothing is compared on"
-        " it. (c) The release, read by its id, which was measured to show each write at once:"
-        " it judges the tag, the mark, the two flags, the title, the notes and the file names,"
-        " and gives each file's asset id, state and size."
+        "(b) The listing, which finds the release, shows whether the tag has more than one, and"
+        " lists the other tags' published releases, from which the publication says whether"
+        " this release is GitHub's latest; it can be behind a write, a person's as much as this"
+        " job's, so nothing of the release is compared on it, and a higher version published"
+        " seconds before the last look can be missing from it, a backport then being said to be"
+        " the latest. (c) The release, read by its id, which was measured to show each write at"
+        " once: it judges the tag, the mark, the two flags, the title, the notes and the file"
+        " names, and gives each file's asset id, state and size."
     ) in comment
     assert (
         "(e) The release by its id again, which must be as (c) showed it: the same assets (ids,"
@@ -448,7 +451,10 @@ def test_the_step_s_comment_and_the_readme_say_what_is_read_where():
     ) in comment
     readme = " ".join(README.split())
     assert (
-        "The listing only finds the release and shows whether the tag has more than one: what"
+        "The listing only finds the release, shows whether the tag has more than one and lists"
+        " the other tags' published releases, from which the publication says whether the"
+        " release is GitHub's latest (a higher version published seconds before the job's last"
+        " look can be missing from it, and a backport is then said to be the latest): what"
         " the job compares it reads by the release's id, which shows a write at once where the"
         " listing can be seconds behind one, a person's as much as the job's. It reads it after"
         " the look that gave the id, as its last read of the release before the publication,"

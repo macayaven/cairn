@@ -9,7 +9,9 @@ take, and a finding counts only when it took them all.
 
 Where the coordinator's decisions leave a fault as a stated limit, the finding is run here and
 still fails: decision 6 (a release the listing does not show yet is not seen) and the one
-moment the step cannot close (the tag deleted between its last read and the publication)."""
+moment the step cannot close (the tag deleted between its last read and the publication). One
+finding no decision covers (a title edited in the stated race, reported as on a draft) is run
+and still fails too."""
 
 from __future__ import annotations
 
@@ -167,9 +169,16 @@ def test_every_schedule_of_one_deviation_breaks_nothing_but_the_race_at_the_publ
 # --- the stated limits ----------------------------------------------------------------------------
 
 LIMITS = [
-    # decision 6: a release the listing does not show yet is not seen
+    # decision 6: a release the listing does not show yet is not seen (the re-run's own earlier
+    # draft is put under it too, in the README's sentence; the coordinator's decision names a
+    # person's release)
     "test_a_re_run_whose_first_look_is_behind_makes_a_second_draft",
     "test_the_job_makes_its_draft_beside_a_person_s_draft_its_first_look_missed",
+    # under no decision: a title edited in the stated race, after the step's last read and
+    # before its publication, is reported by the look after the publication, whose listing is
+    # one look behind, as on "a draft" of a release that is public. The line's advice ("delete
+    # it ... if it is still a draft, or put back what the run wrote") stays safe.
+    "test_a_title_edited_in_the_stated_race_is_reported_on_a_draft_that_is_public",
 ]
 
 

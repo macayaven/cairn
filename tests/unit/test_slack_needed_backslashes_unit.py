@@ -42,10 +42,9 @@ import pytest
 from markdown_it import MarkdownIt
 from test_slack_one_heading_unit import bench, faults, filed, passes  # noqa: F401  (a fixture)
 
-from cairn.compiler import claim_id, render_body
 from cairn.slack import text as slack_text
 from cairn.spans import chunk
-from cairn.store import Claim
+from cairn.web import markdown as web_markdown
 
 READER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
 ONLY_MARKS = re.compile(r"[ \t>]*(=+|-+)[ \t]*")  # a line that could underline the one above
@@ -661,37 +660,59 @@ def test_what_slack_displayed_as_plain_characters_is_markup_in_no_passage(notes,
     ]
 
 
-def test_a_line_one_reading_alone_takes_for_code_keeps_the_marks_of_prose(bench, notes):  # noqa: F811
+RULED = "Row 4.\n ```\ncode\n    ```\n[the ledger](https://fable.test/elsewhere)"
+READ_ON = "Row 4.\n````\ncode\n```\n[the ledger](https://fable.test/elsewhere)"
+SOURCE = "https://fable-works.slack.com/archives/C0LIBRARY1/p1900000000000100"
+
+
+def test_a_line_one_reading_alone_takes_for_code_keeps_the_marks_of_prose(notes):
     """The block's closing fence is indented four: the parser reads on through it, so the last
     line is code to the note; the splitter ends the block there, so the line is a passage of
     its own, a paragraph when a page shows it. Put as displayed it was a link on that page."""
-    text = "Row 4.\n ```\ncode\n    ```\n[the ledger](https://fable.test/elsewhere)"
-    note, spans = filed(bench, text)
+    after = notes(RULED)[1]
     assert (
-        body(note)
+        body(after)
         == "Row 4.\n ```\ncode\n    ```\n\\[the ledger\\]\\(https://fable.test/elsewhere\\)"
     )
-    assert not faults(note, spans) and 6 in code_lines(note) and 6 not in code_to_both(note)
-    claims = [
-        Claim(id=claim_id(span.id), text=span.text, span_ids=(span.id,)) for span in spans[1:]
-    ]
-    page = render_body("Shelves", claims, {span.id: span for span in spans})
-    links = [
-        token.attrGet("href")
-        for block in READER.parse(page)
-        for token in block.children or []
-        if token.type == "link_open"
-    ]
-    assert links == ["https://fable-works.slack.com/archives/C0LIBRARY1/p1900000000000100"]
+    assert one_heading(after) and 6 in code_lines(after) and 6 not in code_to_both(after)
+    assert after == notes.as_prose
     # With the closing fence at the margin both readings end the block, and the same holds.
-    assert body(notes(text.replace("    ```", "```"))[1]).endswith(
-        "\\(https://fable.test/elsewhere\\)"
-    )
+    at_the_margin = notes(RULED.replace("    ```", "```"))[1]
+    assert body(at_the_margin).endswith("\\(https://fable.test/elsewhere\\)")
     # A fence both read on through (a shorter closer) holds the line as displayed: it is code
-    # to the note and to its passage, and on a page.
-    held = notes("Row 4.\n````\ncode\n```\n[the ledger](https://fable.test/elsewhere)")[1]
-    assert body(held).endswith("```\n[the ledger](https://fable.test/elsewhere)")
-    assert markup_of(held) == markup_of(notes.as_prose)
+    # to the note and to its passage.
+    read_on = notes(READ_ON)[1]
+    assert body(read_on).endswith("```\n[the ledger](https://fable.test/elsewhere)")
+    assert 6 in code_to_both(read_on) and markup_of(read_on) == markup_of(notes.as_prose)
+
+
+@pytest.mark.parametrize(
+    ("text", "linked", "code"),
+    [
+        (RULED, [[], [], [], [SOURCE]], [False, True, False, False]),
+        (READ_ON, [[], []], [False, True]),  # the link to Slack is in the fence too
+        (
+            "Settings:\n\n    [the ledger](https://fable.test/elsewhere)",
+            [[], [], [SOURCE]],
+            [False, True, False],
+        ),
+    ],
+    ids=["code to the note alone", "code to both, fenced", "code to both, indented"],
+)
+def test_a_page_links_nothing_that_slack_displayed_as_brackets(bench, text, linked, code):  # noqa: F811
+    """Asked of the product: the page the store made of the filed message, its body and each
+    of its claims as the page view renders a claim, alone, through the web's own renderer.
+    A claim is stored with its indentation, so a line both read as code is code there."""
+    assert filed(bench, text) is not None
+    (listed,) = bench.owner.list_pages(bench.library.id)
+    page = bench.owner.get_page(bench.library.id, listed.slug)
+    shown = [str(web_markdown.render(claim.text)) for claim in page.claims]
+    links = re.compile(r'href="([^"]+)"')
+    assert [links.findall(claim) for claim in shown] == linked
+    assert ["<pre>" in claim for claim in shown] == code
+    assert links.findall(str(web_markdown.render(page.body))) == [
+        a for found in linked for a in found
+    ]
 
 
 # A README pasted into Slack: nine headings, commands indented and fenced, with comments.

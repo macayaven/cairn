@@ -24,8 +24,9 @@ published it. So the job's text issues no delete of a release or of a release's 
 gh for a draft, and publishes with one request that only sets `draft` to false;
 test_generated_release_retry_unit runs the orderings and the requests that fail. gh is a
 stand-in that keeps the releases as a JSON file, runs the step's own --jq expression with jq,
-performs a delete it is asked for (so one would show), and can publish the draft between two
-listings."""
+performs a delete it is asked for (so one would show), can publish the draft between two
+listings, and can list what was there before a write for some looks after it
+(test_ci_release_listing_lag_unit). `sleep` is a stand-in too, so no test waits."""
 
 import hashlib
 import json
@@ -48,9 +49,21 @@ by_hand() {  # a person changes every release: $1 is what, as jq writes it for o
   jq "map($1)" "$EXISTING/releases.json" > "$EXISTING/next.json"
   mv "$EXISTING/next.json" "$EXISTING/releases.json"
 }
+# A write is about to be done. GitHub's listing can lag behind it: when $1 is a number, the
+# listing shows what is there now, before the write, until the $1-th look after it.
+writing() {
+  touch "$EXISTING/written"
+  [ -n "$1" ] || return 0
+  cp "$EXISTING/releases.json" "$EXISTING/behind.json"
+  echo "$1" > "$EXISTING/behind.from"
+  echo 0 > "$EXISTING/behind.looks"
+}
 case "$1 $2" in
   "api --paginate")
     [ -z "$LIST_FAILS" ] || { echo "HTTP 502" >&2; exit 1; }
+    if [ -n "$LIST_FAILS_AFTER_A_WRITE" ] && [ -e "$EXISTING/written" ]; then
+      echo "HTTP 502" >&2; exit 1
+    fi
     listed="$(cat "$EXISTING/listed" 2>/dev/null || echo 0)"
     echo $((listed + 1)) > "$EXISTING/listed"
     jq_expr=""
@@ -58,7 +71,13 @@ case "$1 $2" in
       if [ "$1" = "--jq" ]; then jq_expr="$2"; fi
       shift
     done
-    jq -r "$jq_expr" "$EXISTING/releases.json"
+    shown="$EXISTING/releases.json"
+    if [ -e "$EXISTING/behind.json" ]; then
+      look=$(($(cat "$EXISTING/behind.looks") + 1))
+      echo "$look" > "$EXISTING/behind.looks"
+      [ "$look" -ge "$(cat "$EXISTING/behind.from")" ] || shown="$EXISTING/behind.json"
+    fi
+    jq -r "$jq_expr" "$shown"
     if [ -n "$PUBLISHED_AFTER_FIRST_LISTING" ]; then  # a person publishes the draft meanwhile
       jq 'map(.draft = false)' "$EXISTING/releases.json" > "$EXISTING/next.json"
       mv "$EXISTING/next.json" "$EXISTING/releases.json"
@@ -74,6 +93,7 @@ case "$1 $2" in
     # a person changes it after the job compared it, before the request arrives
     [ -z "$CHANGED_BEFORE_PUBLICATION" ] || by_hand "$CHANGED_BEFORE_PUBLICATION"
     jq -e "any(.id == $id)" "$EXISTING/releases.json" > /dev/null || exit 1  # HTTP 404
+    writing "$PUBLISHED_SHOWN_FROM_LOOK"
     jq "map(if .id == $id then .draft = false else . end)" "$EXISTING/releases.json" \
       > "$EXISTING/next.json"
     mv "$EXISTING/next.json" "$EXISTING/releases.json"
@@ -105,12 +125,20 @@ case "$1 $2" in
       esac
       shift
     done
+    writing "$MADE_SHOWN_FROM_LOOK"
     jq --arg tag "$tag" --rawfile body "$EXISTING/body" --argjson draft "$draft" \
       --argjson pre "$pre" --argjson title "$title" '. + [{id: 88, tag_name: $tag, name: $title,
         draft: $draft, prerelease: $pre,
         body: $body, assets: ($ARGS.positional | map({name: ., size: 1}))}]' \
       "$EXISTING/releases.json" --args "${names[@]}" > "$EXISTING/next.json"
-    mv "$EXISTING/next.json" "$EXISTING/releases.json" ;;
+    mv "$EXISTING/next.json" "$EXISTING/releases.json"
+    # a person changes the draft as soon as it is made, deletes it, or makes one more
+    [ -z "$CHANGED_ONCE_MADE" ] || by_hand "$CHANGED_ONCE_MADE"
+    [ -z "$DELETED_ONCE_MADE" ] || echo "[]" > "$EXISTING/releases.json"
+    if [ -n "$ANOTHER_ONCE_MADE" ]; then
+      jq '. + [.[-1] + {id: 99}]' "$EXISTING/releases.json" > "$EXISTING/next.json"
+      mv "$EXISTING/next.json" "$EXISTING/releases.json"
+    fi ;;
   *) exit 2 ;;
 esac
 """
@@ -144,6 +172,9 @@ def setup(tmp_path: Path, tag: str, existing, assets: dict | None = None):
     bin_.mkdir()
     (bin_ / "gh").write_text(GH)
     (bin_ / "gh").chmod(0o755)
+    # No test waits: `sleep` is the test's, keeps its call with gh's and returns at once.
+    (bin_ / "sleep").write_text('#!/bin/sh\nprintf \'sleep %s\\n\' "$*" >> "$CALLS"\n')
+    (bin_ / "sleep").chmod(0o755)
     return bin_, there, release
 
 
@@ -154,6 +185,8 @@ def attempt(tmp_path: Path, tag: str, candidate: str, **env: str):
     calls.write_text("")
     for downloaded in ("draft", "published"):  # a re-run's runner is a new one
         shutil.rmtree(tmp_path / downloaded, ignore_errors=True)
+    for lag in ("written", "behind.json", "behind.from", "behind.looks"):  # and it comes later
+        (tmp_path / "existing" / lag).unlink(missing_ok=True)
     done = run_step(
         CREATE["run"],
         cwd=tmp_path / "release",
@@ -882,11 +915,8 @@ def test_a_look_that_does_not_show_the_job_s_own_write_has_its_row(tmp_path):
     """(The listing that is behind, and that a second release is never made:
     test_generated_release_retry_unit, "a listing that does not show the step's own write".)"""
     means, next_step = cells("GitHub does not list the release for … as this job has just left it")
-    assert means == (
-        "Just after the job made the draft, or published it, the listing shows no release for"
-        " the tag, or still a draft: a person deleted it in that moment, or the listing did not"
-        " show the job's own write"
-    )
+    # (The wait before this stop, and the row's own words: test_ci_release_listing_lag_unit.)
+    assert means.endswith("or a person deleted the release in that moment")
     assert next_step == (
         "Re-run the job, which starts from what is listed then: it makes the draft if there is"
         " no release, publishes this run's draft, or compares the published release. It never"

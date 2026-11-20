@@ -1738,6 +1738,15 @@ jobs:
           CANDIDATE: ${{ needs.release_check.outputs.candidate }}
         run: |
           cd "$RUNNER_TEMP/release"
+          # GitHub's listing of releases can be behind a write: measured against its API on
+          # 2026-11-20, a draft made without files was absent from a listing made about a
+          # second after its creation returned and present 2.6 s after it, in three of three
+          # trials, while a read of the release by its id showed each write at once. So the
+          # look that follows this job's own write is made again while it shows what was there
+          # before that write: at most $looks looks, $apart seconds apart (10 and 3, so 27
+          # seconds at the longest).
+          looks=10
+          apart=3
           version="${GITHUB_REF_NAME#v}"
           version="${version%-rc.*}"
           files=("cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS)
@@ -1781,7 +1790,8 @@ jobs:
           # It ends well only on a published release that holds exactly the files this run
           # attested, byte for byte, which it leaves as it is: that is all a re-run does after
           # an attempt that finished, so that a release tag's `aliases` runs. A look that does
-          # not show the job's own write stops the job, so it never makes a second release.
+          # not show the job's own write is made again, as the top of this step says; when the
+          # last one still does not, the job stops, so it never makes a second release.
           # This step's text issues no removal of a release or of a release's file and
           # replaces no file.
           # The mark alone does not make a release this run's: a person can change the title,
@@ -1838,6 +1848,25 @@ jobs:
             state=public
             [ "$draft" = false ] || state="a draft"
           }
+          # The look after this job's own write, made again, $looks times at most, while the
+          # listing still shows what was there before it: no release after the creation ($1
+          # is made), this run's release still a draft after the publication (published).
+          # Nothing else is waited for: any other state stops the job inside look, at once,
+          # and no release after the publication is none of the two.
+          look_after() {
+            local n=1
+            look
+            while [ "$n" -lt "$looks" ]; do
+              if [ "$1" = made ]; then
+                [ -z "$found" ] || break
+              else
+                { [ -n "$found" ] && [ "$draft" = true ]; } || break
+              fi
+              sleep "$apart"
+              n=$((n + 1))
+              look
+            done
+          }
           # Its title against the tag, and its notes against the text this run wrote.
           same_text() {
             local what=""
@@ -1862,13 +1891,13 @@ jobs:
           if [ -z "$found" ]; then
             gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
               --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
-            look
+            look_after made
           fi
           if [ -n "$found" ] && [ "$draft" = true ]; then
             same_text
             same_files unfinished draft
             gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
-            look
+            look_after published
           fi
           if [ -z "$found" ] || [ "$draft" = true ]; then
             echo "::error::GitHub does not list the release for $GITHUB_REF_NAME as this job has just left it; re-run this job, which starts from what is listed then"

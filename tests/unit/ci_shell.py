@@ -70,5 +70,9 @@ esac
 
 
 def first_attempt_gh(bin_: Path) -> None:
+    """The stand-in, and a `sleep` that fails the step: this GitHub lists each write at once,
+    so the step has nothing to wait for, and a test never sleeps."""
     (bin_ / "gh").write_text(FIRST_ATTEMPT_GH)
     (bin_ / "gh").chmod(0o755)
+    (bin_ / "sleep").write_text("#!/bin/sh\nexit 1\n")
+    (bin_ / "sleep").chmod(0o755)

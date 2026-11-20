@@ -22,7 +22,9 @@ What a person did before the first request is another state of the grammar (the 
 here shows it). A fault strikes one
 request of the first attempt: the creation refused, or done and its reply lost; the upload
 cut after the first file; the publication refused, or done and its reply lost; the listing
-after a write still showing what was there before it. Each fault is run alone and with a
+after a write still showing what was there before it, at one look (the step waits and looks
+again) or at every look of the attempt (it stops after its last). Each fault is run alone and
+with a
 person publishing before each request up to the one it strikes, where the attempt ends. An
 attempt that stops after a person acted, a fault struck or the step wrote is re-run, twice at
 most, with nobody acting and no fault, as a person re-runs a failed job; one that only read
@@ -110,6 +112,7 @@ FAULTS = (
     ("publication", "refused"),
     ("publication", "lost"),
     ("listing", "stale"),
+    ("listing", "behind"),
 )
 
 GH = r"""
@@ -176,7 +179,7 @@ def request(kind):
         person()
     public()
     fault = now["fault"]
-    if fault and fault[0] == kind and not now["struck"]:
+    if fault and fault[0] == kind and (not now["struck"] or fault[1] == "behind"):
         if kind != "listing" or now["stale"] is not None:
             now["struck"] = True
             return fault[1]
@@ -208,7 +211,7 @@ def wrote(kind, target=None, fields=()):
 
 if args[0] == "api" and "--jq" in args:
     how = request("listing")
-    shown = now["stale"] if how == "stale" else state["releases"]
+    shown = now["stale"] if how in ("stale", "behind") else state["releases"]
     listed = json.dumps([{k: v for k, v in r.items() if k != "files"} for r in shown])
     done = subprocess.run(
         ["jq", "-r", args[args.index("--jq") + 1]], input=listed, capture_output=True, text=True
@@ -389,6 +392,10 @@ def gh(tmp_path_factory) -> Path:
         f'#!/bin/sh\nexec "{sys.executable}" -IS "{bin_}/gh.py" "$STATE" "$@"\n'
     )
     (bin_ / "gh").chmod(0o755)
+    # No test waits: `sleep` is the test's too. It keeps its seconds, one call a line, beside
+    # the state, and returns at once.
+    (bin_ / "sleep").write_text('#!/bin/sh\necho "$1" >> "$STATE/sleeps"\n')
+    (bin_ / "sleep").chmod(0o755)
     return bin_
 
 
@@ -636,20 +643,49 @@ STALE = (
 )
 
 
+def slept(where: Path) -> list[str]:
+    """The seconds of each `sleep` the step called in the history kept in WHERE."""
+    kept = where / "sleeps"
+    return kept.read_text().splitlines() if kept.exists() else []
+
+
+@pytest.mark.parametrize("kind", TAGS)
+@pytest.mark.parametrize(
+    ("state_name", "written"),
+    [("nothing", ["create", "publish"]), (DRAFT, ["publish"])],
+)
+def test_a_listing_one_look_behind_the_step_s_own_write_is_waited_for(
+    gh, tmp_path, kind, state_name, written
+):
+    """GitHub's listing was measured a few seconds behind a write. The look after the step's
+    first write shows what was there before it; the step waits once, looks again, and goes
+    on to the end in the same attempt."""
+    tag = TAGS[kind]
+    runs = history(gh, tmp_path / "h", tag, built(state_name, tag), fault=["listing", "stale"])
+    ((done, state),) = runs
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert state["attempts"][0]["struck"] and slept(tmp_path / "h") == ["3"]
+    assert kinds(state, 1) == written
+    assert faults(runs) == []
+
+
 @pytest.mark.parametrize("kind", TAGS)
 @pytest.mark.parametrize(
     ("state_name", "first", "then"),
     [("nothing", ["create"], ["publish"]), (DRAFT, ["publish"], [])],
 )
-def test_a_listing_that_does_not_show_the_step_s_own_write_stops_it_before_it_writes_again(
+def test_a_listing_that_stays_behind_the_step_s_own_write_stops_it_before_it_writes_again(
     gh, tmp_path, kind, state_name, first, then
 ):
-    """One step past: were the release it had just made not listed, a step that made one
-    whenever it saw none would make a second."""
+    """One step past: were the release it had just made never listed, a step that made one
+    whenever it saw none would make a second. It looks ten times, three seconds apart, and
+    stops; the re-run starts from what is listed then."""
     tag = TAGS[kind]
-    runs = history(gh, tmp_path / "h", tag, built(state_name, tag), fault=["listing", "stale"])
-    (stopped, _), (retry, state) = runs
+    runs = history(gh, tmp_path / "h", tag, built(state_name, tag), fault=["listing", "behind"])
+    (stopped, after), (retry, state) = runs
     assert stopped.returncode == 1 and errors(stopped) == [STALE.format(tag=tag)]
+    assert slept(tmp_path / "h") == ["3"] * 9
+    assert after["attempts"][0]["log"][-10:] == ["listing"] * 10
     assert retry.returncode == 0, retry.stdout + retry.stderr
     assert (kinds(state, 1), kinds(state, 2)) == (first, then)
     assert faults(runs) == []

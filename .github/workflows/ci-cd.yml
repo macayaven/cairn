@@ -40,7 +40,8 @@
 # A v* tag is first checked by job `release_check` (scripts/release_check.py), and `publish`
 # needs it. It refuses, in one line, a tag pushed to a private repository (a private copy of
 # this one runs the same workflow), a tag that is not `v` and the version in pyproject.toml, a
-# version whose section of CHANGELOG.md is missing, has no entry or is dated after the day of
+# version whose section of CHANGELOG.md is missing, has no entry, holds a control character
+# other than a line feed or a tab, or is dated after the day of
 # the run, a tag whose commit is not on main, a tag lower than another of its X.Y, and a
 # version that already has a GitHub release. A tag is published as X.Y.Z, a full version
 # that never moves: when the registry has it already, `publish` carries on with the same
@@ -58,11 +59,12 @@
 # makes the GitHub release with them and the version's section of CHANGELOG.md. A run that
 # failed after `publish` and before the release was made is finished by re-running only its
 # failed jobs. A tag's run builds nothing, so re-running all of it promotes the same digest
-# again. `release` makes the release as a draft, compares the draft's files with the ones it
-# holds, publishes it with a request of its own and looks again. A re-run of it starts from
-# what an earlier attempt left: this run's release published, with the same files, and it goes
-# on, so that a release tag's `aliases` runs; this run's draft with the same files, and it
-# publishes it; a draft whose files are not those, and it stops and says what a person does.
+# again. `release` makes the release as a draft, compares the draft's title, notes and files
+# with the ones it holds, publishes it with a request of its own and looks again. A re-run of
+# it starts from what an earlier attempt left: this run's release published, with the same
+# title, notes and files, and it goes on, so that a release tag's `aliases` runs; this run's
+# draft with the same, and it publishes it; a release whose title, notes or files are not
+# those, and it stops and says what a person does.
 # The job's own text issues no delete, and the GitHub CLI, asked for a draft, deletes no
 # release it made.
 # `package` writes SHA256SUMS over the files it built, and the release publishes it with them.
@@ -100,7 +102,11 @@
 # have: release_check and image_build, on a tag, on the runner CAIRN_GATE_RUNNER names, and
 # publish, on a push to main, release and aliases, on the runner CAIRN_RELEASE_RUNNER names.
 # image_build refuses a gh before 2.102.0, which fixed how gh attestation verify matches
-# --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8). docs/decisions.md, decision 150, says why there are two.
+# --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8). Job release
+# needs gh 2.102.0 or later too, on the runner CAIRN_RELEASE_RUNNER names: what gh does with a
+# draft (it makes one and takes none back, and finds one by its tag) was read in that version's
+# source and in no earlier one. Its first step refuses an earlier gh, before it fetches or
+# writes anything. docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
 # pinned (resolved with git ls-remote on 2026-11-10; actions/attest read with gh api on
@@ -1671,9 +1677,10 @@ jobs:
   # only for another repository or run); it reaches this run's artifacts with the runner's own
   # runtime token and checks their digest. A release candidate becomes a pre-release, never
   # marked latest. A release for the tag that already exists is finished only when it is this
-  # run's: the tag, this run's mark, the same pre-release flag, the same files byte for byte; a
-  # draft with them is published, and a published one is left as it is. It needs the gh CLI on
-  # its runner, as GitHub's hosted runners have.
+  # run's: the tag, this run's mark, the same pre-release flag, the tag as its title (or no
+  # title), the notes this run wrote and the same files, both byte for byte; a draft with them
+  # is published, and a published one is left as it is. It needs the gh CLI on its runner, as
+  # GitHub's hosted runners have.
   release:
     name: GitHub release
     needs: [release_check, publish, verify, package, attest]
@@ -1682,6 +1689,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      # What this job does with a draft was read in the GitHub CLI's source at v2.102.0 (the
+      # last step's comment quotes it) and in no earlier version, and this runner's CLI is not
+      # the one image_build checked on the gate's runner. So an earlier one is refused here,
+      # read and compared as image_build does, before anything is fetched or written. The
+      # step is given no token: the CLI prints its version without one.
+      - name: Check the GitHub CLI
+        run: |
+          if ! command -v gh > /dev/null; then
+            echo "::error::gh is not on this runner, so the GitHub release for $GITHUB_REF_NAME cannot be made; install GitHub CLI 2.102.0 or later on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
+          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+          IFS=. read -r major minor _ <<< "${version:-0.0.0}"
+          if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 102 ]; }; then
+            echo "::error::gh on this runner is ${version:-of a version it does not print}, before 2.102.0, the version in whose source this job's handling of a draft was read, so it is not trusted with the release; update GitHub CLI on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
       - name: Fetch what package built
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -1715,6 +1739,15 @@ jobs:
           CANDIDATE: ${{ needs.release_check.outputs.candidate }}
         run: |
           cd "$RUNNER_TEMP/release"
+          # GitHub's listing of releases can be behind a write: measured against its API on
+          # 2026-11-20, a draft made without files was absent from a listing made about a
+          # second after its creation returned and present 2.6 s after it, in three of three
+          # trials, while a read of the release by its id showed each write at once. So the
+          # look that follows this job's own write is made again while it shows what was there
+          # before that write: at most $looks looks, $apart seconds apart (10 and 3, so 27
+          # seconds at the longest).
+          looks=10
+          apart=3
           version="${GITHUB_REF_NAME#v}"
           version="${version%-rc.*}"
           files=("cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS)
@@ -1758,12 +1791,29 @@ jobs:
           # It ends well only on a published release that holds exactly the files this run
           # attested, byte for byte, which it leaves as it is: that is all a re-run does after
           # an attempt that finished, so that a release tag's `aliases` runs. A look that does
-          # not show the job's own write stops the job, so it never makes a second release.
+          # not show the job's own write is made again, as the top of this step says; when the
+          # last one still does not, the job stops, so it never makes a second release.
           # This step's text issues no removal of a release or of a release's file and
           # replaces no file.
+          # The mark alone does not make a release this run's: a person can change the title,
+          # and the notes around the mark. So each look also reads both, and the step compares
+          # them with what it wrote, before it publishes a draft and again on what the look
+          # after the publication shows; a release that differs stops the job, which then
+          # writes nothing more. The creation sends the title only when one is given, and the
+          # notes as the file holds them (cli/cli at v2.102.0,
+          # pkg/cmd/release/create/create.go, 453 to 458: `if opts.Name != "" {`,
+          # `params["name"] = opts.Name`, `if opts.Body != "" {`, `params["body"] = opts.Body`;
+          # 193 to 198: `b, err := cmdutil.ReadFile(notesFile, opts.IO.In)`,
+          # `opts.Body = string(b)`), so this step names the tag as the title itself. The title
+          # must be the tag, exactly, or missing or empty: an empty title is not an edited
+          # one. It is compared in the listing's own expression and never printed. The notes
+          # are compared byte for byte, and nothing
+          # is normalised: the listing gives them as base64, which the step decodes into a file
+          # and compares with the file it wrote, so no reading here drops a line end or changes
+          # a byte (a command substitution would drop the line ends at the end).
           listing() {
             gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
-              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), ([.assets[].name] | sort | join(\" \"))] | @tsv"
+              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), (.name | . == null or . == \"\" or . == \"$GITHUB_REF_NAME\"), ((.body // \"\") | @base64), ([.assets[].name] | sort | join(\" \"))] | @tsv"
           }
           unlisted() {
             echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
@@ -1777,22 +1827,76 @@ jobs:
             echo "::error::the GitHub release for $GITHUB_REF_NAME is a draft that an earlier attempt of run $GITHUB_RUN_ID left unfinished, which this job neither deletes nor publishes; delete it on the repository's releases page and re-run this job, which makes the release again"
             exit 1
           }
+          unread() {
+            echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing"
+            exit 1
+          }
+          differs() {
+            echo "::error::the GitHub release for $GITHUB_REF_NAME, $state, carries run $GITHUB_RUN_ID's mark and differs from what that run wrote in its $1; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job"
+            exit 1
+          }
           # What GitHub lists for the tag now: nothing (found is empty), or this run's release.
+          # The notes are the sixth field, empty only when the release has no text, and then
+          # it has no mark and the job has stopped before it reads further.
           look() {
             found="$(listing)" || unlisted
             [ -n "$found" ] || return 0
             count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
             [ "$count" = 1 ] || refuse "there are $count releases for it"
-            IFS=$'\t' read -r id draft pre ours names <<< "$found"
+            IFS=$'\t' read -r id draft pre ours titled notes names <<< "$found"
             [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
             [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
+            state=public
+            [ "$draft" = false ] || state="a draft"
+          }
+          # Whether the names listed are some of this run's three files, not all, and no other.
+          some_files() {
+            local name left=" $want " listed=()
+            [ "$names" != "$want" ] || return 1
+            IFS=' ' read -r -a listed <<< "$names"
+            for name in "${listed[@]}"; do
+              case "$left" in
+                *" $name "*) left="${left/ $name / }" ;;
+                *) return 1 ;;
+              esac
+            done
+          }
+          # The look after this job's own write, made again, $looks times at most, while the
+          # listing still shows what was there before it: no release after the creation ($1
+          # is made), this run's release still a draft after the publication (published).
+          # After the creation it also waits while the listing shows this run's draft with
+          # some, not all, of its three file names and no other, since the uploads take about
+          # as long as the listing is behind; then the files are compared as before.
+          # Nothing else is waited for: any other state stops the job inside look, at once,
+          # and no release after the publication is none of the two.
+          look_after() {
+            local n=1
+            look
+            while [ "$n" -lt "$looks" ]; do
+              if [ "$1" = made ]; then
+                [ -z "$found" ] || { [ "$draft" = true ] && some_files; } || break
+              else
+                { [ -n "$found" ] && [ "$draft" = true ]; } || break
+              fi
+              sleep "$apart"
+              n=$((n + 1))
+              look
+            done
+          }
+          # Its title against the tag, and its notes against the text this run wrote.
+          same_text() {
+            local what=""
+            [ "$titled" = true ] || what=title
+            printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
+            cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md" || what="${what:+$what and }notes"
+            [ -z "$what" ] || differs "$what"
           }
           # Its files against the ones this run attested: the names listed, then the names and
-          # the bytes downloaded into $2. $1 is what a difference does.
+          # the bytes downloaded into $2. $1 is what a difference does. A download that fails
+          # is not a difference: the job stops and says so, and a re-run compares again.
           same_files() {
             [ "$names" = "$want" ] || "$1" "its files are [$names], not [$want]"
-            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" \
-              || refuse "its files could not be downloaded to compare"
+            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || unread
             names="$(ls -A "$RUNNER_TEMP/$2" | LC_ALL=C sort | tr '\n' ' ')"
             [ "${names% }" = "$want" ] || "$1" "its files are [${names% }], not [$want]"
             for name in "${files[@]}"; do
@@ -1803,19 +1907,21 @@ jobs:
           if [ -z "$found" ]; then
             gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
               --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
-            look
+            look_after made
           fi
           if [ -n "$found" ] && [ "$draft" = true ]; then
+            same_text
             same_files unfinished draft
             gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
-            look
+            look_after published
           fi
           if [ -z "$found" ] || [ "$draft" = true ]; then
             echo "::error::GitHub does not list the release for $GITHUB_REF_NAME as this job has just left it; re-run this job, which starts from what is listed then"
             exit 1
           fi
+          same_text
           same_files refuse published
-          echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with exactly the files this run attested."
+          echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with the title and the notes this run wrote and exactly the files this run attested."
 
   # Points `latest` at the highest released version and each X.Y at the highest released
   # X.Y.z, after a release is made (a release candidate moves neither). It decides from what

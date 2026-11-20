@@ -1,16 +1,20 @@
-"""Job `release` makes the release as a draft, compares the draft's files with the ones this run
-attested, publishes it with a request of its own and looks again; a retry starts from whatever
-an earlier attempt of the same run left, and nothing the job runs takes a release back.
+"""Job `release` makes the release as a draft, compares the draft's title, notes and files with
+the ones this run wrote and attested, publishes it with a request of its own and looks again; a
+retry starts from whatever an earlier attempt of the same run left, and nothing the job runs
+takes a release back.
 
 The release's text carries a mark, `<!-- cairn-ci-cd run RUN_ID -->`, an HTML comment GitHub
 does not show and its API returns in the release's `body`; a re-run of a job keeps its run's id.
 The step lists every release of the repository, drafts included, and takes the one for its tag
 as this run's only when it carries this run's mark and has this tag's pre-release flag. None:
-it makes a draft with the files and looks again. This run's draft: when it holds exactly the
-files this run attested, names and bytes, the step publishes it, by its id, and looks again;
-when it does not (an upload was cut) the step stops in one line that says what a person does:
-delete it on the releases page and re-run the job. A published one must hold exactly those
-files, byte for byte, and is left as it is. Anything else stops the job in one sentence.
+it makes a draft with the files and looks again. This run's draft: when its title and notes
+are the run's (test_ci_release_notes_title_unit) and it holds exactly the files this run
+attested, names and bytes, the step publishes it, by its id, and looks again; when its files
+are not those (an upload was cut) the step stops in one line that says what a person does:
+delete it on the releases page and re-run the job. A published one must carry that title and
+those notes and hold exactly those files, byte for byte, and is left as it is. A download
+that fails is not a difference: the step says so and a re-run compares again. Anything else
+stops the job in one sentence.
 
 The third report's must-fix 2: the step used to delete its draft by id, and a person who
 published it between the step's last look and that delete lost a public release. The fourth
@@ -20,8 +24,9 @@ published it. So the job's text issues no delete of a release or of a release's 
 gh for a draft, and publishes with one request that only sets `draft` to false;
 test_generated_release_retry_unit runs the orderings and the requests that fail. gh is a
 stand-in that keeps the releases as a JSON file, runs the step's own --jq expression with jq,
-performs a delete it is asked for (so one would show), and can publish the draft between two
-listings."""
+performs a delete it is asked for (so one would show), can publish the draft between two
+listings, and can list what was there before a write for some looks after it
+(test_ci_release_listing_lag_unit). `sleep` is a stand-in too, so no test waits."""
 
 import hashlib
 import json
@@ -40,9 +45,25 @@ MARK = f"<!-- cairn-ci-cd run {RUN_ID} -->"
 
 GH = r"""#!/bin/bash
 printf 'gh %s\n' "$*" >> "$CALLS"
+by_hand() {  # a person changes every release: $1 is what, as jq writes it for one release
+  jq "map($1)" "$EXISTING/releases.json" > "$EXISTING/next.json"
+  mv "$EXISTING/next.json" "$EXISTING/releases.json"
+}
+# A write is about to be done. GitHub's listing can lag behind it: when $1 is a number, the
+# listing shows what is there now, before the write, until the $1-th look after it.
+writing() {
+  touch "$EXISTING/written"
+  [ -n "$1" ] || return 0
+  cp "$EXISTING/releases.json" "$EXISTING/behind.json"
+  echo "$1" > "$EXISTING/behind.from"
+  echo 0 > "$EXISTING/behind.looks"
+}
 case "$1 $2" in
   "api --paginate")
     [ -z "$LIST_FAILS" ] || { echo "HTTP 502" >&2; exit 1; }
+    if [ -n "$LIST_FAILS_AFTER_A_WRITE" ] && [ -e "$EXISTING/written" ]; then
+      echo "HTTP 502" >&2; exit 1
+    fi
     listed="$(cat "$EXISTING/listed" 2>/dev/null || echo 0)"
     echo $((listed + 1)) > "$EXISTING/listed"
     jq_expr=""
@@ -50,7 +71,26 @@ case "$1 $2" in
       if [ "$1" = "--jq" ]; then jq_expr="$2"; fi
       shift
     done
-    jq -r "$jq_expr" "$EXISTING/releases.json"
+    shown="$EXISTING/releases.json"
+    if [ -e "$EXISTING/behind.json" ]; then
+      look=$(($(cat "$EXISTING/behind.looks") + 1))
+      echo "$look" > "$EXISTING/behind.looks"
+      [ "$look" -ge "$(cat "$EXISTING/behind.from")" ] || shown="$EXISTING/behind.json"
+    fi
+    # The listing can be behind the uploads too: the draft this attempt made is listed with
+    # the file names $NAMES_LISTED_AT_FIRST (a JSON list), at every look after its creation
+    # or, with $NAMES_LISTED_FOR_LOOKS, at that many and then with the names it holds.
+    if [ -n "$NAMES_LISTED_AT_FIRST" ] && [ -e "$EXISTING/made.looks" ]; then
+      look=$(($(cat "$EXISTING/made.looks") + 1))
+      echo "$look" > "$EXISTING/made.looks"
+      if [ -z "$NAMES_LISTED_FOR_LOOKS" ] || [ "$look" -le "$NAMES_LISTED_FOR_LOOKS" ]; then
+        jq --argjson names "$NAMES_LISTED_AT_FIRST" 'map(if .id == 88 then
+          .assets = ($names | map({name: ., size: 1})) else . end)' "$shown" \
+          > "$EXISTING/partial.json"
+        shown="$EXISTING/partial.json"
+      fi
+    fi
+    jq -r "$jq_expr" "$shown"
     if [ -n "$PUBLISHED_AFTER_FIRST_LISTING" ]; then  # a person publishes the draft meanwhile
       jq 'map(.draft = false)' "$EXISTING/releases.json" > "$EXISTING/next.json"
       mv "$EXISTING/next.json" "$EXISTING/releases.json"
@@ -63,41 +103,56 @@ case "$1 $2" in
   "api --method")  # the publication: PATCH of a release's id, draft=false
     [ "$3" = PATCH ] && [ "$5 $6 $7" = "--silent -F draft=false" ] || exit 2
     id="${4##*/}"
+    # a person changes it after the job compared it, before the request arrives
+    [ -z "$CHANGED_BEFORE_PUBLICATION" ] || by_hand "$CHANGED_BEFORE_PUBLICATION"
     jq -e "any(.id == $id)" "$EXISTING/releases.json" > /dev/null || exit 1  # HTTP 404
+    writing "$PUBLISHED_SHOWN_FROM_LOOK"
     jq "map(if .id == $id then .draft = false else . end)" "$EXISTING/releases.json" \
       > "$EXISTING/next.json"
     mv "$EXISTING/next.json" "$EXISTING/releases.json"
-    # a person deletes it as soon as it is public
-    [ -z "$DELETED_ONCE_PUBLIC" ] || echo "[]" > "$EXISTING/releases.json" ;;
+    # a person deletes it as soon as it is public, or changes it
+    [ -z "$DELETED_ONCE_PUBLIC" ] || echo "[]" > "$EXISTING/releases.json"
+    [ -z "$CHANGED_ONCE_PUBLIC" ] || by_hand "$CHANGED_ONCE_PUBLIC" ;;
   "release download")
-    [ -z "$DOWNLOAD_FAILS" ] || { echo "HTTP 404" >&2; exit 1; }
     dir=""
     while [ $# -gt 0 ]; do
       if [ "$1" = "--dir" ]; then dir="$2"; fi
       shift
     done
+    # DOWNLOAD_FAILS names the download that fails: of the draft, or of the published release
+    [ "${dir##*/}" != "$DOWNLOAD_FAILS" ] || { echo "HTTP 502" >&2; exit 1; }
     [ ! -e "$dir" ] || exit 1  # gh keeps a file that is there, and the step gives a new place
     mkdir -p "$dir"
     cp "$EXISTING"/assets/* "$dir"/ ;;
   "release create")  # the release asked for, as GitHub would list it, and its files
-    tag="$3"; draft=false; pre=false; names=()
+    tag="$3"; draft=false; pre=false; title=null; names=()
     shift 3
     while [ $# -gt 0 ]; do
       case "$1" in
         --draft) draft=true ;;
         --prerelease) pre=true ;;
         --notes-file) cp "$2" "$EXISTING/body"; shift ;;
-        --title) shift ;;
+        --title) title="$(jq -n --arg title "$2" '$title')"; shift ;;  # none given: no name
         --*) ;;
         *) cp "$1" "$EXISTING/assets/"; names+=("$1") ;;
       esac
       shift
     done
+    writing "$MADE_SHOWN_FROM_LOOK"
+    echo 0 > "$EXISTING/made.looks"
     jq --arg tag "$tag" --rawfile body "$EXISTING/body" --argjson draft "$draft" \
-      --argjson pre "$pre" '. + [{id: 88, tag_name: $tag, draft: $draft, prerelease: $pre,
+      --argjson pre "$pre" --argjson title "$title" '. + [{id: 88, tag_name: $tag, name: $title,
+        draft: $draft, prerelease: $pre,
         body: $body, assets: ($ARGS.positional | map({name: ., size: 1}))}]' \
       "$EXISTING/releases.json" --args "${names[@]}" > "$EXISTING/next.json"
-    mv "$EXISTING/next.json" "$EXISTING/releases.json" ;;
+    mv "$EXISTING/next.json" "$EXISTING/releases.json"
+    # a person changes the draft as soon as it is made, deletes it, or makes one more
+    [ -z "$CHANGED_ONCE_MADE" ] || by_hand "$CHANGED_ONCE_MADE"
+    [ -z "$DELETED_ONCE_MADE" ] || echo "[]" > "$EXISTING/releases.json"
+    if [ -n "$ANOTHER_ONCE_MADE" ]; then
+      jq '. + [.[-1] + {id: 99}]' "$EXISTING/releases.json" > "$EXISTING/next.json"
+      mv "$EXISTING/next.json" "$EXISTING/releases.json"
+    fi ;;
   *) exit 2 ;;
 esac
 """
@@ -131,6 +186,9 @@ def setup(tmp_path: Path, tag: str, existing, assets: dict | None = None):
     bin_.mkdir()
     (bin_ / "gh").write_text(GH)
     (bin_ / "gh").chmod(0o755)
+    # No test waits: `sleep` is the test's, keeps its call with gh's and returns at once.
+    (bin_ / "sleep").write_text('#!/bin/sh\nprintf \'sleep %s\\n\' "$*" >> "$CALLS"\n')
+    (bin_ / "sleep").chmod(0o755)
     return bin_, there, release
 
 
@@ -141,6 +199,9 @@ def attempt(tmp_path: Path, tag: str, candidate: str, **env: str):
     calls.write_text("")
     for downloaded in ("draft", "published"):  # a re-run's runner is a new one
         shutil.rmtree(tmp_path / downloaded, ignore_errors=True)
+    # ... and it comes later, when the listing has caught up with every write
+    for lag in ("written", "behind.json", "behind.from", "behind.looks", "made.looks"):
+        (tmp_path / "existing" / lag).unlink(missing_ok=True)
     done = run_step(
         CREATE["run"],
         cwd=tmp_path / "release",
@@ -187,10 +248,12 @@ def writes(calls: list[str]) -> list[str]:
 def made_earlier(tag: str, prerelease: bool, draft: bool = False, names=None, body=None) -> dict:
     version = tag[1:].split("-rc.")[0]
     attached = [n for n in files_of(version) if n != "notes.md"] if names is None else names
-    # As GET repos/OWNER/REPO/releases lists one (GitHub's REST reference).
+    # As GET repos/OWNER/REPO/releases lists one (GitHub's REST reference), with the title
+    # and the text the step gives the release it makes.
     return {
         "id": 77,
         "tag_name": tag,
+        "name": tag,
         "draft": draft,
         "prerelease": prerelease,
         "body": f"the notes\n\n{MARK}\n" if body is None else body,
@@ -240,7 +303,7 @@ def test_no_release_yet_makes_a_draft_compares_it_publishes_it_and_looks_again(
     ]
     (made_,) = held(tmp_path)
     assert (made_["draft"], made_["prerelease"]) == (False, candidate == "true")
-    assert made_["body"] == f"the notes\n\n{MARK}\n"
+    assert (made_["name"], made_["body"]) == (tag, f"the notes\n\n{MARK}\n")
     # notes.md itself is one of the attested files, so it is left as it is.
     assert (tmp_path / "release" / "notes.md").read_bytes() == b"the notes\n"
     assert f"The GitHub release {tag} is this run's and is published" in done.stdout
@@ -417,15 +480,28 @@ FORBIDDEN = {
     "an edit of a release": r"\bgh\s+release\s+edit\b",
     "another program that speaks HTTP": r"\b(curl|wget)\b",
 }
-# Every line of the job that names gh, whole, in the order the text has them: the listing (a
-# read: no method, field or input), the download, the creation of a draft, and the publication,
-# the one write to a release that exists. Any other line that names it is one too many.
+# Every line of the job that names gh, whole, in the order the text has them: the first step's
+# four, which find gh and read its version, and say so when it is missing or too old; then the
+# listing (a read: no method, field or input), the download, the creation of a draft, and the
+# publication, the one write to a release that exists. Any other line that names it is one too
+# many.
 GH_LINES = [
+    "if ! command -v gh > /dev/null; then",
+    'echo "::error::gh is not on this runner, so the GitHub release for $GITHUB_REF_NAME cannot'
+    " be made; install GitHub CLI 2.102.0 or later on the runner CAIRN_RELEASE_RUNNER names, or"
+    " unset it to use GitHub's\"",
+    "version=\"$(gh --version | sed -n 's/^gh version"
+    " \\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p')\"",
+    'echo "::error::gh on this runner is ${version:-of a version it does not print}, before'
+    " 2.102.0, the version in whose source this job's handling of a draft was read, so it is not"
+    " trusted with the release; update GitHub CLI on the runner CAIRN_RELEASE_RUNNER names, or"
+    " unset it to use GitHub's\"",
     'gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] |'
     ' select(.tag_name == \\"$GITHUB_REF_NAME\\") | [.id, .draft, .prerelease, ((.body // \\"\\")'
-    ' | contains(\\"$mark\\")), ([.assets[].name] | sort | join(\\" \\"))] | @tsv"',
-    'gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || refuse "its files could'
-    ' not be downloaded to compare"',
+    ' | contains(\\"$mark\\")), (.name | . == null or . == \\"\\" or . =='
+    ' \\"$GITHUB_REF_NAME\\"), ((.body // \\"\\") | @base64), ([.assets[].name] | sort |'
+    ' join(\\" \\"))] | @tsv"',
+    'gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || unread',
     'gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME"'
     ' --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"',
     'gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"',
@@ -469,7 +545,10 @@ def test_the_text_of_release_issues_no_delete_and_one_write_to_a_release_that_ex
         "latest=()",
         "latest=(-f make_latest=false)",
     ]
-    assert re.findall(r"\bid=", run_) == [] and "read -r id draft pre ours names <<<" in run_
+    assert (
+        re.findall(r"\bid=", run_) == []
+        and "read -r id draft pre ours titled notes names <<<" in run_
+    )
     # What the check sees, each added to the job as it is: the delete the job had, in the
     # ways gh takes a method, and the other ways to remove or replace what a release holds.
     other = "another line names gh: "
@@ -548,7 +627,7 @@ def test_gh_is_asked_for_a_draft_so_the_release_it_makes_is_never_its_own_to_del
     243, 313), a draft's like any other. Nothing here can run gh's code: the test holds the
     flag on the job's line, the README's sentence, the step's own sentences, and that the
     sentence about gh deleting its release is gone."""
-    create, publish = GH_LINES[2:]
+    create, publish = GH_LINES[-2:]
     assert re.search(r"^gh release create \S+ --draft ", create)
     assert create.endswith('"${files[@]}"')
     assert publish.startswith('gh api --method PATCH "repos/$GH_REPO/releases/$id" ')
@@ -649,11 +728,100 @@ def test_a_release_this_run_cannot_finish_stops_the_job_in_one_sentence(
     assert said in error
 
 
-def test_a_published_release_whose_files_cannot_be_read_is_refused(tmp_path):
-    existing = made_earlier("v1.2.3", False)
-    done, calls = run(tmp_path, "v1.2.3", "", existing, attached("v1.2.3"), DOWNLOAD_FAILS="1")
-    assert done.returncode == 1 and writes(calls) == []
-    assert "its files could not be downloaded to compare" in the_error(done)
+UNREAD = (
+    "::error::the files of the GitHub release for {tag}, {state}, could not be downloaded, so"
+    " they were not compared and nothing shows that they differ; re-run this job, and delete"
+    " nothing"
+)
+
+
+@pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
+@pytest.mark.parametrize("existing", [None, "draft"], ids=["made now", "left by an attempt"])
+def test_a_download_that_fails_before_the_publication_is_not_a_draft_that_differs(
+    tmp_path, tag, candidate, existing
+):
+    """A download that fails says nothing about the files. The step used to answer it with the
+    line of a release this run cannot finish, which tells a person to delete the release, when
+    a plain re-run finishes. Now it says so in a line of its own, publishes nothing, and the
+    re-run compares the draft and publishes it."""
+    held_ = made_earlier(tag, candidate == "true", draft=True) if existing else None
+    assets = attached(tag) if existing else None
+    done, calls = run(tmp_path, tag, candidate, held_, assets, DOWNLOAD_FAILS="draft")
+    assert done.returncode == 1
+    assert the_error(done) == UNREAD.format(tag=tag, state="a draft")
+    assert [line.split()[1:3] for line in writes(calls)] == (
+        [] if existing else [["release", "create"]]
+    )
+    (draft,) = held(tmp_path)
+    assert draft["draft"] is True and calls[-1].startswith("gh release download")
+    done, calls = attempt(tmp_path, tag, candidate)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [line.split()[1:3] for line in writes(calls)] == [["api", "--method"]]
+    assert held(tmp_path) == [{**draft, "draft": False}]
+
+
+@pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
+@pytest.mark.parametrize("existing", [None, "draft", "published"])
+def test_a_download_that_fails_after_the_publication_is_not_a_release_that_differs(
+    tmp_path, tag, candidate, existing
+):
+    """The same after the publication, and on a release an earlier attempt published: the line
+    says the release is public, nothing is written after the failure, and the re-run compares
+    the published release and succeeds, unwritten."""
+    held_ = None
+    if existing:
+        held_ = made_earlier(tag, candidate == "true", draft=existing == "draft")
+    assets = attached(tag) if existing else None
+    done, calls = run(tmp_path, tag, candidate, held_, assets, DOWNLOAD_FAILS="published")
+    assert done.returncode == 1
+    assert the_error(done) == UNREAD.format(tag=tag, state="public")
+    assert [line.split()[1:3] for line in writes(calls)] == {
+        None: [["release", "create"], ["api", "--method"]],
+        "draft": [["api", "--method"]],
+        "published": [],
+    }[existing]
+    (public,) = held(tmp_path)
+    assert public["draft"] is False and calls[-1].startswith("gh release download")
+    done, calls = attempt(tmp_path, tag, candidate)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert writes(calls) == [] and held(tmp_path) == [public]
+
+
+def test_the_line_of_a_download_that_fails_tells_nobody_to_delete_and_has_its_row():
+    for state in ("a draft", "public"):
+        line = UNREAD.format(tag="v1.2.3", state=state)
+        assert "delete it" not in line and line.endswith("re-run this job, and delete nothing")
+    means, next_step = cells(
+        "the files of the GitHub release for …, …, could not be downloaded, so they were not"
+        " compared and nothing shows that they differ"
+    )
+    assert means == (
+        "GitHub did not give the job the release's files to compare, before the publication"
+        " (the line says a draft) or after it (public): that says nothing about the files"
+    )
+    assert next_step == (
+        "Re-run the job, which starts from what is listed then: it compares this run's draft and"
+        " publishes it, or compares the published release. Delete nothing, unless a draft's"
+        " download fails at every re-run: such a draft may hold a file whose upload was cut,"
+        " which GitHub may not serve, and is then deleted on the releases page and the job"
+        " re-run, as for an unfinished draft."
+    )
+
+
+def test_a_draft_whose_download_fails_at_every_re_run_is_deleted_and_made_again(tmp_path):
+    """The row's exception, done. Whether GitHub serves a file whose upload was cut is not
+    known here (the row says "may"); what is run is that the line repeats, writes nothing, and
+    that the draft deleted by hand is made again by the re-run."""
+    existing = made_earlier("v1.2.3", False, draft=True)
+    setup(tmp_path, "v1.2.3", existing, attached("v1.2.3"))
+    for _ in range(2):
+        done, calls = attempt(tmp_path, "v1.2.3", "", DOWNLOAD_FAILS="draft")
+        assert done.returncode == 1 and writes(calls) == [] and held(tmp_path) == [existing]
+        assert the_error(done) == UNREAD.format(tag="v1.2.3", state="a draft")
+    by_hand(tmp_path, "delete")
+    done, calls = attempt(tmp_path, "v1.2.3", "")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [(r["id"], r["draft"]) for r in held(tmp_path)] == [(88, False)]
 
 
 def test_a_release_of_another_tag_is_none_of_this_one_s(tmp_path):
@@ -694,21 +862,29 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
         "The release's text ends in a mark, an HTML comment GitHub does not show, with the id of"
         " the run that made it. Job `release` makes the release with separate requests and takes"
         " none back: it makes a draft with the files (`gh release create --draft`), compares the"
-        " draft's files with the ones this run attested, names and bytes, publishes the draft"
-        " with a request of its own, to the draft's id, and looks again; it succeeds only on a"
-        " published release that holds exactly those files, byte for byte. Each look lists the"
+        " draft's title and notes with what it wrote and its files with the ones this run"
+        " attested, names and bytes, publishes the draft with a request of its own, to the"
+        " draft's id, and looks again; it succeeds only on a published release that carries"
+        " that title and those notes and holds exactly those files, byte for byte. Each look"
+        " lists the"
         " repository's releases, drafts included (a listing that fails stops the job), and takes"
         " the one for its tag as its own only when it carries this run's mark and this tag's"
         " pre-release flag. So a re-run of `release` starts from what an earlier attempt left:"
-        " no release, and it makes the draft; this run's draft with exactly this run's files,"
-        " and it publishes it; a published release with exactly those files, and it leaves it"
-        " as it is and succeeds, so that a release tag's `aliases` runs (a candidate's run has"
+        " no release, and it makes the draft; this run's draft with this run's title and notes"
+        " and exactly this run's files, and it publishes it; a published release with the same,"
+        " and"
+        " it leaves it as it is and succeeds, so that a release tag's `aliases` runs (a"
+        " candidate's run has"
         " none). A publication GitHub made while its reply was lost fails the job and loses"
         " nothing: the re-run finds the release published. A draft that does not hold exactly"
         " this run's files, as when an upload was cut, stops the job, and a person deletes it on"
         " the releases page and re-runs the job, which makes the release again (the table below"
-        " has the line). Any other release for the tag stops the job."
+        " has the line)."
     ) in readme
+    # (The sentences on the notes and the title that follow: test_ci_release_notes_title_unit.)
+    assert " (the table has the line for both). Any other release for the tag stops the job." in (
+        readme
+    )
     (limits,) = [" ".join(p.split()) for p in README.split("\n") if p.startswith("Three limits.")]
     assert limits.endswith(
         " The third limit is job `release`'s: no request compares and publishes at once, so a"
@@ -737,27 +913,30 @@ def test_the_draft_s_stop_has_its_row_and_the_row_says_what_the_tests_above_run(
     assert means == (
         "A draft for the tag carries this run's mark and does not hold exactly the files this"
         " run attested: an earlier attempt's upload was cut, and it may hold none of them, some,"
-        " or one cut off"
+        " or one cut off; or the attempt that made it still saw fewer file names listed than it"
+        " uploaded, at the last of its ten looks"
     )
     assert next_step == (
         "Delete it on the repository's releases page and re-run the job, which makes the release"
         " again (once the five days the run's files are kept have passed, re-run `package`"
-        " instead, which `release` follows). Do not publish it by hand: the job then finds a"
-        " public release it cannot finish."
+        " instead, which runs only after a `verify` that passed and which `release` follows). Do"
+        " not publish it by hand: the job then finds a public release it cannot finish. When the"
+        " releases page shows the draft with its three files, re-run the job first: it compares"
+        " the draft and publishes it if the files are whole."
     )
-    # `package` re-run alone is followed by `release`, which then finds no release and makes it.
-    assert "release" in rerun({"package"})
+    # (The listing short of file names, and the re-run that publishes the whole draft:
+    # test_ci_release_listing_lag_unit; the re-run that publishes a draft left whole, above.)
+    # `package` re-run alone is followed by `release`, which then finds no release and makes it;
+    # it needs `verify` (test_ci_retry_limits_unit runs what a failed `verify` does to it).
+    assert "release" in rerun({"package"}) and "verify" in JOBS["package"]["needs"]
 
 
 def test_a_look_that_does_not_show_the_job_s_own_write_has_its_row(tmp_path):
     """(The listing that is behind, and that a second release is never made:
     test_generated_release_retry_unit, "a listing that does not show the step's own write".)"""
     means, next_step = cells("GitHub does not list the release for … as this job has just left it")
-    assert means == (
-        "Just after the job made the draft, or published it, the listing shows no release for"
-        " the tag, or still a draft: a person deleted it in that moment, or the listing did not"
-        " show the job's own write"
-    )
+    # (The wait before this stop, and the row's own words: test_ci_release_listing_lag_unit.)
+    assert means.endswith("or a person deleted the release in that moment")
     assert next_step == (
         "Re-run the job, which starts from what is listed then: it makes the draft if there is"
         " no release, publishes this run's draft, or compares the published release. It never"

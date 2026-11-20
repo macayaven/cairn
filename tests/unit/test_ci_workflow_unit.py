@@ -1272,7 +1272,8 @@ def test_the_header_says_what_a_tag_must_be_and_what_it_publishes():
         " `publish` needs it.",
         "It refuses, in one line, a tag pushed to a private repository (a private copy of this"
         " one runs the same workflow), a tag that is not `v` and the version in pyproject.toml,"
-        " a version whose section of CHANGELOG.md is missing, has no entry or is dated after"
+        " a version whose section of CHANGELOG.md is missing, has no entry, holds a control"
+        " character other than a line feed or a tab, or is dated after"
         " the day of the run, a tag whose commit is not on main, a tag lower than another of"
         " its X.Y, and a version that already has a GitHub release.",
         "A tag is published as X.Y.Z, a full version that never moves: when the registry has"
@@ -1482,14 +1483,16 @@ def test_release_builds_nothing_installs_nothing_and_checks_out_nothing():
     assert RELEASE["if"] == PACKAGE["if"]
     assert RELEASE["permissions"] == {"contents": "write"}
     steps = RELEASE["steps"]
+    # (The first asks the runner's gh for its version: test_ci_release_gh_version_unit.)
     assert [s.get("uses", "run").split("@")[0] for s in steps] == [
+        "run",
         "actions/download-artifact",
         "run",
         "run",
     ]
     configuration = yaml.safe_dump(RELEASE)
     assert not re.search(r"\buv\b|setup-uv|\bpip\b|actions/checkout", configuration)
-    download = steps[0]
+    download = steps[1]
     assert download["with"] == {"name": "release", "path": "${{ runner.temp }}/release"}
 
 
@@ -1526,7 +1529,8 @@ THE_FILES = ["cairn_memory-1.2.3-py3-none-any.whl", "cairn_memory-1.2.3.tar.gz",
 
 
 def test_the_check_passes_one_wheel_and_one_source_archive_of_the_version(tmp_path):
-    check = RELEASE["steps"][1]
+    check = RELEASE["steps"][2]
+    assert check["name"] == "Check the files"
     done = run_release_step(tmp_path, check, THE_FILES)
     assert (done.returncode, done.stderr) == (0, ""), done.stdout
 
@@ -1544,13 +1548,13 @@ def test_the_check_passes_one_wheel_and_one_source_archive_of_the_version(tmp_pa
     ],
 )
 def test_the_check_refuses_anything_else(tmp_path, files):
-    done = run_release_step(tmp_path, RELEASE["steps"][1], files)
+    done = run_release_step(tmp_path, RELEASE["steps"][2], files)
     assert done.returncode == 1
     assert "::error::" in done.stdout
 
 
 def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
-    create = RELEASE["steps"][2]
+    create = RELEASE["steps"][3]
     assert create["name"] == "Create the release"
     assert create["env"] == {
         "GH_TOKEN": "${{ github.token }}",
@@ -1618,7 +1622,7 @@ def test_the_write_token_reaches_the_step_that_makes_the_release_and_nothing_els
     steps = RELEASE["steps"]
     assert [step["name"] for step in steps if reaches_the_token(step)] == ["Create the release"]
     # The model sees a token handed to the download explicitly, and setup-uv's implicit one.
-    download = steps[0]
+    download = steps[1]
     given = {**download, "with": {**download["with"], "github-token": "${{ github.token }}"}}
     assert reaches_the_token(given)
     uv = next(s for s in PACKAGE["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))
@@ -1774,6 +1778,28 @@ def test_the_jobs_that_run_gh_are_named_with_their_runner_in_the_header_and_the_
     assert said in header
     readme = " ".join((REPO / "README.md").read_text().replace("`", "").split())
     assert said in readme
+
+
+def test_release_asks_for_the_gh_whose_source_its_handling_of_a_draft_was_read_in():
+    """The fifth report's remaining suspicion: the version of gh is checked on the gate's
+    runner, and `release` runs on another, with a gh of its own. What `release` does with a
+    draft was read in gh's source at v2.102.0 and in no earlier version, so the header and the
+    README ask for that version on the runner `release` runs on, whatever checks it."""
+    said = (
+        "Job release needs gh 2.102.0 or later too, on the runner CAIRN_RELEASE_RUNNER names:"
+        " what gh does with a draft (it makes one and takes none back, and finds one by its"
+        " tag) was read in that version's source and in no earlier one."
+    )
+    header = " ".join(RAW_WORKFLOW.split("\nname:")[0].replace("# ", "").split())
+    assert header.count(said) == 1
+    readme = " ".join((REPO / "README.md").read_text().replace("`", "").split())
+    assert readme.count(said) == 1
+    assert "CAIRN_RELEASE_RUNNER" in RELEASE["runs-on"]
+    assert "CAIRN_GATE_RUNNER" in JOBS["image_build"]["runs-on"]
+    # The version is the one the step's own sentences about gh quote its source at.
+    create = next(s for s in RELEASE["steps"] if s.get("name") == "Create the release")
+    assert "cli/cli at v2.102.0" in create["run"]
+    assert "v2.102.0" in (REPO / "tests/unit/test_ci_release_retry_unit.py").read_text()
 
 
 # A shell or python expansion in an error line, written `…` in the README's table.

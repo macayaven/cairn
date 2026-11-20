@@ -138,6 +138,7 @@ PRIVILEGED_STEPS = {
     ],
     "attest_main": [("The image's name", "run"), ("Attest the image", ATTEST_ACTION_PINNED)],
     "release": [
+        ("Check the GitHub CLI", "run"),
         ("Fetch what package built", DOWNLOAD),
         ("Check the files", "run"),
         ("Create the release", "run"),
@@ -248,9 +249,10 @@ PRIVILEGED_DEFINITIONS = {
     ],
     "release": [
         "5165d1610aa4638259b10262874a992db6b2b557007a329103fbbd9dcba655d4",
+        "84e1945943c1b1f16bdfc7312d1c24960aeb8a685d370ae6c3b5e8cd08db4719",
         "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
         "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
-        "1e777dcfa94cd8d7a4f8c8bc719505b6b1cbf722b6b8cf7ca1fcb1efc08dec85",
+        "247b88ad57b1981ce3985b72cf860392014e88d70d5d0bf80fb8a15c90c80396",
     ],
     "deploy": [
         "401510e913f6e37136331eeefa6d88fce27bbba126b17c42793f7694b9600454",

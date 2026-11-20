@@ -16,11 +16,15 @@ archive of other bytes. Every such release is enumerated, 96 of them, and a seed
 draws pairs of them and a release of another tag beside one. A person does nothing, or, just
 before the n-th request of the first attempt, for every n it has but the first: publishes the
 tag's drafts (GitHub keeps a release's id when it is published), deletes the tag's releases,
-replaces a file, attaches a file, or changes the text. What a person did before the first
-request is another state of the grammar (the last test here shows it). A fault strikes one
+replaces a file, attaches a file, changes the text, edits the notes around the mark, which
+stays, or edits the title (the fifth report's must-fix 2: a re-run published such a draft).
+What a person did before the first request is another state of the grammar (the last test
+here shows it). A fault strikes one
 request of the first attempt: the creation refused, or done and its reply lost; the upload
 cut after the first file; the publication refused, or done and its reply lost; the listing
-after a write still showing what was there before it. Each fault is run alone and with a
+after a write still showing what was there before it, at one look (the step waits and looks
+again) or at every look of the attempt (it stops after its last). Each fault is run alone and
+with a
 person publishing before each request up to the one it strikes, where the attempt ends. An
 attempt that stops after a person acted, a fault struck or the step wrote is re-run, twice at
 most, with nobody acting and no fault, as a person re-runs a failed job; one that only read
@@ -48,22 +52,25 @@ on a release's id with `draft=false` publishes that release, as `publishRelease`
 What must hold, whatever the state, the person, the fault and the moment:
 - the step's writes are the creation, only when its own listing showed no release for the
   tag and once an attempt, and the publication, only of the one release its last listing
-  showed as this run's draft with the tag's flag and its files' names, and after a download
-  later than that listing gave exactly the files this run attested: nothing else, so no
-  delete, no upload onto a release that exists and no other edit;
+  showed as this run's draft with the tag's flag, the tag as its title, the notes this run
+  wrote, byte for byte, and its files' names, and after a download later than that listing
+  gave exactly the files this run attested: nothing else, so no delete, no upload onto a
+  release that exists and no other edit;
 - a release that is published at any moment is there at the end with the same id, text, flag
   and files, unless the person deleted or changed it (or published the draft `gh release
   create` had just made before that command's own upload, which then reaches it);
 - an attempt that succeeds saw, in its last listing, one release for the tag, published, with
-  the tag's flag, this run's mark and the files' names, and got from the download after it
-  exactly the files this run attested; that is what GitHub holds at the end, unless the person
-  acted after that listing, and then the step wrote nothing after the person;
+  the tag's flag, this run's mark, the tag as its title, the notes this run wrote and the
+  files' names, and got from the download after it exactly the files this run attested; that
+  is what GitHub holds at the end, unless the person acted after that listing, and then the
+  step wrote nothing after the person;
 - the releases the step made never leave two for the tag;
 - an attempt that stops says why in exactly one `::error::` line of one sentence, unless a
   call to gh failed by itself.
 
 Seeded, so every run checks the same cases. Made-up repository, run and files."""
 
+import base64
 import itertools
 import json
 import random
@@ -89,7 +96,15 @@ WHEEL, SOURCE, SUMS = (
     "SHA256SUMS",
 )
 HELD = ("all files", "no file", "a file cut off", "a file of other bytes")
-PEOPLE = ("publish", "delete", "replace a file", "attach a file", "change the text")
+PEOPLE = (
+    "publish",
+    "delete",
+    "replace a file",
+    "attach a file",
+    "change the text",
+    "edit the notes",
+    "edit the title",
+)
 FAULTS = (
     ("made", "refused"),
     ("made", "lost"),
@@ -97,6 +112,7 @@ FAULTS = (
     ("publication", "refused"),
     ("publication", "lost"),
     ("listing", "stale"),
+    ("listing", "behind"),
 )
 
 GH = r"""
@@ -138,8 +154,13 @@ def person():
             attach(release, state["source"], b"put there by hand".hex())
         elif now["person"] == "attach a file":
             attach(release, "by-hand.txt", b"put there by hand".hex())
-        elif now["person"] == "change the text":
-            release["body"] = "edited by hand\n"
+        elif now["person"] in ("change the text", "edit the notes", "edit the title"):
+            if now["person"] == "change the text":
+                release["body"] = "edited by hand\n"
+            elif now["person"] == "edit the notes":  # around the mark, which stays
+                release["body"] = release["body"].replace("the notes", "notes edited by hand")
+            else:
+                release["name"] = "edited by hand"
             if not release["draft"]:  # theirs to change, as the files above
                 state["public"][str(release["id"])] = copy.deepcopy(release)
 
@@ -158,7 +179,7 @@ def request(kind):
         person()
     public()
     fault = now["fault"]
-    if fault and fault[0] == kind and not now["struck"]:
+    if fault and fault[0] == kind and (not now["struck"] or fault[1] == "behind"):
         if kind != "listing" or now["stale"] is not None:
             now["struck"] = True
             return fault[1]
@@ -190,7 +211,7 @@ def wrote(kind, target=None, fields=()):
 
 if args[0] == "api" and "--jq" in args:
     how = request("listing")
-    shown = now["stale"] if how == "stale" else state["releases"]
+    shown = now["stale"] if how in ("stale", "behind") else state["releases"]
     listed = json.dumps([{k: v for k, v in r.items() if k != "files"} for r in shown])
     done = subprocess.run(
         ["jq", "-r", args[args.index("--jq") + 1]], input=listed, capture_output=True, text=True
@@ -249,6 +270,7 @@ if args[:2] == ["release", "create"]:
     state["releases"].append({
         "id": made,
         "tag_name": args[2],
+        "name": args[args.index("--title") + 1] if "--title" in args else None,  # create.go, 453
         "draft": asked or while_uploading,
         "prerelease": "--prerelease" in args,
         "body": Path(args[notes]).read_text(),
@@ -310,6 +332,7 @@ def release(rid, tag, files, draft, flag, mark, held) -> dict:
     return {
         "id": rid,
         "tag_name": tag,
+        "name": tag,
         "draft": draft,
         "prerelease": ("-rc." in tag) == flag,
         "body": f"the notes\n\n{MARKS[mark]}\n",
@@ -347,6 +370,7 @@ def states() -> dict[str, list[tuple]]:
 STATES = states()
 FILES = attested(random.Random(SEED))
 WHOLE = {name: data.hex() for name, data in FILES.items()}
+WROTE = "the notes\n\n" + MARKS["this run's mark"] + "\n"  # notes.md, an empty line, the mark
 DRAFT = "draft, its flag, this run's mark, all files"
 PUBLISHED = "published, its flag, this run's mark, all files"
 
@@ -368,6 +392,10 @@ def gh(tmp_path_factory) -> Path:
         f'#!/bin/sh\nexec "{sys.executable}" -IS "{bin_}/gh.py" "$STATE" "$@"\n'
     )
     (bin_ / "gh").chmod(0o755)
+    # No test waits: `sleep` is the test's too. It keeps its seconds, one call a line, beside
+    # the state, and returns at once.
+    (bin_ / "sleep").write_text('#!/bin/sh\necho "$1" >> "$STATE/sleeps"\n')
+    (bin_ / "sleep").chmod(0o755)
     return bin_
 
 
@@ -437,7 +465,8 @@ def faults(runs: list) -> list[str]:
     names = " ".join(sorted(WHOLE))
 
     def listed_as(draft: str, rid) -> str:
-        return f"{rid}\t{draft}\t{flag}\ttrue\t{names}\n"
+        notes = base64.b64encode(WROTE.encode()).decode()
+        return f"{rid}\t{draft}\t{flag}\ttrue\ttrue\t{notes}\t{names}\n"
 
     found = []
     made = set()
@@ -487,9 +516,8 @@ def faults(runs: list) -> list[str]:
             if any(w["attempt"] == n + 1 and w["at"] >= now["acted"] - 1 for w in state["writes"]):
                 found.append("wrote after the person had changed what it last listed")
         elif [
-            (r["id"], r["draft"], r["prerelease"], MARKS["this run's mark"] in r["body"])
-            for r in ours(state)
-        ] != [(int(rid), False, "-rc." in tag, True)] or ours(state)[0]["files"] != WHOLE:
+            (r["id"], r["draft"], r["prerelease"], r["name"], r["body"]) for r in ours(state)
+        ] != [(int(rid), False, "-rc." in tag, tag, WROTE)] or ours(state)[0]["files"] != WHOLE:
             found.append("succeeded without exactly one published release of this run's files")
     return found
 
@@ -615,20 +643,49 @@ STALE = (
 )
 
 
+def slept(where: Path) -> list[str]:
+    """The seconds of each `sleep` the step called in the history kept in WHERE."""
+    kept = where / "sleeps"
+    return kept.read_text().splitlines() if kept.exists() else []
+
+
+@pytest.mark.parametrize("kind", TAGS)
+@pytest.mark.parametrize(
+    ("state_name", "written"),
+    [("nothing", ["create", "publish"]), (DRAFT, ["publish"])],
+)
+def test_a_listing_one_look_behind_the_step_s_own_write_is_waited_for(
+    gh, tmp_path, kind, state_name, written
+):
+    """GitHub's listing was measured a few seconds behind a write. The look after the step's
+    first write shows what was there before it; the step waits once, looks again, and goes
+    on to the end in the same attempt."""
+    tag = TAGS[kind]
+    runs = history(gh, tmp_path / "h", tag, built(state_name, tag), fault=["listing", "stale"])
+    ((done, state),) = runs
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert state["attempts"][0]["struck"] and slept(tmp_path / "h") == ["3"]
+    assert kinds(state, 1) == written
+    assert faults(runs) == []
+
+
 @pytest.mark.parametrize("kind", TAGS)
 @pytest.mark.parametrize(
     ("state_name", "first", "then"),
     [("nothing", ["create"], ["publish"]), (DRAFT, ["publish"], [])],
 )
-def test_a_listing_that_does_not_show_the_step_s_own_write_stops_it_before_it_writes_again(
+def test_a_listing_that_stays_behind_the_step_s_own_write_stops_it_before_it_writes_again(
     gh, tmp_path, kind, state_name, first, then
 ):
-    """One step past: were the release it had just made not listed, a step that made one
-    whenever it saw none would make a second."""
+    """One step past: were the release it had just made never listed, a step that made one
+    whenever it saw none would make a second. It looks ten times, three seconds apart, and
+    stops; the re-run starts from what is listed then."""
     tag = TAGS[kind]
-    runs = history(gh, tmp_path / "h", tag, built(state_name, tag), fault=["listing", "stale"])
-    (stopped, _), (retry, state) = runs
+    runs = history(gh, tmp_path / "h", tag, built(state_name, tag), fault=["listing", "behind"])
+    (stopped, after), (retry, state) = runs
     assert stopped.returncode == 1 and errors(stopped) == [STALE.format(tag=tag)]
+    assert slept(tmp_path / "h") == ["3"] * 9
+    assert after["attempts"][0]["log"][-10:] == ["listing"] * 10
     assert retry.returncode == 0, retry.stdout + retry.stderr
     assert (kinds(state, 1), kinds(state, 2)) == (first, then)
     assert faults(runs) == []

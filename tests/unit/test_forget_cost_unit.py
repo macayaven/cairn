@@ -179,8 +179,9 @@ def test_the_worst_case_renders_at_most_the_cap_and_two(count):
     Measured on one machine shared with other work (the forget call, the middle of three
     runs on the page as filed; counts are asserted, never time). Before the cap: a hundred
     notes, 101 renders, 1,079 bodies of parser input, 0.9 s; three hundred, 301, 2,948
-    bodies, 6.3 s; a thousand, 1,001, 9,519 bodies, 74 s (69 to 85 s). With it: CAP_TIMES.
-    Filing the thousand takes nine minutes."""
+    bodies, 6.3 s; a thousand, 1,001, 9,519 bodies, 74 s (69 to 85 s). With it, 66 renders
+    at each size: 881, 1,094 and 1,183 bodies; 1.1 s, 4.7 s and 16.8 s, with other work
+    keeping the load average at five to six. Filing the thousand takes nine minutes."""
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20_000))
     run = Run(alternating(count, ["Ops"]), check_restore=False)
     try:

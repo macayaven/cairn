@@ -79,10 +79,11 @@ LIMITED_ERASER = (
 # directly before the one named that the body leaves open leaves with it (_plan's second
 # stated class). Why a cap: notes stored in reverse that spell the title two ways in turn,
 # under a heading that says one spelling, cost a render a note in the plain rule and in the
-# rule without it (a thousand: 1,001 renders, over a minute). Why 64: on every other page
-# tried a forget rendered a page at most 19 times (the generated pages, the reports' pages;
-# the plain rule up to 37 on the generated ones and once a sibling on the tester's), so the
-# class takes nothing on any of them; and that worst case renders RENDERS_MAX + 2 times
+# rule without it (a thousand: 1,001 renders, over a minute). Why 64: outside that family
+# (test_forget_title_line_unit.py's pages are of it, 25 renders) a forget rendered a page at
+# most 19 times on the pages tried: the generated pages, seeds 0 to 299, where the plain
+# rule rendered up to 37 times, and test_forget_changed_title_unit.py's. So the class takes
+# nothing there, and that worst case renders RENDERS_MAX + 2 times, at any size
 # (tests/unit/test_forget_render_cap_unit.py, test_forget_cost_unit.py).
 RENDERS_MAX = 64
 # The keys of an audit event's detail made from a note: a page's slug comes from its title.

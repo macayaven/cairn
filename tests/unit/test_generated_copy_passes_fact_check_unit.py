@@ -25,7 +25,12 @@ Four families of made-up notes, each case filed in a project of its own:
 
 A failure names case ids and violation codes, never a note's text: `cases()` builds the same
 notes on every run. The report's note is also filed by name, alone and in the places a
-passage can stand, and so is the simplest note of each other shape the families found."""
+passage can stand, and so is the simplest note of each other shape the families found.
+
+The last tests are the sweep of the other places that read a piece of a passage: what a fact
+keeps of its passage, a code block's lines, a claim read as a paragraph whatever its passage
+was, the `lint` command's reading of a body, and the one thing the place of a fact still
+changes, white space that ends inline code."""
 
 import random
 from collections import Counter
@@ -34,11 +39,12 @@ from contextlib import closing
 import pytest
 
 from cairn.compiler import CONTENT_KINDS, CandidatePage, extractive, render_body
-from cairn.facts import as_extracted, extract_facts
+from cairn.facts import as_extracted, compared, extract_facts
 from cairn.gate import lint_gate, strict_lint_gate, verbatim_gate
+from cairn.lint import ClaimInput, PageInput, lint_pages
 from cairn.memory import Memory, RequestError
 from cairn.spans import chunk
-from cairn.store import Store
+from cairn.store import Claim, Store
 
 SEED, MIXED, PAIRS = 20261121, 400, 150
 TITLE = "Quill notes"
@@ -81,6 +87,7 @@ NAMED = {  # the report's note where a passage can stand, and the other shapes f
     "before <": "See https://example.invalid/(2_<br> today.",
     "a scheme": "See ~v2_://example.invalid/a today.",
     "a scheme and an end": "See .v2.1__://example.invalid/(2_> today.",
+    "commas at edges": "See `1,234`5 and 1,`234`, x://a/1,234,567 and (x://b/1,234). today.",
 }
 KINDS = ["2", "2,700", "5 min", "v1.2.3", "2026-04-09", "--dry-run", "/var/log/a_b", "`2_`", "`_2`"]
 OPENS = ["", "(", "_", "(_", "<", "~", "-", "/"]
@@ -354,3 +361,80 @@ def test_every_gate_that_checks_facts_passes_the_copy(gate, text):
     body = render_body(TITLE, claims, spans)
     page = CandidatePage(slug="quill-notes", title=TITLE, body=body, claims=claims)
     assert [v.split(":")[0] for v in gate(page, spans).violations] == []
+
+
+def facts_of_every_case() -> list:
+    """(passage, fact) for every fact of every content passage of every case."""
+    texts = [text for made in cases().values() for notes in made.values() for text in notes]
+    return [(span, f) for text in texts for span in content(text) for f in extract_facts(span)]
+
+
+def test_a_fact_keeps_its_own_characters_of_the_passage_as_read():
+    for span, f in facts_of_every_case():
+        assert (f.value, len(f.as_read)) == (span.text[f.start : f.end], len(f.value))
+        changed = {(was, now) for was, now in zip(f.value, f.as_read, strict=True) if was != now}
+        assert changed <= {("_", "*")}, (f.kind, changed)
+
+
+def test_only_a_url_reads_differently_alone_and_no_line_of_a_code_block_does():
+    """Reading a fact's text alone, as the gate did, against the same text read in its passage:
+    of the kinds only a URL ever differs, so nothing else was refused or let through by it;
+    and a code block's lines, which were read alone too, each read the same either way."""
+    differ, lines = Counter(), Counter()
+    for _, f in facts_of_every_case():
+        if f.kind != "code_block":
+            differ[f.kind] += as_extracted(f.value) != compared(f.as_read)
+            continue
+        pairs = zip(f.value.split("\n"), f.as_read.split("\n"), strict=True)
+        for alone, read in pairs:
+            lines["with an underscore"] += "_" in alone
+            lines["that differ"] += as_extracted(alone) != compared(read)
+    assert {kind for kind, n in differ.items() if n} == {"url"}, differ
+    assert set(differ) == {"url", "number", "version", "date", "flag", "path", "inline_code"}
+    assert lines["with an underscore"] > 100 and lines["that differ"] == 0, lines
+
+
+@pytest.mark.parametrize("kind", sorted(CONTENT_KINDS))
+def test_a_text_reads_the_same_whatever_kind_of_passage_it_is(kind):
+    """lint reads a claim as a paragraph, whatever passage it copies."""
+    for span, _ in facts_of_every_case()[::7]:
+        other = span.model_copy(update={"kind": kind})
+        assert extract_facts(other) == extract_facts(span)
+
+
+def test_the_lint_command_finds_every_fact_of_passages_copied_into_a_body():
+    """The `lint` command reads a page by its body, whole (not by its claims): each passage
+    on lines of its own between blank lines reads there as it does alone."""
+    found = Counter()
+    for family, made in cases().items():
+        for notes in made.values():
+            spans = [span for n, text in enumerate(notes) for span in chunk(f"note-{n}", text)]
+            copied = [span for span in spans if span.kind in CONTENT_KINDS]
+            claims = [
+                ClaimInput(id=f"c{n}", text=span.text, span_ids=[span.id])
+                for n, span in enumerate(copied)
+            ]
+            body = "# Quill notes\n\n" + "\n\n".join(span.text for span in copied) + "\n"
+            report = lint_pages([PageInput(slug="quill", text=body, claims=claims)], spans)
+            found.update((family, v.code) for v in report.violations)
+    assert found == Counter()
+
+
+@pytest.mark.parametrize(
+    ("passage", "claim"),
+    [("Keep `a ` here.", "Keep `a` here."), ("Keep `a` here.", "Keep `a ` here.")],
+)
+def test_white_space_that_ends_inline_code_is_not_compared_by_the_fact_check(passage, claim):
+    """A limit, as before this fix: the white-space rule (compared_text) is applied to the
+    fact's own text, whose end it takes for a line's end. The fact check passes the changed
+    claim; the verbatim gate, which compares whole texts, refuses it."""
+    spans = {span.id: span for span in chunk("note", passage)}
+    claims = (Claim(id="cl_a", text=claim, span_ids=tuple(spans)),)
+    page = CandidatePage(
+        slug="q", title=TITLE, body=render_body(TITLE, claims, spans), claims=claims
+    )
+    assert lint_gate(page, spans).violations == []
+    assert strict_lint_gate(page, spans).violations == []
+    assert [v.split(":")[0] for v in verbatim_gate(page, spans).violations] == [
+        "grounding.not_verbatim"
+    ]

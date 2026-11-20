@@ -23,10 +23,13 @@ them) + 3 for each candidate claim read + what is given.
 The counts are those the store's connection reports to its trace callback and hands to its
 row factory. What they cannot see is counted in SQLite's steps: the same read costs the
 same steps when the project holds two thousand claims more, on other pages, that hold none
-of the page's words.
+of the page's words; and beside 1,000 and 8,000 claims of another project that hold every
+one of them, wherever those were saved. A page of the project costs a few steps in each
+statement that lists claims by their words (PAGE_STEPS), whatever it holds.
 """
 
 import contextlib
+import re
 import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
@@ -196,6 +199,144 @@ def test_claims_that_hold_none_of_the_pages_words_cost_nothing(tmp_path):
     assert len(seen_large.statements) == len(seen.statements)
     assert (seen_large.rows, seen_large.claims) == (seen.rows, seen.claims)
     assert seen_large.steps <= 1.1 * seen.steps + 10 * PERIOD, (seen.steps, seen_large.steps)
+
+
+# Claims of other projects of the workspace that hold the page's words (RT4): the work of a
+# read is the page's and its own project's. Four projects, each a page "asked" of 64 terms and
+# a page "share" that states SHARED of them, placed around the claims of a fifth project that
+# hold every one of those words and the title: its claims saved after a project's pages
+# ("after"), before them ("before"), between them ("between"), or between them with "asked"
+# saved again last ("again"). The fifth project always holds one claim with none of the
+# words, so that where it stands is the same whatever it holds.
+LAYOUTS = ("after", "before", "between", "again")
+FOREIGN = (0, 1_000, 8_000)
+LISTED = 64  # the terms of each page "asked": one statement lists them
+PAGE_STEPS = 150  # SQLite's steps a page of the project costs a statement that lists claims
+
+
+def around(folder, foreign: int) -> tuple[Store, dict[str, str]]:
+    """The workspace above with `foreign` claims of the fifth project that hold the words, and
+    each layout's project id. Saved in this order: after's pages; between's "asked"; again's
+    two pages; the fifth project's claims; before's pages; between's "share"; again's "asked"
+    a second time."""
+    store = Store(folder / "cairn.db")
+    memory = Memory(store, lint_gate)
+    projects = {layout: store.create_project(layout).id for layout in LAYOUTS}
+    other = store.create_project("elsewhere")
+    lines = [
+        "- Step: " + " ".join(term(n) for n in range(first, first + 8))
+        for first in range(0, LISTED, 8)
+    ]
+
+    def asked(layout: str, again: bool = False) -> None:
+        text = "\n".join(lines) + ("\n- Again: the same steps.\n" if again else "\n")
+        memory.note(layout, text, title="Asked", topic="Asked")
+
+    def share(layout: str) -> None:
+        shared = " ".join(term(n) for n in range(SHARED))
+        memory.note(layout, f"Brook sets {shared} first.\n", title="Share", topic="Share")
+
+    asked("after")
+    share("after")
+    asked("between")
+    asked("again")
+    share("again")
+    held = " ".join(term(n).strip("`") for n in range(LISTED)) + " Asked"
+    claims = [Claim(id="cl_none", text="Quill keeps the ledger.", span_ids=())]
+    claims += [Claim(id=f"cl_{n}", text=f"{held} {n}", span_ids=()) for n in range(foreign)]
+    for first in range(0, len(claims), 500):
+        store.save_page(
+            other.id, f"bulk-{first}", f"Ledger {first}", "", claims[first : first + 500]
+        )
+    asked("before")
+    share("before")
+    share("between")
+    asked("again", again=True)
+    merge(store)
+    return store, projects
+
+
+def shown(found: relating.Related) -> list:
+    """An answer without its ids, which each store makes its own."""
+    return [(p.slug, [(r.kind, r.term, r.pages) for r in p.why], p.more) for p in found.pages]
+
+
+@pytest.fixture(scope="module")
+def beside(tmp_path_factory):
+    """For each count of FOREIGN: each layout's answer and what its read cost."""
+    costs: dict[int, dict[str, tuple]] = {}
+    for foreign in FOREIGN:
+        store, projects = around(tmp_path_factory.mktemp(f"foreign-{foreign}"), foreign)
+        try:
+            costs[foreign] = {layout: counted(store, id_) for layout, id_ in projects.items()}
+        finally:
+            store.close()
+    return costs
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_claims_of_another_project_that_hold_the_pages_words_cost_no_step(beside, layout):
+    """1,000 and 8,000 claims of another project that hold every word of the page and its
+    title, wherever they were saved: the same answer, statements, rows, claims read by row
+    and steps as with none, give or take the index's pages."""
+    found, alone = beside[0][layout]
+    assert [page.slug for page in found.pages] == ["share"] and found.left.complete
+    for foreign in FOREIGN[1:]:
+        found_beside, seen = beside[foreign][layout]
+        assert (shown(found_beside), found_beside.left) == (shown(found), found.left), foreign
+        assert len(seen.statements) == len(alone.statements), foreign
+        assert (seen.rows, seen.claims) == (alone.rows, alone.claims), foreign
+        assert seen.steps <= 1.1 * alone.steps + 10 * PERIOD, (foreign, alone.steps, seen.steps)
+
+
+def test_each_page_of_the_project_costs_a_few_seeks_whatever_it_holds(tmp_path):
+    """What the project's pages cost a read: each is found as a range of rows, a few seeks, in
+    each statement that lists claims by their words (four for 200 terms, and the title's),
+    whatever it holds; its claims that hold none of the words cost nothing."""
+    costs = {}
+    for pages, claims in ((0, 0), (40, 1), (40, 50)):
+        folder = tmp_path / f"{pages}-{claims}"
+        folder.mkdir()
+        store, project_id = project_of(folder, 200)
+        try:
+            for k in range(pages):
+                more = [
+                    Claim(id=f"cl_{k}_{n}", text=f"Quill keeps ledger {n} for Ada.", span_ids=())
+                    for n in range(claims)
+                ]
+                store.save_page(project_id, f"bulk-{k}", f"Ledger {k}", "", more)
+            merge(store)
+            costs[pages, claims] = counted(store, project_id)[1]
+        finally:
+            store.close()
+    alone, few, many = costs[0, 0], costs[40, 1], costs[40, 50]
+    assert len(few.statements) == len(many.statements) == len(alone.statements)
+    assert (few.rows, few.claims) == (many.rows, many.claims) == (alone.rows, alone.claims)
+    assert many.steps <= 1.1 * few.steps + 10 * PERIOD, (few.steps, many.steps)
+    listing = [s for s in alone.statements if " MATCH " in s and "BETWEEN" in s]
+    assert len(listing) == 4 + 1
+    assert few.steps - alone.steps <= 40 * len(listing) * PAGE_STEPS, (alone.steps, few.steps)
+
+
+def test_the_index_is_asked_for_a_terms_claims_within_the_projects_rows(tmp_path):
+    """The plan of the statements that list claims by their words (the terms', the title's):
+    the account's index is searched by the match and by a range of rows, one range of the
+    project's at a time (cairn.store.relating), never walked from its first match on."""
+    store, projects = around(tmp_path, 0)
+    try:
+        _, seen = counted(store, projects["between"])
+        listing = [s for s in seen.statements if " MATCH " in s and "BETWEEN" in s]
+        plans = [
+            [step[-1] for step in store._con.execute("EXPLAIN QUERY PLAN " + statement)]
+            for statement in listing
+        ]
+    finally:
+        store.close()
+    assert len(listing) == 2  # the 64 terms, and the title
+    for plan in plans:
+        searched = [step for step in plan if "VIRTUAL TABLE INDEX" in step]
+        # FTS5 says what it was given: M a match, > and < the least and the greatest row
+        assert searched and all(re.search(r"INDEX \d+:M\d*><", step) for step in searched), plan
 
 
 def test_the_bounds_met_are_counted_and_the_read_stays_inside_them(tmp_path, monkeypatch):

@@ -86,8 +86,17 @@ most relations.RELATED_MAX pages of WHY_MAX reasons of two claims. (The caller's
 wrote the claims given is a row for each passage they cite: one for a claim as it is
 compiled, and as many as a tidy folded into it, as a search reads them for a hit.)
 tests/unit/test_relating_cost_unit.py counts statements, rows and SQLite's steps for pages of
-10, 200 and 3,000 terms. As for a search (ranking), the matches walked to list a term's
-claims are the account's: a match out of the project is walked and passed over.
+10, 200 and 3,000 terms.
+The work is the page's and its project's, whatever other projects hold. The index is asked
+for the claims that hold some words within the project's rows alone, one range at a time
+(`_RUNS`): a run of the project's pages whose rows follow one another with no row of
+another project between them. So a match of another project is never walked, however many
+claims there hold the page's words (a search, ranking, walks them and passes them over);
+each page of the project costs a few seeks in each statement that lists claims, and each
+run one search of the index a term, the runs being at most the project's pages, however
+the writes of other projects fell between them. The same test counts the same steps
+beside 1,000 and 8,000 claims of another project that hold every word of the page and its
+title, saved before its pages, after them or between them.
 
 Limits. A term is found by its words as it is compared: `1,250x` is compared as `1250x`,
 which the index reads as another word, so a claim that writes the separator states no term
@@ -185,6 +194,28 @@ _BY_ROW = (
     "FROM json_each(?1) AS wanted CROSS JOIN search_claims AS c ON c.account_id = ?2"
     " AND c.row = wanted.value CROSS JOIN {index} ON {index}.rowid = c.row"
     " WHERE c.project_id = ?3"
+)
+# The project's rows in the account's index, as runs: the least and the greatest row of each,
+# in order. A page's rows are its claims, indexed together in one transaction
+# (ranking.index_page), so they follow one another: each page is one range of rows, read
+# from search_claims by its page and the first row and the last, two seeks. Pages whose
+# ranges follow one another with no row of another project between them are one run: a
+# page whose first row comes right after a row of the project starts no run (one seek
+# back). So a read asks the index once a run, never for a row before the project's first
+# or between two runs, and how many runs there are is the project's: at most its pages,
+# whatever the other projects hold. ?1 the account, ?2 the project.
+_RUNS = (
+    "WITH pages AS MATERIALIZED (SELECT"
+    " (SELECT min(row) FROM search_claims WHERE account_id = ?1 AND project_id = ?2"
+    " AND slug = heads.slug) AS lo,"
+    " (SELECT max(row) FROM search_claims WHERE account_id = ?1 AND project_id = ?2"
+    " AND slug = heads.slug) AS hi"
+    " FROM page_heads AS heads WHERE heads.project_id = ?2),"
+    " counted AS (SELECT lo, hi, sum(coalesce((SELECT project_id FROM search_claims"
+    " WHERE account_id = ?1 AND row < pages.lo ORDER BY row DESC LIMIT 1), '') <> ?2)"
+    " OVER (ORDER BY lo) AS run FROM pages WHERE lo IS NOT NULL),"
+    " runs AS MATERIALIZED (SELECT min(lo) AS lo, max(hi) AS hi FROM counted"
+    " GROUP BY run) "
 )
 
 
@@ -494,19 +525,24 @@ def _listed(
     matches: Sequence[str],
     but: str | None = None,
 ) -> list[Listed]:
-    """For each match, the first relations.CLAIMS_COMMON + 1 claims of the project that hold
-    it (of its pages other than `but`, when given), as (row, the page's slug), by row: one
-    statement for every AT_ONCE matches. A row is kept only when search_claims puts it in the
-    project, and no column of a claim is read."""
+    """For each match, relations.CLAIMS_COMMON + 1 claims at most of the project that hold it
+    (of its pages other than `but`, when given), as (row, the page's slug), by row: every
+    such claim when there are no more, the first by row else. One statement for every AT_ONCE
+    matches. A row is kept only when search_claims puts it in the project, and no column of a
+    claim is read.
+
+    The index is asked within the project's rows (_RUNS), one run at a time, so a match of
+    another project is never walked, however many there are (those inside a run aside, which
+    a page's claims indexed together leave none of)."""
     found: list[Listed] = [[] for _ in matches]
     for start in range(0, len(matches), AT_ONCE):
         part = matches[start : start + AT_ONCE]
-        each = " UNION ALL ".join(
+        each = _RUNS + " UNION ALL ".join(
             f"SELECT * FROM (SELECT ?{5 + 2 * n} AS term, {index}.rowid AS row, c.slug AS slug"
-            f" FROM {index} CROSS JOIN search_claims AS c ON c.account_id = ?1"
-            f" AND c.row = {index}.rowid"
+            f" FROM runs CROSS JOIN {index} ON {index}.rowid BETWEEN runs.lo AND runs.hi"
+            f" CROSS JOIN search_claims AS c ON c.account_id = ?1 AND c.row = {index}.rowid"
             f" WHERE {index} MATCH ?{6 + 2 * n} AND c.project_id = ?2"
-            f" AND (?3 IS NULL OR c.slug <> ?3) ORDER BY {index}.rowid LIMIT ?4)"
+            f" AND (?3 IS NULL OR c.slug <> ?3) LIMIT ?4)"
             for n in range(len(part))
         )
         parameters: list[object] = [account_id, project_id, but, relations.CLAIMS_COMMON + 1]

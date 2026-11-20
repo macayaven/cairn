@@ -541,6 +541,16 @@ def test_the_first_passage_a_claim_cites_stands_for_the_others(store, ops):
     assert reasons(related(store, ops.id, "brook")) == {}
 
 
+def test_a_term_longer_than_two_hundred_characters_relates_none(store, ops):
+    at_bound = "https://fable.example/" + "a" * 178
+    past = "https://fable.example/" + "b" * 179
+    one = file(store, "ops", "One", f"Ada reads {at_bound} daily.\n\nAnd {past} weekly.\n")
+    two = file(store, "ops", "Two", f"Brook reads {at_bound} too.\n\nAnd {past} yearly.\n")
+    assert (len(at_bound), len(past)) == (200, 201)
+    for slug, other in ((one, two), (two, one)):
+        assert reasons(related(store, ops.id, slug)) == {other: [(SHARES, at_bound, "url", 2)]}
+
+
 # A long claim: cut at the bound, with the line of its passage that holds the term
 
 

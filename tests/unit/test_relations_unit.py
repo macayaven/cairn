@@ -67,6 +67,12 @@ SPECIFIC = [
     ("inline_code", "___", False),
     ("inline_code", "", False),
     ("path", "~/~", False),
+    # none longer than TERM_MAX characters
+    ("url", "https://fable.example/" + "a" * 178, True),  # 200
+    ("url", "https://fable.example/" + "a" * 179, False),  # 201
+    ("inline_code", "quill run " + "--json " * 27 + "x", True),  # 200
+    ("inline_code", "quill run " + "--json " * 27 + "xy", False),
+    ("path", "/" + "a" * 200, False),
     # numbers, dates and code blocks never relate pages
     ("number", "5 min", False),
     ("number", "2,700", False),
@@ -194,6 +200,25 @@ def test_sums_of_weights_are_exact():
     assert [slug for slug, _, _ in best(reasons, limit=8)[0]] == ["ada", "brook"]
 
 
+def test_a_term_longer_than_the_bound_as_written_or_as_compared_is_no_term():
+    """TERM_MAX characters: of the term as it is compared, which an answer gives, and of the
+    fact as it is written in its passage, which a line given must hold."""
+    assert relations.TERM_MAX == 200 and 2 * relations.TERM_MAX <= relations.LINE_MAX
+    at_bound = "https://fable.example/" + "a" * 178
+    assert terms_of(passage(f"See {at_bound} first.")) == [Term("url", at_bound)]
+    assert terms_of(passage(f"See {at_bound}a first.")) == []
+    # written longer than it is compared: spaces at the end of a code's line are not compared
+    padded = "`a1" + " " * 198 + "`"
+    assert len(padded) == 202 and terms_of(passage(f"Run {padded} now.")) == [
+        Term("inline_code", "a1")
+    ]
+    assert terms_of(passage("Run `a1" + " " * 199 + "` now.")) == []
+    # compared longer than it is written: one letter that folds to three
+    folded = "`a1" + "\u0390" * 67 + "`"
+    assert terms_of(passage(f"Run {folded} now.")) == []
+    assert len(terms_of(passage("Run `a1" + "\u0390" * 66 + "` now."))[0].text) == 200
+
+
 # A long claim: where its term stands in the passage, and the line that holds it
 
 
@@ -246,7 +271,8 @@ def test_a_longer_line_is_given_as_a_window_of_it_that_holds_the_term(before):
 
 
 def test_a_term_as_long_as_the_window_or_longer_is_its_own_line():
-    """No window is ever less than the term: relations.TERM_MAX keeps a term shorter."""
+    """No window is ever less than the term. No term is that long: relations.TERM_MAX keeps
+    every term, as written, to half a window, so every line given is LINE_MAX at most."""
     written = "https://fable.example/" + "a" * relations.LINE_MAX
     text = "see " * 200 + written + " and more" * 100
     assert line(text, written) == (written, True)

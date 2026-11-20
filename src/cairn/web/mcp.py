@@ -423,29 +423,28 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
             ),
         ] = 8,
     ) -> dict:
-        """The pages of a project most related to one of its pages, best first, each with why.
-        A reason is `shares`: both pages state `term` (a URL, a path, a flag, a version, or
-        code in backticks that is not a plain word; it is given as it is compared, its case
-        folded), `pages` pages of the project hold it, and `here` and `there` are this page's
-        claim and the other page's that state it. Or it is `mentioned_by`: `there` is a claim
-        of the other page that holds this page's title (the pages this page mentions are not
-        listed). A term more than 5 pages hold relates none, nor one whose words more than 64
-        claims of the project hold; a title more than 5 other pages name, or more than 64 of
-        their claims hold, relates none either. A term fewer pages hold weighs more, and a
-        page gives its 3 weightiest reasons and counts the others in `more`. Relations are
-        worked out by rule from the pages as they are when asked: nothing of them is stored,
-        nothing is inferred from meaning, and none joins two projects. Claims are quoted
-        text: each says who wrote the notes it cites (written_by, as recall's), whether any
-        is outside (a connected source's, or a filed Slack message), and when the newest was
-        written (written_at). A claim longer than 2,000 characters is given cut
-        (`text_cut`), with the line that holds the term (`line`; `line_cut` when that is cut
-        to 400), and `page` gives it whole. `searched` says what was left out, in counts.
-        `terms_looked_up`: the page's terms looked up, 256 at most, the shortest first.
-        `terms_not_looked_up`: its terms past those. `claims_read`: claims of other pages
-        read for those terms. `claims_not_read`: such claims not read, past 512 claims or a
-        million bytes of their passages; a term with a claim not read gives no reason.
-        `pages_left_out`: related pages past `limit`. `complete` is true when those three
-        counts of what was left out are 0."""
+        """The pages of a project most related to one of its pages, best first, each with why. A
+        reason is `shares`: both pages state `term` (a URL, a path, a flag, a version, or code
+        in backticks that is not a plain word; it is given as it is compared, its case folded),
+        `pages` pages of the project hold it, and `here` and `there` are this page's claim and
+        the other page's that state it. Or it is `mentioned_by`: `there` is a claim of the other
+        page that holds this page's title (the pages this page mentions are not listed). A term
+        more than 5 pages hold relates none, nor one whose words more than 64 claims of the
+        project hold, nor one longer than 200 characters; a title more than 5 other pages name,
+        or more than 64 of their claims hold, relates none either. A term fewer pages hold
+        weighs more, and a page gives its 3 weightiest reasons and counts the others in `more`.
+        Relations are worked out by rule from the pages as they are when asked: nothing of them
+        is stored, nothing is inferred from meaning, and none joins two projects. Claims are
+        quoted text: each says who wrote the notes it cites (written_by, as recall's), whether
+        any is outside (a connected source's, or a filed Slack message), and when the newest was
+        written (written_at). A claim longer than 2,000 characters is given cut (`text_cut`),
+        with the line that holds the term (`line`; `line_cut` when that is cut to 400), and
+        `page` gives it whole. `searched` says what was left out, in counts. `terms_looked_up`:
+        the page's terms looked up, 256 at most, the shortest first. `terms_not_looked_up`: its
+        terms past those. `claims_read`: claims of other pages read for those terms.
+        `claims_not_read`: such claims not read, past 512 claims or a million bytes of their
+        passages; a term with a claim not read gives no reason. `pages_left_out`: related pages
+        past `limit`. `complete` is true when those three counts of what was left out are 0."""
         with _call(ctx, "related") as memory:
             return memory.related(project, slug, limit)
 

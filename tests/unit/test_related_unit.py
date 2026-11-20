@@ -530,13 +530,14 @@ def test_the_tools_description_says_which_terms_and_titles_relate_none():
     said = " ".join(tools()["related"].description.split())
     for line in (
         "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"
-        " the project hold; a title more than 5 other pages name, or more than 64 of their"
-        " claims hold, relates none either.",
+        " the project hold, nor one longer than 200 characters; a title more than 5 other pages"
+        " name, or more than 64 of their claims hold, relates none either.",
         "A term fewer pages hold weighs more, and a page gives its 3 weightiest reasons and"
         " counts the others in `more`.",
     ):
         assert line in said, line
     assert (relations.COMMON, relations.CLAIMS_COMMON, relations.WHY_MAX) == (5, 64, 3)
+    assert relations.TERM_MAX == 200
 
 
 RELATED = (

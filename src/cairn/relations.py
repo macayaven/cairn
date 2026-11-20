@@ -19,7 +19,10 @@ only when it holds a character that is not a letter (a digit, a space, punctuati
 `pyproject.toml`, `os_login_2fa`, `compact --if-due`) or is at least CODE_MIN characters
 long, so a plain word in backticks (`name`, `true`) relates nothing; and no term without a
 letter or a digit, of which the index holds no word. Numbers, dates and code blocks never
-relate pages.
+relate pages. Nor does a term longer than TERM_MAX characters, as it is compared or as it is
+written in its passage (`placed`): an answer gives the term and a line that holds it, and
+both are bounded. The longest term that relates two of this repository's own documents is
+111 characters.
 
 Which terms are common, and relate none: a term more than COMMON pages of the project hold;
 and a term whose words more than CLAIMS_COMMON claims of the project hold, the asking
@@ -60,6 +63,7 @@ from cairn.spans import Span
 
 TERM_KINDS = ("url", "path", "flag", "version", "inline_code")  # the facts that can be terms
 CODE_MIN = 12  # an inline code of letters only relates pages from this many characters
+TERM_MAX = 200  # a term longer than this, as compared or as written, relates none
 COMMON = 5  # a term more pages of the project hold than this relates none
 CLAIMS_COMMON = 64  # nor does one whose words more claims of the project hold than this
 WHY_MAX = 3  # the reasons an answer gives for one related page; it counts the rest
@@ -81,6 +85,8 @@ def specific(kind: str, text: str) -> bool:
     """Whether a term of this kind and text relates pages (the module's rule)."""
     if kind not in TERM_KINDS or not any(char.isalnum() for char in text):
         return False
+    if len(text) > TERM_MAX:
+        return False
     if kind != "inline_code":
         return True
     return len(text) >= CODE_MIN or not text.isalpha()
@@ -88,10 +94,11 @@ def specific(kind: str, text: str) -> bool:
 
 def placed(span: Span) -> dict[Term, tuple[int, int]]:
     """The terms of a passage that relate pages, each once, in the order they are read: each
-    with where its first fact stands in the passage's text, the fact's own start and end."""
+    with where its first fact stands in the passage's text, the fact's own start and end. A
+    fact written in more than TERM_MAX characters is no term, whatever it is compared as."""
     found: dict[Term, tuple[int, int]] = {}
     for fact in extract_facts(span):
-        if fact.kind in TERM_KINDS:
+        if fact.kind in TERM_KINDS and fact.end - fact.start <= TERM_MAX:
             term = Term(fact.kind, compared(fact.as_read))
             if specific(*term):
                 found.setdefault(term, (fact.start, fact.end))
@@ -107,8 +114,9 @@ def line_of(text: str, start: int, end: int) -> tuple[str, bool]:
     """The line of a passage's `text` that holds text[start:end], a term where `placed` found
     it (a fact is read within one line), and whether it is cut. A line of at most LINE_MAX
     characters is given whole. A longer one is given as LINE_MAX characters of it that hold
-    the term, as near their middle as the line's ends let it be; and a term as long as that
-    or longer is given alone. Nothing is searched for: the place is the fact's own."""
+    the term, as near their middle as the line's ends let it be; a term as long as that or
+    longer would be given alone, and none is (TERM_MAX), so what is given is LINE_MAX
+    characters at most. Nothing is searched for: the place is the fact's own."""
     first = text.rfind("\n", 0, start) + 1
     last = text.find("\n", end)
     last = len(text) if last < 0 else last

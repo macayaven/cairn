@@ -144,8 +144,9 @@ class Reading:
 
 def relates(kind: str, text: str) -> bool:
     """The rule in the brief's words: every url, path, flag and version; inline code only with
-    a character that is not a letter, or 12 characters long; none with no letter or digit."""
-    if kind not in KINDS or not any(char.isalnum() for char in text):
+    a character that is not a letter, or 12 characters long; none with no letter or digit,
+    and none longer than 200 characters."""
+    if kind not in KINDS or not any(char.isalnum() for char in text) or len(text) > 200:
         return False
     return kind != "inline_code" or len(text) >= 12 or any(not c.isalpha() for c in text)
 

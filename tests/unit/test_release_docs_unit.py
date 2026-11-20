@@ -472,3 +472,44 @@ def test_the_changelog_says_models_of_the_model_the_operator_connects():
     )
     assert "every model" not in sources
     assert "a project's people can allow that model, keep it out, or leave it undecided" in sources
+
+
+def test_the_readme_and_the_changelog_say_what_related_pages_are():
+    """Decision 203: a relation between two pages is worked out when asked, by rule, with its
+    evidence. The README's tables and the changelog's entry name what the code gives, with the
+    code's own numbers."""
+    from cairn import relations
+
+    readme = read("README.md")
+    tools = readme.split("\n## MCP tools\n", 1)[1].split("\n## ", 1)[0]
+    assert (
+        "| `related` | The pages of a project related to one of its pages, best first, each"
+        " with why and the claims it rests on |"
+    ) in tools
+    assert (
+        "| `graph` | A project's pages, claims, passages and notes, as nodes and edges |" in tools
+    )
+    exists = readme.split("\n## What exists today\n", 1)[1].split("\n## ", 1)[0]
+    assert "| Related pages | " in exists and "`tests/unit/test_related_unit.py`" in exists
+    entry = next(
+        line
+        for line in read("CHANGELOG.md").splitlines()
+        if line.startswith("- **Related pages.**")
+    )
+    for said in (
+        "worked out when it is asked for, by rule, from the pages as they are",
+        "nothing of it is stored",
+        "names the page's title in its prose",
+        "`related`",
+        "`GET /api/projects/<project>/pages/<slug>/related`",
+        f"{relations.RELATED_DEFAULT} pages unless more are asked for,"
+        f" {relations.RELATED_MAX} at most",
+        f"more than {relations.COMMON} pages",
+        "No relation joins two projects",
+        "says what it left out",
+    ):
+        assert said in entry, said
+    agents = next(
+        line for line in read("CHANGELOG.md").splitlines() if line.startswith("- **Agents.**")
+    )
+    assert "a `related` tool" in agents

@@ -3,25 +3,25 @@
     python3 scripts/oci_archive.py ARCHIVE [--root DIGEST] [--github-output FILE]
 
 ARCHIVE is the OCI image layout, as a tar, that buildx's oci exporter writes for a build of
-linux/amd64 and linux/arm64 with provenance and a bill of materials, or that
-`oras cp --to-oci-layout` writes when it copies such an index from a registry. buildx's
-index.json names exactly one image index, and without --root nothing else passes. oras's lists
-the index and every manifest under it (oras-go v2.7.0, content/oci/oci.go: each manifest it
-stores is tagged by its digest, and saveIndex writes one entry per tag); with --root the image
-index is the entry with DIGEST, and any other entry must be a manifest that index holds. Every
-descriptor's media type is checked, and its size against its blob: images are OCI image
-manifests of linux/amd64 (no variant) or linux/arm64 (no variant, or v8), the index has no
-config or layers, an attestation is listed as unknown/unknown and every one of its layers is an
-in-toto statement (Statement/v0.1, as buildkit writes it, or /v1) whose subject is its image
-and whose predicate type is its layer's annotation. Every file under blobs/sha256/ is the bytes its
-name says; the index holds exactly one image for each of the two platforms, whose own config
-says it is built for that platform, and exactly one attestation manifest for each image (an
-entry annotated `vnd.docker.reference.type: attestation-manifest` and
-`vnd.docker.reference.digest: <the image's digest>`, as buildx writes them), and nothing else:
-no third platform, no second attestation, no attestation of an image it does not hold; each
-attestation's layers include a build provenance (in-toto predicate type
-`https://slsa.dev/provenance/...`) and a bill of materials (`https://spdx.dev/Document`); and
-every blob those manifests name (each config and each layer) is in the archive.
+linux/amd64 and linux/arm64 with provenance and a bill of materials, or that `oras cp --to-oci-
+layout` writes when it copies such an index from a registry. buildx's index.json names exactly
+one image index, and without --root nothing else passes. oras's lists the index and every
+manifest under it (oras-go v2.7.0, content/oci/oci.go: each manifest it stores is tagged by its
+digest, and saveIndex writes one entry per tag); with --root the image index is the entry with
+DIGEST, and any other entry must be a manifest that index holds. Every descriptor's media type
+is checked, and its size against its blob: images are OCI image manifests of linux/amd64 (no
+variant) or linux/arm64 (no variant, or v8), the index has no config or layers, an attestation
+is listed as unknown/unknown and every one of its layers is an in-toto statement
+(Statement/v0.1, as buildkit writes it, or /v1) whose subjects, if any, are its image and whose
+predicate type is its layer's annotation. Every file under blobs/sha256/ is the bytes its name
+says; the index holds exactly one image for each of the two platforms, whose own config says it
+is built for that platform, and exactly one attestation manifest for each image (an entry
+annotated `vnd.docker.reference.type: attestation-manifest` and `vnd.docker.reference.digest:
+<the image's digest>`, as buildx writes them), and nothing else: no third platform, no second
+attestation, no attestation of an image it does not hold; each attestation's layers include a
+build provenance (in-toto predicate type `https://slsa.dev/provenance/...`) and a bill of
+materials (`https://spdx.dev/Document`); and every blob those manifests name (each config and
+each layer) is in the archive.
 
 It prints the index's digest and, for each platform, its image's digest; with --github-output
 it appends `digest=<the index's digest>`, `archive=<the archive's SHA-256>`, and `amd64=` and
@@ -156,7 +156,9 @@ def _attested(blobs, proof: dict, image: str, platform: str) -> None:
                 f"a layer of {what} has a statement whose predicate type is not its annotation's"
             )
         hexes = [(s.get("digest") or {}).get("sha256") for s in statement.get("subject") or []]
-        if f"sha256:{hexes[0] if len(hexes) == 1 else ''}" != image:
+        # buildkit names the image once per image name it was given, and not at all when it
+        # was given none, as image_build's export is; the index's annotation binds it then.
+        if any(f"sha256:{found}" != image for found in hexes):
             raise Refused(
                 f"a layer of {what} has a statement whose subject is not the image for {platform}"
             )

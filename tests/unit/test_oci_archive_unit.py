@@ -432,3 +432,30 @@ def test_both_in_toto_statement_versions_are_statements(tmp_path, kind):
     path, _ = build(tmp_path, proof={"body": written})
     code, _, err, _ = run(path, tmp_path)
     assert (code, err) == (0, ""), err
+
+
+def no_subject(of: dict, predicate: str) -> dict:
+    return {**statement(of, predicate), "subject": []}
+
+
+def two_names(of: dict, predicate: str) -> dict:
+    once = statement(of, predicate)
+    return {**once, "subject": once["subject"] * 2}
+
+
+def one_of_two_elsewhere(of: dict, predicate: str) -> dict:
+    once = statement(of, predicate)
+    return {**once, "subject": once["subject"] + other_subject(of, predicate)["subject"]}
+
+
+@pytest.mark.parametrize(
+    ("body", "passes"), [(no_subject, True), (two_names, True), (one_of_two_elsewhere, False)]
+)
+def test_a_statement_names_its_image_once_per_image_name_or_not_at_all(tmp_path, body, passes):
+    """buildkit v0.26.0 (exporter/containerimage/writer.go) gives a statement one subject per
+    image name the build is given, each with the image's digest, and none when it is given no
+    name, as image_build's oci export is: no subject passes, the index's annotation binding the
+    attestation to its image; a subject that is another digest does not."""
+    path, _ = build(tmp_path, proof={"body": body})
+    code, _, err, _ = run(path, tmp_path)
+    assert (code == 0) is passes, err

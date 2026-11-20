@@ -130,14 +130,14 @@ gives the claim whole): "text_cut": true and "line", the line that shows what th
 For a claim that states a shared term that is the line of the passage it cites that holds the
 term, taken where the term's fact stands and never by a search of the text; for a claim that
 mentions the page, the line that names the title in its prose, at the first place the index
-matched it outside code, a path, a flag, a version or an address
-(cairn.store.relating._mentioning; two lines, with their line break, when the title's words
-stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX characters of it
-that hold the term or the title, with "line_cut": true. Only a long claim of which no line can
-be told (one that mentions the page as the index has it: its text is not its passage's, or
-holds a mark of the index or a null character) gives its first TEXT_MAX characters as "text",
-with "text_cut": true and no line. So a claim has its text whole, or "text_cut" with a line,
-or "text_cut" with a head: never a head beside a line. `passage_ids` names the first
+matched it outside code, a path, a flag, a version or an address as the passage's facts read
+them (cairn.store.relating._mentioning; two lines, with their line break, when the title's
+words stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX characters of
+it that hold the term or the title, with "line_cut": true. Only a long claim of which no line
+can be told (one that mentions the page as the index has it: its text is not its passage's)
+gives its first TEXT_MAX characters as "text", with "text_cut": true and no line. So a claim
+has its text whole, or "text_cut" with a line, or "text_cut" with a head: never a head beside
+a line. `passage_ids` names the first
 relations.PASSAGES_MAX passages a claim cites, and "passage_ids_more" counts the others, only
 when there are more (a claim a tidy folded from many; who wrote it is still said of every note
 it cites). So an answer's size is bounded by constants: `limit` pages of relations.WHY_MAX

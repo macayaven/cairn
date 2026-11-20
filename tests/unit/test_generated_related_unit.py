@@ -42,8 +42,8 @@ What is checked of every answer of `Memory.related`, for every page:
   and LINE_GIVEN characters for relations.TEXT_MAX and LINE_MAX): the answer is the whole
   answer but for its long claims; a claim has its text whole, or `text_cut` with a line and
   no text, or `text_cut` with its first TEXT_GIVEN characters and no line (only a claim
-  that mentions the page and holds a mark of the index or a null: a project made by hand
-  has some), never a head and a line; a line is the line of the claim's first passage on
+  that mentions the page and whose text is not its passage's: a project made by hand has
+  one), never a head and a line; a line is the line of the claim's first passage on
   which the term's first
   fact stands, by a fresh extract_facts and the passage split at its line ends here, whole
   or LINE_GIVEN characters of it that hold the fact as it is written there; and the line of
@@ -68,7 +68,7 @@ from cairn import relations
 from cairn.facts import extract_facts
 from cairn.gate import lint_gate
 from cairn.memory import Memory, RequestError
-from cairn.store import Store, relating
+from cairn.store import Claim, Store, relating
 
 SEED, PROJECTS = 20261120, 300
 TITLES = [
@@ -205,9 +205,17 @@ def prose_of(span) -> str:
     text = list(span.text)
     for fact in extract_facts(span):
         if fact.kind in KINDS or fact.kind == "code_block":
-            for at in range(fact.start, fact.end):
+            start = fact.start
+            if fact.kind == "code_block" and start:  # from the fence's opening line
+                start = span.text.rfind("\n", 0, start - 1) + 1
+            for at in range(start, fact.end):
                 text[at] = "z" if text[at] != "\n" else "\n"
     return "".join(text)
+
+
+def unchecked(text: str) -> bool:
+    """A claim that holds a mark of the index or a null character, which names no page."""
+    return any(mark in text for mark in (*relating.MARKS, "\x00"))
 
 
 def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
@@ -252,7 +260,10 @@ def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
         named_by[slug] = {
             other
             for other in held_by[slug]
-            if any(reading.holds(prose[claim.id], title) for claim in pages[other].claims)
+            if any(
+                reading.holds(prose[claim.id], title) and not unchecked(claim.text)
+                for claim in pages[other].claims
+            )
         }
         naming[slug] = sum(theirs.values())
     return {
@@ -549,12 +560,13 @@ def mention_fault(
     return "" if whole_lines and len(line) <= LINE_GIVEN else "not whole lines of the text"
 
 
-def shape_of(given: dict, text: str, mention: bool) -> tuple[str, str]:
+def shape_of(given: dict, text: str, mention: bool, its_passage: bool) -> tuple[str, str]:
     """The shape a claim is given in, its whole text being `text`, and what is wrong with it
     (nothing when it is right). One of three: its text whole, when that is within TEXT_GIVEN
     characters; of a longer text, `text_cut` with a line and no text; or `text_cut` with its
     first TEXT_GIVEN characters and no line, which only a claim that mentions the page and
-    holds a mark of the index or a null character is given as. Never a head and a line."""
+    whose text is not its passage's (`its_passage` false) is given as. Never a head and a
+    line."""
     if "text_cut" not in given:
         alone = "line" not in given and "line_cut" not in given
         right = alone and given.get("text") == text and len(text) <= TEXT_GIVEN
@@ -563,11 +575,10 @@ def shape_of(given: dict, text: str, mention: bool) -> tuple[str, str]:
         return "none", "marked cut, and its text is within the bound"
     if "line" in given:
         return "a line", "" if "text" not in given else "a head beside a line"
-    told = not any(mark in text for mark in (*relating.MARKS, "\x00"))
     right = given.get("text") == text[:TEXT_GIVEN] and "line_cut" not in given
     if not right:
         return "a head", "not its first characters, alone"
-    return "a head", "a head where a line can be told" if told or not mention else ""
+    return "a head", "" if mention and not its_passage else "a head where a line can be told"
 
 
 def claims_checked(whole: dict, cut: dict, spans: dict, reading: Reading, seen: Counter) -> list:
@@ -594,7 +605,10 @@ def claims_checked(whole: dict, cut: dict, spans: dict, reading: Reading, seen: 
                 added = {k: given[k] for k in ("text_cut", "line", "line_cut") if k in given}
                 if {**given, "text": claim["text"]} != {**claim, **added}:
                     wrong.append((*where, "another field differs"))
-                shape, fault = shape_of(given, claim["text"], reason["kind"] != "shares")
+                first = spans.get(claim["passage_ids"][0]) if claim["passage_ids"] else None
+                its_passage = first is not None and first.text == claim["text"]
+                mention = reason["kind"] != "shares"
+                shape, fault = shape_of(given, claim["text"], mention, its_passage)
                 seen[shape] += 1
                 if fault:
                     wrong.append((*where, fault))
@@ -656,9 +670,10 @@ def test_a_claim_is_given_whole_or_by_its_line_or_by_its_head_and_never_by_both(
 
 def test_the_same_holds_of_claims_that_hold_a_mark_of_the_index_or_a_null(monkeypatch):
     """The third shape, which no generated claim is given in: a project made here, of a page
-    that five claims mention. Three of them hold a mark of the index or a null character,
-    and are given by their head; the others by the line that names the title. The same
-    check as above says so (`claims_checked`), and nothing else of the answers is wrong."""
+    that five claims would mention. Three of them hold a mark of the index or a null
+    character and name no page; one is saved by hand, its text not its passage's, and is
+    given by its head; the last by the line that names the title. The same check as above
+    says so (`claims_checked`), and nothing else of the answers is wrong."""
     marked = [relating.MARKS[0], relating.MARKS[1], "\x00"]
     seen, reading = Counter(), Reading()
     with closing(Store(":memory:")) as store:
@@ -668,6 +683,12 @@ def test_the_same_holds_of_claims_that_hold_a_mark_of_the_index_or_a_null(monkey
         for n, mark in enumerate(marked):
             text = f"Page {n}: Ada waits. She opens {mark} the Quill ledger at noon.\n"
             memory.note("marks", text, title=f"Marked {n}")
+        written, _ = store.add_note(project.id, "# Hand\n\nBrook keeps the books.\n")
+        (span,) = [s.id for s in store.note_spans(written.id) if s.kind == "paragraph"]
+        text = "Page 3: Ada waits. She opens the Quill ledger at noon."
+        store.save_page(
+            project.id, "hand", "Hand", "", [Claim(id="cl_h", text=text, span_ids=[span])]
+        )
         memory.note("marks", "Ada waits.\nThen she opens the Quill ledger.\n", title="Plain")
         memory.note("marks", "Quill pins `quill.lock`, far from the ledger.\n", title="Keeper")
         slugs = [head.slug for head in store.list_pages(project.id)]
@@ -683,17 +704,14 @@ def test_the_same_holds_of_claims_that_hold_a_mark_of_the_index_or_a_null(monkey
         for fault in claims_checked(whole[slug], cut[slug], spans, reading, seen)
     ]
     assert wrong == [], wrong
-    assert len(whole["quill-ledger"]["related"]) == 5
-    assert (seen["a head"], seen["a line, of a mention"], seen["none"]) == (3, 1, 0), seen
+    given = [page["page"] for page in whole["quill-ledger"]["related"]]
+    assert sorted(given) == ["hand", "keeper", "plain"]
+    assert (seen["a head"], seen["a line, of a mention"], seen["none"]) == (1, 1, 0), seen
     assert seen["a line"] >= 3 and seen["line whole"] + seen["line cut"] >= 2, seen
-    heads = [
-        page["why"][0]["there"]
-        for page in cut["quill-ledger"]["related"]
-        if page["page"].startswith("marked")
+    (head,) = [
+        page["why"][0]["there"] for page in cut["quill-ledger"]["related"] if page["page"] == "hand"
     ]
-    assert [sorted(set(claim) & {"text", "text_cut", "line", "line_cut"}) for claim in heads] == [
-        ["text", "text_cut"]
-    ] * 3
+    assert sorted(set(head) & {"text", "text_cut", "line", "line_cut"}) == ["text", "text_cut"]
 
 
 def test_a_relation_holds_from_both_sides(world):

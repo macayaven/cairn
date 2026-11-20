@@ -354,14 +354,17 @@ def test_a_long_claim_that_mentions_the_page_says_it_is_cut_and_gives_the_line_t
     assert wide[0]["line"].endswith("then opens the Quill ledger.") and "text" not in wide[0]
 
 
-@pytest.mark.parametrize("held", [relating.MARKS[0], relating.MARKS[1], "\x00"])
-def test_a_claim_cut_that_no_line_can_be_given_of_gives_its_head_as_text(env, held):
-    """The one case: a claim that mentions the page and holds a mark of the index or a null
-    character, where the index cannot say which line names the title. It gives its first
-    TEXT_MAX characters as `text`, with `text_cut`, and no line; over MCP and REST alike."""
-    whole = "Ada waits for the nightly log. " * 30 + f"She opens {held} the Quill ledger."
+def test_a_claim_cut_that_no_line_can_be_given_of_gives_its_head_as_text(env):
+    """The one case: a claim that mentions the page and whose text is not its passage's (a
+    page saved by hand), so no line of the passage can be said to name the title. It gives
+    its first TEXT_MAX characters as `text`, with `text_cut`, and no line; over MCP and REST
+    alike. (A claim that holds a mark of the index or a null character names no page.)"""
+    whole = "Ada waits for the nightly log. " * 30 + "She opens the Quill ledger."
     Memory(env.store, lint_gate).note("ops", "Brook balances it.\n", title="Quill ledger")
-    Memory(env.store, lint_gate).note("ops", whole + "\n", title="Long")
+    written, _ = env.store.add_note(env.ops.id, "# Long\n\nBrook keeps the books.\n")
+    (span,) = [s.id for s in env.store.note_spans(written.id) if s.kind == "paragraph"]
+    by_hand = Claim(id="cl_by_hand", text=whole, span_ids=[span])
+    env.store.save_page(env.ops.id, "long", "Long", "", [by_hand])
     found = answer(env.client, env.key, "related", project="ops", slug="quill-ledger")
     assert rest(env, "quill-ledger").json() == found
     (reason,) = found["related"][0]["why"]
@@ -685,8 +688,10 @@ def test_the_tools_description_says_which_terms_and_titles_relate_none():
     said = " ".join(tools()["related"].description.split())
     assert (
         "Or it is `mentioned_by`: `there` is a claim of the other page that names this page's"
-        " title in its prose, not inside code, a path, a flag or an address (the pages this"
-        " page mentions are not listed)."
+        " title in its prose: not by words inside code (in backticks, or in a fenced block,"
+        " its opening line included), nor inside a URL, a path, a flag or a version as the"
+        " page's facts read them, so a bare `ledger/notes.md` still names a page Ledger (the"
+        " pages this page mentions are not listed)."
     ) in said
     for line in (
         "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"

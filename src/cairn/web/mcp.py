@@ -428,8 +428,10 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         in backticks that is not a plain word; it is given as it is written, capitals included:
         `-L` is not `-l`), `pages` pages of the project hold it, and `here` and `there` are this
         page's claim and the other page's that state it. Or it is `mentioned_by`: `there` is a
-        claim of the other page that names this page's title in its prose, not inside code, a
-        path, a flag or an address (the pages this page mentions are not listed). A claim that
+        claim of the other page that names this page's title in its prose: not by words inside
+        code (in backticks, or in a fenced block, its opening line included), nor inside a URL,
+        a path, a flag or a version as the page's facts read them, so a bare `ledger/notes.md`
+        still names a page Ledger (the pages this page mentions are not listed). A claim that
         cites several passages is read by its first. A term more than 5 pages hold relates none,
         nor one whose words more than 64 claims of the project hold, nor one longer than 200
         characters; a title more than 5 other pages name, or more than 64 of their claims hold,

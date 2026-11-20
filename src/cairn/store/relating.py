@@ -89,9 +89,9 @@ read already holds it and from where the term's fact stands in it: nothing is re
 and the text is not searched a second time. Beside a claim cut that names the title goes
 the line that names it: the line of its passage at the first place that counts
 (`_mentioning`), from the passage this read holds; nothing here looks for the title. A
-claim cut that mentions the page as the index has it (its text is not its passage's, or
-holds a mark of the index or a null character) has no place that is known to be prose: it
-has no line, and an answer gives its first characters.
+claim cut that mentions the page as the index has it (its text is not its passage's) has no
+place that is known to be prose: it has no line, and an answer gives its first characters. A
+claim that holds a mark of the index or a null character names no page (`_mentioning`).
 
 Statements, T being the terms looked up, beside the four of the caller (the page's head, the
 index's table, the notes of the passages the claims given cite, and who wrote them): 2 for
@@ -397,20 +397,21 @@ def _mentioning(
     A claim that holds the title's words (`naming`) names the title only when a place where
     the index matched them lies outside every stretch of its passage that is code, a path, a
     flag, a version or an address (relations.covered, on the facts this read holds of the
-    passage, read whole). The places
-    are the index's (`_marked`), and they are places of the passage because the claim's
-    text is the passage's text; the statement says whether it is. Where it is not (a page
-    saved by hand), where the claim cites no passage of the project, and where the claim
-    holds a mark of the index or a null character, the places of the one say nothing of the
-    other: the claim mentions the page as the index has it, and its place is None.
+    passage, read whole). The places are the index's (`_marked`), and they are places of the
+    passage because the claim's text is the passage's text; the statement says whether it
+    is. Where it is not (a page saved by hand), and where the claim cites no passage of the
+    project, the places of the one say nothing of the other: the claim mentions the page as
+    the index has it, and its place is None. A claim that holds a mark of the index or a null
+    character names no page: its places cannot be told, so whether it names the title in its
+    prose cannot be checked.
 
     As for a term: a title one of whose claims was not read gives no mention at all; nor
     does a title more than relations.COMMON other pages name. One statement, none for no
     claim read."""
     asked = [
-        (row, candidates[row][0])
+        (row, cited[0] if (cited := candidates[row]) and cited[0] in spans else None)
         for row, _ in naming
-        if row in read and candidates[row] and candidates[row][0] in spans
+        if row in read
     ]
     marks = _marked(con, index, named, asked) if named and asked else {}
     if any(row not in read for row, _ in naming):  # a claim not read: no mention at all
@@ -421,36 +422,38 @@ def _mentioning(
             continue
         if row not in marks:  # the index's word stands
             names[at] = (row, None)
-        elif place := relations.named_at(
-            _places(marks[row]),
-            relations.covered(spans[candidates[row][0]], facts[candidates[row][0]]),
+        elif marks[row] and (
+            place := relations.named_at(
+                _places(marks[row]),
+                relations.covered(spans[candidates[row][0]], facts[candidates[row][0]]),
+            )
         ):
             names[at] = (row, place)
     return {} if len(names) > relations.COMMON else names
 
 
 def _marked(
-    con: sqlite3.Connection, index: str, named: str, asked: Sequence[tuple[int, str]]
+    con: sqlite3.Connection, index: str, named: str, asked: Sequence[tuple[int, str | None]]
 ) -> dict[int, str]:
-    """For each (claim's row, its first passage's id) of `asked`, a passage this read holds:
-    the claim's text with MARKS around every place the index matched `named` in it, the
-    match that listed the claim, on the text column (FTS5's highlight()). Only for a claim
-    whose text is its passage's text, character for character, and holds neither mark nor a
-    null character (SQLite's reading of a text stops there): the statement decides both
+    """For each (claim's row, its first passage's id when this read holds it, else None) of
+    `asked`: "" for a claim whose text holds a mark or a null character (SQLite's reading of
+    a text stops there), whose places cannot be told; else, for a claim whose text is its
+    passage's text, character for character, the text with MARKS around every place the
+    index matched `named` in it, the match that listed the claim, on the text column
+    (FTS5's highlight()); and nothing for any other claim. The statement decides all three
     without handing a text back, so a claim reworded from its passage, of any length, costs
-    nothing. What is handed back is then the passage's text once more, with two marks a
-    match: the index's work, not a reading of facts, and not counted in BYTES_MAX, which
-    counts the passage once (`_within`). One statement."""
+    nothing. What is handed back is the passage's text once more, with two marks a match:
+    the index's work, not a reading of facts, and not counted in BYTES_MAX, which counts the
+    passage once (`_within`). One statement."""
     return {
         row: marks
         for row, marks in con.execute(
-            f"SELECT {index}.rowid, CASE WHEN {index}.text = spans.text"
-            f" AND instr({index}.text, ?3) + instr({index}.text, ?4)"
-            f" + instr(CAST({index}.text AS BLOB), X'00') = 0"
-            f" THEN highlight({index}, 5, ?3, ?4) END"
+            f"SELECT {index}.rowid, CASE WHEN instr({index}.text, ?3) + instr({index}.text, ?4)"
+            f" + instr(CAST({index}.text AS BLOB), X'00') > 0 THEN ''"
+            f" WHEN {index}.text = spans.text THEN highlight({index}, 5, ?3, ?4) END"
             f" FROM json_each(?1) AS wanted"
             f" CROSS JOIN {index} ON {index}.rowid = json_extract(wanted.value, '$[0]')"
-            f" CROSS JOIN spans ON spans.id = json_extract(wanted.value, '$[1]')"
+            f" LEFT JOIN spans ON spans.id = json_extract(wanted.value, '$[1]')"
             f" WHERE {index} MATCH ?2",
             (json.dumps([list(pair) for pair in asked]), named, *MARKS),
         )

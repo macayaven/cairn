@@ -402,11 +402,14 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       that is not a plain word, the same when written the same, capitals included, and given
       as written; none that more than 5 pages hold, or whose words more than 64 claims of the
       project hold, or that is longer than 200 characters), or whose claim names the page's
-      title in its prose, not inside code, a path, a flag, a version or an address (the index
-      says where the claim's text holds the title's words, and the facts of the passage the
-      claim is the text of say which of those places are prose; a claim that is not its
-      passage's text mentions as the index has it; none when more than 5 other pages name it,
-      or more than 64 of their claims). A claim that cites several passages is read by its
+      title in its prose: not by words inside code (in backticks, or in a fenced block, its
+      opening line included), nor inside a URL, a path, a flag or a version as the page's
+      facts read them, so a bare `ledger/notes.md` still names a page Ledger (the index says
+      where the claim's text holds the title's words, and the facts of the passage the claim
+      is the text of say which of those places are prose; a claim that is not its passage's
+      text mentions as the index has it; a claim that holds a mark of the index or a null
+      character names none; none when more than 5 other pages name it, or more than 64 of
+      their claims). A claim that cites several passages is read by its
       first, and a term a search does not find as it is written (`1,250x`, compared without
       its separator) relates none, from either page. `pages` is how many pages hold the term,
       exactly: a term whose pages are not all known gives no reason. `here` and `there` are
@@ -417,8 +420,8 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       that names the title in its prose (two lines, with their line break, when the title's
       words stand on two); 400 characters of a longer line, with "line_cut": true. Only a long
       claim of which no line can be told (it mentions the page as the index has it: its text
-      is not its passage's, or holds a mark of the index or a null character) gives its first
-      600 characters as "text", with "text_cut": true and no line: never a head beside a line.
+      is not its passage's) gives its first 600 characters as "text", with "text_cut": true
+      and no line: never a head beside a line.
       `page` gives the claim whole; a claim within 600 characters gives its "text" whole and
       none of the other three fields. "passage_ids" names the first 8 passages a claim cites,
       and "passage_ids_more" counts the rest, only when there are more (a claim a tidy folded

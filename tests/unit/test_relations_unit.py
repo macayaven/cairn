@@ -348,8 +348,9 @@ def test_a_match_on_two_lines_is_given_with_both():
 
 def test_the_stretches_that_are_no_prose_are_the_facts_own_and_the_code_blocks():
     """Every url, path, flag, version and inline code, whether or not it is a term that
-    relates pages (a plain word in backticks covers too), and the body of every code block:
-    each by the fact's own start and end."""
+    relates pages (a plain word in backticks covers too), each by the fact's own start and
+    end; and every fenced code block from its opening line, the word after its marks
+    included, to the end of its body."""
     text = (
         "Started by `deploy/compose.yaml` or ./deploy/run.sh; see"
         " https://fable.example/deploy with --dry-run on v2.4.1, then `deploy`."
@@ -363,10 +364,16 @@ def test_the_stretches_that_are_no_prose_are_the_facts_own_and_the_code_blocks()
         "deploy",
     ]
     fenced = "Before a deploy.\n\n```sh\ndeploy --now\n```\nAfter 5 min, on 2099-01-02."
-    assert [fenced[slice(*at)] for at in relations.covered(passage(fenced))] == ["deploy --now"]
-    # what the facts do not own is prose: a path written with no root, a fence's first line
-    bare = "Started by deploy/compose.yaml.\n\n```deploy\nquill run\n```"
-    assert [bare[slice(*at)] for at in relations.covered(passage(bare))] == ["quill run"]
+    covered = [fenced[slice(*at)] for at in relations.covered(passage(fenced))]
+    assert covered == ["```sh\ndeploy --now"]
+    # what the facts do not own is prose: a path written with no root, an email address
+    bare = "Started by deploy/compose.yaml for ada@deploy.dev.\n\n```deploy\nquill run\n```"
+    assert [bare[slice(*at)] for at in relations.covered(passage(bare))] == ["```deploy\nquill run"]
+    for opened in ("> ~~~deploy\n> quill run\n> ~~~", "- Ada\n\n  ```deploy\n  run\n  ```"):
+        (stretch,) = relations.covered(passage(opened))
+        assert opened[slice(*stretch)].lstrip("> -Ad\n").startswith(("~~~deploy", "```deploy"))
+    empty = "```deploy\n```"
+    assert [empty[slice(*at)] for at in relations.covered(passage(empty))] == ["```deploy\n"]
 
 
 NAMED = [

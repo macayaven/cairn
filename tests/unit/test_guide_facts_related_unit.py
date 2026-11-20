@@ -108,8 +108,10 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
         "connect",
         "Each related page says why, with the claims the reason rests on: both pages state the"
         " same term (a URL, a path, a flag, a version, or code in backticks that is not a plain"
-        " word), or a claim of the other page names this page's title in its prose, not inside"
-        " code, a path, a flag or an address.",
+        " word), or a claim of the other page names this page's title in its prose: not by"
+        " words inside code (in backticks, or in a fenced block, its opening line included),"
+        " nor inside a URL, a path, a flag or a version as the page's facts read them, so a"
+        " bare `ledger/notes.md` still names a page Ledger.",
     )
     file(
         memory,

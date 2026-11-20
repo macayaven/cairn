@@ -367,6 +367,8 @@ def test_a_one_word_title_inside_a_flag_is_not_named(store, ops):
         "Run `deploy` and wait.",  # a plain word in backticks: no term, and still code
         "Pass --deploy to ship.",  # a flag
         "Then:\n\n```sh\nquill deploy --now\n```",  # a code block
+        "Then:\n\n```deploy\nquill run\n```",  # the word after a fence's opening marks
+        "> ~~~deploy\n> quill run\n> ~~~",  # and in a quote
     ],
 )
 def test_a_title_inside_an_address_a_path_a_flag_or_code_is_not_named(store, ops, inside):
@@ -377,13 +379,23 @@ def test_a_title_inside_an_address_a_path_a_flag_or_code_is_not_named(store, ops
     assert named_by(store, ops, deploy) == ["prose"]
 
 
-def test_what_the_facts_do_not_own_is_prose_and_names_the_title(store, ops):
-    """Pinned as it is: a path written with no root and outside backticks is no fact of a
-    passage, and the word after a fence's opening marks is not in the code block's body."""
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Started by deploy/compose.yaml at dawn.",  # a path written with no root
+        "Write to ada@deploy.dev at dawn.",  # an email address
+        "Brook edits C:\\Deploy\\notes.txt daily.",  # a Windows path
+        "Brook opens deploy.example.com daily.",  # a host with no scheme
+        "Brook runs it:\n\n    deploy --now\n\nThen rests.",  # an indented block
+    ],
+)
+def test_what_the_facts_do_not_own_is_prose_and_names_the_title(store, ops, said):
+    """Pinned as it is: what the passage's facts do not read as a url, a path, a flag, a
+    version, inline code or a fenced block is prose (cairn.facts reads an indented block as
+    lines of prose too)."""
     deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
-    bare = file(store, "ops", "Bare", "Started by deploy/compose.yaml at dawn.\n")
-    fence = file(store, "ops", "Fence", "Then:\n\n```deploy\nquill run\n```\n")
-    assert named_by(store, ops, deploy) == [bare, fence]
+    other = file(store, "ops", "Other", said + "\n")
+    assert named_by(store, ops, deploy) == [other]
 
 
 def test_a_title_that_reads_as_code_is_named_in_prose_and_not_in_backticks(store, ops):
@@ -638,7 +650,8 @@ def test_a_term_with_an_accent_relates_the_pages_that_write_it_the_same_way(stor
 
 def test_a_term_and_a_title_that_hold_a_quote_or_a_null_are_found_and_nothing_fails(store, ops):
     """A double quote would end the phrase and a null the query: the one is doubled, the
-    other given as the space the index reads it as."""
+    other given as the space the index reads it as. A claim that names a title holding a null
+    in prose writes the space (one that writes the null names no page: relating._mentioning)."""
     for n, term in enumerate(['say "hi" now --x', "a1\x00b2"]):
         one = file(store, "ops", f"One {n}", f"Ada runs `{term}` here.\n")
         two = file(store, "ops", f"Two {n}", f"Brook runs `{term}` there.\n")
@@ -647,7 +660,8 @@ def test_a_term_and_a_title_that_hold_a_quote_or_a_null_are_found_and_nothing_fa
         store.save_page(
             ops.id, f"named-{n}", title, "", [Claim(id="cl_n", text="Ada.", span_ids=())]
         )
-        by = file(store, "ops", f"Namer {n}", f"Brook opens {title} at dusk.\n")
+        written = title.replace("\x00", " ")
+        by = file(store, "ops", f"Namer {n}", f"Brook opens {written} at dusk.\n")
         assert reasons(related(store, ops.id, f"named-{n}")) == {
             by: [(MENTIONED_BY, title, "title", 2)]
         }
@@ -1036,26 +1050,29 @@ NO_LINE = [
 
 
 @pytest.mark.parametrize(("mark", "where"), NO_LINE)
-def test_a_claim_whose_text_holds_a_mark_of_the_index_or_a_null_gives_no_line(
+def test_a_claim_whose_text_holds_a_mark_of_the_index_or_a_null_names_no_page(
     store, ops, mark, where
 ):
     """The index says where it matched by putting two marks around the match (relating.MARKS,
     two characters Unicode keeps out of every text exchanged). In a claim that holds one of
     them the place cannot be told from the marks; and SQLite's own reading of a text stops
-    at a null character, so of a claim that holds one the place and the part handed back
-    would be wrong. Neither gives a line: the claim is cut, says so, and `page` gives it
-    whole. (A claim may hold any of the three: a note is stored as it is written. Between
-    the title's words a mark makes one word of the two, and there is no mention.)"""
+    at a null character, so of a claim that holds one the place would be wrong. Whether such
+    a claim names the title in its prose cannot be checked, so it names no page, short or
+    long, whatever else it holds: a path cannot make a mention by holding a mark. (A claim
+    may hold any of the three: a note is stored as it is written.)"""
     named = {
         "before the title": f"She opens {mark} the Quill ledger.",
         "after it": f"She opens the Quill ledger {mark} at noon.",
         "between its words": f"She opens the Quill{mark}ledger at noon.",
     }[where]
-    whole = "Ada waits for the nightly log. " * 30 + named
-    there = mention(store, ops, whole)
-    assert (there.cut, there.line, there.line_cut) == (True, None, False)
+    ledger = file(store, "ops", "Quill ledger", "Brook balances it at dusk.\n")
+    file(store, "ops", "Short", named + "\n")
+    file(store, "ops", "Long", "Ada waits for the nightly log. " * 30 + named + "\n")
+    file(store, "ops", "Path", f"Brook reads ~/quill/ledger.md {mark} daily.\n")
+    plain = file(store, "ops", "Plain", "She opens the Quill ledger at noon.\n")
+    assert named_by(store, ops, ledger) == [plain]
     (held,) = store.get_page(ops.id, "long").claims
-    assert held.text == whole  # stored whole, the character with it
+    assert held.text.endswith(named)  # stored whole, the character with it
 
 
 @pytest.mark.parametrize(

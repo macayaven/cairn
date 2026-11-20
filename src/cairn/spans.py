@@ -312,6 +312,7 @@ def claim_id(span_id: str) -> str:
 
 
 _LINE_BREAK = re.compile("\n")
+_CR_LF = re.compile("\r\n")
 _PARSER_LINES = re.compile(r"\r\n?|\n")
 _TAG_START = re.compile(r"<[A-Za-z/!?]")  # where raw HTML or an autolink may start
 
@@ -398,15 +399,26 @@ def code_read_once() -> Iterator[None]:
 
 
 def _code_spans(text: str) -> list[tuple[int, int]] | None:
-    """code_spans, parsed."""
-    src = text.replace("\r\n", " \n").replace("\r", "\n").replace("\0", "\ufffd")
+    """code_spans, parsed: the text read as the parser reads it (each CR LF one line break,
+    a lone CR one, NUL as U+FFFD), and each place found put back at its place in `text`."""
+    src = text.replace("\r\n", "\n").replace("\r", "\n").replace("\0", "\ufffd")
     found: list[tuple[int, int]] = []
     for md in _PARSERS if _TAG_START.search(text) else _PARSERS[:1]:
         read = _code_read(md, src)
         if read is None:
             return None
         found.extend(read)
+    if len(src) < len(text):  # a CR LF read as one character: back to the text's places
+        back = [m.start() - n for n, m in enumerate(_CR_LF.finditer(text))]  # their LFs, read
+        found = [(_back(back, left), _back(back, right - 1) + 1) for left, right in found]
+        found = [(left, right + (text[right - 1 : right + 1] == "\r\n")) for left, right in found]
     return _apart(found)
+
+
+def _back(back: list[int], at: int) -> int:
+    """The place in the text of place `at` of the text with each CR LF read as one LF: past
+    every CR LF before it, one character more. `back` holds each CR LF's LF as read so."""
+    return at + bisect.bisect_left(back, at)
 
 
 def _code_read(md: MarkdownIt, src: str) -> list[tuple[int, int]] | None:
@@ -432,18 +444,29 @@ def _code_read(md: MarkdownIt, src: str) -> list[tuple[int, int]] | None:
         content = token.content
         if any(read_in is not content and read_in != content for _, _, read_in in codes[:1]):
             return None  # read in a text of its own, at places of its own
-        rows = _rows_placed(token, opener.type, lines, cursors)
-        if rows is None:
-            return None
-        breaks = [0, *(m.end() for m in _LINE_BREAK.finditer(content))]
-        for left, right, _ in codes:
-            at = (
-                _place(breaks, rows, starts, token.map[0], left),
-                _place(breaks, rows, starts, token.map[0], right),
+        breaks = [0, *(m.end() for m in _LINE_BREAK.finditer(content)), len(content) + 1]
+        needed = {
+            row
+            for left, right, _ in codes
+            for row in range(
+                bisect.bisect_right(breaks, left) - 1, bisect.bisect_right(breaks, right - 1)
             )
-            if src[at[0] : at[1]] != content[left:right]:
-                return None
-            found.append(at)
+        }
+        where = _rows_placed(token, opener, lines, cursors, needed)
+        if where is None:
+            return None
+        line, rows = where
+        for left, right, _ in codes:
+            # One piece a line: a quote's markers or a list item's indentation between two
+            # lines of a code span are the container's, not the code's.
+            row = bisect.bisect_right(breaks, left) - 1
+            while left < right:
+                end = min(right, breaks[row + 1])  # a line's piece holds its line break
+                begin = starts[line + row] + (rows[row] or 0) + left - breaks[row]
+                if src[begin : begin + end - left] != content[left:end]:
+                    return None
+                found.append((begin, begin + end - left))
+                left, row = end, row + 1
     return found
 
 
@@ -454,42 +477,44 @@ def _may_go_on(opener) -> bool:
     return opener.type == "paragraph_open" and opener.level == 0 and opener.map[0] == 0
 
 
-def _rows_placed(token, opener: str, lines: list[str], cursors: dict[int, int]) -> list[int] | None:
-    """Where each line of an inline token's text starts in its line of the source: a
-    paragraph's lines are the ends of theirs, its last up to its trailing white space; a
-    heading's text is the last of its line holding it, and a table's cells are found left to
-    right. None when a line of the token's text is not so found in its line."""
+def _rows_placed(
+    token, opener, lines: list[str], cursors: dict[int, int], needed: set[int]
+) -> tuple[int, list[int | None]] | None:
+    """The source line an inline token's text starts on, and where each line of the text starts
+    in its line of the source (None for a line not so found), every line in `needed` found: a
+    paragraph's lines (a setext heading's too) are the ends of theirs, its last up to its
+    trailing white space (the parser strips the paragraph's ends as str.strip does, so a first
+    line of no-break spaces alone may be gone; a tab the parser splits adds spaces, so that
+    line is not found); an ATX heading's text is the last of its line holding it, and a table's
+    cells are found left to right. None when a line in `needed` is not found."""
     rows = token.content.split("\n")
     first, end = token.map
+    if opener.type == "paragraph_open" or opener.markup in ("=", "-"):
+        for line in range(first, end - len(rows) + 1):  # past lines the strip took
+            placed = _paragraph_rows(rows, lines[line : line + len(rows)])
+            if all(placed[row] is not None for row in needed):
+                return line, placed
+        return None
     if len(rows) != end - first:
         return None
-    placed = []
+    placed: list[int | None] = []
     for i, row in enumerate(rows):
         line = lines[first + i]
-        if opener == "paragraph_open":
-            whole = line if i < len(rows) - 1 else line.rstrip()
-            if not whole.endswith(row):
-                return None
-            placed.append(len(whole) - len(row))
-        elif opener == "heading_open":
+        if opener.type == "heading_open":
             at = line.rfind(row)
-            if at < 0:
-                return None
-            placed.append(at)
         else:  # a table cell
             at = line.find(row, cursors.get(first + i, 0))
-            if at < 0:
-                return None
             cursors[first + i] = at + len(row)
-            placed.append(at)
+        placed.append(at if at >= 0 else None)
+    return (first, placed) if all(placed[row] is not None for row in needed) else None
+
+
+def _paragraph_rows(rows: list[str], lines: list[str]) -> list[int | None]:
+    placed: list[int | None] = []
+    for i, (row, line) in enumerate(zip(rows, lines, strict=True)):
+        whole = line if i < len(rows) - 1 else line.rstrip()
+        placed.append(len(whole) - len(row) if whole.endswith(row) else None)
     return placed
-
-
-def _place(breaks: list[int], rows: list[int], starts: list[int], first: int, at: int) -> int:
-    """The place in the source of place `at` of an inline token's text, whose lines start at
-    `breaks` and are found at `rows` in the source's lines from line `first`."""
-    row = bisect.bisect_right(breaks, at) - 1
-    return starts[first + row] + rows[row] + at - breaks[row]
 
 
 def _apart(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:

@@ -75,7 +75,9 @@ text is then read by a handle, which is no statement). A statement with nothing 
 not run. At most 2 + 4 + 3 + 1 + 2 = 12, and 16 with the caller's.
 Rows: two for each claim of the page; for each term at most CLAIMS_COMMON + 1, and as many
 for the title; 3 for each candidate claim read, at most CLAIMS_MAX; and what is given, at
-most relations.RELATED_MAX pages of WHY_MAX reasons of two claims.
+most relations.RELATED_MAX pages of WHY_MAX reasons of two claims. (The caller's read of who
+wrote the claims given is a row for each passage they cite: one for a claim as it is
+compiled, and as many as a tidy folded into it, as a search reads them for a hit.)
 tests/unit/test_relating_cost_unit.py counts statements, rows and SQLite's steps for pages of
 10, 200 and 3,000 terms. As for a search (ranking), the matches walked to list a term's
 claims are the account's: a match out of the project is walked and passed over.

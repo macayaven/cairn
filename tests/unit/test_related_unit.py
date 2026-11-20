@@ -313,6 +313,62 @@ def test_a_long_claim_that_mentions_the_page_says_it_is_cut_and_gives_no_line(en
     assert "line" not in reason["there"] and "line_cut" not in reason["there"]
 
 
+def test_a_claim_folded_from_many_passages_names_the_first_eight_and_counts_the_rest(env):
+    """The product's own way to a claim of many passages: the same line filed in eleven notes
+    of one page, which a tidy folds into one claim that cites all eleven. The claim is read
+    by its first passage, names relations.PASSAGES_MAX of them and counts the others; `page`
+    names every one. Who wrote it is still said of all eleven notes, as a hit of `recall`
+    says it."""
+    from cairn.arrange import tidy_page
+
+    for n in range(11):
+        note(env, "Fold", f"Ada pins `quill.lock` daily.\n\nBrook checks ledger {n} at dawn.\n")
+    note(env, "Asked", "Quill reads `quill.lock` at noon.\n")
+    assert tidy_page(env.store, env.ops.id, "fold").status == "arranged"
+    (held,) = [c for c in env.store.get_page(env.ops.id, "fold").claims if "quill" in c.text]
+    assert len(held.span_ids) == 11
+
+    found = answer(env.client, env.key, "related", project="ops", slug="asked")
+    assert rest(env, "asked").json() == found
+    (reason,) = found["related"][0]["why"]
+    there = reason["there"]
+    assert there["claim_id"] == held.id
+    assert there["passage_ids"] == list(held.span_ids[: relations.PASSAGES_MAX])
+    assert (relations.PASSAGES_MAX, there["passage_ids_more"]) == (8, 3)
+    assert list(there) == [
+        "claim_id",
+        "text",
+        "passage_ids",
+        "passage_ids_more",
+        "outside",
+        "written_by",
+        "written_by_more",
+        "written_at",
+    ]
+    (hit,) = answer(env.client, env.key, "recall", query="pins daily", project="ops")["hits"]
+    assert hit["passage_ids"] == list(held.span_ids)
+    for field in ("written_by", "written_by_more", "outside", "written_at"):
+        assert there[field] == hit[field], field
+    assert (len(there["written_by"]), there["written_by_more"]) == (3, 8)
+    assert "passage_ids_more" not in reason["here"] and len(reason["here"]["passage_ids"]) == 1
+    # and asked of the folded page: its own side is the folded claim
+    back = answer(env.client, env.key, "related", project="ops", slug="fold")
+    assert back["related"][0]["why"][0]["here"] == there
+
+
+def test_a_claim_of_exactly_eight_passages_names_them_all_and_counts_none(env):
+    from cairn.arrange import tidy_page
+
+    for n in range(8):
+        note(env, "Fold", f"Ada pins `quill.lock` daily.\n\nBrook checks ledger {n} at dawn.\n")
+    note(env, "Asked", "Quill reads `quill.lock` at noon.\n")
+    assert tidy_page(env.store, env.ops.id, "fold").status == "arranged"
+    there = answer(env.client, env.key, "related", project="ops", slug="asked")["related"][0][
+        "why"
+    ][0]["there"]
+    assert len(there["passage_ids"]) == 8 and "passage_ids_more" not in there
+
+
 def test_a_claim_names_its_writers_as_page_names_them_whatever_project_its_passage_is_of(env):
     """A page saved by hand that cites another project's passage, a source's: its claim is
     marked outside for a key that reaches that project, as `page` marks it, and names no
@@ -524,6 +580,11 @@ def test_the_tools_description_says_a_long_claim_is_cut_and_that_page_gives_it_w
         " whole."
     ) in said
     assert (relations.TEXT_MAX, relations.LINE_MAX) == (2_000, 400)
+    assert (
+        "`passage_ids` names the first 8 passages a claim cites, and `passage_ids_more` counts"
+        " the rest."
+    ) in said
+    assert relations.PASSAGES_MAX == 8
 
 
 def test_the_tools_description_says_which_terms_and_titles_relate_none():

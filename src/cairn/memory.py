@@ -129,7 +129,10 @@ gives the claim whole). A claim cut that states a shared term has "line" too, th
 the passage it cites that holds the term, taken where the term's fact stands and never by
 a search of the text; a line longer than relations.LINE_MAX is given as LINE_MAX characters
 of it that hold the term, with "line_cut": true. A claim that is not cut has none of the
-three fields, and a claim cut that mentions has no line. No answer shows a weight.
+three fields, and a claim cut that mentions has no line. `passage_ids` names the first
+relations.PASSAGES_MAX passages a claim cites, and "passage_ids_more" counts the others,
+only when there are more (a claim a tidy folded from many; who wrote it is still said of
+every note it cites). No answer shows a weight.
 `searched` (`related_searched`), always: `complete`, and the three things a read can leave
 out, each counted (cairn.store.relating.Left): `terms_looked_up` and `terms_not_looked_up`,
 the page's terms past the bound on terms; `claims_read` and `claims_not_read`, the claims
@@ -156,7 +159,7 @@ from cairn.compiler import (
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
 from cairn.plans import Plan, Plans, limit_sentence
-from cairn.relations import RELATED_MAX, SHARES, Reason
+from cairn.relations import PASSAGES_MAX, RELATED_MAX, SHARES, Reason
 from cairn.sources import KINDS as SOURCE_KINDS
 from cairn.spans import Span, chunk
 from cairn.store import (
@@ -969,6 +972,16 @@ def _cut(claim: relating.Stated) -> dict[str, Any]:
     return said
 
 
+def _passages(span_ids: Sequence[str]) -> dict[str, Any]:
+    """The passages a claim given by `related` cites: `passage_ids`, the first
+    relations.PASSAGES_MAX, and `passage_ids_more`, the count of the rest, only when there
+    are more (a claim a tidy folded from many; `page` names them all)."""
+    shown: dict[str, Any] = {"passage_ids": list(span_ids[:PASSAGES_MAX])}
+    if len(span_ids) > PASSAGES_MAX:
+        shown["passage_ids_more"] = len(span_ids) - PASSAGES_MAX
+    return shown
+
+
 def related_searched(left: relating.Left) -> dict[str, Any]:
     """What a read of related pages left out, as `related` answers it under `searched`:
     `complete`, then the counts of cairn.store.relating.Left under their own names."""
@@ -1531,7 +1544,7 @@ class Memory:
                 "claim_id": claim.claim_id,
                 "text": claim.text,
                 **_cut(claim),
-                "passage_ids": list(claim.span_ids),
+                **_passages(claim.span_ids),
                 "outside": any(entry["outside"] for entry in entries),
                 **_writers(entries),
                 "written_at": _newest(found.origins[e["note"]].created_at for e in entries),

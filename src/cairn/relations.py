@@ -46,7 +46,10 @@ its first TEXT_MAX, marked cut. A reader of a claim cut must still see the term 
 a claim cut that states a shared term is given with the line of its passage that holds the
 term (`line_of`): the line the term's fact stands on (`placed`: the fact's own start and
 end, never a second search of the text), whole up to LINE_MAX characters, else LINE_MAX
-characters of it around the term.
+characters of it around the term. And the passages it cites: the first PASSAGES_MAX, and
+a count of the others. A claim cites one passage as it is compiled; a tidy folds claims of
+the same text into one that cites every passage of theirs, without a bound, and the claim
+is read by its first.
 
 When a page holds more terms than are looked up (cairn.store.relating.TERMS_MAX), the
 shortest are looked up first (`looked_up_before`): the terms a few pages share are short (a
@@ -70,6 +73,7 @@ WHY_MAX = 3  # the reasons an answer gives for one related page; it counts the r
 RELATED_MAX = 20  # the most related pages one answer gives
 TEXT_MAX = 2_000  # the characters of a claim's text an answer gives; a longer one is cut
 LINE_MAX = 400  # the characters of the line that holds a term, given beside a claim cut
+PASSAGES_MAX = 8  # the passages a claim given names, the first it cites; it counts the rest
 SHARES, MENTIONED_BY = "shares", "mentioned_by"  # the kinds of relation
 TITLE = "title"  # the kind of what a mention holds: the page's title
 

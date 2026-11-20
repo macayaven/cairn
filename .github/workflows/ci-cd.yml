@@ -89,7 +89,11 @@
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
 # jobs and of `package`, which runs the build backend; CAIRN_RELEASE_RUNNER names the runner
 # of publish, verify, attest_main, attest, release, aliases and deploy, which no job of a pull
-# request uses and which runs no build. docs/decisions.md, decision 150, says why there are two.
+# request uses and which runs no build. Five jobs run the GitHub CLI, gh, which GitHub's runners
+# have: release_check and image_build, on a tag, on the runner CAIRN_GATE_RUNNER names, and
+# publish, on a push to main, release and aliases, on the runner CAIRN_RELEASE_RUNNER names.
+# image_build refuses a gh before 2.102.0, which fixed how gh attestation verify matches
+# --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8). docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
 # pinned (resolved with git ls-remote on 2026-11-10; actions/attest read with gh api on
@@ -431,13 +435,15 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Make the directory the archive goes in
         run: mkdir -p "$RUNNER_TEMP/image"
+      # The export is named (buildkit's `name=`) so that buildkit gives every attestation
+      # statement each platform's image as its subject; given no name it gives none.
       - name: Build linux/amd64 and linux/arm64
         if: github.ref_type != 'tag'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          outputs: type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar
+          outputs: type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar,name=cairn
           provenance: mode=max
           sbom: true
           cache-from: type=gha,scope=image
@@ -489,10 +495,26 @@ jobs:
             echo "::error::gh is not on this runner, so main's attestation of $MAIN cannot be checked; install GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
             exit 1
           fi
+          # GHSA-wjmr-j3rp-mh2g and GHSA-4mq3-hpgx-9cx8: before 2.102.0, gh matched
+          # --signer-workflow as a prefix and --source-ref without case.
+          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+          IFS=. read -r major minor _ <<< "${version:-0.0.0}"
+          if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 102 ]; }; then
+            echo "::error::gh on this runner is ${version:-of a version it does not print}, before 2.102.0, which fixed how gh attestation verify matches --signer-workflow and --source-ref, so it is not trusted with main's attestation; update GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
+          # Off a terminal gh prints only its error. These are its words, in 2.102.0 and
+          # 2.105.0, for no attestation of the digest and for one that does not match the policy;
+          # anything else is the tool or the API.
           if ! gh attestation verify "$RUNNER_TEMP/main.json" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci-cd.yml" \
-              --source-ref refs/heads/main --source-digest "$GITHUB_SHA"; then
-            echo "::error::$MAIN has no attestation signed by this repository's ci-cd.yml for a run on refs/heads/main at $GITHUB_SHA, so nothing shows it is main's image of this commit; run this tag's workflow again once main's run for that commit has attested it (job attest_main), or tag a commit whose main run did"
+              --source-ref refs/heads/main --source-digest "$GITHUB_SHA" 2> "$RUNNER_TEMP/verify.err"; then
+            cat "$RUNNER_TEMP/verify.err" >&2
+            if grep -Eq 'no attestations found|verifying with issuer|expected [A-Za-z]+ to be ' "$RUNNER_TEMP/verify.err"; then
+              echo "::error::$MAIN has no attestation signed by this repository's ci-cd.yml for a run on refs/heads/main at $GITHUB_SHA, so nothing shows it is main's image of this commit; run this tag's workflow again once main's run for that commit has attested it (job attest_main), or tag a commit whose main run did"
+            else
+              echo "::error::gh attestation verify could not check $MAIN: the tool failed or GitHub's API could not be reached, as its own words above say; re-run this job"
+            fi
             exit 1
           fi
       # The same step every scan runs on its runner's registry, so each pull request proves
@@ -1432,11 +1454,19 @@ jobs:
           fi
           image="ghcr.io/$repository:$tag"
           docker logout ghcr.io
-          # The digest this pull printed (`Digest: sha256:...`, as docker pull prints it), not
-          # the digests the engine knows the name by: it may hold another index from before.
-          pulled="$(docker pull "$image" | tee /dev/stderr | sed -n 's/^Digest: //p')"
+          # The pull's status on its own: the step runs as bash -e, without pipefail, and docker
+          # pull can print its digest and then fail. Then the digest this pull printed
+          # (`Digest: sha256:...`, as docker pull prints it), not the digests the engine knows
+          # the name by: it may hold another index from before.
+          if docker pull "$image" > "$RUNNER_TEMP/pull.log" 2>&1; then status=0; else status=$?; fi
+          cat "$RUNNER_TEMP/pull.log"
+          if [ "$status" != 0 ]; then
+            echo "::error::docker pull $image with no login failed (exit $status), so nobody can pull it as the run guide says now; check that the package is public on GitHub, then re-run this job"
+            exit 1
+          fi
+          pulled="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/pull.log")"
           if [ "$pulled" != "$DIGEST" ]; then
-            echo "::error::$image, pulled with no login, is ${pulled:-no digest} by the digest the pull printed, not $DIGEST, the digest publish pushed"
+            echo "::error::$image, pulled with no login, is ${pulled:-no digest} by the digest the pull printed, not $DIGEST, the digest publish pushed, so the tag was moved after publish; release nothing from this run, and re-run this job once the package's page shows the tag at the digest publish pushed"
             exit 1
           fi
       - name: Log in to GHCR
@@ -1676,69 +1706,63 @@ jobs:
             prerelease=true
             candidate=(--prerelease --latest=false)
           fi
+          # The release's text is the version's notes and then a mark with this run's id, an
+          # HTML comment GitHub does not show and its API returns in the release's body. A re-run
+          # of the job keeps the run's id; notes.md itself is attested, so it is left as it is.
+          mark="<!-- cairn-ci-cd run $GITHUB_RUN_ID -->"
+          { cat notes.md; printf '\n%s\n' "$mark"; } > "$RUNNER_TEMP/body.md"
           # An earlier attempt may have made the release and been lost before the job was
           # recorded as done, or left it a draft: gh release create makes a draft, uploads the
           # files and then publishes it, in separate requests, so a runner lost in between
           # leaves the draft. Every release of the repository is listed, drafts included (GitHub
           # lists drafts to a token that may write, as this job's may), and a listing that fails
           # stops the job instead of being taken for none. The release for this tag is this
-          # run's only if it is the only one, has this tag's pre-release flag and holds no file
-          # this run did not make. A published one must hold them all, byte for byte, and is left
-          # as it is. A draft, which no one but the repository's writers can see, gets the files
-          # it lacks or holds cut off, and this run's notes, and is published. Either way
-          # `aliases` runs. Any other stops the job.
-          if ! found="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
-              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.draft, .prerelease, ([.assets[].name] | sort | join(\" \"))] | @tsv")"; then
+          # run's only if it is the only one and carries this run's mark and this tag's
+          # pre-release flag. A published one must hold exactly the files this run attested,
+          # byte for byte, and is left as it is. A draft is listed again just before it is
+          # touched and, only if it is still the same draft, deleted by its id, and the release
+          # made again as on a first attempt; its files, which may be cut off, are never read.
+          # Either way `aliases` runs. Any other release stops the job, and nothing is written
+          # to it.
+          listing() {
+            gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), ([.assets[].name] | sort | join(\" \"))] | @tsv"
+          }
+          unlisted() {
             echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
             exit 1
-          fi
+          }
+          found="$(listing)" || unlisted
           if [ -n "$found" ]; then
             refuse() {
-              echo "::error::a GitHub release for $GITHUB_REF_NAME exists and is not this run's: $1; a person decides what becomes of it"
+              echo "::error::a GitHub release for $GITHUB_REF_NAME exists and is not one this run can finish: $1; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job"
               exit 1
             }
             count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
             [ "$count" = 1 ] || refuse "there are $count releases for it"
-            IFS=$'\t' read -r draft pre names <<< "$found"
+            IFS=$'\t' read -r id draft pre ours names <<< "$found"
+            [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
             [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
-            want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
-            want="${want% }"
-            for name in $names; do
-              case " ${files[*]} " in
-                *" $name "*) ;;
-                *) refuse "it holds $name, which this run did not attest" ;;
-              esac
-            done
-            if [ -n "$names" ]; then
-              gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published"
-            fi
-            upload=()
-            for name in "${files[@]}"; do
-              case " $names " in
-                *" $name "*)
-                  cmp -s "$name" "$RUNNER_TEMP/published/$name" && continue
-                  [ "$draft" = true ] || refuse "$name is not the file this run attested" ;;
-                *) [ "$draft" = true ] || refuse "its files are [$names], not [$want]" ;;
-              esac
-              upload+=("$name")
-            done
             if [ "$draft" = true ]; then
-              if [ "${#upload[@]}" -gt 0 ]; then
-                gh release upload "$GITHUB_REF_NAME" --clobber "${upload[@]}"
-              fi
-              latest=()
-              if [ "$CANDIDATE" = "true" ]; then
-                latest=(--latest=false)
-              fi
-              gh release edit "$GITHUB_REF_NAME" --draft=false --notes-file notes.md "${latest[@]}"
-              echo "The draft GitHub release $GITHUB_REF_NAME is this run's, left by an earlier attempt: the files it lacked or holds cut off are uploaded, its notes are this run's, and it is published."
+              again="$(listing)" || unlisted
+              [ "$again" = "$found" ] || refuse "it changed while this job looked at it"
+              gh api -X DELETE "repos/$GH_REPO/releases/$id"
+              echo "The draft GitHub release $GITHUB_REF_NAME is this run's, left unfinished by an earlier attempt: it is deleted and the release is made again."
             else
+              want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+              want="${want% }"
+              [ "$names" = "$want" ] || refuse "its files are [$names], not [$want]"
+              gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published" \
+                || refuse "its files could not be downloaded to compare"
+              for name in "${files[@]}"; do
+                cmp -s "$name" "$RUNNER_TEMP/published/$name" || refuse "$name is not the file this run attested"
+              done
               echo "The GitHub release $GITHUB_REF_NAME is this run's, made by an earlier attempt with these files: it is not made again."
+              exit 0
             fi
-            exit 0
           fi
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md "${candidate[@]}" "${files[@]}"
+            --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
 
   # Points `latest` at the highest released version and each X.Y at the highest released
   # X.Y.z, after a release is made (a release candidate moves neither). It decides from what
@@ -1792,7 +1816,7 @@ jobs:
           image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           released="$(gh release list --limit 1000 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName')"
           if [ "$(printf '%s\n' "$released" | grep -c .)" -ge 1000 ]; then
-            echo "::error::gh listed 1000 releases, the most it asks for, so a higher one may be missing"
+            echo "::error::gh listed 1000 releases, the most it asks for, so a higher one may be missing; raise this step's limit and job release_check's together on main, then run job aliases in the run of a commit that has them"
             exit 1
           fi
           oras repo tags "$image" > "$RUNNER_TEMP/published"

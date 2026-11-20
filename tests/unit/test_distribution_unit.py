@@ -109,9 +109,17 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         " `release`, the only one that may write to the repository, builds and installs"
         " nothing, checks that it got one wheel and one source archive of the tag's version,"
         " and makes the release. A tag never deploys.",
-        "A tag's run builds nothing, so re-running all its jobs promotes the same digest again"
-        " and finishes it, until its GitHub release exists, when `release_check` refuses the"
-        " tag.",
+        "A tag's run builds no image (job `package` builds only the release's files), so"
+        " re-running all its jobs promotes the same digest again and finishes it, until its"
+        " GitHub release exists, when `release_check` refuses the tag: from then on, re-run only"
+        " the failed jobs, which GitHub follows with the jobs that need them, a failed `release`"
+        " within the five days the run's files are kept and a failed `aliases` at any time.",
+        "`main` is moved only when the run's commit is still the head of `main`, read just"
+        " before it is moved: a run of an older commit, a retry among them, writes its"
+        " `sha-<commit>` and leaves `main` to the newer commit's run.",
+        "This repository's package exists already; in a fresh fork, the first `publish` lists"
+        " the package's tags before there is a package, which GHCR may refuse, so the package"
+        " may need to be created first: this is not checked.",
         "On `main`, re-running every job builds again and `publish` stops, since"
         " `sha-<commit>` holds another digest: re-run only the failed jobs.",
     ):

@@ -13,6 +13,7 @@
   whether in a shell line or through an action that builds (`deploy` runs its one script)."""
 
 import hashlib
+import json
 import re
 import subprocess
 from itertools import pairwise
@@ -20,8 +21,10 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ci_shell import run_step
 from test_ci_workflow_unit import (
     JOBS,
+    RAW_WORKFLOW,
     THE_GATE,
     ancestors,
     evaluate,
@@ -195,6 +198,108 @@ def test_a_privileged_job_runs_exactly_its_listed_steps_and_no_file_but_deploy_s
     assert files_run({"steps": [{"run": 'bash scripts/deploy_production.sh wait "$D"'}]}) == []
 
 
+def definition(value) -> str:
+    """The SHA-256 of VALUE as canonical JSON (keys sorted, YAML's `on`, read as True, a
+    string), the same on every machine whatever the YAML's layout."""
+
+    def plain(x):
+        if isinstance(x, dict):
+            return {str(k): plain(v) for k, v in x.items()}
+        return [plain(v) for v in x] if isinstance(x, list) else x
+
+    text = json.dumps(plain(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+# The whole definition of each privileged job: its own keys (permissions, needs, if, runs-on,
+# environment, concurrency, env, outputs) and then each step whole, `with` and `env` inputs,
+# `shell`, `working-directory` and `if` included. A change to any of them is a change here.
+PRIVILEGED_DEFINITIONS = {
+    "publish": [
+        "abe0ae08af0800c938fcde96faea54bb07276f962dbf16bad96ab39ec4f26a06",
+        "1a6b7627d1ef6deb2d94425608ef7bae00108989018ac6ac819381746041cbe0",
+        "8306689dab0ead439f5f7fd02a80289fa3c8492078e2f988a4a993978ed26baa",
+        "d9ea58238b445cda0110bdacbaf8df6871101638f01b5ce1a827f14fff4e0535",
+        "ef6a84363a5151811074777e49202394f0aa77ca636013f73154e1cc5f89998b",
+        "ad9651396fe808494b0cdac909f262796fe4930a9055a9d868e6ddd8c5ba2adf",
+        "c83e7facece707c4f75350e1de0052f2ce46fcc8a71786a447f6637ef62ea26f",
+    ],
+    "aliases": [
+        "90094caae1a5888d5fcdce1e5bb80a92c0cb7539a7db7fd131655532ed5c4e83",
+        "1a6b7627d1ef6deb2d94425608ef7bae00108989018ac6ac819381746041cbe0",
+        "8306689dab0ead439f5f7fd02a80289fa3c8492078e2f988a4a993978ed26baa",
+        "a494380ef5e74b3f32a7075e134120ee726c3b8a0d321bacf7f6ef2c83ab37cc",
+    ],
+    "attest": [
+        "c131c0a395998bfe5cc8c174d51ff4369af022467b11be44b08ef7229b36955b",
+        "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
+        "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
+        "cc86b92c64e9151bfa82f40dd1095dbfadd82a494a9bba96082398a87521a4d3",
+        "61c61f66fe29242510dcfdbc44aa543de571c3c4c84dfef2d539372ba941b8bc",
+        "17a3c14e979955db5dc020a60609de3a40456b894c3987fd0e6396fad1590ba9",
+    ],
+    "attest_main": [
+        "033e875e462bb3bfef8f34ea5b9e037bc71026963ac4fd9e26065cffdd6838b0",
+        "cc86b92c64e9151bfa82f40dd1095dbfadd82a494a9bba96082398a87521a4d3",
+        "17a3c14e979955db5dc020a60609de3a40456b894c3987fd0e6396fad1590ba9",
+    ],
+    "release": [
+        "5165d1610aa4638259b10262874a992db6b2b557007a329103fbbd9dcba655d4",
+        "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
+        "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
+        "a32d1c955bb0e0a09ae752caca1db0b8aecc3da1ce5cd6a540982a0687e89a63",
+    ],
+    "deploy": [
+        "401510e913f6e37136331eeefa6d88fce27bbba126b17c42793f7694b9600454",
+        "b18abd84ee482615c40437c08518d017e4714ce2969a8de2177163237511424c",
+        "a2535f2ff0de1a3d0277c76a2785eeac643094fc780539743881dac6e7cd3770",
+        "8306689dab0ead439f5f7fd02a80289fa3c8492078e2f988a4a993978ed26baa",
+        "5adafd3ace605a543d6987d35c06f906bf2906d9568de6f3680c9dd2a958199f",
+        "98eea6ec9c1ffb5566953bb347a4eb98ba62f321f5a8a853e05a479fbce9ba19",
+        "bbca2994a9d061fd00037a35ce2ee8983531d90544a0994fb2b54199b4a18095",
+        "0a121d0a5e8a8d2842f01b512d79eac2b512addcedee827510b874abaa6f1eb7",
+        "017f3f0cd69d3c189c0764dadcdbf1d3e3cd3c1793072e5139d8148a58d7e927",
+        "33eb2834597be56ac27f28feeb21b8056c4cbaec3ad15858238a992f8be61fc4",
+        "d6cbac9b74b53c64fccc732bcca08b479063efedd08a1012e94c1b5f16720142",
+        "2017523234a93cd32e28ae852d764a8f1c537530e467fceec2a124648bc930c1",
+        "07c4d51c7b032306506491757887c9353c08b9a0dd0e9452832d09b1758acba6",
+    ],
+}
+# The workflow's own keys but its jobs (name, on, permissions, concurrency): a default shell,
+# working directory or env there would reach every privileged step.
+WORKFLOW_DEFINITION = "b1cee4920f1e889327531def9015032200cb85cf16e9c55d61b6396c655c14af"
+
+
+def job_definition(job: dict) -> list[str]:
+    own = {key: value for key, value in job.items() if key != "steps"}
+    return [definition(own), *(definition(step) for step in job["steps"])]
+
+
+def test_every_privileged_job_and_each_of_its_steps_is_pinned_whole():
+    workflow = yaml.safe_load(RAW_WORKFLOW)
+    assert definition({k: v for k, v in workflow.items() if k != "jobs"}) == WORKFLOW_DEFINITION
+    assert set(PRIVILEGED_DEFINITIONS) == {n for n, j in JOBS.items() if holds_a_token(j)}
+    for name, pinned in PRIVILEGED_DEFINITIONS.items():
+        assert job_definition(JOBS[name]) == pinned, name
+    # What the pin sees that the step list did not: deploy's checkout of another repository,
+    # ref or path, a step's shell, working directory, env or inputs, and the job's defaults.
+    deploy = JOBS["deploy"]
+    checkout = deploy["steps"][0]
+    for changed in (
+        {**checkout, "with": {**checkout.get("with", {}), "repository": "someone/else"}},
+        {**checkout, "with": {**checkout.get("with", {}), "ref": "other"}},
+        {**checkout, "with": {**checkout.get("with", {}), "path": "elsewhere"}},
+        {**deploy["steps"][1], "shell": "sh"},
+        {**deploy["steps"][1], "working-directory": "elsewhere"},
+        {**deploy["steps"][1], "env": {"BASH_ENV": "x"}},
+    ):
+        index = deploy["steps"].index(checkout if "uses" in changed else deploy["steps"][1])
+        steps = [*deploy["steps"][:index], changed, *deploy["steps"][index + 1 :]]
+        assert job_definition({**deploy, "steps": steps}) != PRIVILEGED_DEFINITIONS["deploy"]
+    with_defaults = {**deploy, "defaults": {"run": {"shell": "sh"}}}
+    assert job_definition(with_defaults) != PRIVILEGED_DEFINITIONS["deploy"]
+
+
 def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_the_checkout():
     holders = [name for name, job in JOBS.items() if holds_a_token(job)]
     assert set(holders) == {"publish", "aliases", "attest", "attest_main", "release", "deploy"}
@@ -240,13 +345,10 @@ def shim(bin_) -> None:
 
 
 def bash(run: str, cwd, env: dict) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
+    return run_step(
+        run,
         cwd=cwd,
         env=env,
-        capture_output=True,
-        text=True,
-        check=False,
     )
 
 
@@ -412,6 +514,7 @@ def run_create(tmp_path, tag: str, candidate: str):
         "CANDIDATE": "${{ needs.release_check.outputs.candidate }}",
     }
     (tmp_path / "release").mkdir()
+    (tmp_path / "release" / "notes.md").write_text("the notes\n")
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     # No release for the tag yet: the listing of releases holds none, as on a first attempt.
@@ -437,7 +540,7 @@ def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_pat
         "--title",
         "v1.2.3",
         "--notes-file",
-        "notes.md",
+        f"{tmp_path}/body.md",
         "cairn_memory-1.2.3-py3-none-any.whl",
         "cairn_memory-1.2.3.tar.gz",
         "SHA256SUMS",
@@ -453,7 +556,7 @@ def test_a_candidate_is_a_pre_release_never_marked_latest(tmp_path):
         "--title",
         "v1.2.3-rc.2",
         "--notes-file",
-        "notes.md",
+        f"{tmp_path}/body.md",
         "--prerelease",
         "--latest=false",
         "cairn_memory-1.2.3-py3-none-any.whl",
@@ -536,11 +639,17 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     owner = "<owner>/<repo>"
     workflow = f"--repo {owner} --signer-workflow {owner}/.github/workflows/ci-cd.yml"
     expected = {
-        f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}",
+        f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}"
+        " --source-digest <commit>",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow}",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow} --source-ref"
-        " refs/heads/main",
+        " refs/heads/main --source-digest <commit>",
     }
+    commit = (
+        "`<commit>` is the full commit the tag `vX.Y.Z` names (`git rev-parse"
+        " 'vX.Y.Z^{commit}'`): `--source-digest` checks that the attestation was made by a run"
+        " of that commit, which is what ties the files and the image to the release's commit."
+    )
     ci = README[README.index("## CI/CD") : README.index("## Planned")]
     update = DEPLOY_GUIDE[DEPLOY_GUIDE.index("## Update") :]
     update = update[: update.index("\n## ")]
@@ -556,6 +665,7 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     for guide in (ci, update):
         assert set(VERIFY.findall(guide)) == expected
         assert proof in flat(guide)
+        assert commit in flat(guide)
         assert "A pass proves that these bytes are the ones" not in flat(guide)
     # The flag the guides give is the one the tag's run checks main's attestation with.
     tag_check = next(
@@ -598,7 +708,8 @@ def test_the_readme_says_what_a_change_of_documents_alone_still_runs_and_how_tag
         "When the registry has no `sha-<commit>` for the tag's commit, the tag's run stops"
         " before publishing anything and says to run it again once `main`'s run for that"
         " commit has published it;",
-        "After a release, job `aliases` points `latest` at the highest released version and each"
+        "After a release, and never after a candidate, job `aliases` points `latest` at the"
+        " highest released version and each"
         " `X.Y` at its newest `X.Y.z`, one such job at a time across all runs, deciding from the"
         " releases and the registry as they are when it runs, so overlapping releases cannot"
         " move either backwards.",
@@ -705,6 +816,14 @@ def test_aliases_alone_re_run_in_any_release_s_run_does_what_a_superseded_one_wo
         " `X.Y` stay where they were: re-run the job `aliases` alone in any release's run, which"
         " decides from the releases and the registry as they are then and so moves every alias"
         " where it belongs." in ci
+    )
+    # It moves latest first and then each X.Y, so a stop between them leaves a part done.
+    run_ = point["run"]
+    assert run_.index("point latest") < run_.index("for line in")
+    assert (
+        "Job `aliases` moves `latest` first and then each `X.Y`: if it stops in between,"
+        " `latest` has moved and an `X.Y` may not have, and running it again finishes the job."
+        in ci
     )
     assert (
         "A run re-run later keeps the workflow of its own commit, and with it the cap that"

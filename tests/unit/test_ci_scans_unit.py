@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ci_shell import run_step
 from test_ci_workflow_unit import JOBS, RAW_WORKFLOW, ancestors, needs
 
 REPO = Path(__file__).resolve().parents[2]
@@ -403,17 +404,14 @@ def run_install(tmp_path, job: str, arch: str, tamper: bool = False):
         ).stdout.split()[0]
         for digest in assets.values():
             run = run.replace(digest, made)
-    return subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
+    return run_step(
+        run,
         env={
             "PATH": f"{bin_}:/usr/bin:/bin",
             "RUNNER_TEMP": str(tmp_path),
             "RUNNER_ARCH": arch,
             "GITHUB_PATH": str(tmp_path / "path"),
         },
-        capture_output=True,
-        text=True,
-        check=False,
     )
 
 

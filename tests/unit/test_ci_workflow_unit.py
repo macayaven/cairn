@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ci_shell import run_step
 
 REPO = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location(
@@ -146,7 +147,10 @@ def test_release_qemu_installer_uses_the_native_platform_before_image_work(name)
         # One build of both platforms, written as an archive: nothing is pushed or loaded.
         build = next(s for s in steps if s.get("uses", "").startswith("docker/build-push"))
         assert set(build["with"]["platforms"].split(",")) == {"linux/amd64", "linux/arm64"}
-        assert build["with"]["outputs"] == ("type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar")
+        # Named, so buildkit gives each attestation statement the image as its subject.
+        assert build["with"]["outputs"] == (
+            "type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar,name=cairn"
+        )
         assert "push" not in build["with"] and "load" not in build["with"]
 
 
@@ -191,17 +195,14 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
         tool.chmod(0o755)
     calls = tmp_path / "calls"
     digest = "sha256:" + "a" * 64
-    result = subprocess.run(
-        ["/bin/bash", "-e", "-c", commands],
+    result = run_step(
+        commands,
         env={
             "PATH": str(tmp_path),
             "CALLS": str(calls),
             "image": f"ghcr.io/owner/repo@{digest}",
             "DOCKER_DEFAULT_PLATFORM": job.get("env", {}).get("DOCKER_DEFAULT_PLATFORM", ""),
         },
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert calls.read_text().splitlines() == [
@@ -227,12 +228,13 @@ def run_the_guide_pull(tmp_path, pulled: str, **ref: str) -> tuple[int, str, lis
         'if [ "$1" = pull ]; then\n'
         '  printf "1.2.3: Pulling from owner/repo\\nDigest: %s\\n" "$PULLED"\n'
         '  printf "Status: Downloaded newer image for %s\\n%s\\n" "$2" "$2"\n'
+        '  exit "${PULL_EXIT:-0}"\n'
         "fi\n"
     )
     docker.chmod(0o755)
     calls = tmp_path / "calls"
-    done = subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+    done = run_step(
+        step["run"],
         env={
             "PATH": f"{tmp_path}:/usr/bin:/bin",
             "CALLS": str(calls),
@@ -243,12 +245,9 @@ def run_the_guide_pull(tmp_path, pulled: str, **ref: str) -> tuple[int, str, lis
             "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567",
             "REPOSITORY_PRIVATE": "false",
             "DIGEST": "sha256:" + "a" * 64,
+            "RUNNER_TEMP": str(tmp_path),
             **ref,
         },
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        check=False,
     )
     made = calls.read_text().splitlines() if calls.exists() else []
     return done.returncode, done.stdout, made
@@ -306,7 +305,26 @@ def test_the_pull_with_no_login_fails_unless_this_pull_printed_the_published_dig
     assert code == 1
     assert out.splitlines()[-1] == (
         f"::error::ghcr.io/owner/repo:1.2.3, pulled with no login, is {pulled or 'no digest'}"
-        f" by the digest the pull printed, not {PUSHED_INDEX}, the digest publish pushed"
+        f" by the digest the pull printed, not {PUSHED_INDEX}, the digest publish pushed, so"
+        " the tag was moved after publish; release nothing from this run, and re-run this job"
+        " once the package's page shows the tag at the digest publish pushed"
+    )
+
+
+@pytest.mark.parametrize("status", ["1", "125"])
+def test_a_pull_that_fails_after_printing_the_digest_fails_the_step_in_one_sentence(
+    tmp_path, status
+):
+    """docker pull can print `Digest:` and then fail (Moby's pull writes the digest before it
+    stores the reference). Run as GitHub runs the step, bash -e without pipefail, a pipe into
+    sed would hide that status: the pull's status is checked on its own."""
+    code, out, _ = run_the_guide_pull(tmp_path, PUSHED_INDEX, PULL_EXIT=status)
+    assert code == 1
+    (error,) = [line for line in out.splitlines() if line.startswith("::error::")]
+    assert error == (
+        f"::error::docker pull ghcr.io/owner/repo:1.2.3 with no login failed (exit {status}),"
+        " so nobody can pull it as the run guide says now; check that the package is public on"
+        " GitHub, then re-run this job"
     )
 
 
@@ -316,8 +334,13 @@ def test_the_pull_with_no_login_is_the_one_the_run_guide_gives():
     assert re.search(r"^docker pull ghcr\.io/macayaven/cairn:\d+\.\d+\.\d+ &&$", guide, re.M)
     assert "the `docker pull` above prints `Digest: sha256:` and a digest" in guide
     assert "RepoDigests" not in guide
-    pulled = 'pulled="$(docker pull "$image" | tee /dev/stderr | sed -n ' + "'s/^Digest: //p')\""
-    assert pulled in run.splitlines()
+    lines = [line.strip() for line in run.splitlines()]
+    assert (
+        'if docker pull "$image" > "$RUNNER_TEMP/pull.log" 2>&1; then status=0; else status=$?; fi'
+        in lines
+    )
+    assert 'pulled="$(sed -n \'s/^Digest: //p\' "$RUNNER_TEMP/pull.log")"' in lines
+    assert not [line for line in lines if "docker pull" in line and "|" in line]
 
 
 def test_release_jobs_do_not_run_the_application_environment_or_rehearsals_on_the_host():
@@ -425,12 +448,9 @@ def test_rehearsals_refuse_a_local_image_for_the_wrong_platform(
     )
     docker.chmod(0o755)
     env = {k: v for k, v in JOBS[name]["env"].items() if k in ("LOCAL", "PLATFORM", "ARCH")}
-    result = subprocess.run(
-        ["/bin/bash", "-e", "-c", preflight["run"]],
+    result = run_step(
+        preflight["run"],
         env={"PATH": str(tmp_path), "IMAGE_ARCH": architecture, "IMAGE": "x@sha256:1", **env},
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert (result.returncode == 0) is success
 
@@ -1194,8 +1214,8 @@ def run_the_check_step(tmp_path, private: str, released: str = "[]") -> tuple[in
     output = tmp_path / "github_output"
     output.write_text("")
     step = JOBS["release_check"]["steps"][1]
-    done = subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+    done = run_step(
+        step["run"],
         cwd=root,
         env={
             **env,
@@ -1204,10 +1224,6 @@ def run_the_check_step(tmp_path, private: str, released: str = "[]") -> tuple[in
             "GITHUB_OUTPUT": str(output),
             "REPOSITORY_PRIVATE": private,
         },
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
     )
     return done.returncode, done.stderr, output.read_text()
 
@@ -1495,13 +1511,10 @@ def run_release_step(tmp_path, step: dict, files: list[str], tag: str = "v1.2.3"
     # No release for the tag yet: the listing of releases holds none, as on a first attempt.
     (bin_ / "gh").write_text('#!/bin/sh\nif [ "$1" = api ]; then exit 0; fi\nprintf "%s\\n" "$@"\n')
     (bin_ / "gh").chmod(0o755)
-    return subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+    return run_step(
+        step["run"],
         cwd=tmp_path,
         env={"PATH": f"{bin_}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path), "GITHUB_REF_NAME": tag},
-        capture_output=True,
-        text=True,
-        check=False,
     )
 
 
@@ -1550,7 +1563,7 @@ def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
         "--title",
         "v1.2.3",
         "--notes-file",
-        "notes.md",
+        f"{tmp_path}/body.md",
         "cairn_memory-1.2.3-py3-none-any.whl",
         "cairn_memory-1.2.3.tar.gz",
         "SHA256SUMS",
@@ -1715,3 +1728,74 @@ def test_every_gate_run_rehearses_the_build_a_tag_runs():
         " `package_check`, the same uv build line as job `package`, uploading nothing)"
         in " ".join(RAW_WORKFLOW.split("\nname:")[0].replace("# ", "").split())
     )
+
+
+def test_no_step_names_a_shell_so_every_step_runs_as_the_tests_run_it():
+    """ci_shell.run_step runs a step as `bash -e`, GitHub's command for a step that names no
+    shell; that holds only while no step, job or the workflow names one."""
+    workflow = yaml.safe_load(RAW_WORKFLOW)
+    assert "defaults" not in workflow
+    for name, job in JOBS.items():
+        assert "defaults" not in job, name
+        for step in job.get("steps", []):
+            assert "shell" not in step, (name, step.get("name"))
+
+
+GH_JOBS = {"release_check", "image_build", "publish", "release", "aliases"}
+
+
+def test_the_jobs_that_run_gh_are_named_with_their_runner_in_the_header_and_the_readme():
+    """A runner of the operator's own needs the GitHub CLI for these jobs; GitHub's have it."""
+    found = {
+        name
+        for name, job in JOBS.items()
+        for s in job.get("steps", [])
+        if re.search(r"(^|[\s(;|&$])gh\s", s.get("run", ""))
+        or "release_check.py" in s.get("run", "")
+    }
+    assert found == GH_JOBS | {
+        "package"
+    }  # package runs release_check.py --notes, which needs no gh
+    assert "def run_gh" in (REPO / "scripts" / "release_check.py").read_text()
+    said = (
+        "Five jobs run the GitHub CLI, gh, which GitHub's runners have: release_check and"
+        " image_build, on a tag, on the runner CAIRN_GATE_RUNNER names, and publish, on a push"
+        " to main, release and aliases, on the runner CAIRN_RELEASE_RUNNER names. image_build"
+        " refuses a gh before 2.102.0, which fixed how gh attestation verify matches"
+        " --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8)."
+    )
+    header = " ".join(RAW_WORKFLOW.split("\nname:")[0].replace("# ", "").split())
+    assert said in header
+    readme = " ".join((REPO / "README.md").read_text().replace("`", "").split())
+    assert said in readme
+
+
+# A shell or python expansion in an error line, written `…` in the README's table.
+EXPANSION = re.compile(
+    r"\$\{[^}]*\}|\$\((?:[^()]|\([^)]*\))*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9]|\{[a-z_]+\}"
+)
+ERROR = re.compile(r"::error::(.*?)(?:\"\s*(?:;|$|\n)|\"\)|'\))", re.M)
+
+
+def stops() -> set[str]:
+    """Each `::error::` line a step of the workflow can print, as the README's table names it:
+    expansions as `…`, cut before its first `; `, where its next step starts."""
+    return {
+        EXPANSION.sub("…", found.group(1)).split("; ")[0]
+        for job in JOBS.values()
+        for step in job.get("steps", [])
+        for found in ERROR.finditer(step.get("run", "") + "\n")
+    }
+
+
+def test_every_stop_of_the_workflow_has_its_row_in_the_readme_and_no_row_is_stale():
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    part = readme[readme.index("### When a run stops") : readme.index("## Planned")]
+    rows = [line for line in part.splitlines() if line.startswith("| `")]
+    named = {}
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split(" | ")]
+        assert len(cells) == 3 and all(cells), row
+        named[cells[0].strip("`")] = cells
+    assert len(stops()) > 25
+    assert set(named) == stops()

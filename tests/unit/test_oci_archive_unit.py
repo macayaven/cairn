@@ -95,8 +95,13 @@ def statement(of: dict, predicate: str, kind: str = STATEMENT) -> dict:
     return {
         "_type": kind,
         "predicateType": predicate,
-        "subject": [{"name": "_", "digest": {"sha256": of["digest"].split(":")[1]}}],
-        "predicate": {},
+        "subject": [
+            {
+                "name": "pkg:docker/cairn@latest?platform=linux%2Famd64",
+                "digest": {"sha256": of["digest"].split(":")[1]},
+            }
+        ],
+        "predicate": {"made": "up"},
     }
 
 
@@ -366,6 +371,62 @@ def test_a_layout_is_refused_unless_it_holds_the_root_and_only_what_it_names(
     assert said in err
 
 
+def child_resized(index: dict, manifests: list[dict]) -> list[dict]:
+    """oras's entries, one child's with a size that is not its blob's."""
+    entries = as_oras_writes(index, manifests)
+    return [{**entries[0], "size": entries[0]["size"] + 1}, *entries[1:]]
+
+
+def child_retyped(index: dict, manifests: list[dict]) -> list[dict]:
+    entries = as_oras_writes(index, manifests)
+    return [{**entries[0], "mediaType": INDEX}, *entries[1:]]
+
+
+def child_named(index: dict, manifests: list[dict]) -> list[dict]:
+    """The tag given to a child: a lookup by the name would find the child, not the index."""
+    entries = as_oras_writes(index, manifests)
+    named = {**entries[0], "annotations": {"org.opencontainers.image.ref.name": "main"}}
+    return [named, *entries[1:]]
+
+
+def two_names_for_the_root(index: dict, manifests: list[dict]) -> list[dict]:
+    """`oras cp ... DIR:main,latest`: saveIndex writes one entry for each name of the root."""
+    entries = as_oras_writes(index, manifests, tag="main")
+    latest = {**entries[-1], "annotations": {"org.opencontainers.image.ref.name": "latest"}}
+    return [*entries, latest]
+
+
+def root_alias_resized(index: dict, manifests: list[dict]) -> list[dict]:
+    entries = two_names_for_the_root(index, manifests)
+    return [*entries[:-1], {**entries[-1], "size": entries[-1]["size"] + 1}]
+
+
+def test_a_root_listed_once_for_each_of_its_names_passes(tmp_path):
+    path, digest = build(tmp_path, oras=two_names_for_the_root)
+    code, out, err, _ = run(path, tmp_path, root=digest)
+    assert (code, err) == (0, ""), err
+    assert out.splitlines()[0] == f"image index {digest}"
+
+
+@pytest.mark.parametrize(
+    ("oras", "said"),
+    [
+        (child_resized, "index.json lists sha256:"),
+        (child_retyped, "index.json lists sha256:"),
+        (child_named, "index.json gives the name main to sha256:"),
+        (root_alias_resized, "index.json lists the image index"),
+    ],
+)
+def test_index_json_s_own_descriptors_are_checked_like_the_index_s(tmp_path, oras, said):
+    """Each entry of index.json is checked against the descriptor the image index holds for the
+    same digest and against its blob: a false size or media type, or a name on a child, is
+    refused even though the run imports by the root's digest."""
+    path, digest = build(tmp_path, oras=oras)
+    code, _, err, output = run(path, tmp_path, root=digest)
+    assert code == 1 and output == ""
+    assert said in err, err
+
+
 # --- every descriptor is what a runtime and a verifier take it for -----------------------------
 
 
@@ -448,14 +509,37 @@ def one_of_two_elsewhere(of: dict, predicate: str) -> dict:
     return {**once, "subject": once["subject"] + other_subject(of, predicate)["subject"]}
 
 
+def no_predicate(of: dict, predicate: str) -> dict:
+    return {k: v for k, v in statement(of, predicate).items() if k != "predicate"}
+
+
+def empty_predicate(of: dict, predicate: str) -> dict:
+    return {**statement(of, predicate), "predicate": {}}
+
+
+def listed_predicate(of: dict, predicate: str) -> dict:
+    return {**statement(of, predicate), "predicate": ["made", "up"]}
+
+
 @pytest.mark.parametrize(
-    ("body", "passes"), [(no_subject, True), (two_names, True), (one_of_two_elsewhere, False)]
+    ("body", "passes"),
+    [
+        (statement, True),
+        (two_names, True),
+        (no_subject, False),
+        (one_of_two_elsewhere, False),
+        (no_predicate, False),
+        (empty_predicate, False),
+        (listed_predicate, False),
+    ],
 )
-def test_a_statement_names_its_image_once_per_image_name_or_not_at_all(tmp_path, body, passes):
-    """buildkit v0.26.0 (exporter/containerimage/writer.go) gives a statement one subject per
-    image name the build is given, each with the image's digest, and none when it is given no
-    name, as image_build's oci export is: no subject passes, the index's annotation binding the
-    attestation to its image; a subject that is another digest does not."""
+def test_a_statement_names_its_image_and_holds_a_predicate(tmp_path, body, passes):
+    """buildkit v0.26.0 gives a statement one subject per image name the export is given
+    (exporter/containerimage/writer.go), each with that platform's image digest, and none when
+    it is given no name; the provenance it makes and the bill of materials the syft scanner
+    (v1.12.1, internal/scanner.go) writes carry no subjects of their own, so both take those
+    (exporter/attestation/make.go). image_build names its export, so a statement with no
+    subject, or one of another digest, is refused, as is one with no predicate."""
     path, _ = build(tmp_path, proof={"body": body})
     code, _, err, _ = run(path, tmp_path)
     assert (code == 0) is passes, err

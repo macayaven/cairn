@@ -123,7 +123,10 @@ Use a billing-enabled project, OpenTofu 1.13 or newer, and the Google Cloud CLI.
 [Application Default Credentials](https://docs.cloud.google.com/docs/authentication/provide-credentials-adc)
 with permission to enable the APIs and provision the stack. The account you use for SSH needs
 [IAP tunnel access and OS Admin Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin#assign-oslogin-roles),
-including permission to use the attached service account. Have a domain whose DNS you can edit.
+including permission to use the attached service account. An account from outside the
+project's organisation also needs `roles/compute.osLoginExternalUser`, granted on the
+organisation; and where the roles are granted on the instance alone, the CLI also needs to
+read the project (`compute.projects.get`). Have a domain whose DNS you can edit.
 The stack enables the Cloud OS Login API (`oslogin.googleapis.com`) for SSH.
 
 The stack creates a VPC and subnet, an `e2-small` with a 20 GiB `pd-balanced` boot disk, a

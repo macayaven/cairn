@@ -312,3 +312,47 @@ def test_the_security_guide_says_a_body_is_the_notes_own_markdown_and_the_web_vi
     parsers = [line for line in source.splitlines() if "MarkdownIt(" in line]
     assert parsers and all('"html": False' in line for line in parsers), parsers
     assert (ROOT / "tests" / "unit" / "test_claim_markdown_unit.py").is_file()
+
+
+def test_the_readme_says_where_the_source_runs_and_why():
+    """README, Develop: "on Linux or macOS: the store takes Unix file locks, so Python on
+    Windows cannot import it". What it rests on: the store's own module imports `fcntl`,
+    which Windows' Python does not have (the third report's table, "Platform")."""
+    develop = part(read("README.md"), "## Develop")
+    assert (
+        "on Linux or macOS: the store takes Unix file locks, so Python on Windows cannot"
+        " import it, and on Windows cairn runs in Docker or WSL." in develop
+    )
+    portable = (ROOT / "src" / "cairn" / "store" / "portable.py").read_text(encoding="utf-8")
+    assert "\nimport fcntl\n" in portable and "fcntl.flock(" in portable
+
+
+def test_the_readme_tells_the_reader_to_make_the_key_file_their_own():
+    """README, Make a key: the copy out of the container is followed by the command that
+    makes the file readable by its owner alone, since the copy does not promise it."""
+    said = " ".join(read("README.md").split())
+    assert said.count("Run `chmod 600 laptop.env` so that only you can read it") == 1
+    assert "and only you can read it." not in said
+
+
+def test_the_specification_says_what_audit_verify_names_and_when_a_rewrite_runs_again():
+    """docs/spec-v1.md, RV2 and RV4, as the changelog and the run guide say it; the
+    behaviour is run by test_audit_chain_unit.py and
+    test_compaction_record_generation_unit.py."""
+    spec = " ".join(read("docs/spec-v1.md").split())
+    assert (
+        "`audit-verify` names an event changed by hand, and, for one removed from the middle,"
+        " the event after it;" in spec
+    )
+    assert (
+        "a rewrite that was recorded is not done again (one killed before its record runs"
+        " again);" in spec
+    )
+    assert "a rewrite that succeeded is not done again" not in spec
+
+
+def test_the_quick_guide_names_the_role_an_outside_account_needs():
+    """infra/quick/README.md, Google Cloud: what an account from outside the organisation
+    needs beside the two roles, as Google's page on OS Login roles lists it."""
+    said = " ".join(read("infra/quick/README.md").split())
+    assert said.count("`roles/compute.osLoginExternalUser`, granted on the organisation") == 1

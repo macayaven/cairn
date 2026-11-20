@@ -46,7 +46,7 @@ docker compose cp cairn:/data/laptop.env ./laptop.env
 docker compose exec cairn rm /data/laptop.env
 ```
 
-`deploy/laptop.env` now holds one line, `CAIRN_API_KEY=` and the key, and only you can read it. git ignores the file. cairn keeps only a digest of the key: if you lose the file, make another key.
+`deploy/laptop.env` now holds one line, `CAIRN_API_KEY=` and the key. Run `chmod 600 laptop.env` so that only you can read it: a copy out of a container keeps the file's permissions only where your file system does. git ignores the file. cairn keeps only a digest of the key: if you lose the file, make another key.
 
 ### Sign in
 
@@ -164,7 +164,7 @@ A newer cairn may update the database when it starts. When the update only adds 
 
 ## Develop
 
-You need [uv](https://docs.astral.sh/uv/). From the clone's top folder:
+You need [uv](https://docs.astral.sh/uv/), on Linux or macOS: the store takes Unix file locks, so Python on Windows cannot import it, and on Windows cairn runs in Docker or WSL. From the clone's top folder:
 
 ```bash
 uv sync

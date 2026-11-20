@@ -64,8 +64,9 @@ class Filed:
 class Filer:
     """A fresh workspace for each message, in one folder."""
 
-    def __init__(self, folder: Path) -> None:
+    def __init__(self, folder: Path, rich: bool = False) -> None:
         self.folder = folder
+        self.rich = rich  # send Slack's rich text with the text, as Slack does
 
     def __call__(self, raw: str, author: str = "Cedar Quill") -> Filed:
         for leftover in self.folder.glob("cairn.db*"):
@@ -77,7 +78,10 @@ class Filer:
             )
             bench.link(ADA_SLACK, bench.ada, bench.library)
             message = {"type": "message", "user": shortcuts.CEDAR, "ts": "1900000000.000100"}
-            response = shortcuts.handle(bench, {**message, "text": raw})
+            sent = {**message, "text": raw}
+            if self.rich and (blocks := rich_text(raw, author)) is not None:
+                sent["blocks"] = blocks
+            response = shortcuts.handle(bench, sent)
             asyncio.run(response.background())
             (reply,) = [body["text"] for where, body in bench.calls if where == REPLY]
             filed = Filed(raw, author, reply)
@@ -96,6 +100,40 @@ class Filer:
             return filed
         finally:
             bench.store.close()
+
+
+def rich_text(raw: str, author: str) -> list | None:
+    """Slack's rich text for `raw`, as the model reads it: a preformatted element for each
+    code block (its lines less a first or last line of blanks), a code-styled text element
+    for each code span. None where the model leaves any of it open."""
+    shown = display(raw, {shortcuts.CEDAR: author})
+    if shown.unsure:
+        return None
+    elements: list[dict] = []
+    section: list[dict] = []
+    for piece in shown.pieces:
+        if piece.kind == "block":
+            if section:
+                elements.append({"type": "rich_text_section", "elements": section})
+                section = []
+            lines = piece.shown.split("\n")
+            while lines and not lines[0].strip(" \t"):
+                del lines[0]
+            while lines and not lines[-1].strip(" \t"):
+                del lines[-1]
+            text = "\n".join(lines)
+            elements.append(
+                {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": text}]}
+            )
+        elif piece.kind == "code":
+            section.append({"type": "text", "text": piece.shown, "style": {"code": True}})
+        elif piece.kind == "link":
+            section.append({"type": "link", "url": piece.target, "text": piece.shown})
+        else:
+            section.append({"type": "text", "text": piece.shown})
+    if section:
+        elements.append({"type": "rich_text_section", "elements": section})
+    return [{"type": "rich_text", "block_id": "rt3", "elements": elements}]
 
 
 # What a view shows
@@ -160,6 +198,7 @@ def _headings_split(markdown: str) -> list[int]:
 # a shrink keeps.
 
 Fault = tuple[str, str, str, str]
+names = dict(NAMES)  # the author's Slack id and name, as the message being checked has them
 
 
 def _norm_href(href: str) -> str:
@@ -167,12 +206,12 @@ def _norm_href(href: str) -> str:
 
 
 def _code_texts(raw: str) -> list[str]:
-    return [p.shown for p in display(raw, NAMES).pieces if p.kind in ("code", "block")]
+    return [p.shown for p in display(raw, names).pieces if p.kind in ("code", "block")]
 
 
 def _link_faults(raw: str, html: str, view: str) -> list[Fault]:
     """Links and images in one HTML view that Slack did not make."""
-    shown = display(raw, NAMES)
+    shown = display(raw, names)
     allowed = {(_norm_href(SOURCE), "Source in Slack")}
     allowed |= {(_norm_href(t), label) for t, label in shown.links + shown.any_links}
     found, out = Shown(html), []
@@ -241,7 +280,7 @@ def _patterns(raw: str, squash: bool, relax: bool = False) -> list[str]:
             else:
                 lines[-1].append(re.escape(char))
 
-    for piece in display(raw, NAMES).pieces:
+    for piece in display(raw, names).pieces:
         if "@" in piece.shown and piece.kind in ("text", "code", "block"):
             piece = Piece(piece.kind, piece.shown, sure=False)  # an email address is removed
         if piece.kind == "text" and piece.sure:
@@ -276,10 +315,16 @@ def _patterns(raw: str, squash: bool, relax: bool = False) -> list[str]:
 
 def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
     """Slack's code shown as code, byte for byte; and code on the page that Slack displayed."""
-    shown = display(raw, NAMES)
+    shown = display(raw, names)
     patterns = [re.compile(_LEAD + p) for p in _patterns(raw, squash=False)]
     relaxed = [re.compile(_LEAD + p) for p in _patterns(raw, squash=False, relax=True)]
     slack_code = {line for block in shown.code_blocks for line in block}
+    slack_code |= {  # a block Slack's page leaves open may be shown either way
+        line
+        for p in shown.pieces
+        if p.kind == "block" and not p.sure
+        for line in p.shown.split("\n")
+    }
     out: list[Fault] = []
     for view, html in views.items():
         blocks, inline = _code_lines(html), _inline_code(html)
@@ -315,7 +360,7 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
                     kind = "trailing white space lost (Slack text read as code)"
                 elif any(p.fullmatch(re.sub(r"\\(.)", r"\1", line)) for p in patterns):
                     kind = "escape shown in code"
-                elif any(p.fullmatch(line.replace("**", "*")) for p in patterns):
+                elif any(p.fullmatch(line.replace("**", "*").replace("~~", "~")) for p in patterns):
                     kind = "marks of prose in code"
                 else:
                     kind = "line not displayed"
@@ -352,7 +397,9 @@ def _text_faults(raw: str, claims: list[str]) -> list[Fault]:
 def faults(filed: Filed) -> list[Fault]:
     """Every fault of a filed message."""
     raw = filed.raw
-    shown = display(raw, NAMES)
+    names.clear()
+    names[shortcuts.CEDAR] = filed.author
+    shown = display(raw, names)
     out: list[Fault] = []
     if filed.note is None:
         if shown.text().strip() and not filed.reply.startswith("This message has no text"):

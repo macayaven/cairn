@@ -53,15 +53,15 @@ class Display:
 
     @property
     def code_blocks(self) -> list[list[str]]:
-        """Each code block's displayed lines; an empty first or last line is left out (the
-        page does not say whether Slack shows it)."""
+        """Each code block's displayed lines; a first or last line of blanks alone is left out
+        (the page does not say whether Slack shows it)."""
         blocks = []
         for piece in self.pieces:
             if piece.kind == "block" and piece.sure:
                 lines = piece.shown.split("\n")
-                if lines and lines[0] == "":
+                if lines and not lines[0].strip(" \t"):
                     lines = lines[1:]
-                if lines and lines[-1] == "":
+                if lines and not lines[-1].strip(" \t"):
                     lines = lines[:-1]
                 blocks.append(lines)
         return blocks
@@ -191,6 +191,16 @@ def display(raw: str, names: dict[str, str] | None = None) -> Display:
         run.append(char)
         i += 1
     flush()
+    # On a line with a backtick Slack's page leaves open, which backticks pair is open too.
+    line, open_lines, lines_of = 0, set(), []
+    for piece in pieces:
+        lines_of.append(line)
+        if piece.kind == "text" and not piece.sure and "`" in piece.shown:
+            open_lines.add(line)
+        line += piece.shown.count("\n")
+    for at, piece in enumerate(pieces):
+        if piece.kind in ("code", "block") and piece.sure and lines_of[at] in open_lines:
+            pieces[at] = Piece(piece.kind, piece.shown, sure=False)
     return shown
 
 
@@ -276,6 +286,8 @@ def _block(rng: random.Random) -> str:
 
 def _piece(rng: random.Random) -> str:
     kind = rng.random()
+    if kind < 0.04:  # long enough to reach the 80 characters a title is cut to
+        return ("Read the setup notes before the Monday review " * 3)[: rng.randint(30, 90)]
     if kind < 0.25:
         return rng.choice(WORDS)
     if kind < 0.40:

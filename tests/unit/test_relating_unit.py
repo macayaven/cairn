@@ -493,7 +493,7 @@ def test_a_title_whose_claims_were_not_all_read_mentions_none_and_counts_them(
     file(store, "ops", "Near", "Brook waits for a deploy.\n")
     file(store, "ops", "Far", "Quill waits for a deploy, " + "and waits, " * 60 + "then rests.\n")
     assert named_by(store, ops, deploy) == ["far", "near"]
-    monkeypatch.setattr(relating, "BYTES_MAX", 300)  # the long passage, twice, does not fit
+    monkeypatch.setattr(relating, "BYTES_MAX", 300)  # the long passage does not fit
     found = related(store, ops.id, deploy)
     assert found.pages == () and not found.left.complete
     assert (found.left.claims_read, found.left.claims_not_read) == (1, 1)

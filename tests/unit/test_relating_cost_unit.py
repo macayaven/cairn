@@ -124,7 +124,7 @@ def counted(store: Store, project_id: str):
 
 
 def test_the_stated_bounds():
-    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 500_000)
+    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 750_000)
     assert (relating.AT_ONCE, relations.CLAIMS_COMMON, relations.COMMON) == (64, 64, 5)
     assert not hasattr(relating, "HERE_MAX") and not hasattr(relating, "LISTED_MAX")
 
@@ -170,6 +170,49 @@ def test_the_fact_reader_is_handed_the_pages_passages_and_the_bound_in_bytes_of_
     assert found.left.claims_read == len(handed) - len(own) <= relating.CLAIMS_MAX
     assert found.left.claims_not_read == pages * 40 - found.left.claims_read > 0
     assert len(seen.statements) - settings_loaded(seen.statements) <= 17
+
+
+def test_a_passage_listed_for_a_term_and_for_the_title_is_read_once_and_charged_once(
+    tmp_path, monkeypatch
+):
+    """Four pages each state a term of the page and name its title in prose, in one claim of
+    one passage: the claim is listed for the term and for the title. Within the read each
+    passage's facts are extracted once, kept for that read alone, and its bytes are charged
+    to BYTES_MAX once: with the bound set to the four passages' bytes, all are read."""
+    store = Store(tmp_path / "cairn.db")
+    project = store.create_project("ops")
+    memory = Memory(store, lint_gate)
+    memory.note("ops", f"Ada sets {term(1)} and {term(2)}.\n", title="Asked", topic="Asked")
+    for k in range(4):
+        text = f"Brook {k} reads Asked and sets {term(1)} here.\n"
+        memory.note("ops", text, title=f"Other {k}", topic=f"Other {k}")
+    others = [
+        claim.span_ids[0]
+        for k in range(4)
+        for claim in store.get_page(project.id, f"other-{k}").claims
+    ]
+    sizes = {span.id: len(span.text.encode()) for span in store.get_spans(others).values()}
+    assert len(sizes) == 4
+    monkeypatch.setattr(relating, "BYTES_MAX", sum(sizes.values()))
+    extracted: dict[str, int] = {}
+    reader = relations.extract_facts
+
+    def counted_reader(span):
+        extracted[span.id] = extracted.get(span.id, 0) + 1
+        return reader(span)
+
+    monkeypatch.setattr(relations, "extract_facts", counted_reader)
+    try:
+        found = store.related_pages(project.id, "asked", RELATED_MAX)
+        again = store.related_pages(project.id, "asked", RELATED_MAX)
+    finally:
+        store.close()
+    assert found is not None and again is not None
+    assert found.left.complete and found.left.claims_read == 4 == len(found.pages)
+    for page in found.pages:
+        assert sorted(reason.kind for reason in page.why) == [relations.MENTIONED_BY, SHARES]
+    # each passage once a read: the page's own and the four others', in each of the two reads
+    assert set(extracted) >= set(sizes) and set(extracted.values()) == {2}, extracted
 
 
 @pytest.mark.parametrize(
@@ -562,9 +605,9 @@ def test_what_it_costs_to_know_that_a_claim_names_the_title(tmp_path, monkeypatc
     """A page mentioned by one claim, short or of 60,000 characters, which names it at its
     end. The claim is read as a term's candidate is, and the index is asked once where it
     matched: 13 statements, however long the claim. Its passage is handed back, and once
-    more as the claim's text with the index's marks: twice its bytes, which BYTES_MAX
-    counts. With less room than that the claim is not read, nothing of it is handed back,
-    the page is not said to be mentioned, and the claim is counted."""
+    more as the claim's text with the index's marks; BYTES_MAX counts the passage once,
+    its facts being read once. With less room than that the claim is not read, nothing of
+    it is handed back, the page is not said to be mentioned, and the claim is counted."""
     for size, said in (
         ("short", "Then she opens " + named),
         ("long", LONG + "Then she opens " + named),
@@ -585,12 +628,12 @@ def test_what_it_costs_to_know_that_a_claim_names_the_title(tmp_path, monkeypatc
         if size == "long":
             assert len(reason.there.line) == relations.LINE_MAX and reason.there.line_cut
             assert reason.there.line.startswith("Quill") or reason.there.line.endswith(named)
-            monkeypatch.setattr(relating, "BYTES_MAX", 2 * stored - 1)
+            monkeypatch.setattr(relating, "BYTES_MAX", stored - 1)
             with watched(store) as seen:
                 found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
             assert found.pages == () and found.left.claims_not_read == 1
             assert seen.longest < 100 and not [s for s in seen.statements if "highlight(" in s]
-            monkeypatch.setattr(relating, "BYTES_MAX", 2 * stored)
+            monkeypatch.setattr(relating, "BYTES_MAX", stored)
             assert len(store.related_pages(project_id, "quill-ledger", RELATED_MAX).pages) == 1
             monkeypatch.undo()
         store.close()

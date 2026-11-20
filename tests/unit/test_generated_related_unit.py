@@ -11,7 +11,8 @@ across its edges, a backslash at an edge, in a paragraph, a list item, a quote, 
 or a fence; and as drawn, in capitals or without its commas. So pages share terms, written
 differently on each. A page's title is one or two of the words the generator's prose is made
 of, so titles occur in other pages' prose, and several titles share a word ("Quill" and
-"Quill log").
+"Quill log"). Most pages hold one passage more that writes another page's title (`naming`):
+in a sentence, where it names that page, or inside a fence or a path, where it does not.
 
 What is checked of every answer of `Memory.related`, for every page:
 - each claim it gives is a claim of the latest version of its page, word for word, with the
@@ -49,7 +50,7 @@ What is checked of every answer of `Memory.related`, for every page:
   a claim that mentions the page is a piece of the claim's text, the first of its lines
   that holds the title's words side by side as the index reads them (its tokens of the
   line alone, as for a mention above), whole or LINE_GIVEN characters of it.
-CLAIMS_COMMON is 7 for these projects, which hold at most 36 claims, so that the rule decides
+CLAIMS_COMMON is 7 for these projects, which hold at most 45 claims, so that the rule decides
 some relations; the first test counts how many.
 A failure names project and page numbers and term kinds, never a note's text.
 """
@@ -110,20 +111,46 @@ def spelled(rng: random.Random, held: str) -> str:
     return rng.choice([held, held, held.upper(), held.replace(",", "")])
 
 
+def naming(rng: random.Random, pages: dict[str, str]) -> dict[str, str]:
+    """`pages`, most of them with one passage more that writes another page's title: in a
+    sentence of the generator's words, where it names that page (on its one line, or on the
+    second of two), or inside a fence or a path (one no other page writes), where it does
+    not."""
+    titles = list(pages)
+    made = {}
+    for n, (title, text) in enumerate(pages.items()):
+        other = rng.choice([t for t in titles if t != title])
+        where = rng.choice(["prose", "lines", "fence", "path", None])
+        added = {
+            "prose": f"{shapes.words(rng)} {other} {shapes.words(rng)}.",
+            "lines": f"{shapes.words(rng)}\n{shapes.words(rng)} {other} {shapes.words(rng)}.",
+            "fence": f"```\n{shapes.words(rng)} {other}\n```",
+            "path": f"{shapes.words(rng)} /srv/p{n}/{other.replace(' ', '/')}",
+            None: None,
+        }[where]
+        made[title] = text if added is None else f"{text}\n\n{added}"
+    return made
+
+
 def projects() -> list[dict[str, str]]:
     """Each project: its pages, title to the text of the page's one note."""
     rng = random.Random(SEED)
+    titled = random.Random(SEED + 1)  # the passages that write titles (`naming`)
     made = []
     for _ in range(PROJECTS):
         pool = [shapes.fact(rng) for _ in range(rng.randint(1, 4))]
         titles = rng.sample(TITLES, rng.randint(2, 9))
         made.append(
-            {
-                title: "\n\n".join(
-                    passage(rng, spelled(rng, rng.choice(pool))) for _ in range(rng.randint(1, 4))
-                )
-                for title in titles
-            }
+            naming(
+                titled,
+                {
+                    title: "\n\n".join(
+                        passage(rng, spelled(rng, rng.choice(pool)))
+                        for _ in range(rng.randint(1, 4))
+                    )
+                    for title in titles
+                },
+            )
         )
     return made
 

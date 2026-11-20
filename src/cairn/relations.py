@@ -84,7 +84,7 @@ from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from typing import Any, NamedTuple
 
-from cairn.facts import cased, extract_facts
+from cairn.facts import Fact, cased, extract_facts
 from cairn.spans import Span
 
 TERM_KINDS = ("url", "path", "flag", "version", "inline_code")  # the facts that can be terms
@@ -121,12 +121,13 @@ def specific(kind: str, text: str) -> bool:
     return len(text) >= CODE_MIN or not text.isalpha()
 
 
-def placed(span: Span) -> dict[Term, tuple[int, int]]:
+def placed(span: Span, facts: Sequence[Fact] | None = None) -> dict[Term, tuple[int, int]]:
     """The terms of a passage that relate pages, each once, in the order they are read: each
     with where its first fact stands in the passage's text, the fact's own start and end. A
-    fact written in more than TERM_MAX characters is no term."""
+    fact written in more than TERM_MAX characters is no term. `facts`: the passage's, when
+    the caller has read them already (extract_facts of the passage whole)."""
     found: dict[Term, tuple[int, int]] = {}
-    for fact in extract_facts(span):
+    for fact in extract_facts(span) if facts is None else facts:
         if fact.kind in TERM_KINDS and fact.end - fact.start <= TERM_MAX:
             term = Term(fact.kind, cased(fact.as_read))
             if specific(*term):
@@ -158,15 +159,15 @@ def line_of(text: str, start: int, end: int) -> tuple[str, bool]:
     return text[left : left + LINE_MAX], True
 
 
-def covered(span: Span) -> list[tuple[int, int]]:
+def covered(span: Span, facts: Sequence[Fact] | None = None) -> list[tuple[int, int]]:
     """The stretches of a passage's text that are no prose, in the order they stand: every
     fact of TERM_KINDS, a term that relates pages or not (a plain word in backticks covers
     too), and the body of every code block, each by the fact's own start and end. What the
     facts do not own is prose: a path written with no root (`deploy/compose.yaml` outside
-    backticks is no fact), the word after a fence's opening marks."""
+    backticks is no fact), the word after a fence's opening marks. `facts`: as `placed`."""
     return [
         (fact.start, fact.end)
-        for fact in extract_facts(span)
+        for fact in (extract_facts(span) if facts is None else facts)
         if fact.kind in TERM_KINDS or fact.kind == "code_block"
     ]
 

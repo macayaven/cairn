@@ -59,9 +59,11 @@ Bounded work, whoever asks, and nothing left out silently. What can be left out 
   as one more of them, a term's claims all or none, until CLAIMS_MAX claims are read; and
   their passages, in that order, until BYTES_MAX bytes are (each is measured first from
   its row, by a handle on the stored value that reads none of it, as cairn.graph measures
-  one: a passage that does not fit is neither read nor fetched). The passage of a claim
-  listed for the title counts twice: its bytes are handed back once more, as the claim's
-  text with the index's marks. A term one of whose claims was not read gives no reason at
+  one: a passage that does not fit is neither read nor fetched). A passage counts once,
+  however many of the claims listed cite it, for the terms and the title alike: within a
+  read its facts are read once (cairn.facts.extract_facts), and kept for that read alone,
+  for its terms (relations.placed) and for whether it names the title in prose
+  (relations.covered). A term one of whose claims was not read gives no reason at
   all: it is not known of every page whether it states the term, nor how many do. And so
   for the title. So every reason given says how many pages hold its term exactly, and no
   reason needs a mark of how far it was read.
@@ -69,9 +71,9 @@ Bounded work, whoever asks, and nothing left out silently. What can be left out 
 `complete` is true only when all three are nothing.
 
 BYTES_MAX is set from a table of measurements (beside it): a read's time goes to reading the
-terms of passages (relations.placed, 97% of it), not to the index or to reading the rows (1%
-each), at about half a microsecond to 0.7 of one a byte of text dense with flags, paths and
-versions; 512 candidates of short passages take 0.03 s, so CLAIMS_MAX is not what costs.
+facts of passages (cairn.facts.extract_facts, 97% of it), not to the index or to reading the
+rows (1% each), at about half a microsecond to 0.7 of one a byte of text dense with flags,
+paths and versions; 512 candidates of short passages take 0.03 s, so CLAIMS_MAX is not what costs.
 Since one read of related pages runs at a time (Store.related_pages), a slow read delays
 the next read of related pages, not page views. The page's own passages are not counted in
 BYTES_MAX: they are read whole, as `page` reads them, and a page of 380,000 characters dense
@@ -126,7 +128,7 @@ the index finds. Such a term relates nothing, from either side.
 
 import json
 import sqlite3
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
 from cairn import relations
@@ -136,26 +138,24 @@ from cairn.store import ranking
 
 TERMS_MAX = 256  # terms of a page that are looked up; it counts the rest
 CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
-# BYTES_MAX, measured on one laptop (an Apple M5) on 2026-11-20, under a load of 7 to 8: this
-# repository's documents filed as 32 pages, each asked at limit 20, and the worst read built
-# (256 terms; 512 candidate claims of 2,000 bytes of flags, paths and versions each). Time is
-# the middle of three runs; the worst page's, of three such rounds. On a quieter machine
-# (load 5.7) the worst page took 0.13, 0.21, 0.26, 0.37 and 0.51 s: times vary two- to
-# threefold with the machine's load, the counts not at all.
+# BYTES_MAX, measured on one laptop (an Apple M5) on 2026-11-20, each passage read and counted
+# once a read: this repository's documents filed as 32 pages, each asked at limit 20, and the
+# worst read built (256 terms; 512 candidate claims of 2,000 bytes of flags, paths and
+# versions each). Time is the middle of three runs, under a load of 10 to 13; the counts do
+# not vary with the load, the times two- to threefold.
 #   bytes       complete  pairs  reasons lost      worst of the 32  worst page built
-#   250,000     3 of 32   106    1,201 of 1,874    0.34 s           0.34 s
-#   400,000     3 of 32   124      987             0.38 s           0.55 s
-#   500,000    12 of 32   130      728             0.33 s           0.66 s
-#   750,000    21 of 32   154      535             0.55 s           1.00 s
-#   1,000,000  27 of 32   157      257             0.62 s           1.45 s
-# The rule: the smallest value whose worst read is at most half a second and which keeps 24
-# of the 32 answers complete, else 500,000. No value does both, so 500,000. The title's
-# claims are read within the bound, their passages counted twice, and a term or a title with
-# a claim not read gives no reason, so the answers are complete less often than the bytes
-# alone would say. Below a million bytes the table of decisions, one passage of 322,326
-# bytes, holds most of what is lost: with that page left out, 250,000 gives 24 of 31 complete
-# and 400,000 and more 26 of 31 (30 with no bound), pairs 135 then 136 of 136.
-BYTES_MAX = 500_000  # bytes of those claims' passages, as stored, read in all
+#   250,000     3 of 32   106    1,199 of 1,874    0.34 s           0.48 s
+#   400,000     3 of 32   132      902             0.39 s           0.68 s
+#   500,000    20 of 32   152      412             0.40 s           0.91 s
+#   750,000    27 of 32   157      257             0.42 s           1.32 s
+#   1,000,000  27 of 32   157      257             0.49 s           1.78 s
+# The rule: the smallest value whose worst read is at most half a second on a quiet run and
+# which keeps 24 of the 32 answers complete, else 500,000. 750,000 is the smallest that keeps
+# 24. Its worst of the 32 is under half a second even under that load. The worst page built
+# is the one row over it: its read at 750,000 is the same as before passages were counted
+# once (the same claims read, the same answer), and that read took 0.37 s earlier the same
+# day under a load of 5.7, the quietest run measured.
+BYTES_MAX = 750_000  # bytes of those claims' passages, as stored, read in all
 AT_ONCE = 64  # terms one statement asks the index for
 # The two marks the index is asked to put around what it matched of a title in a claim's
 # text (`_marked`): characters Unicode keeps for a program's own use and out of every text
@@ -282,7 +282,11 @@ def related(
         )
     }
     spans: dict[str, Span] = {}  # each passage read, whole: a line given is a line of one
-    held = _terms(_passages(con, project_id, [cited[0] for cited in own.values() if cited]), spans)
+    facts: dict[
+        str, list[relations.Fact]
+    ] = {}  # the facts of each, read once, kept for this read alone
+    own_passages = _passages(con, project_id, [cited[0] for cited in own.values() if cited])
+    held = _terms(own_passages, spans, facts)
     stating: dict[Term, set[int]] = {}  # each term of the page: its claims whose passage holds it
     for row, cited in own.items():
         for term in held.get(cited[0], ()) if cited else ():
@@ -307,11 +311,10 @@ def related(
     named = _title(title)
     naming = _title_claims(con, *scope, slug, named)
     candidates = _candidates(con, *scope, [*(others for _, others in asked.values()), naming])
-    marked = {candidates[row][0] for row, _ in naming if candidates.get(row)}
     passages, unread = _within(
-        con, project_id, list(dict.fromkeys(c[0] for c in candidates.values() if c)), marked
+        con, project_id, list(dict.fromkeys(c[0] for c in candidates.values() if c))
     )
-    held |= _terms(passages, spans)
+    held |= _terms(passages, spans, facts)
     read = {row for row, cited in candidates.items() if not (cited and cited[0] in unread)}
 
     reasons: dict[str, list[Reason]] = {}
@@ -329,7 +332,8 @@ def related(
             reasons.setdefault(at, []).append(shared._replace(there=row))
 
     places: dict[int, tuple[int, int]] = {}  # where a claim names the title, when it is known
-    for at, (row, place) in _mentioning(con, index, named, naming, candidates, read, spans).items():
+    mentioning = _mentioning(con, index, named, naming, candidates, read, spans, facts)
+    for at, (row, place) in mentioning.items():
         reasons.setdefault(at, []).append(Reason(MENTIONED_BY, title, TITLE, 2, None, row))
         if place is not None:
             places[row] = place
@@ -381,13 +385,15 @@ def _mentioning(
     candidates: Cited,
     read: set[int],
     spans: Mapping[str, Span],
+    facts: Mapping[str, Sequence[relations.Fact]],
 ) -> dict[str, tuple[int, tuple[int, int] | None]]:
     """Each other page that names the title in the prose of a claim: its first claim that
     does, by row, and where in the claim's text (relations.named_at).
 
     A claim that holds the title's words (`naming`) names the title only when a place where
     the index matched them lies outside every stretch of its passage that is code, a path, a
-    flag, a version or an address (relations.covered, on the passage read whole). The places
+    flag, a version or an address (relations.covered, on the facts this read holds of the
+    passage, read whole). The places
     are the index's (`_marked`), and they are places of the passage because the claim's
     text is the passage's text; the statement says whether it is. Where it is not (a page
     saved by hand), where the claim cites no passage of the project, and where the claim
@@ -412,7 +418,8 @@ def _mentioning(
         if row not in marks:  # the index's word stands
             names[at] = (row, None)
         elif place := relations.named_at(
-            _places(marks[row]), relations.covered(spans[candidates[row][0]])
+            _places(marks[row]),
+            relations.covered(spans[candidates[row][0]], facts[candidates[row][0]]),
         ):
             names[at] = (row, place)
     return {} if len(names) > relations.COMMON else names
@@ -427,8 +434,9 @@ def _marked(
     whose text is its passage's text, character for character, and holds neither mark nor a
     null character (SQLite's reading of a text stops there): the statement decides both
     without handing a text back, so a claim reworded from its passage, of any length, costs
-    nothing. What is handed back is then the passage's bytes once more, with two marks a
-    match; `_within` has counted them. One statement."""
+    nothing. What is handed back is then the passage's text once more, with two marks a
+    match: the index's work, not a reading of facts, and not counted in BYTES_MAX, which
+    counts the passage once (`_within`). One statement."""
     return {
         row: marks
         for row, marks in con.execute(
@@ -557,26 +565,26 @@ def _passages(con: sqlite3.Connection, project_id: str, span_ids: Iterable[str])
 
 
 def _terms(
-    passages: Iterable[Span], spans: dict[str, Span]
+    passages: Iterable[Span], spans: dict[str, Span], facts: dict[str, list[relations.Fact]]
 ) -> dict[str, dict[Term, tuple[int, int]]]:
     """Each passage read: the terms it holds and where each stands in it (relations.placed, on
-    the passage whole). The passage is kept in `spans`."""
+    the passage whole). The passage is kept in `spans`, and its facts, read once, in `facts`."""
     held = {}
     for span in passages:
         spans[span.id] = span
-        held[span.id] = relations.placed(span)
+        facts[span.id] = relations.extract_facts(span)
+        held[span.id] = relations.placed(span, facts[span.id])
     return held
 
 
 def _within(
-    con: sqlite3.Connection, project_id: str, span_ids: Sequence[str], twice: Collection[str]
+    con: sqlite3.Connection, project_id: str, span_ids: Sequence[str]
 ) -> tuple[list[Span], set[str]]:
     """The candidates' passages, in the order given, until BYTES_MAX bytes are read, and the
     ids of those of the project left unread. Each is measured first from its row, by a
     handle on its stored text that reads none of it, so a passage that does not fit is
-    neither read nor fetched: two statements, none for no passage. A passage of `twice`,
-    whose claim may name the title, counts twice: its bytes come back once more as the
-    claim's text with the index's marks (`_marked`)."""
+    neither read nor fetched: two statements, none for no passage. Each passage counts
+    once, whichever claims cite it and whatever they are listed for."""
     if not span_ids:
         return [], set()
     sizes = {}
@@ -587,10 +595,9 @@ def _within(
             sizes[span_id] = len(stored)
     taken, room = [], BYTES_MAX
     for span_id in span_ids:
-        cost = sizes.get(span_id, 0) * (2 if span_id in twice else 1)
-        if span_id in sizes and cost <= room:
+        if span_id in sizes and sizes[span_id] <= room:
             taken.append(span_id)
-            room -= cost
+            room -= sizes[span_id]
     return _passages(con, project_id, taken), set(sizes) - set(taken)
 
 

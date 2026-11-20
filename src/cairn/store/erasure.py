@@ -614,7 +614,7 @@ def _with_it(
     later = [
         c for text, c in blocks[at + 1 :] if (past or capped) and c and _may_open_a_fence(text)
     ]
-    if capped:  # all of them, and the run the body left open before it, whatever the title
+    if capped:  # all of them, and its section's claims left open before it, whatever the title
         return _places(kept, [*later, *(blocks[n][1] for n in _left_open(body, blocks, at))])
     took = later[: max(titles.steady(kept, [named, *later], title, text=True) - 1, 0)]
     leave = {id(claim) for claim in took}
@@ -829,7 +829,10 @@ def _left_open(body: str, blocks: Sequence[tuple[str, Claim | None]], at: int) -
     and the claim named does not keep it (the ninth round). Not a claim whose fence closes
     in its own text, nor one the body wrote a closer after, nor one with no fence. Not asked
     of what follows them: one parse of the body as it is, whatever the title does next;
-    none as `_written`."""
+    none as `_written`. After the claim named the section is not asked: a claim there whose
+    fence has no closing line can open a fence, and leaves by `_may_open_a_fence`; one at
+    the margin that this parse reads open is so only because what the claim named leaves
+    open runs on into it, and its own fence closes in its text."""
     found = _written(body, blocks, at)
     if found is None:
         return set()

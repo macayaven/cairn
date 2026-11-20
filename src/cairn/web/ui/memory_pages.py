@@ -1,15 +1,18 @@
 """The pages that show memory: the projects, a project's pages and notes, a page with its
-claims and their passages (page_view), and search."""
+claims and their passages (page_view), the pages related to a page (related_view), and
+search."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
+from urllib.parse import quote
 
 from starlette.requests import Request
 from starlette.responses import Response
 
 from cairn.compiler import body_to_read, section_headings
 from cairn.kinds import GENERAL
-from cairn.memory import SLACK_FILED, Memory, is_outside
+from cairn.memory import RELATED_RANGE, SLACK_FILED, Memory, NotFound, is_outside
+from cairn.relations import MENTIONED_BY, RELATED_MAX
 from cairn.spans import Span
 from cairn.store import Page, Project
 from cairn.store.audit import UNKNOWN_WRITER
@@ -23,6 +26,15 @@ from cairn.web.ui.common import _ui
 UI_HITS = 30
 WEB_PAGES_AT_ONCE = 200  # Q1: the pages a project's page lists at a time, by slug
 WEB_NOTES_AT_ONCE = 50  # UI and UX 8: the notes a project's list of notes shows at a time
+RELATED_SHOWN = 8  # the related pages a page's related pages show unless `limit` asks
+# A shared term's kind (cairn.relations.TERM_KINDS), as the related page says it.
+TERM_WORDS = {
+    "url": "URL",
+    "path": "path",
+    "flag": "flag",
+    "version": "version",
+    "inline_code": "code",
+}
 
 
 def _lines(span: Span) -> str:
@@ -173,6 +185,126 @@ def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
     }
 
 
+def related_href(
+    project: str, slug: str, *, limit: int | None = None, entry: str | None = None
+) -> str:
+    """The address of the related pages of a page: up to `limit` of them when given, and at
+    the entry of the related page `entry` (related_entry) when given."""
+    href = "/b/" + quote(project, safe="") + "/p/" + quote(slug, safe="") + "/related"
+    if limit is not None:
+        href += f"?limit={limit}"
+    return href if entry is None else href + "#" + quote(related_entry(entry), safe="")
+
+
+def related_entry(slug: str) -> str:
+    """The id of a related page's entry on the related pages of another."""
+    return "related-" + slug
+
+
+def related_left_out(searched: Mapping[str, Any]) -> str | None:
+    """One sentence for what a read of related pages left out, from the counts its answer
+    gives under `searched` (cairn.memory.related_searched) and nothing else: the page's
+    terms that were not looked up, the claims of other pages that were not read, the related
+    pages past the limit. None for an answer that is complete."""
+    if searched["complete"]:
+        return None
+    parts = []
+    if terms := searched["terms_not_looked_up"]:
+        every = terms + searched["terms_looked_up"]
+        was = "was" if terms == 1 else "were"
+        parts.append(f"{terms:,} of the page's {every:,} terms {was} not looked up")
+    if claims := searched["claims_not_read"]:
+        were = "claim of other pages that may state one of its terms was"
+        if claims != 1:
+            were = "claims of other pages that may state one of its terms were"
+        parts.append(f"{claims:,} {were} not read")
+    if pages := searched["pages_left_out"]:
+        are = "page is" if pages == 1 else "pages are"
+        parts.append(f"{pages:,} more related {are} not shown")
+    if not parts:
+        return "This is not all of it."
+    said = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    return f"This is not all of it: {said}."
+
+
+def _quoted(claim: Mapping[str, Any], mention: bool) -> dict[str, Any]:
+    """A claim a relation rests on, as the related page quotes it: its text as it is, never
+    drawn as Markdown; whether it is cut; the line given beside a claim cut, wherever the
+    answer holds one; and who wrote the notes it cites, each said once in the page view's
+    words (writer_words; a Slack message someone filed as search_hits says it), how many
+    notes that is, when the newest was written and whether any is outside text."""
+    entries = claim["written_by"]
+    more = claim.get("written_by_more", 0)
+    writers = dict.fromkeys(
+        writer_words(entry["kind"], entry["name"])
+        + (f": {entry['filed_message']}" if entry.get("filed_message") else "")
+        for entry in entries
+    )
+    line = claim.get("line")
+    holds = "names the title" if mention else "states the term"
+    in_part = ", in part" if claim.get("line_cut") else ""
+    return {
+        "id": claim["claim_id"],
+        "text": claim["text"],
+        "cut": bool(claim.get("text_cut")),
+        "line": line,
+        "line_cut": bool(claim.get("line_cut")),
+        "line_says": f"The line of its passage that {holds}{in_part}:",
+        "writers": list(writers),
+        "notes": len(entries) + more,
+        "notes_more": more,
+        "written_at": claim["written_at"],
+        "outside": claim["outside"],
+    }
+
+
+def related_view(answer: Mapping[str, Any], limit: int) -> dict[str, Any]:
+    """What `Memory.related` answered, as the related page shows it, and nothing it did not
+    answer: the related pages in its order, each reason with its claims (_quoted; this
+    page's own only for a shared term), the count of the reasons it does not list, the
+    sentence of what the read left out (related_left_out) and, when it left pages out and
+    `limit` asked for fewer than an answer can hold, the address that shows the most."""
+    project, slug = answer["project"], answer["page"]
+    related = []
+    for page in answer["related"]:
+        reasons = []
+        for why in page["why"]:
+            mention = why["kind"] == MENTIONED_BY
+            reasons.append(
+                {
+                    "kind": why["kind"],
+                    "term": why["term"],
+                    "term_kind": why["term_kind"],
+                    "term_word": TERM_WORDS.get(why["term_kind"], "term"),
+                    "pages": why.get("pages"),
+                    "here": _quoted(why["here"], mention) if "here" in why else None,
+                    "there": _quoted(why["there"], mention),
+                }
+            )
+        related.append(
+            {
+                "slug": page["page"],
+                "title": page["title"],
+                "entry": related_entry(page["page"]),
+                "reasons": reasons,
+                "more": page["more"],
+            }
+        )
+    left = answer["searched"]["pages_left_out"]
+    return {
+        "project": project,
+        "slug": slug,
+        "title": answer["title"],
+        "version": answer["version"],
+        "related": related,
+        "left_out": related_left_out(answer["searched"]),
+        "more_href": related_href(project, slug, limit=RELATED_MAX)
+        if left and limit < RELATED_MAX
+        else None,
+        "most": RELATED_MAX,
+    }
+
+
 def _sees_rule(memory: Memory, project: Project) -> bool:
     """Whether /b/<project>/access opens for the caller: the question that page asks the store
     (Store.project_access, PermissionError for whoever is neither the maker, nor an owner, nor
@@ -290,6 +422,23 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
             **page_view(memory, target, shown),
         )
 
+    def related(request: Request) -> Response:
+        """The pages related to a page's latest version, as `Memory.related` answers them
+        (related_view): RELATED_SHOWN of them unless `limit` asks, a whole number of 1 to
+        RELATED_MAX, any other refused in REST's sentence. A project out of reach and a
+        page that is not there are answered as the page view answers them."""
+        memory = _memory(request)
+        ref, slug = request.path_params["project"], request.path_params["slug"]
+        # a web page: what it does not know it ignores (X1); its `limit` it reads as REST does
+        limit = _whole_number(request.query_params, "limit", RELATED_RANGE)
+        limit = RELATED_SHOWN if limit is None else limit
+        try:
+            found = memory.related(ref, slug, limit)
+        except NotFound:
+            memory.find_page(memory.project(ref), slug)  # refuses in the page view's words
+            raise  # a page filed since: the first answer stands
+        return _ui(request, "related.html", **related_view(found, limit))
+
     def search(request: Request) -> Response:
         memory = _memory(request)
         query = request.query_params.get("q", "").strip()
@@ -310,4 +459,4 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
             most=UI_HITS,  # at most this many are asked for, so the page cannot count past it
         )
 
-    return home, project, notes, page, search
+    return home, project, notes, page, related, search

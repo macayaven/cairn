@@ -698,8 +698,10 @@ Web UI (server-rendered HTML)
   head it holds as its text, else nothing, and its link reads the whole claim on its page.
   Then "and N more
   reasons" for `more`; one sentence for what the read left out (related_left_out), with a
-  link to show up to 20 when pages were left out; and, with no related page, one sentence
-  that says so and what makes two pages related. N is 1 to 20 (8 when left out), and any
+  link to show up to 20 when pages were left out. With no related page it says so in one
+  sentence, with what makes two pages related; of an answer that is not complete it says
+  only that none was found in what was looked at, never that there is none. N is 1 to 20 (8
+  when left out), and any
   other is a 400 page that says so in REST's sentence; a project out of reach or a page
   that is not there is the 404 the page view gives. A parameter it does not take is
   ignored. The page view runs no statement more for the link. No script.

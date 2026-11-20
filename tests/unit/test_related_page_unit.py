@@ -610,6 +610,36 @@ def test_an_answer_that_is_not_complete_says_what_was_not_looked_at_from_its_cou
     assert said.all("a") == []  # no page was left out: nothing more to show
 
 
+def test_with_no_related_page_found_an_answer_that_is_not_complete_does_not_say_there_is_none(
+    w, monkeypatch
+):
+    """The page's one other term was not looked up, and another page states it: the page says
+    none was found in what was looked at, then what was not looked at, and never that no
+    page is related."""
+    monkeypatch.setattr(relating, "TERMS_MAX", 1)
+    note(w, "Asked", "Use `a.cfg` and `long-name.cfg`.\n")
+    note(w, "Other", "Brook sets `long-name.cfg`.\n")
+    answer = Memory(w.ada.view, lint_gate).related("ops", "asked", RELATED_SHOWN)
+    assert answer["related"] == [] and answer["searched"]["terms_not_looked_up"] == 1
+    r = get(w, "/b/ops/p/asked/related")
+    assert r.status_code == 200 and shown(r.text) == []
+    body = tree(main_of(r.text))
+    (empty,) = body.all("p", "empty")
+    assert flat(empty.text()) == (
+        "No page related to Asked was found in what was looked at: two pages are related when a"
+        " claim of each states the same term (a URL, a path, a flag, a version, or code that is"
+        " not a plain word), or when a claim of the other names this page's title."
+    )
+    (said,) = body.all("p", "searched")
+    assert flat(said.text()) == (
+        "This is not all of it: 1 of the page's 2 terms was not looked up."
+    )
+    assert "No page of ops is related" not in r.text
+    # with every term looked up, the same page is found, and nothing is said to be left out
+    monkeypatch.undo()
+    assert [page["page"] for page in shown(get(w, "/b/ops/p/asked/related").text)] == ["other"]
+
+
 @pytest.mark.parametrize(
     ("counts", "said"),
     [

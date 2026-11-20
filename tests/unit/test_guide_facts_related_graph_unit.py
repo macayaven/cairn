@@ -7,6 +7,7 @@ import logging
 
 import pytest
 from guide_source import guide_source
+from test_design_system_unit import tree
 from test_related_graph_unit import RELATED, drawn
 from test_related_page_unit import build, get, note, shown
 
@@ -225,3 +226,34 @@ def test_the_contract_says_what_the_related_view_reads_and_how_it_is_recorded(w,
             assert get(w, path).status_code == 200
     records = [r for r in caplog.records if r.name == "cairn.access"]
     assert [r.action for r in records] == ["graph", "graph", "related"]
+
+
+def test_the_contract_says_no_page_found_is_not_no_page_when_the_answer_is_not_complete(
+    w, monkeypatch
+):
+    from cairn.store import relating
+
+    doc_says(
+        cairn.server.__doc__,
+        "With no related page it says so in one sentence, with what makes two pages related;"
+        " of an answer that is not complete it says only that none was found in what was"
+        " looked at, never that there is none.",
+    )
+    doc_says(
+        graph_routes.__doc__,
+        "With no related page the view says so, and of an answer that is not complete only that"
+        " none was found in what was looked at.",
+    )
+    monkeypatch.setattr(relating, "TERMS_MAX", 1)
+    note(w, "Asked", "Use `a.cfg` and `long-name.cfg`.\n")
+    note(w, "Other", "Brook sets `long-name.cfg`.\n")
+    page = flat(tree(get(w, "/b/ops/p/asked/related").text).text())
+    view = drawn(get(w, RELATED + "asked").text).text
+    assert "No page related to Asked was found in what was looked at" in page
+    assert "No related page was found in what was looked at." in view
+    for said in (page, view):
+        assert "is related to" not in said.split("two pages are related")[0]
+        assert "This is not all of it: 1 of the page's 2 terms was not looked up." in said
+    whole = get(w, "/b/ops/p/queue/related").text  # complete, and none: said outright
+    assert "No page of ops is related to Queue" in whole
+    assert "No page is related to the page in focus." in drawn(get(w, RELATED + "queue").text).text

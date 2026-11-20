@@ -34,6 +34,8 @@ the other, or is named by it) and counts the others, linked to that page's entry
 drawn. Each related page's node opens its own related view, and every page node of the
 other views links its page's ("Related pages"). `q` and `after` are ignored: the view is one
 answer, and what its read left out is said in the sentence the related pages say it in.
+With no related page the view says so, and of an answer that is not complete only that none
+was found in what was looked at.
 It is two reads, neither inside the other: the reach check the other views make
 (cairn.graph.project_in_reach), then `Memory.related`, which rechecks the reach in the
 snapshot it reads the pages in. So a project out of reach is the 404 of one that does not

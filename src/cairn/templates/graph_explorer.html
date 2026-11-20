@@ -26,10 +26,13 @@
 {% if navigation.evidence_href %}
 {% if edges %}
 <p>Each relationship below says the first reason a page is related to the page in focus. <a href="{{ navigation.evidence_href }}">The claims every reason rests on</a> are on its related pages.</p>
+{% if navigation.left_out %}<p>{{ navigation.left_out }}</p>{% endif %}
+{% elif navigation.left_out %}
+{# An answer that is not complete: no page was found, which is not that there is none. #}
+<p>No related page was found in what was looked at. {{ navigation.left_out }} <a href="{{ navigation.evidence_href }}">Its related pages</a> say what relates two pages.</p>
 {% else %}
 <p>No page is related to the page in focus. <a href="{{ navigation.evidence_href }}">Its related pages</a> say what relates two pages.</p>
 {% endif %}
-{% if navigation.left_out %}<p>{{ navigation.left_out }}</p>{% endif %}
 {% endif %}
 <p class="graph-legend"><strong>Graph legend</strong>
 {% for kind, mark in [("project", "◆"), ("page", "■"), ("claim", "▲"), ("passage", "●"), ("note", "✚")] %}

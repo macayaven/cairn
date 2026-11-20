@@ -378,6 +378,25 @@ def test_limit_is_the_batch_and_what_is_left_out_is_said_in_the_related_pages_se
     assert "This is not all of it" not in whole.text
 
 
+def test_with_no_related_page_found_a_view_that_did_not_look_at_all_does_not_say_there_is_none(
+    w, monkeypatch
+):
+    from cairn.store import relating
+
+    monkeypatch.setattr(relating, "TERMS_MAX", 1)
+    note(w, "Asked", "Use `a.cfg` and `long-name.cfg`.\n")
+    note(w, "Other", "Brook sets `long-name.cfg`.\n")
+    view = drawn(get(w, RELATED + "asked").text)
+    assert list(view.nodes) == ["page:asked"] and view.edges == []
+    assert (
+        "0 related pages shown. No related page was found in what was looked at. This is not all"
+        " of it: 1 of the page's 2 terms was not looked up." in view.text
+    )
+    assert "No page is related to the page in focus" not in view.text
+    monkeypatch.undo()
+    assert list(drawn(get(w, RELATED + "asked").text).nodes) == ["page:asked", "page:other"]
+
+
 @pytest.mark.parametrize("limit", ["0", "21", "-1", "many"])
 def test_a_limit_the_explorer_refuses_is_refused_as_on_its_other_views(w, world, limit):
     refused = get(w, RELATED + f"deploy&limit={limit}")

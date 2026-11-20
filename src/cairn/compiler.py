@@ -356,7 +356,8 @@ BODY_NOT_SHOWN = (  # what a read answers in the place of a body it does not sho
     "The body of this version is not shown. Its notes' Markdown cannot be put together"
     " safely: a code fence would run from one claim into the next, and a body closes at most"
     f" {CLOSERS_MAX} such fences. Read the claims, where each claim's text and citations are"
-    " exact. The page is written whole again when a note it cites is forgotten."
+    " exact. The body is shown again once a note the page cites is forgotten, which writes"
+    " the page again."
 )
 
 

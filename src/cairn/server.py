@@ -380,9 +380,8 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       (Q3: what a fixed amount of work allows for the parts of its words, 8,000 for one
       part down to 1,000 from eight on, as before; cairn.store.ranking.scored_max).
   page(project, slug, version=None) -> {"project", "slug", "title", "version", "versions",
-      "body", "claims": [{"id", "text", "passage_ids"}], "metrics"}; "body_not_shown",
-      true, joins them only when "body" is cairn.compiler.BODY_NOT_SHOWN, the sentence in the
-      place of a stored version's body that would run a code fence across claims
+      "body", "claims": [{"id", "text", "passage_ids"}], "metrics"}
+      ("body_not_shown", true, only when "body" is the sentence cairn.compiler.BODY_NOT_SHOWN)
   evidence(project, slug, claim_id, version=None) -> {"claim": {...}, "version", "passages":
       [{"id", "note_id", "note_title", "heading_path", "start_line", "end_line", "text"}]}
       (E1, frozen by tests/acceptance/test_e1_evidence_of_a_version.py: the claim as that

@@ -30,7 +30,7 @@ NOT_SHOWN = (
     "The body of this version is not shown. Its notes' Markdown cannot be put together"
     " safely: a code fence would run from one claim into the next, and a body closes at most"
     " 16 such fences. Read the claims, where each claim's text and citations are exact. The"
-    " page is written whole again when a note it cites is forgotten."
+    " body is shown again once a note the page cites is forgotten, which writes the page again."
 )
 PAGE_FIELDS = {"project", "slug", "title", "version", "versions", "body", "claims", "metrics"}
 SIXTEEN = (
@@ -217,10 +217,11 @@ def test_a_note_the_page_refuses_leaves_the_version_and_its_read_as_they_were(en
         assert exact(again, page) and again["body"] == NOT_SHOWN and again["body_not_shown"]
 
 
-def test_the_read_is_safe_before_and_after_a_forget_which_writes_the_page_whole(env):
+def test_the_read_is_safe_before_and_after_a_forget_and_the_body_is_shown_again(env):
     """The sentence's last clause. Which claims a forget keeps is the forget's own rule and
-    is not asked here: only that what a reader is given holds no fence across claims, and
-    that the version the forget wrote is shown."""
+    is not asked here (a claim whose fence the body would not close leaves with it): only
+    that what a reader is given holds no fence across claims, and that the body of the
+    version the forget wrote is shown."""
     store = env[0]
     page, notes = saved_by_23c24229(store, [*triples(CLOSERS_MAX + 1), "Quill keeps the log."])
     for endpoint in ENDPOINTS:

@@ -125,6 +125,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from cairn.store.base import StoreBase, _iso, _require_account
+from cairn.store.erasure import _compaction_due
 from cairn.store.hosted import Sealer
 
 if TYPE_CHECKING:
@@ -623,7 +624,9 @@ class SlackMethods(StoreBase):
                 return _install(row)
             notes = self._remove(con, install_id)
             self._slack_audit(con, "slack.install_removed", install_id, notes=notes)
-            return _install(self._slack_row(con, install_id))
+            removed = _install(self._slack_row(con, install_id))
+        self._truncate_log(f"slack installation {install_id}")  # as any deletion: the log
+        return removed
 
     def _remove(self, con: sqlite3.Connection, install_id: str) -> int:
         """Removal (D10), in the caller's write: the secrets, links and offers deleted, and
@@ -638,6 +641,7 @@ class SlackMethods(StoreBase):
         con.execute("DELETE FROM slack_link_offers WHERE install_id = ?", (install_id,))
         # a message tied to a note the project held already: the tie goes, the note is not Slack's
         con.execute("DELETE FROM slack_notes WHERE install_id = ? AND owns = 0", (install_id,))
+        _compaction_due(con, self._stamp())  # the secrets and links are a deletion like any
         return con.execute(
             "UPDATE slack_notes SET forget_at = ? WHERE install_id = ? AND forget_at IS NULL",
             (_iso(stamp + FORGET_AFTER), install_id),
@@ -654,7 +658,9 @@ class SlackMethods(StoreBase):
                 return _install(row)
             self._revoke(con, install_id)
             self._slack_audit(con, "slack.bot_revoked", install_id)
-            return _install(self._slack_row(con, install_id))
+            revoked = _install(self._slack_row(con, install_id))
+        self._truncate_log(f"slack installation {install_id}")  # the deleted bot token
+        return revoked
 
     def _revoke(self, con: sqlite3.Connection, install_id: str) -> None:
         con.execute(
@@ -662,6 +668,7 @@ class SlackMethods(StoreBase):
             " bot_gone_at = COALESCE(bot_gone_at, ?) WHERE id = ?",
             (self._stamp(), install_id),
         )
+        _compaction_due(con, self._stamp())  # the bot token is deleted
 
     def slack_bot_token(self, install_id: str) -> str | None:
         """The install's bot token opened, for a call to Slack; None when it holds none or
@@ -1002,6 +1009,7 @@ class SlackMethods(StoreBase):
         The install as it is now; None when it is gone."""
         if answer not in ANSWERS:
             raise ValueError(f"a check comes to {', '.join(ANSWERS)}")
+        revoked = False
         with self._write() as con:
             same = "id = ? AND account_id = ? AND made_at = ? AND bot_token IS NOT NULL"
             binding = (check.install_id, check.account_id, check.made_at)
@@ -1015,6 +1023,7 @@ class SlackMethods(StoreBase):
                     f"SELECT 1 FROM slack_installs WHERE {same} AND dead_checks >= 2", binding
                 ).fetchone()
                 if ended:
+                    revoked = True
                     self._revoke(con, check.install_id)
                     self._audit(
                         con, "slack.bot_revoked", account_id=check.account_id,
@@ -1023,6 +1032,8 @@ class SlackMethods(StoreBase):
             row = con.execute(
                 f"SELECT {_INSTALL_COLUMNS} FROM slack_installs WHERE id = ?", (check.install_id,)
             ).fetchone()
+        if revoked:
+            self._truncate_log(f"slack installation {check.install_id}")  # its bot token
         return _install(row) if row else None
 
     def remove_gone_slack_installs(self) -> list[str]:
@@ -1042,6 +1053,8 @@ class SlackMethods(StoreBase):
                     con, "slack.install_removed", account_id=account_id, actor=("system", None),
                     detail={"install": install_id, "notes": notes, "why": "bot_token_ended"},
                 )  # fmt: skip
+        for install_id, _ in found:
+            self._truncate_log(f"slack installation {install_id}")
         return [install_id for install_id, _ in found]
 
     # Links and offers (D5)

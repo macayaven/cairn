@@ -125,3 +125,73 @@ def test_removed_slack_secrets_and_links_stay_in_the_log_while_a_reader_holds_it
             assert b"U0CANARYWAL01" not in after and sealed_bytes not in after
     finally:
         store.close()
+
+
+def _slack_install(store):
+    """A store with one Slack installation set up and one person linked; (the owner's view,
+    the installation's id, the sealed signing secret and bot token as the file holds them)."""
+    store.slack_sealer = Sealer(bytes(range(32)))
+    ada = store.sign_in(
+        "sso", "sub-ada", "ada@example.test", "Ada", issuer="https://sso.example.test",
+        join="personal",
+    )  # fmt: skip
+    owner = store.for_account(ada.account_id, ada.user.id)
+    install = owner.make_slack_install()
+    owner.ready_slack_install(
+        install.id,
+        signing_secret="8f" + "e1c0ffee" * 3,
+        bot_token="xoxb-" + "1111-2222-" + "FableBotToken0123",
+        team_id="T0FABLE01",
+        team_domain="fable-works",
+        bot_user_id="U0FABLEBOT",
+    )
+    owner.link_slack_user(install.id, "U0CANARYWAL01", ada.user.id)
+    signing, token = store._con.execute(
+        "SELECT signing_secret, bot_token FROM slack_installs WHERE id = ?", (install.id,)
+    ).fetchone()
+    return owner, install.id, signing.encode("ascii"), token.encode("ascii")
+
+
+def _log(db) -> bytes:
+    wal = Path(f"{db}-wal")
+    return wal.read_bytes() if wal.exists() else b""
+
+
+def test_removing_slack_empties_the_log_as_any_deletion_does_and_marks_a_compaction_due(tmp_path):
+    """With no other connection on the file, what Slack's removal deleted is not left in the
+    write-ahead log (it was: removal did not truncate the log as forgetting a note does), and
+    the deletion is recorded, so `compact --if-due` finishes it where a replica holds the
+    log."""
+    db = tmp_path / "cairn.db"
+    store = Store(db)
+    try:
+        owner, install_id, signing, token = _slack_install(store)
+        assert store.compaction_state().deleted_at is None
+        assert signing in _log(db) and b"U0CANARYWAL01" in _log(db)  # still in the log: set-up
+        owner.remove_slack_install(install_id)
+        log = _log(db)
+        held = [
+            name
+            for name, what in (
+                ("signing secret", signing),
+                ("bot token", token),
+                ("link", b"U0CANARYWAL01"),
+            )
+            if what in log
+        ]
+        assert held == []
+        assert store.compaction_state().deleted_at is not None
+    finally:
+        store.close()
+
+
+def test_a_revoked_bot_token_is_not_left_in_the_log(tmp_path):
+    db = tmp_path / "cairn.db"
+    store = Store(db)
+    try:
+        owner, install_id, _, token = _slack_install(store)
+        owner.revoke_slack_bot(install_id)
+        assert (token in _log(db)) is False
+        assert store.compaction_state().deleted_at is not None
+    finally:
+        store.close()

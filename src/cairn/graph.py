@@ -22,6 +22,15 @@ continuation: opaque, signed with a key made once per process, tied to the works
 project, the view and the search; one that does not verify is a ValueError, and one whose
 page changed since is GraphStale. An index row that is missing or names another project is
 GraphUnavailable, never a shorter answer. The tests count statements and rows, never time.
+
+The explorer's view of a page and its related pages (KG2) is not read here, and no function
+of this module reads a relation: project_graph and graph_neighbourhood answer the explicit
+evidence alone. That view's pages are what `Memory.related` answers, a bounded read of
+another kind (cairn.store.relating: up to 16 statements, the claims of other pages that hold
+the page's terms), which does not fit in what a request may do above, and which answers
+through its own read. So the view is two reads, neither inside the other: project_in_reach,
+the check every view here makes, in a snapshot of its own, and then `Memory.related`, which
+rechecks the view's reach in the snapshot it reads the pages in (cairn.web.graph_routes).
 """
 
 import base64
@@ -300,6 +309,17 @@ def _project_in_reach(store: Store, con: sqlite3.Connection, ref: str) -> tuple[
     ):
         raise KeyError(ref)
     return project
+
+
+def project_in_reach(store: Store, ref: str) -> tuple[str, str]:
+    """The project `ref` names (id, else name) as (id, name), in one read snapshot that reads
+    nothing else, with the checks every view of the explorer makes (_project_in_reach).
+    KeyError when it does not exist or is out of reach, the same for both; GraphUnavailable
+    for a reach past this module's bounds. For the view whose pages another read gives (the
+    module's docstring): what that read answers, it answers for a project found here."""
+    with store._read() as con:
+        project_id, name = _project_in_reach(store, con, ref)
+    return project_id, name
 
 
 class GraphStale(ValueError):

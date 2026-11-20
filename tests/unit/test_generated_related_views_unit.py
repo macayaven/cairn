@@ -1,5 +1,6 @@
 """What people are shown of related pages, over generated projects: the web page of a page's
-related pages shows exactly what `Memory.related` answers, in its order.
+related pages, and the explorer's view of them, show exactly what `Memory.related` answers,
+in its order.
 
 The projects are those of tests/unit/test_generated_related_unit.py (its `projects()`: seeded,
 the same on every run), which checks the answers themselves; here each answer is compared
@@ -8,7 +9,10 @@ each with its title, its reasons in order (kind, term, kind of term, how many pa
 the claim on each side by its id and what is quoted of it, character for character (all of
 it; or, of a claim that is cut, the line its answer gives, else its head), and the count of the
 reasons not listed. Asked at the most pages an answer holds, and at 2, where pages are left
-out. A failure names project and page numbers, never a note's text.
+out. The explorer's view is compared the same way: its nodes are the page and the answer's
+pages in order, in the drawing and in the list, and its edges go from the page to each of
+them, each saying the first reason's kind and term and counting every other reason. A
+failure names project and page numbers, never a note's text.
 """
 
 import logging
@@ -16,6 +20,7 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 from test_generated_related_unit import projects
+from test_related_graph_unit import drawn
 from test_related_page_unit import given_of, shown
 
 from cairn import relations
@@ -117,7 +122,8 @@ def world(tmp_path_factory):
                 continue
         made.append((name, [head.slug for head in store.list_pages(project.id)]))
     key = store.create_key("laptop")
-    with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+    app = create_app(store, public_url=BASE, graph_explorer=True)
+    with TestClient(app, base_url=BASE) as client:
         opened = client.post("/login", data={"key": key}, follow_redirects=False)
         assert opened.status_code == 303
         client.cookies.clear()
@@ -166,4 +172,58 @@ def test_the_web_page_shows_the_pages_and_reasons_of_the_answer_in_its_order(wor
         "left out": 1_000,
         "cut": 5_000,
     }
+    assert all(seen[what] >= count for what, count in least.items()), seen
+
+
+def test_the_explorers_view_draws_the_nodes_and_edges_of_the_answer_in_its_order(
+    world, monkeypatch
+):
+    differ, seen = [], dict.fromkeys(("nodes", "edges", "mentions", "more", "left out"), 0)
+    for limit, reasons_given, cut in ASKED:
+        bounds(monkeypatch, reasons_given, cut)
+        for name, slugs in world["projects"]:
+            for slug in slugs:
+                answer = world["memory"].related(name, slug, limit)
+                r = world["client"].get(
+                    f"/b/{name}/graph?focus=related%3A{slug}&limit={limit}",
+                    headers=world["cookie"],
+                )
+                assert r.status_code == 200, (name, slug, limit)
+                view = drawn(r.text)
+                here = "page:" + slug
+                nodes = [here, *("page:" + page["page"] for page in answer["related"])]
+                edges = [
+                    (
+                        here,
+                        "page:" + page["page"],
+                        page["why"][0]["kind"],
+                        page["why"][0]["term"],
+                        len(page["why"]) - 1 + page["more"],
+                    )
+                    for page in answer["related"]
+                ]
+                given = [
+                    (edge["from"], edge["to"], edge["reason"], edge["term"], int(edge["more"]))
+                    for edge in view.edges
+                ]
+                where = (name, slug, limit, reasons_given, cut)
+                if list(view.nodes) != nodes or view.svg_nodes != nodes:
+                    differ.append((*where, "nodes"))
+                if given != edges or view.lines != [edge[:2] for edge in edges]:
+                    differ.append((*where, "edges"))
+                if view.focus != here:
+                    differ.append((*where, "the node it is laid out around"))
+                titles = [answer["title"], *(page["title"] for page in answer["related"])]
+                if [next(iter(links)) for links in view.nodes.values()] != titles:
+                    differ.append((*where, "titles"))
+                if ("This is not all of it" in view.text) is answer["searched"]["complete"]:
+                    differ.append((*where, "what was left out"))
+                seen["nodes"] += len(nodes)
+                seen["edges"] += len(edges)
+                seen["mentions"] += sum(edge[2] == relations.MENTIONED_BY for edge in edges)
+                seen["more"] += sum(edge[4] > 0 for edge in edges)
+                seen["left out"] += answer["searched"]["pages_left_out"] > 0
+    assert differ == [], (len(differ), differ[:5])
+    # so the comparison is not kept by views in which nothing could differ
+    least = {"nodes": 17_000, "edges": 10_000, "mentions": 6_000, "more": 1_500, "left out": 1_000}
     assert all(seen[what] >= count for what, count in least.items()), seen

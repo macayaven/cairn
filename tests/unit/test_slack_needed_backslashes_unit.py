@@ -65,8 +65,12 @@ NAMES = {
 # backslash before its first tilde; with those backslashes taken out the digest is
 # ad3d2c518b9d1929204ce131048c065c5201df7fe8e4057253c8bf8550ef96c0, as on 22f498b6. And by
 # finding 6: struck text is written as typed, so af92e9a5627fc9c37e3e68294cd35d0dbf39c7e18d17
-# 93534299acf7ee51ee33 became this, every changed line of it a line of then with fewer tildes.
-PROSE_ON_22F498B6 = "c51e4820300f3fd9e332b6fb7193ca305acc7c7459c6b166366785de771cb9b2"
+# 93534299acf7ee51ee33 became c51e4820300f3fd9e332b6fb7193ca305acc7c7459c6b166366785de771cb9b2,
+# every changed line of it a line of then with fewer tildes. And by the tester's second attack,
+# finding 2: a `*` or `_` is emphasis only where Slack shows it, else the character typed, so
+# that digest became this, every changed line of it (221 of 112 notes) a line of then with
+# only its asterisks and the backslashes before `*` and `_` different.
+PROSE_ON_22F498B6 = "3455dfd5af5f6fda1d263000ffc145e5bc2de1508cc8d4954c4ca82fa3636cc0"
 
 
 @pytest.fixture
@@ -695,20 +699,22 @@ DISPLAYED = {
         "Settings:\n\n\titems[0] = (a) * 2 * 3",
         "Settings:\n\n\titems[0] = (a) * 2 * 3",
     ),
-    # Slack has no fence of tildes (the third tester's finding 3): its lines are text.
+    # Slack has no fence of tildes (the third tester's finding 3): its lines are text. A `*`
+    # Slack shows as a character is the character typed (the second attack, finding 2): one
+    # between blanks bare, one before a word with a backslash; neither doubled.
     "in a fence of tildes": (
         "Settings:\n~~~\nitems[0] = (a) * 2 * 3\n~~~",
-        "Settings:\n\\~~~\nitems\\[0\\] = \\(a\\) ** 2 ** 3\n\\~~~",
+        "Settings:\n\\~~~\nitems\\[0\\] = \\(a\\) * 2 * 3\n\\~~~",
     ),
     "in a fence of tildes left open": (
         "Settings:\n~~~\nitems[0] = *p * 2",
-        "Settings:\n\\~~~\nitems\\[0\\] = **p ** 2",
+        "Settings:\n\\~~~\nitems\\[0\\] = \\*p * 2",
     ),
     # Three backticks that Slack paired with no others it displayed as they are: text, and no
     # fence over what follows.
     "under three backticks nothing pairs with: text": (
         "Settings:\n```\nitems[0] = *p * 2",
-        "Settings:\n\\`\\`\\`\nitems\\[0\\] = **p ** 2",
+        "Settings:\n\\`\\`\\`\nitems\\[0\\] = \\*p * 2",
     ),
     "its entities read": (
         "Settings:\n\n    a &lt; b &amp;&amp; c &gt; d",
@@ -731,10 +737,10 @@ DISPLAYED = {
         "1.\n\t~~~\n   # run [once]\nRow 4.",
         "1.\n\t\\~~~\n   \\# run \\[once\\]\nRow 4.",
     ),
-    # Not code to the parser, so prose as before.
+    # Not code to the parser, so prose as before, its asterisks as Slack showed them.
     "no blank line above: text": (
         "Settings:\n    items[0] = (a) * 2 * 3",
-        "Settings:\n    items\\[0\\] = \\(a\\) ** 2 ** 3",
+        "Settings:\n    items\\[0\\] = \\(a\\) * 2 * 3",
     ),
     "three spaces: text": (
         "Settings:\n\n   items[0] = *p*",
@@ -1245,7 +1251,7 @@ def test_a_readme_keeps_its_commands_and_their_comments(bench, notes):  # noqa: 
         README.replace("&gt;", ">").replace("\n---\n", "\n\\---\n").replace("# Shelf", "\\# Shelf")
     )
     lines = lines.replace("~~~\n# rows", "\\~~~\n\\# rows").replace("[4]", "\\[4\\]")
-    lines = lines.replace("*row\n~~~", "*row\n\\~~~")
+    lines = lines.replace("*row\n~~~", "\\*row\n\\~~~")  # not emphasis: typed (finding 2)
     for heading in ("## Install", "## Use", "## Rows", "## Notes", "## Limits", "## Thanks"):
         lines = lines.replace("\n" + heading, "\n\\" + heading)
     lines = lines.replace("\n### Row", "\n\\### Row")

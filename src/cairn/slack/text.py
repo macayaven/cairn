@@ -111,15 +111,75 @@ def _prose(text: str, clear: bool = True) -> str:
     of three tildes or more that only blanks and the marks of a quotation or a list item
     stand before on its line (_FENCE_LEAD: where a reader could take it for a fence, at any
     indentation and in any container) gets a backslash before its first tilde. `clear`:
-    whether what was written on the line before `text` is such marks alone, or nothing."""
-    text = _redact(_decode(text))
-    text = text.replace("&", "&amp;").replace("<", "&lt;")
-    text = re.sub(r"([\\\[\]()!`])", r"\\\1", text)
-    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"**\1**", text)
+    whether what was written on the line before `text` is such marks alone, or nothing.
+    Emphasis is written where Slack shows it and nowhere else (_emphasis)."""
+    text = _emphasis(_redact(_decode(text)))
     if clear:
         return _FENCE_LEAD.sub(r"\1\\~", text)
     first, feed, rest = text.partition("\n")
     return first + feed + _FENCE_LEAD.sub(r"\1\\~", rest)
+
+
+def _paired(text: str) -> set[int]:
+    """The places of the `*`, `_` and `~` that Slack shows as emphasis in `text`, prose as
+    Slack displayed it. Slack's page on message text gives `*bold*`, `_italic_` and `~strike~`
+    and says nothing of where a mark opens or closes; the rule is the third tester's model
+    of it (its `slack_styles`) with "not inside a word": from left to right, a mark opens
+    where neither a blank nor a mark follows it and neither a letter nor a digit stands
+    before it, and closes at the first same mark on its line, a character on at least, that
+    has no blank before it and neither a letter nor a digit after it; the marks between are
+    characters. Where none closes it, it is a character. Each character is read a bounded
+    number of times: the closers of each mark are found once, and looked for from a place
+    that only moves on."""
+    closers: dict[str, list[int]] = {"*": [], "_": [], "~": []}
+    for at, mark in enumerate(text):
+        after = text[at + 1 : at + 2]
+        if mark in closers and at and not text[at - 1].isspace() and not after.isalnum():
+            closers[mark].append(at)
+    next_one = dict.fromkeys(closers, 0)
+    feed, paired, at = _Next(text, "\n", len(text)), set(), 0
+    while at < len(text) - 1:
+        mark, after, before = text[at], text[at + 1], text[at - 1 : at]
+        opens = not after.isspace() and after not in closers and not before.isalnum()
+        if mark in closers and opens:
+            ends, n = closers[mark], next_one[mark]
+            while n < len(ends) and ends[n] < at + 2:
+                n += 1
+            next_one[mark] = n
+            if n < len(ends) and ends[n] < feed(at):
+                paired.update((at, ends[n]))
+                at = ends[n] + 1
+                continue
+        at += 1
+    return paired
+
+
+_ESCAPED = {"&": "&amp;", "<": "&lt;", **{mark: "\\" + mark for mark in "\\[]()!`"}}
+
+
+def _emphasis(text: str) -> str:
+    """`text`, prose as Slack displayed it, as Markdown: a `*` and a `_` that Slack shows as
+    emphasis (_paired) written `**` and `_`, so the page shows bold and italic, and a `~` as
+    typed (a page cannot strike). Every other `*` and `_` is the character typed, with a
+    backslash before it unless no reader could take it for a mark: a `_` between two
+    letters or digits, a `*` between two blanks after the first character of its line that
+    is not blank (never a list's mark, nor emphasis, nor a rule). The characters Markdown
+    reads as markup are escaped as everywhere in prose."""
+    paired, pieces, worded = _paired(text), [], False  # worded: the line holds a non-blank
+    for at, character in enumerate(text):
+        before, after = text[at - 1 : at], text[at + 1 : at + 2]
+        if at in paired:
+            pieces.append("**" if character == "*" else character)
+        elif character == "_":
+            bare = before.isalnum() and after.isalnum()
+            pieces.append(character if bare else "\\_")
+        elif character == "*":
+            bare = worded and before in (" ", "\t") and after in (" ", "\t")
+            pieces.append(character if bare else "\\*")
+        else:
+            pieces.append(_ESCAPED.get(character, character))
+        worded = character != "\n" and (worded or character not in " \t")
+    return "".join(pieces)
 
 
 def _link_target(target: str) -> str | None:

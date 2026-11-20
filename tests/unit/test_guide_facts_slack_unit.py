@@ -925,10 +925,18 @@ def test_connect_a_line_read_as_code_holds_what_slack_displayed():
         " the rest of the note, a link is still `[its words](its address)`, and an email"
         " address is still removed.",
     )
-    sent = "items[0] = (a) * 2 * 3 <@U0QUILL01> <https://fable.test/a_b|Issue #4> quill@fable.test"
-    shown = "items[0] = (a) * 2 * 3 @Brook Quill [Issue #4](https://fable.test/a_b) [email removed]"
+    # Slack's bold, `*now*`, gives the prose its doubled asterisks; the asterisks of `* 2 *`
+    # Slack shows as characters, and the prose writes them so (the second attack, finding 2).
+    sent = (
+        "items[0] = (a) * 2 * 3 *now* <@U0QUILL01> <https://fable.test/a_b|Issue #4>"
+        " quill@fable.test"
+    )
+    shown = (
+        "items[0] = (a) * 2 * 3 *now* @Brook Quill [Issue #4](https://fable.test/a_b)"
+        " [email removed]"
+    )
     prose = (
-        "items\\[0\\] = \\(a\\) ** 2 ** 3 @Brook Quill [Issue \\#4](https://fable.test/a_b)"
+        "items\\[0\\] = \\(a\\) * 2 * 3 **now** @Brook Quill [Issue \\#4](https://fable.test/a_b)"
         " \\[email removed\\]"
     )
     assert as_read(a_filed_note(f"Settings:\n\n    {sent}")) == (
@@ -1042,6 +1050,30 @@ def test_connect_a_line_of_tildes_is_text():
         [0],
         [("fence", f"~~~\n{manual}\n")],
     )
+
+
+def test_connect_emphasis_is_written_only_where_slack_shows_it():
+    """connect.md: "Bold, italic and struck text are Slack's only where its marks make them:
+    ...\" (The tester's second attack, finding 2: every `*x*` was doubled, so `2 * 3 * 4` was
+    `2 ** 3 ** 4`; each case is test_slack_emphasis_unit's.)"""
+    says(
+        *CONNECT,
+        "Bold, italic and struck text are Slack's only where its marks make them: a `*`, `_` or"
+        " `~` with neither a blank nor a mark after it and neither a letter nor a digit before"
+        " it, up to the next same mark on its line with no blank before it and neither a letter"
+        " nor a digit after it; Slack's page does not say where they open and close, and this is"
+        f" {PRODUCT.name}'s reading of it. There bold is written `**bold**` and italic `_italic_`;"
+        " every other `*` and `_` is the character typed, with a backslash before it unless it"
+        " is a `*` between two blanks with more than blanks before it on its line, or a `_`"
+        " between two letters or digits, so `2 * 3 * 4` and `snake_case` are written as typed.",
+    )
+    for sent, written in (
+        ("*bold* _italic_ ~struck~", "**bold** _italic_ ~struck~"),
+        ("2 * 3 * 4 and snake_case", "2 * 3 * 4 and snake_case"),
+        ("* item a*b*c *open _x", "\\* item a\\*b\\*c \\*open \\_x"),
+        ("*a\nb* *c *d*", "\\*a\nb\\* **c \\*d**"),
+    ):
+        assert as_read(a_filed_note(sent))[0] == written, sent
 
 
 def test_connect_struck_text_is_written_as_typed():

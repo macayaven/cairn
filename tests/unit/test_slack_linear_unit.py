@@ -53,6 +53,8 @@ SHAPES = {
     "list marks": "- ",  # what may stand before a fence of tildes (_FENCE_LEAD)
     "escaped brackets": "\\[",  # a title's escapes (_ATOM)
     "bold words": "*a* ",  # a title no cut keeps
+    "open marks": "*a _b ~c ",  # marks that open and find no closer (_paired)
+    "marks in words": "a*b_c~d ",  # marks that neither open nor close
 }
 
 

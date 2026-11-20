@@ -76,6 +76,28 @@ def eighteen() -> Plan:
     )
 
 
+OPEN, SHUT = "    - ~~~\n      sample {n}", "    - ~~~\n      sample {n}\n      ~~~"
+
+
+def mixed() -> Plan:
+    """Open and closed siblings behind a prefix of three hundred paragraphs, then a tail
+    that is a backtick fence opener of 3,000 characters: the twelve nearest leave, the
+    closed one before them stays and so does all before it. The first question's answers
+    past that closed one are guesses (spans.fences_reaching), asked again."""
+    shapes = [OPEN, SHUT, OPEN, OPEN, SHUT, *[OPEN] * 12]
+    prefix = "\n\n".join(f"Paragraph {n} of the prefix." for n in range(300))
+    return Plan(
+        [
+            Note("prefix", prefix, "Ops"),
+            *older(),
+            Note("run", "\n\n".join(s.format(n=n) for n, s in enumerate(shapes)), "Ops"),
+            Note("sep", "Between.", "Ops"),
+            Note("tail", "      " + "`" * 5 + " " * 3000 + "x", "Ops"),
+        ],
+        [],
+    )
+
+
 PAGES = {
     "a hundred notes stored in reverse": lambda: Plan(
         [
@@ -88,6 +110,7 @@ PAGES = {
     "two hundred siblings, a line of 8,000": lambda: siblings(200, "        " + "tail " * 1600),
     "a thousand siblings, a line of 40,000": lambda: siblings(1000, "        " + "tail " * 8000),
     "eighteen notes and an example after the tail": eighteen,
+    "open and closed items behind a prefix, before a long opener": mixed,
 }
 
 
@@ -117,7 +140,9 @@ def test_the_testers_pages_cost_two_renders(name):
         run.close()
 
 
-SEEDS = range(200, 300)  # the tester's generated test runs 0:200
+# the tester's generated test runs 0:200; 199 is the one of 0:400 that renders once more than
+# the plain loop (nineteen against eighteen, past sixteen named)
+SEEDS = [199, *range(200, 300)]
 
 
 def test_generated_forgets_cost_what_the_plain_loop_costs():
@@ -151,9 +176,9 @@ def test_generated_forgets_cost_what_the_plain_loop_costs():
                 worst_input = max(worst_input, multiple)
         finally:
             run.close()
-    # what these pages came to, pinned: some pass sixteen renders, none costs more than the
-    # plain loop, and the parser was handed at most this much
-    assert (past, worst_over, round(worst_input, 1)) == (6, 0, 20.2)
+    # what these pages came to, pinned: some pass sixteen renders, one renders once more than
+    # the plain loop (seed 199), and the parser was handed at most this much
+    assert (past, worst_over, round(worst_input, 1)) == (7, 1, 20.2)
     says(
         "security",
         CHECKS,

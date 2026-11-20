@@ -410,8 +410,10 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     (more than spans.CLOSERS_MAX of them, Refusal.FENCE_RUNS_ON). The claim that opens it
     leaves, the first in the body's order, and the rest are rendered and asked again, since
     without it the body is another. That alone is the plain rule, and it costs a render for
-    each claim that leaves. So that a note's author cannot make a forget cost that, two
-    kinds of claim leave in the same render as the claim named (`_with_it`):
+    each claim that leaves. So that it costs that only where the title changes after each
+    claim, as when notes stored in reverse spell it differently in turn (the plain rule
+    costs as much there), two kinds of claim leave in the same render as the claim named
+    (`_with_it`):
 
     - In every render, the claims the body writes directly before it that the plain rule
       would name next, one a render: those whose fence, ended until now by the end of its

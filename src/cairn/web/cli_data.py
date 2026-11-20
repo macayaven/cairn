@@ -319,7 +319,8 @@ def _compact(db: Path) -> int:
 def _compact_if_due(db: Path) -> int:
     """`compact --if-due` (the Google Cloud host's nightly run, infra/gcp/files/host.sh): what
     the record of compaction (Store.compaction_state) says is still due, so a deletion the
-    server's own compactor already rewrote for is not rewritten again. No deletion recorded:
+    server's own compactor already rewrote for, and recorded, is not rewritten again (one
+    killed before its record is). No deletion recorded:
     nothing. The file rewritten since the last deletion: the write-ahead log alone
     (Store.empty_log), not finished (exit 1, as compact's line) when another connection holds
     it. Otherwise the whole compaction, as `compact`."""

@@ -212,3 +212,49 @@ def test_a_record_an_earlier_build_left_rewritten_is_still_cleared(db):
         assert store.compaction_state().deleted_at is None
     finally:
         store.close()
+
+
+RUN_SAYS = (
+    "a rewrite is not repeated for the same deletion once it is recorded (one killed before"
+    " its record runs again)"
+)
+
+
+def test_the_run_guide_says_a_rewrite_is_not_repeated_once_recorded_and_runs_it(
+    two, db, monkeypatch
+):
+    """The sentence, run as it says: a recorded rewrite whose log was held is not done again
+    by the next try; one killed before its record is."""
+    from guide_source import guide_source
+
+    from cairn.web.compactor import Compactor
+
+    assert " ".join(guide_source("run").split()).count(RUN_SAYS) == 1
+    server, _ = two
+    vacuums: list[str] = []
+    server._observe(trace=lambda s: vacuums.append(s) if s.strip().upper() == "VACUUM" else None)
+    deleted(server)
+    with replica(db), pytest.raises(CompactIncomplete):
+        server.compact()  # recorded: rewritten, only the log is due
+    assert Compactor(server, hours=24, clock=lambda: T0).run_once() is True
+    assert len(vacuums) == 1  # the log alone: no second rewrite
+
+    deleted(server)
+
+    class Killed(BaseException):
+        pass
+
+    @contextmanager
+    def killed(con):
+        raise Killed
+        yield  # pragma: no cover
+
+    real = portable._transaction
+    monkeypatch.setattr(portable, "_transaction", killed)
+    with pytest.raises(Killed):
+        server.compact()  # rewritten, and killed before its record
+    monkeypatch.setattr(portable, "_transaction", real)
+    assert server.compaction_state().rewritten is False  # a rewrite is still due
+    assert Compactor(server, hours=24, clock=lambda: T0).run_once() is True
+    assert len(vacuums) == 3  # it ran again
+    assert server.compaction_state().deleted_at is None

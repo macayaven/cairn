@@ -556,20 +556,21 @@ class PortableMethods(StoreBase):
 
         The record (compaction_state): the rewrite and the emptying of the log are kept
         apart. Under the lock and before VACUUM, the deletion record (store.compact_due) is
-        read as it stands, its `updated_at` (each deletion sets it to its own time): what
-        the rewrite covers. Once VACUUM has returned, under the same hold of the lock and in
-        one transaction, compacted_at is set to when the rewrite began and the record is
-        marked as covered by it only if it still holds what was read: a deletion another
-        process (the server, beside the command line) records in between keeps it due, for
-        a rewrite of its own. A process that dies after VACUUM and before that transaction
-        leaves the record as it was, so the rewrite is done again: it costs the time of one
-        rewrite and loses nothing. A rewrite that did not happen,
-        whatever stopped it, records nothing (CompactIncomplete, `rewrote` False, when the
-        file was busy). When the rewrite succeeded and another connection held the log (a
-        replica service always does), CompactIncomplete with `rewrote` True: the deletion
-        stays recorded, as rewritten, so what stays due is emptying the log (empty_log),
-        never a second rewrite for it. Once the log is emptied the record goes, unless a
-        deletion came meanwhile."""
+        read as it stands, its `updated_at`: a generation each deletion writes of its own
+        (base.deletion_generation), what the rewrite covers. Once VACUUM has returned, under
+        the same hold of the lock and in one transaction, compacted_at is set to when the
+        rewrite began and the record is marked as covered by it (REWRITTEN with that
+        generation) only if it still holds what was read: a deletion another process (the
+        server, beside the command line) records in between keeps it due, for a rewrite of
+        its own. A process that dies after VACUUM and before that transaction leaves the
+        record as it was, so the rewrite is done again: it costs the time of one rewrite and
+        loses nothing. A rewrite that did not happen, whatever stopped it, records nothing
+        (CompactIncomplete, `rewrote` False, when the file was busy). When the rewrite
+        succeeded and another connection held the log (a replica service always does),
+        CompactIncomplete with `rewrote` True: the deletion stays recorded, as rewritten, so
+        what stays due is emptying the log (empty_log), never a second rewrite for it once
+        it is recorded. Once the log is emptied the record goes, unless a deletion came
+        meanwhile (_empty_log: by its generation)."""
         if not self._owner:
             raise PermissionError("only the store that opened the database compacts it")
         self._room_for_rewrite()

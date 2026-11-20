@@ -300,7 +300,7 @@ After a workspace, a project or a note is deleted, `serve` compacts the database
 - `compact done in N ms`: the file was rewritten and its write-ahead log emptied.
 - `compact not started: the database's disk has N bytes free, a rewrite needs N`: there was no room; nothing changed, and it tries again at the next poll, 10 minutes later.
 - `compact not finished: another connection held the file (rewritten; the write-ahead log was not emptied) in N ms`: another program reading the database, such as a replica, held its write-ahead log. The file was rewritten; only emptying the log is left.
-- `compact not finished: another connection held the file (no rewrite: only the write-ahead log was due) in N ms`: the next try, after the interval or at the first poll after a restart, empties the log alone and never rewrites the file again for the same deletion; this one found the log still held.
+- `compact not finished: another connection held the file (no rewrite: only the write-ahead log was due) in N ms`: the next try, after the interval or at the first poll after a restart, empties the log alone: a rewrite is not repeated for the same deletion once it is recorded (one killed before its record runs again); this one found the log still held.
 - `compact done (no rewrite: only the write-ahead log was due) in N ms`: the log is emptied, and the compaction is done. A deletion after the rewrite starts a new one.
 
 ## A graph to explore

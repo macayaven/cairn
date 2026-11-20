@@ -4,8 +4,9 @@ been deleted since the last compaction and the interval has passed (Store.compac
 A compaction rewrites the whole file (Store.compact), then empties the write-ahead log;
 the two are recorded apart. When the rewrite succeeded and another connection held the log
 (beside a replica service one always does), what stays due is emptying the log alone
-(Store.empty_log), which costs no rewrite: neither the next interval nor a restarted server
-rewrites the file again for the same deletion. A deletion that comes after starts a new
+(Store.empty_log), which costs no rewrite: a rewrite is not repeated for the same deletion
+once it is recorded, by the next interval or a restarted server (one killed before its
+record runs again). A deletion that comes after starts a new
 rewrite. Before a rewrite the store checks for room (twice the database free on its disk);
 without it nothing starts, one line says both numbers, and it stays due.
 

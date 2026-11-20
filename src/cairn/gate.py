@@ -77,7 +77,7 @@ from collections.abc import Iterable, Mapping
 
 from cairn.candidate import CandidatePage, GateResult
 from cairn.lint import ClaimInput, PageInput, lint_pages
-from cairn.spans import FenceLeftOpen, Span, compared_text, open_fence_closer
+from cairn.spans import CLOSERS_MAX, FenceLeftOpen, Span, compared_text, open_fence_closer
 from cairn.store import Claim
 
 PROSE_KINDS = frozenset({"paragraph", "bullet", "quote"})
@@ -293,22 +293,28 @@ def fence_left_open(claims: Iterable[Claim], in_body: str | None = None) -> list
     """FENCE_LEFT_OPEN, once for each claim whose text leaves a code fence open that no line
     render_body could write after it closes (cairn.spans.FenceLeftOpen), and once for the
     claim `in_body` names: the one whose fence, where the body puts it after the claims
-    before it, runs into the next claim with no line that closes it (compiler.assembled).
-    Naming the claim, never its text. No such text or page has been found; the check stands
-    so that one is refused, never saved."""
+    before it, runs into the next claim and the body does not close it (compiler.assembled:
+    no line closes it, or the body already closes CLOSERS_MAX such fences). Naming the
+    claim, never its text. No text or page that no line closes has been found; the check
+    stands so that one is refused, never saved."""
     left = []
     for claim in claims:
         try:
             open_fence_closer(claim.text)
         except FenceLeftOpen:
             left.append(claim.id)
-    if in_body is not None and in_body not in left:
-        left.append(in_body)
-    return [
+    out = [
         f"{FENCE_LEFT_OPEN}: {claim_id}: the passage leaves a code fence open that no"
         " closing line after it closes, so the claims after it would read as code"
         for claim_id in left
     ]
+    if in_body is not None and in_body not in left:
+        out.append(
+            f"{FENCE_LEFT_OPEN}: {in_body}: where the page puts the passage, it opens a code"
+            f" fence the body does not close (a body closes at most {CLOSERS_MAX} such"
+            " fences), so the claims after it would read as code"
+        )
+    return out
 
 
 def unclaimed_line(page: CandidatePage, spans: Mapping[str, Span]) -> int | None:

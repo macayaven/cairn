@@ -19,9 +19,11 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
   depends on what is written before it (after a list item, a passage that alone is indented
   text may open a fence), so a fence that runs from one claim into the next claim or heading
   gets a closer after the claim it starts in, kept only when the parser then reads no fence
-  leaving that claim (third report, must-fix 4; spans.fences_kept_in). A claim no such line
-  closes is refused (gate.FENCE_LEFT_OPEN): alone, by compile_note and by every gate; where
-  the body puts it, by every gate, so no compile, tidy or arrangement saves it. render_body
+  leaving that claim (third report, must-fix 4; spans.fences_kept_in), and at most
+  spans.CLOSERS_MAX such closers in one body, so a render parses the body at most that often
+  and once more. A claim no such line closes, or one past that number, is refused
+  (gate.FENCE_LEFT_OPEN): alone, by compile_note and by every gate; where the body puts it,
+  by every gate, so no compile, tidy or arrangement saves it. render_body
   itself never refuses: a forgotten note's page is written with it. Each gate checks that
   the body is what this function writes of the claims (gate.unclaimed_line: equality with a
   re-render).
@@ -318,12 +320,14 @@ def assembled(
     title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
 ) -> tuple[str, str | None]:
     """The body render_body writes, and the id of the claim whose code fence runs into the
-    next claim or heading with no line after the claim that closes it ("-" if it is no
-    claim's), else None. Each claim is written closed as it is alone (`_closed`); then the
-    body is read whole by the Markdown parser, and a fence that starts in one block and
-    covers the next gets a closer after its block, kept only when the parser then reads no
-    fence leaving that block (cairn.spans.fences_kept_in). No page is known that names a
-    claim here; every gate refuses one (gate.unclaimed_violations)."""
+    next claim or heading and is not closed after the claim ("-" if it is no claim's), else
+    None. Each claim is written closed as it is alone (`_closed`); then the body is read
+    whole by the Markdown parser, and a fence that starts in one block and covers the next
+    gets a closer after its block, kept only when the parser then reads no fence leaving
+    that block, and at most spans.CLOSERS_MAX of them in one body
+    (cairn.spans.fences_kept_in). A claim is named here when its closer did not close it (no
+    such page is known) or when the body holds more such fences than that; every gate
+    refuses the page (gate.unclaimed_violations)."""
     blocks = _blocks(title, claims, spans, _closed, section_headings, heading_text)
     kept, left = fences_kept_in([text for text, _ in blocks])
     owner = None if left is None else blocks[left][1]

@@ -35,7 +35,7 @@ from cairn.compiler import (
 from cairn.gate import lint_gate, strict_lint_gate, unclaimed_violations, verbatim_gate
 from cairn.llm import FakeModel, Reply
 from cairn.memory import Memory
-from cairn.spans import chunk, claim_id
+from cairn.spans import CLOSERS_MAX, chunk, claim_id
 from cairn.store import Claim, Store
 
 READERS = {
@@ -45,6 +45,10 @@ READERS = {
 REVIEWER = ["- item", "    ~~~\n    sample", "  After."]  # the third report's three notes
 AS_23C24229_WROTE_IT = "# Ops\n\n- item\n\n    ~~~\n    sample\n\n  After.\n"
 CLOSED = "# Ops\n\n- item\n\n    ~~~\n    sample\n    ~~~\n\n  After.\n"
+IN_BODY = (  # the refusal of a claim whose fence the body does not close
+    "where the page puts the passage, it opens a code fence the body does not close (a body"
+    " closes at most 16 such fences), so the claims after it would read as code"
+)
 AT_THE_MARGIN = "# Ops\n\n- item\n\n    ~~~\n    sample\n~~~\n\n  After.\n"  # a closer that is none
 
 
@@ -426,10 +430,7 @@ def test_a_fence_no_closer_holds_in_is_written_as_it_is_and_every_gate_refuses_i
     assert body == AS_23C24229_WROTE_IT  # a closer the parser does not prove is not kept
     assert assembled("Ops", claims, spans) == (body, claims[1].id)
     page = CandidatePage(slug="ops", title="Ops", body=body, claims=claims)
-    refusal = (
-        f"compile.fence_left_open: {claims[1].id}: the passage leaves a code fence open that no"
-        " closing line after it closes, so the claims after it would read as code"
-    )
+    refusal = f"compile.fence_left_open: {claims[1].id}: {IN_BODY}"
     assert unclaimed_violations(page, spans) == [refusal]
     for gate in (provenance_gate, lint_gate, strict_lint_gate, verbatim_gate):
         verdict = gate(page, spans)
@@ -455,10 +456,7 @@ def test_a_note_that_would_be_read_as_code_is_refused_and_nothing_is_saved(
     no_closer(monkeypatch)
     answer = memory.note("alpha", "  After.", title="Ops", topic="Ops")
     assert answer["status"] == "rejected"
-    assert answer["violations"] == [
-        f"compile.fence_left_open: {page.claims[1].id}: the passage leaves a code fence open"
-        " that no closing line after it closes, so the claims after it would read as code"
-    ]
+    assert answer["violations"] == [f"compile.fence_left_open: {page.claims[1].id}: {IN_BODY}"]
     assert store.get_page(page.project_id, page.slug) == page
 
 
@@ -480,6 +478,65 @@ def test_forgetting_a_note_is_not_refused_where_no_closer_holds_the_fence_in(
         assert (there.body, there.claims) == (page.body, page.claims)
     finally:
         target.close()
+
+
+# A body closes at most CLOSERS_MAX such fences, so a note's author cannot make a render
+# cost a parse of the body for each claim
+
+
+def triples(count: int) -> list[str]:
+    """`count` times the reviewer's three notes, each with words of its own."""
+    return [
+        text
+        for n in range(count)
+        for text in (f"- item {n}", f"    ~~~\n    sample {n}", f"  After {n}.")
+    ]
+
+
+def test_sixteen_such_fences_are_closed_and_the_note_that_makes_a_seventeenth_is_refused(
+    memory, store, monkeypatch
+):
+    assert CLOSERS_MAX == 16
+    page = filed(memory, store, triples(CLOSERS_MAX))
+    assert page.body.count("\n    ~~~\n\n  After") == CLOSERS_MAX
+    assert all(prose(page.body, f"After {n}.") for n in range(CLOSERS_MAX))
+    spans = store.get_spans([i for claim in page.claims for i in claim.span_ids])
+    # each of the 16 passages that hold a run alone, then the body once and once a closer
+    count = parses(monkeypatch, lambda: render_body(page.title, page.claims, spans))
+    assert count == CLOSERS_MAX + 1 + CLOSERS_MAX
+    page = filed(memory, store, ["- item 16", "    ~~~\n    sample 16"])  # nothing follows it yet
+    assert len(page.claims) == 3 * CLOSERS_MAX + 2
+    answer = memory.note("alpha", "  After 16.", title="Ops", topic="Ops")
+    assert answer["status"] == "rejected"
+    assert answer["violations"] == [f"compile.fence_left_open: {page.claims[-1].id}: {IN_BODY}"]
+    assert store.get_page(page.project_id, page.slug) == page  # its last good version
+    assert "sample" not in answer["violations"][0]
+
+
+def test_forgetting_a_note_is_not_refused_where_it_makes_a_seventeenth_such_fence(memory, store):
+    last = ["- item 16", "Between.", "    ~~~\n    sample 16", "  After 16."]
+    texts = [*triples(CLOSERS_MAX), *last]
+    answers = [memory.note("alpha", text, title="Ops", topic="Ops") for text in texts]
+    assert {answer["status"] for answer in answers} == {"saved"}
+    store.forget_note(answers[-3]["note_id"])
+    page = store.get_page(store.get_project("alpha").id, answers[0]["page"])
+    assert [claim.text for claim in page.claims] == [t for t in texts if t != "Between."]
+    assert page.body.count("\n    ~~~\n\n  After") == CLOSERS_MAX  # the seventeenth is left open
+    assert page.body.endswith("- item 16\n\n    ~~~\n    sample 16\n\n  After 16.\n")
+
+
+def test_2000_claims_that_close_or_open_one_another_cost_seventeen_parses_of_the_body(
+    monkeypatch,
+):
+    """One list item, then 1,999 indented fences: each closer makes the next claim the one
+    that opens a fence. Without the bound, a parse of the body for each claim."""
+    claims, spans = made(["- item", *(f"    ~~~\n    sample {n}" for n in range(1999))])
+    found = []
+    count = parses(monkeypatch, lambda: found.append(assembled("Ops", claims, spans)))
+    assert count == 1999 + 1 + CLOSERS_MAX  # each passage alone, as before, and the body
+    ((body, left),) = found
+    assert left == claims[CLOSERS_MAX + 1].id  # the first whose fence is left to run on
+    assert body.count("\n    ~~~\n\n    ~~~\n") == CLOSERS_MAX  # a closer, then the next claim
 
 
 # Cost: how often the parser is asked
@@ -504,12 +561,12 @@ PAGES_OF_200 = {
     "66 times the reviewer's three notes": (
         [t for n in range(66) for t in ("- item", f"    ~~~\n    sample {n}", f"  After {n}.")],
         66,
-        133,
+        66 + 1 + CLOSERS_MAX,  # no more closers than that: the rest are left, and refused
     ),
     "one list item, then 199 indented fences, each closing or opening the next": (
         ["- item", *(f"    ~~~\n    sample {n}" for n in range(199))],
         199,
-        398,
+        199 + 1 + CLOSERS_MAX,
     ),
 }
 

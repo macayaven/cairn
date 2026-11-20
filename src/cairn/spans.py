@@ -373,32 +373,39 @@ def _covering_fence(text: str, count: int, lines: list[str]):
 # (third report, must-fix 4).
 
 
+CLOSERS_MAX = 16  # the closers fences_kept_in writes in one body, so the parses of a render
+
+
 def fences_kept_in(blocks: Sequence[str]) -> tuple[list[str], int | None]:
     """`blocks`, the title, headings and claims of a body in its order, which render_body
     joins with a blank line: each as given, or with a line after it that closes a code fence
     the Markdown parser, reading the whole body, opens in that block and runs into a later
-    one; and the index of the first block whose fence that line does not close, else None.
-    That block and the blocks after it are then as given.
+    one; and the index of the first block whose fence is left to run on, else None: the
+    line did not close it, or CLOSERS_MAX closers were written before it. That block and the
+    blocks after it are then as given.
 
     The parser's line map decides, as in open_fence_closer: a fence leaves its block when its
     token starts in the block and covers the first line of the next. The first such fence
     gets a closer after its block (`_closer`) and the body is parsed again; the closer is
     kept only when no fence that starts in that block, the closer's own line included,
     leaves it any more. Then the next such fence, which starts in a later block. One parse
-    when no fence leaves its block and one more for each closer, each of the whole body;
-    blocks that hold no backtick and no tilde are not parsed."""
+    when no fence leaves its block and one more for each closer, each of the whole body, so
+    at most CLOSERS_MAX + 1 whatever the notes hold (a note's author cannot make a render
+    cost a parse for each claim); blocks that hold no backtick and no tilde are not parsed."""
     blocks = list(blocks)
     if not any("`" in block or "~" in block for block in blocks):
         return blocks, None
     found = _leaving_fence(blocks)
-    while found is not None:
+    for _ in range(CLOSERS_MAX):
+        if found is None:
+            break
         at, closer = found
         closed = [*blocks[:at], f"{blocks[at]}\n{closer}", *blocks[at + 1 :]]
         found = _leaving_fence(closed)
         if found is not None and found[0] <= at:
             return blocks, at
         blocks = closed
-    return blocks, None
+    return blocks, None if found is None else found[0]
 
 
 def _leaving_fence(blocks: list[str]) -> tuple[int, str] | None:

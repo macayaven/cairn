@@ -12,8 +12,9 @@ Contract (frozen by tests/acceptance/test_w3_gate.py):
   report's finding 1: the reverse of the claim-in-body check, by equality with a re-render;
   no statement, as the gate reads nothing from the store); and compile.fence_left_open for
   each claim that leaves a code fence open that no line the body could write after it
-  closes (`fence_left_open`; none is known), naming the claim, never its text. Every gate
-  asks both (`unclaimed_violations`), and the import refuses such a claim too.
+  closes, alone or where the body puts it after the claims before it (`fence_left_open`;
+  none is known), naming the claim, never its text. Every gate asks both
+  (`unclaimed_violations`), and the import refuses a claim that alone is such a claim.
 - metrics: {"claims": claim count, "spans_cited": distinct cited span count,
   "retention": plain retention overall, "code_line_retention": plain code-line retention,
   "span_coverage": cairn span coverage, "omission_rate": cairn omission rate}.
@@ -273,31 +274,41 @@ FENCE_LEFT_OPEN = "compile.fence_left_open"  # a claim leaves a fence no closer 
 def unclaimed_violations(page: CandidatePage, spans: Mapping[str, Span]) -> list[str]:
     """provenance.unclaimed_line, once, for the first line of the body that is not what
     render_body writes there (`unclaimed_line`), naming its number, never its text; then
-    FENCE_LEFT_OPEN for each claim the body cannot close (`fence_left_open`). Every gate
-    asks this, so no compile, tidy or arrangement saves such a page."""
-    at = unclaimed_line(page, spans)
+    FENCE_LEFT_OPEN for each claim the body cannot close (`fence_left_open`), alone or
+    where the body puts it. Every gate asks this, so no compile, tidy or arrangement saves
+    such a page. One rendering when the body is as written; one more, to find the line,
+    when it is not."""
+    from cairn.compiler import assembled  # the compiler builds on the gate
+
+    written, in_body = assembled(page.title, page.claims, spans)
+    at = None if page.body == written else unclaimed_line(page, spans)
     unclaimed = [
         f"provenance.unclaimed_line: -: line {at} of the body is not in a claim, nor a heading"
         " or fence the body writes"
     ]
-    return [*(unclaimed if at is not None else []), *fence_left_open(page.claims)]
+    return [*(unclaimed if at is not None else []), *fence_left_open(page.claims, in_body)]
 
 
-def fence_left_open(claims: Iterable[Claim]) -> list[str]:
+def fence_left_open(claims: Iterable[Claim], in_body: str | None = None) -> list[str]:
     """FENCE_LEFT_OPEN, once for each claim whose text leaves a code fence open that no line
-    render_body could write after it closes (cairn.spans.FenceLeftOpen), naming the claim,
-    never its text. No such text has been found; the check stands so that one is refused,
-    never rendered."""
-    out = []
+    render_body could write after it closes (cairn.spans.FenceLeftOpen), and once for the
+    claim `in_body` names: the one whose fence, where the body puts it after the claims
+    before it, runs into the next claim with no line that closes it (compiler.assembled).
+    Naming the claim, never its text. No such text or page has been found; the check stands
+    so that one is refused, never saved."""
+    left = []
     for claim in claims:
         try:
             open_fence_closer(claim.text)
         except FenceLeftOpen:
-            out.append(
-                f"{FENCE_LEFT_OPEN}: {claim.id}: the passage leaves a code fence open that no"
-                " closing line after it closes, so the claims after it would read as code"
-            )
-    return out
+            left.append(claim.id)
+    if in_body is not None and in_body not in left:
+        left.append(in_body)
+    return [
+        f"{FENCE_LEFT_OPEN}: {claim_id}: the passage leaves a code fence open that no"
+        " closing line after it closes, so the claims after it would read as code"
+        for claim_id in left
+    ]
 
 
 def unclaimed_line(page: CandidatePage, spans: Mapping[str, Span]) -> int | None:

@@ -608,6 +608,11 @@ def test_its_limit_a_line_that_closes_a_fence_only_as_displayed_keeps_the_note_a
     after = notes("Settings:\n~~~\n<x|~~~>\nitems[0]\n~~~")[1]
     assert body(after) == "Settings:\n~~~\n\\~\\~\\~\nitems\\[0\\]\n~~~"
     assert one_heading(after) and {3, 4, 5, 6} <= code_lines(after)
+    # A label of backticks does the same to a fence of backticks that Slack's own block
+    # left open (text after its closing fence), which the parser reads on to the end.
+    after = notes("Settings:\n```\ncode\n``` more\n<x|```>\nitems[0]")[1]
+    assert body(after) == "Settings:\n```\ncode\n``` more\n\\`\\`\\`\nitems\\[0\\]"
+    assert one_heading(after) and {3, 4, 5, 6, 7} <= code_lines(after)
     # With the next line indented it is code either way, and the note is as displayed.
     assert body(notes("Settings:\n~~~\n<x|~~~>\n    items[0]")[1]) == (
         "Settings:\n~~~\n~~~\n    items[0]"
@@ -616,8 +621,9 @@ def test_its_limit_a_line_that_closes_a_fence_only_as_displayed_keeps_the_note_a
 
 def test_a_note_its_code_as_displayed_cannot_be_made_of_is_the_note_made_as_prose(monkeypatch):
     """Made twice: as prose, then with the lines read as code as displayed. Should the second
-    making refuse, the first is the note, and nothing is refused that was filed. No message
-    was found that does it; shown with a making that refuses the second time."""
+    making refuse, the first is the note, and nothing is refused that was filed; and so it is
+    should the two texts not have the same lines. No message was found that does either:
+    shown with a making that refuses the second time, and with a text a line longer."""
     made, make = [], slack_text._one_heading
 
     def refusing(text: str) -> str:
@@ -626,19 +632,19 @@ def test_a_note_its_code_as_displayed_cannot_be_made_of_is_the_note_made_as_pros
             raise ValueError("The message's headings could not be written as text")
         return make(text)
 
-    monkeypatch.setattr(slack_text, "_one_heading", refusing)
     prose = "## Cedar Quill\n\n# Settings\n\n    items\\[0\\]"
     shown = "## Cedar Quill\n\n# Settings\n\n    items[0]"
-    assert (
-        slack_text._code_as_shown(prose, shown)
-        == "## Cedar Quill\n\n\\# Settings\n\n    items\\[0\\]"
-    )
+    as_prose = "## Cedar Quill\n\n\\# Settings\n\n    items\\[0\\]"
+    monkeypatch.setattr(slack_text, "_one_heading", refusing)
+    assert slack_text._code_as_shown(prose, shown) == as_prose
     assert made == [prose, shown]
+
     made.clear()
     monkeypatch.setattr(slack_text, "_one_heading", lambda text: made.append(text) or make(text))
-    assert (
-        slack_text._code_as_shown(prose, shown) == "## Cedar Quill\n\n\\# Settings\n\n    items[0]"
-    )
+    assert slack_text._code_as_shown(prose, shown + "\nRow 4.") == as_prose
+    assert made == [prose]
+    assert slack_text._code_as_shown(prose, shown) == as_prose.replace("\\[0\\]", "[0]")
+    assert made == [prose, prose, shown]
 
 
 EDGES = [

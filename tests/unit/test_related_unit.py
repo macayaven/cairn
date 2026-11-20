@@ -216,6 +216,18 @@ def test_a_claim_of_outside_text_says_so_with_each_note_it_cites(env):
     assert there["written_at"] == WHEN
 
 
+def test_a_claims_text_is_given_whole_as_a_hit_of_recall_gives_it(env):
+    long = "Brook pins `quill.lock` and then " + "waits for the nightly log, " * 300 + "stops."
+    note(env, "Asked", "Ada reads `quill.lock` daily.\n")
+    note(env, "Long", long + "\n")
+    (page,) = answer(env.client, env.key, "related", project="ops", slug="asked")["related"]
+    there = page["why"][0]["there"]
+    (hit,) = answer(env.client, env.key, "recall", query="pins", project="ops")["hits"]
+    assert there["text"] == hit["text"] == long and len(long) > 8_000
+    for field in ("claim_id", "passage_ids", "outside", "written_by", "written_at"):
+        assert there[field] == hit[field], field
+
+
 # Refusals
 
 

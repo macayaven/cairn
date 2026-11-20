@@ -41,13 +41,24 @@ if args[0] == "api":
     options, _ = parser.parse_known_args(args[1:])
     method = options.method or ("POST" if options.data is not None else "GET")
 if method in {"GET", "HEAD"}:
-    listing = [release] if release else []
-    if "--jq" in args:
-        query = args[args.index("--jq") + 1]
-        done = subprocess.run(["jq", "-r", query], input=json.dumps(listing), text=True)
-        rc = done.returncode
+    prefix = "repos/wren/ledger/releases"
+    paths = (arg.lstrip("/") for arg in args if arg.lstrip("/").startswith("repos/"))
+    endpoint = next(paths, "").partition("?")[0]
+    entry = None if not release else release | {
+        "assets": [{k: v for k, v in asset.items() if k != "data"} for asset in release["assets"]]
+    }
+    if endpoint == prefix:
+        reply = [entry] if entry else []
+    elif entry and endpoint == f"{prefix}/{entry['id']}":
+        reply = entry
     else:
-        print(json.dumps(listing))
+        reply, rc = None, 1
+    query = next((args[i + 1] for i, arg in enumerate(args) if arg in ("--jq", "-q")), None)
+    if rc == 0 and query:
+        done = subprocess.run(["jq", "-r", query], input=json.dumps(reply), text=True)
+        rc = done.returncode
+    elif rc == 0:
+        print(json.dumps(reply))
 elif args[:2] == ["release", "download"]:
     dest = Path(args[args.index("--dir") + 1])
     dest.mkdir(parents=True, exist_ok=True)
@@ -101,6 +112,7 @@ def retry(folder, *, tag=TAG, draft=True, assets=None, change_wheel=False, publi
     existing = {
         "id": 77,
         "tag_name": tag,
+        "name": tag,
         "prerelease": "-rc." in tag,
         "draft": draft and publish_after != 0,
         "body": (package / "notes.md").read_text() + f"\n<!-- cairn-ci-cd run {RUN_ID} -->\n",

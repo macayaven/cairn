@@ -25,6 +25,7 @@ from itertools import pairwise
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 from markdown_it import MarkdownIt
+from markdown_it.common.utils import isMdAsciiPunct, isPunctChar, isWhiteSpace
 
 from cairn.spans import chunk
 from cairn.store.memory import TITLE_MAX
@@ -101,7 +102,7 @@ def _name(name: str, literal: Callable[[str], str] = _literal) -> str:
     return literal(" ".join(name.splitlines()))
 
 
-def _prose(text: str, clear: bool = True) -> str:
+def _prose(text: str, clear: bool = True, last: str = " ", then: str = " ") -> str:
     """Text Slack displayed as prose, as Markdown that displays the same. A backtick here is
     one Slack paired with no other and displayed as it is: left bare, Markdown would pair it
     with the backtick that opens a code span (_render) and read that span's code as prose.
@@ -112,25 +113,26 @@ def _prose(text: str, clear: bool = True) -> str:
     stand before on its line (_FENCE_LEAD: where a reader could take it for a fence, at any
     indentation and in any container) gets a backslash before its first tilde. `clear`:
     whether what was written on the line before `text` is such marks alone, or nothing.
-    Emphasis is written where Slack shows it and nowhere else (_emphasis)."""
-    text = _emphasis(_redact(_decode(text)))
+    Emphasis is written where Slack shows it and nowhere else (_emphasis; `last` and
+    `then`: what the note writes just before and just after `text`)."""
+    text = _emphasis(_redact(_decode(text)), last, then)
     if clear:
         return _FENCE_LEAD.sub(r"\1\\~", text)
     first, feed, rest = text.partition("\n")
     return first + feed + _FENCE_LEAD.sub(r"\1\\~", rest)
 
 
-def _paired(text: str) -> dict[int, bool]:
+def _paired(text: str) -> dict[int, int]:
     """The places of the `*`, `_` and `~` that Slack shows as emphasis in `text`, prose as
-    Slack displayed it, each with whether it opens. Slack's page on message text gives
-    `*bold*`, `_italic_` and `~strike~` and says nothing of where a mark opens or closes;
-    the rule is the third tester's model of it (its `slack_styles`) with "not inside a
-    word": from left to right, a mark opens where neither a blank nor a mark follows it and
-    neither a letter nor a digit stands before it, and closes at the first same mark on its
-    line, a character on at least, that has no blank before it and neither a letter nor a
-    digit after it; the marks between are characters. Where none closes it, it is a
-    character. Each character is read a bounded number of times: the closers of each mark
-    are found once, and looked for from a place that only moves on."""
+    Slack displayed it, each with the place of the mark it pairs with. Slack's page on
+    message text gives `*bold*`, `_italic_` and `~strike~` and says nothing of where a mark
+    opens or closes; the rule is the third tester's model of it (its `slack_styles`) with
+    "not inside a word": from left to right, a mark opens where neither a blank nor a mark
+    follows it and neither a letter nor a digit stands before it, and closes at the first
+    same mark on its line, a character on at least, that has no blank before it and
+    neither a letter nor a digit after it; the marks between are characters. Where none
+    closes it, it is a character. Each character is read a bounded number of times: the
+    closers of each mark are found once, and looked for from a place that only moves on."""
     closers: dict[str, list[int]] = {"*": [], "_": [], "~": []}
     for at, mark in enumerate(text):
         after = text[at + 1 : at + 2]
@@ -147,7 +149,7 @@ def _paired(text: str) -> dict[int, bool]:
                 n += 1
             next_one[mark] = n
             if n < len(ends) and ends[n] < feed(at):
-                paired.update({at: True, ends[n]: False})
+                paired.update({at: ends[n], ends[n]: at})
                 at = ends[n] + 1
                 continue
         at += 1
@@ -155,40 +157,87 @@ def _paired(text: str) -> dict[int, bool]:
 
 
 _ESCAPED = {"&": "&amp;", "<": "&lt;", **{mark: "\\" + mark for mark in "\\[]()!`"}}
+BLANKS = {"  ", " \t", "\t ", "\t\t"}  # a blank each side
+# The marks of quotations and list items that may start a line (_emphasis).
+_CONTAINER = re.compile(r"(?:[ \t>]|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]))*")
 
 
-def _emphasis(text: str) -> str:
+def _emphasis(text: str, last: str = " ", then: str = " ") -> str:
     """`text`, prose as Slack displayed it, as Markdown: a `*` and a `_` that Slack shows as
     emphasis (_paired) written `**` and `_`, so the page shows bold and italic, and a `~` as
     typed (a page cannot strike). Every other `*` and `_` is the character typed, with a
     backslash before it unless no reader could take it for a mark: a `_` between two
-    letters or digits, a `*` between two blanks after the first character of its line that
-    is not blank (never a list's mark, nor emphasis, nor a rule). The characters Markdown
-    reads as markup are escaped as everywhere in prose. Where a span of bold or italic ends
-    right where another of the same mark starts, the two marks between are left out: the
-    page shows one span of the same words, where it would read `**a****b**` otherwise."""
-    paired, pieces, worded = _paired(text), [], False  # worded: the line holds a non-blank
+    letters or digits, a `*` between two blanks past the marks of a quotation or a list
+    that start its line (_CONTAINER: never a list's mark, nor emphasis, nor a rule). The
+    characters Markdown reads as markup are escaped as everywhere in prose.
+
+    Where a span of bold or italic ends right where another of the same mark starts, the two
+    marks between are left out: the page shows one span of the same words, where it would
+    read `**a****b**` otherwise. And a span is written so only where the page's parser reads
+    its two marks as emphasis (_reads): `last` and `then` are the characters the note writes
+    just before and just after `text` (a blank where it starts or ends a line). Else its
+    marks are typed too, with their backslashes: `*(b)*` before a date's words shows so."""
+    paired, written = _paired(text), []
     for at, character in enumerate(text):
+        if at in paired:
+            touches = at + 1 if paired[at] < at else at - 1  # the other side of the mark
+            if (
+                paired.get(touches, at) != at
+                and text[touches] == character != "~"
+                and (paired[touches] > touches) == (paired[at] < at)
+            ):
+                written.append("")  # a span ends where another starts: the two make one
+                continue
+            written.append("**" if character == "*" else character)
+        elif character in "*_":
+            written.append("\\" + character)
+        else:
+            written.append(_ESCAPED.get(character, character))
+    for at, close in paired.items():  # Markdown's reading needs the marks as written
+        if close < at or text[at] == "~" or not written[at]:
+            continue
+        chain = [at, close]  # the marks of the spans that make one, each read once
+        while not written[chain[-1]]:
+            chain += [chain[-1] + 1, paired[chain[-1] + 1]]
+        close = chain[-1]
+        before = written[at - 1][-1:] if at else last
+        after = written[close + 1][:1] if close + 1 < len(text) else then
+        if not _reads(text[at], before, written[at + 1][:1], written[close - 1][-1:], after):
+            for mark in chain:
+                written[mark] = "\\" + text[mark]
+    line = 0  # where the marks that start the line end
+    for at, character in enumerate(text):
+        if not at or text[at - 1] == "\n":
+            line = _CONTAINER.match(text, at).end()
         before, after = text[at - 1 : at], text[at + 1 : at + 2]
         if at in paired:
-            touches = at + 1 if not paired[at] else at - 1  # the other side of the mark
-            if (
-                character in "*_"
-                and paired.get(touches) is (at < touches)
-                and (text[touches] == character)
-            ):
-                continue  # a span ends where another starts: the two make one
-            pieces.append("**" if character == "*" else character)
-        elif character == "_":
-            bare = before.isalnum() and after.isalnum()
-            pieces.append(character if bare else "\\_")
-        elif character == "*":
-            bare = worded and before in (" ", "\t") and after in (" ", "\t")
-            pieces.append(character if bare else "\\*")
-        else:
-            pieces.append(_ESCAPED.get(character, character))
-        worded = character != "\n" and (worded or character not in " \t")
-    return "".join(pieces)
+            continue
+        if character == "_" and before.isalnum() and after.isalnum():
+            written[at] = character  # inside a word: never a mark to Markdown
+        if character == "*" and at >= line and before + after in BLANKS:
+            written[at] = character  # between blanks past a line's marks: never one either
+    return "".join(written)
+
+
+def _reads(mark: str, before: str, first: str, end: str, after: str) -> bool:
+    """Whether the page's parser reads a span of `mark` as emphasis: the characters the note
+    writes before its opening mark and after its closing one, and its first and last, as
+    markdown-it decides whether a run of marks can open or close (CommonMark's flanking)."""
+
+    def kind(character: str) -> str:
+        if not character or isWhiteSpace(ord(character)):
+            return "blank"
+        return "mark" if isMdAsciiPunct(ord(character)) or isPunctChar(character) else "word"
+
+    outside, inside = kind(before), kind(first)
+    opens = inside != "blank" and (inside != "mark" or outside != "word")
+    if mark == "_":  # a `_` touching a letter or a digit outside neither opens nor closes
+        opens = opens and outside != "word"
+    inside, outside = kind(end), kind(after)
+    closes = inside != "blank" and (inside != "mark" or outside != "word")
+    if mark == "_":
+        closes = closes and outside != "word"
+    return opens and closes
 
 
 def _link_target(target: str) -> str | None:
@@ -656,8 +705,9 @@ def _render(
     line as plain characters, backticks and all, and a link as its words."""
     literal = _shown if displayed else _literal
 
-    def prose(text: str) -> str:
-        return _shown(text) if displayed else _prose(text, clear)
+    def prose(text: str, then: str = " ") -> str:  # `then`: what the note writes after it
+        last = next((piece[-1] for piece in reversed(pieces) if piece), " ")  # and before
+        return _shown(text) if displayed else _prose(text, clear, last.strip("\n") or " ", then)
 
     tokens: list[tuple[int, int, str, object]] = []
     # A block's line: where it starts, read once (`read`: up to where), and where the marks
@@ -694,7 +744,8 @@ def _render(
                 gap, offset = gap + text[offset:start], end
                 continue
         before = gap + text[offset:start]
-        pieces.append(prose(_apart(before, below, kind == "block", True, fresh)))
+        then = "\n" if isinstance(what, list) else reference[:1] if reference else "`"
+        pieces.append(prose(_apart(before, below, kind == "block", True, fresh), then))
         gap, fresh = "", pieces[-1].endswith("\n") if pieces[-1] else fresh
         clear = _clear(clear, pieces[-1])
         if isinstance(what, list):

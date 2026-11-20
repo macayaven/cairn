@@ -52,7 +52,7 @@ def page_reads(body: str) -> tuple[str, list[str]]:
         ("* spaced *", "\\* spaced \\*", "* spaced *"),
         ("*not closed", "\\*not closed", "*not closed"),
         ("*a\nb*", "\\*a\nb\\*", "*a\nb*"),  # a mark does not close on another line
-        ("* * *", "\\* * \\*", "* * *"),  # no rule either
+        ("* * *", "\\* \\* \\*", "* * *"),  # no rule either: each a mark a list could start
     ],
 )
 def test_a_mark_slack_shows_as_a_character_is_the_character_typed(text, body, shown):
@@ -106,3 +106,47 @@ def test_a_mark_whose_partner_is_past_a_link_a_mention_or_code_is_typed(text, bo
     """The limit: marks are paired between Slack's links, mentions and code, not across
     them, so these show as typed, where Slack shows the span styled (the guide says so)."""
     assert body_of(filed(text)) == body
+
+
+@pytest.mark.parametrize(
+    ("text", "body"),
+    [
+        ("*(b)*<!date^1900000000^{date}|17 Mar>", "\\*\\(b\\)\\*17 Mar"),
+        ("<x|label>*(b)*", "label\\*\\(b\\)\\*"),
+        ("*[WIP]*<https://fable.test/x|PR 12>", "**\\[WIP\\]**[PR 12](https://fable.test/x)"),
+        ("&gt; * item", "> \\* item"),
+        ("- * item", "- \\* item"),
+        ("1. * item", "1. \\* item"),
+    ],
+)
+def test_a_span_markdown_cannot_read_as_slack_did_is_its_marks_typed(text, body):
+    """Found trying the fix: a span whose marks touch a link's words or a date's on the
+    outside and punctuation on the inside is one Markdown does not read, and showed its
+    asterisks doubled; and a `*` after a quotation's or a list's mark began a list. Each
+    is now the characters typed."""
+    assert body_of(filed(text)) == body
+    assert "**" not in page_reads(body)[0]
+
+
+def test_the_title_writes_a_span_as_markdown_reads_it():
+    title = filed("*[WIP]*<https://fable.test/x|PR 12>").title  # the link is its words alone
+    assert title == "\\*\\[WIP\\]\\*PR 12"
+
+
+PARTS = ["*", "_", "a", " ", "(", "\N{GRINNING FACE}", "<x|b>", "<@U0CEDAR01>"]
+
+
+def test_no_page_shows_a_mark_slack_did_not_display():
+    """Every message of up to four of these parts: the page shows no more `*` or `_` than
+    the message holds, in the note's body and in the heading of its title."""
+    messages = [""]
+    for _ in range(4):
+        messages = [m + part for m in messages for part in PARTS if len(m) < 60]
+        for text in messages:
+            if not text.strip():
+                continue
+            draft = filed(text)
+            heading = READER.parse(f"# {draft.title}")[1].children or []
+            for shown in (page_reads(body_of(draft))[0], "".join(t.content for t in heading)):
+                for mark in "*_":
+                    assert shown.count(mark) <= text.count(mark), (text, body_of(draft), shown)

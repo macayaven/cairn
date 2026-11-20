@@ -1089,7 +1089,9 @@ def test_connect_a_line_of_tildes_is_text():
 def test_connect_emphasis_is_written_only_where_slack_shows_it():
     """connect.md: "Bold, italic and struck text are Slack's only where its marks make them:
     ...\" (The tester's second attack, finding 2: every `*x*` was doubled, so `2 * 3 * 4` was
-    `2 ** 3 ** 4`; each case is test_slack_emphasis_unit's.)"""
+    `2 ** 3 ** 4`; each case is test_slack_emphasis_unit's. Trying the fix found the last
+    two: a span a page read otherwise showed its asterisks doubled, and a `*` after a list's
+    mark began a list.)"""
     says(
         *CONNECT,
         "Bold, italic and struck text are Slack's only where its marks make them: a `*`, `_` or"
@@ -1097,10 +1099,13 @@ def test_connect_emphasis_is_written_only_where_slack_shows_it():
         " it, up to the next same mark on its line with no blank before it and neither a letter"
         " nor a digit after it, and no link, mention or code between them; Slack's page does not"
         f" say where they open and close, and this is {PRODUCT.name}'s reading of it."
-        " There bold is written `**bold**` and italic `_italic_`; every other `*` and `_` is"
-        " the character typed, with a backslash before it unless it is a `*` between two"
-        " blanks with more than blanks before it on its line, or a `_` between two letters or"
-        " digits, so `2 * 3 * 4` and `snake_case` are written as typed.",
+        " There bold is written `**bold**` and italic `_italic_`, but where a page would not"
+        " read them so, as where a mark has punctuation on its inner side and a letter or a"
+        " digit on its outer one, `*(b)*` right before a date's words for instance, its marks"
+        " are typed. Every other `*` and `_` is the character typed, with a backslash before"
+        " it unless it is a `*` between two blanks past the blanks and the marks of a"
+        " quotation or a list that start its line, or a `_` between two letters or digits, so"
+        " `2 * 3 * 4` and `snake_case` are written as typed.",
     )
     for sent, written in (
         ("*bold* _italic_ ~struck~", "**bold** _italic_ ~struck~"),
@@ -1108,6 +1113,8 @@ def test_connect_emphasis_is_written_only_where_slack_shows_it():
         ("* item a*b*c *open _x", "\\* item a\\*b\\*c \\*open \\_x"),
         ("*a\nb* *c *d*", "\\*a\nb\\* **c \\*d**"),
         ("*see <https://fable.test/x|docs>*", "\\*see [docs](https://fable.test/x)\\*"),
+        ("*(b)*<!date^1900000000^{date}|17 Mar>", "\\*\\(b\\)\\*17 Mar"),
+        ("&gt; * a and 2 * 3\n- * b", "> \\* a and 2 * 3\n- \\* b"),
     ):
         assert as_read(a_filed_note(sent))[0] == written, sent
 

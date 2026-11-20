@@ -224,7 +224,10 @@ Tidying a page, with no model
   CORE5 of passages that differ by white space, or a model's under two headings) is rebuilt
   from its passages (compiler.rebuilt_folds), and the page is saved as its next version even
   when nothing else changes; earlier versions keep it. `arrange_page` hands such a page to
-  the tidy before any model is asked.
+  the tidy before any model is asked. When the rebuilt claims would be more than a page holds
+  (store.PAGE_CLAIMS_MAX: an old fold beside 1,999 other claims), the store refuses the save
+  and the tidy is "rejected" with the store's reason (the page and the bound, never a claim):
+  nothing is saved and the page keeps its version.
 - From the plan on it is arrange_page's own code (_save_plan): the folded citations, `moved`
   and `merged`, the body, `verbatim_gate` ("rejected"), the save with `expected_version`
   ("stale"), the audit event "page.arranged" and `arranged_by`, both naming TIDY ("cairn").
@@ -360,7 +363,7 @@ from cairn.llm import ChatModel, LLMError, draw_tag, failure_text, new_boundary
 from cairn.llm import unwrap_reply as _unwrap
 from cairn.memory import access_log
 from cairn.spans import Span, compared_text
-from cairn.store import Claim, KeptFromModels, Page, StalePage, Store
+from cairn.store import Claim, KeptFromModels, Page, PageTooLong, StalePage, Store
 from cairn.store.memory import NAME_MAX
 
 MIN_CLAIMS = 6  # pages with fewer are not worth a call
@@ -995,6 +998,8 @@ def _save_plan(
         )
     except KeptFromModels:  # set to "never" while the model answered: nothing of it is saved
         return outcome("kept from models", page.version, problem=KEPT)
+    except PageTooLong as full:  # an old fold rebuilt past the claims a page holds: it stays
+        return outcome("rejected", page.version, problem=str(full))  # the page and the bound
     except StalePage as stale:
         return outcome("stale", stale.found, moved=moved, merged=merged)
     return outcome("arranged", saved.version, moved=moved, merged=merged)

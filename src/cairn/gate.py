@@ -15,6 +15,13 @@ Contract (frozen by tests/acceptance/test_w3_gate.py):
   closes, alone or where the body puts it after the claims before it (`fence_left_open`;
   none is known), naming the claim, never its text. Every gate asks both
   (`unclaimed_violations`), and the import refuses a claim that alone is such a claim.
+- What a gate accepts, an import accepts, because every gate asks the import's own check of
+  a version (`importable`: store.portable.version_faults, the function an import raises
+  from and a forget drops claims by). A page the gate would pass and that check refuses is
+  refused, with one violation for each claim it names, "import.<rule>: -: ..." (the rule a
+  store.portable.Refusal, in lower case: import.id_shape, import.id_twice,
+  import.cited_twice and so on), which names the page and the claim's place, never its
+  text or its id. A page the gate fails keeps the gate's own violations alone.
 - metrics: {"claims": claim count, "spans_cited": distinct cited span count,
   "retention": plain retention overall, "code_line_retention": plain code-line retention,
   "span_coverage": cairn span coverage, "omission_rate": cairn omission rate}.
@@ -98,7 +105,7 @@ def lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
     unclaimed = unclaimed_violations(page, spans)
-    return GateResult(
+    result = GateResult(
         passed=not report.violations and not unclaimed,
         violations=[
             *(f"{v.code}: {v.claim_id or '-'}: {v.message}" for v in report.violations),
@@ -113,11 +120,17 @@ def lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
             "omission_rate": cairn["omission_rate"],
         },
     )
+    return importable(result, page, spans, reworded=True)
 
 
 def strict_lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     """lint_gate against every span in `spans`, cited or not, so an uncited content span
     fails coverage.passage_unaccounted. Gate a model's draft with this."""
+    return importable(_strict(page, spans), page, spans, reworded=True)
+
+
+def _strict(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
+    """strict_lint_gate before the import's check, which verbatim_gate asks after its own."""
     cited = list(dict.fromkeys(span_id for claim in page.claims for span_id in claim.span_ids))
     claims = [ClaimInput(id=c.id, text=c.text, span_ids=list(c.span_ids)) for c in page.claims]
     report = lint_pages(
@@ -144,6 +157,50 @@ def strict_lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResu
     )
 
 
+IMPORT = "import"  # the prefix of a violation that carries an import's reason
+
+
+def importable(
+    result: GateResult,
+    page: CandidatePage,
+    spans: Mapping[str, Span],
+    *,
+    reworded: bool = False,
+) -> GateResult:
+    """`result`, a gate's verdict of `page`, failed when the gate passed a page an import
+    would refuse (third report, must-fix 1, and the readers after it: an id not of cairn's
+    shape or held twice, a passage cited twice, three copies of one passage). The check is
+    the import's own, store.portable.version_faults, asked for a version to be made
+    (`legacy` False: no claim passes by the comparison before CORE5), of the candidate's
+    claims and the passages the gate was given: so every gate and an import share one
+    definition, and a rule added to the import reaches the gates by itself. One violation
+    for each claim it names (one for a page with no claim), "import.<rule>: -: ...", saying
+    the page, the claim's place and the rule in the import's words, never a claim's text or
+    id. A verdict that already
+    failed is returned as it is (T4's frozen tests pin a rejection's exact violations), as
+    compiler._offered_only does. It reads nothing: the gate holds the passages.
+
+    `reworded`: the one rule left out, for the gates whose contract takes a claim in other
+    words than its passage (lint_gate, strict_lint_gate, compiler.provenance_gate; T4, T5d):
+    "does not say what a passage it cites says". Every other rule is asked of every claim,
+    in other words or not. An import refuses what they save for that rule, as
+    store.portable says; verbatim_gate, the gate of every composer but the extractive one
+    unless a caller names another, asks every rule."""
+    from cairn.store.portable import version_faults  # the store's check, asked here
+
+    if not result.passed:
+        return result
+    whom = {"claim": "it", "a claim": "it", "version": "the version", "claims": "its claims"}
+    violations = [
+        f"{IMPORT}.{fault.name.lower()}: -: an import would refuse the page {page.slug!r}"
+        f"{f' for claim {n}' if n else ''}: {whom[fault.value[0]]} {fault.rule(page.claims)}"
+        for n, fault in version_faults(page.claims, spans, legacy=False, reworded=reworded)
+    ]
+    if not violations:
+        return result
+    return GateResult(passed=False, violations=violations, metrics=result.metrics)
+
+
 def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     """strict_lint_gate, plus grounding.not_verbatim for each claim that is not one passage,
     whole: one violation per claim, naming a passage id or a line number, never text; when
@@ -163,20 +220,25 @@ def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     Only if approved." But when the author put "Only if approved." in a passage of its own,
     that is a claim of its own: the strict gate's coverage rule puts it on the page, and the
     arrangement decides where."""
-    strict = strict_lint_gate(page, spans)
+    strict = _strict(page, spans)
     refused = _refusals(page.claims, spans) or _past_the_import(page.claims, spans)
-    return GateResult(
+    result = GateResult(
         passed=strict.passed and not refused,
         violations=[*strict.violations, *refused],
         metrics=strict.metrics,
     )
+    return importable(result, page, spans)
 
 
-def whole(claim: Claim, spans: Mapping[str, Span]) -> bool:
+def whole(
+    claim: Claim, spans: Mapping[str, Span], readings: dict[str, str | None] | None = None
+) -> bool:
     """Whether the claim is the whole of every passage it cites that `spans` holds, by
     verbatim_gate's own rule (and cites at least one): what a claim must still be to survive
-    a forgotten note (store.erasure.kept_claims, review 7.5)."""
-    return _not_verbatim(claim, spans) is None
+    a forgotten note (store.erasure.kept_claims, review 7.5). `readings` keeps each
+    passage's compared text between the claims of one version, so a passage is read once
+    however many claims cite it (store.portable.version_faults)."""
+    return _not_verbatim(claim, spans, readings) is None
 
 
 def _refusals(claims: Iterable[Claim], spans: Mapping[str, Span]) -> list[str]:

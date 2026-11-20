@@ -217,12 +217,12 @@ def test_a_term_many_claims_hold_is_read_to_its_bound_and_counted(tmp_path, monk
         terms=3, terms_left_out=0, terms_cut=2, title_cut=False, claims_read=11, pages_left_out=0
     )
     assert not found.left.complete
-    related = {page.slug: [(r.term, r.pages) for r in page.why] for page in found.pages}
+    related = {page.slug: [(r.term, r.pages, r.exact) for r in page.why] for page in found.pages}
     assert related == {
-        "a-0": [("a.cfg", 4)],
-        "a-1": [("a.cfg", 4)],
-        "a-2": [("a.cfg", 4)],
-        "b": [("b.cfg", 2)],  # as far as the read saw: more claims hold its words
+        "a-0": [("a.cfg", 4, True)],
+        "a-1": [("a.cfg", 4, True)],
+        "a-2": [("a.cfg", 4, True)],
+        "b": [("b.cfg", 2, False)],  # as far as the read saw: more claims hold its words
     }
     listed = 3 + 9 + 9  # a term's claims are listed one past the bound, to know there are more
     assert seen.rows == 2 + 2 * 1 + 3 + listed + 3 * 11 + (5 + 4 + 5) + 5

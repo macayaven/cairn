@@ -391,6 +391,8 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
   related(project, slug, limit=8) -> {"project", "page", "title", "version", "related":
       [{"page", "title", "version", "why": [{"kind": "shares", "term", "term_kind", "pages",
       "here", "there"} or {"kind": "mentioned_by", "term", "term_kind": "title", "there"}],
+      ("pages_exact", false, joins "pages" only when the read did not see every claim that
+      holds the term's words: more pages may hold it)
       "more"}], "searched": {"complete", "terms_searched", "terms_left_out", "terms_cut",
       "title_cut", "claims_read", "pages_left_out"}}
       (KG1; cairn.memory, Related pages; the rules are cairn.relations and the read
@@ -405,7 +407,9 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       out of it with the write that forgets it. Not in this version: a relation across
       projects, the pages a page mentions, paths of several steps, groups over a whole
       project, anything inferred from meaning. `searched` says what the read's bounds left
-      out, always. A read of the page for the audit log (read.page), which never holds a term.
+      out, always: the store's read runs at most 20 statements, whatever the page and the
+      project hold (cairn.store.relating says which, and tests/unit/test_relating_cost_unit.py
+      counts them). A read of the page for the audit log (read.page), which never holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments

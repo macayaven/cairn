@@ -45,8 +45,8 @@ carries):
   (`terms_cut`): more claims hold its words than were listed, a claim listed or its passage
   was not read, or none of the page's first HERE_MAX claims is found and it has more. Not so
   when more than relations.COMMON pages are already known to hold it, which settles it. What
-  was seen of a term that is cut still relates pages, and a reason's `pages` is how many
-  pages hold the term as far as the read saw.
+  was seen of a term that is cut still relates pages: a reason's `pages` is how many pages
+  hold the term as far as the read saw, and the reason says that the count is not exact.
 - The first LISTED_MAX claims that hold the title are listed; when more hold it, or the
   title has more words than a search takes (ranking.split) and is not looked up,
   `title_cut` says so.
@@ -216,10 +216,9 @@ def related(
             if holds[at] is None and (term not in read or (cited and cited[0] in unread)):
                 unknown = True
         cut += unknown
+        shared = Reason(SHARES, term.text, term.kind, 1 + len(holding), here[term], None)
         for at in holding:
-            reasons.setdefault(at, []).append(
-                Reason(SHARES, term.text, term.kind, 1 + len(holding), here[term], holds[at])
-            )
+            reasons.setdefault(at, []).append(shared._replace(there=holds[at], exact=not unknown))
 
     counted, more_words = ranking.split(title)
     mentions = [] if more_words else _mentions(con, *scope, slug, ranking.phrase(counted))

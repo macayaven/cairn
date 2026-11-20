@@ -84,7 +84,9 @@ def looked_up_before(term: Term) -> tuple[int, str, str]:
 class Reason(NamedTuple):
     """Why two pages are related: the kind of relation, the term both state (or this page's
     title), its kind, how many pages of the project hold it as far as the read saw (this page
-    among them; 2 for a mention), and the claim on each side (none here for a mention)."""
+    among them; 2 for a mention), the claim on each side (none here for a mention), and
+    whether that count is exact: False when the read did not see every claim that holds the
+    term's words, so more pages may hold it."""
 
     kind: str
     term: str
@@ -92,6 +94,7 @@ class Reason(NamedTuple):
     pages: int
     here: Any
     there: Any
+    exact: bool = True
 
     @property
     def weight(self) -> Fraction:

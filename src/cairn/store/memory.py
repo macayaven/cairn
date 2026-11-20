@@ -13,6 +13,7 @@ import yaml
 
 from cairn import facts as _facts
 from cairn.kinds import GENERAL, KINDS
+from cairn.relations import RELATED_MAX
 from cairn.spans import Span, chunk
 from cairn.store import ranking, relating
 from cairn.store.access import LEVELS, MODELS_PREFIX, KeptFromModels, _keep_from_models
@@ -1185,8 +1186,9 @@ class MemoryMethods(StoreBase):
 
     # Related pages
     def related_pages(self, project_id: str, slug: str, limit: int = 8) -> relating.Related | None:
-        """The pages of the project related to its page `slug`, the best `limit` first, each
-        with the claims the relation rests on, and what the read left out (cairn.store.relating;
+        """The pages of the project related to its page `slug`, the best `limit` first (at most
+        relations.RELATED_MAX, whatever is asked), each with the claims the relation rests on,
+        and what the read left out (cairn.store.relating;
         the rules are cairn.relations). None when the project has no such page, or is unknown
         or out of reach: the same answer for all three. Nothing of a relation is stored. One
         read: the page, the claims of the other pages, their passages and who wrote the notes
@@ -1205,8 +1207,9 @@ class MemoryMethods(StoreBase):
             if not _has_table(con, self._index):  # the account has not saved a page yet
                 nothing = relating.Left(0, 0, 0, False, 0, 0)
                 return relating.Related(slug, *head, (), nothing, {}, {})
+            most = min(max(0, limit), RELATED_MAX)  # whoever asks: no more than an answer holds
             found = relating.related(
-                con, self._account_id, self._index, project_id, slug, *head, max(0, limit)
+                con, self._account_id, self._index, project_id, slug, *head, most
             )
             if not found.notes_of:  # nothing given, or nothing it cites is held: no one to name
                 return found

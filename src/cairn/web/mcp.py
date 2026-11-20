@@ -438,7 +438,8 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         newest was written (written_at). `searched` says what was left out.
         `terms_searched`: the page's terms looked up, 256 at most. `terms_left_out`: its
         other terms. `terms_cut`: terms whose claims were not all read (64 for a term, 512
-        and a million characters in all), so more pages may hold them than `pages` says.
+        and a million characters in all), so more pages may hold them than `pages` says. A
+        reason for such a term has `pages_exact` false.
         `title_cut`: true when more claims hold the title than the 64 read, or the title has
         more words than a search takes. `claims_read`: claims of other pages read.
         `pages_left_out`: related pages past `limit`. `complete` is true when nothing was

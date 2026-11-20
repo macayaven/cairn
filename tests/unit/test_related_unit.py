@@ -186,6 +186,37 @@ def test_limit_takes_the_best_and_the_answer_counts_the_pages_left_out(env):
     assert eight["searched"]["complete"] is True and rest(env, "asked").json() == eight
 
 
+def test_a_reason_whose_term_was_cut_says_its_count_is_not_exact(env, monkeypatch):
+    """`pages` is how many pages hold the term as far as the read saw. When the read did not
+    see every claim that holds its words, the reason says so, and no other reason does."""
+    monkeypatch.setattr(relating, "LISTED_MAX", 2)
+    note(env, "Asked", "Use `a.cfg` and `b.cfg`.\n")
+    note(env, "Few", "Set `a.cfg` once.\n")
+    note(env, "Many", "\n".join(f"- Line {n} sets `b.cfg`." for n in range(3)) + "\n")
+    found = answer(env.client, env.key, "related", project="ops", slug="asked")
+    counts = {
+        reason["term"]: (reason["pages"], reason.get("pages_exact"))
+        for page in found["related"]
+        for reason in page["why"]
+    }
+    assert counts == {"a.cfg": (2, None), "b.cfg": (2, False)}
+    assert (found["searched"]["terms_cut"], found["searched"]["complete"]) == (1, False)
+    (many,) = [page for page in found["related"] if page["page"] == "many"]
+    assert list(many["why"][0]) == [
+        "kind", "term", "term_kind", "pages", "pages_exact", "here", "there",
+    ]  # fmt: skip
+
+
+def test_the_store_gives_no_more_pages_than_an_answer_may_hold(env):
+    """Whoever calls: a limit past the most an answer gives is that most, and the rest counted."""
+    terms = [f"`t{n}.cfg`" for n in range(relations.RELATED_MAX + 2)]
+    note(env, "Asked", "Use " + " ".join(terms) + ".\n")
+    for n, term in enumerate(terms):
+        note(env, f"Page {n}", f"Brook sets {term}.\n")
+    found = env.store.related_pages(env.ops.id, "asked", 1_000)
+    assert len(found.pages) == relations.RELATED_MAX and found.left.pages_left_out == 2
+
+
 # Everything an agent reads says who wrote it
 
 
@@ -400,6 +431,7 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
         "`title_cut`: true when more claims hold the title than the 64 read, or the title has"
         " more words than a search takes.",
         "`claims_read`: claims of other pages read.",
+        "A reason for such a term has `pages_exact` false.",
         "`pages_left_out`: related pages past `limit`.",
         "`complete` is true when nothing was left out.",
         "A term more than 5 pages hold relates none; a term fewer pages hold weighs more, and a"

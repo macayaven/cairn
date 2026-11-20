@@ -118,8 +118,10 @@ Related pages (KG1; the rules are cairn.relations, the read cairn.store.relating
 {"page", "title", "version", "why", "more"}. `why` holds at most relations.WHY_MAX reasons,
 the weightiest first, and `more` counts the rest. A reason is {"kind": "shares", "term",
 "term_kind", "pages", "here", "there"}: a term both pages state, as it is compared, its
-kind, how many pages of the project hold it as far as the read saw, and the claim of this
-page and of the other that state it; or {"kind": "mentioned_by", "term", "term_kind": "title",
+kind, how many pages of the project hold it as far as the read saw (`pages_exact`, false,
+joins them only when the read did not see every claim that holds the term's words), and
+the claim of this page and of the other that state it; or {"kind": "mentioned_by", "term",
+"term_kind": "title",
 "there"}: a claim of the other page that holds this page's title. This version does not list
 the pages a page mentions. Each claim is {"claim_id", "text", "passage_ids", "outside",
 "written_by", "written_at"} (and `written_by_more`), as a hit of `recall` carries them, its
@@ -147,7 +149,7 @@ from cairn.compiler import (
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
 from cairn.plans import Plan, Plans, limit_sentence
-from cairn.relations import RELATED_MAX, SHARES
+from cairn.relations import RELATED_MAX, SHARES, Reason
 from cairn.sources import KINDS as SOURCE_KINDS
 from cairn.spans import Span, chunk
 from cairn.store import (
@@ -940,6 +942,16 @@ def written_entries(
     return answers
 
 
+def _held_by(reason: Reason, stated: Mapping[Any, dict[str, Any]]) -> dict[str, Any]:
+    """What a `shares` reason says beside its term: how many pages hold it, `pages_exact`,
+    false, only when the read did not see every claim that holds its words (the count is
+    then what it saw), and this page's claim. Nothing for a mention."""
+    if reason.kind != SHARES:
+        return {}
+    exact = {} if reason.exact else {"pages_exact": False}
+    return {"pages": reason.pages, **exact, "here": stated[reason.here]}
+
+
 def related_searched(left: relating.Left) -> dict[str, Any]:
     """What a read of related pages left out, as `related` answers it under `searched`:
     `complete`, then the counts of cairn.store.relating.Left under the names callers meet."""
@@ -1531,11 +1543,7 @@ class Memory:
                             "kind": reason.kind,
                             "term": reason.term,
                             "term_kind": reason.term_kind,
-                            **(
-                                {"pages": reason.pages, "here": stated[reason.here]}
-                                if reason.kind == SHARES
-                                else {}
-                            ),
+                            **_held_by(reason, stated),
                             "there": stated[reason.there],
                         }
                         for reason in page.why

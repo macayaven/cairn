@@ -303,13 +303,15 @@ def test_the_reply_shows_as_characters_what_slack_displayed_so(tmp_path, text, a
     assert named(reply) == title, reply
 
 
-def test_a_special_mention_shows_as_slack_displayed_it(tmp_path):
+@pytest.mark.parametrize("special", ["here", "everyone"])
+def test_a_special_mention_shows_as_slack_displayed_it(tmp_path, special):
     """Found on 9d1abc2f: Slack displays <!here> as "@here"; the note wrote "[link omitted]"
     in the claim, the title and the reply."""
-    (page,), (reply,) = filed_on_bench(tmp_path, "Standup <!here> at ten")
+    (page,), (reply,) = filed_on_bench(tmp_path, f"Standup <!{special}> at ten")
     shown = "".join(text for claim in page.claims for text in Shown(str(render(claim.text))).text)
-    assert "@here" in shown and "link omitted" not in shown, shown
-    assert "link omitted" not in page.title and named(reply) == "Standup @here at ten", reply
+    assert f"@{special}" in shown and "link omitted" not in shown, shown
+    assert "link omitted" not in page.title, page.title
+    assert named(reply) == f"Standup @{special} at ten", reply
 
 
 def test_code_blocks_slack_names_in_rich_text_convert_in_linear_time():
@@ -317,19 +319,22 @@ def test_code_blocks_slack_names_in_rich_text_convert_in_linear_time():
     end (text._known_code), so 40,000 characters of ```x``` took about 1.6 s against 0.14 s
     for 10,000."""
     spent = {}
-    for size in (10_000, 40_000):
+    for size in (10_000, 40_000):  # the best of three, so a busy machine does not decide
         count = size // 7
         block = {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": "x"}]}
         message = {
             "text": "```x```" * count, "ts": "1900000000.000100", "user": "U1",
             "blocks": [{"type": "rich_text", "elements": [block] * count}],
         }  # fmt: skip
-        start = time.perf_counter()
-        note_from_message(
-            message, team_id="T", team_domain="fable-works", conversation_id="C0LIB",
-            author="Cedar Quill", names={},
-        )  # fmt: skip
-        spent[size] = time.perf_counter() - start
+        times = []
+        for _ in range(3):
+            start = time.perf_counter()
+            note_from_message(
+                message, team_id="T", team_domain="fable-works", conversation_id="C0LIB",
+                author="Cedar Quill", names={},
+            )  # fmt: skip
+            times.append(time.perf_counter() - start)
+        spent[size] = min(times)
     assert spent[40_000] < 6 * spent[10_000], spent
 
 

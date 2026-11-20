@@ -26,7 +26,8 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
   by every gate, so no compile, tidy or arrangement saves it. render_body
   itself never refuses: a forgotten note's page is written with it. Each gate checks that
   the body is what this function writes of the claims (gate.unclaimed_line: equality with a
-  re-render).
+  re-render). A read of a stored version asks body_to_read, which answers BODY_NOT_SHOWN in
+  the body's place when the renderer names such a claim (fourth report, must-fix 4).
 - Before saving, the candidate page and the spans its claims cite go through a gate. A
   failing gate saves nothing and returns status "rejected" with the gate's result. The gate's
   metrics are saved with the page version.
@@ -112,6 +113,7 @@ from cairn.gate import (
     whole,
 )
 from cairn.spans import (
+    CLOSERS_MAX,
     FenceLeftOpen,
     Span,
     claim_id,
@@ -348,6 +350,27 @@ def left_to_run(
         owner = blocks[left][1]
         place = next((n for n, claim in enumerate(claims, 1) if claim is owner), 0)
     return "\n\n".join(kept) + "\n", place
+
+
+BODY_NOT_SHOWN = (  # what a read answers in the place of a body it does not show
+    "The body of this version is not shown. Its notes' Markdown cannot be put together"
+    " safely: a code fence would run from one claim into the next, and a body closes at most"
+    f" {CLOSERS_MAX} such fences. Read the claims, where each claim's text and citations are"
+    " exact. The page is written whole again when a note it cites is forgotten."
+)
+
+
+def body_to_read(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> tuple[str, bool]:
+    """What a read answers as a version's body, and whether that is BODY_NOT_SHOWN in its
+    place: the body render_body writes, unless the renderer names a fence it left to run
+    from one claim into the next (left_to_run: more of them than a body closes, or one no
+    closer closes). A version an earlier build stored can hold one: it is read, never checked
+    as an import is, and the package's gates, an import and a forget write none now. One
+    render, as render_body; never raises."""
+    body, place = left_to_run(title, claims, spans)
+    return (body, False) if place is None else (BODY_NOT_SHOWN, True)
 
 
 def render_body_before_review_four(

@@ -121,9 +121,9 @@ from cairn.compiler import (
     CONTENT_KINDS,
     CompileResult,
     Gate,
+    body_to_read,
     compile_note,
     lost_race,
-    render_body,
     slugify,
 )
 from cairn.guard import Finding
@@ -1444,19 +1444,23 @@ class Memory:
     ) -> dict[str, Any]:
         """A page as stored, each claim marked `outside` when a note it cites is (A1), with a
         part of its version numbers read from their end (Q1: versions_of). Its body is
-        rendered when read (compiler.render_body of its claims and the spans they cite, read
-        once with the writers), so a version stored under an earlier rendering reads as now."""
+        rendered when read (compiler.body_to_read of its claims and the spans they cite, read
+        once with the writers), so a version stored under an earlier rendering reads as now.
+        A version an earlier build stored whose rendering would leave a code fence running
+        from one claim into the next is answered with every claim, compiler.BODY_NOT_SHOWN
+        as its body and `body_not_shown` true; no other answer has that field."""
         target = self.project(project)
         page = self.named_page(target, slug, version)
         writers, spans, origins = self._written_by(claim.span_ids for claim in page.claims)
         versions, total, _, following = self.versions_of(target, page.slug, limit, before)
+        body, not_shown = body_to_read(page.title, page.claims, spans)
         answer = {
             "project": target.name,
             "slug": page.slug,
             "title": page.title,
             "version": page.version,
             "versions": versions,
-            "body": render_body(page.title, page.claims, spans),
+            "body": body,
             "claims": [
                 {
                     **_claim(claim),
@@ -1468,6 +1472,8 @@ class Memory:
             ],
             "metrics": shown_metrics(page.metrics),
         }
+        if not_shown:
+            answer["body_not_shown"] = True
         if len(versions) < total:  # Q1: the part leaves versions out
             answer["versions_total"] = total
             if following is not None:

@@ -7,7 +7,7 @@ from typing import Any
 from starlette.requests import Request
 from starlette.responses import Response
 
-from cairn.compiler import render_body, section_headings
+from cairn.compiler import body_to_read, section_headings
 from cairn.kinds import GENERAL
 from cairn.memory import SLACK_FILED, Memory, is_outside
 from cairn.spans import Span
@@ -152,8 +152,9 @@ def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
     ]
     return {
         "items": items,
-        # The Markdown body as REST and MCP give it: rendered when read, never the stored text.
-        "body": render_body(page.title, page.claims, {i: span for i, (span, _) in found.items()}),
+        # The Markdown body as REST and MCP give it: rendered when read, never the stored
+        # text, and compiler.BODY_NOT_SHOWN where a fence of it would run across claims.
+        "body": body_to_read(page.title, page.claims, {i: s for i, (s, _) in found.items()})[0],
         "sources": sources,
         "metrics": metrics,
         "lines_cited": sum(source["cited"] for source in sources),

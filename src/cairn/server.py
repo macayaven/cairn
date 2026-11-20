@@ -485,9 +485,12 @@ The note guard and the logs (frozen by tests/acceptance/test_g1_guard.py; cairn/
   the web view's too, and with `serve --audit-reads` also in the audit log (read.page,
   read.evidence, read.search, read.graph, read.note, read.notes; Memory.access): each GET of
   a page that shows memory is one record, named as the MCP tool that reads the same (/
-  "projects", /b/<project> "overview", /b/<project>/p/<slug> "page", /search "recall") or
+  "projects", /b/<project> "overview", /b/<project>/p/<slug> "page",
+  /b/<project>/p/<slug>/related "related", /search "recall") or
   after what it asks (/b/<project>/notes "notes", /b/<project>/access "project_access",
-  /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The pages of the
+  /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The graph page is
+  one record named "graph" (cairn.web.graph_routes), but for its view of a page's related
+  pages, which reads what `related` reads and is recorded as it. The pages of the
   workspace's settings, people and credentials, and the composer's empty form, are not on
   it; what the web view writes is in the audit log. A request to /api or /mcp refused
   before its route (no valid credential) is one record ("none", None, None, "denied",
@@ -683,6 +686,31 @@ Web UI (server-rendered HTML)
   page's gate metrics are shown under "Checks" in words (web/ui.CHECKS; a name without
   words as it is), each row carrying its name (data-metric), and each source says which
   claims cite it by their number on the page. Earlier versions are linked.
+- GET /b/{project}/p/{slug}/related[?limit=N] (KG2), linked from the page's head as "Related
+  pages" for its latest version: what `related` answers for the page (Memory.related, one
+  read, recorded as `related` records it) and nothing else, shown by
+  cairn.web.ui.memory_pages.related_view: the related pages best first, each with its title
+  linking to it and an element with id="related-<slug>"; each reason in words (a shared term
+  as code, with how many pages of the project hold it; or that a claim of the other page
+  names this page's title); each claim a reason rests on quoted as plain text, white space
+  kept, never drawn as Markdown, linked to its claim on its page ("#<claim id>"), and under
+  it who wrote the notes it cites (web/ui.writer_words), when, and whether any is outside
+  text. A claim that is cut (`text_cut`) is never taken to hold a text: the page says it is
+  longer than what is shown and shows the line its answer gives (the line of its passage
+  that states the term, or the line that names the title) wherever it holds one, else the
+  head it holds as its text, else nothing, and its link reads the whole claim on its page.
+  Then "and N more
+  reasons" for `more`; one sentence for what the read left out (related_left_out), with a
+  link to show up to 20 when pages were left out. With no related page it says so in one
+  sentence, with what makes two pages related; of an answer that is not complete it says
+  only that none was found in what was looked at, never that there is none. N is 1 to 20 (8
+  when left out), and any
+  other is a 400 page that says so in REST's sentence; a project out of reach or a page
+  that is not there is the 404 the page view gives. A parameter it does not take is
+  ignored. Words that come from a note or name its writer (a title, a term, a writer's
+  name) stand in a <bdi>, and what is quoted of a claim alone in an element of its own, so
+  an override that nothing in them closes turns none of the page's own words. The page
+  view runs no statement more for the link. No script.
 - GET /setup: how agents connect: with only the URL when OAuth is on (the MCP URL, and the
   `claude mcp add --transport http cairn <url>` and `codex mcp add cairn --url <url>`
   commands; else how to turn it on), and with an API key: the MCP URL (public_url + "/mcp",
@@ -821,11 +849,16 @@ Writing from the web view (frozen by tests/acceptance/test_m1_mobile.py; cairn/w
   (role="alert"). A note the gate rejects: 422, the gate's violations listed, what was typed
   still in the form (escaped); the note is kept, as with the tool. Unknown project, or
   another account's: 404.
-- GET /new is the same composer with a `project` select of the caller's projects (by name),
-  posting to /notes. It pre-fills `title` and `text` from the query string and appends `url`
-  on a line of its own, unless the text already holds it: the share target lands here. With
-  no project yet it says so and shows the new-project form instead. POST /notes without a project:
-  400 and the form again.
+- GET /new is the same composer with a `project` select of the projects the caller can write
+  to (by name), posting to /notes. It pre-fills `title` and `text` from the query string and
+  appends `url` on a line of its own, unless the text already holds it: the share target lands
+  here. With no project yet it says so and shows the new-project form instead. POST /notes
+  without a project: 400 and the form again.
+- No composer is shown where the caller cannot write: GET /b/{project}/new for a project the
+  caller only reads, GET /new for a caller who reads projects and can write to none, and
+  whatever is posted to either form for a project the caller only reads, are 403 in the
+  store's words for that write, and nothing is stored. GET / offers Write a note only to a
+  caller who can write to a project.
 - GET / has a form posting to /projects (`name`, `description`, and `kind`, a select of every
   kind, "general" chosen): 303 to /b/<name> when created; 409 (name taken) or 400 (not a
   valid name, or an unknown kind) with the home page again, a message (role="alert") and
@@ -835,8 +868,8 @@ Writing from the web view (frozen by tests/acceptance/test_m1_mobile.py; cairn/w
 - Installable: every page links /static/manifest.webmanifest (public, like the stylesheet):
   name, short_name, start_url "/", display "standalone", the SVG icon, and a share_target
   (GET /new with title, text and url). The UI's Content-Security-Policy has
-  `manifest-src 'self'`; there is still no script anywhere but one: with `serve
-  --graph-explorer`, the graph page alone loads cairn's own (G2; cairn.web.graph_view).
+  `manifest-src 'self'`; there is still no script anywhere but one: unless `serve
+  --no-graph-explorer` is given, the graph page alone loads cairn's own (G2; cairn.web.graph_view).
 - The two typefaces ship in /static/fonts/ (public, like the stylesheet; SIL Open Font
   License 1.1, each licence beside its font), and the policy has `font-src 'self'`.
 - The search box is on the home page and on every project page. Every page is laid out for

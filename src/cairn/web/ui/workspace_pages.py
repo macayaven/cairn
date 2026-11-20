@@ -131,6 +131,8 @@ def workspace_handlers(app_url: str) -> tuple[Callable[..., Any], ...]:
             names=names,
             sets=memory.store.list_sets(),
             projects=memory.store.list_projects(),
+            manage=may_manage_credentials(memory),
+            approvers={member.user_id: member.name for member in memory.store.list_members()},
         )
 
     def key_page(

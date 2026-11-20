@@ -438,3 +438,26 @@ def test_the_guides_say_what_a_stored_page_reads_as_and_what_a_reused_name_shows
     )
     for name in ("test_stored_fence_read_unit", "test_forget_slug_reuse_unit"):
         assert (ROOT / "tests" / "unit" / f"{name}.py").is_file(), name
+
+
+def test_the_changelog_says_what_removing_slack_does_to_the_log_and_no_more():
+    """Fifth report, must-fix 4: the deletion is committed and recorded; the database's log is
+    emptied only when no other connection holds it (store._truncate_log tries), so the
+    changelog does not promise that it is emptied, and says where the secrets can stay."""
+    slack = next(
+        line for line in read("CHANGELOG.md").splitlines() if line.startswith("- **From Slack.**")
+    )
+    assert "emptying the database's log" not in slack
+    assert (
+        "Removing the app deletes its secrets at once and records the deletion; the database's"
+        " log is emptied then too unless another connection holds it, and the privacy guide"
+        " says where the deleted secrets can stay."
+    ) in slack
+
+
+def test_the_specification_says_the_graph_is_on_unless_switched_off():
+    """Fifth report: the public spec still said the explorer defaults off (decision 201)."""
+    scope = part(read("docs/spec-v1.md"), "## Out of scope for v1")
+    assert "behind a switch that is off" not in scope
+    assert "`serve --no-graph-explorer`" in scope
+    assert cli.GRAPH_EXPLORER_BY_DEFAULT is True

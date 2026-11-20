@@ -322,6 +322,7 @@ SERVE_LOCK_REFUSED = "cannot take the lock that keeps one server on {db}: {reaso
 KEEP_VERSIONS = 50
 ALL_VERSIONS = "all"  # --keep-versions all: every version
 STATS_EVERY = 15.0  # minutes between the lines `serve` logs with the install's numbers (Q1)
+GRAPH_EXPLORER_BY_DEFAULT = True  # G2: `serve` opens the explorer; --no-graph-explorer turns it off
 KEEP_VERSIONS_WITH_PLANS = (
     "--keep-versions does not go with --plans: each plan's versions_per_page says how many"
     " versions of a page it keeps"
@@ -557,11 +558,18 @@ def _parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="name of the runtime environment variable holding the read-only documentation key",
     )
-    serve.add_argument(  # G2
+    graph_explorer = serve.add_mutually_exclusive_group()
+    graph_explorer.add_argument(  # G2
         "--graph-explorer",
         action="store_true",
         help="make a project's graph page the explorer, the one page that loads a script"
-        " (cairn's own, by a nonce and its hash); off: the graph page runs no script",
+        " (cairn's own, by a nonce and its hash); the default",
+    )
+    graph_explorer.add_argument(
+        "--no-graph-explorer",
+        action="store_true",
+        help="draw a project's graph page on the server alone with no script; serve shows"
+        " the explorer unless this is given",
     )
     cli_arrange.add_options(serve)
     _source_parsers(commands)
@@ -1963,7 +1971,9 @@ def _serve(args: argparse.Namespace) -> int:
                 stats_every=args.stats_every or None,  # Q1: the line with the numbers
                 google_connect=google,  # a Google account connected in the browser, or off
                 slack=slack,  # K1: Slack, both ways, or off
-                graph_explorer=args.graph_explorer,  # G2: the graph page you can explore
+                # G2: serve shows the graph explorer unless --no-graph-explorer turns it off
+                graph_explorer=args.graph_explorer
+                or (GRAPH_EXPLORER_BY_DEFAULT and not args.no_graph_explorer),
                 audit_reads=args.audit_reads,  # each read an event of its workspace
                 audit_keep=_audit_kept(args),  # how many events each workspace keeps
             )

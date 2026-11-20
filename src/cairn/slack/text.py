@@ -4,12 +4,16 @@ The note holds one heading, its first line: who wrote the message and when, as t
 verified. Where a heading begins is asked of the note as written, never worked out from the
 message: of the passage splitter (cairn.spans.chunk), whose heading paths say whose words a
 passage is, and of the Markdown parser as the web view reads. Every line either finds a
-heading on is written as text (_one_heading). The splitter's line boundaries (str.splitlines:
-more than a line feed) are each written as a line feed first, a CR LF as one.
+heading on is written as text, and no other line where a line at a reading can tell
+(_one_heading): the note says whose words it holds, so a backslash no reader asked for is a
+false quotation. For the same reason a line both readers read as code in the finished note,
+where every character is shown as it is, holds what Slack displayed and none of the marks
+that write prose (_code_as_shown). The splitter's line boundaries (str.splitlines: more than
+a line feed) are each written as a line feed first, a CR LF as one.
 """
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import quote, unquote, urlencode, urlsplit
@@ -37,15 +41,21 @@ def _decode(text: str) -> str:
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
+def _shown(text: str) -> str:
+    """Text as Slack displayed it, an email address removed: what _literal and _prose start
+    from, and what a line both readers read as code holds (_code_as_shown)."""
+    return _redact(_decode(text))
+
+
 def _literal(text: str) -> str:
     text = _redact(_decode(text))
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return re.sub(r"([\\`*_\[\]()!#~])", r"\\\1", text)
 
 
-def _name(name: str) -> str:
+def _name(name: str, literal: Callable[[str], str] = _literal) -> str:
     """A name as Slack gives it, on one line: it cannot start a line of the note."""
-    return _literal(" ".join(name.splitlines()))
+    return literal(" ".join(name.splitlines()))
 
 
 def _prose(text: str) -> str:
@@ -94,7 +104,8 @@ def _headings(text: str) -> dict[int, str]:
     written as text joins the paragraph above it, and a line of "=" or "-" below would
     underline that paragraph next; so once a heading is found, every such line below it that
     is not in a code fence is given too, and a run of them costs one more reading, not one
-    each. (Indented code is not spared: the paragraph a line joins can take it in.)"""
+    each. (Indented code is not spared: the paragraph a line joins can take it in.) Not every
+    line so given would read as a heading: _one_heading says when they are all written."""
     lines = text.split("\n")
     found = {span.start_line - 1: "#" for span in chunk("", text) if span.kind == "heading"}
     code: set[int] = set()
@@ -115,41 +126,158 @@ def _headings(text: str) -> dict[int, str]:
     return found
 
 
-def _one_heading(text: str) -> str:
-    """`text` with a backslash before what makes any line after its first a heading, so the
-    words stay and read as text. It is read until no heading is found: twice as a rule, once
-    more for each list item that takes in a line indented past it once the line above is
-    text. ValueError rather than a note with a second heading, should _PASSES readings not be
-    enough."""
-    text = "\n".join(text.splitlines())
-    for _ in range(_PASSES):
-        found = _headings(text)
+def _made_text(text: str, found: dict[int, str], every: bool) -> str | None:
+    """`text` with a backslash before what makes a line of `found` a heading, so the words stay
+    and read as text: the first such line, or `every` one. Then it is read again (_headings),
+    and so on: _PASSES readings with the one that gave `found`. None when the last of them
+    still finds a heading."""
+    lines = text.split("\n")
+    for _ in range(_PASSES - 1):
         if not found:
-            return text
-        lines = text.split("\n")
-        for index, mark in found.items():
-            lines[index] = lines[index].replace(mark, "\\" + mark, 1)
-        text = "\n".join(lines)
-    raise ValueError("The message's headings could not be written as text")
+            break
+        for index in found if every else [min(found)]:
+            lines[index] = lines[index].replace(found[index], "\\" + found[index], 1)
+        found = _headings("\n".join(lines))
+    return None if found else "\n".join(lines)
 
 
-def _render(text: str, names: Mapping[str, str]) -> str:
+def _code(note: str) -> set[int]:
+    """The lines the Markdown parser reads as code in `note`, fenced or indented."""
+    return {
+        line
+        for token in _PARSER.parse(note)
+        if token.type in ("fence", "code_block") and token.map
+        for line in range(*token.map)
+    }
+
+
+def _read(note: str) -> tuple[list[tuple[str, int, int]], set[int], set[int]]:
+    """How the two readers read `note`: the passages the splitter cuts it into; the lines the
+    Markdown parser reads as code in the whole of it; and those of them it also reads as code
+    in their own passage alone, which is what a claim's text is and what a page shows."""
+    passages, code = chunk("", note), _code(note)
+    alone = {
+        span.start_line - 1 + line
+        for span in passages
+        if not code.isdisjoint(range(span.start_line - 1, span.end_line))
+        for line in _code(span.text)
+    }
+    return [(span.kind, span.start_line, span.end_line) for span in passages], code, code & alone
+
+
+def _code_as_written(text: str, note: str) -> str:
+    """`note`, made of `text` by backslashes alone, with each line its Markdown parser reads
+    as code as `text` has it, but for a backslash where a reader then finds a heading (the
+    passage splitter reads headings in some lines the parser reads as code): a line at a
+    reading (_made_text), so none is one too many. Should _PASSES readings not finish that,
+    every line of code the splitter then reads as a heading keeps the backslash it had, at
+    once; and `note` itself unless one more reading then finds one heading."""
+    written, made, code = text.split("\n"), note.split("\n"), _code(note)
+    lines = [written[at] if at in code else line for at, line in enumerate(made)]
+    if lines == made:
+        return note
+    put_back = "\n".join(lines)
+    kept = _made_text(put_back, _headings(put_back), False)
+    if kept is not None:
+        return kept
+    for span in chunk("", put_back):
+        if span.kind == "heading" and span.start_line > 1:
+            lines[span.start_line - 1] = made[span.start_line - 1]
+    return note if _headings("\n".join(lines)) else "\n".join(lines)
+
+
+def _one_heading(text: str) -> str:
+    """`text` with a backslash before what makes any line after its first a heading, and
+    nowhere else where that can be told.
+
+    What a line reads as depends on the lines above it, and on no backslash written below it.
+    So the first line a reading finds is a heading whatever is done below it, and it alone
+    gets the backslash; the note is read again, and the lines above the next one found are
+    then as they will stay. Every backslash written so is needed: without it, a reader finds
+    a second heading. It costs a reading a line, so it is done only when the first reading
+    gives fewer than _PASSES lines that could need one (a line of "=" or "-" under a blank
+    line underlines nothing and is not counted).
+
+    A message with more such lines, or one _PASSES readings do not finish, is written from
+    the start as it was before: every line _headings gives at each reading, the lines its
+    underline rule adds among them, a rule or indented code that no reader took for a heading
+    too. Code is then put back as written (_code_as_written); the other lines keep the
+    backslash, which is the limit. ValueError rather than a note with a second heading,
+    should _PASSES readings not be enough then either, after twice _PASSES readings less
+    one; a note costs three times _PASSES at most."""
+    text = "\n".join(text.splitlines())
+    lines, found = text.split("\n"), _headings(text)
+    if sum(mark == "#" or bool(lines[at - 1].strip()) for at, mark in found.items()) < _PASSES:
+        note = _made_text(text, found, False)
+        if note is not None:
+            return note
+    note = _made_text(text, found, True)
+    if note is None:
+        raise ValueError("The message's headings could not be written as text")
+    return _code_as_written(text, note)
+
+
+def _code_as_shown(text: str, shown: str) -> str:
+    """The note of a message: `text`, the message as the prose rules write it, with one
+    heading (_one_heading), and each line both readers read as code in that note (_read: the
+    parser in the note whole, and in the line's own passage alone) as `shown` has it: the
+    message as Slack displayed it, line for line. Slack has no indented code and Markdown
+    has, so the rules that write prose (a backslash before a bracket, a doubled asterisk)
+    wrote on lines that the note shows as they are.
+
+    What is displayed is not escaped, so it may be read as Markdown nowhere: a line the note
+    reads as code and its passage does not (a fence the parser reads on and the splitter
+    ends) would be a link or a heading on a page, and keeps the prose. And which lines are
+    code is asked of the finished note, so it is made twice: of `text`, and then of `text`
+    with those lines as `shown` has them. The second is the note only if both readers read
+    it as they read the first, passage for passage and line for line: a link's label of
+    tildes is "~~~" as displayed and would end the fence it stands in. Then, or should the
+    second making refuse or the two texts not have the same lines, the note is the first, as
+    prose throughout. One making when no such line differs between the two texts; so the
+    readings of _one_heading, or twice them."""
+    first = _one_heading(text)
+    written, displayed = text.split("\n"), shown.split("\n")
+    if len(written) != len(displayed):
+        return first
+    differs = {at for at, line in enumerate(written) if line != displayed[at]}
+    read = differs and _read(first)
+    code = read and differs & read[2]
+    if not code:
+        return first
+    try:
+        second = _one_heading(
+            "\n".join(displayed[at] if at in code else line for at, line in enumerate(written))
+        )
+    except ValueError:
+        return first
+    return second if _read(second) == read else first
+
+
+def _render(
+    text: str,
+    names: Mapping[str, str],
+    prose: Callable[[str], str] = _prose,
+    literal: Callable[[str], str] = _literal,
+) -> str:
+    """`text` as the note holds it: its prose by `prose`, a name or a link's label by
+    `literal`, a code span or block of Slack's own as it was displayed. With _shown for both,
+    the whole of it as Slack displayed it, and the same lines."""
     pieces: list[str] = []
     offset = 0
     for match in _TOKENS.finditer(text):
-        pieces.append(_prose(text[offset : match.start()]))
+        pieces.append(prose(text[offset : match.start()]))
         token = match.group()
         if token.startswith("`"):
-            pieces.append(_redact(_decode(token)))
+            pieces.append(_shown(token))
         else:
             target, separator, label = token[1:-1].partition("|")
             if target.startswith("@"):
-                pieces.append("@" + _name(names.get(target[1:], target[1:])))
+                pieces.append("@" + _name(names.get(target[1:], target[1:]), literal))
             elif target.startswith("#"):
-                pieces.append("#" + _name(names.get(target[1:], label or target[1:])))
+                pieces.append("#" + _name(names.get(target[1:], label or target[1:]), literal))
             else:
                 url = _link_target(target)
-                shown = _literal(label if separator else target)
+                shown = literal(label if separator else target)
                 if url:
                     pieces.append(f"[{shown}]({url})")
                 elif separator:
@@ -157,7 +285,7 @@ def _render(text: str, names: Mapping[str, str]) -> str:
                 else:
                     pieces.append("[link omitted]")
         offset = match.end()
-    pieces.append(_prose(text[offset:]))
+    pieces.append(prose(text[offset:]))
     return "".join(pieces)
 
 
@@ -219,7 +347,9 @@ def note_from_message(
     if not body:
         raise NotText("The selected message has no text")
     who = _literal(" ".join((author or "Unknown author").split()))
-    heading = f"## {who} · {when:%Y-%m-%d %H:%M:%S} UTC"
-    text = _one_heading(f"{heading}\n\n{body}\n\n[Source in Slack]({source})")
+    heading = f"## {who} · {when:%Y-%m-%d %H:%M:%S} UTC\n\n"
+    link = f"\n\n[Source in Slack]({source})"
+    shown = _render(raw.strip(), names, _shown, _shown).strip()
+    text = _code_as_shown(heading + body + link, heading + shown + link)
     title = next(line.strip() for line in text.split("\n")[1:] if line.strip())
     return Draft(title, text, source)

@@ -257,6 +257,7 @@ Arguments after the image name replace the default command, `serve --db /data/ca
 - **Other hostnames for `/mcp`:** add `--allowed-host NAME` for each one. Any other Host header gets 421.
 - **A host directory instead of a volume:** run as the directory's owner, with `-v "$PWD/data:/data" --user "$(id -u):$(id -g)"`. If cairn may not write there, `serve` stops at start with one line that names the folder or the database file and says to run cairn as its owner.
 - **No tidying:** add `--no-tidy`. cairn otherwise tidies each page a note arrives on, with no model ([the run guide](docs/guides/run.md#tidy-pages-without-a-model)).
+- **No graph script:** add `--no-graph-explorer`. By default `serve` shows the graph explorer on a project's **Graph** page, the one page that loads a script (cairn's own, by a nonce and its hash); with `--no-graph-explorer`, the graph page is drawn by the server alone and runs no script ([the run guide](docs/guides/run.md#a-graph-to-explore)).
 
 `python3 scripts/smoke_container.py cairn:local` checks the image Compose built end to end.
 

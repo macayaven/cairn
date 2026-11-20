@@ -1383,7 +1383,7 @@ def test_the_agents_page(world):
 def test_setup_explains_connecting_by_url_when_it_is_possible(tmp_path, public_url, by_url):
     world = World(tmp_path, public_url)
     try:
-        text = world.browser(world.ada).get("/setup").text
+        text = world.browser(world.ada).get("/setup", follow_redirects=True).text
     finally:
         world.store.close()
     assert f"{public_url}/mcp" in text and "With only the URL" in text

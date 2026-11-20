@@ -426,6 +426,38 @@ def _leaving_fence(blocks: list[str]) -> tuple[int, str] | None:
     return None
 
 
+def fences_reaching(before: str, blocks: Sequence[str], line: str) -> list[bool]:
+    """Of each of `blocks`, whether a code fence that starts in it takes `line` in, where
+    `line` is written after it as the first line of the next block of a body is: after a
+    blank line. `before` is the body up to the first of them, ending in its blank line; the
+    blocks follow one another as a body writes them, each with `line` after it.
+
+    The parser's line map decides, as in _leaving_fence: the fence's token starts in the
+    block and its map ends past the line. One parse, of `before` and the blocks.
+
+    What an answer is worth. A line that a fence takes in is code, or the fence's closing
+    line: the lines after it are read as if it were not there. A line that no fence takes
+    is a block of its own, which may change how the blocks after it are read. So the
+    answers up to the first False, that one included, are the parser's own for the body in
+    which that block is followed by a block starting with `line`; the answers after it are
+    a guess. A caller that acts on them asks again, without the lines before
+    (store.erasure._before_it)."""
+    parts, first, asked, count = [before], [], [], len(_PARSER_LINES.findall(before))
+    for block in blocks:
+        first.append(count)
+        count += len(_PARSER_LINES.findall(f"{block}\n\n"))
+        asked.append(count)  # where `line` stands after this block
+        count += 2
+        parts.append(f"{block}\n\n{line}\n\n")
+    taken = [False] * len(first)
+    for token in _PARSER.parse("".join(parts)):
+        if token.type == "fence" and token.map:
+            at = bisect_right(first, token.map[0]) - 1
+            if at >= 0 and token.map[0] < asked[at] < token.map[1]:
+                taken[at] = True
+    return taken
+
+
 def _closer(opener: str, run: str) -> str:
     """The line to write as the closer of a fence the parser opened with `run` on the line
     `opener`: the run after what the line holds before it, its white space as written and

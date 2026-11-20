@@ -17,6 +17,7 @@ ROUTES = (
     ("/b/{project}", ("GET", "HEAD"), "endpoint"),
     ("/b/{project}/notes", ("GET", "HEAD"), "endpoint"),
     ("/b/{project}/p/{slug}", ("GET", "HEAD"), "endpoint"),
+    ("/b/{project}/p/{slug}/related", ("GET", "HEAD"), "endpoint"),  # added since: KG2
     ("/search", ("GET", "HEAD"), "endpoint"),
     ("/setup", ("GET", "HEAD"), "setup"),
     ("/welcome", ("GET", "HEAD"), "welcome"),

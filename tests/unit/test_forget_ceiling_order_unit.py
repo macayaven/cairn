@@ -1,5 +1,7 @@
-"""Past the ceiling on its renders, a forget takes only claims the body puts after the fence
-that runs on and that can open one (fourth report, must-fix 2).
+"""Past the ceiling on its renders, a forget takes with the claim named the claims the body
+puts after it that can open a fence (fourth report, must-fix 2); and, in every render, the
+claims directly before it that the parser shows holding what follows (CORE9A:
+test_forget_siblings_unit.py). No other claim leaves for a fence, however often it renders.
 
 A forget that brings more code fences together than a body closes (spans.CLOSERS_MAX) drops
 the claim whose fence runs on and renders again, CLOSERS_MAX times; past that it took the
@@ -13,6 +15,7 @@ saves; the forgotten note is a paragraph at the margin that kept indented text a
 the list item above it. Renders are counted as calls of compiler.left_to_run. Made-up notes."""
 
 import io
+import itertools
 import random
 
 import pytest
@@ -199,16 +202,17 @@ def test_two_lists_the_body_writes_against_their_stored_order_cost_eighteen_rend
 
 
 @pytest.mark.parametrize("deep", [1, 2, 8, 9])
-def test_a_fence_that_ended_with_its_list_item_costs_one_more_render(
+def test_fences_that_ended_with_their_list_items_leave_in_the_render_that_uncovers_them(
     store, memory, tmp_path, monkeypatch, deep
 ):
-    """The true bound past eighteen. Under a first list item, `deep` items nested one in
-    another with a fence in each that ends where its item ends (the next block is indented
-    less), then the snippets, then indented words. Once the snippets left, the words follow
-    the fence of the innermost item and that fence covers them: its claim is named in the
-    next render, and the fence of the item around it in the one after. One render for each
-    such item, and no claim that is whole is taken for it. Eight of them is the most: the
-    parser reads no fence in a list nested deeper, and then nothing runs on at all."""
+    """Under a first list item, `deep` items nested one in another with a fence in each that
+    ends where its item ends (the next block is indented less), then the snippets, then
+    indented words. Once the snippets left, the words follow the fence of the innermost
+    item and that fence covers them, and then the fence of the item around it. That was a
+    render for each such item. They leave with the claim named in the seventeenth render,
+    since the parser, asked with the words after each, shows every one of them holding the
+    words (erasure._before_it); no claim that is whole is taken for it. Eight of them is
+    the most: the parser reads no fence in a list nested deeper, and then nothing runs on."""
     first = [f"    ~~~\n    first {n}" for n in range(CLOSERS_MAX + 1)]
     items = [f"{' ' * 4 * level}-   item {level}" for level in range(deep + 1)]
     ended = [f"{' ' * 4 * level}~~~\n{' ' * 4 * level}ended" for level in range(deep + 1, 1, -1)]
@@ -222,37 +226,52 @@ def test_a_fence_that_ended_with_its_list_item_costs_one_more_render(
     count = renders(monkeypatch, lambda: store.forget_note(separator))
     if deep <= 8:
         assert texts(store) == ["- item", *items, *first, words]
-        assert count == CLOSERS_MAX + 2 + deep
+        # CORE9A: it was CLOSERS_MAX + 2 + deep, a render for each nested item
+        assert count == CLOSERS_MAX + 2
     else:
         assert texts(store) == ["- item", *items, *ended, *first, *blocks, words]
         assert count == 1
     assert restored(store, tmp_path) == texts(store)
 
 
-def test_past_twice_the_ceiling_every_claim_with_a_backtick_or_a_tilde_leaves(
+def test_past_twice_the_ceiling_a_render_takes_no_more_than_the_first_one_past_it(
     store, memory, monkeypatch
 ):
-    """The bound itself, whatever a page holds: no page is known on which a fence still
-    runs on after 2 x CLOSERS_MAX renders, so one is made up here, a body reader that names
-    the last claim for as long as a claim holds a backtick or a tilde. One claim leaves in
-    each of those renders; in the next, every claim that holds a backtick or a tilde, since
-    a body without them has no fence; and one more render finds nothing."""
-    plain = [f"Ada keeps log {n}." for n in range(10)]
+    """No last bound is left that takes more than the fault (CORE9A: past twice the ceiling
+    every claim with a backtick or a tilde left, wherever the body wrote it, and ordinary
+    notes came to that). No page is known that renders so often, so one is made up: a body
+    reader that names the claim before the last for as long as more than twelve are left.
+    Each render takes the claim named; the first past the ceiling takes with it the one
+    claim after it that can open a fence; and the renders past twice the ceiling take what
+    the others take. What the body wrote before stays: inline code, a fenced block at the
+    margin, an indented example with its own closing line. The loop ends because every
+    render takes a claim."""
+    indented = "    ~~~text\n    Brook owns the rollback.\n    ~~~"
+    safe = [INLINE, FENCED, "- item", indented, "Ada keeps `port 22` shut."]
     coded = [f"Ada keeps `log {n}`." for n in range(50)]
-    filed(memory, "\n\n".join([*plain, *coded]))
+    filed(memory, "\n\n".join(safe[:3]))
+    filed(memory, indented)
+    filed(memory, "\n\n".join([safe[4], *coded]))
+    last = "    ~~~text\n    Quill owns the log.\n    ~~~"
+    filed(memory, last)
     other = filed(memory, "Fin.")
-    real = cairn.compiler.left_to_run
+    assert texts(store) == [*safe, *coded, last, "Fin."]
+    real, taken = cairn.compiler.left_to_run, []
 
-    def named_last(title, claims, spans):
+    def named_before_the_last(title, claims, spans):
         body, _ = real(title, claims, spans)
-        marked = any("`" in claim.text or "~" in claim.text for claim in claims)
-        return body, len(claims) if marked else None
+        taken.append(len(claims))
+        return body, len(claims) - 1 if len(claims) > 12 else None
 
     with monkeypatch.context() as patch:
-        patch.setattr(cairn.compiler, "left_to_run", named_last)
-        count = renders(patch, lambda: store.forget_note(other))
-    assert count == 2 * CLOSERS_MAX + 2
-    assert texts(store) == plain
+        patch.setattr(cairn.compiler, "left_to_run", named_before_the_last)
+        store.forget_note(other)
+    assert len(taken) > 2 * CLOSERS_MAX + 2
+    # one claim a render, but the first render past the ceiling: the claim after it too
+    steps = [before - after for before, after in itertools.pairwise(taken)]
+    assert steps == [1] * CLOSERS_MAX + [2] + [1] * (len(steps) - CLOSERS_MAX - 1)
+    # the claim that was last once the indented one had left stays last: none names it
+    assert texts(store) == [*safe, *coded[:6], coded[-CLOSERS_MAX - 2]]
 
 
 # Which claims can open a fence: the parser's answer, held to the parser's reading of bodies

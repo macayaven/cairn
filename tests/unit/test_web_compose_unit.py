@@ -10,11 +10,16 @@ import re
 import httpx
 import pytest
 from starlette.testclient import TestClient
+from test_guide_facts_m3_unit import SIX, answer
 
+from cairn import sources
+from cairn.arrange import arrange_page
 from cairn.compiler import GateResult
 from cairn.identity import GitHub
+from cairn.llm import FakeModel
 from cairn.server import SignIn, create_app
 from cairn.store import Store
+from cairn.web import cli_arrange
 from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
@@ -138,6 +143,15 @@ def test_the_manifest_is_served_as_a_manifest(env):
 
 # The Source field (R1.5): what its forms do, and a near miss caught before storing
 
+# What a form does, as the hint beside the field says it after the forms: no more than is
+# true whether or not a model is connected and whatever the operator set.
+MARKED = (
+    " keeps its page from a model the operator connects to arrange pages, unless the operator"
+    " chose to send such notes; the assistants people connect read it like any note they reach"
+    " and send it to their own provider."
+)
+MORE_THAN_TRUE = ("no model", "every model")  # what neither the hint nor the alert may promise
+
 
 def test_beside_the_source_field_the_forms_are_named_from_the_codes_list(env):
     from cairn.sources import withheld_forms
@@ -147,10 +161,51 @@ def test_beside_the_source_field_the_forms_are_named_from_the_codes_list(env):
     assert {"mail", "gmail"} <= set(named)
     forms = [f"<code>{form}:</code>" for form in named]
     listed = f"{', '.join(forms[:-1])} or {forms[-1]}"
-    said = f"A note whose source begins with {listed} is sent to no model."
+    said = f'<p class="hint">A note whose source begins with {listed}{MARKED}</p>'
     for page in (client.get("/b/alpha/new").text, client.get("/new").text):
         assert said in page
+        assert not [words for words in MORE_THAN_TRUE if words in page]
         assert 'name="as_written"' not in page  # the tick box comes with a near miss only
+
+
+def test_what_the_hint_says_of_a_marked_note_is_what_happens_to_it(env):
+    """The hint's sentence (MARKED), run: a note filed through the form under each start it
+    names has a page the arranger does not send to its model by default and does send when
+    the operator's setting says send; an agent with a key reads the note's claims either way."""
+    store, client = env
+    project = store.get_project("alpha")
+    hint = re.search(
+        r'<p class="hint">(A note whose source begins with .*?)</p>',
+        client.get("/b/alpha/new").text,
+        re.S,
+    ).group(1)
+    assert hint.endswith(MARKED)
+    named = re.findall(r"<code>([^<]+):</code>", hint)
+    assert len(named) > 1 and "mail" in named
+    # "the operator chose to send such notes": <PREFIX>_SOURCE_NOTES=send, which makes the
+    # arranger withhold nothing (cli_arrange.serve_arranger); unset, it withholds these.
+    assert cli_arrange.sends_source_notes("ARRANGER", {}) is False
+    assert cli_arrange.sends_source_notes("ARRANGER", {"ARRANGER_SOURCE_NOTES": "send"}) is True
+    key = store.create_key("assistant")
+    for start in named:
+        pages = []
+        for n in range(2):  # a page for each setting: a page not sent is tidied instead
+            title = f"Shelf {start} {n}"
+            filed = post(
+                client, "/b/alpha/notes", text=f"# {title}\n\n{SIX}", source_ref=f"{start}:x-7"
+            )
+            assert filed.status_code == 303, start
+            pages.append(store.get_page(project.id, filed.headers["location"].rsplit("/", 1)[1]))
+        kept, sent = pages
+        model = FakeModel([])
+        held = arrange_page(store, project.id, kept.slug, model, withhold=sources.withheld_via())
+        assert held.status == "withheld" and model.requests == [], start
+        model = FakeModel([answer(sent)])
+        gone = arrange_page(store, project.id, sent.slug, model, withhold=())
+        assert gone.status == "arranged", start
+        assert sent.claims[0].text in model.requests[0][1]["content"], start
+        read = client.get(f"/api/projects/alpha/pages/{kept.slug}", headers={"x-api-key": key})
+        assert kept.claims[0].text in [claim["text"] for claim in read.json()["claims"]], start
 
 
 @pytest.mark.parametrize("path", ["/b/alpha/notes", "/notes"])
@@ -166,11 +221,13 @@ def test_a_near_miss_comes_back_with_everything_typed_and_nothing_stored(env, pa
     assert store.list_pages(store.get_project("alpha").id) == []
     alert = re.search(r'<div class="alert" role="alert">(.*?)</div>', r.text, re.S).group(1)
     said = (
-        f"The source is close to <code>{form}:</code>, the start that keeps a note from every"
-        f" model: begin it with <code>{form}:</code> to keep this note from them, or tick"
+        f"The source is close to <code>{form}:</code>, the start that marks a note the way the"
+        f" hint under Source says: begin it with <code>{form}:</code> to mark this note, or tick"
         " Save it as written to store the source as it is."
     )
     assert said in alert
+    assert MARKED in r.text.split(alert, 1)[1]  # the hint the alert names, further down
+    assert not [words for words in MORE_THAN_TRUE if words in r.text]
     assert "Quill retries 3 times before failing." in textarea(r.text)
     assert 'value="Kept &lt;title&gt;"' in r.text and 'value="Retry"' in r.text
     assert f'name="source_ref" type="text" value="{typed}"' in r.text

@@ -7,14 +7,15 @@
 <p>Pages and the passages their claims cite. Diagram labels may be shortened; full text is in the list below.</p>
 {% if truncated %}<p>Some content is omitted because this graph reached a limit.</p>{% endif %}
 <div class="graph-diagram" role="region" aria-label="Graph diagram" tabindex="0">
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="{{ height }}" aria-hidden="true">
+<svg xmlns="http://www.w3.org/2000/svg" width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}" aria-hidden="true">
   {% for edge in edges %}
-  <line data-graph-area="svg" data-graph-edge="{{ edge.number }}" x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="currentColor" />
+  <path class="graph-edge" data-graph-area="svg" data-graph-edge="{{ edge.number }}" d="{{ edge.path }}" fill="none" stroke="currentColor" />
   {% endfor %}
   {% for node in nodes %}
   <g data-graph-area="svg" data-graph-node="{{ node.id }}">
+    <rect class="graph-node-box" x="{{ node.box_x }}" y="{{ node.box_y }}" width="{{ node.box_w }}" height="{{ node.box_h }}" rx="6" />
     <circle cx="{{ node.x }}" cy="{{ node.y }}" r="5" fill="currentColor" />
-    <svg x="{{ node.x + 8 }}" y="{{ node.y + 4 }}" width="210" height="24" overflow="hidden"><text x="0" y="15" font-family="monospace" font-size="12" fill="currentColor"{% if node.display|length > 16 %} textLength="200" lengthAdjust="spacingAndGlyphs"{% endif %}>{{ node.display }}</text></svg>
+    <svg x="{{ node.label_x }}" y="{{ node.label_y }}" width="{{ node.label_w }}" height="24" overflow="hidden"><text x="0" y="16" font-family="monospace" font-size="12" fill="currentColor"{% if node.display|length > 16 %} textLength="180" lengthAdjust="spacingAndGlyphs"{% endif %}>{{ node.display }}</text></svg>
   </g>
   {% endfor %}
 </svg>
@@ -22,7 +23,7 @@
 <h2>Graph content</h2>
 <ul>
 {% for node in nodes %}
-<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ node.label }}</a>{% else %}{{ node.label }}{% endif %}{% if node.kind == 'note' %}; source_ref: {{ node.source_ref or '' }}; via: {{ node.via or '' }}{% endif %}</li>
+<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ node.label }}</a>{% else %}{{ node.label }}{% endif %}{% if node.kind == 'note' %}{% if node.source_ref %}; source_ref: {{ node.source_ref }}{% endif %}{% if node.via %}; via: {{ node.via }}{% endif %}{% endif %}</li>
 {% endfor %}
 </ul>
 <h2>Relationships</h2>

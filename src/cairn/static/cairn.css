@@ -309,6 +309,7 @@ fieldset.reach legend { padding: 0 var(--space-1); font-size: 13px; line-height:
 /* A choice said in a sentence: the text wraps beside its button, not under it */
 .option.said { flex-wrap: nowrap; align-items: flex-start; padding: var(--space-2) 0; }
 .option.said input { flex: none; margin-top: 2px; }
+.option-title { display: block; font-weight: 600; }
 .ticks { display: grid; padding-left: 26px; }
 /* A long list of projects narrowed by name (cairn.narrowing): the field and its button on
    one row, the count under them */
@@ -542,11 +543,24 @@ details.body pre { margin-top: var(--space-2); white-space: pre-wrap; overflow-w
 .project-name { font-size: 17px; line-height: 24px; font-weight: 700; overflow-wrap: anywhere; }
 .project-name a { color: var(--ink); }
 .about { max-width: var(--measure); font-size: 15px; line-height: 22px; }
+.models-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.project-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-6);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+}
 
-/* Search hit: the claim itself, whole, its matched words on mark */
+/* Search hit: the claim itself, whole, its matched words on mark. A reason on a page's
+   related pages is a hit too: a long word in one breaks where it must, as in a claim's text
+   (a term can be 200 characters of code). */
 
 .hits { list-style: none; margin: 0; padding: 0; max-width: calc(var(--measure) + var(--margin)); }
-.hit { padding-block: var(--space-3); }
+.hit { padding-block: var(--space-3); overflow-wrap: anywhere; }
 .hit + .hit { border-top: 1px solid var(--rule); }
 .hit-where { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-soft); }
 .hit-where a { color: var(--ink-soft); }
@@ -801,7 +815,7 @@ details.kind ul { padding-left: 1.2rem; }
   .sheet, .signin, .consent { padding: var(--space-4); }
   .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .facts dd { margin-bottom: var(--space-2); }
-  .crumbs a, .meta a, .hit-where a, .source-head a, .sources .back a, .parts a, .toc a { display: inline-block; min-height: 44px; line-height: 44px; }
+  .crumbs a, .meta a, .hit-where a, .source-head a, .sources .back a, .parts a, .toc a, .project-foot a { display: inline-block; min-height: 44px; line-height: 44px; }
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -814,3 +828,6 @@ details.kind ul { padding-left: 1.2rem; }
   overflow-x: auto;
   margin-bottom: 1.5rem;
 }
+.graph-diagram > svg { display: block; width: 100%; max-width: 100%; height: auto; }
+.graph-node-box { fill: var(--sheet); stroke: var(--rule); stroke-width: 1; }
+.graph-edge { stroke: var(--ink-soft); stroke-width: 1.25; fill: none; }

@@ -241,6 +241,11 @@ class FakeStore:
     def list_projects(self) -> list[Project]:
         return sorted(self.projects.values(), key=lambda b: b.name.lower())
 
+    def writable_projects(self) -> list[Project]:
+        """The view acts for no person, so it writes wherever it reaches: the home page asks,
+        to offer a note. Who else writes where is tested over the real store."""
+        return self.list_projects()
+
     def get_project(self, ref: str) -> Project | None:
         return self.projects.get(ref) or self._by_name(ref)
 
@@ -853,11 +858,12 @@ def test_the_page_view_shows_sections_and_rounded_metrics(env):
     html = env.client.get("/b/alpha/p/tools").text
     assert '<h2 class="section">Quill</h2>' in html and '<h2 class="section">Lumen</h2>' in html
     # The page's <time datetime> stamps hold microseconds, and "17:55:10.952381" holds
-    # "0.95238" too: the value is read in its own row, and the page without its stamps.
+    # "95.238" / "0.95238" too: the value is read in its own row, and the page without stamps.
     row = re.search(r'<tr data-metric="retention">(.*?)</tr>', html, re.S)
     assert row, "no retention row"
-    assert '<td data-label="Value" class="num">0.952</td>' in row.group(1)
-    assert "0.95238" not in re.sub(r'\bdatetime="[^"]*"', "", html)
+    assert '<td data-label="Value" class="num">95.2%</td>' in row.group(1)
+    stripped = re.sub(r'\bdatetime="[^"]*"', "", html)
+    assert "95.238" not in stripped and "0.95238" not in stripped
 
 
 def test_the_page_footer_says_its_checks_and_who_cites_a_source_in_words(env):

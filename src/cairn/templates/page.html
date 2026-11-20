@@ -28,6 +28,10 @@
 {% if trimmed %}
 <p class="meta">Showing the last {{ versions_total }} versions of this page: older ones were removed when it was saved, to keep its history bounded.</p>
 {% endif %}
+{# Relations are worked out for a page's latest version alone: an earlier one has no link. #}
+{% if page.version == latest %}
+<p class="meta"><a href="{{ page_url }}/related">Related pages</a></p>
+{% endif %}
 {% if page.metrics.get("arranged_by") == software %}
 <p class="arranged">Arranged by {{ product.name }}: each heading's claims were put together and repeated claims folded, with no model; every word is the sources' own.</p>
 {% elif page.metrics.get("arranged_by") %}

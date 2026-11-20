@@ -48,3 +48,5 @@
 .graph-explorer [data-graph-live] svg { touch-action: pan-y pinch-zoom; }
 
 .graph-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The lists under the drawing: a long label or term breaks where it must on a narrow screen. */
+.graph-explorer li { overflow-wrap: anywhere; }

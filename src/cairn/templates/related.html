@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "_components.html" import crumbs, noted %}
+{# A document's title takes no element: the page's title stands between isolate characters. #}
+{% block title %}Related pages · {{ "\u2068" ~ title ~ "\u2069" }} · {{ project }}{% endblock %}
+{% block main %}
+{% set project_url = "/b/" ~ (project|seg) %}
+{% set page_url = project_url ~ "/p/" ~ (slug|seg) %}
+{# A claim a relation rests on, quoted (memory_pages._quoted): what is shown of it as it was
+   written, white space kept, never drawn as Markdown (what is shown of a claim that was cut
+   can end inside a fence or a link); a claim not shown whole says so, and its link reads it
+   whole on its page; under it, who wrote the notes it cites and when. `at`: its page's
+   address; `on`: its page's title. #}
+{% macro quoted(claim, side, at, on) %}
+<li>
+  <figure class="source" data-claim="{{ claim.id }}" data-side="{{ side }}" data-part="{{ claim.part }}">
+    <figcaption class="source-head"><strong>{{ noted(on) }}</strong> <a href="{{ at }}#{{ claim.id|seg }}">{{ "Read the whole claim on" if claim.cut else "Open this claim on" }} {{ noted(on) }}</a></figcaption>
+    {% if claim.says %}
+    <div class="source-head" data-cut><span>{{ claim.says }}</span></div>
+    {% endif %}
+    {% if claim.text is not none %}
+    <div class="source-lines"><div class="source-line">{{ claim.text }}</div></div>
+    {% endif %}
+  </figure>
+  <p class="back written">{% if claim.notes %}{% for writer in claim.writers %}<span class="writer">{{ noted(writer.who) }}{% if writer.filed %}: {{ writer.filed }}{% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% if claim.notes_more %} and {{ claim.notes_more }} more {{ "note" if claim.notes_more == 1 else "notes" }}{% endif %}{% if claim.written_at %} · {{ "written" if claim.notes == 1 else "the newest written" }} <time datetime="{{ claim.written_at }}">{{ claim.written_at|when }}</time>{% endif %}{% if claim.outside %} · <span class="outside">outside text</span>{% endif %}{% else %}It cites no note in your reach.{% endif %}</p>
+</li>
+{% endmacro %}
+<header class="page-head">
+{{ crumbs((("/", "Projects"), (project_url, project), (page_url, noted(title)))) }}
+<h1>Pages related to {{ noted(title) }}</h1>
+<p class="lede">The pages of {{ project }} that state one of this page's terms or name its title, the most related first. Each relation is worked out when this page is opened, from the pages as they are, and shows the claims it rests on, quoted as they were written.</p>
+</header>
+{% set relates %}two pages are related when a claim of each states the same term (a URL, a path, a flag, a version, or code that is not a plain word), or when a claim of the other names this page's title{% endset %}
+{% if related %}
+<p class="meta">{{ related|length }} related {{ "page" if related|length == 1 else "pages" }}, for version {{ version }} of {{ noted(title) }}, its latest.</p>
+{% elif left_out %}
+{# An answer that is not complete: no page was found, which is not that there is none. #}
+<p class="empty">No page related to {{ noted(title) }} was found in what was looked at: {{ relates }}.</p>
+{% else %}
+<p class="empty">No page of {{ project }} is related to {{ noted(title) }}: {{ relates }}.</p>
+{% endif %}
+{% if left_out %}
+<p class="meta searched">{{ left_out }}{% if more_href %} <a href="{{ more_href }}">Show up to {{ most }}</a>{% endif %}</p>
+{% endif %}
+{% for page in related %}
+{% set other_url = project_url ~ "/p/" ~ (page.slug|seg) %}
+<section id="{{ page.entry }}" data-related-page="{{ page.slug }}">
+<h2 class="section"><a href="{{ other_url }}">{{ noted(page.title) }}</a></h2>
+<ul class="hits">
+{% for reason in page.reasons %}
+  <li class="hit" data-reason="{{ reason.kind }}" data-term="{{ reason.term }}" data-term-kind="{{ reason.term_kind }}"{% if reason.pages is not none %} data-pages="{{ reason.pages }}"{% endif %}>
+    {% if reason.here %}
+    <p>Both pages state the {{ reason.term_word }} <bdi><code>{{ reason.term }}</code></bdi>. {{ reason.pages }} pages of {{ project }} hold it.</p>
+    {% else %}
+    <p>A claim of {{ noted(page.title) }} names this page's title, {{ noted(reason.term) }}.</p>
+    {% endif %}
+    <ul class="sources">
+    {% if reason.here %}
+    {{ quoted(reason.here, "here", page_url, title) }}
+    {% endif %}
+    {{ quoted(reason.there, "there", other_url, page.title) }}
+    </ul>
+  </li>
+{% endfor %}
+</ul>
+{% if page.more %}
+<p class="meta" data-more="{{ page.more }}">and {{ page.more }} more {{ "reason" if page.more == 1 else "reasons" }}</p>
+{% endif %}
+</section>
+{% endfor %}
+{% endblock %}

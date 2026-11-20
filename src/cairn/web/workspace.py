@@ -25,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
-from cairn.guard import POLICIES, policy_words
+from cairn.guard import POLICIES, policy_choice, policy_words
 from cairn.memory import BadRequest, Conflict, Forbidden, Memory
 from cairn.store import DEFAULT_GUARD_POLICY, POLICY_SETTING
 from cairn.web.auth import _memory, may_manage_credentials
@@ -154,7 +154,7 @@ def workspace_routes(*, own_guard: bool = False) -> list[Route]:
             parts=parts_for(memory),
             policy=policy,
             policy_said=policy_words(policy, product) if policy else OPERATOR_DECIDES + ".",
-            policies=[(value, policy_words(value, product)) for value in POLICIES],
+            policies=[(value, *policy_choice(value)) for value in POLICIES],
             chooses=policy is not None and may_manage_credentials(memory),
         )
 

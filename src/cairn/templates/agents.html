@@ -3,16 +3,18 @@
 {% block title %}Connected agents{% endblock %}
 {% block main %}
 <h1>Connected agents</h1>
-<p class="lede">Agents you approved in the browser. Each uses the projects it was approved for over MCP, to read and write or only to read. It stays connected until someone disconnects it, it goes 30 days unused, or the person who approved it leaves the workspace; {{ product.name }} also ends it if one of its replaced tokens is used again. Agents that use an API key are under <a href="/keys">Keys</a>.</p>
+<p class="lede">{% if manage and approvers %}Agents approved in the browser across this workspace: owners and admins see every member's connected agents and can disconnect any of them.{% else %}Agents you approved in the browser.{% endif %} Each uses the projects it was approved for over MCP, to read and write or only to read. It stays connected until someone disconnects it, it goes 30 days unused, or the person who approved it leaves the workspace; {{ product.name }} also ends it if one of its replaced tokens is used again. Agents that use an API key are under <a href="/keys">Keys</a>.</p>
 {% if grants %}
 <div class="table-wrap">
 <table class="rows">
-  <thead><tr><th>Agent</th><th>What it can see</th><th>Connected</th><th><span class="hint">Action</span></th></tr></thead>
+  <thead><tr><th>Agent</th><th>What it can see</th><th>Approved by</th><th>Connected</th><th><span class="hint">Action</span></th></tr></thead>
   <tbody>
   {% for grant in grants %}
     <tr>
+      {% set approver = approvers.get(grant.approver_id) if grant.approver_id else None %}
       <td data-label="Agent">{{ actor("agent", grant.client_name) }}{% set made_with = made_with_words(grant.made_with, grant.made_with_revoked) %}{% if made_with %} <span class="hint">{{ made_with }}</span>{% endif %}</td>
-      <td data-label="What it can see">{{ scope(scope_of(grant.projects, grant.access, names, sets, projects, "any project beyond the reach of whoever approved it"), "What " ~ grant.client_name ~ " can see") }}</td>
+      <td data-label="What it can see">{{ scope(scope_of(grant.projects, grant.access, names, sets, projects, "any project " ~ approver ~ " cannot reach" if approver else ("any project beyond the reach of whoever approved it" if grant.approver_id else "nothing in this workspace")), "What " ~ grant.client_name ~ " can see") }}</td>
+      <td data-label="Approved by">{% if approver %}{{ actor("person", approver) }}{% elif grant.approver_id %}A former member{% else %}The workspace{% endif %}</td>
       <td data-label="Connected"><time datetime="{{ grant.created_at }}">{{ grant.created_at|day }}</time></td>
       <td data-label="Action" class="act"><a href="/agents/{{ grant.id|seg }}/revoke" aria-label="Disconnect {{ grant.client_name }}">Disconnect</a></td>
     </tr>
@@ -23,7 +25,7 @@
 {% else %}
 <section class="empty-state" aria-labelledby="no-agent">
   <h2 id="no-agent">No agent is connected</h2>
-  <p><a href="/setup">Setup</a> shows how to connect one with only the URL.</p>
+  <p><a href="/start/connect">Setup</a> shows how to connect one with only the URL.</p>
 </section>
 {% endif %}
 {% endblock %}

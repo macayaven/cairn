@@ -968,7 +968,7 @@ def _held_by(reason: Reason, stated: Mapping[Any, dict[str, Any]]) -> dict[str, 
     return {"pages": reason.pages, "here": stated[reason.here]}
 
 
-def _cut(claim: relating.Stated) -> dict[str, Any]:
+def _claim_cut(claim: relating.Stated) -> dict[str, Any]:
     """What a claim given by `related` says when its text is cut (relations.TEXT_MAX):
     `text_cut`; for a term it states, `line`, the line of its passage that holds the term;
     and `line_cut` when that line is given in part. Nothing for a claim given whole."""
@@ -980,7 +980,7 @@ def _cut(claim: relating.Stated) -> dict[str, Any]:
     return said
 
 
-def _passages(span_ids: Sequence[str]) -> dict[str, Any]:
+def _passages_named(span_ids: Sequence[str]) -> dict[str, Any]:
     """The passages a claim given by `related` cites: `passage_ids`, the first
     relations.PASSAGES_MAX, and `passage_ids_more`, the count of the rest, only when there
     are more (a claim a tidy folded from many; `page` names them all)."""
@@ -1551,8 +1551,8 @@ class Memory:
             claim: {
                 "claim_id": claim.claim_id,
                 "text": claim.text,
-                **_cut(claim),
-                **_passages(claim.span_ids),
+                **_claim_cut(claim),
+                **_passages_named(claim.span_ids),
                 "outside": any(entry["outside"] for entry in entries),
                 **_writers(entries),
                 "written_at": _newest(found.origins[e["note"]].created_at for e in entries),

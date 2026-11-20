@@ -702,7 +702,7 @@ def a_filed_note(text: str) -> str:
     return note_from_message(
         {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text},
         team_id=TEAM, team_domain="fable-works", conversation_id="C0LIBRARY1",
-        author="Cedar Quill", names={},
+        author="Cedar Quill", names={"U0QUILL01": "Brook Quill"},
     ).text  # fmt: skip
 
 
@@ -737,14 +737,10 @@ def test_connect_a_line_that_would_read_as_a_heading_gets_a_backslash():
         assert len(as_read(note.replace(lines, text))[1]) == 2  # the heading it would be
 
 
-def test_connect_a_rule_and_code_get_no_backslash():
-    """connect.md: "A line that would not read as a heading gets none, so a rule stays a rule,
-    and a line of `---` in a code block, fenced or indented, stays as it was written.\""""
-    says(
-        *CONNECT,
-        "A line that would not read as a heading gets none, so a rule stays a rule, and a line"
-        " of `---` in a code block, fenced or indented, stays as it was written.",
-    )
+def test_connect_a_rule_gets_no_backslash():
+    """connect.md: "A line that would not read as a heading gets none, so a rule stays a
+    rule.\""""
+    says(*CONNECT, "A line that would not read as a heading gets none, so a rule stays a rule.")
     text = "# Settings\n\n---\n\n```\n---\n```\n\n    ---\n\nRow 4."
     assert as_read(a_filed_note(text)) == (
         "\\" + text,
@@ -753,33 +749,70 @@ def test_connect_a_rule_and_code_get_no_backslash():
     )
 
 
-def test_connect_only_eight_such_lines_get_a_backslash_they_do_not_need():
+def test_connect_a_line_read_as_code_holds_what_slack_displayed():
+    """connect.md: "A line the note reads as code, fenced or indented, holds what Slack
+    displayed: none of the backslashes and doubled asterisks that keep the other lines from
+    reading as Markdown are written in it, while a mention is still the person's name, a link
+    is still `[its words](its address)`, and an email address is still removed.\""""
+    says(
+        *CONNECT,
+        "A line the note reads as code, fenced or indented, holds what Slack displayed: none of"
+        " the backslashes and doubled asterisks that keep the other lines from reading as"
+        " Markdown are written in it, while a mention is still the person's name, a link is"
+        " still `[its words](its address)`, and an email address is still removed.",
+    )
+    sent = "items[0] = (a) * 2 * 3 <@U0QUILL01> <https://fable.test/a_b|Issue #4> quill@fable.test"
+    shown = "items[0] = (a) * 2 * 3 @Brook Quill [Issue #4](https://fable.test/a_b) [email removed]"
+    prose = (
+        "items\\[0\\] = \\(a\\) ** 2 ** 3 @Brook Quill [Issue \\#4](https://fable.test/a_b)"
+        " \\[email removed\\]"
+    )
+    assert as_read(a_filed_note(f"Settings:\n\n    {sent}")) == (
+        f"Settings:\n\n    {shown}",
+        [0],
+        [("code_block", shown + "\n")],
+    )
+    assert as_read(a_filed_note(f"Settings:\n~~~\n{sent}\n~~~")) == (
+        f"Settings:\n~~~\n{shown}\n~~~",
+        [0],
+        [("fence", shown + "\n")],
+    )
+    assert as_read(a_filed_note(f"Settings:\n    {sent}")) == (f"Settings:\n    {prose}", [0], [])
+
+
+def test_connect_the_two_limits_of_what_a_filed_message_holds():
     """connect.md: "Only a message with eight or more lines that read as headings or could
     underline one can get a backslash it does not need, on a rule below its first heading for
-    instance; a line of only `=` or `-` that reads as code is left as written there too.\"
-    That no message with fewer gets one is test_slack_needed_backslashes_unit's, on generated
-    messages."""
+    instance; and only a message in which a line would end a code fence as Slack displayed it,
+    and not as prose, keeps the marks of prose in its code.\" That no other message does
+    either is test_slack_needed_backslashes_unit's, on generated messages."""
     says(
         *CONNECT,
         "Only a message with eight or more lines that read as headings or could underline one"
         " can get a backslash it does not need, on a rule below its first heading for instance;"
-        " a line of only `=` or `-` that reads as code is left as written there too.",
+        " and only a message in which a line would end a code fence as Slack displayed it, and"
+        " not as prose, keeps the marks of prose in its code.",
     )
     seven = "".join(f"# Shelf {n}\n" for n in range(1, 8))
-    below = "\n---\n\n    ===\n\nRow 4."
+    below = "\n---\n\n    items[0]\n\nRow 4."
     as_text = seven.replace("#", "\\#")
-    assert as_read(a_filed_note(seven + below)) == (
-        as_text + below,
-        [0],
-        [("hr", ""), ("code_block", "===\n")],
-    )
+    code = [("code_block", "items[0]\n")]
+    assert as_read(a_filed_note(seven + below)) == (as_text + below, [0], [("hr", ""), *code])
     note = a_filed_note(seven + "# Shelf 8\n" + below)
-    assert as_read(note) == (
-        as_text + "\\# Shelf 8\n\n\\---\n\n    ===\n\nRow 4.",
+    assert as_read(note) == (as_text + "\\# Shelf 8\n\n\\---\n\n    items[0]\n\nRow 4.", [0], code)
+    assert as_read(note.replace("\\---", "---"))[1:] == ([0], [("hr", ""), *code])
+
+    ends = "<nowhere|~~~>"  # a link's words: "~~~" as displayed, with backslashes as prose
+    assert as_read(a_filed_note(f"Settings:\n~~~\n{ends}\nitems[0]\n~~~")) == (
+        "Settings:\n~~~\n\\~\\~\\~\nitems\\[0\\]\n~~~",
         [0],
-        [("code_block", "===\n")],
+        [("fence", "\\~\\~\\~\nitems\\[0\\]\n")],
     )
-    assert as_read(note.replace("\\---", "---"))[1:] == ([0], [("hr", ""), ("code_block", "===\n")])
+    assert as_read(a_filed_note("Settings:\n~~~\nitems[0]\n~~~")) == (
+        "Settings:\n~~~\nitems[0]\n~~~",
+        [0],
+        [("fence", "items[0]\n")],
+    )
 
 
 def test_connect_every_answer_is_for_you_alone():

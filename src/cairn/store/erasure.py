@@ -79,14 +79,18 @@ _REACHES = (
 def kept_claims(
     claims: Sequence[Claim], gone: frozenset[str], spans: Mapping[str, Span]
 ) -> tuple[Claim, ...]:
-    """A page's claims once the spans `gone` are forgotten, in their order, with their ids
-    and text. A claim that cites none of them is kept as it is. One that cites some of them
+    """A page's claims once the spans `gone` are forgotten, in their order, with their ids.
+    A claim that cites none of them is kept. One that cites some of them
     and other spans too keeps citing those others when its text is the whole of every one of
     them that the store still holds (`spans`, by id), by the verbatim gate's own equality
     (cairn.gate.whole, review 7.5): a claim folded from passages that say the same is kept,
     while one whose text merely occurs inside a remaining passage ("Enable X." inside "Never
     enable X. in prod.") or that joined the forgotten note's words goes. One that cites only
     forgotten spans goes.
+    A kept claim that is the whole of every span it cites takes the text of the first of them
+    the store holds, byte for byte (third report, must-fix 1): a fold's text is one note's
+    spelling, and the white space that equality leaves out must not outlive that note, in
+    this forget or one made before this rule. Any other kept claim keeps its text.
     A kept claim whose id was made from a forgotten span (spans.claim_id: a span id is a
     digest of its text) takes the id of the first span it keeps, or, when another claim
     already has that one, an id made from its place and the spans it keeps."""
@@ -95,12 +99,13 @@ def kept_claims(
     kept = []
     for claim in claims:
         left = tuple(span_id for span_id in claim.span_ids if span_id not in gone)
-        if len(left) == len(claim.span_ids):
-            kept.append(claim)
-            continue
-        survivor = claim.model_copy(update={"span_ids": left})
+        cut = len(left) < len(claim.span_ids)
+        survivor = claim.model_copy(update={"span_ids": left}) if cut else claim
         if whole(survivor, spans):
-            kept.append(survivor)
+            first = next(span_id for span_id in left if span_id in spans)
+            kept.append(survivor.model_copy(update={"text": spans[first].text}))
+        elif not cut:
+            kept.append(claim)
     made_from_gone = {claim_id(span_id) for span_id in gone}
     taken = {claim.id for claim in kept if claim.id not in made_from_gone}
     for place, claim in enumerate(kept):

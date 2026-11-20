@@ -14,8 +14,8 @@ from cairn.store import Store
 
 NOW = datetime(2026, 11, 20, 9, 30, tzinfo=UTC)
 RUN_SAYS = (
-    "A process reads the `--audit-keep` number once: one that is running when another `serve` is started"
-    " with a different number keeps pruning by the number it read until it exits, so"
+    "A process reads the `--audit-keep` number once: one that is running when another `serve`"
+    " is started with a different number keeps pruning by the number it read until it exits, so"
     " change it by stopping `serve` and starting it again, with no other `serve` on the same"
     " database."
 )

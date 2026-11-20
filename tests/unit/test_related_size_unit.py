@@ -162,7 +162,7 @@ def largest(limit: int, character: str, shape: str = "a head") -> dict:
 
 def faults(answer: dict, limit: int) -> list[str]:
     """Where the answer is not within the largest of `limit` pages: a field longer than the
-    largest's, or a claim in none of the three shapes (`claims_given` yields them)."""
+    largest's, or a claim in none of the three shapes (`sides` yields the claims)."""
     found = within(answer, largest(limit, "a", "every field"))
     for reason, claim in sides(answer):
         cut, text, line = "text_cut" in claim, "text" in claim, "line" in claim

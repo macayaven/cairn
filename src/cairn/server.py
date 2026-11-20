@@ -542,7 +542,7 @@ REST (JSON; project = id or name; unknown project or page, or another account's 
 - GET /api/projects/{project}/pages; GET /api/projects/{project}/pages/{slug}[?version=N]
 - GET /api/projects/{project}/pages/{slug}/claims/{claim_id}/evidence[?version=N] (E1)
 - GET /api/projects/{project}/pages/{slug}/related[?limit=N] (KG1): what `related` answers;
-  N is 1 to 20 (8 when left out), and any other is a 400 that says so; a page that is not
+  N is 1 to 20 (5 when left out), and any other is a 400 that says so; a page that is not
   there is the 404 `page` gives, with the nearest page names
 - GET /api/search?q=...[&project=...][&limit=N]: what `recall` answers, `searched` included;
   N is 1 to 50 (8 when left out), and any other is a 400 that says so (Q3)

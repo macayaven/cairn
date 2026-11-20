@@ -200,6 +200,14 @@ def test_five_pages_are_given_when_no_limit_is_asked_for(env):
     assert len(env.store.related_pages(env.ops.id, "asked").pages) == 5  # and the store's own
     six = answer(env.client, env.key, "related", project="ops", slug="asked", limit=6)
     assert len(six["related"]) == 6 and six["searched"]["pages_left_out"] == 1
+    import cairn.server
+
+    said = " ".join(cairn.server.__doc__.split())  # the contract says the same number twice
+    assert "related(project, slug, limit=5) -> " in said
+    assert (
+        "GET /api/projects/{project}/pages/{slug}/related[?limit=N] (KG1): what `related`"
+        " answers; N is 1 to 20 (5 when left out)"
+    ) in said
 
 
 def test_a_term_whose_claims_were_not_all_read_gives_no_reason_and_the_answer_counts_them(

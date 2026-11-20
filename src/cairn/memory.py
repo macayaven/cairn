@@ -132,7 +132,15 @@ of it that hold the term, with "line_cut": true. A claim that is not cut has non
 three fields, and a claim cut that mentions has no line. `passage_ids` names the first
 relations.PASSAGES_MAX passages a claim cites, and "passage_ids_more" counts the others,
 only when there are more (a claim a tidy folded from many; who wrote it is still said of
-every note it cites). No answer shows a weight.
+every note it cites). So an answer's size is bounded by constants: `limit` pages of
+relations.WHY_MAX reasons, each a term of relations.TERM_MAX characters at most and two
+claims of TEXT_MAX and LINE_MAX characters, PASSAGES_MAX passages and WRITTEN_BY_MAX
+writers. The largest answer they allow at `limit` 20 is 521,924 bytes over REST and 636,625
+over MCP for text of one byte a character, and 2,474,924 and 2,980,225 whatever the text
+holds; at the default `limit` of 8, 209,144 and 255,145, and 990,944 and 1,193,305
+(tests/unit/test_related_size_unit.py builds that answer from the constants, and checks
+answers made from claims of 322,320 characters against it field by field). No answer shows
+a weight.
 `searched` (`related_searched`), always: `complete`, and the three things a read can leave
 out, each counted (cairn.store.relating.Left): `terms_looked_up` and `terms_not_looked_up`,
 the page's terms past the bound on terms; `claims_read` and `claims_not_read`, the claims

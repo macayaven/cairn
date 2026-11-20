@@ -6,6 +6,7 @@ Memory.note as `serve` files them; made-up names."""
 import json
 import sqlite3
 import threading
+import unicodedata
 from contextlib import closing
 
 import pytest
@@ -57,10 +58,19 @@ def reasons(found) -> dict[str, list[tuple]]:
 # The match: ranking's own way
 
 
-def test_a_phrase_is_the_words_side_by_side_in_a_claims_text_and_never_its_title(store, ops):
-    assert ranking.phrase(["Deploy", "runbook"]) == 'text : "Deploy runbook"'
-    assert ranking.phrase(["os_login_2fa"]) == 'text : "os_login_2fa"'
-    assert ranking.phrase([]) is None and ranking.phrase(["_", "___"]) is None  # no part
+def test_the_index_is_given_the_text_itself_as_one_phrase_and_reads_its_words_alone(store, ops):
+    """What the index is asked for a term or a title: the text as it is, as one quoted phrase
+    on the text column. Nothing here splits it into words; the index's own reading of the
+    phrase decides them, as it decided the words of the claims. Only what a query cannot
+    write as it is is changed: a double quote is doubled, and a null character, where a
+    query ends, is a space (the index reads a null as a separator, as it reads a space)."""
+    assert ranking.quoted("Deploy runbook") == 'text : "Deploy runbook"'
+    assert ranking.quoted("os_login_2fa") == 'text : "os_login_2fa"'
+    assert ranking.quoted('say "hi" now') == 'text : "say ""hi"" now"'
+    assert ranking.quoted("a1\x00b2") == 'text : "a1 b2"'
+    decomposed = unicodedata.normalize("NFD", "R\u00e9sum\u00e9.cfg")
+    assert ranking.quoted(decomposed) == f'text : "{decomposed}"'  # not "Re sume cfg"
+    assert ranking.quoted("---") == 'text : "---"' and not hasattr(ranking, "phrase")
     store.save_page(
         ops.id,
         "deploy",
@@ -72,22 +82,26 @@ def test_a_phrase_is_the_words_side_by_side_in_a_claims_text_and_never_its_title
             Claim(
                 id="cl_c", text="Set os_login_2fa before the Deploy; Runbook follows.", span_ids=()
             ),
+            Claim(id="cl_d", text='Then say "hi" now, and NEAR(a b) or text : x.', span_ids=()),
         ],
     )
 
-    def held(words: list[str]) -> list[str]:
+    def held(text: str) -> list[str]:
         with store._read() as con:
             rows = con.execute(
                 f"SELECT claim_id FROM {store._index} WHERE {store._index} MATCH ? ORDER BY rowid",
-                (ranking.phrase(words),),
+                (ranking.quoted(text),),
             )
             return [row[0] for row in rows]
 
     # every row holds the title "Deploy runbook"; only the text decides, and punctuation between
     # two words is no word (the index's own reading, as a search's)
-    assert held(["deploy", "runbook"]) == ["cl_a", "cl_c"]
-    assert held(["os", "login", "2fa"]) == held(["os_login_2fa"]) == ["cl_c"]  # "_" splits
-    assert held(["runbook", "deploy"]) == []
+    assert held("deploy runbook") == held("Deploy; RUNBOOK") == ["cl_a", "cl_c"]
+    assert held("os login 2fa") == held("os_login_2fa") == ["cl_c"]  # the index splits at "_"
+    assert held("runbook deploy") == []
+    # nothing of a text is read as a query: quotes, a column, an operator are words or none
+    assert held('say "hi" now') == held("NEAR(a b)") == held("text : x") == ["cl_d"]
+    assert held("---") == held("") == held('"') == []  # no word: nothing matches, and no error
 
 
 # What relates two pages
@@ -129,6 +143,36 @@ def test_two_pages_that_state_one_term_are_related_each_with_its_claim(store, op
         reason.there.text,
         reason.here.text,
     )
+
+
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [
+        ("`-L`", "`-l`"),  # a local forward, a login name
+        ("-L", "-l"),
+        ("/srv/Quill/notes", "/srv/quill/notes"),  # a path
+        ("`Make lint`", "`make lint`"),  # code
+        ("https://Fable.example/runbook", "https://fable.example/runbook"),  # an address's host
+        ("https://fable.example/Runbook", "https://fable.example/runbook"),  # and its path
+    ],
+)
+def test_terms_that_differ_only_by_a_capital_are_two_terms(store, ops, one, other):
+    """The index proposes each page's claim to the other, reading without regard to case;
+    the passages say they are two terms, and neither page is said to state the other's.
+    One rule for every kind, an address's host included: exact."""
+    first = file(store, "ops", "First", f"Ada uses {one} here.\n")
+    second = file(store, "ops", "Second", f"Brook uses {other} there.\n")
+    for slug in (first, second):
+        found = related(store, ops.id, slug)
+        assert found.pages == () and found.left.complete and found.left.claims_read == 1
+    third = file(store, "ops", "Third", f"Quill uses {one} too.\n")
+    written = one.strip("`")
+    for slug, with_it in ((first, third), (third, first)):
+        (page,) = related(store, ops.id, slug).pages
+        (reason,) = page.why
+        assert (page.slug, reason.term, reason.pages) == (with_it, written, 2)  # as it is read
+        assert written in reason.here.text and written in reason.there.text
+    assert related(store, ops.id, second).pages == ()
 
 
 def test_the_same_text_of_another_kind_is_another_term(store, ops):
@@ -264,12 +308,198 @@ def test_another_project_with_the_same_term_and_title_never_appears_and_is_never
     assert both.related_pages(ops.id, deploy, 20) == alone
 
 
-def test_a_one_word_title_is_found_inside_a_flag_that_holds_the_word(store, ops):
-    """What the index's own match means for a short title: it reads `--audit-keep` as the words
-    audit and keep, as a search does, so a page titled Audit is mentioned by that claim."""
+# A title is named in a claim's prose: not inside code, a path, a flag, a version or an address
+
+
+def named_by(store: Store, ops, slug: str) -> list[str]:
+    found = related(store, ops.id, slug)
+    return [page.slug for page in found.pages if page.why[0].kind == MENTIONED_BY]
+
+
+def test_the_places_the_index_marked_are_read_in_the_texts_own_characters():
+    opened, closed = relating.MARKS
+    marked = f"ab{opened}cd{closed}e{opened}f{closed}"
+    assert relating._places(marked) == [(2, 4), (5, 6)]
+    assert relating._places("no mark at all") == []
+    # marks that do not pair say nothing more: the read never asks for such a text, and
+    # reading one ends all the same
+    assert relating._places(f"a{opened}b") == []
+    assert relating._places(f"a{opened}b{closed}c{opened}d") == [(1, 2)]
+    text = "Quill ledger, then the QUILL\u2014ledger."
+    marked = f"{opened}Quill ledger{closed}, then the {opened}QUILL\u2014ledger{closed}."
+    assert [text[slice(*place)] for place in relating._places(marked)] == [
+        "Quill ledger",
+        "QUILL\u2014ledger",
+    ]
+
+
+def test_a_title_inside_a_path_in_backticks_is_not_named(store, ops):
+    """The case from the pages in a browser: the claim's only "deploy" is inside a path."""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    file(
+        store,
+        "ops",
+        "Replica",
+        "The replica is configured in `litestream.yml` and started by `deploy/compose.yaml`.\n",
+    )
+    found = related(store, ops.id, deploy)
+    assert found.pages == () and found.left.complete
+    assert found.left.claims_read == 1  # the claim was read, with its passage, to say so
+
+
+def test_a_one_word_title_inside_a_flag_is_not_named(store, ops):
+    """The index reads `--audit-keep` as the words audit and keep, as a search does, and
+    lists the claim; the passage says the words stand inside a flag, in backticks or bare."""
     audit = file(store, "ops", "Audit", "Ada reads the log.\n")
-    deploy = file(store, "ops", "Deploy", "Run the job with `--audit-keep` set to 7.\n")
-    assert reasons(related(store, ops.id, audit)) == {deploy: [(MENTIONED_BY, "Audit", "title", 2)]}
+    file(store, "ops", "Deploy", "Run the job with `--audit-keep` set to 7.\n")
+    file(store, "ops", "Nightly", "The job runs with --audit-keep 7 at night.\n")
+    assert named_by(store, ops, audit) == []
+    review = file(store, "ops", "Review", "The audit of March found `--audit-keep` unset.\n")
+    assert named_by(store, ops, audit) == [review]  # in prose too, in this claim
+
+
+@pytest.mark.parametrize(
+    "inside",
+    [
+        "See https://fable.example/deploy/guide first.",  # an address
+        "Start it with ./deploy/run.sh at noon.",  # a path with a root
+        "It lives under /srv/deploy/current now.",
+        "Run `deploy` and wait.",  # a plain word in backticks: no term, and still code
+        "Pass --deploy to ship.",  # a flag
+        "Then:\n\n```sh\nquill deploy --now\n```",  # a code block
+    ],
+)
+def test_a_title_inside_an_address_a_path_a_flag_or_code_is_not_named(store, ops, inside):
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    file(store, "ops", "Other", inside + "\n")
+    assert named_by(store, ops, deploy) == []
+    file(store, "ops", "Prose", "Before a deploy, read this. " + inside + "\n")
+    assert named_by(store, ops, deploy) == ["prose"]
+
+
+def test_what_the_facts_do_not_own_is_prose_and_names_the_title(store, ops):
+    """Pinned as it is: a path written with no root and outside backticks is no fact of a
+    passage, and the word after a fence's opening marks is not in the code block's body."""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    bare = file(store, "ops", "Bare", "Started by deploy/compose.yaml at dawn.\n")
+    fence = file(store, "ops", "Fence", "Then:\n\n```deploy\nquill run\n```\n")
+    assert named_by(store, ops, deploy) == [bare, fence]
+
+
+def test_a_title_that_reads_as_code_is_named_in_prose_and_not_in_backticks(store, ops):
+    compose = file(store, "ops", "compose.yaml", "Brook keeps it short.\n")
+    prose = file(store, "ops", "Prose", "Edit compose.yaml before the release.\n")
+    file(store, "ops", "Ticks", "Edit `compose.yaml` before the release.\n")
+    file(store, "ops", "Path", "It is `deploy/compose.yaml`, read at start.\n")
+    both = file(store, "ops", "Both", "Run `compose.yaml` checks; compose.yaml must parse.\n")
+    assert named_by(store, ops, compose) == [both, prose]
+
+
+def test_a_title_of_two_words_with_one_in_code_is_not_named(store, ops):
+    """The index matches the two words side by side whatever stands between them; a match
+    that lies partly inside code is inside it."""
+    ledger = file(store, "ops", "Quill ledger", "Brook balances it at dusk.\n")
+    file(store, "ops", "First", "Run `quill` ledger checks at noon.\n")
+    file(store, "ops", "Second", "Open quill `ledger` and wait.\n")
+    file(store, "ops", "Across", "Open quill `--x` ledger and wait.\n")  # code between: no match
+    assert named_by(store, ops, ledger) == []
+    whole = file(store, "ops", "Whole", "Run `quill` ledger checks, then the Quill ledger.\n")
+    assert named_by(store, ops, ledger) == [whole]
+
+
+def test_a_claim_reworded_from_its_passage_mentions_as_the_index_says(store, ops):
+    """Where a claim's text is not the text of the first passage it cites (a page saved by
+    hand), the places of the one are not the places of the other: the mention stands as the
+    index has it. So does that of a claim that cites no passage, or another project's."""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    note, _ = store.add_note(ops.id, "# Replica\n\nStarted by `deploy/compose.yaml` at dawn.\n")
+    (span,) = [s.id for s in store.note_spans(note.id) if s.kind == "paragraph"]
+    said = "The replica is started by `deploy/compose.yaml`."
+    store.save_page(
+        ops.id, "reworded", "Reworded", "", [Claim(id="cl_r", text=said, span_ids=[span])]
+    )
+    store.save_page(ops.id, "uncited", "Uncited", "", [Claim(id="cl_u", text=said, span_ids=())])
+    other = store.create_project("other")
+    far, _ = store.add_note(other.id, "# Far\n\n" + said + "\n")
+    (theirs,) = [s.id for s in store.note_spans(far.id) if s.kind == "paragraph"]
+    store.save_page(
+        ops.id, "outside", "Outside", "", [Claim(id="cl_o", text=said, span_ids=[theirs])]
+    )
+    assert named_by(store, ops, deploy) == ["outside", "reworded", "uncited"]
+    # and a long one of them is given by its head: no place of it is known to be prose, so
+    # there is no line to give (here the title's only place is the path)
+    long = "Ada waits for the nightly log. " * 30 + said
+    store.save_page(
+        ops.id, "reworded", "Reworded", "", [Claim(id="cl_r", text=long, span_ids=[span])]
+    )
+    (there,) = [
+        page.why[0].there
+        for page in related(store, ops.id, deploy).pages
+        if page.slug == "reworded"
+    ]
+    assert (there.text, there.cut, there.line, there.line_cut) == (
+        long[:TEXT_MAX],
+        True,
+        None,
+        False,
+    )
+    # the same words as the text of its own passage: not named
+    store.save_page(
+        ops.id,
+        "same",
+        "Same",
+        "",
+        [Claim(id="cl_s", text="Started by `deploy/compose.yaml` at dawn.", span_ids=[span])],
+    )
+    assert named_by(store, ops, deploy) == ["outside", "reworded", "uncited"]
+
+
+def test_a_cut_claim_gives_the_line_of_the_place_that_names_the_title(store, ops):
+    """Not the first place the index matched, which stands in a path: the first in prose."""
+    lines = (
+        ["Started by `deploy/compose.yaml` at dawn."]
+        + [f"Ada waits for nightly log {n}." for n in range(60)]
+        + ["After each deploy she rests."]
+        + [f"Brook rests {n}." for n in range(20)]
+        + ["A second deploy follows."]
+    )
+    whole = "\n".join(lines)
+    there = mention(store, ops, whole, title="Deploy")
+    assert (there.cut, there.line, there.line_cut) == (True, "After each deploy she rests.", False)
+
+
+def test_a_title_six_pages_hold_in_code_and_three_name_is_not_common(store, ops):
+    """The pages that count toward a common title are those that name it. (The claims that
+    count toward CLAIMS_COMMON are the index's: every claim that holds its words.)"""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    for n in range(6):
+        file(store, "ops", f"Code {n}", f"Page {n} runs `deploy --now`.\n")
+    for n in range(3):
+        file(store, "ops", f"Prose {n}", f"Page {n} waits for a deploy.\n")
+    found = related(store, ops.id, deploy)
+    assert named_by(store, ops, deploy) == ["prose-0", "prose-1", "prose-2"]
+    assert found.left.complete and found.left.claims_read == 9
+    for n in range(3, 6):
+        file(store, "ops", f"Prose {n}", f"Page {n} waits for a deploy.\n")
+    assert named_by(store, ops, deploy) == []  # six name it now: common
+
+
+def test_a_title_whose_claims_were_not_all_read_mentions_none_and_counts_them(
+    store, ops, monkeypatch
+):
+    """As a term: a page that may name the title or not leaves it unsettled, and the title
+    gives no reason; the claims not read are counted and the answer is not complete."""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    file(store, "ops", "Near", "Brook waits for a deploy.\n")
+    file(store, "ops", "Far", "Quill waits for a deploy, " + "and waits, " * 60 + "then rests.\n")
+    assert named_by(store, ops, deploy) == ["far", "near"]
+    monkeypatch.setattr(relating, "BYTES_MAX", 300)  # the long passage, twice, does not fit
+    found = related(store, ops.id, deploy)
+    assert found.pages == () and not found.left.complete
+    assert (found.left.claims_read, found.left.claims_not_read) == (1, 1)
+    monkeypatch.setattr(relating, "CLAIMS_MAX", 1)  # nor do two claims
+    found = related(store, ops.id, deploy)
+    assert found.pages == () and (found.left.claims_read, found.left.claims_not_read) == (0, 2)
 
 
 def test_an_account_with_no_page_answers_nothing(tmp_path):
@@ -345,22 +575,100 @@ def test_a_write_in_the_middle_of_a_read_changes_nothing_of_its_answer(tmp_path,
 # The bounds, each met and each said
 
 
-def test_a_title_of_more_words_than_a_search_takes_relates_none_by_mention(store, ops):
-    long_title = " ".join(f"w{n}" for n in range(ranking.WORDS_MAX + 1))
-    store.save_page(ops.id, "long", long_title, "", [Claim(id="cl_a", text="Ada.", span_ids=())])
-    first = " ".join(f"w{n}" for n in range(ranking.WORDS_MAX))
+def test_a_title_of_many_words_is_looked_up_whole_and_one_past_the_bound_is_not(store, ops):
+    """No count of words decides: the title is given to the index as it is. 66 words in 200
+    characters are a phrase like any other; a title longer than relations.TERM_MAX characters
+    (none the product writes: a title is 200 at most) is not looked up, and relates none."""
+    words = [chr(97 + n // 26) + chr(97 + n % 26) for n in range(67)]
+    title = " ".join(words[:66]) + " zz"
+    assert len(title) == relations.TERM_MAX and len(title.split()) > ranking.WORDS_MAX
+    store.save_page(ops.id, "long", title, "", [Claim(id="cl_a", text="Ada.", span_ids=())])
     store.save_page(
-        ops.id, "other", "Other", "", [Claim(id="cl_b", text=f"{first} and more.", span_ids=())]
+        ops.id, "first", "First", "", [Claim(id="cl_b", text=f"Read {title} twice.", span_ids=())]
     )
-    found = related(store, ops.id, "long")
-    assert found.pages == ()  # its first 32 words alone would be found: that is no mention
-    assert found.left == NOTHING_LEFT_OUT  # by rule, as a title of no word: nothing was left out
-    store.save_page(ops.id, "dash", "---", "", [Claim(id="cl_c", text="Brook.", span_ids=())])
-    assert related(store, ops.id, "dash").left == NOTHING_LEFT_OUT
+    store.save_page(
+        ops.id, "most", "Most", "", [Claim(id="cl_c", text=" ".join(words[:66]), span_ids=())]
+    )
+    assert reasons(related(store, ops.id, "long")) == {"first": [(MENTIONED_BY, title, "title", 2)]}
+    longer = title + "z"
+    store.save_page(ops.id, "longer", longer, "", [Claim(id="cl_d", text="Brook.", span_ids=())])
+    store.save_page(
+        ops.id, "second", "Second", "", [Claim(id="cl_e", text=f"Read {longer} too.", span_ids=())]
+    )
+    found = related(store, ops.id, "longer")
+    assert found.pages == () and found.left == NOTHING_LEFT_OUT  # by rule: not looked up
+    store.save_page(ops.id, "dash", "---", "", [Claim(id="cl_f", text="Brook ---.", span_ids=())])
+    assert related(store, ops.id, "dash").left == NOTHING_LEFT_OUT  # no word: none matches
+
+
+COMPOSED = "R\u00e9sum\u00e9"
+DECOMPOSED = unicodedata.normalize("NFD", COMPOSED)
+
+
+@pytest.mark.parametrize("title", [COMPOSED, DECOMPOSED])
+@pytest.mark.parametrize("written", [COMPOSED, DECOMPOSED])
+def test_a_title_is_mentioned_where_the_index_matches_it_composed_or_not(
+    store, ops, title, written
+):
+    """The index reads an accented letter and the same letter with a combining accent as one
+    word, and it alone reads the title: the page is mentioned whichever way each is written."""
+    assert COMPOSED != DECOMPOSED and len(DECOMPOSED) == 8
+    asked = file(store, "ops", title, "Brook keeps the template.\n")
+    file(store, "ops", "Hiring", f"Send the {written} to Ada.\n")
+    found = related(store, ops.id, asked)
+    assert reasons(found) == {"hiring": [(MENTIONED_BY, title, "title", 2)]}
+    assert found.left.complete and found.title == title  # kept as it was written
+
+
+@pytest.mark.parametrize("form", ["NFC", "NFD"])
+def test_a_term_with_an_accent_relates_the_pages_that_write_it_the_same_way(store, ops, form):
+    """Both pages write it composed, or both decomposed: one term, found by the index's own
+    words (two words by a splitter of ours, where the index reads one). Written the other
+    way on a third page it is another term, as a capital makes another: exact, as read."""
+    term = unicodedata.normalize(form, "R\u00e9sum\u00e9.cfg")
+    other = unicodedata.normalize("NFD" if form == "NFC" else "NFC", term)
+    draft = file(store, "ops", "Draft", f"Brook edits `{term}` first.\n")
+    review = file(store, "ops", "Review", f"Ada reads `{term}` after.\n")
+    third = file(store, "ops", "Third", f"Quill reads `{other}` last.\n")
+    assert reasons(related(store, ops.id, draft)) == {review: [(SHARES, term, "inline_code", 2)]}
+    assert reasons(related(store, ops.id, review)) == {draft: [(SHARES, term, "inline_code", 2)]}
+    found = related(store, ops.id, third)
+    assert found.pages == () and found.left.complete and found.left.claims_read == 2
+
+
+def test_a_term_and_a_title_that_hold_a_quote_or_a_null_are_found_and_nothing_fails(store, ops):
+    """A double quote would end the phrase and a null the query: the one is doubled, the
+    other given as the space the index reads it as."""
+    for n, term in enumerate(['say "hi" now --x', "a1\x00b2"]):
+        one = file(store, "ops", f"One {n}", f"Ada runs `{term}` here.\n")
+        two = file(store, "ops", f"Two {n}", f"Brook runs `{term}` there.\n")
+        assert reasons(related(store, ops.id, one)) == {two: [(SHARES, term, "inline_code", 2)]}
+    for n, title in enumerate(['The "Quill" ledger', "Night\x00run"]):
+        store.save_page(
+            ops.id, f"named-{n}", title, "", [Claim(id="cl_n", text="Ada.", span_ids=())]
+        )
+        by = file(store, "ops", f"Namer {n}", f"Brook opens {title} at dusk.\n")
+        assert reasons(related(store, ops.id, f"named-{n}")) == {
+            by: [(MENTIONED_BY, title, "title", 2)]
+        }
+
+
+def test_a_term_of_many_parts_is_looked_up_like_any_other(store, ops):
+    """65 parts joined by "_", which a search's words may not hold: a term is not a search's
+    words. It is looked up as it is, the two pages are related, and nothing is left out."""
+    parts = [chr(97 + n // 26) + chr(97 + n % 26) for n in range(65)]
+    term = "_".join(parts)
+    assert len(term) == 194 and len(parts) > ranking.PARTS_MAX
+    one = file(store, "ops", "Keys one", f"The key is `{term}` here.\n")
+    two = file(store, "ops", "Keys two", f"Set `{term}` there too.\n")
+    found = related(store, ops.id, one)
+    assert reasons(found) == {two: [(SHARES, term, "inline_code", 2)]}
+    assert found.left == NOTHING_LEFT_OUT._replace(terms_looked_up=1, claims_read=1)
 
 
 def test_a_title_more_than_five_other_pages_name_relates_none_by_mention(store, ops):
-    """As a term more than COMMON pages hold: read whole, so the answer is complete."""
+    """As a term more than COMMON pages hold: its claims are read whole, six of them, so the
+    answer is complete."""
     quill = file(store, "ops", "Quill", "Ada wrote it.\n")
     for n in range(COMMON):
         file(store, "ops", f"Notes {n}", f"Quill line {n}.\n")
@@ -370,7 +678,8 @@ def test_a_title_more_than_five_other_pages_name_relates_none_by_mention(store, 
     }
     file(store, "ops", "Notes more", "One more names Quill.\n")  # the sixth other page
     found = related(store, ops.id, quill)
-    assert found.pages == () and found.left == NOTHING_LEFT_OUT
+    assert found.pages == () and found.left == NOTHING_LEFT_OUT._replace(claims_read=COMMON + 1)
+    assert found.left.complete
 
 
 def test_a_title_more_than_sixty_four_claims_of_other_pages_hold_relates_none(store, ops):
@@ -387,10 +696,10 @@ def test_a_title_more_than_sixty_four_claims_of_other_pages_hold_relates_none(st
         "notes-0": [(MENTIONED_BY, "Quill", "title", 2)],
         "notes-1": [(MENTIONED_BY, "Quill", "title", 2)],
     }
-    assert found.left == NOTHING_LEFT_OUT
+    assert found.left == NOTHING_LEFT_OUT._replace(claims_read=CLAIMS_COMMON)  # each was read
     file(store, "ops", "Third", "Quill once more.\n")
     found = related(store, ops.id, quill)
-    assert found.pages == () and found.left == NOTHING_LEFT_OUT
+    assert found.pages == () and found.left == NOTHING_LEFT_OUT  # and here none: 65 list it
 
 
 # A term many claims hold
@@ -643,10 +952,10 @@ def test_a_long_line_is_given_as_a_window_that_holds_the_term_as_written(store, 
     whole = "Brook waits for the nightly log, " * 80 + "pins `Quill.Lock` and " + "stops, " * 90
     assert "\n" not in whole and len(whole) > TEXT_MAX
     file(store, "ops", "Long", whole + "\n")
-    short = file(store, "ops", "Short", "Ada reads `quill.lock` daily.\n")
+    short = file(store, "ops", "Short", "Ada reads `Quill.Lock` daily.\n")
     (reason,) = related(store, ops.id, short).pages[0].why
     there = reason.there
-    assert (reason.term, there.cut, there.line_cut) == ("quill.lock", True, True)
+    assert (reason.term, there.cut, there.line_cut) == ("Quill.Lock", True, True)  # as read
     assert len(there.line) == LINE_MAX and there.line in whole
     assert "`Quill.Lock`" in there.line and "Quill.Lock" not in there.text
 

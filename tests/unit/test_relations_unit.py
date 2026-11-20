@@ -95,10 +95,55 @@ def test_a_passages_terms_are_its_specific_facts_as_compared_each_once_in_the_or
         Term("inline_code", "compact --if-due"),
         Term("flag", "--audit-keep"),
         Term("version", "v1.2.3"),
-        Term("url", "https://example.invalid/a"),  # as facts.compared reads it: case folded
-        Term("path", "~/notes"),
-        Term("inline_code", "readme.md"),
+        Term("url", "https://example.invalid/A"),  # as it is written: its case is kept
+        Term("path", "~/Notes"),
+        Term("inline_code", "README.md"),
     ]
+
+
+def test_two_facts_are_one_term_only_when_they_are_written_the_same_case_included():
+    """`-L` forwards a port and `-l` names a login: two flags. A path, code and an address
+    that differ by a capital are two terms each, the host of an address like the rest (one
+    rule, exact). What is not case is as facts.compared has it: a number's thousands
+    separators and the white space at the end of the fact are left out of the comparison."""
+    span = passage(
+        "Pass -L then -l; open /srv/Quill and /srv/quill; run `Make lint` and `make lint`;"
+        " see https://Fable.example/a and https://fable.example/a."
+    )
+    assert terms_of(span) == [
+        Term("flag", "-L"),
+        Term("flag", "-l"),
+        Term("path", "/srv/Quill"),
+        Term("path", "/srv/quill"),
+        Term("inline_code", "Make lint"),
+        Term("inline_code", "make lint"),
+        Term("url", "https://Fable.example/a"),
+        Term("url", "https://fable.example/a"),
+    ]
+    same = passage("Keep `cap 1,250x` and `cap 1250x`, then `a1  ` and `a1`.")
+    assert terms_of(same) == [Term("inline_code", "cap 1250x"), Term("inline_code", "a1")]
+
+
+def test_the_text_terms_are_compared_by_is_compared_text_with_its_case_kept():
+    """facts.cased beside facts.compared, which is unchanged: folding the case of the one
+    gives the other, for every fact the generator of
+    tests/unit/test_generated_copy_passes_fact_check_unit.py draws and for texts whose
+    letters change length when folded."""
+    import random
+
+    import test_generated_copy_passes_fact_check_unit as shapes
+
+    from cairn.facts import cased, compared
+
+    rng = random.Random(20261120)
+    drawn = [shapes.fact(rng) for _ in range(500)]
+    odd = ["Stra\u00dfe 1,250", "\u0130stanbul  ", "A1\u0390 2,700,000x", "MiXed Case\t", " lead"]
+    for text in [*drawn, *(d.upper() for d in drawn), *odd]:
+        assert compared(text) == cased(text).casefold(), ascii(text)
+    assert cased("Quill.Lock 1,250  ") == "Quill.Lock 1250"
+    assert len({cased(d) for d in drawn} | {cased(d.upper()) for d in drawn}) > len(
+        {compared(d) for d in drawn}
+    )
 
 
 def test_a_term_is_the_fact_as_read_in_its_passage_never_a_piece_read_again():
@@ -200,9 +245,10 @@ def test_sums_of_weights_are_exact():
     assert [slug for slug, _, _ in best(reasons, limit=8)[0]] == ["ada", "brook"]
 
 
-def test_a_term_longer_than_the_bound_as_written_or_as_compared_is_no_term():
-    """TERM_MAX characters: of the term as it is compared, which an answer gives, and of the
-    fact as it is written in its passage, which a line given must hold."""
+def test_a_term_longer_than_the_bound_as_written_is_no_term():
+    """TERM_MAX characters of the fact as it is written in its passage, which a line given
+    must hold. The term an answer gives is never longer than that: it is the fact as
+    written, less a number's separators and the white space at its end."""
     assert relations.TERM_MAX == 200 and 2 * relations.TERM_MAX <= relations.LINE_MAX
     at_bound = "https://fable.example/" + "a" * 178
     assert terms_of(passage(f"See {at_bound} first.")) == [Term("url", at_bound)]
@@ -213,10 +259,9 @@ def test_a_term_longer_than_the_bound_as_written_or_as_compared_is_no_term():
         Term("inline_code", "a1")
     ]
     assert terms_of(passage("Run `a1" + " " * 199 + "` now.")) == []
-    # compared longer than it is written: one letter that folds to three
-    folded = "`a1" + "\u0390" * 67 + "`"
-    assert terms_of(passage(f"Run {folded} now.")) == []
-    assert len(terms_of(passage("Run `a1" + "\u0390" * 66 + "` now."))[0].text) == 200
+    # a letter that would fold to three is kept as it is: 69 characters, not 203
+    kept = "a1" + "\u0390" * 67
+    assert terms_of(passage(f"Run `{kept}` now.")) == [Term("inline_code", kept)]
 
 
 # A long claim: where its term stands in the passage, and the line that holds it
@@ -234,8 +279,9 @@ def test_a_term_is_placed_where_its_first_fact_stands_in_the_passage():
     placed = relations.placed(span)
     assert list(placed) == terms_of(span)
     assert {term: span.text[slice(*at)] for term, at in placed.items()} == {
-        Term("inline_code", "quill.lock"): "quill.lock",  # the first of its three, as written
-        Term("url", "https://fable.example/runbook"): "https://fable.example/Runbook",
+        Term("inline_code", "quill.lock"): "quill.lock",  # the first of its two
+        Term("url", "https://fable.example/Runbook"): "https://fable.example/Runbook",
+        Term("inline_code", "Quill.Lock"): "Quill.Lock",  # another term: a capital differs
     }
     assert placed[Term("inline_code", "quill.lock")] == (12, 22)
 
@@ -297,38 +343,60 @@ def test_a_match_on_two_lines_is_given_with_both():
     assert line(text, "Quill\nledger") == ("Ada opens the Quill\nledger at noon.", False)
 
 
-def test_the_line_is_the_same_read_from_the_part_of_a_text_around_the_match():
-    """What the store asks the index for, of a claim too long to read whole: LINE_MAX
-    characters before the match, and LINE_MAX after it (after its first LINE_MAX + 1, of a
-    longer match). `line_of` on that part gives what it gives on the whole text, wherever
-    the line ends fall: on the part's edges, one character inside them, one outside."""
-    import random
+# A title named in prose: the stretches of a passage that are no prose
 
-    rng = random.Random(20261120)
-    most, checked, cut = relations.LINE_MAX, 0, 0
-    lengths = [0, 1, 2, most - 12, most - 11, most - 10, most - 1, most, most + 1, 3 * most]
-    for before in lengths:
-        for after in lengths:
-            for held in (1, 10, most, most + 1, most + 2, 2 * most):
-                for lead, tail in (("", ""), ("x\n", "\ny"), ("x" * 900 + "\n", "\n" + "y" * 900)):
-                    text = lead + "b" * before + "M" * held + "a" * after + tail
-                    start = len(lead) + before
-                    end = start + held
-                    until = min(end, start + most + 1)
-                    lo, hi = max(0, start - most), until + most
-                    whole = relations.line_of(text, start, end)
-                    assert relations.line_of(text[lo:hi], start - lo, until - lo) == whole
-                    assert len(whole[0]) <= most
-                    checked += 1
-                    cut += whole[1]
-    for _ in range(2_000):  # and texts of lines of any length, a match anywhere
-        text = "".join(rng.choice("ab \n") if rng.random() < 0.02 else "c" for _ in range(1_500))
-        start = rng.randrange(len(text))
-        end = min(len(text), start + rng.choice([1, 5, 40, most, most + 5]))
-        until = min(end, start + most + 1)
-        lo, hi = max(0, start - most), until + most
-        whole = relations.line_of(text, start, end)
-        assert relations.line_of(text[lo:hi], start - lo, until - lo) == whole
-        assert len(whole[0]) <= most
-        cut += whole[1]
-    assert checked == 1_800 and cut > 1_000
+
+def test_the_stretches_that_are_no_prose_are_the_facts_own_and_the_code_blocks():
+    """Every url, path, flag, version and inline code, whether or not it is a term that
+    relates pages (a plain word in backticks covers too), and the body of every code block:
+    each by the fact's own start and end."""
+    text = (
+        "Started by `deploy/compose.yaml` or ./deploy/run.sh; see"
+        " https://fable.example/deploy with --dry-run on v2.4.1, then `deploy`."
+    )
+    assert [text[slice(*at)] for at in relations.covered(passage(text))] == [
+        "deploy/compose.yaml",
+        "./deploy/run.sh",
+        "https://fable.example/deploy",
+        "--dry-run",
+        "v2.4.1",
+        "deploy",
+    ]
+    fenced = "Before a deploy.\n\n```sh\ndeploy --now\n```\nAfter 5 min, on 2099-01-02."
+    assert [fenced[slice(*at)] for at in relations.covered(passage(fenced))] == ["deploy --now"]
+    # what the facts do not own is prose: a path written with no root, a fence's first line
+    bare = "Started by deploy/compose.yaml.\n\n```deploy\nquill run\n```"
+    assert [bare[slice(*at)] for at in relations.covered(passage(bare))] == ["quill run"]
+
+
+NAMED = [
+    # (the places a title was matched at, the stretches, the first place in the prose)
+    ([(10, 16)], [], (10, 16)),
+    ([(10, 16)], [(20, 30)], (10, 16)),
+    ([(10, 16)], [(10, 16)], None),  # the stretch itself
+    ([(10, 16)], [(0, 40)], None),  # inside a longer one
+    ([(10, 16)], [(15, 30)], None),  # partly inside: its last character
+    ([(10, 16)], [(0, 11)], None),  # its first
+    ([(10, 16)], [(12, 13)], None),  # around a stretch: a title of two words, code between
+    ([(10, 16)], [(0, 10), (16, 30)], (10, 16)),  # touching on both sides is outside
+    ([(10, 16), (40, 46)], [(0, 20)], (40, 46)),  # the first place that is outside
+    ([(10, 16), (40, 46)], [(0, 20), (38, 50)], None),
+    ([(10, 16), (40, 46), (70, 76)], [(0, 20), (38, 50), (90, 99)], (70, 76)),
+    ([], [(0, 20)], None),
+]
+
+
+@pytest.mark.parametrize(("places", "stretches", "first"), NAMED)
+def test_a_title_is_named_at_the_first_place_that_shares_no_character_with_a_stretch(
+    places, stretches, first
+):
+    assert relations.named_at(places, stretches) == first
+
+
+def test_many_places_and_many_stretches_are_walked_once():
+    """Both in the order they stand: a passage of thousands of facts, a title matched in
+    hundreds of places, each inside one of them but the last."""
+    stretches = [(10 * n, 10 * n + 6) for n in range(5_000)]
+    places = [(10 * n + 2, 10 * n + 4) for n in range(0, 5_000, 7)] + [(60_000, 60_005)]
+    assert relations.named_at(places, stretches) == (60_000, 60_005)
+    assert relations.named_at(places[:-1], stretches) is None

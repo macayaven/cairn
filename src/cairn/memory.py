@@ -113,47 +113,48 @@ once (cairn.store.ranking.found); `searched` words them, and nothing else does: 
 
 Related pages (KG1; the rules are cairn.relations, the read cairn.store.relating).
 `related(project, slug, limit=5)` answers {"project", "page", "title", "version", "related",
-"searched"}: the pages of the project most related to the page, best first, at most `limit`
-(a whole number of 1 to relations.RELATED_MAX, any other refused, never cut), each as
-{"page", "title", "version", "why", "more"}. `why` holds at most relations.WHY_MAX reasons,
-the weightiest first, and `more` counts the rest. A reason is {"kind": "shares", "term",
-"term_kind", "pages", "here", "there"}: a term both pages state, as it is compared, its
-kind, how many pages of the project hold it (exactly: a term whose pages are not all known
+"searched"}: the pages of the project most related to the page, best first, at most `limit` (a
+whole number of 1 to relations.RELATED_MAX, any other refused, never cut), each as {"page",
+"title", "version", "why", "more"}. `why` holds at most relations.WHY_MAX reasons, the
+weightiest first, and `more` counts the rest. A reason is {"kind": "shares", "term",
+"term_kind", "pages", "here", "there"}: a term both pages state, as it is written (two facts
+are one term when their kind and their text are the same, capitals included: cairn.relations),
+its kind, how many pages of the project hold it (exactly: a term whose pages are not all known
 gives no reason), and the claim of this page and of the other that state it; or {"kind":
 "mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that holds
 this page's title. This version does not list the pages a page mentions. Each claim is
 {"claim_id", "text", "passage_ids", "outside", "written_by", "written_at"} (and
 `written_by_more`), as a hit of `recall` carries them, but for a claim longer than
 relations.TEXT_MAX characters, which is given in place of its text (`_claim_text`; `page`
-gives the claim whole): "text_cut": true and "line", the line that shows what the reason
-says. For a claim that states a shared term that is the line of the passage it cites that
-holds the term, taken where the term's fact stands and never by a search of the text; for
-a claim that mentions the page, the line of its own text that names the title, where the
-index matched it (cairn.store.relating._named; two lines, with their line break, when the
-title's words stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX
-characters of it that hold the term or the title, with "line_cut": true. Only a long claim
-of which no line can be told (one that mentions the page and holds a mark of the index or
-a null character) gives its first TEXT_MAX characters as "text", with "text_cut": true and
-no line. So a claim has its text whole, or "text_cut" with a line, or "text_cut" with a
-head: never a head beside a line. `passage_ids` names the first relations.PASSAGES_MAX
-passages a claim cites, and "passage_ids_more" counts the others, only when there are more
-(a claim a tidy folded from many; who wrote it is still said of every note it cites). So
-an answer's size is bounded by constants: `limit` pages of relations.WHY_MAX reasons, each
-a term of relations.TERM_MAX characters at most and two claims of TEXT_MAX characters of
-text or LINE_MAX of a line, PASSAGES_MAX passages and WRITTEN_BY_MAX writers. The largest
-answer they allow at `limit` 20 is 302,804 bytes over REST and 413,185 over MCP for text
-of one byte a character, and 1,175,804 and 1,460,785 whatever the text holds; at the
+gives the claim whole): "text_cut": true and "line", the line that shows what the reason says.
+For a claim that states a shared term that is the line of the passage it cites that holds the
+term, taken where the term's fact stands and never by a search of the text; for a claim that
+mentions the page, the line that names the title in its prose, at the first place the index
+matched it outside code, a path, a flag, a version or an address
+(cairn.store.relating._mentioning; two lines, with their line break, when the title's words
+stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX characters of it
+that hold the term or the title, with "line_cut": true. Only a long claim of which no line can
+be told (one that mentions the page as the index has it: its text is not its passage's, or
+holds a mark of the index or a null character) gives its first TEXT_MAX characters as "text",
+with "text_cut": true and no line. So a claim has its text whole, or "text_cut" with a line,
+or "text_cut" with a head: never a head beside a line. `passage_ids` names the first
+relations.PASSAGES_MAX passages a claim cites, and "passage_ids_more" counts the others, only
+when there are more (a claim a tidy folded from many; who wrote it is still said of every note
+it cites). So an answer's size is bounded by constants: `limit` pages of relations.WHY_MAX
+reasons, each a term of relations.TERM_MAX characters at most and two claims of TEXT_MAX
+characters of text or LINE_MAX of a line, PASSAGES_MAX passages and WRITTEN_BY_MAX writers.
+The largest answer they allow at `limit` 20 is 302,804 bytes over REST and 413,185 over MCP
+for text of one byte a character, and 1,175,804 and 1,460,785 whatever the text holds; at the
 default `limit` of 5, 76,169 and 103,915, and 295,169 and 366,715
 (tests/unit/test_related_size_unit.py builds that answer from the constants, and checks
-answers made from claims of 322,320 characters against it field by field). No answer shows
-a weight.
-`searched` (`related_searched`), always: `complete`, and the three things a read can leave
-out, each counted (cairn.store.relating.Left): `terms_looked_up` and `terms_not_looked_up`,
-the page's terms past the bound on terms; `claims_read` and `claims_not_read`, the claims
-of other pages past the bounds on what is read; `pages_left_out`, the related pages past
-`limit`. Nothing of a relation is stored: the answer is worked out from the pages as they
-are, in one read of the store, with who wrote the notes its claims cite. A page that is
-not there is refused as `page` refuses it."""
+answers made from claims of 322,320 characters against it field by field). No answer shows a
+weight. `searched` (`related_searched`), always: `complete`, and the three things a read can
+leave out, each counted (cairn.store.relating.Left): `terms_looked_up` and
+`terms_not_looked_up`, the page's terms past the bound on terms; `claims_read` and
+`claims_not_read`, the claims of other pages past the bounds on what is read;
+`pages_left_out`, the related pages past `limit`. Nothing of a relation is stored: the answer
+is worked out from the pages as they are, in one read of the store, with who wrote the notes
+its claims cite. A page that is not there is refused as `page` refuses it."""
 
 import contextlib
 import logging
@@ -979,7 +980,7 @@ def _claim_text(claim: relating.Stated) -> dict[str, Any]:
     A claim within relations.TEXT_MAX characters: `text`, whole. A longer one: `text_cut`
     and, in place of its text, `line`, the line that holds the term it states or names the
     title it mentions, with `line_cut` when that line is given in part. A longer one of
-    which no line can be told (cairn.store.relating._named): `text_cut` and its first
+    which no line can be told (cairn.store.relating._mentioning): `text_cut` and its first
     TEXT_MAX characters as `text`."""
     if not claim.cut:
         return {"text": claim.text}

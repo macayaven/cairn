@@ -12,12 +12,14 @@ read:
   text); a claim whose first passage is not, or that cites none, states none. A claim is the
   whole of each passage it cites, so the first stands for the others.
 - A claim states a term when the index finds the term's words, side by side, in the claim's
-  text, and its passage holds the term. The words are those of the term as it is compared
-  (`ranking.phrase` of `ranking.words`; the first of them for a term of more words than a
-  search takes), so they are the same whichever page asks. The index only proposes a claim:
-  the flag `--audit-keep` and the words "audit keep" in a sentence are the same words to it.
-  The passage decides. A term the index has no word of, or does not find in the claim that
-  writes it (below, Limits), is stated by no claim.
+  text, and its passage holds the term. The index is given the term itself, as it is
+  compared, as one quoted phrase (`ranking.quoted`): its tokenizer alone reads the words,
+  as it read the claims', and nothing here splits them, so there is one reading and it is
+  the same whichever page asks. The index only proposes a claim: the flag `--audit-keep`
+  and the words "audit keep" in a sentence are the same words to it, and so are `-L` and
+  `-l`. The passage decides, exactly: by the term's kind and its text as written, capitals
+  included. A term the index has no word of, or does not find in the claim that writes it
+  (below, Limits), is stated by no claim.
 - For each term of the page, the claims of the whole project that hold its words are listed,
   by row, one more than relations.CLAIMS_COMMON at most: that one more says the term is
   common, and it relates none. Otherwise the list is every claim that could state the term,
@@ -25,13 +27,20 @@ read:
   and of every other, and two pages are related by a term from either side or from neither.
   The page states the term by the first of its own claims in the list whose passage holds
   it; with none, the term relates nothing.
-- A mention: a claim of another page whose text holds this page's title as a phrase. There
-  the index's match is the verdict (so a title of one word is found inside `--audit-keep`
-  too, as a search finds it). The index's `title` column, which every row of a page holds,
-  is never matched, and a page's own claims do not mention it. The claims of other pages
-  that hold the title are listed the same way: one more than CLAIMS_COMMON, or more than
-  relations.COMMON pages among them, and the title is common and relates none. A title of
-  more words than a search takes (ranking.split) is not looked up, and relates none.
+- A mention: a claim of another page that names this page's title in its prose
+  (`_mentioning`; the rule is relations.MENTIONED_BY). The index lists the claims whose
+  text holds the title as a phrase, as it lists a term's: its `title` column, which every
+  row of a page holds, is never matched, a page's own claims do not mention it, and one
+  claim more than CLAIMS_COMMON says the title is common and relates none. The index
+  only proposes here too: it reads `--audit-keep` as the words audit and keep, and
+  `deploy/compose.yaml` as deploy, compose and yaml. So each claim listed is read as a
+  term's candidate is, with the first passage it cites, and the index is asked for every
+  place it matched the title in the claim's text (`_marked`); the claim names the title
+  when one of those places lies outside every stretch of the passage that is code, a path,
+  a flag, a version or an address (relations.named_at). A title more than relations.COMMON
+  other pages name is common and relates none. The title is given to the index as a term
+  is, itself and whole; one longer than relations.TERM_MAX characters, which no title the
+  product writes is, is not looked up, and relates none.
 
 Row to project before any claim is read (as ranking.search): a match is kept only when
 `search_claims`, by primary key, puts its row in the project, and the statements that list
@@ -41,18 +50,20 @@ matches, and nothing out of the project changes an answer.
 Bounded work, whoever asks, and nothing left out silently. What can be left out is counted
 (`Left`, which every answer carries), and it is these three things and no other:
 - The page's terms past the first TERMS_MAX, the shortest first
-  (relations.looked_up_before): `terms_not_looked_up`. (The page's own claims and their
-  first passages are read whole, as `page` reads them: a page holds at most
-  cairn.store.PAGE_CLAIMS_MAX claims.)
-- The claims of other pages listed for a term and not read: `claims_not_read`. The claims
-  listed are read the terms with the fewest first, a term's claims all or none, until
-  CLAIMS_MAX claims are read; and their passages, in that order, until BYTES_MAX bytes are
-  (each is measured first from its row, by a handle on the stored value that reads none of
-  it, as cairn.graph measures one: a passage that does not fit is neither read nor
-  fetched). A term is settled when each page listed for it is known to hold it or not: one
-  of its claims states it, or all of them were read. A term that is not settled gives no
-  reason at all, unless more than COMMON pages are already known to hold it, which settles
-  it as common. So every reason given says how many pages hold its term exactly, and no
+  (relations.looked_up_before): `terms_not_looked_up`. Every term of the page that relates
+  pages by the rule is one or the other: looked up, or counted here. (The page's own
+  claims and their first passages are read whole, as `page` reads them: a page holds at
+  most cairn.store.PAGE_CLAIMS_MAX claims.)
+- The claims of other pages listed for a term, or for the title, and not read:
+  `claims_not_read`. The claims listed are read the terms with the fewest first, the title
+  as one more of them, a term's claims all or none, until CLAIMS_MAX claims are read; and
+  their passages, in that order, until BYTES_MAX bytes are (each is measured first from
+  its row, by a handle on the stored value that reads none of it, as cairn.graph measures
+  one: a passage that does not fit is neither read nor fetched). The passage of a claim
+  listed for the title counts twice: its bytes are handed back once more, as the claim's
+  text with the index's marks. A term one of whose claims was not read gives no reason at
+  all: it is not known of every page whether it states the term, nor how many do. And so
+  for the title. So every reason given says how many pages hold its term exactly, and no
   reason needs a mark of how far it was read.
 - The related pages past the `limit` asked for: `pages_left_out`.
 `complete` is true only when all three are nothing.
@@ -72,25 +83,24 @@ index stores (`_text`), so of a claim of any length no more is handed back than 
 one; a longer one is given cut. Beside a claim cut that states a shared term goes the line
 of its first passage that holds the term (relations.line_of), from the passage as this
 read already holds it and from where the term's fact stands in it: nothing is read for it,
-and the text is not searched a second time. Beside a claim cut that mentions the page
-goes the line of its own text that names the title (`_named`): the index is asked where it
-matched, answers by its own marks around the match, and hands back that place with the
-part of the text a line can come from, 3 * LINE_MAX + 1 characters at most. Nothing here
-looks for the title. To mark the match the index reads the claim whole itself, inside its
-statement: one claim for each page that mentions the page and is given, so relations.COMMON
-claims at most, each as long as a page's claims may be (cairn.store.PAGE_CHARS_MAX
-characters).
+and the text is not searched a second time. Beside a claim cut that names the title goes
+the line that names it: the line of its passage at the first place that counts
+(`_mentioning`), from the passage this read holds; nothing here looks for the title. A
+claim cut that mentions the page as the index has it (its text is not its passage's, or
+holds a mark of the index or a null character) has no place that is known to be prose: it
+has no line, and an answer gives its first characters.
 
 Statements, T being the terms looked up, beside the four of the caller (the page's head, the
 index's table, the notes of the passages the claims given cite, and who wrote them): 2 for
 the page's claims and their passages; ceil(T / AT_ONCE) to list the claims that hold each
-term's words; 3 for the candidates (their rows, the rows of their passages, the passages); 1
-for the title; 2 for what is given (the claims, the pages' titles and versions; each claim's
-text is then read by a handle, which is no statement), and 1 more to ask the index where a
-claim given cut names the title. A statement with nothing to ask is not run. At most 2 + 4
-+ 3 + 1 + 3 = 13, and 17 with the caller's.
+term's words; 1 for the title; 3 for the candidates, the title's among them (their rows,
+the rows of their passages, the passages); 1 to ask the index where it matched the title in
+the claims listed for it; 2 for what is given (the claims, the pages' titles and versions;
+each claim's text is then read by a handle, which is no statement). A statement with
+nothing to ask is not run. At most 2 + 4 + 1 + 3 + 1 + 2 = 13, and 17 with the caller's.
 Rows: two for each claim of the page; for each term at most CLAIMS_COMMON + 1, and as many
-for the title; 3 for each candidate claim read, at most CLAIMS_MAX; and what is given, at
+for the title; 3 for each candidate claim read, at most CLAIMS_MAX, and one more for each
+of the title's, at most CLAIMS_COMMON; and what is given, at
 most relations.RELATED_MAX pages of WHY_MAX reasons of two claims. (The caller's read of who
 wrote the claims given is a row for each passage they cite: one for a claim as it is
 compiled, and as many as a tidy folded into it, as a search reads them for a hit.)
@@ -103,19 +113,20 @@ another project between them. So a match of another project is never walked, how
 claims there hold the page's words (a search, ranking, walks them and passes them over);
 each page of the project costs a few seeks in each statement that lists claims, and each
 run one search of the index a term, the runs being at most the project's pages, however
-the writes of other projects fell between them. The same test counts the same steps
-beside 1,000 and 8,000 claims of another project that hold every word of the page and its
-title, saved before its pages, after them or between them.
+the writes of other projects fell between them. The index is asked where it matched the
+title (`_marked`) by the match and each claim's own row, a claim of the project already
+read. The same test counts the same steps beside 1,000 and 8,000 claims of another project
+that hold every word of the page and its title, saved before its pages, after them or
+between them, on each of those paths: the terms', the title's, and a mention given cut.
 
 Limits. A term is found by its words as it is compared: `1,250x` is compared as `1250x`,
 which the index reads as another word, so a claim that writes the separator states no term
-the index finds; and so for a letter that is compared as other letters (the sharp s). Such
-a term relates nothing, from either side.
+the index finds. Such a term relates nothing, from either side.
 """
 
 import json
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
 from cairn import relations
@@ -143,7 +154,7 @@ CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
 BYTES_MAX = 750_000  # bytes of those claims' passages, as stored, read in all
 AT_ONCE = 64  # terms one statement asks the index for
 # The two marks the index is asked to put around what it matched of a title in a claim's
-# text (`_named`): characters Unicode keeps for a program's own use and out of every text
+# text (`_marked`): characters Unicode keeps for a program's own use and out of every text
 # that is exchanged, so a claim holds neither unless someone put it there.
 MARKS = ("\ufdd0", "\ufdd1")
 
@@ -153,10 +164,11 @@ class Stated(NamedTuple):
     its text whole up to relations.TEXT_MAX characters, else its first TEXT_MAX and `cut`.
     For a claim cut that states a shared term, `line` is the line of its first passage that
     holds the term, where the term's fact stands (relations.line_of); for one that mentions
-    the page, the line of its own text that names the title, where the index matched it
-    (`_named`). `line_cut` says that line is given in part. A claim that is not cut has no
-    line. An answer gives a claim cut by its line and leaves its first characters out; it
-    gives them only when there is no line (cairn.memory)."""
+    the page, the line of its passage at the place that names the title in prose
+    (`_mentioning`). `line_cut` says that line is given in part. A claim that is not cut has
+    no line, nor has one that mentions the page as the index has it. An answer gives a claim
+    cut by its line and leaves its first characters out; it gives them only when there is
+    no line (cairn.memory)."""
 
     claim_id: str
     text: str
@@ -265,16 +277,15 @@ def related(
             (account_id, project_id, slug),
         )
     }
-    texts: dict[str, str] = {}  # each passage read, whole: a claim cut is given a line of it
-    held = _terms(_passages(con, project_id, [cited[0] for cited in own.values() if cited]), texts)
+    spans: dict[str, Span] = {}  # each passage read, whole: a line given is a line of one
+    held = _terms(_passages(con, project_id, [cited[0] for cited in own.values() if cited]), spans)
     stating: dict[Term, set[int]] = {}  # each term of the page: its claims whose passage holds it
     for row, cited in own.items():
         for term in held.get(cited[0], ()) if cited else ():
             stating.setdefault(term, set()).add(row)
-    matches = {term: ranking.phrase(ranking.words(term.text)) for term in stating}
-    known = sorted((term for term in stating if matches[term]), key=relations.looked_up_before)
+    known = sorted(stating, key=relations.looked_up_before)  # every term: looked up, or counted
     looked = known[:TERMS_MAX]
-    listed = _listed(con, *scope, [matches[term] for term in looked])
+    listed = _listed(con, *scope, [ranking.quoted(term.text) for term in looked])
 
     # Each term to settle: the page's own claim that states it, and the other pages' claims
     # that hold its words. Not a term more claims hold than make it common, nor one that no
@@ -287,37 +298,41 @@ def related(
         others = [(row, at) for row, at in rows if at != slug]
         if here is not None and others:
             asked[term] = (here, others)
-    candidates = _candidates(con, *scope, [others for _, others in asked.values()])
+    # The title is settled as a term is: the claims of other pages that hold its words are
+    # read with the terms' claims, within the same bounds.
+    named = _title(title)
+    naming = _title_claims(con, *scope, slug, named)
+    candidates = _candidates(con, *scope, [*(others for _, others in asked.values()), naming])
+    marked = {candidates[row][0] for row, _ in naming if candidates.get(row)}
     passages, unread = _within(
-        con, project_id, list(dict.fromkeys(c[0] for c in candidates.values() if c))
+        con, project_id, list(dict.fromkeys(c[0] for c in candidates.values() if c)), marked
     )
-    held |= _terms(passages, texts)
+    held |= _terms(passages, spans)
     read = {row for row, cited in candidates.items() if not (cited and cited[0] in unread)}
 
     reasons: dict[str, list[Reason]] = {}
     for term, (here, others) in asked.items():
+        if any(row not in read for row, _ in others):  # a claim not read: no reason at all
+            continue
         states: dict[str, int] = {}  # each page that holds the term: its first claim that states it
-        unsettled: set[str] = set()  # pages with a claim that was not read
         for row, at in others:
-            if row not in read:
-                unsettled.add(at)
-            elif at not in states and candidates[row] and term in held.get(candidates[row][0], ()):
+            if at not in states and candidates[row] and term in held.get(candidates[row][0], ()):
                 states[at] = row
         if len(states) >= relations.COMMON:  # with this page, more than COMMON hold it
-            continue
-        if unsettled - states.keys():  # a page that may hold it or not: the term gives no reason
             continue
         shared = Reason(SHARES, term.text, term.kind, 1 + len(states), here, None)
         for at, row in states.items():
             reasons.setdefault(at, []).append(shared._replace(there=row))
 
-    named = _title(title)
-    for at, row in _mentioning(con, *scope, slug, named).items():
+    places: dict[int, tuple[int, int]] = {}  # where a claim names the title, when it is known
+    for at, (row, place) in _mentioning(con, index, named, naming, candidates, read, spans).items():
         reasons.setdefault(at, []).append(Reason(MENTIONED_BY, title, TITLE, 2, None, row))
+        if place is not None:
+            places[row] = place
 
     given, pages_left_out = relations.best(reasons, limit)
-    pages = _given(con, *scope, given, held, texts, named) if given else ()
-    wanted = {row for _, others in asked.values() for row, _ in others}
+    pages = _given(con, *scope, given, held, spans, places) if given else ()
+    wanted = {row for _, others in asked.values() for row, _ in others} | {r for r, _ in naming}
     left = Left(
         terms_looked_up=len(looked),
         terms_not_looked_up=len(known) - len(looked),
@@ -329,33 +344,115 @@ def related(
 
 
 def _title(title: str) -> str | None:
-    """What the index is asked for a page's title: its words side by side in a claim's text.
-    None for a title of no word, or of more words than a search takes (ranking.split)."""
-    counted, more_words = ranking.split(title)
-    return None if more_words else ranking.phrase(counted)
+    """What the index is asked for a page's title: the title itself, as one phrase in a
+    claim's text (ranking.quoted). None for a title longer than relations.TERM_MAX
+    characters, which is not looked up: a phrase asked of the index is no longer than a
+    term's, and no title the product writes is."""
+    return None if len(title) > relations.TERM_MAX else ranking.quoted(title)
 
 
-def _mentioning(
+def _title_claims(
     con: sqlite3.Connection,
     account_id: str,
     index: str,
     project_id: str,
     slug: str,
     named: str | None,
-) -> dict[str, int]:
-    """Each other page a claim of which holds the title as a phrase (`named`: `_title`): its
-    first such claim, by row. None for a title that is not looked up; and none for a title
-    that is common: more than relations.CLAIMS_COMMON claims of other pages hold it, or more
-    than relations.COMMON other pages. One statement at most."""
+) -> Listed:
+    """The claims of other pages whose text holds the title as a phrase (`named`: `_title`),
+    by row: the index's own match, on the text column. None for a title that is not looked
+    up, and none for one more than relations.CLAIMS_COMMON such claims hold, which is common
+    and relates none. One statement at most."""
     if named is None:
-        return {}
+        return []
     (rows,) = _listed(con, account_id, index, project_id, [named], but=slug)
-    naming: dict[str, int] = {}
-    for row, at in rows:
-        naming.setdefault(at, row)
-    if len(rows) > relations.CLAIMS_COMMON or len(naming) > relations.COMMON:
+    return [] if len(rows) > relations.CLAIMS_COMMON else rows
+
+
+def _mentioning(
+    con: sqlite3.Connection,
+    index: str,
+    named: str | None,
+    naming: Listed,
+    candidates: Cited,
+    read: set[int],
+    spans: Mapping[str, Span],
+) -> dict[str, tuple[int, tuple[int, int] | None]]:
+    """Each other page that names the title in the prose of a claim: its first claim that
+    does, by row, and where in the claim's text (relations.named_at).
+
+    A claim that holds the title's words (`naming`) names the title only when a place where
+    the index matched them lies outside every stretch of its passage that is code, a path, a
+    flag, a version or an address (relations.covered, on the passage read whole). The places
+    are the index's (`_marked`), and they are places of the passage because the claim's
+    text is the passage's text; the statement says whether it is. Where it is not (a page
+    saved by hand), where the claim cites no passage of the project, and where the claim
+    holds a mark of the index or a null character, the places of the one say nothing of the
+    other: the claim mentions the page as the index has it, and its place is None.
+
+    As for a term: a title one of whose claims was not read gives no mention at all; nor
+    does a title more than relations.COMMON other pages name. One statement, none for no
+    claim read."""
+    asked = [
+        (row, candidates[row][0])
+        for row, _ in naming
+        if row in read and candidates[row] and candidates[row][0] in spans
+    ]
+    marks = _marked(con, index, named, asked) if named and asked else {}
+    if any(row not in read for row, _ in naming):  # a claim not read: no mention at all
         return {}
-    return naming
+    names: dict[str, tuple[int, tuple[int, int] | None]] = {}
+    for row, at in naming:
+        if at in names:
+            continue
+        if row not in marks:  # the index's word stands
+            names[at] = (row, None)
+        elif place := relations.named_at(
+            _places(marks[row]), relations.covered(spans[candidates[row][0]])
+        ):
+            names[at] = (row, place)
+    return {} if len(names) > relations.COMMON else names
+
+
+def _marked(
+    con: sqlite3.Connection, index: str, named: str, asked: Sequence[tuple[int, str]]
+) -> dict[int, str]:
+    """For each (claim's row, its first passage's id) of `asked`, a passage this read holds:
+    the claim's text with MARKS around every place the index matched `named` in it, the
+    match that listed the claim, on the text column (FTS5's highlight()). Only for a claim
+    whose text is its passage's text, character for character, and holds neither mark nor a
+    null character (SQLite's reading of a text stops there): the statement decides both
+    without handing a text back, so a claim reworded from its passage, of any length, costs
+    nothing. What is handed back is then the passage's bytes once more, with two marks a
+    match; `_within` has counted them. One statement."""
+    return {
+        row: marks
+        for row, marks in con.execute(
+            f"SELECT {index}.rowid, CASE WHEN {index}.text = spans.text"
+            f" AND instr({index}.text, ?3) + instr({index}.text, ?4)"
+            f" + instr(CAST({index}.text AS BLOB), X'00') = 0"
+            f" THEN highlight({index}, 5, ?3, ?4) END"
+            f" FROM json_each(?1) AS wanted"
+            f" CROSS JOIN {index} ON {index}.rowid = json_extract(wanted.value, '$[0]')"
+            f" CROSS JOIN spans ON spans.id = json_extract(wanted.value, '$[1]')"
+            f" WHERE {index} MATCH ?2",
+            (json.dumps([list(pair) for pair in asked]), named, *MARKS),
+        )
+        if marks is not None
+    }
+
+
+def _places(marks: str) -> list[tuple[int, int]]:
+    """Where the index matched, in the characters of the text it marked, in order: MARKS[0]
+    stands before each match and MARKS[1] after it, and the text itself holds neither
+    (`_marked` asks for no other text). A first mark with no second after it ends the
+    reading: it says no place."""
+    opened, closed = MARKS
+    places, at, before = [], 0, 0  # `before`: the marks that stand before this place
+    while (start := marks.find(opened, at)) >= 0 and (end := marks.find(closed, start + 1)) > 0:
+        places.append((start - before, end - before - 1))
+        at, before = end + 1, before + 2
+    return places
 
 
 def _given(
@@ -365,15 +462,16 @@ def _given(
     project_id: str,
     given: Sequence[tuple[str, Sequence[Reason], int]],
     held: Mapping[str, Mapping[Term, tuple[int, int]]],
-    texts: Mapping[str, str],
-    named: str | None,
+    spans: Mapping[str, Span],
+    places: Mapping[int, tuple[int, int]],
 ) -> tuple[RelatedPage, ...]:
     """The pages given, each with its title, its version and the claims of its reasons, read
-    by row: two statements, and one more when a claim that mentions the page is cut. A
-    claim's text is read to relations.TEXT_MAX characters and no further (`_text`). A claim
-    cut that states a term is given the line of its passage that holds it, from `held`,
-    where each term stands in each passage read, and `texts`; one that mentions the page,
-    the line of its own text that names the title (`_named`, asked what `named` matched)."""
+    by row: two statements. A claim's text is read to relations.TEXT_MAX characters and no
+    further (`_text`). A claim cut that states a term is given the line of its passage that
+    holds it, from `held`, where each term stands in each passage read, and `spans`; one
+    that names the title, the line of its passage at the place that counts (`places`:
+    `_mentioning`). A claim cut that mentions the page as the index has it has no place
+    known to be prose, and no line."""
     rows = {r for _, why, _ in given for reason in why for r in (reason.here, reason.there)}
     shown = {}
     for row, claim_id, span_ids in con.execute(
@@ -391,14 +489,6 @@ def _given(
         )
     }
 
-    mentions = {
-        reason.there
-        for _, why, _ in given
-        for reason in why
-        if reason.kind == MENTIONED_BY and shown[reason.there].cut
-    }
-    naming = _named(con, index, named, sorted(mentions)) if named and mentions else {}
-
     def side(reason: Reason, row: int | None) -> Stated | None:
         stated = None if row is None else shown[row]
         if stated is None or not stated.cut:
@@ -406,10 +496,10 @@ def _given(
         if reason.kind == SHARES:
             passage = stated.span_ids[0]  # the passage the claim states the term by: its first
             place = held[passage][Term(reason.term_kind, reason.term)]
-            line, line_cut = relations.line_of(texts[passage], *place)
-        elif row in naming:
-            line, line_cut = naming[row]
-        else:  # the index could not say where: `_named`
+            line, line_cut = relations.line_of(spans[passage].text, *place)
+        elif row in places:  # the claim is its passage's text: the place is a place of both
+            line, line_cut = relations.line_of(spans[stated.span_ids[0]].text, *places[row])
+        else:  # it mentions the page as the index has it: no place is known to be prose
             return stated
         return stated._replace(line=line, line_cut=line_cut)
 
@@ -425,50 +515,6 @@ def _given(
         )
         for at, why, more in given
     )
-
-
-def _named(
-    con: sqlite3.Connection, index: str, named: str, rows: Sequence[int]
-) -> dict[int, tuple[str, bool]]:
-    """For each of these claims, which mention the page and are given cut: the line of the
-    claim's text that names the title, and whether that line is cut (relations.line_of).
-
-    Where the title is named is the index's own answer, and nothing here looks for it: the
-    index is asked again for `named`, the match that listed the claim, restricted to the
-    text column as it was, on these rows alone, and its highlight() gives each claim's text
-    with MARKS around what the match held. The place of the first pair of marks is the place
-    of the first match, in characters; it is found in the statement, which hands back that
-    place and no more of the claim than line_of reads: LINE_MAX characters before the match
-    and after it, of the text as the index stores it. So a claim of any length is answered
-    with 3 * LINE_MAX + 1 characters at most. The index itself reads the claim whole, and
-    marks it once a row: the inner SELECT is kept apart by its LIMIT, so highlight() is not
-    run again for each use of its marks (tests/unit/test_relating_cost_unit.py reads the
-    statement's plan).
-
-    A claim whose own text holds one of the MARKS has no line here: the first mark would not
-    say where the match is. Nor has one that holds a null character, where SQLite's reading
-    of a text stops: its place and the part handed back would be wrong (its bytes are asked
-    for the null, which the text's own functions do not see). Such a claim stays as it was
-    read, cut and saying so. One statement."""
-    before = relations.LINE_MAX
-    found = {}
-    for row, start, until, part, own in con.execute(
-        "SELECT placed.row, placed.start - max(1, placed.start - ?3),"
-        " placed.until - max(1, placed.start - ?3),"
-        " substr(held.text, max(1, placed.start - ?3),"
-        " placed.until + ?3 - max(1, placed.start - ?3)),"
-        " instr(held.text, ?4) + instr(held.text, ?5) + instr(CAST(held.text AS BLOB), X'00')"
-        " FROM (SELECT row, instr(marked, ?4) AS start,"
-        " min(instr(marked, ?5) - 1, instr(marked, ?4) + ?3 + 1) AS until"
-        f" FROM (SELECT {index}.rowid AS row, highlight({index}, 5, ?4, ?5) AS marked"
-        f" FROM json_each(?1) AS wanted CROSS JOIN {index} ON {index}.rowid = wanted.value"
-        f" WHERE {index} MATCH ?2 LIMIT -1)) AS placed"
-        f" CROSS JOIN {index} AS held ON held.rowid = placed.row",
-        (json.dumps(list(rows)), named, before, *MARKS),
-    ):
-        if not own:
-            found[row] = relations.line_of(part, start, until)
-    return found
 
 
 def _text(con: sqlite3.Connection, index: str, row: int) -> tuple[str, bool]:
@@ -507,24 +553,26 @@ def _passages(con: sqlite3.Connection, project_id: str, span_ids: Iterable[str])
 
 
 def _terms(
-    passages: Iterable[Span], texts: dict[str, str]
+    passages: Iterable[Span], spans: dict[str, Span]
 ) -> dict[str, dict[Term, tuple[int, int]]]:
     """Each passage read: the terms it holds and where each stands in it (relations.placed, on
-    the passage whole). Its text is kept in `texts`."""
+    the passage whole). The passage is kept in `spans`."""
     held = {}
     for span in passages:
-        texts[span.id] = span.text
+        spans[span.id] = span
         held[span.id] = relations.placed(span)
     return held
 
 
 def _within(
-    con: sqlite3.Connection, project_id: str, span_ids: Sequence[str]
+    con: sqlite3.Connection, project_id: str, span_ids: Sequence[str], twice: Collection[str]
 ) -> tuple[list[Span], set[str]]:
     """The candidates' passages, in the order given, until BYTES_MAX bytes are read, and the
     ids of those of the project left unread. Each is measured first from its row, by a
     handle on its stored text that reads none of it, so a passage that does not fit is
-    neither read nor fetched: two statements, none for no passage."""
+    neither read nor fetched: two statements, none for no passage. A passage of `twice`,
+    whose claim may name the title, counts twice: its bytes come back once more as the
+    claim's text with the index's marks (`_marked`)."""
     if not span_ids:
         return [], set()
     sizes = {}
@@ -535,9 +583,10 @@ def _within(
             sizes[span_id] = len(stored)
     taken, room = [], BYTES_MAX
     for span_id in span_ids:
-        if span_id in sizes and sizes[span_id] <= room:
+        cost = sizes.get(span_id, 0) * (2 if span_id in twice else 1)
+        if span_id in sizes and cost <= room:
             taken.append(span_id)
-            room -= sizes[span_id]
+            room -= cost
     return _passages(con, project_id, taken), set(sizes) - set(taken)
 
 

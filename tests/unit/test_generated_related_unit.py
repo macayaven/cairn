@@ -17,7 +17,8 @@ What is checked of every answer of `Memory.related`, for every page:
 - each claim it gives is a claim of the latest version of its page, word for word, with the
   passages that version cites;
 - a `shares` reason's term is a fact of a passage each of its two claims cites, by a fresh
-  cairn.facts.extract_facts on that passage, equal by kind and by facts.compared;
+  cairn.facts.extract_facts on that passage, equal by kind and by its text as it is
+  written, capitals included (`as_term`, in the rule's words);
 - a `mentioned_by` reason's claim holds the title's words side by side as the index reads
   them. The reading is FTS5's own, asked another way: the tokens it makes of a text, from an
   index of that text alone (its `fts5vocab` table), never a MATCH;
@@ -26,8 +27,11 @@ What is checked of every answer of `Memory.related`, for every page:
   claim's first passage has the fact and the claim's text holds the term's words side by
   side; two to COMMON pages that hold a term are related by it, each saying how many do,
   unless more than CLAIMS_COMMON claims of the project hold its words; a page is mentioned
-  by the other pages whose claims hold its title, unless more than COMMON of them do, or
-  more than CLAIMS_COMMON of their claims;
+  by the other pages a claim of which names its title in its prose (the title's words side
+  by side, as the index reads them, in the passage with its code, paths, flags, versions
+  and addresses taken out: `prose_of`, a fresh extraction, never the index's marks), unless
+  more than COMMON pages name it, or more than CLAIMS_COMMON of the other pages' claims
+  hold its words;
 - symmetry: where both answers are complete, B related to A by a term means A related to B
   by that term, held by as many pages;
 - and with the bounds on what is read made small enough to be met: every reason still given
@@ -60,7 +64,7 @@ import pytest
 import test_generated_copy_passes_fact_check_unit as shapes
 
 from cairn import relations
-from cairn.facts import compared, extract_facts
+from cairn.facts import extract_facts
 from cairn.gate import lint_gate
 from cairn.memory import Memory, RequestError
 from cairn.store import Store, relating
@@ -99,9 +103,10 @@ def passage(rng: random.Random, held: str) -> str:
 
 
 def spelled(rng: random.Random, held: str) -> str:
-    """`held` as one page writes it: as drawn, in capitals, or without its commas. Two
-    spellings can be one term (facts.compared folds case and takes a thousands separator
-    out) that the index reads as the same words, or as other words."""
+    """`held` as one page writes it: as drawn, in capitals, or without its commas. In
+    capitals it is another term that the index reads as the same words; without its commas
+    it can be the same term (a thousands separator is left out of the comparison) that the
+    index reads as other words."""
     return rng.choice([held, held, held.upper(), held.replace(",", "")])
 
 
@@ -140,12 +145,19 @@ class Reading:
             self.known[text] = tuple(term for (term,) in rows)
         return self.known[text]
 
-    def holds(self, text: str, words: list[str]) -> bool:
-        """Whether `text` holds the words side by side and in order, as the index reads both."""
-        wanted, held = self.of(" ".join(words)), self.of(text)
+    def holds(self, text: str, phrase: str) -> bool:
+        """Whether `text` holds the words of `phrase` side by side and in order, as the index
+        reads both: its tokens of each, and no splitting of words done here."""
+        wanted, held = self.of(phrase), self.of(text)
         return bool(wanted) and any(
             held[at : at + len(wanted)] == wanted for at in range(len(held) - len(wanted) + 1)
         )
+
+
+def as_term(as_read: str) -> str:
+    """A fact's text as two terms are compared, in the rule's words: as it is written,
+    capitals included, less the white space at its end and a number's thousands separators."""
+    return re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", as_read.rstrip(" \t\r"))
 
 
 def relates(kind: str, text: str) -> bool:
@@ -157,11 +169,26 @@ def relates(kind: str, text: str) -> bool:
     return kind != "inline_code" or len(text) >= 12 or any(not c.isalpha() for c in text)
 
 
+def prose_of(span) -> str:
+    """The passage's text with every character of every stretch that is code, a path, a flag,
+    a version or an address made a "z" (a fresh extract_facts: the facts of those kinds and
+    the code blocks; line ends kept), so each character stays where it was and no word of a
+    title is left in such a stretch. A word that stands partly in one is no longer the word:
+    what the index then reads of the text is what stands in its prose."""
+    text = list(span.text)
+    for fact in extract_facts(span):
+        if fact.kind in KINDS or fact.kind == "code_block":
+            for at in range(fact.start, fact.end):
+                text[at] = "z" if text[at] != "\n" else "\n"
+    return "".join(text)
+
+
 def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
     """The whole project, read here, claim by claim: `holds`, for each page, the terms it
     holds; `claims`, for each of those terms, how many claims of the project hold its words;
-    `named_by`, for each page, the other pages whose claims hold its title, and
-    `naming`, how many claims of theirs do."""
+    `named_by`, for each page, the other pages a claim of which holds its title in its
+    prose (`prose_of` of the passage the claim is the text of); `held_by`, those whose
+    claims hold its words anywhere; and `naming`, how many claims of theirs do."""
     pages = {
         head.slug: store.get_page(project_id, head.slug) for head in store.list_pages(project_id)
     }
@@ -172,26 +199,42 @@ def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
             spans = store.get_spans(claim.span_ids[:1])
             for span in spans.values():
                 for fact in extract_facts(span):
-                    term = (fact.kind, compared(fact.as_read))
-                    if relates(*term) and reading.holds(claim.text, re.findall(r"\w+", term[1])):
+                    term = (fact.kind, as_term(fact.as_read))
+                    if relates(*term) and reading.holds(claim.text, term[1]):
                         held.add(term)
         holds[slug] = held
     every = [claim for page in pages.values() for claim in page.claims]
     claims = {
-        term: sum(reading.holds(claim.text, re.findall(r"\w+", term[1])) for claim in every)
+        term: sum(reading.holds(claim.text, term[1]) for claim in every)
         for term in set().union(*holds.values())
     }
-    named_by, naming = {}, {}
+    prose = {}
+    for claim in every:  # every generated claim is the text of the one passage it cites
+        (span,) = store.get_spans(claim.span_ids).values()
+        assert span.text == claim.text
+        prose[claim.id] = prose_of(span)
+    named_by, held_by, naming = {}, {}, {}
     for slug, page in pages.items():
-        title = re.findall(r"\w+", page.title)
+        title = page.title
         theirs = {
             other: sum(reading.holds(claim.text, title) for claim in found.claims)
             for other, found in pages.items()
             if other != slug
         }
-        named_by[slug] = {other for other, count in theirs.items() if count}
+        held_by[slug] = {other for other, count in theirs.items() if count}
+        named_by[slug] = {
+            other
+            for other in held_by[slug]
+            if any(reading.holds(prose[claim.id], title) for claim in pages[other].claims)
+        }
         naming[slug] = sum(theirs.values())
-    return {"holds": holds, "claims": claims, "named_by": named_by, "naming": naming}
+    return {
+        "holds": holds,
+        "claims": claims,
+        "named_by": named_by,
+        "held_by": held_by,
+        "naming": naming,
+    }
 
 
 def expected(here: dict, slug: str) -> tuple[set, set]:
@@ -281,18 +324,24 @@ def test_the_generated_projects_relate_pages_in_every_way(world):
             elif count >= 2 and here["claims"][term] > CLAIMS_COMMON:
                 decided["a term few pages hold and many claims"] += 1
         for slug, named_by in here["named_by"].items():
+            decided["a title a page holds in code alone"] += len(here["held_by"][slug] - named_by)
             if len(named_by) > relations.COMMON:
                 decided["a title more than COMMON pages name"] += 1
             elif named_by and here["naming"][slug] > CLAIMS_COMMON:
                 decided["a title few pages name in many claims"] += 1
+            elif len(here["held_by"][slug]) > relations.COMMON:
+                decided["a title many pages hold and few name"] += 1
         for answer in project["answers"].values():
             answers += 1
             complete += answer["searched"]["complete"]
             mentions += sum(1 for _ in reasons(answer, "mentioned_by"))
             shared.update(reason["term_kind"] for _, reason in reasons(answer, "shares"))
     assert set(shared) == set(KINDS), shared  # each kind of term relates pages somewhere
-    assert min(shared.values()) >= 20 and mentions >= 200, (shared, mentions)
-    assert len(decided) == 4 and min(decided.values()) >= 20, decided
+    assert min(shared.values()) >= 15 and mentions >= 200, (shared, mentions)
+    assert len(decided) == 6, decided
+    few = "a title many pages hold and few name"  # relates now: the pages that count name it
+    assert decided[few] >= 3 and decided["a title a page holds in code alone"] >= 200, decided
+    assert min(count for rule, count in decided.items() if rule != few) >= 15, decided
     assert answers >= 1_000 and complete == answers, (answers, complete)
 
 
@@ -336,7 +385,7 @@ def test_a_shared_term_is_a_fact_of_a_passage_each_claim_cites(world):
                 for claim in (reason["here"], reason["there"]):
                     checked += 1
                     facts = {
-                        (fact.kind, compared(fact.as_read))
+                        (fact.kind, as_term(fact.as_read))
                         for span_id in claim["passage_ids"]
                         for fact in extract_facts(project["spans"][span_id])
                     }
@@ -345,17 +394,28 @@ def test_a_shared_term_is_a_fact_of_a_passage_each_claim_cites(world):
     assert wrong == [] and checked >= 1_000, (len(wrong), wrong[:5], checked)
 
 
-def test_a_mention_is_a_claim_that_holds_the_title_as_the_index_reads_it(world):
+def test_a_mention_is_a_claim_that_names_the_title_in_its_prose_as_the_index_reads_it(world):
+    """Every mention returned, again and by other means than the index's marks: the claim's
+    text holds the title's words side by side as the index reads them; and so does the
+    passage the claim is the text of once its code, paths, flags, versions and addresses are
+    taken out of it (`prose_of`, a fresh extraction): a match of the title stands outside
+    every one of those stretches."""
     wrong, checked = [], 0
     for project in world["projects"]:
         for slug, answer in project["answers"].items():
-            title = re.findall(r"\w+", answer["title"])
+            title = answer["title"]
             for page, reason in reasons(answer, "mentioned_by"):
                 checked += 1
                 assert (reason["term"], reason["term_kind"]) == (answer["title"], "title")
                 assert "here" not in reason and "pages" not in reason and page["page"] != slug
-                if not world["reading"].holds(reason["there"]["text"], title):
-                    wrong.append((project["name"], slug, page["page"]))
+                claim = reason["there"]
+                (passage_id,) = claim["passage_ids"]
+                span = project["spans"][passage_id]
+                assert span.text == claim["text"]  # so a place of the one is a place of the other
+                if not world["reading"].holds(claim["text"], title):
+                    wrong.append((project["name"], slug, page["page"], "not held"))
+                elif not world["reading"].holds(prose_of(span), title):
+                    wrong.append((project["name"], slug, page["page"], "held in code alone"))
     assert wrong == [] and checked >= 200, (wrong[:5], checked)
 
 
@@ -394,18 +454,20 @@ def test_a_read_within_small_bounds_gives_only_what_the_whole_read_gives_and_cou
 ):
     """No reason carries a mark of how far it was read, because none needs one: with the claims
     and bytes read made small, every reason still given is the whole read's, with the same
-    count of pages; an answer that gives fewer says how many claims it did not read; and a
-    mention, which reads no claim to be known, is never lost."""
-    wrong, fewer, bounded_answers = [], 0, 0
+    count of pages, a mention like a shared term (the claims that hold a title are read to
+    know which name it); and an answer that gives fewer says how many claims it did not
+    read."""
+    wrong, fewer, bounded_answers, lost = [], 0, 0, Counter()
     for project in world["projects"]:
         for slug, whole in project["answers"].items():
             bounded = project["bounded"][slug]
             searched = bounded["searched"]
             assert searched["claims_read"] <= CLAIMS_READ
             got, all_of_it = given_by(bounded), given_by(whole)
-            mentions = {reason for reason in all_of_it if reason[1] == "mentioned_by"}
-            if not (got <= all_of_it and mentions <= got):
+            if not got <= all_of_it:
                 wrong.append((project["name"], slug, "a reason the whole read does not give"))
+            lost["mentions"] += sum(1 for reason in all_of_it - got if reason[1] == "mentioned_by")
+            lost["terms"] += sum(1 for reason in all_of_it - got if reason[1] == "shares")
             if got != all_of_it:
                 fewer += 1
                 if not searched["claims_not_read"] or searched["complete"]:
@@ -415,34 +477,42 @@ def test_a_read_within_small_bounds_gives_only_what_the_whole_read_gives_and_cou
                 wrong.append((project["name"], slug, "every claim read, another answer"))
     assert wrong == [], (len(wrong), wrong[:5])
     assert bounded_answers >= 200 and fewer >= 100, (bounded_answers, fewer)
+    assert lost["mentions"] >= 500 and lost["terms"] >= 300, lost
 
 
 def first_line_of(span, kind: str, term: str) -> tuple[str, str] | None:
     """Read here: the line of the passage on which the first fact that is the term stands,
     and the fact as it is written there."""
     for fact in extract_facts(span):  # in the order they stand
-        if (fact.kind, compared(fact.as_read)) == (kind, term):
+        if (fact.kind, as_term(fact.as_read)) == (kind, term):
             before = span.text[: fact.start].count("\n")
             return span.text.split("\n")[before], span.text[fact.start : fact.end]
     return None
 
 
-def mention_fault(reading: Reading, given: dict, text: str, title: str, seen: Counter) -> str:
+def mention_fault(
+    reading: Reading, given: dict, text: str, prose: str, title: str, seen: Counter
+) -> str:
     """What is wrong with the line of a claim cut that mentions the page titled `title`, the
-    claim's whole text being `text`; nothing when it is right. The line is a piece of the
-    text; the index's own reading of the line holds the title's words side by side; no line
-    of the text before it does, so it is the first place the title is named; and it is whole
-    lines of the text, or LINE_GIVEN characters of longer ones."""
-    words = re.findall(r"\w+", title)
+    claim's whole text being `text` and `prose` that text with its code, paths, flags,
+    versions and addresses taken out (`prose_of`: character for character); nothing when it
+    is right. The line is a piece of the text; where it stands, the prose holds the title's
+    words side by side as the index reads them; no line of the prose before it does, so it
+    is the first place the title is named in prose; and it is whole lines of the text, or
+    LINE_GIVEN characters of longer ones. (No generated claim holds a title in code before
+    it names it in prose: tests/unit/test_relating_unit.py has that claim.)"""
+    words = title
     line = given.get("line")
     if line is None or line not in text:
         return "no line, or not a piece of the claim's text"
-    if not reading.holds(line, words):
-        return "the line does not hold the title as the index reads it"
-    before = text[: text.rfind("\n", 0, text.index(line)) + 1]  # the whole lines before it
+    stands = [at for at in range(len(text)) if text.startswith(line, at)]
+    named = [at for at in stands if reading.holds(prose[at : at + len(line)], words)]
+    if not named:
+        return "the line does not name the title in prose as the index reads it"
+    before = prose[: prose.rfind("\n", 0, named[0]) + 1]  # the whole lines before it
     seen["a mention after a line that holds none"] += bool(before.strip())
     if reading.holds(before, words):
-        return "a line before it names the title"
+        return "a line before it names the title in prose"
     if "line_cut" in given:
         seen["a mention's line cut"] += 1
         return "" if len(line) == LINE_GIVEN else "cut, and not to the bound"
@@ -505,7 +575,10 @@ def claims_checked(whole: dict, cut: dict, spans: dict, reading: Reading, seen: 
                     continue
                 if reason["kind"] != "shares":
                     seen["a line, of a mention"] += 1
-                    fault = mention_fault(reading, given, claim["text"], whole["title"], seen)
+                    prose = prose_of(spans[claim["passage_ids"][0]])
+                    fault = mention_fault(
+                        reading, given, claim["text"], prose, whole["title"], seen
+                    )
                     if fault:
                         wrong.append((*where, fault))
                     continue
@@ -548,10 +621,10 @@ def test_a_claim_is_given_whole_or_by_its_line_or_by_its_head_and_never_by_both(
     assert min(seen[k] for k in each) >= 100, seen
     assert seen["a head"] == seen["none"] == 0, seen  # no generated claim holds a mark
     assert seen["a mention's line whole"] >= 200 and seen["a mention's line cut"] >= 500, seen
-    assert seen["a mention after a line that holds none"] >= 300, seen
+    assert seen["a mention after a line that holds none"] >= 200, seen
     assert seen["a mention's line of two lines"] >= 5, seen
     assert seen["of a passage of several lines"] >= 300, seen
-    assert seen["line cut to the term's start"] >= 30, seen
+    assert seen["line cut to the term's start"] >= 20, seen
 
 
 def test_the_same_holds_of_claims_that_hold_a_mark_of_the_index_or_a_null(monkeypatch):

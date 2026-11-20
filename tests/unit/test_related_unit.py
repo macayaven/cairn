@@ -617,9 +617,9 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
     for line in (
         "`terms_looked_up`: the page's terms looked up, 256 at most, the shortest first.",
         "`terms_not_looked_up`: its terms past those.",
-        "`claims_read`: claims of other pages read for those terms.",
+        "`claims_read`: claims of other pages read for those terms and for the title.",
         "`claims_not_read`: such claims not read, past 512 claims or 750,000 bytes of their"
-        " passages; a term with a claim not read gives no reason.",
+        " passages; a term with a claim not read gives no reason, nor does the title.",
         "The page's own passages are read whole, as `page` reads them.",
         "`pages_left_out`: related pages past `limit`.",
         "`complete` is true when those three counts of what was left out are 0.",
@@ -649,8 +649,45 @@ def test_the_tools_description_says_a_long_claim_is_cut_and_that_page_gives_it_w
     assert relations.PASSAGES_MAX == 8
 
 
+def test_the_tools_description_says_a_term_is_given_as_it_is_written(env):
+    """And it is: two pages that write a flag the same way are told that flag, capitals
+    and all; two that write `-L` and `-l` are not told they share one."""
+    said = " ".join(tools()["related"].description.split())
+    assert (
+        "both pages state `term` (a URL, a path, a flag, a version, or code in backticks that"
+        " is not a plain word; it is given as it is written, capitals included: `-L` is not"
+        " `-l`)"
+    ) in said
+    assert "case folded" not in said
+    note(env, "Tunnel", "Forward a local port with `-L`.\n")
+    note(env, "Login", "Pass the remote login name with `-l`.\n")
+    note(env, "Jump", "Forward through a host with `-L` too.\n")
+    found = answer(env.client, env.key, "related", project="ops", slug="tunnel")
+    assert [(page["page"], page["why"][0]["term"]) for page in found["related"]] == [("jump", "-L")]
+    (reason,) = found["related"][0]["why"]
+    assert reason["term"] in reason["here"]["text"] and reason["term"] in reason["there"]["text"]
+    assert answer(env.client, env.key, "related", project="ops", slug="login")["related"] == []
+
+
+def test_a_term_and_a_title_that_hold_a_null_or_a_quote_answer_over_every_surface(env):
+    """A null would end the query the index is asked, and a quote its phrase: neither is an
+    error, and each relation is found, over MCP and REST alike."""
+    memory = Memory(env.store, lint_gate)
+    for n, term in enumerate(["a1\x00b2", 'say "hi" --now']):
+        memory.note("ops", f"Ada runs `{term}` here.\n", title=f"One {n}")
+        memory.note("ops", f"Brook runs `{term}` there.\n", title=f"Two {n}")
+        found = answer(env.client, env.key, "related", project="ops", slug=f"one-{n}")
+        assert rest(env, f"one-{n}").json() == found
+        assert [(p["page"], p["why"][0]["term"]) for p in found["related"]] == [(f"two-{n}", term)]
+
+
 def test_the_tools_description_says_which_terms_and_titles_relate_none():
     said = " ".join(tools()["related"].description.split())
+    assert (
+        "Or it is `mentioned_by`: `there` is a claim of the other page that names this page's"
+        " title in its prose, not inside code, a path, a flag or an address (the pages this"
+        " page mentions are not listed)."
+    ) in said
     for line in (
         "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"
         " the project hold, nor one longer than 200 characters; a title more than 5 other pages"
@@ -692,9 +729,10 @@ def test_the_contract_states_the_bounds_of_a_read_as_the_store_has_them():
 
     said = " ".join(cairn.server.__doc__.split())
     assert (
-        "counts each: the page's terms past the first 256, the claims of other pages past the"
-        " 512 claims and the 750,000 bytes of passages read, the related pages past `limit`."
-        " The page's own passages are read whole, as `page` reads them."
+        "counts each: the page's terms past the first 256, the claims of other pages, listed for"
+        " a term or for the title, past the 512 claims and the 750,000 bytes of passages read,"
+        " the related pages past `limit`. The page's own passages are read whole, as `page`"
+        " reads them."
     ) in said
     assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 750_000)
 

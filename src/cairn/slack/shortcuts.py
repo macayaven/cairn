@@ -136,6 +136,7 @@ async def _write(
         title=draft.title,
         source_ref=draft.source_ref,
         message=(conversation_id, time),
+        shown=draft.shown,
     )
 
 

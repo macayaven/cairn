@@ -9,6 +9,7 @@ cut to the store's 80 characters (store.memory.TITLE_MAX) where no escape is cut
 Every name and message is made up."""
 
 import asyncio
+import re
 
 import pytest
 import test_slack_shortcuts_unit as shortcuts
@@ -136,5 +137,29 @@ def test_a_title_cut_short_is_the_one_the_page_is_given(tmp_path):
         asyncio.run(shortcuts.handle(bench, {**message, "ts": "1900000000.000100"}).background())
         (page,) = bench.owner.list_pages(bench.library.id)
         assert page.title == title_of(text)
+    finally:
+        bench.store.close()
+
+
+def label_of(reply: str) -> str:
+    """The note's title in the reply's words, as Slack displays them."""
+    (label,) = re.findall(r"^(?:Already filed|Filed): (.*)$", reply, re.MULTILINE)
+    return label.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+def test_the_reply_names_the_note_as_slack_displayed_it(tmp_path):
+    """The third tester's finding 7: the reply in Slack showed the title as the note stores
+    it, escapes and entities and all. It shows what Slack displayed, filed now and again."""
+    bench = Bench(tmp_path)
+    try:
+        bench.users[shortcuts.CEDAR] = shortcuts.cedar()
+        bench.link(ADA_SLACK, bench.ada, bench.library)
+        text = "Q&amp;A [notes] *now* for <https://fable.test/l|the ledger> #4"
+        message = {"type": "message", "user": shortcuts.CEDAR, "text": text}
+        message["ts"] = "1900000000.000100"
+        for _ in range(2):  # filed, then filed already
+            bench.calls.clear()
+            reply = shortcuts.replied(bench, shortcuts.handle(bench, message))
+            assert label_of(reply) == "Q&A [notes] now for the ledger #4", reply
     finally:
         bench.store.close()

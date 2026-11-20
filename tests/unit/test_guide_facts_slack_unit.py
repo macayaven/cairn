@@ -24,7 +24,7 @@ from guide_source import guide_source
 from markdown_it import MarkdownIt
 from starlette.testclient import TestClient
 from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, ask, said
-from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle
+from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle, replied
 from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
 
 import cairn.store.slack as store_slack
@@ -65,6 +65,7 @@ from cairn.web import cli_arrange
 from cairn.web import slack as web_slack
 from cairn.web.brand import product_of
 from cairn.web.markdown import render
+from cookie_names import session_cookie
 
 PRODUCT = product_of(None)
 RULE = "github_token"  # the note guard's rule, as cairn names it
@@ -725,6 +726,58 @@ def test_connect_the_title_is_the_first_line_the_message_displays():
     assert [token.type for token in heading] == ["text"]
     assert heading[0].content == "See `[manual](https://fable.test/m)` and the ledger"
     assert len(title("Row " * 30)) <= 80 == TITLE_MAX
+
+
+def test_connect_the_reply_names_the_note_as_slack_displayed_it(tmp_path):
+    """connect.md: "The reply in Slack names the note by its title as Slack displayed it.\"
+    (The third tester's finding 7.)"""
+    says(
+        *CONNECT,
+        "The reply in Slack names the note by its title as Slack displayed it.",
+    )
+    bench = Bench(tmp_path)
+    try:
+        bench.users[CEDAR] = cedar()
+        bench.link(ADA_SLACK, bench.ada, bench.library)
+        message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100"}
+        reply = replied(bench, handle(bench, {**message, "text": "Q&amp;A [notes] *now*"}))
+        assert reply.startswith("Filed: Q&amp;A [notes] now\n")  # Slack shows "Q&A [notes] now"
+    finally:
+        bench.store.close()
+
+
+def test_connect_the_page_shows_the_title_and_the_author_as_the_note_writes_them(tmp_path):
+    """connect.md: "Its page shows that title, and the heading with the author's name, as the
+    note writes them for Markdown: ...\" A limit (the third tester, finding 7): showing what Slack
+    displayed there would take the web view reading every page's title and section headings
+    as Markdown, whatever wrote them, which it does not."""
+    says(
+        *CONNECT,
+        "Its page shows that title, and the heading with the author's name, as the note writes "
+        "them for Markdown: where they hold a character Markdown reads, such as `[`, `&` or `*`, "
+        "the backslash or entity that keeps it text shows there.",
+    )
+    bench = Bench(tmp_path)
+    try:
+        bench.users[CEDAR] = cedar(
+            real_name="Ana & Bo [x]", profile={"real_name": "Ana & Bo [x]", "display_name": "A"}
+        )
+        bench.link(ADA_SLACK, bench.ada, bench.library)
+        message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100"}
+        asyncio.run(handle(bench, {**message, "text": "Q&amp;A [notes]"}).background())
+        (listed,) = bench.owner.list_pages(bench.library.id)
+        assert listed.title == "Q&amp;A \\[notes\\]"
+        session = bench.store.sign_in(
+            "sso", "sub-ada", "ada@example.test", "Ada", issuer="https://sso.example.test",
+            join="personal",
+        )  # fmt: skip
+        app = create_app(bench.store, public_url=BASE, clock=bench.clock)
+        with TestClient(app, base_url=BASE) as client:
+            client.cookies.set(session_cookie("https"), session.token)
+            html = client.get(f"/b/library/p/{listed.slug}").text
+        assert "Q&amp;amp;A \\[notes\\]" in html and "Ana &amp;amp; Bo \\[x\\]" in html
+    finally:
+        bench.store.close()
 
 
 def a_filed_note(text: str) -> str:

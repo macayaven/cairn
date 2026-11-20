@@ -28,6 +28,7 @@ from markdown_it import MarkdownIt
 
 from cairn.spans import chunk
 from cairn.store.memory import TITLE_MAX
+from cairn.topics import one_line
 
 # An email address. Every pattern here reads each character of what it is run over a bounded
 # number of times, however long the text (the third tester, finding 9): a run of the
@@ -625,6 +626,13 @@ def _shows(title: str) -> str:
     return "".join(child.content for child in heading.children or [])
 
 
+def displayed_title(title: str) -> str:
+    """A note's title as a reply in Slack names it: what the page's heading of it displays,
+    which for a filed message is what Slack displayed (the third tester, finding 7), never
+    the escapes and entities the title is stored with."""
+    return " ".join(_shows(one_line(title)).split("\n")).strip()
+
+
 def _unclosed(title: str) -> str:
     """`title` with a backslash before a run of "#" that would close the page's heading of it,
     where the run would be dropped (the run is all of it, or a blank stands before it)."""
@@ -678,6 +686,7 @@ class Draft:
     title: str
     text: str
     source_ref: str
+    shown: str = ""  # the title as Slack displayed it (displayed_title), for the reply
 
 
 class NotText(ValueError):
@@ -748,4 +757,5 @@ def note_from_message(
             if not _not_one_fence(text, wrote):
                 break
         plain = range(len(raw)) if plain or every or not missing else {min(missing)}
-    return Draft(_title(raw.strip(), names, code), text, source)
+    title = _title(raw.strip(), names, code)
+    return Draft(title, text, source, displayed_title(title))

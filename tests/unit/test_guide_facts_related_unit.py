@@ -111,7 +111,8 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
         " word), or a claim of the other page names this page's title in its prose: not by"
         " words inside code (in backticks, or in a fenced block, its opening line included),"
         " nor inside a URL, a path, a flag or a version as the page's facts read them, so a"
-        " bare `ledger/notes.md` still names a page Ledger.",
+        " bare `ledger/notes.md` still names a page Ledger; a claim that holds a mark of the"
+        " index or a null character names none.",
     )
     file(
         memory,

@@ -160,7 +160,9 @@ def test_the_documents_say_what_bounds_a_reads_rows_and_what_is_not_counted():
     assert (
         "The rows of the index a read is handed are bounded whatever the workspace holds:"
         " where other projects hold a page's terms in very many claims, the answer can be"
-        " incomplete, and says so; it never says something else." in contract
+        " incomplete, and says so; each reason it gives is true and counts the pages it would"
+        " count with nothing left out, though an incomplete answer can hold other true reasons"
+        " than a complete one would show first." in contract
     )
     module = " ".join(relating.__doc__.split())
     assert "whatever other projects hold" not in module
@@ -463,10 +465,14 @@ def reasons_of(found: relating.Related) -> set:
 
 
 def part_of(found: relating.Related, whole: relating.Related) -> None:
-    """`found` says nothing that `whole`, a complete answer of the same page, does not: past
+    """`found` against `whole`, a complete answer of the same page, where nothing but ROWS_MAX
+    leaves anything out of `found` (the fixtures here, within CLAIMS_MAX and BYTES_MAX): past
     ROWS_MAX it gives a part of whole's reasons, each with the same term, count of pages and
     claims, and says it is not complete by counting terms not looked up; within it, the same
-    answer. (Its counts of claims read and of reasons past WHY_MAX or `limit` may be fewer.)"""
+    answer. (Its counts of claims read and of reasons past WHY_MAX or `limit` may be fewer.
+    Where CLAIMS_MAX or BYTES_MAX bind too, a term not looked up leaves room for another
+    term's claims, and an incomplete answer can hold true reasons a complete one would not
+    show first.)"""
     assert whole.left.complete
     if found.left.terms_not_looked_up == whole.left.terms_not_looked_up:
         assert (reasons_of(found), found.left) == (reasons_of(whole), whole.left)
@@ -483,7 +489,8 @@ def test_claims_of_another_project_that_hold_the_pages_words(beside, layout):
     rows, claims read by row and steps as with none, give or take the index's pages. Saved
     inside it, the index hands each to the read for each term, which passes it over by its
     project: ROW_STEPS steps a row at most, ROWS_MAX rows in all; within that, the same
-    answer, and past it a part of that answer, which says it is not complete."""
+    answer, and past it, with these claims, a part of that answer, which says it is not
+    complete."""
     found, alone = beside[0][layout]
     assert sorted(page.slug for page in found.pages) == ["mention", "share"]
     assert found.left.complete
@@ -630,8 +637,8 @@ def test_past_the_rows_a_read_visits_the_term_being_asked_and_those_after_it_are
     project's alike, are counted as they are handed over: the terms in the order they are
     looked up, the title last. The term being asked when the count reaches ROWS_MAX, and
     every one after it, are not asked or not taken: counted in terms_not_looked_up, the title
-    as one more, they give no reason, and the answer is not complete. What it gives is a part
-    of the whole answer, each reason with the same count of pages and the same claims."""
+    as one more, they give no reason, and the answer is not complete. What it gives here is a
+    part of the whole answer, each reason with the same count of pages and the same claims."""
     store = Store(tmp_path / "cairn.db")
     project = store.create_project("ops")
     other = store.create_project("elsewhere")
@@ -866,7 +873,7 @@ def test_claims_of_another_project_outside_a_projects_span_cost_nothing(grid, pa
 @pytest.mark.parametrize("pages", SIZES)
 def test_claims_of_another_project_inside_a_projects_span_cost_the_rows_handed_over(grid, pages):
     """Within ROWS_MAX (8,000 claims: 64,000 rows for the terms and 8,000 for the title), the
-    same answer; past it (64,000 claims), a part of it that says it is not complete. Each row
+    same answer; past it (64,000 claims), here a part of it that says it is not complete. Each row
     handed over costs ROW_STEPS steps at most, whatever the project's size."""
     found, alone = grid[pages][0]["alternating"]
     for count in HOLDING[1:]:

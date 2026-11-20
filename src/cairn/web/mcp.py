@@ -431,8 +431,9 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         claim of the other page that names this page's title in its prose: not by words inside
         code (in backticks, or in a fenced block, its opening line included), nor inside a URL,
         a path, a flag or a version as the page's facts read them, so a bare `ledger/notes.md`
-        still names a page Ledger (the pages this page mentions are not listed). A claim that
-        cites several passages is read by its first. A term more than 5 pages hold relates none,
+        still names a page Ledger; a claim that holds a mark of the index or a null character
+        names none (the pages this page mentions are not listed). A claim that cites several
+        passages is read by its first. A term more than 5 pages hold relates none,
         nor one whose words more than 64 claims of the project hold, nor one longer than 200
         characters; a title more than 5 other pages name, or more than 64 of their claims hold,
         relates none either. A term the search does not find as it is written (`1,250x`,

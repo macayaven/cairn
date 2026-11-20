@@ -694,8 +694,9 @@ def test_the_tools_description_says_which_terms_and_titles_relate_none():
         "Or it is `mentioned_by`: `there` is a claim of the other page that names this page's"
         " title in its prose: not by words inside code (in backticks, or in a fenced block,"
         " its opening line included), nor inside a URL, a path, a flag or a version as the"
-        " page's facts read them, so a bare `ledger/notes.md` still names a page Ledger (the"
-        " pages this page mentions are not listed)."
+        " page's facts read them, so a bare `ledger/notes.md` still names a page Ledger; a claim"
+        " that holds a mark of the index or a null character names none (the pages this page"
+        " mentions are not listed)."
     ) in said
     for line in (
         "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"
@@ -744,8 +745,10 @@ def test_the_contract_states_the_bounds_of_a_read_as_the_store_has_them():
         " the 512 claims and the 750,000 bytes of passages read, the related pages past"
         " `limit`. The rows of the index a read is handed are bounded whatever the workspace"
         " holds: where other projects hold a page's terms in very many claims, the answer can"
-        " be incomplete, and says so; it never says something else. The page's own passages"
-        " are read whole, as `page` reads them."
+        " be incomplete, and says so; each reason it gives is true and counts the pages it would"
+        " count with nothing left out, though an incomplete answer can hold other true reasons"
+        " than a complete one would show first. The page's own passages are read whole, as"
+        " `page` reads them."
     ) in said
     assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 750_000)
     assert relating.ROWS_MAX == 150_000

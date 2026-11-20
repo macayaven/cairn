@@ -437,8 +437,10 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       term or for the title, past the 512 claims and the 750,000 bytes of passages read, the
       related pages past `limit`. The rows of the index a read is handed are bounded whatever
       the workspace holds: where other projects hold a page's terms in very many claims, the
-      answer can be incomplete, and says so; it never says something else. The page's own
-      passages are read whole, as `page` reads them. The store's read runs
+      answer can be incomplete, and says so; each reason it gives is true and counts the pages
+      it would count with nothing left out, though an incomplete answer can hold other true
+      reasons than a complete one would show first. The page's own passages are read whole,
+      as `page` reads them. The store's read runs
       at most 17 statements, whatever the page and the project hold (cairn.store.relating
       says which, and tests/unit/test_relating_cost_unit.py counts them). One read of
       related pages at a time in a server process, for every workspace it serves, over MCP,

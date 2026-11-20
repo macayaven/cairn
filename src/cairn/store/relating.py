@@ -123,12 +123,14 @@ project, and every walk at the ROWS_MAX-th row handed over, the project's and ot
 together, counted as SQLite hands them over (`_Visits`): the term being asked when the
 count reaches ROWS_MAX, and every term after it, the title last, are not looked up. So
 where other projects hold a page's terms in very many claims among the project's rows, an
-answer can be incomplete, and says so (`terms_not_looked_up`); it never says something
-else: each reason it gives has the same count of pages and the same claims as with nothing
-left out. Not counted: a claim among the project's rows that holds every word of a term,
-but not side by side as the term has them, is read by the index for its places and passed
-over inside the index's own work, never handed over, so ROWS_MAX does not bound that work
-(measured beside it). The index is asked where it matched the title (`_marked`) by the
+answer can be incomplete, and says so (`terms_not_looked_up`); each reason it gives is
+true, with the same count of pages and the same claims as with nothing left out, though it
+can hold other true reasons than a complete answer would show first: a term not looked up
+leaves room among the claims read (CLAIMS_MAX, BYTES_MAX) for another term's. Not
+counted: a claim among the project's rows that holds every word of a term, but not side by
+side as the term has them, is read by the index for its places and passed over inside the
+index's own work, never handed over, so ROWS_MAX does not bound that work (measured beside
+it). The index is asked where it matched the title (`_marked`) by the
 match and each claim's own row, a claim of the project already read. The same test counts
 the steps of a read whose project's pages were saved together, and each in turn with
 another project's, at 120, 1,000 and 4,000 pages, beside 0, 8,000 and 64,000 claims of

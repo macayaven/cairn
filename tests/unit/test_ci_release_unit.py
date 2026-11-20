@@ -802,10 +802,10 @@ def test_the_readme_s_two_limits_are_the_numbers_the_workflow_and_the_script_use
     assert (
         "The build's archive and the release's files are kept as artifacts of the run for five"
         " days: re-running only the failed jobs of a run works within them; after them,"
-        " `publish` still finishes when the registry already holds the digest, and anything"
-        " that needs an artifact fails, so on `main` the next push publishes a new build, and a"
-        " tag's run is re-run whole." in ci
+        " `publish` still finishes when the registry already holds the digest, and a job re-run"
+        " alone that needs an artifact fails" in ci
     )
+    # (What a tag's run recovers after them: test_ci_retry_limits_unit.)
     kept = {
         s["with"]["name"]: s["with"]["retention-days"]
         for job in JOBS.values()

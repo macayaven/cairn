@@ -1214,7 +1214,10 @@ jobs:
   # once, and on main so is sha-<commit>: when the registry has it already, the same digest is
   # carried on and another digest stops the job, so a re-run never moves it. The rest of its
   # tags (main) are added to the same digest. A tag's digest is main's, in the registry
-  # already, so a tag run copies no archive. `latest` and X.Y are job `aliases`'s, after the release.
+  # already, so a tag's run tags it there and copies no archive, unless the registry does not
+  # give the digest when asked (it is gone, or the request failed): then the archive is copied
+  # on a tag too, by the same digest, and on a tag the archive is main's image as image_build
+  # read it. `latest` and X.Y are job `aliases`'s, after the release.
   publish:
     name: publish to GHCR
     needs:
@@ -1281,7 +1284,9 @@ jobs:
       # registry has it, the same digest carries on and another stops the job; if the registry
       # has the digest itself (main's image, on a tag; or a first attempt's push), the names
       # are tags of it and the archive is not needed, so a retry works after the artifact has
-      # expired. Only a digest the registry does not hold is copied from image_build's archive.
+      # expired. Only a digest the registry does not give when asked (it lacks it, or the
+      # request failed: the step does not tell the two apart) is copied from image_build's
+      # archive, on main and on a tag alike.
       - name: Look for this build in the registry
         id: decide
         env:

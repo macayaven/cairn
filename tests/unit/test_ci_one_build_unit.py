@@ -17,7 +17,16 @@ from pathlib import Path
 
 import pytest
 from test_ci_promote_unit import RECEIVE, Runner, digest, step
-from test_ci_workflow_unit import JOBS, MAIN_PUSH, TAG, evaluate, expression, jobs_that_run, needs
+from test_ci_workflow_unit import (
+    JOBS,
+    MAIN_PUSH,
+    TAG,
+    evaluate,
+    expression,
+    job_comment,
+    jobs_that_run,
+    needs,
+)
 from test_oci_archive_unit import as_oras_writes
 from test_oci_archive_unit import build as oci_build
 
@@ -621,6 +630,32 @@ def test_a_tag_run_re_run_whole_promotes_the_same_digest_again_and_finishes(tmp_
         assert not fetched
     assert "is this build already" in decided.stdout
     assert runner.tags() == {"sha-ccccccc": main, "1.2.3": main}
+
+
+def test_a_tag_whose_digest_the_registry_does_not_give_copies_the_archive_by_that_digest(
+    tmp_path,
+):
+    """The third report: `publish` asks the registry for the digest and takes any failure, an
+    error as much as "not there", for "copy the archive", on a tag as on main (the step tells
+    neither the failures nor the refs apart). On a tag the archive is main's image, read by
+    that digest in image_build, so what is copied is the same digest and the version names it."""
+    decide = step("publish", DECIDE)["run"]
+    lookup = 'if [ "$copy" = true ] && ! oras manifest fetch "$image@$DIGEST" > /dev/null; then'
+    assert lookup in decide and decide.count("GITHUB_REF_TYPE") == 1  # the `first` name only
+    runner = Runner(tmp_path)  # a registry that does not give the digest
+    built = digest(runner.built)
+    decided, pushed, fetched = promote(runner, "v1.2.3", ["1.2.3"], built)
+    assert decided.returncode == 0 and pushed.returncode == 0, pushed.stdout + pushed.stderr
+    assert fetched
+    assert f"cp --from-oci-layout layout@{built} ghcr.io/owner/repo:1.2.3" in runner.oras_calls()
+    assert runner.tags() == {"1.2.3": built}
+    comment = " ".join(job_comment("publish").split())
+    assert (
+        "A tag's digest is main's, in the registry already, so a tag's run tags it there and"
+        " copies no archive, unless the registry does not give the digest when asked (it is"
+        " gone, or the request failed): then the archive is copied on a tag too, by the same"
+        " digest, and on a tag the archive is main's image as image_build read it." in comment
+    )
 
 
 def test_with_publishing_off_a_tag_still_reads_main_s_image_and_so_stops():

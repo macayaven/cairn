@@ -719,14 +719,23 @@ def as_read(note: str) -> tuple[str, list[int], list[tuple[str, str]]]:
 
 def test_connect_a_line_that_would_read_as_a_heading_gets_a_backslash():
     """connect.md: "The note keeps that one heading: where the message has a line that would
-    read as another, a backslash is written before the `#` that starts it, or before the first
-    `=` or `-` of the line under it that makes it one, and the line reads as text.\""""
+    read as another, in the note or in a passage of it shown alone, a backslash is written
+    before the `#` that starts it, or before the first `=` or `-` of the line under it that
+    makes it one, and the line reads as text.\""""
     says(
         *CONNECT,
         "The note keeps that one heading: where the message has a line that would read as"
-        " another, a backslash is written before the `#` that starts it, or before the first `=`"
-        " or `-` of the line under it that makes it one, and the line reads as text.",
+        " another, in the note or in a passage of it shown alone, a backslash is written before"
+        " the `#` that starts it, or before the first `=` or `-` of the line under it that makes"
+        " it one, and the line reads as text.",
     )
+    # In a passage shown alone: the dashes are a rule to the note, which reads the line above
+    # them into the quotation, and underline that line where its passage stands alone.
+    note = a_filed_note("&gt; Row 4.\nRow 5.\n---")
+    assert as_read(note) == ("> Row 4.\nRow 5.\n\\---", [0], [])
+    alone = [span.text for span in chunk("", note.replace("\\---", "---"))][2]
+    assert alone == "Row 5.\n---"
+    assert MarkdownIt("commonmark", {"html": False}).parse(alone)[0].type == "heading_open"
     for text, lines in (
         ("## Ada Park\nRow 4.", "\\## Ada Park\nRow 4."),
         ("Ada Park\n===\nRow 4.", "Ada Park\n\\===\nRow 4."),
@@ -781,11 +790,11 @@ def test_connect_a_line_read_as_code_holds_what_slack_displayed():
         [("fence", shown + "\n")],
     )
     assert as_read(a_filed_note(f"Settings:\n    {sent}")) == (f"Settings:\n    {prose}", [0], [])
-    # Code to the note alone: its block's closing fence is indented four, which ends the block
-    # for the passages and not for the note. Its passage is a paragraph, so it stays prose.
-    note = a_filed_note(f"Settings:\n ```\nrows\n    ```\n{sent}")
+    # Code to the note alone: the closing line of its fence of tildes is indented four, which
+    # ends the block for the passages and not for the note. Its passage is a paragraph: prose.
+    note = a_filed_note(f"Settings:\n ~~~\nrows\n    ~~~\n{sent}")
     held, headings, ((kind, code),) = as_read(note)
-    assert (held, headings, kind) == (f"Settings:\n ```\nrows\n    ```\n{prose}", [0], "fence")
+    assert (held, headings, kind) == (f"Settings:\n ~~~\nrows\n    ~~~\n{prose}", [0], "fence")
     assert prose in code
     assert [span.kind for span in chunk("", note)][1:4] == ["paragraph", "code", "paragraph"]
 
@@ -793,15 +802,15 @@ def test_connect_a_line_read_as_code_holds_what_slack_displayed():
 def test_connect_the_two_limits_of_what_a_filed_message_holds():
     """connect.md: "Only a message with eight or more lines that read as headings or could
     underline one can get a backslash it does not need, on a rule below its first heading for
-    instance; and only a message in which a line would end a code fence as Slack displayed it,
-    and not as prose, keeps the marks of prose where both read code.\" That no other message
-    does either is test_slack_needed_backslashes_unit's, on generated messages."""
+    instance; and only a message in which a line would open or end a code fence as Slack
+    displayed it, and not as prose, keeps the marks of prose where both read code.\" That no
+    other message does either is test_slack_needed_backslashes_unit's, on generated messages."""
     says(
         *CONNECT,
         "Only a message with eight or more lines that read as headings or could underline one"
         " can get a backslash it does not need, on a rule below its first heading for instance;"
-        " and only a message in which a line would end a code fence as Slack displayed it, and"
-        " not as prose, keeps the marks of prose where both read code.",
+        " and only a message in which a line would open or end a code fence as Slack displayed"
+        " it, and not as prose, keeps the marks of prose where both read code.",
     )
     seven = "".join(f"# Shelf {n}\n" for n in range(1, 8))
     below = "\n---\n\n    items[0]\n\nRow 4."
@@ -823,6 +832,86 @@ def test_connect_the_two_limits_of_what_a_filed_message_holds():
         [0],
         [("fence", "items[0]\n")],
     )
+    # Three backticks that Slack paired with no others, in a list item's fence of tildes that
+    # the note reads on: as displayed they would open a fence where the passages are cut.
+    opens = "- ~~~\n  rows\n~~~\n```\nitems[0]"
+    assert as_read(a_filed_note(opens))[0] == "- ~~~\n  rows\n~~~\n\\`\\`\\`\nitems\\[0\\]"
+
+
+def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
+    """connect.md: "A code block of Slack's own is a fence on lines of its own in the note,
+    whatever stood beside it on its lines in the message, and holds what Slack displayed, the
+    white space that ends a line included; that white space is kept at the end of the message
+    too, where the last line is code.\""""
+    says(
+        *CONNECT,
+        "A code block of Slack's own is a fence on lines of its own in the note, whatever stood"
+        " beside it on its lines in the message, and holds what Slack displayed, the white space"
+        " that ends a line included; that white space is kept at the end of the message too,"
+        " where the last line is code.",
+    )
+    row = "[manual](https://fable.test/docs) a &lt; b\t"
+    shown = "[manual](https://fable.test/docs) a < b\t"
+    for sent in (f"Rows: ```{row}``` and so on", f"Rows:\n   ```\n{row}\n   ```\nand so on"):
+        note = a_filed_note(sent)
+        assert as_read(note) == (
+            f"Rows:\n```\n{shown}\n```\nand so on",
+            [0],
+            [("fence", shown + "\n")],
+        )
+        assert [(span.kind, span.text) for span in chunk("", note)][2] == (
+            "code",
+            f"```\n{shown}\n```",
+        )
+    assert as_read(a_filed_note("Rows:\n\n    5\tplum\t \n"))[0] == "Rows:\n\n    5\tplum\t "
+    assert as_read(a_filed_note("Rows:\n5\tplum\t \n"))[0] == "Rows:\n5\tplum"
+
+
+def test_connect_a_block_that_cannot_be_one_fence_is_plain_characters():
+    """connect.md: "A block the note could not hold as one fence, because a fence of tildes
+    stands about it and a line of tildes in it, is written as plain characters, backticks and
+    all.\""""
+    says(
+        *CONNECT,
+        "A block the note could not hold as one fence, because a fence of tildes stands about it"
+        " and a line of tildes in it, is written as plain characters, backticks and all.",
+    )
+    manual = "[manual](https://fable.test/docs)"
+    plain = "\\[manual\\]\\(https://fable.test/docs\\)"
+    held, headings, _ = as_read(a_filed_note(f"~~~\n```\n~~~\n{manual}\n```\n~~~\nRow 4."))
+    assert (held, headings) == (f"~~~\n\\`\\`\\`\n\\~\\~\\~\n{plain}\n\\`\\`\\`\n~~~\nRow 4.", [0])
+    # Without the fence of tildes about it, it is one fence, its line of tildes in it.
+    assert as_read(a_filed_note(f"```\n~~~\n{manual}\n```\nRow 4.")) == (
+        f"```\n~~~\n{manual}\n```\nRow 4.",
+        [0],
+        [("fence", f"~~~\n{manual}\n")],
+    )
+
+
+def test_connect_code_within_a_line_stays_between_its_backticks():
+    """connect.md: "Code within a line stays between its backticks, and a backtick that Slack
+    paired with no other gets a backslash; in a message that could hold a table, code within a
+    line that holds a `|` is written as plain characters, backticks and all, since a table's
+    row is cut at its bars before its code is read.\""""
+    says(
+        *CONNECT,
+        "Code within a line stays between its backticks, and a backtick that Slack paired with"
+        " no other gets a backslash; in a message that could hold a table, code within a line"
+        " that holds a `|` is written as plain characters, backticks and all, since a table's"
+        " row is cut at its bars before its code is read.",
+    )
+    code = "`[manual](https://fable.test/docs)|Row 4`"
+    assert as_read(a_filed_note(f"Row 4 `\nRow 5 {code}")) == (
+        f"Row 4 \\`\nRow 5 {code}",
+        [0],
+        [],
+    )
+    plain = "\\`\\[manual\\]\\(https://fable.test/docs\\)|Row 4\\`"
+    held, headings, _ = as_read(a_filed_note(f"| Row |\n|---|\n| {code} |"))
+    assert (held, headings) == (f"| Row |\n|---|\n| {plain} |", [0])
+    parsed = MarkdownIt("commonmark", {"html": False}).enable("table").parse(held)
+    assert [token.type for token in parsed].count("table_open") == 1
+    assert not [t for block in parsed for t in block.children or [] if t.type == "link_open"]
 
 
 def test_connect_every_answer_is_for_you_alone():

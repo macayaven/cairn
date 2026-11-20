@@ -10,7 +10,24 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+# A region does not offer every instance type in each of its zones.
+data "aws_ec2_instance_type_offerings" "app" {
+  location_type = "availability-zone"
+
+  filter {
+    name   = "instance-type"
+    values = [local.instance_type]
+  }
+}
+
 locals {
+  instance_type = "t3.small"
+  # The region's own zones are its name and one letter. The listing also holds any Local
+  # Zone the account has opted in to, and those names sort first.
+  zones = sort([
+    for zone in data.aws_ec2_instance_type_offerings.app.locations : zone
+    if can(regex("^${var.region}[a-z]$", zone))
+  ])
   cloud_init = templatefile("${path.module}/../cloud-init.yaml.tftpl", {
     quick_dir        = "${path.module}/.."
     serve_extra_args = var.serve_extra_args
@@ -38,6 +55,18 @@ resource "aws_vpc" "app" {
 resource "aws_subnet" "app" {
   vpc_id     = aws_vpc.app.id
   cidr_block = aws_vpc.app.cidr_block
+  # EC2 would select a zone for a subnet that names none, whether or not it offers the type.
+  availability_zone = local.zones[0]
+
+  lifecycle {
+    # Moving the subnet replaces the VM. The zone is chosen once, when the subnet is made.
+    ignore_changes = [availability_zone]
+
+    precondition {
+      condition     = length(local.zones) > 0
+      error_message = "No Availability Zone of this region offers the VM's instance type. Choose another region."
+    }
+  }
 }
 
 resource "aws_internet_gateway" "app" {
@@ -82,7 +111,46 @@ resource "aws_vpc_security_group_egress_rule" "app" {
 
 resource "aws_s3_bucket" "replica" {
   bucket_prefix = "cairn-quick-"
-  force_destroy = false
+  # False unless a person says the backups may go: a destroy then stops at a bucket that
+  # holds anything. True, once applied, lets it empty the bucket, every version included.
+  force_destroy = var.delete_backups
+}
+
+# A delete or an overwrite, Litestream's own or anyone's, leaves the earlier bytes as a
+# noncurrent version. The VM's role can delete an object and cannot delete a version.
+resource "aws_s3_bucket_versioning" "replica" {
+  bucket = aws_s3_bucket.replica.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Seven days after it was deleted or overwritten a version goes, then the delete marker it
+# left alone. Nothing here gives a current object a lifetime.
+resource "aws_s3_bucket_lifecycle_configuration" "replica" {
+  bucket = aws_s3_bucket.replica.id
+
+  rule {
+    id     = "keep-deleted-seven-days"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.replica]
 }
 
 resource "aws_s3_bucket_public_access_block" "replica" {
@@ -141,6 +209,14 @@ resource "aws_iam_role_policy" "app" {
         Resource = "${aws_s3_bucket.replica.arn}/cairn/*"
       },
       {
+        # A cold copy is added under a prefix of its own, where the VM can neither read
+        # nor delete: the guide's "AWS cold copy".
+        Sid      = "ColdCopies"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${aws_s3_bucket.replica.arn}/cold/*"
+      },
+      {
         Sid      = "Settings"
         Effect   = "Allow"
         Action   = ["secretsmanager:ListSecretVersionIds", "secretsmanager:GetSecretValue"]
@@ -162,7 +238,7 @@ resource "aws_iam_instance_profile" "app" {
 
 resource "aws_instance" "app" {
   ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t3.small"
+  instance_type          = local.instance_type
   subnet_id              = aws_subnet.app.id
   vpc_security_group_ids = [aws_security_group.app.id]
   iam_instance_profile   = aws_iam_instance_profile.app.name
@@ -204,6 +280,7 @@ resource "aws_instance" "app" {
     aws_vpc_security_group_egress_rule.app,
     aws_s3_bucket_public_access_block.replica,
     aws_s3_bucket_server_side_encryption_configuration.replica,
+    aws_s3_bucket_versioning.replica,
     aws_iam_role_policy.app,
     aws_iam_role_policy_attachment.ssm,
   ]

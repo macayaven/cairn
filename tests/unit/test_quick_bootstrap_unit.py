@@ -20,7 +20,15 @@ from cairn.web.cli import _parser, _sign_in
 BOOTSTRAP = QUICK / "bootstrap.sh"
 SETTINGS = b"CAIRN_TEST_SETTING='synthetic $value with spaces'\nOTHER=line\n\n"
 TOKEN = "synthetic-metadata-token"
-COMPOSE_UP = ["docker", "compose", "up", "-d", "--pull", "missing"]
+COMPOSE_UP = ["docker", "compose", "--progress", "quiet", "up", "-d", "--pull", "missing"]
+AWS_DENIED = (
+    "An error occurred (AccessDeniedException) when calling the {} operation: User: "
+    "arn:aws:sts::000000000000:assumed-role/cairn-quick-example/i-00000000000000000 is not "
+    "authorized to perform: secretsmanager:{} on resource: cairn-quick-example"
+)
+CURL_DENIED = "curl: (22) The requested URL returned error: 403"
+RESTORE_FAILED = 'service "litestream-restore" didn\'t complete successfully: exit 1'
+LEFT_OUT = "(a line that repeats part of a setting was left out)"
 RULE = ["!", "-i", "br-cairn-backup", "-d", "169.254.169.254", "-p"]
 STANDIN = r"""
 import json
@@ -44,6 +52,8 @@ def pull_images():
 
 
 if cmd == "docker":
+    if args[:3] == ["compose", "--progress", "quiet"]:
+        args = ["compose", *args[3:]]
     if mode == "fail-first-index":
         assert (state / "docker-installed").is_file()
     if args == ["version", "--format", "{{.Server.Version}}"]:
@@ -59,8 +69,17 @@ if cmd == "docker":
         elif args[3:] not in ([], ["--pull", "missing"]):
             sys.exit(2)
         if mode.startswith("compose-failure") or not (state / "images-cached").exists():
+            # What Compose 5.5 was seen to print, and the worst it could: the file itself.
+            print('time="2026-11-20T00:00:00Z" level=warning msg="The \\"value\\" variable is not'
+                  ' set. Defaulting to a blank string."', file=sys.stderr)
+            print(f"failed to read {os.getcwd()}/cairn.env: line 1: unterminated quoted value"
+                  " 'synthetic $value with spaces", file=sys.stderr)
             print(os.environ["STANDIN_SECRET"], file=sys.stderr)
+            print(os.environ["STANDIN_COMPOSE_ERROR"], file=sys.stderr)
             sys.exit(1)
+        if mode == "compose-warns":
+            print('time="2026-11-20T00:00:00Z" level=warning msg="The \\"value\\" variable is not'
+                  ' set. Defaulting to a blank string."', file=sys.stderr)
         (state / "stack-started").touch()
     elif args[:3] == ["compose", "ps", "--all"]:
         print(os.environ["STANDIN_SECRET"], file=sys.stderr)
@@ -150,9 +169,17 @@ elif cmd in ("aws", "curl"):
             kind = "read"
         else:
             sys.exit(2)
-    if mode == "fail-" + kind:
-        print(os.environ["STANDIN_SECRET"], file=sys.stderr)
-        sys.exit(1)
+    if mode in ("fail-" + kind, "fail-" + kind + "-echo"):
+        if kind == "read" and cmd == "aws":  # the value was sent before the tool failed
+            print(json.dumps({"ARN": arn, "SecretString": os.environ["STANDIN_SECRET"]}))
+        elif kind == "read":
+            print(json.dumps({"payload": {"data": os.environ["STANDIN_PAYLOAD"],
+                                          "dataCrc32c": os.environ["STANDIN_CRC32C"]}}))
+        if mode.endswith("-echo"):  # and a tool that repeats what it read
+            print("received: synthetic $value with spaces", file=sys.stderr)
+        operation = "ListSecretVersionIds" if kind == "list" else "GetSecretValue"
+        print(os.environ["STANDIN_TOOL_ERROR"].format(operation, operation), file=sys.stderr)
+        sys.exit(254 if cmd == "aws" else 22)
     if kind == "list" and mode == "empty":
         print("{}")
     elif cmd == "aws" and kind == "list":
@@ -232,6 +259,8 @@ def vm_environment(vm, cloud, mode, settings=SETTINGS, config=None):
         "STANDIN_PAYLOAD": base64.b64encode(settings).decode(),
         "STANDIN_CRC32C": crc32c(settings),
         "STANDIN_TOKEN": TOKEN,
+        "STANDIN_TOOL_ERROR": AWS_DENIED if cloud == "aws" else CURL_DENIED,
+        "STANDIN_COMPOSE_ERROR": RESTORE_FAILED,
         "CAIRN_CLOUD": cloud,
         "CAIRN_DOMAIN": "cairn.example.net",
         "ACME_EMAIL": "ops@example.net",
@@ -453,6 +482,9 @@ def test_gcp_rejects_a_wrong_checksum_before_publishing(vm, data):
     existing.write_text("EXISTING=synthetic\n")
     done = run(vm, "gcp", settings=data, config={"STANDIN_CRC32C": "1"})
     assert done.returncode != 0
+    assert "cairn-quick: settings read: the data of the secret does not match its checksum" in (
+        done.stderr.splitlines()
+    )
     assert "could not read the cairn settings secret" in done.stderr
     assert data.decode() not in done.stdout + done.stderr
     assert existing.read_text() == "EXISTING=synthetic\n"
@@ -500,12 +532,24 @@ def test_cached_restart_does_not_contact_the_registry(vm):
 
 
 @pytest.mark.parametrize("status_available", [True, False])
-def test_compose_failure_reports_only_safe_status(vm, status_available):
+def test_compose_failure_says_why_in_composes_words_and_repeats_no_setting(vm, status_available):
+    """A failed `up` leaves Compose's own error in the unit's journal, one line each, and
+    the unit fails. What Compose can say about the settings file is said without the
+    settings: its syntax error keeps the line number and loses what it quotes, its warning
+    that names what follows a $ in a value is put in other words, and a line that repeats
+    a value is left out."""
     mode = "compose-failure" if status_available else "compose-failure-no-status"
     done = run(vm, mode=mode)
     assert done.returncode != 0
-    assert "Docker Compose up failed" in done.stderr
-    assert "$value" not in done.stdout + done.stderr
+    assert done.stdout == ""
+    said = done.stderr.splitlines()
+    assert f"cairn-quick: compose: {RESTORE_FAILED}" in said
+    assert "cairn-quick: compose: the settings file, line 1: unterminated quoted value" in said
+    assert any("in single quotes" in line for line in said)
+    assert said.count(f"cairn-quick: compose: {LEFT_OUT}") == 2  # the file's two lines
+    assert "Docker Compose up failed" in said[-1]
+    for part in ("$value", "synthetic", "with spaces", "OTHER=line", '"value"'):
+        assert part not in done.stderr, part
     assert ("litestream-restore exited (exit=1)" in done.stderr) is status_available
     assert calls(vm)[-1][:4] == ["docker", "compose", "ps", "--all"]
 
@@ -529,11 +573,82 @@ def test_a_failed_secret_read_leaves_existing_settings_and_never_calls_compose(v
     existing.write_text("EXISTING=synthetic\n")
     done = run(vm, cloud, mode)
     assert done.returncode != 0
-    assert "could not read the cairn settings secret" in done.stderr
-    assert "$value" not in done.stdout + done.stderr
+    assert "could not read the cairn settings secret" in done.stderr.splitlines()[-1]
+    # The tool's own error, on a line of its own, in the unit's journal.
+    operation = "ListSecretVersionIds" if mode == "fail-list" else "GetSecretValue"
+    denied = AWS_DENIED.format(operation, operation) if cloud == "aws" else CURL_DENIED
+    assert f"cairn-quick: settings read: {denied}" in done.stderr.splitlines()
+    assert "Traceback" not in done.stderr and "  File" not in done.stderr
+    # A failing read sent the value before it failed (`fail-read`): none of it is printed.
+    for part in ("$value", "synthetic", "with spaces", "OTHER", "SecretString", "payload"):
+        assert part not in done.stdout + done.stderr, part
     assert TOKEN not in done.stdout + done.stderr
     assert list((vm / "deploy").iterdir()) == [existing]
     assert existing.read_text() == "EXISTING=synthetic\n"
+    assert not any(call[:2] == ["docker", "compose"] for call in calls(vm))
+
+
+def test_a_start_that_worked_still_says_that_compose_changed_a_setting(vm):
+    """Compose expands a $ in a settings value that is not between single quotes, to nothing
+    when no such variable is set, and says so in a warning only: the stack starts with
+    another value than the secret holds. The boot passes the warning on, in other words,
+    since Compose's own name what follows the $ in the value."""
+    done = run(vm, mode="compose-warns")
+    assert done.returncode == 0, done.stderr
+    assert (vm / "stack-started").exists()
+    (said,) = done.stderr.splitlines()
+    assert said.startswith("cairn-quick: compose: a settings value holds a $")
+    assert "single quotes" in said
+    assert '"value"' not in done.stderr and "$value" not in done.stderr
+
+
+def test_compose_takes_a_setting_as_written_only_between_single_quotes(vm):
+    """What the guide tells a person about writing `cairn.env`, held to Compose itself:
+    the settings arrive in cairn's environment as the secret wrote them only between
+    single quotes."""
+    written = {
+        "PLAIN": "two words, a=b and c#d",
+        "SINGLE": "'pa$word9 #x \"y\"'",
+        "DOLLAR": "pa$word9",
+        "COMMENT": "abc #def",
+        "DOUBLE": '"quoted"',
+    }
+    settings = "".join(f"{name}={value}\n" for name, value in written.items()).encode()
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    # `config` writes a literal $ as $$, so that its output can be read again.
+    got = {
+        name: value.replace("$$", "$") for name, value in compose_service(vm)["environment"].items()
+    }
+    assert got["PLAIN"] == "two words, a=b and c#d"
+    assert got["SINGLE"] == 'pa$word9 #x "y"'
+    assert got["DOLLAR"] == "pa"  # expanded: no variable word9 is set
+    assert got["COMMENT"] == "abc"  # cut at the # after a space
+    assert got["DOUBLE"] == "quoted"  # unquoted
+    guide = " ".join((QUICK / "README.md").read_text().split())
+    sentence = (
+        "Compose reads the file: it takes a value as written only between single quotes."
+        " Outside them a `$` starts a variable, a `#` after a space starts a comment, and"
+        " quotes around a value are removed."
+    )
+    assert guide.count(sentence) == 2  # under the settings of each cloud, in the same words
+
+
+def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):
+    """The value travels on standard output into a staged file and nowhere else. Should a
+    tool also repeat it among its errors, that line is left out and the others stay."""
+    done = run(vm, "gcp", "fail-read-echo")
+    assert done.returncode != 0
+    said = done.stderr.splitlines()
+    assert f"cairn-quick: settings read: {CURL_DENIED}" in said
+    assert f"cairn-quick: settings read: {LEFT_OUT}" in said
+    for part in ("$value", "synthetic", "with spaces"):
+        assert part not in done.stdout + done.stderr, part
+    assert not (vm / "deploy" / "cairn.env").exists()
     assert not any(call[:2] == ["docker", "compose"] for call in calls(vm))
 
 

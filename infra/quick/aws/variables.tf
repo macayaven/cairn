@@ -54,3 +54,10 @@ variable "serve_extra_args" {
     error_message = "Use nonempty serve arguments containing only letters, digits, spaces or -_.:/@=,+%?&."
   }
 }
+
+variable "delete_backups" {
+  description = "Let a destroy empty and delete the backup bucket, every version in it. It takes effect at the next apply."
+  type        = bool
+  default     = false
+  nullable    = false
+}

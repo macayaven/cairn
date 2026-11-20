@@ -5,6 +5,9 @@ mock_provider "aws" {
   mock_data "aws_partition" {
     defaults = { partition = "aws" }
   }
+  mock_data "aws_ec2_instance_type_offerings" {
+    defaults = { locations = ["us-east-1-bos-1a", "us-east-1b", "us-east-1a"] }
+  }
   mock_resource "aws_s3_bucket" {
     defaults = {
       bucket = "cairn-quick-example"
@@ -44,6 +47,11 @@ run "three_inputs_with_safe_defaults" {
   }
 
   assert {
+    condition     = aws_subnet.app.availability_zone == "us-east-1a"
+    error_message = "The subnet goes in the first of the region's own zones that offers the instance type."
+  }
+
+  assert {
     condition = (
       toset([for rule in aws_vpc_security_group_ingress_rule.web : rule.from_port]) == toset([80, 443]) &&
       alltrue([for rule in aws_vpc_security_group_ingress_rule.web :
@@ -77,11 +85,47 @@ run "three_inputs_with_safe_defaults" {
   }
 
   assert {
+    condition = (
+      one(aws_s3_bucket_versioning.replica.versioning_configuration).status == "Enabled" &&
+      length(aws_s3_bucket_lifecycle_configuration.replica.rule) == 1 &&
+      aws_s3_bucket_lifecycle_configuration.replica.rule[0].status == "Enabled" &&
+      aws_s3_bucket_lifecycle_configuration.replica.rule[0].noncurrent_version_expiration[0].noncurrent_days == 7 &&
+      aws_s3_bucket_lifecycle_configuration.replica.rule[0].expiration[0].expired_object_delete_marker &&
+      aws_s3_bucket_lifecycle_configuration.replica.rule[0].abort_incomplete_multipart_upload[0].days_after_initiation == 7
+    )
+    error_message = "The bucket keeps what is deleted or overwritten for seven days, then removes it."
+  }
+
+  assert {
     condition = alltrue([for filename in fileset(path.module, "*.tf") :
       length(regexall("(resource|data|ephemeral)\\s+\"(aws_iam_access_key|aws_secretsmanager_secret_version|aws_ssm_parameter)\"", file("${path.module}/${filename}"))) == 0
     ])
     error_message = "Only the secret's metadata belongs in OpenTofu. Do not create or look up key or secret values."
   }
+}
+
+run "a_destroy_empties_the_bucket_only_when_asked" {
+  command = plan
+
+  variables {
+    delete_backups = true
+  }
+
+  assert {
+    condition     = aws_s3_bucket.replica.force_destroy
+    error_message = "With delete_backups, an apply records that a destroy may empty the bucket."
+  }
+}
+
+run "a_region_where_no_zone_offers_the_type_is_refused" {
+  command = plan
+
+  override_data {
+    target = data.aws_ec2_instance_type_offerings.app
+    values = { locations = ["us-east-1-bos-1a"] }
+  }
+
+  expect_failures = [aws_subnet.app]
 }
 
 run "identity_is_scoped_to_the_replica_and_settings" {
@@ -90,23 +134,25 @@ run "identity_is_scoped_to_the_replica_and_settings" {
   assert {
     condition = (
       toset([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Sid]) ==
-      toset(["ReplicaBucket", "ReplicaObjects", "Settings"]) &&
+      toset(["ReplicaBucket", "ReplicaObjects", "ColdCopies", "Settings"]) &&
       alltrue([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Effect == "Allow"]) &&
       one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Resource if statement.Sid == "ReplicaBucket"]) == aws_s3_bucket.replica.arn &&
       one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Resource if statement.Sid == "ReplicaObjects"]) == "${aws_s3_bucket.replica.arn}/cairn/*" &&
+      one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Resource if statement.Sid == "ColdCopies"]) == "${aws_s3_bucket.replica.arn}/cold/*" &&
       one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Resource if statement.Sid == "Settings"]) == aws_secretsmanager_secret.settings.arn
     )
-    error_message = "The workload policy must be scoped to the one replica bucket, its cairn prefix and the one secret."
+    error_message = "The workload policy must be scoped to the one replica bucket, its cairn and cold prefixes and the one secret."
   }
 
   assert {
     condition = (
       toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ReplicaBucket"])) == toset(["s3:GetBucketLocation", "s3:ListBucket"]) &&
       toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ReplicaObjects"])) == toset(["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]) &&
+      toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ColdCopies"])) == toset(["s3:PutObject"]) &&
       toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "Settings"])) == toset(["secretsmanager:ListSecretVersionIds", "secretsmanager:GetSecretValue"]) &&
       aws_iam_role_policy_attachment.ssm.policy_arn == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
     )
-    error_message = "The VM gets the Litestream, settings-read and SSM permissions it needs."
+    error_message = "The VM gets the Litestream, cold-copy, settings-read and SSM permissions it needs."
   }
 
   assert {
@@ -128,6 +174,20 @@ run "identity_is_scoped_to_the_replica_and_settings" {
       output.public_ipv4 == aws_eip.app.public_ip
     )
     error_message = "The VM boots with a public address, and the DNS output is its reserved address."
+  }
+}
+
+run "a_new_zone_listing_keeps_the_existing_subnet" {
+  command = plan
+
+  override_data {
+    target = data.aws_ec2_instance_type_offerings.app
+    values = { locations = ["us-east-1c"] }
+  }
+
+  assert {
+    condition     = aws_subnet.app.availability_zone == "us-east-1a"
+    error_message = "A change in where the instance type is offered does not move the subnet, and the VM with it."
   }
 }
 

@@ -118,9 +118,43 @@ for byte in data:
     for _ in range(8):
         crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
 if int(payload["dataCrc32c"]) != (crc ^ 0xFFFFFFFF):
-    sys.exit(1)
+    sys.exit("the data of the secret does not match its checksum")
 sys.stdout.buffer.write(data)
 '
+}
+
+# The tools' own error lines, for the journal, and never a setting's value: a line that
+# repeats a settings line, or 6 characters of a value (12 in a row of a longer one), is
+# left out. Python's traceback frames are dropped; the error's own line stays.
+say_errors() {
+  python3 - "$@" >&2 <<'PY'
+import re, sys
+label, errors, *settings = sys.argv[1:]
+values = set()
+for name in settings:
+    try:
+        lines = open(name, encoding="utf-8", errors="replace").read().splitlines()
+    except OSError:
+        continue
+    for line in lines:
+        values.add(line.strip())
+        text = line.partition("=")[2].strip().strip("'\"")
+        if len(text) >= 6:
+            values.update(text[i:i + 12] for i in range(max(1, len(text) - 11)))
+values.discard("")
+for line in open(errors, encoding="utf-8", errors="replace").read().splitlines()[-20:]:
+    if line.startswith(("Traceback", " ")):
+        continue
+    if "variable is not set" in line:  # Compose names what follows a $ in a value
+        line = "a settings value holds a $ that Compose took for a variable: put the value in single quotes"
+    elif "cairn.env" in line:  # its syntax error quotes the file
+        found = re.search(r"line \d+: [^\"']*", line)
+        line = "the settings file, " + (found[0].strip() if found else "unreadable")
+    if any(value in line for value in values):
+        line = "(a line that repeats part of a setting was left out)"
+    if line.strip():
+        print(f"cairn-quick: {label}: {line}")
+PY
 }
 
 publish_env() {
@@ -147,8 +181,9 @@ start_stack() (
 
   staging=$(mktemp -d "$PWD/.bootstrap.XXXXXX")
   trap 'rm -rf -- "$staging"' EXIT
-  # Suppress CLI errors that could include part of a response.
-  if ! "$read_settings" >"$staging/cairn.env" 2>/dev/null; then
+  # The value goes to the staged file and nowhere else. What the tool says goes to the journal.
+  if ! "$read_settings" >"$staging/cairn.env" 2>"$staging/errors"; then
+    say_errors 'settings read' "$staging/errors" "$staging/cairn.env" cairn.env || true
     die "could not read the cairn settings secret on $CAIRN_CLOUD. Check the VM identity and the selected version."
   fi
   cat >"$staging/.env" <<EOF
@@ -169,13 +204,15 @@ EOF
     publish_env "$file"
   done
 
-  # Compose can include a malformed env file's contents in an error.
-  if ! docker compose up -d --pull missing >/dev/null 2>&1; then
+  # Without its progress lines, what Compose prints is its warnings and its error.
+  if ! docker compose --progress quiet up -d --pull missing >/dev/null 2>"$staging/errors"; then
+    say_errors compose "$staging/errors" cairn.env || true
     if status=$(docker compose ps --all --format '{{.Service}} {{.State}} (exit={{.ExitCode}})' 2>/dev/null); then
       [ -z "$status" ] || printf '%s\n' "$status" >&2
     fi
     die 'Docker Compose up failed. Check registry access, the image, the settings file syntax and container status.'
   fi
+  say_errors compose "$staging/errors" cairn.env || true  # what a start that worked warned of
 )
 
 first_key() (

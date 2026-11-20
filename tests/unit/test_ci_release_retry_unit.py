@@ -1,24 +1,32 @@
 """A retry of `release` ends well when an earlier attempt of the same run made the release and
-was not recorded as done, or left it a draft (gh release create makes a draft, uploads the
-files, then publishes it, in separate requests: gh's own help for the command).
+was not recorded as done, and stops, deleting nothing, when that attempt left it a draft (gh
+release create makes a draft, uploads the files, then publishes it, in separate requests: gh's
+own help for the command).
 
 The release's text carries a mark, `<!-- cairn-ci-cd run RUN_ID -->`, an HTML comment GitHub
 does not show and its API returns in the release's `body`; a re-run of a job keeps its run's id.
 The step lists every release of the repository, drafts included, and takes the one for its tag
 as this run's only when it carries this run's mark and has this tag's pre-release flag. A
 published one must hold exactly the files this run attested, byte for byte, and is left as it
-is. A draft is listed again just before it is touched, and only if it is still the same draft
-is it deleted, by its id, and the release made again as on a first attempt: nothing is ever
-written to a release that is not a draft of this run's. Anything else stops the job in one
-sentence. gh is a stand-in that keeps the releases as a JSON file, runs the step's own --jq
-expression with jq, and can publish the draft between two listings."""
+is. A draft stops the job in one line that says what a person does: delete it on the releases
+page and re-run the job, which makes the release again, or publish it there, if its files are
+whole, and re-run the job, which then compares them. The third report's must-fix 2: the step
+used to delete its draft by id, and a person who published it between the step's last look
+and that delete lost a public release. So no command of the job deletes a release or a file
+of one, or writes to a release that exists; test_generated_release_retry_unit runs every
+ordering. Anything else stops the job in one sentence. gh is a stand-in that keeps the
+releases as a JSON file, runs the step's own --jq expression with jq, performs a delete it is
+asked for (so one would show), and can publish the draft between two listings."""
 
+import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
 from ci_shell import SYSTEM, run_step
-from test_ci_workflow_unit import JOBS
+from test_ci_release_unit import files_run
+from test_ci_workflow_unit import JOBS, rerun, stops
 
 (CREATE,) = [s for s in JOBS["release"]["steps"] if s.get("name") == "Create the release"]
 RUN_ID = "4242"
@@ -66,12 +74,15 @@ esac
 
 
 def files_of(version: str) -> dict[str, bytes]:
-    return {
+    """What `package` hands on: the two files, the text, and SHA256SUMS over the three, as its
+    step writes it."""
+    made = {
         f"cairn_memory-{version}-py3-none-any.whl": b"a wheel",
         f"cairn_memory-{version}.tar.gz": b"a source archive",
-        "SHA256SUMS": b"the checksums",
         "notes.md": b"the notes\n",
     }
+    sums = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n" for name, data in made.items())
+    return {**made, "SHA256SUMS": sums.encode()}
 
 
 def setup(tmp_path: Path, tag: str, existing, assets: dict | None = None):
@@ -93,26 +104,43 @@ def setup(tmp_path: Path, tag: str, existing, assets: dict | None = None):
     return bin_, there, release
 
 
-def run(tmp_path: Path, tag: str, candidate: str, existing=None, assets=None, **env: str):
-    bin_, there, release = setup(tmp_path, tag, existing, assets)
+def attempt(tmp_path: Path, tag: str, candidate: str, **env: str):
+    """One attempt of the step on what `setup` left and the attempts before it changed; the
+    calls are this attempt's."""
     calls = tmp_path / "calls"
     calls.write_text("")
     done = run_step(
         CREATE["run"],
-        cwd=release,
+        cwd=tmp_path / "release",
         env={
-            "PATH": f"{bin_}:{SYSTEM}",
+            "PATH": f"{tmp_path / 'bin'}:{SYSTEM}",
             "RUNNER_TEMP": str(tmp_path),
             "GITHUB_REF_NAME": tag,
             "GITHUB_RUN_ID": RUN_ID,
             "CANDIDATE": candidate,
             "CALLS": str(calls),
-            "EXISTING": str(there),
+            "EXISTING": str(tmp_path / "existing"),
             "GH_REPO": "owner/repo",
             **env,
         },
     )
     return done, calls.read_text().splitlines()
+
+
+def run(tmp_path: Path, tag: str, candidate: str, existing=None, assets=None, **env: str):
+    setup(tmp_path, tag, existing, assets)
+    return attempt(tmp_path, tag, candidate, **env)
+
+
+def held(tmp_path: Path) -> list[dict]:
+    return json.loads((tmp_path / "existing" / "releases.json").read_text())
+
+
+def by_hand(tmp_path: Path, what: str) -> None:
+    """A person, on the releases page: publishes every draft (GitHub keeps its id) or deletes
+    every release."""
+    after = [{**r, "draft": False} for r in held(tmp_path)] if what == "publish" else []
+    (tmp_path / "existing" / "releases.json").write_text(json.dumps(after))
 
 
 def made(calls: list[str]) -> list[str]:
@@ -169,35 +197,228 @@ def test_this_run_s_published_release_is_recognised_and_left_as_it_is(tmp_path, 
     assert f"gh release download {tag} --dir {tmp_path}/published" in calls
 
 
+DRAFT = (
+    "::error::the GitHub release for {tag} is a draft that an earlier attempt of run "
+    + RUN_ID
+    + " left unfinished, which this job neither deletes nor publishes; look at it on the"
+    " repository's releases page and either delete it there and re-run this job, which makes"
+    " the release again, or, only if it holds exactly [SHA256SUMS"
+    " cairn_memory-1.2.3-py3-none-any.whl cairn_memory-1.2.3.tar.gz] and each cairn_memory file"
+    " has the SHA-256 its SHA256SUMS lists, publish it there and re-run this job, which then"
+    " compares its files with the ones this run attested"
+)
+CUT_OFF = {"cairn_memory-1.2.3.tar.gz": b"a sou"}
+
+
 @pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
 @pytest.mark.parametrize(
     "names",
     [None, ["SHA256SUMS"], [], ["cairn_memory-1.2.3.tar.gz"]],
     ids=["all", "one", "none", "cut-off"],
 )
-def test_this_run_s_draft_is_listed_again_deleted_by_its_id_and_the_release_made_again(
+def test_this_run_s_draft_stops_the_job_which_writes_nothing_and_says_what_a_person_does(
     tmp_path, tag, candidate, names
 ):
     """Whatever files the draft holds, and a file cut off mid-upload, which GitHub may not even
-    serve, is never read: the draft is still this run's, so it goes."""
+    serve, is never read: the job looks once, stops, and leaves the draft as it is."""
     existing = made_earlier(tag, candidate == "true", draft=True, names=names)
-    done, calls = run(tmp_path, tag, candidate, existing, {"cairn_memory-1.2.3.tar.gz": b"a sou"})
-    assert done.returncode == 0, done.stdout + done.stderr
-    assert sum(line.startswith("gh api --paginate") for line in calls) == 2
-    assert writes(calls)[0] == "gh api -X DELETE repos/owner/repo/releases/77"
-    assert len(writes(calls)) == 2 and writes(calls)[1].startswith(f"gh release create {tag}")
-    assert not [line for line in calls if line.startswith("gh release download")]
-    assert f"The draft GitHub release {tag} is this run's" in done.stdout
+    done, calls = run(tmp_path, tag, candidate, existing, CUT_OFF)
+    assert done.returncode == 1
+    assert calls == [line for line in calls if line.startswith("gh api --paginate")]
+    assert len(calls) == 1 and writes(calls) == []
+    assert the_error(done) == DRAFT.format(tag=tag)
+    assert held(tmp_path) == [existing]
 
 
-def test_a_draft_published_between_the_listing_and_the_write_is_not_touched(tmp_path):
+def test_a_draft_a_person_publishes_while_the_job_looks_at_it_is_not_touched(tmp_path):
+    """The job saw a draft; that it is published a moment later changes nothing the job does,
+    since it does nothing to it. (Every other moment: test_generated_release_retry_unit.)"""
     existing = made_earlier("v1.2.3", False, draft=True)
     done, calls = run(
         tmp_path, "v1.2.3", "", existing, attached("v1.2.3"), PUBLISHED_AFTER_FIRST_LISTING="1"
     )
     assert done.returncode == 1
     assert writes(calls) == []
-    assert "it changed while this job looked at it" in the_error(done)
+    assert the_error(done) == DRAFT.format(tag="v1.2.3")
+    assert held(tmp_path) == [{**existing, "draft": False}]
+
+
+# --- what the line tells a person to do, done ----------------------------------------------------
+
+
+def whole(tag: str, assets: dict[str, bytes]) -> bool:
+    """The check the line gives a person before publishing a draft by hand: exactly the three
+    files, and each cairn_memory file has the SHA-256 its SHA256SUMS lists."""
+    listed = dict(
+        reversed(line.split("  ", 1))
+        for line in assets.get("SHA256SUMS", b"").decode().splitlines()
+        if "  " in line
+    )
+    return set(assets) == set(attached(tag)) and all(
+        listed.get(name) == hashlib.sha256(data).hexdigest()
+        for name, data in assets.items()
+        if name.startswith("cairn_memory")
+    )
+
+
+def left_a_draft(tmp_path, tag: str, candidate: str, assets: dict[str, bytes]) -> None:
+    existing = made_earlier(tag, candidate == "true", draft=True, names=list(assets))
+    done, calls = run(tmp_path, tag, candidate, existing, assets)
+    assert done.returncode == 1 and writes(calls) == []
+    assert the_error(done) == DRAFT.format(tag=tag)
+
+
+@pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
+def test_the_draft_a_person_deletes_is_made_again_by_the_re_run(tmp_path, tag, candidate):
+    left_a_draft(tmp_path, tag, candidate, CUT_OFF)
+    by_hand(tmp_path, "delete")
+    done, calls = attempt(tmp_path, tag, candidate)
+    assert done.returncode == 0, done.stdout + done.stderr
+    (create,) = writes(calls)
+    assert create.startswith(f"gh release create {tag} --verify-tag")
+    assert create.endswith(
+        "cairn_memory-1.2.3-py3-none-any.whl cairn_memory-1.2.3.tar.gz SHA256SUMS"
+    )
+
+
+@pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
+def test_the_whole_draft_a_person_publishes_is_compared_and_kept_by_the_re_run(
+    tmp_path, tag, candidate
+):
+    assert whole(tag, attached(tag))
+    left_a_draft(tmp_path, tag, candidate, attached(tag))
+    by_hand(tmp_path, "publish")
+    before = held(tmp_path)
+    done, calls = attempt(tmp_path, tag, candidate)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert writes(calls) == [] and held(tmp_path) == before
+    assert f"gh release download {tag} --dir {tmp_path}/published" in calls
+    assert f"The GitHub release {tag} is this run's" in done.stdout
+
+
+SUMS_CUT = attached("v1.2.3")["SHA256SUMS"].splitlines(keepends=True)
+
+
+@pytest.mark.parametrize(
+    ("assets", "passes_the_person_s_check", "said"),
+    [
+        (
+            {**attached("v1.2.3"), **CUT_OFF},
+            False,
+            "cairn_memory-1.2.3.tar.gz is not the file this run attested",
+        ),
+        (
+            {n: d for n, d in attached("v1.2.3").items() if n != "SHA256SUMS"},
+            False,
+            "its files are [cairn_memory-1.2.3-py3-none-any.whl cairn_memory-1.2.3.tar.gz], not",
+        ),
+        # The check a person can make does not see SHA256SUMS cut off after the two lines it
+        # reads; the job's comparison of every byte does.
+        (
+            {**attached("v1.2.3"), "SHA256SUMS": b"".join(SUMS_CUT[:2])},
+            True,
+            "SHA256SUMS is not the file this run attested",
+        ),
+    ],
+    ids=["a file cut off", "a file missing", "the checksums cut off"],
+)
+def test_a_draft_published_by_hand_that_is_not_whole_is_refused_by_the_re_run_and_stays(
+    tmp_path, assets, passes_the_person_s_check, said
+):
+    """The re-run's comparison is the last word, and by then the release is public: it is
+    refused in the sentence every release this run cannot finish gets, and nothing is deleted."""
+    assert whole("v1.2.3", assets) is passes_the_person_s_check
+    left_a_draft(tmp_path, "v1.2.3", "", assets)
+    by_hand(tmp_path, "publish")
+    before = held(tmp_path)
+    done, calls = attempt(tmp_path, "v1.2.3", "")
+    assert done.returncode == 1 and writes(calls) == [] and held(tmp_path) == before
+    error = the_error(done)
+    assert error.startswith(REFUSED.format(tag="v1.2.3")) and error.endswith(NEXT)
+    assert said in error
+
+
+# --- no command of the job can delete ------------------------------------------------------------
+
+FORBIDDEN = {
+    "the API's delete": r"DELETE",
+    "gh release delete or delete-asset": r"\bgh\s+release\s+delete",
+    "an upload that replaces a file": r"--clobber",
+    "an upload onto a release that exists": r"\bgh\s+release\s+upload\b",
+    "an edit of a release": r"\bgh\s+release\s+edit\b",
+    "another program that speaks HTTP": r"\b(curl|wget)\b",
+}
+# Every line of the job that names gh, whole: the listing (a read: no method, field or input),
+# the download and the creation. Any other line that names it is one too many.
+GH_LINES = [
+    'gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] |'
+    ' select(.tag_name == \\"$GITHUB_REF_NAME\\") | [.id, .draft, .prerelease, ((.body // \\"\\")'
+    ' | contains(\\"$mark\\")), ([.assets[].name] | sort | join(\\" \\"))] | @tsv"',
+    'gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published" || refuse "its files'
+    ' could not be downloaded to compare"',
+    'gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file'
+    ' "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"',
+]
+NAMES_GH = re.compile(r"(^|[^\w.-])gh(?![\w.-])")
+
+
+def commands(job: dict) -> list[str]:
+    """The lines of JOB's shell steps, comments too, a line continued with a backslash made
+    one line."""
+    text = "\n".join(re.sub(r"\s*\\\n\s*", " ", s.get("run", "")) for s in job["steps"])
+    return [line.strip() for line in text.splitlines()]
+
+
+def can_delete(job: dict) -> list[str]:
+    lines = commands(job)
+    text = "\n".join(lines)
+    found = [what for what, shape in FORBIDDEN.items() if re.search(shape, text)]
+    return found + [
+        f"another line names gh: {line}"
+        for line in lines
+        if NAMES_GH.search(line) and line not in GH_LINES
+    ]
+
+
+def test_no_command_of_release_deletes_a_release_or_writes_to_one_that_exists():
+    """On the job's text, so the delete cannot come back unseen: no DELETE, no gh release
+    delete, delete-asset, upload or edit, no --clobber, no curl; the lines that name gh are the
+    listing, the download and the creation, each exactly as written here; and it runs no file."""
+    release = JOBS["release"]
+    assert can_delete(release) == []
+    assert [line for line in commands(release) if NAMES_GH.search(line)] == GH_LINES
+    assert files_run(release) == []
+    assert [s["uses"].split("@")[0] for s in release["steps"] if "uses" in s] == [
+        "actions/download-artifact"
+    ]
+    # What the check sees, each added to the job as it is: the delete the job had, in the
+    # ways gh takes a method, and the other ways to remove or replace what a release holds.
+    other = "another line names gh: "
+    for added, seen in {
+        'gh api -X DELETE "repos/$GH_REPO/releases/$id"': ["the API's delete", other],
+        'gh api -XDELETE "repos/$GH_REPO/releases/$id"': ["the API's delete", other],
+        'gh api --method=delete "repos/$GH_REPO/releases/$id"': [other],
+        'gh api "repos/$GH_REPO/releases/$id" \\\n  -F draft=false': [other],
+        'gh api --paginate "repos/$GH_REPO/releases?per_page=100" --input body.json': [other],
+        'curl -X DELETE "$url"': ["the API's delete", "another program that speaks HTTP"],
+        'wget --method=delete "$url"': ["another program that speaks HTTP"],
+        'gh release delete "$GITHUB_REF_NAME" --yes': ["gh release delete or delete-asset", other],
+        'gh  release \\\n  delete-asset "$GITHUB_REF_NAME" SHA256SUMS': [
+            "gh release delete or delete-asset",
+            other,
+        ],
+        'gh release upload "$GITHUB_REF_NAME" SHA256SUMS': [
+            "an upload onto a release that exists",
+            other,
+        ],
+        'gh release create "$GITHUB_REF_NAME" --clobber': ["an upload that replaces a file", other],
+        'gh release edit "$GITHUB_REF_NAME" --draft=false': ["an edit of a release", other],
+        '"$(command -v gh)" release view "$GITHUB_REF_NAME"': [other],
+        "# then gh removes it": [other],
+    }.items():
+        job = {"steps": [*release["steps"], {"name": "added", "run": added}]}
+        got = can_delete(job)
+        assert [other if what.startswith(other) else what for what in got] == seen, (added, got)
 
 
 REFUSED = "::error::a GitHub release for {tag} exists and is not one this run can finish: "
@@ -304,16 +525,52 @@ def test_the_listing_takes_every_page_and_drafts_by_their_tag():
     assert "--clobber" not in run_ and "gh release upload" not in run_
 
 
+README = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
+
+
 def test_the_retry_is_said_in_the_readme_with_its_condition():
-    readme = " ".join((Path(__file__).resolve().parents[2] / "README.md").read_text().split())
+    readme = " ".join(README.split())
     assert (
         "The release's text ends in a mark, an HTML comment GitHub does not show, with the id of"
         " the run that made it. A re-run of `release` lists the repository's releases, drafts"
         " included (a listing that fails stops the job), and takes the one for its tag as its"
         " own only when it carries this run's mark and this tag's pre-release flag: a published"
-        " one that holds exactly the files this run attested, byte for byte, is left as it is,"
-        " and a draft, which gh leaves when its runner is lost while it uploads, is listed again,"
-        " deleted if it is still the same draft, and the release made again; either way"
-        " `aliases` runs. Any other release for the tag stops the job, and nothing is written to"
-        " it."
+        " one that holds exactly the files this run attested, byte for byte, is left as it is"
+        " and the job succeeds, so that a release tag's `aliases` runs (a candidate's run has"
+        " none); a draft, which `gh release create` leaves when its runner is lost while it"
+        " uploads, stops the job, and a person deletes it on the releases page and re-runs the"
+        " job, which makes the release again, or publishes it there if its files are whole and"
+        " re-runs the job, which then compares them (the table below has the line). Any other"
+        " release for the tag stops the job. The job's own text issues no delete of a release or"
+        " of a release's file and no write to a release that exists, since a person can publish"
+        " a draft between any look at it and a write, and a published release keeps its id; its"
+        " one write is `gh release create`, reached only when the listing showed no release for"
+        " the tag."
     ) in readme
+    assert "deleted if it is still the same draft" not in readme
+    assert "either way `aliases` runs" not in readme
+
+
+def test_the_draft_s_stop_has_its_row_and_the_row_says_what_the_tests_above_run():
+    key = (
+        "the GitHub release for … is a draft that an earlier attempt of run … left unfinished,"
+        " which this job neither deletes nor publishes"
+    )
+    assert key in stops()
+    (row,) = [line for line in README.splitlines() if line.startswith(f"| `{key}` |")]
+    _, means, next_step = (cell.strip() for cell in row.strip("|").split(" | "))
+    assert means == (
+        "An earlier attempt's runner was lost while `gh release create` uploaded the files: the"
+        " draft carries this run's mark and may hold none of them, some, or one cut off"
+    )
+    assert next_step == (
+        "Look at it on the repository's releases page. Delete it there and re-run the job,"
+        " which makes the release again (once the five days the run's files are kept have"
+        " passed, re-run `package` instead, which `release` follows). Or publish it there, only"
+        " if it holds exactly the wheel, the source archive and `SHA256SUMS` and both files"
+        " have the SHA-256 that `SHA256SUMS` lists, and re-run the job within those five days:"
+        " it compares every byte with the files this run attested and stops if one differs,"
+        " with the release already public, so when in doubt delete the draft."
+    )
+    # `package` re-run alone is followed by `release`, which then finds no release and makes it.
+    assert "release" in rerun({"package"})

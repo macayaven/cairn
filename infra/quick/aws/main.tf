@@ -10,7 +10,24 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+# A region does not offer every instance type in each of its zones.
+data "aws_ec2_instance_type_offerings" "app" {
+  location_type = "availability-zone"
+
+  filter {
+    name   = "instance-type"
+    values = [local.instance_type]
+  }
+}
+
 locals {
+  instance_type = "t3.small"
+  # The region's own zones are its name and one letter. The listing also holds any Local
+  # Zone the account has opted in to, and those names sort first.
+  zones = sort([
+    for zone in data.aws_ec2_instance_type_offerings.app.locations : zone
+    if can(regex("^${var.region}[a-z]$", zone))
+  ])
   cloud_init = templatefile("${path.module}/../cloud-init.yaml.tftpl", {
     quick_dir        = "${path.module}/.."
     serve_extra_args = var.serve_extra_args
@@ -38,6 +55,18 @@ resource "aws_vpc" "app" {
 resource "aws_subnet" "app" {
   vpc_id     = aws_vpc.app.id
   cidr_block = aws_vpc.app.cidr_block
+  # EC2 would select a zone for a subnet that names none, whether or not it offers the type.
+  availability_zone = local.zones[0]
+
+  lifecycle {
+    # Moving the subnet replaces the VM. The zone is chosen once, when the subnet is made.
+    ignore_changes = [availability_zone]
+
+    precondition {
+      condition     = length(local.zones) > 0
+      error_message = "No Availability Zone of this region offers the VM's instance type. Choose another region."
+    }
+  }
 }
 
 resource "aws_internet_gateway" "app" {
@@ -162,7 +191,7 @@ resource "aws_iam_instance_profile" "app" {
 
 resource "aws_instance" "app" {
   ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t3.small"
+  instance_type          = local.instance_type
   subnet_id              = aws_subnet.app.id
   vpc_security_group_ids = [aws_security_group.app.id]
   iam_instance_profile   = aws_iam_instance_profile.app.name

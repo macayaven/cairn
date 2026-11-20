@@ -5,6 +5,9 @@ mock_provider "aws" {
   mock_data "aws_partition" {
     defaults = { partition = "aws" }
   }
+  mock_data "aws_ec2_instance_type_offerings" {
+    defaults = { locations = ["us-east-1-bos-1a", "us-east-1b", "us-east-1a"] }
+  }
   mock_resource "aws_s3_bucket" {
     defaults = {
       bucket = "cairn-quick-example"
@@ -41,6 +44,11 @@ run "three_inputs_with_safe_defaults" {
       one(aws_instance.app.root_block_device).encrypted
     )
     error_message = "The default VM must use a released image and an encrypted 20 GiB boot disk."
+  }
+
+  assert {
+    condition     = aws_subnet.app.availability_zone == "us-east-1a"
+    error_message = "The subnet goes in the first of the region's own zones that offers the instance type."
   }
 
   assert {
@@ -82,6 +90,17 @@ run "three_inputs_with_safe_defaults" {
     ])
     error_message = "Only the secret's metadata belongs in OpenTofu. Do not create or look up key or secret values."
   }
+}
+
+run "a_region_where_no_zone_offers_the_type_is_refused" {
+  command = plan
+
+  override_data {
+    target = data.aws_ec2_instance_type_offerings.app
+    values = { locations = ["us-east-1-bos-1a"] }
+  }
+
+  expect_failures = [aws_subnet.app]
 }
 
 run "identity_is_scoped_to_the_replica_and_settings" {
@@ -128,6 +147,20 @@ run "identity_is_scoped_to_the_replica_and_settings" {
       output.public_ipv4 == aws_eip.app.public_ip
     )
     error_message = "The VM boots with a public address, and the DNS output is its reserved address."
+  }
+}
+
+run "a_new_zone_listing_keeps_the_existing_subnet" {
+  command = plan
+
+  override_data {
+    target = data.aws_ec2_instance_type_offerings.app
+    values = { locations = ["us-east-1c"] }
+  }
+
+  assert {
+    condition     = aws_subnet.app.availability_zone == "us-east-1a"
+    error_message = "A change in where the instance type is offered does not move the subnet, and the VM with it."
   }
 }
 

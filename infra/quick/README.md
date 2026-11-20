@@ -26,6 +26,8 @@ and permissions for an interactive session. Have a domain whose DNS you can edit
 
 The stack creates a VPC and subnet, a `t3.small` with a 20 GiB encrypted `gp3` boot disk, a
 reserved public IPv4 address, an instance profile, an S3 bucket and a Secrets Manager secret.
+It puts the subnet in the first Availability Zone that offers `t3.small`, and later applies
+leave it there.
 While it runs, budget for [EC2 instance time](https://aws.amazon.com/ec2/pricing/on-demand/),
 [the disk](https://aws.amazon.com/ebs/pricing/), [the IPv4 address](https://aws.amazon.com/vpc/pricing/),
 [S3 storage and requests](https://aws.amazon.com/s3/pricing/), [the secret and its API calls](https://aws.amazon.com/secrets-manager/pricing/),

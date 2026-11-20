@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 from test_assembled_fence_unit import READERS, no_closer, parses, saved_by_23c24229, triples
 from test_core_promise_title_unit import BASE, PRE, SAME_ORIGIN, mcp_page
 
+import cairn.server
 from cairn.compiler import render_body, render_body_before_review_four
 from cairn.gate import lint_gate
 from cairn.memory import Memory
@@ -279,6 +280,23 @@ def test_a_read_of_a_version_that_is_not_shown_costs_one_render_too(env, monkeyp
     assert parses(monkeypatch, lambda: memory.page("alpha", "ops")) == count
     project = memory.project("alpha")
     assert parses(monkeypatch, lambda: page_view(memory, project, page)) == count
+
+
+# What an agent is told of the field
+
+
+def test_the_tool_and_the_contract_name_the_field(env):
+    _, client, key = env
+    listing = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        "x-api-key": key,
+    }
+    tools = client.post("/mcp", headers=headers, json=listing).json()["result"]["tools"]
+    (page,) = [tool for tool in tools if tool["name"] == "page"]
+    assert page["description"].count("body_not_shown") == 1
+    assert cairn.server.__doc__.count('"body_not_shown"') == 1
 
 
 # A limit that stays: the export copies a version's Markdown as it is stored

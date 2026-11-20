@@ -270,6 +270,9 @@ class Config:
     rebuild_between: bool = False  # package re-run with new bytes before the 2nd attempt
     person_menu: str = "full"  # or "small"
     gh_limit: int = 120
+    annotated: bool = False  # the run's tag is an annotated tag (an object naming the commit)
+    existing: tuple = ()  # stable versions published (by earlier runs) before the step starts
+    other_runs: tuple = ()  # stable versions another tag's run may publish at any gap
 
     @property
     def candidate(self) -> bool:
@@ -285,6 +288,37 @@ class Hung(Exception):
 
 
 ATTEMPT_SECONDS = int(os.environ.get("RT2_ATTEMPT_SECONDS", 60))
+
+
+def stable_key(tag: str):
+    m = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag)
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def highest_stable(state: dict):
+    """The id of the highest stable version among the published releases: where GitHub's Latest
+    belongs, by the ordering job `aliases` uses."""
+    best = None
+    for rid, r in state["releases"].items():
+        key = stable_key(r["tag_name"])
+        if r["draft"] or r["prerelease"] or key is None:
+            continue
+        if best is None or key > best[0]:
+            best = (key, rid)
+    return None if best is None else best[1]
+
+
+def published_elsewhere(rid: int, version: str) -> dict:
+    return {
+        "id": rid,
+        "tag_name": version,
+        "draft": False,
+        "prerelease": False,
+        "name": version,
+        "body": f"the notes of {version}\n",
+        "assets": [],
+        "target_commitish": OTHER_SHA,
+    }
 
 
 class Hub:
@@ -317,6 +351,12 @@ class Hub:
                 "assets": [],
                 "target_commitish": "main",
             }
+        for n, version in enumerate(config.existing):
+            rid = 40 + n
+            self._truth["releases"][rid] = published_elsewhere(rid, version)
+            self._truth["tags"][version] = OTHER_SHA
+        self._truth["latest"] = highest_stable(self._truth)
+        self.next_other = 60
         self.initial = copy.deepcopy(self._truth)
 
     # -- truth and views --
@@ -386,7 +426,8 @@ class Hub:
                                 {
                                     "id": aid,
                                     "name": WHEEL,
-                                    "data": b"a person's wheel\n",
+                                    # the same size: only the bytes differ
+                                    "data": b"wheel bytes, build Z\n",
                                     "state": "uploaded",
                                 },
                             ),
@@ -425,6 +466,9 @@ class Hub:
                     )
                 )
         options.append(("makes a second release for the tag, a draft", "second-draft"))
+        for version in self.config.other_runs:
+            if not any(r["tag_name"] == version for r in self._truth["releases"].values()):
+                options.append((f"another run publishes {version}", f"other:{version}"))
         if not small:
             options.append(("makes a second release for the tag, published", "second-public"))
             if self.tag in self._truth["tags"]:
@@ -457,7 +501,16 @@ class Hub:
         name, act = options[pick]
         before = self.snap()
         rid = None
-        if act in ("second-draft", "second-public"):
+        if isinstance(act, str) and act.startswith("other:"):
+            # another tag's run, its make_latest decided on GitHub as it is (the best it can do)
+            version = act.split(":", 1)[1]
+            rid = self.next_other
+            self.next_other += 1
+            self.write("person", ("tag", version, OTHER_SHA), "person")
+            self.write("person", ("create", rid, published_elsewhere(rid, version)), "person")
+            if highest_stable(self._truth) == rid:
+                self.write("person", ("latest", rid), "person")
+        elif act in ("second-draft", "second-public"):
             rid = self.next_id
             self.next_id += 1
             fields = {
@@ -521,6 +574,7 @@ class Hub:
 
     def api(self, args: list[str]) -> tuple[int, str, str]:
         method, path, jq, paginate, silent, fields = None, None, None, False, False, {}
+        accept = None
         i = 0
         while i < len(args):
             a = args[i]
@@ -538,7 +592,12 @@ class Hub:
                     value = {"true": True, "false": False}.get(value, value)
                 fields[key], i = value, i + 2
             elif a in ("-H", "--header"):
-                i += 2
+                key, _, value = args[i + 1].partition(":")
+                if key.strip().lower() != "accept":
+                    raise Unmodelled(f"gh api header {args[i + 1]}")
+                accept, i = value.strip(), i + 2
+            elif a == "--allow-escape-sequences":  # matters only on a terminal
+                i += 1
             elif a.startswith("-"):
                 raise Unmodelled(f"gh api option {a}")
             else:
@@ -548,6 +607,25 @@ class Hub:
         method = (method or ("POST" if fields else "GET")).upper()
         parts = urlsplit(path or "")
         segments = parts.path.strip("/").split("/")
+        if (
+            method == "GET"
+            and segments[:5] == ["repos", *GH_REPO.split("/"), "commits", "tags"]
+            and len(segments) == 6
+            and accept == "application/vnd.github.sha"
+            and jq is None
+        ):
+            return self.tag_read(segments[5])
+        if (
+            method == "GET"
+            and segments[:5] == ["repos", *GH_REPO.split("/"), "releases", "assets"]
+            and len(segments) == 6
+            and segments[5].isdigit()
+            and accept == "application/octet-stream"
+            and jq is None
+        ):
+            return self.asset(int(segments[5]))
+        if accept is not None:
+            raise Unmodelled(f"gh api {method} {path} with Accept {accept}")
         base = ["repos", *GH_REPO.split("/"), "releases"]
         if segments[:4] != base:
             raise Unmodelled(f"gh api {method} {path}")
@@ -571,7 +649,14 @@ class Hub:
             "prerelease": r["prerelease"],
             "target_commitish": r.get("target_commitish", "main"),
             "assets": [
-                {"id": a["id"], "name": a["name"], "state": a["state"], "size": len(a["data"])}
+                {
+                    "id": a["id"],
+                    "name": a["name"],
+                    "state": a["state"],
+                    "size": a.get("size", len(a["data"])),
+                    # a replacement is a new asset; an asset never changes in place here
+                    "updated_at": f"2026-11-20T10:{a['id'] % 60:02d}:00Z",
+                }
                 for a in r["assets"]
             ],
         }
@@ -641,6 +726,89 @@ class Hub:
         )
         return 0, (jq_eval(jq, json.dumps(shown)) if jq else json.dumps(shown)), ""
 
+    def tag_read(self, tag: str) -> tuple[int, str, str]:
+        """GET repos/R/commits/tags/T with Accept application/vnd.github.sha: the commit the tag
+        names, as plain text with no newline. GitHub resolves the ref, so an annotated tag gives
+        its commit, not the tag object; a tag that is gone gives 422."""
+        fate = self.request("tagread", f"GET commits/tags/{tag}", write=False)
+        if fate == "fail":
+            self.event(
+                "request",
+                f"GET commits/tags/{tag}: 502",
+                kind="tag",
+                fate=fate,
+                truth_before=self.snap(),
+            )
+            url = f"https://api.github.com/repos/{GH_REPO}/commits/tags/{tag}"
+            return 1, "", f"gh: HTTP 502: Bad Gateway ({url})\n"
+        sha = self._truth["tags"].get(tag)
+        kind = "annotated" if self.config.annotated else "lightweight"
+        self.event(
+            "request",
+            f"GET commits/tags/{tag} ({kind}): {sha or '422'}",
+            kind="tag",
+            fate=fate,
+            shown=sha,
+            truth_before=self.snap(),
+        )
+        if sha is None:
+            body = (
+                '{"message":"No commit found for SHA: tags/' + tag + '","documentation_url":'
+                '"https://docs.github.com/rest/commits/commits#get-a-commit","status":"422"}'
+            )
+            return 1, body, f"gh: No commit found for SHA: tags/{tag} (HTTP 422)\n"
+        return 0, sha, ""
+
+    def asset(self, aid: int) -> tuple[int, str, str]:
+        """GET repos/R/releases/assets/ID with Accept application/octet-stream: the file's bytes
+        (GitHub redirects to the storage and gh follows), or 404 for an asset that is gone or
+        whose upload never finished."""
+        owner = next(
+            (
+                rid
+                for rid, r in self._truth["releases"].items()
+                for a in r["assets"]
+                if a["id"] == aid
+            ),
+            None,
+        )
+        fate = self.request("asset", f"GET asset {aid}", write=False, rid=owner)
+        owner = next(
+            (
+                rid
+                for rid, r in self._truth["releases"].items()
+                for a in r["assets"]
+                if a["id"] == aid
+            ),
+            None,
+        )
+        live = (
+            None
+            if owner is None
+            else next(a for a in self._truth["releases"][owner]["assets"] if a["id"] == aid)
+        )
+        ok = (
+            fate == "ok"
+            and live is not None
+            and not (live["state"] == "starter" and self.config.starter_download == "404")
+        )
+        name = live["name"] if live is not None else f"asset {aid}"
+        self.event(
+            "request",
+            f"GET asset {aid} ({name}) of {owner}" + ("" if ok else ": failed"),
+            kind="asset",
+            rid=owner,
+            fate=fate,
+            truth_before=self.snap(),
+            shown=(name, live["data"] if ok else None),
+        )
+        if fate == "fail":
+            return 1, "", "gh: HTTP 502: Bad Gateway\n"
+        if not ok:
+            body = '{"message":"Not Found","status":"404"}'
+            return 1, body, "gh: Not Found (HTTP 404)\n"
+        return 0, live["data"].decode(), ""
+
     def patch(self, rid: int, fields: dict, silent: bool) -> tuple[int, str, str]:
         fate = self.request("patch", f"PATCH releases/{rid} {fields}", write=True, rid=rid)
         before = self.snap()
@@ -689,10 +857,17 @@ class Hub:
         }
         self.write("publish", ("set", rid, change), "step")
         if publishing and r["tag_name"] not in self._truth["tags"]:
-            self.write("publish", ("tag", r["tag_name"], HEAD_SHA), "step")
-        # GitHub's make_latest defaults to true for a release newly published (REST docs)
-        if publishing and not r["prerelease"] and fields.get("make_latest", "true") != "false":
+            # GitHub makes a missing tag from target_commitish: a commit, or a branch's head
+            target = r.get("target_commitish") or "main"
+            sha = target if re.fullmatch(r"[0-9a-f]{40}", target) else HEAD_SHA
+            self.write("publish", ("tag", r["tag_name"], sha), "step")
+        # make_latest (REST docs): "true" makes it Latest, "false" leaves Latest where it is,
+        # and left out it defaults to true for a release newly published
+        latest = fields.get("make_latest", "true")
+        if publishing and not r["prerelease"] and latest in ("true", True):
             self.write("publish", ("latest", rid), "step")
+        elif latest not in ("true", True, "false", False):
+            raise Unmodelled(f"make_latest={latest}")
         self.event(
             "request",
             f"PATCH releases/{rid} {fields}" + (": done, reply lost" if fate == "lost" else ""),
@@ -713,7 +888,7 @@ class Hub:
     def create(self, cwd: str, args: list[str]) -> tuple[int, str, str]:
         tag, rest = args[0], args[1:]
         flags = {"--draft": False, "--verify-tag": False, "--prerelease": False}
-        title = notes_file = None
+        title = notes_file = target = None
         files = []
         i = 0
         while i < len(rest):
@@ -724,6 +899,8 @@ class Hub:
                 title, i = rest[i + 1], i + 2
             elif a == "--notes-file":
                 notes_file, i = rest[i + 1], i + 2
+            elif a == "--target":  # gh sends it as target_commitish
+                target, i = rest[i + 1], i + 2
             elif a.startswith("--latest="):
                 i += 1  # make_latest on a draft: GitHub uses it only once it is published
             elif a.startswith("-"):
@@ -767,7 +944,7 @@ class Hub:
             "name": title or None,
             "body": body or None,
             "assets": [],
-            "target_commitish": "main",
+            "target_commitish": target or "main",
         }
         self.write("create", ("create", rid, fields), "step")
         self.event(
@@ -833,7 +1010,11 @@ class Hub:
             stored = data[: len(data) // 2] if fate == "cut" else data
             self.write(
                 "upload",
-                ("asset_add", rid, {"id": aid, "name": name, "data": stored, "state": state}),
+                (
+                    "asset_add",
+                    rid,
+                    {"id": aid, "name": name, "data": stored, "state": state, "size": len(data)},
+                ),
                 "step",
             )
             self.event(

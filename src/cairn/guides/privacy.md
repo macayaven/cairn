@@ -37,6 +37,8 @@ When the server removes the installation, both secrets and every link are delete
 
 The server acts on an app removal from Slack only when Slack's dispatch time is in a later second than the installation's set-up on the server's clock. It ignores removals dated at or before that second or with no valid dispatch time and records them in the workspace audit log.
 
+A slow server clock can let an earlier installation's uninstall remove a replacement of the same Slack app with the same signing secret when the replacement was set up within that clock difference after dispatch and stamped in an earlier second than Slack's dispatch time. The workspace audit log records `slack.install_removed` with the installation ID and the number of notes newly scheduled for forgetting. Once the clock is accurate, set Slack up again for the same Slack workspace and relink people. Setting it up before the 10-day deadline keeps the notes Slack created.
+
 Checking the bot token can reveal a missed removal. These checks run at most once every 6 hours while the server runs with `serve --slack`. The server switches the installation off and deletes the bot token when it acts on a revocation of that token or when two checks say the token has ended. Any successful check resets the count. Timeouts, rate limits, HTTP 5xx responses and failed connections can delay discovery. After 3 days with an ended bot token, the server removes the installation unless a new bot token was pasted on the **Sources** page. The server forgets notes that are due even when it runs without `--slack`. Backups made before the forgetting hold those notes until they expire, as they hold every forgotten note.
 
 ## What {{name}} never stores

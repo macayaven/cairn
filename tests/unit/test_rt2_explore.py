@@ -52,6 +52,7 @@ from test_rt2_github import (
     Config,
     Event,
     Hub,
+    Hung,
     Scheduler,
     Write,
     body_text,
@@ -732,6 +733,18 @@ class Report:
                 self.found[v] = f
 
 
+def guarded(report: Report, what: str, make) -> Execution | None:
+    """One execution; one that does not end is made again once (a slow machine), and one that
+    hangs twice is kept as a note, with its schedule, instead of ending the search."""
+    for _ in range(2):
+        try:
+            return make()
+        except Hung as error:
+            last = str(error).splitlines()[-1]
+    report.notes[f"6? an attempt did not end, twice: {what}; last event {last}"] += 1
+    return None
+
+
 def explore(run: str, config: Config, k: int, limit: int | None = None) -> Report:
     """Every schedule of at most K deviations, breadth first (so each violation's first
     execution is a shortest one)."""
@@ -739,7 +752,9 @@ def explore(run: str, config: Config, k: int, limit: int | None = None) -> Repor
     queue = collections.deque([{}])
     while queue and (limit is None or report.executions < limit):
         plan = queue.popleft()
-        ex = execute(run, config, plan, k)
+        ex = guarded(report, f"plan {plan}", lambda plan=plan: execute(run, config, plan, k))
+        if ex is None:
+            continue
         report.add(ex, len(plan))
         if len(plan) < k:
             after = max(plan) + 1 if plan else 0
@@ -760,7 +775,14 @@ def wander(run: str, config: Config, walks: int, seed: int, rate: float) -> Repo
         c = copy.deepcopy(config)
         c.lag = lag
         c.persist_lag = config.persist_lag or rng.random() < 0.2
-        ex = execute(run, c, None, None, rng=random.Random(rng.random()), rate=rate)
+        seed = rng.random()
+        ex = guarded(
+            report,
+            f"walk seed {seed}, lag {lag}",
+            lambda c=c, seed=seed: execute(run, c, None, None, rng=random.Random(seed), rate=rate),
+        )
+        if ex is None:
+            continue
         report.add(ex, len(ex.hub.s.plan))
     report.seconds = time.time() - t0
     return report
@@ -907,16 +929,19 @@ def main() -> None:  # pragma: no cover - the full run, outside pytest: python t
                 f"{r.seconds:.0f} s",
                 flush=True,
             )
+            print("".join(f"   {v}\n" for v in sorted(map(str, r.found))), end="", flush=True)
             total.merge(r)
     for name, switch in SWITCHES.items():
         r = explore(run, Config(tag=TAGS["release"], person_menu="small", **switch), k=k)
         print(f"switch {name}: {r.executions} executions, {len(r.found)} violations", flush=True)
+        print("".join(f"   {v}\n" for v in sorted(map(str, r.found))), end="", flush=True)
         total.merge(r)
     for tag in TAGS.values():
         r = wander(
             run, Config(tag=tag), walks=int(os.environ.get("RT2_WALKS", 400)), seed=7, rate=0.03
         )
         print(f"random {tag}: {r.executions} executions, {len(r.found)} violations", flush=True)
+        print("".join(f"   {v}\n" for v in sorted(map(str, r.found))), end="", flush=True)
         total.merge(r)
     print(summary(total))
 

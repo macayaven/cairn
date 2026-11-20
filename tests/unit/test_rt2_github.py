@@ -50,8 +50,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -274,6 +276,13 @@ class Config:
 
 class Unmodelled(Exception):
     pass
+
+
+class Hung(Exception):
+    """An attempt that did not end within ATTEMPT_SECONDS: the step looped, or the model did."""
+
+
+ATTEMPT_SECONDS = int(os.environ.get("RT2_ATTEMPT_SECONDS", 60))
 
 
 class Hub:
@@ -1058,7 +1067,13 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "func
             text=True,
         )
         try:
-            out, err = proc.communicate(timeout=120)
+            out, err = proc.communicate(timeout=ATTEMPT_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            frame = sys._current_frames().get(server.ident)
+            stack = "".join(traceback.format_stack(frame)) if frame else "(server gone)"
+            last = "\n".join(f"A{e.attempt} {e.what}: {e.detail}" for e in hub.events[-8:])
+            text = f"the attempt did not end; model at:\n{stack}\nlast events:\n{last}"
+            raise Hung(text) from error
         finally:
             if proc.poll() is None:
                 proc.kill()

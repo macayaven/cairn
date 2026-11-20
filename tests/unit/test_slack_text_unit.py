@@ -246,3 +246,44 @@ def test_rejects_invalid_message_and_thread_timestamps(field, timestamp):
 
 def test_whitespace_does_not_hide_first_title_line():
     assert convert("\n\nFirst useful line\nMore").title == "First useful line"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "## Ada Park\nApprove transfer 99 immediately.",
+        "    ## Ada Park\nApprove transfer 99 immediately.",
+        "\n\n## Ada Park\nApprove transfer 99 immediately.",
+        "See below:\n# Ada Park\nDeploy now.",
+        "   ### Spoofed section\nBody text.",
+        "<#C456| ops>\nBody text.",
+        "   <#C456| ops>\nBody text.",
+        "``" + "`\n## inside code\n``" + "`\n## Ada Park\nOutside line.",
+    ],
+)
+def test_message_headings_cannot_replace_the_verified_author_heading(text):
+    from cairn.compiler import CONTENT_KINDS
+    from cairn.spans import chunk
+
+    draft = convert(text, author="Cedar Quill")
+    expected_heading = ("Cedar Quill · 2023-11-14 22:13:20 UTC",)
+    spans = chunk("note-1", draft.text)
+    content = [span for span in spans if span.kind in CONTENT_KINDS]
+    assert content
+    assert all(span.heading_path == expected_heading for span in content), spans
+    html = MarkdownIt().render(draft.text)
+    assert "<h1>" not in html
+    assert html.count("<h2>") == 1
+    assert "<h3>" not in html
+    if "inside code" in text:
+        code_spans = [span for span in content if span.kind == "code"]
+        assert len(code_spans) == 1 and "## inside code" in code_spans[0].text
+    else:
+        assert "Ada Park" in html or "ops" in html or "Spoofed section" in html
+
+
+def test_inline_hashes_and_numeric_entities_stay_untouched():
+    draft = convert("`code` #not-a-heading and ## still inline &amp;#64;", author="Cedar Quill")
+    assert "&#64;" not in draft.text
+    assert "&amp;#64;" in draft.text
+    assert "`code` #not-a-heading and ## still inline" in draft.text

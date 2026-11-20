@@ -480,7 +480,9 @@ The note guard and the logs (frozen by tests/acceptance/test_g1_guard.py; cairn/
   "projects", /b/<project> "overview", /b/<project>/p/<slug> "page",
   /b/<project>/p/<slug>/related "related", /search "recall") or
   after what it asks (/b/<project>/notes "notes", /b/<project>/access "project_access",
-  /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The pages of the
+  /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The graph page is
+  one record named "graph" (cairn.web.graph_routes), but for its view of a page's related
+  pages, which reads what `related` reads and is recorded as it. The pages of the
   workspace's settings, people and credentials, and the composer's empty form, are not on
   it; what the web view writes is in the audit log. A request to /api or /mcp refused
   before its route (no valid credential) is one record ("none", None, None, "denied",

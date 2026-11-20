@@ -315,6 +315,8 @@ After a workspace, a project or a note is deleted, `serve` compacts the database
 
 By default `serve` makes a project's **Graph** page one to explore: its pages or its notes a batch of at most 20 at a time, with **Next batch** for the rest, a search within the view, a page's claims, the passages a claim cites, and a page for each note. That page is the only one that runs a script, cairn's own, and it works without it. To run no script on any page, pass `--no-graph-explorer`: the graph page is then drawn by the server alone and runs no script (`--graph-explorer` is still accepted).
 
+The explorer has one more view, a page and its related pages: in the view of a project's pages and in the view of a page's claims, **Related pages** opens it. It draws the page with the pages `related` gives for it, at most 20, and each related page opens its own, so a person walks from page to page. Each relationship says the first reason the two pages are related and how many more there are, and links the claims they rest on, on the page's **Related pages**. The view of a project's pages draws no relation between them, and says so: a relation is worked out for one page, when its view is opened. With `--no-graph-explorer` there is no such view; a page's **Related pages** link works either way.
+
 ## Numbers to watch
 
 `stats` prints how much the install holds, and it only reads:

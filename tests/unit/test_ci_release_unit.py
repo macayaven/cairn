@@ -24,7 +24,9 @@ import yaml
 from ci_shell import run_step
 from test_ci_workflow_unit import (
     JOBS,
+    MAIN_PUSH,
     RAW_WORKFLOW,
+    TAG,
     THE_GATE,
     ancestors,
     evaluate,
@@ -36,6 +38,7 @@ from test_ci_workflow_unit import (
     reaches_the_token,
     release_check,
     release_tags,
+    rerun,
 )
 
 PACKAGE, ATTEST, RELEASE = JOBS["package"], JOBS["attest"], JOBS["release"]
@@ -640,7 +643,7 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     workflow = f"--repo {owner} --signer-workflow {owner}/.github/workflows/ci-cd.yml"
     expected = {
         f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}"
-        " --source-digest <commit>",
+        " --source-ref refs/tags/vX.Y.Z --source-digest <commit>",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow}",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow} --source-ref"
         " refs/heads/main --source-digest <commit>",
@@ -654,23 +657,44 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     update = DEPLOY_GUIDE[DEPLOY_GUIDE.index("## Update") :]
     update = update[: update.index("\n## ")]
     proof = (
-        "A pass for the wheel proves that these bytes are the ones this repository's"
-        " `ci-cd.yml` built and attested in the tag's run, unchanged since. A pass for the"
-        " image proves less by itself, since the tag's run, which promotes the image and does"
+        "`--source-ref` checks which ref that run was for: a release candidate tagged on the"
+        " same commit builds and attests a wheel of its own under the same name, so the wheel's"
+        " command names `refs/tags/vX.Y.Z`, and `refs/tags/vX.Y.Z-rc.N` when the file is a"
+        " candidate's. A pass for the wheel proves that these bytes were built and attested by"
+        " this repository's `ci-cd.yml` in a run of the tag `vX.Y.Z` at that commit, unchanged"
+        " since; it does not prove that they are the files the release attaches, since a re-run"
+        " of job `package` builds files of its own and `attest` attests those too. A pass for"
+        " the image proves less by itself, since the tag's run, which promotes the image and does"
         " not build it, attests its digest too; with `--source-ref refs/heads/main` a pass"
         " proves that `main`'s run of `ci-cd.yml` published and attested that digest, the run"
         " that built it, as the tag's run checked before it promoted it. Neither proves that"
         " the code or its dependencies are free of flaws"
+    )
+    tag_check = next(
+        s for s in JOBS["image_build"]["steps"] if s.get("name", "").startswith("Check that main")
     )
     for guide in (ci, update):
         assert set(VERIFY.findall(guide)) == expected
         assert proof in flat(guide)
         assert commit in flat(guide)
         assert "A pass proves that these bytes are the ones" not in flat(guide)
+        assert "built and attested in the tag's run" not in flat(guide)
+        # The commands' shape: every flag is one the tag's run gives gh for main's attestation.
+        for command in VERIFY.findall(guide):
+            assert set(re.findall(r"--[a-z-]+", command)) <= set(
+                re.findall(r"--[a-z-]+", tag_check["run"][tag_check["run"].index("verify") :])
+            ), command
+    # Why the wheel's command names the tag's ref: a candidate and the release tagged on one
+    # commit each run `package` and `attest`, on a tag's ref and never on main, and both name
+    # the wheel by the version alone. And a re-run of `package` is followed by `attest`.
+    for tagged in (TAG, CANDIDATE):
+        ran = jobs_that_run(tagged, {"release_check": {"candidate": ""}})
+        assert {"package", "attest"} <= ran
+    assert not {"package", "attest"} & jobs_that_run(MAIN_PUSH)
+    (check,) = [s for s in ATTEST["steps"] if s.get("name") == "Check the files"]
+    assert 'version="${version%-rc.*}"' in check["run"]
+    assert "attest" in rerun({"package"})
     # The flag the guides give is the one the tag's run checks main's attestation with.
-    tag_check = next(
-        s for s in JOBS["image_build"]["steps"] if s.get("name", "").startswith("Check that main")
-    )
     assert "--source-ref refs/heads/main" in tag_check["run"]
     # The image the guide names is the one `publish` tags and `attest` attests by digest.
     meta = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "meta")

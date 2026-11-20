@@ -10,12 +10,14 @@
 {% if project.description %}<p class="lede">{{ project.description }}</p>{% endif %}
 <p class="row">{% if sharing and sharing.startswith("Private") %}<span class="tag is-private">private</span> {% endif %}<span class="meta">{% if sharing %}<strong class="sharing">{{ sharing }}</strong>.{% else %}Every member reads and writes.{% endif %}</span></p>
 <div class="row models">
-  <p class="meta">{% if models == "never" %}<strong>Models: never.</strong> No model is sent this project's pages, whatever their notes say or the operator set. Pages already arranged stay as they are.{% if kind_of(project.kind).private %} {{ kind_of(project.kind).title }} start this way.{% endif %}{% elif models == "allowed" %}<strong>Models: allowed.</strong> A model the operator connects can be sent this project's pages, to put their claims in order.{% else %}<strong>Models: not decided.</strong> Nobody has chosen for this project: a model the operator connects can be sent its pages, unless the operator sends only the pages of projects whose people chose allowed, and then it is sent none.{% endif %} Models decides only what this server's own model, the one that arranges pages, is sent; the assistants people connect read what they reach and send it to their own provider.</p>
   {% if rule %}
-  <form method="post" action="/b/{{ project.name|seg }}/models">
+  <p class="meta">{% if models == "never" %}<strong>Models: never.</strong> No model is sent this project's pages, whatever their notes say or the operator set. Pages already arranged stay as they are.{% if kind_of(project.kind).private %} {{ kind_of(project.kind).title }} start this way.{% endif %}{% elif models == "allowed" %}<strong>Models: allowed.</strong> A model the operator connects can be sent this project's pages, to put their claims in order.{% else %}<strong>Models: not decided.</strong> Nobody has chosen for this project: a model the operator connects can be sent its pages, unless the operator sends only the pages of projects whose people chose allowed, and then it is sent none.{% endif %} Models decides only what this server's own model, the one that arranges pages, is sent; the assistants people connect read what they reach and send it to their own provider.</p>
+  <form method="post" action="/b/{{ project.name|seg }}/models" class="models-actions">
     {% if models != "allowed" %}<button type="submit" class="quiet" name="models" value="allowed">Allow a model</button>{% endif %}
     {% if models != "never" %}<button type="submit" class="quiet" name="models" value="never">Keep from every model</button>{% endif %}
   </form>
+  {% else %}
+  <p class="meta">{% if models == "never" %}<strong>Models: never.</strong> No model is sent this project's pages, whatever their notes say or the operator set. Pages already arranged stay as they are.{% if kind_of(project.kind).private %} {{ kind_of(project.kind).title }} start this way.{% endif %}{% elif models == "allowed" %}<strong>Models: allowed.</strong> A model the operator connects can be sent this project's pages, to put their claims in order.{% else %}<strong>Models: not decided.</strong> Nobody has chosen for this project yet.{% endif %}</p>
   {% endif %}
 </div>
 {% set kind = kind_of(project.kind) %}
@@ -32,7 +34,7 @@
   {% endif %}
   <p class="hint">Agents that use this project are told the same.</p>
 </details>
-<p class="meta"><strong class="mono">{{ pages_total }}</strong> {{ "page" if pages_total == 1 else "pages" }} compiled from <strong class="mono">{{ notes }}</strong> {{ "note" if notes == 1 else "notes" }} · id <span class="mono">{{ project.id }}</span> · <a href="/b/{{ project.name|seg }}/graph">Graph</a> · <a href="/b/{{ project.name|seg }}/notes">Notes</a>{% if rule %} · <a href="/b/{{ project.name|seg }}/access">Who reaches it</a>{% endif %}{% if erase %} · <a href="/b/{{ project.name|seg }}/delete">Delete this project</a>{% endif %}</p>
+<p class="meta"><strong class="mono">{{ pages_total }}</strong> {{ "page" if pages_total == 1 else "pages" }} compiled from <strong class="mono">{{ notes }}</strong> {{ "note" if notes == 1 else "notes" }} · <a href="/b/{{ project.name|seg }}/graph">Graph</a> · <a href="/b/{{ project.name|seg }}/notes">Notes</a>{% if rule %} · <a href="/b/{{ project.name|seg }}/access">Who reaches it</a>{% endif %}</p>
 <form class="search" method="get" action="/search" role="search">
   <input type="hidden" name="project" value="{{ project.name }}">
   <input type="search" name="q" placeholder="Search {{ project.name }}" aria-label="Search {{ project.name }}">
@@ -65,4 +67,8 @@
   <p>A note filed in this project is compiled into a page.</p>
 </section>
 {% endif %}
+<div class="project-foot meta">
+  <span>Project id <span class="mono">{{ project.id }}</span></span>
+  {% if erase %}<a href="/b/{{ project.name|seg }}/delete">Delete this project</a>{% endif %}
+</div>
 {% endblock %}

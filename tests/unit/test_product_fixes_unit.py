@@ -268,3 +268,65 @@ def test_welcome_without_oauth_links_to_unified_connect_page(tmp_path):
             assert 'href="/setup"' not in welcome
     finally:
         store.close()
+
+
+def test_project_chrome_separates_buttons_condenses_readonly_models_and_moves_id_and_delete(
+    tmp_path,
+):
+    from pathlib import Path
+
+    from cookie_names import session_cookie
+
+    store = Store(tmp_path / "cairn.db")
+    try:
+        ada_s = store.sign_in(
+            "sso",
+            "ada",
+            "ada@example.test",
+            "Ada",
+            issuer="https://id.example.test",
+            join="default",
+        )
+        sam_s = store.sign_in(
+            "sso",
+            "sam",
+            "sam@example.test",
+            "Sam",
+            issuer="https://id.example.test",
+            join="default",
+        )
+        ada = store.for_account(ada_s.account_id, ada_s.user.id)
+        ops = ada.create_project("ops", everyone="write")
+        with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+            cookie_name = session_cookie("https")
+
+            # Owner view: buttons have spacing class, nav row has no id or delete link
+            client.cookies.set(cookie_name, ada_s.token)
+            owner_html = client.get("/b/ops").text
+            assert 'action="/b/ops/models" class="models-actions"' in owner_html
+            nav_row = next(
+                m for m in re.findall(r'<p class="meta">.*?</p>', owner_html, re.S) if "/graph" in m
+            )
+            assert ops.id not in nav_row
+            assert "Delete this project" not in nav_row
+            foot = owner_html.split('class="project-foot meta"', 1)[1].split("</div>", 1)[0]
+            assert ops.id in foot and 'href="/b/ops/delete"' in foot
+
+            # Member who cannot change Models gets short one-sentence Models note
+            client.cookies.set(cookie_name, sam_s.token)
+            member_html = client.get("/b/ops").text
+            models_block = member_html.split('class="row models"', 1)[1].split("</div>", 1)[0]
+            assert "Models: not decided." in models_block
+            assert "Models decides only" not in models_block
+            assert "unless the operator sends only" not in models_block
+
+        css = (Path(__file__).resolve().parents[2] / "src/cairn/static/cairn.css").read_text(
+            encoding="utf-8"
+        )
+        assert (
+            ".models-actions" in css
+            and "gap:" in css.split(".models-actions", 1)[1].split("}", 1)[0]
+        )
+        assert ".project-foot" in css
+    finally:
+        store.close()

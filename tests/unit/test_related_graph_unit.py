@@ -386,6 +386,34 @@ def test_a_limit_the_explorer_refuses_is_refused_as_on_its_other_views(w, world,
     assert main_of(refused.text) == main_of(other.text)
 
 
+def test_a_focus_longer_than_the_explorer_takes_is_refused_as_on_its_other_views(w, world):
+    long = "x" * 600
+    refused = get(w, RELATED + long)
+    other = get(w, "/b/ops/graph?focus=page%3A" + long)
+    assert refused.status_code == other.status_code == 400
+    assert main_of(refused.text) == main_of(other.text)
+    assert get(w, RELATED + "x" * 400).status_code == 404  # within the bound: no such page
+
+
+def test_a_kind_of_reason_the_view_has_no_words_for_is_said_by_its_name():
+    searched = dict.fromkeys(
+        ("terms_looked_up", "terms_not_looked_up", "claims_read", "claims_not_read"), 0
+    ) | {"complete": True, "pages_left_out": 0}
+    why = {"kind": "cites_same", "term": "RFC 9110", "term_kind": "source", "there": {}}
+    answer = {
+        "project": "ops",
+        "page": "deploy",
+        "title": "Deploy",
+        "version": 1,
+        "related": [{"page": "b", "title": "B", "version": 1, "why": [why], "more": 0}],
+        "searched": searched,
+    }
+    (edge,) = related_graph(answer)["edges"]
+    assert (edge["kind"], edge["reason"], edge["term"]) == ("cites same", "cites_same", "RFC 9110")
+    html = render_explorer("ops", related_graph(answer), brand=None, person=None).body.decode()
+    assert "page: Deploy</a> cites same <a" in html and "<code>" not in html
+
+
 def test_a_page_that_is_gone_and_a_project_out_of_reach_answer_as_the_other_views(w, world):
     gone, claims = get(w, RELATED + "nowhere"), get(w, "/b/ops/graph?focus=page%3Anowhere")
     assert gone.status_code == claims.status_code == 404

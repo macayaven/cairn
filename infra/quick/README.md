@@ -125,23 +125,44 @@ tofu destroy
 
 ## Google Cloud
 
-Use a billing-enabled project, OpenTofu 1.13 or newer, and the Google Cloud CLI. Configure
+Use a billing-enabled project, OpenTofu 1.13 or newer, and the Google Cloud CLI. Sign in and set
 [Application Default Credentials](https://docs.cloud.google.com/docs/authentication/provide-credentials-adc)
-with permission to enable the APIs and provision the stack. The account you use for SSH needs
+(`gcloud auth application-default login`) with permission to enable APIs and provision the stack;
+the Google provider sets `billing_project` and `user_project_override = true` from `project_id`, so
+you do not need a separate quota-project file. On a brand-new project where Service Usage and
+Resource Manager are not active yet, enable both once before your first apply:
+
+```sh
+gcloud services enable serviceusage.googleapis.com cloudresourcemanager.googleapis.com \
+  --project=PROJECT_ID
+```
+
+The account you use for SSH needs
 [IAP tunnel access and OS Admin Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin#assign-oslogin-roles),
-including permission to use the attached service account. An account from outside the
-project's organisation also needs `roles/compute.osLoginExternalUser`, granted on the
-organisation; and where the roles are granted on the instance alone, the CLI also needs to
-read the project (`compute.projects.get`). Have a domain whose DNS you can edit.
+including permission to use the attached service account. An account from outside the project's
+organisation also needs `roles/compute.osLoginExternalUser`, granted on the organisation; and where
+the roles are granted on the instance alone, the CLI also needs to read the project
+(`compute.projects.get`). Have a domain whose DNS you can edit.
 The stack enables the Cloud OS Login API (`oslogin.googleapis.com`) for SSH.
 
-The stack creates a VPC and subnet, an `e2-small` with a 20 GiB `pd-balanced` boot disk, a
-reserved public IPv4 address, a service account, a Cloud Storage bucket and a Secret Manager
-secret. The default zone is `us-central1-a`. While it runs, budget for
+The stack creates a VPC and subnet (with Private Google Access), an `e2-small` with Shielded VM
+features and a 20 GiB `pd-balanced` boot disk, a reserved public IPv4 address, a service account, a
+Cloud Storage bucket with a 7-day soft delete policy, and a Secret Manager secret. Rather than
+creating custom project IAM roles (which suffer a 37-day GCP name lockout after teardown), it
+binds predefined roles strictly to those two resources:
+
+- **`roles/storage.objectUser` on the backup bucket:** grants object and multipart-upload
+  operations needed by Litestream, plus object metadata edits, moves, restores and folder
+  operations inside that bucket — never bucket deletion or IAM/policy changes.
+- **`roles/secretmanager.secretAccessor` and `roles/secretmanager.viewer` on the settings
+  secret:** lets the VM list and read secret versions, plus view that single secret's metadata, IAM
+  policy and tags — never modify secrets/versions or read any other secret.
+
+The default zone is `us-central1-a`. While it runs, budget for
 [Compute Engine instance time](https://cloud.google.com/compute/vm-instance-pricing),
 [the disk](https://cloud.google.com/compute/disks-image-pricing),
 [the IPv4 address and billable transfer](https://cloud.google.com/vpc/network-pricing),
-[replica storage and requests](https://cloud.google.com/storage/pricing),
+[replica storage, soft-deleted 10-second L0 files and requests](https://cloud.google.com/storage/pricing),
 and [active secret versions and access operations](https://cloud.google.com/secret-manager/pricing).
 
 1. Clone at the release tag.
@@ -163,7 +184,13 @@ and [active secret versions and access operations](https://cloud.google.com/secr
    tofu init
    ```
 
-4. Review and apply the plan.
+4. Review and apply the plan. On a fresh project, Google Cloud API activation and service-account
+   propagation can take up to a minute; if the first `tofu apply` stops with a propagation `403` or
+   unknown service account error, wait a minute and run `tofu apply` again. Later applies ignore new
+   Ubuntu 24.04 image releases so a routine run never replaces your VM; to move to a newer Ubuntu
+   image on purpose (after saving a backup), run `tofu apply -replace=google_compute_instance.app`.
+   Replacing the VM clears Caddy's certificate cache on the boot disk; avoid repeated recreations so
+   you do not hit Let's Encrypt's limit of 5 duplicate certificates per week.
 
    ```sh
    tofu apply
@@ -191,7 +218,8 @@ and [active secret versions and access operations](https://cloud.google.com/secr
    ```
 
 The key command writes a root-owned file with mode 0600 and prints its path. Read it in a private
-session and use the API key to sign in at your HTTPS URL. Keep the key in your credential store.
+session, save the API key in your credential store, remove the temporary file on the VM
+(`sudo rm -f /opt/cairn/cairn-first-key.*`), and sign in at your HTTPS URL.
 
 ### Google Cloud settings
 
@@ -214,14 +242,19 @@ sudo systemctl restart cairn-quick.service
 ### Google Cloud teardown
 
 Save the bucket name before destroying the stack. The destroy operation refuses to delete a
-bucket with objects. The project APIs stay enabled.
+bucket with live objects. The project APIs stay enabled. The bucket keeps a 7-day soft delete policy
+against accidental or VM-initiated deletion (note that Litestream's 10-second L0 files also stay in
+soft delete for 7 days and incur standard Cloud Storage charges). Emptying live objects with
+`gcloud storage rm --all-versions` lets `tofu destroy` delete the bucket immediately even while
+soft-deleted objects remain; the soft-deleted bucket and objects stay recoverable and billed until
+their 7 days expire, while the bucket name becomes available right away.
 
 ```sh
 bucket="$(tofu output -raw backup_bucket)"
 tofu destroy
 ```
 
-To remove a retained bucket too, empty it and retry the destroy. This deletes the backups.
+To remove a retained bucket too, empty its live objects and retry the destroy. This deletes the live backups.
 
 ```sh
 gcloud storage rm --all-versions "gs://$bucket/**"

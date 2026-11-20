@@ -16,11 +16,13 @@ locals {
 
 resource "google_project_service" "api" {
   for_each = toset([
+    "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",
     "iam.googleapis.com",
     "iap.googleapis.com",
     "oslogin.googleapis.com",
     "secretmanager.googleapis.com",
+    "serviceusage.googleapis.com",
     "storage.googleapis.com",
   ])
 
@@ -43,10 +45,11 @@ resource "google_compute_network" "app" {
 }
 
 resource "google_compute_subnetwork" "app" {
-  name          = "cairn-quick"
-  ip_cidr_range = "10.42.0.0/24"
-  network       = google_compute_network.app.self_link
-  stack_type    = "IPV4_ONLY"
+  name                     = "cairn-quick"
+  ip_cidr_range            = "10.42.0.0/24"
+  network                  = google_compute_network.app.self_link
+  stack_type               = "IPV4_ONLY"
+  private_ip_google_access = true
 }
 
 resource "google_compute_address" "app" {
@@ -89,9 +92,10 @@ resource "google_storage_bucket" "replica" {
   public_access_prevention    = "enforced"
   force_destroy               = false
 
-  # Google-managed encryption is the service default. Litestream manages retention.
+  # Google-managed encryption is the service default. Litestream manages retention, while a
+  # 7-day soft delete policy protects deleted replica files against VM compromise.
   soft_delete_policy {
-    retention_duration_seconds = 0
+    retention_duration_seconds = 604800
   }
 
   depends_on = [google_project_service.api["storage.googleapis.com"]]
@@ -114,39 +118,20 @@ resource "google_service_account" "app" {
   depends_on = [google_project_service.api["iam.googleapis.com"]]
 }
 
-resource "google_project_iam_custom_role" "replica" {
-  role_id = "cairnQuickReplica"
-  title   = "cairn replica objects"
-  permissions = [
-    "storage.objects.create",
-    "storage.objects.delete",
-    "storage.objects.get",
-    "storage.objects.list",
-  ]
-
-  depends_on = [google_project_service.api["iam.googleapis.com"]]
-}
-
 resource "google_storage_bucket_iam_member" "replica" {
   bucket = google_storage_bucket.replica.name
-  role   = google_project_iam_custom_role.replica.name
+  role   = "roles/storage.objectUser"
   member = google_service_account.app.member
 }
 
-resource "google_project_iam_custom_role" "settings" {
-  role_id = "cairnQuickSettings"
-  title   = "cairn settings secret versions"
-  permissions = [
-    "secretmanager.versions.access",
-    "secretmanager.versions.list",
-  ]
-
-  depends_on = [google_project_service.api["iam.googleapis.com"]]
-}
-
 resource "google_secret_manager_secret_iam_member" "settings" {
+  for_each = toset([
+    "roles/secretmanager.secretAccessor",
+    "roles/secretmanager.viewer",
+  ])
+
   secret_id = google_secret_manager_secret.settings.secret_id
-  role      = google_project_iam_custom_role.settings.name
+  role      = each.key
   member    = google_service_account.app.member
 }
 
@@ -178,9 +163,16 @@ resource "google_compute_instance" "app" {
     }
   }
 
+  shielded_instance_config {
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+    enable_integrity_monitoring = true
+  }
+
   metadata = {
-    enable-oslogin = "TRUE"
-    user-data      = local.cloud_init
+    enable-oslogin         = "TRUE"
+    block-project-ssh-keys = "TRUE"
+    user-data              = local.cloud_init
   }
 
   service_account {
@@ -189,6 +181,10 @@ resource "google_compute_instance" "app" {
   }
 
   lifecycle {
+    ignore_changes = [
+      # A new Ubuntu LTS image release must not replace a running VM on routine applies.
+      boot_disk[0].initialize_params[0].image,
+    ]
     replace_triggered_by = [terraform_data.bootstrap]
   }
 

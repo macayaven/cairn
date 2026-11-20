@@ -10,6 +10,8 @@ _EMAIL = re.compile(r"""(?:"[^"\n]+"|[\w.!#$%&'*+/=?^`{|}~-]+)@(?:\[[^\]\n]+\]|[
 _TOKENS = re.compile(r"```[\s\S]*?```|`[^`\n]*`|<[^>\n]+>")
 _DOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
 _TIMESTAMP = re.compile(r"[0-9]{1,12}\.[0-9]{6}")
+_ATX_START = re.compile(r"(?m)^([ ]{0,3})(#{1,6})(?=[ \t])")
+_ATX_AFTER_NL = re.compile(r"(\n[ ]{0,3})(#{1,6})(?=[ \t])")
 
 
 def _redact(text: str) -> str:
@@ -67,11 +69,17 @@ def _link_target(target: str) -> str | None:
     return quote(target, safe=":/?#%=&+@,;~-._")
 
 
+def _escape_headings(text: str, *, line_start: bool) -> str:
+    pattern = _ATX_START if line_start else _ATX_AFTER_NL
+    return pattern.sub(r"\1\\\2", text)
+
+
 def _render(text: str, names: Mapping[str, str]) -> str:
-    pieces = []
+    pieces: list[str] = []
     offset = 0
     for match in _TOKENS.finditer(text):
-        pieces.append(_prose(text[offset : match.start()]))
+        line_start = offset == 0 or text[offset - 1] == "\n"
+        pieces.append(_escape_headings(_prose(text[offset : match.start()]), line_start=line_start))
         token = match.group()
         if token.startswith("`"):
             pieces.append(_redact(_decode(token)))
@@ -80,7 +88,16 @@ def _render(text: str, names: Mapping[str, str]) -> str:
             if target.startswith("@"):
                 pieces.append("@" + _literal(names.get(target[1:], target[1:])))
             elif target.startswith("#"):
-                pieces.append("#" + _literal(names.get(target[1:], label or target[1:])))
+                shown_tag = _literal(names.get(target[1:], label or target[1:]))
+                line_prefix = "".join(pieces).rsplit("\n", 1)[-1]
+                if (
+                    shown_tag[:1] in {" ", "\t"}
+                    and len(line_prefix) <= 3
+                    and line_prefix == " " * len(line_prefix)
+                ):
+                    pieces.append(r"\#" + shown_tag)
+                else:
+                    pieces.append("#" + shown_tag)
             else:
                 url = _link_target(target)
                 shown = _literal(label if separator else target)
@@ -91,7 +108,8 @@ def _render(text: str, names: Mapping[str, str]) -> str:
                 else:
                     pieces.append("[link omitted]")
         offset = match.end()
-    pieces.append(_prose(text[offset:]))
+    line_start = offset == 0 or text[offset - 1] == "\n"
+    pieces.append(_escape_headings(_prose(text[offset:]), line_start=line_start))
     return "".join(pieces)
 
 
@@ -148,7 +166,7 @@ def note_from_message(
         if root != timestamp:
             source += "?" + urlencode({"thread_ts": root, "cid": conversation_id})
     raw = "".join(character for character in raw if character in "\n\t" or ord(character) >= 32)
-    body = _render(raw, names).strip()
+    body = _render(raw.strip(), names).strip()
     if not body:
         raise NotText("The selected message has no text")
     title = next(line.strip() for line in body.splitlines() if line.strip())

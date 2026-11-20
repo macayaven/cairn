@@ -33,6 +33,8 @@ def at_line_three(text: str, policy: str = "secrets") -> list[tuple[str, int]]:
     [
         # a connection string with a password in its authority (one that holds "@" too)
         ("credential_url", "postgres://quill" + ":S3cur3P@ssw0rd!@10.0.0.4:5432/fable"),
+        ("credential_url", "postgres://quill" + ":password@123@10.0.0.4:5432/fable"),
+        ("credential_url", "postgres://quill" + ":@ssw0rd!@10.0.0.4:5432/fable"),
         ("credential_url", "mysql://ada" + ":plainpassword@db.fable.test/works"),
         ("credential_url", "amqp://brook" + ":" + ALNUM[:10] + "@queue.fable.test"),
         ("credential_url", "Clone https://ada" + ":" + ALNUM[:20] + "@git.fable.test/x.git"),
@@ -68,6 +70,8 @@ def test_a_credential_people_paste_is_refused_by_the_default_policy(rule, text):
         "postgres://${DB_USER}:${DB_PASSWORD}@db/fable",
         # a port and a path are not a password
         "https://fable.test:8443/works@home",
+        "https://fable.test:443?email=ada@fable.test",
+        "https://fable.test:443#ada@fable.test",
         "See https://fable.test:443/a/b and mail ada@fable.test",
         # placeholders in a header
         "Authorization: Bearer <token>",

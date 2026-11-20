@@ -35,21 +35,21 @@
       <li><strong>1</strong> note</li>
     </ul>
     <article class="claim margin-grid" id="example-1">
-      <div class="in-margin claim-cites"><a href="#example-1" title="Source 1">1</a></div>
+      <div class="in-margin claim-cites"><a href="#example-1" title="Source 1" aria-label="Source 1">1</a></div>
       <div class="claim-body">
         <p class="claim-text">Quill retries a failed charge 3 times, 30 s apart.</p>
         <details class="proof" open><summary>See the source line</summary>{{ lines(note, 1, 1, 5, 3, 3) }}</details>
       </div>
     </article>
     <article class="claim margin-grid" id="example-2">
-      <div class="in-margin claim-cites"><a href="#example-2" title="Source 2">2</a></div>
+      <div class="in-margin claim-cites"><a href="#example-2" title="Source 2" aria-label="Source 2">2</a></div>
       <div class="claim-body">
         <p class="claim-text">Lumen never retries: it reports the failure and stops.</p>
         <details class="proof"><summary>See the source line</summary>{{ lines(note, 2, 3, 7, 5, 5) }}</details>
       </div>
     </article>
     <article class="claim margin-grid code" id="example-3">
-      <div class="in-margin claim-cites"><a href="#example-3" title="Source 3">3</a></div>
+      <div class="in-margin claim-cites"><a href="#example-3" title="Source 3" aria-label="Source 3">3</a></div>
       <div class="claim-body">
         <div class="claim-text md"><pre><code class="language-bash">quill run --max-retries 3 --backoff 30s</code></pre></div>
         <details class="proof"><summary>See the 3 source lines</summary>{{ lines(note, 3, 5, 9, 7, 9) }}</details>

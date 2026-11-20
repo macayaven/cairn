@@ -159,3 +159,37 @@ def test_the_shipped_backup_settings_are_the_ones_the_privacy_guide_states():
         " snapshot of the machine's data disk, kept 14 days.",
     ):
         assert said in privacy, said
+
+
+def test_the_privacy_guide_states_the_forgotten_digest_limits(tmp_path):
+    import hashlib
+
+    import pytest
+
+    from cairn.compiler import provenance_gate
+    from cairn.memory import Memory, NoteForgotten
+    from cairn.store import Store
+
+    privacy = " ".join(guide_text("privacy").split())
+    for sentence in (
+        "someone who holds the database file and guesses the text exactly can confirm the guess",
+        "Someone who can write to the project and already has the note's exact text can learn that"
+        " it was forgotten there, because writing it again is refused and the refusal says why.",
+    ):
+        assert sentence in privacy, sentence
+
+    note_text = "Canary line for digest check."
+    store = Store(tmp_path / "cairn.db")
+    try:
+        store.create_project("ops")
+        mem = Memory(store, provenance_gate)
+        made = mem.note("ops", note_text, topic="Digest")
+        store.forget_note(made["note_id"])
+        with pytest.raises(NoteForgotten):
+            mem.note("ops", note_text, topic="Digest")
+        digests = [
+            row[0] for row in store._con.execute("SELECT text_sha256 FROM forgotten").fetchall()
+        ]
+        assert hashlib.sha256(note_text.encode("utf-8")).hexdigest() in digests
+    finally:
+        store.close()

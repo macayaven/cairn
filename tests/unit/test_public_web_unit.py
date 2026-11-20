@@ -190,3 +190,14 @@ def test_every_page_links_the_stylesheet_by_a_digest_of_the_file_as_shipped(tmp_
     assert client.get(link.split('"')[1]).status_code == 200  # the address serves the file
     for template in (files("cairn") / "templates").iterdir():  # only base.html links it
         assert template.name == "base.html" or "/static/cairn.css" not in template.read_text()
+
+
+def test_the_landing_page_example_citations_name_their_sources(tmp_path):
+    store = Store(tmp_path / "landing.db")
+    offline = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    sign_in = SignIn(providers=(GitHub("id", "secret"),), http=offline)
+    with TestClient(create_app(store, public_url=BASE, sign_in=sign_in), base_url=BASE) as client:
+        landing = client.get("/").text
+    store.close()
+    for n in (1, 2, 3):
+        assert f'href="#example-{n}" title="Source {n}" aria-label="Source {n}"' in landing

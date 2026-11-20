@@ -173,7 +173,7 @@ def found(counted: Sequence[str], left_out: Sequence[str], ranked: Ranked = NOTH
     return Found(
         hits=ranked.hits,
         searched=Searched(
-            words_searched=len(counted),
+            words_searched=len(counted) if _parts(counted) else 0,
             words_left_out=tuple(left_out[:WORDS_SHOWN]),
             words_left_out_count=len(left_out),
             claims_matched=ranked.matched,

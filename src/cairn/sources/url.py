@@ -46,6 +46,8 @@ METADATA_ADDRESSES = frozenset(
 )
 _BROADCAST = ipaddress.IPv4Address("255.255.255.255")
 _NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+_IPV4_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
 _NUMERIC = frozenset("0123456789abcdefx.")  # IPv4 written in a form inet_aton reads
 INSIDE = (
     "is an address inside this machine's network plumbing (a link-local address, a cloud's"
@@ -72,9 +74,17 @@ def _policy_address(address: IPAddress) -> IPAddress:
     if isinstance(address, ipaddress.IPv6Address):
         if address.ipv4_mapped is not None:
             address = address.ipv4_mapped
-        elif address in _NAT64:
+        elif address in _NAT64 or address in _NAT64_LOCAL or address in _IPV4_TRANSLATED:
             address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
     return address
+
+
+def _is_global(address: IPAddress) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and (
+        address in _NAT64_LOCAL or address in _IPV4_TRANSLATED
+    ):
+        return False
+    return _policy_address(address).is_global
 
 
 def _address_inside(address: IPAddress) -> bool:
@@ -280,9 +290,7 @@ class CheckedTransport(httpx.AsyncBaseTransport):
                 raise httpx.ConnectError(UNRESOLVED, request=request)
         if any(_address_inside(address) for address in addresses):
             raise RefusedAddress(REFUSED, request=request)
-        if not self._allow_private and any(
-            not _policy_address(address).is_global for address in addresses
-        ):
+        if not self._allow_private and any(not _is_global(address) for address in addresses):
             raise PrivateAddress(PRIVATE_REFUSAL, request=request)
         if (
             request.url.scheme == "http"

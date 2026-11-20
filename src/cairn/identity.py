@@ -49,6 +49,8 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from cairn.sources.url import inside
+
 PROVIDER_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 # The `acr` values that mean a second factor whatever the provider: the multi-factor
 # policies of the OpenID Provider Authentication Policy Extension 1.0.
@@ -308,7 +310,7 @@ def _https_or_loopback(url: object, loopback: bool = True) -> bool:
         host = parts.hostname
     except ValueError:
         return False
-    if not host or "@" in parts.netloc:
+    if not host or "@" in parts.netloc or inside(host):
         return False
     return parts.scheme == "https" or (loopback and parts.scheme == "http" and host in _LOOPBACK)
 

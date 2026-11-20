@@ -62,7 +62,9 @@ INSIDE = [
     "[::]",
     "255.255.255.255",
     "[::ffff:169.254.169.254]",
+    "[::ffff:0:169.254.169.254]",
     "[64:ff9b::a9fe:a9fe]",
+    "[64:ff9b:1::169.254.169.254]",
     "2852039166",  # 169.254.169.254 written as one number
     "0xa9fea9fe",
     "169.254.43518",
@@ -192,6 +194,8 @@ def get(client: httpx.AsyncClient, address: str) -> httpx.Response:
         ["fe80::1"],
         ["10.0.0.5", "169.254.169.254"],  # any one of them
         ["::ffff:169.254.169.254"],
+        ["::ffff:0:169.254.169.254"],
+        ["64:ff9b:1::169.254.169.254"],
         ["224.0.0.1"],
         ["0.0.0.0"],
     ],
@@ -223,7 +227,17 @@ def test_a_name_that_resolves_to_a_private_or_loopback_address_is_sent(answers, 
     assert resolve.asked == [("ghe.fable.test", 8080)]
 
 
-@pytest.mark.parametrize("host", ["169.254.169.254", "[fe80::1]", "2852039166", "0xa9fea9fe"])
+@pytest.mark.parametrize(
+    "host",
+    [
+        "169.254.169.254",
+        "[fe80::1]",
+        "[::ffff:0:169.254.169.254]",
+        "[64:ff9b:1::169.254.169.254]",
+        "2852039166",
+        "0xa9fea9fe",
+    ],
+)
 def test_an_inside_address_written_out_is_refused_without_asking(host, monkeypatch):
     monkeypatch.setenv(u.PRIVATE_ADDRESSES_SETTING, "allow")
     sent, transport = recording()
@@ -345,3 +359,13 @@ def test_the_check_resolves_once_and_hands_the_ip_to_the_transport():
     assert sent[0].url.host == "192.0.0.9"
     assert sent[0].headers["host"] == "r.fable.test"
     assert next(answers) == ["169.254.169.254"]
+
+
+@pytest.mark.parametrize("answer", ["64:ff9b:1::93.184.216.34", "::ffff:0:93.184.216.34"])
+def test_local_translation_prefixes_are_not_global(answer, monkeypatch):
+    monkeypatch.delenv(u.PRIVATE_ADDRESSES_SETTING, raising=False)
+    sent, transport = recording()
+    client = source_client(transport=transport, resolve=Resolver({"t.fable.test": [answer]}))
+    with pytest.raises(u.PrivateAddress):
+        get(client, "https://t.fable.test/api")
+    assert sent == []

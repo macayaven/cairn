@@ -51,8 +51,8 @@ def test_the_security_policy_says_which_versions_get_fixes_as_the_workflow_tags_
     tags = workflow_step("Image tags")
     assert "type=semver,pattern={{version}}" in tags
     assert "{{major}}.{{minor}}" not in tags and "latest" not in tags.split("tags: |")[1]
-    push = workflow_step("Push the scanned build")
-    assert 'grep -Fxq "$first"' in push and "a full version is published once" in push
+    decide = workflow_step("Look for this build in the registry")
+    assert 'grep -Fxq "$first"' in decide and "a full version is published once" in decide
     # Job `aliases` moves X.Y to the newest X.Y.z and latest to the highest release.
     aliases = workflow_step("Point latest and each X.Y at the highest release")
     assert "point latest " in aliases and 'point "$line" ' in aliases

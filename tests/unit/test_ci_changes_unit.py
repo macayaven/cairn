@@ -1440,12 +1440,14 @@ def test_the_publishing_job_is_found_by_the_display_name_this_workflow_gives_it(
     ]
     # And it is the job that pushes the image: the only one that copies the build into the
     # registry. `aliases`, after the release, may write packages too: it moves tags only.
+    # A copy to the runner's own registry (--to-plain-http) or from GHCR into a directory
+    # (--to-oci-layout, image_build on a tag) writes nothing to GHCR.
     pushes = [
         name
         for name, job in jobs.items()
         for step in job["steps"]
         if (step.get("with") or {}).get("push") is True
-        or re.search(r"\boras cp\b(?!.*--to-plain-http)", step.get("run", ""))
+        or re.search(r"\boras cp\b(?!.*--to-(plain-http|oci-layout))", step.get("run", ""))
     ]
     assert pushes == ["publish"]
     writers = [

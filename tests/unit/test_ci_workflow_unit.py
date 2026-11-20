@@ -367,12 +367,15 @@ def test_rehearsals_select_amd64_and_only_emulate_on_arm(name):
     assert qemu.get("env", {}).get("DOCKER_DEFAULT_PLATFORM") == (
         "${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}"
     )
-    build_index = next(
-        i for i, step in enumerate(job["steps"]) if "docker build" in step.get("run", "")
+    # The rehearsals take the build's amd64 image, by its own digest, and build none.
+    pull_index = next(
+        i
+        for i, step in enumerate(job["steps"])
+        if step.get("name") == "Pull this platform of the build"
     )
-    assert job["steps"].index(qemu) < build_index
-    build = shlex.split(job["steps"][build_index]["run"])
-    assert build[build.index("--platform") + 1] == "linux/amd64"
+    assert job["steps"].index(qemu) < pull_index
+    assert job["env"]["PLATFORM"] == "linux/amd64" and job["env"]["ARCH"] == "amd64"
+    assert not any("docker build" in step.get("run", "") for step in job["steps"])
     if name == "host":
         # Emulated on an ARM64 runner the job took 31 minutes; 40 left no room.
         assert job["timeout-minutes"] == 60
@@ -406,18 +409,23 @@ def test_rehearsals_refuse_a_local_image_for_the_wrong_platform(
     tmp_path, name, architecture, success
 ):
     steps = JOBS[name]["steps"]
-    preflight = next(step for step in steps if step.get("name") == "Check the image platform")
-    assert steps.index(preflight) == len(steps) - 2
+    preflight = next(
+        step for step in steps if step.get("name") == "Pull this platform of the build"
+    )
+    # Then the runner's registry is stopped, and the rehearsal runs.
+    assert steps.index(preflight) == len(steps) - 3
     docker = tmp_path / "docker"
     docker.write_text(
         "#!/bin/sh\n"
+        'case "$1" in pull|tag) exit 0 ;; esac\n'
         'test "$*" = "image inspect --format {{.Architecture}} cairn:ci" || exit 77\n'
         'printf "%s\\n" "$IMAGE_ARCH"\n'
     )
     docker.chmod(0o755)
+    env = {k: v for k, v in JOBS[name]["env"].items() if k in ("LOCAL", "PLATFORM", "ARCH")}
     result = subprocess.run(
         ["/bin/bash", "-e", "-c", preflight["run"]],
-        env={"PATH": str(tmp_path), "IMAGE_ARCH": architecture},
+        env={"PATH": str(tmp_path), "IMAGE_ARCH": architecture, "IMAGE": "x@sha256:1", **env},
         capture_output=True,
         text=True,
         check=False,
@@ -583,8 +591,9 @@ def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
     # The three image jobs also need `changes`, the only way to read its output; the image
     # check needs image_build, whose build it runs.
     assert needs(JOBS["image"]) == {"test", "changes", "image_build"}
-    assert needs(JOBS["host"]) == {"test", "changes"}
-    assert needs(JOBS["stack"]) == {"changes"}
+    # The rehearsals rehearse that build too, its amd64 image, and build none of their own.
+    assert needs(JOBS["host"]) == {"test", "changes", "image_build"}
+    assert needs(JOBS["stack"]) == {"changes", "image_build"}
     assert needs(JOBS["publish"]) == {
         "infra",
         "image",
@@ -1043,7 +1052,7 @@ def test_host_rehearsal_units_receive_the_amd64_platform():
         == 'sudo systemctl set-environment "DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM"'
     )
     assert steps.index(step) < next(
-        i for i, s in enumerate(steps) if "docker build" in s.get("run", "")
+        i for i, s in enumerate(steps) if s.get("name") == "Pull this platform of the build"
     )
     assert JOBS["host"]["env"]["DOCKER_DEFAULT_PLATFORM"] == "linux/amd64"
 

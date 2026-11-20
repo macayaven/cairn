@@ -22,7 +22,6 @@ import pytest
 import yaml
 from test_ci_workflow_unit import (
     JOBS,
-    SHA,
     THE_GATE,
     ancestors,
     evaluate,
@@ -384,9 +383,10 @@ def candidate_tags(tag: str) -> set[str]:
     return image_tags({**context, "needs": outputs})
 
 
-def test_a_candidate_is_published_as_its_own_tag_and_its_commit_only():
-    assert candidate_tags("v1.2.3-rc.1") == {"1.2.3-rc.1", f"sha-{SHA[:7]}"}
-    assert candidate_tags("v0.1.0-rc.12") == {"0.1.0-rc.12", f"sha-{SHA[:7]}"}
+def test_a_candidate_is_published_as_its_own_tag_only():
+    # Its image is main's, already sha-<commit>: a tag run writes no sha- tag.
+    assert candidate_tags("v1.2.3-rc.1") == {"1.2.3-rc.1"}
+    assert candidate_tags("v0.1.0-rc.12") == {"0.1.0-rc.12"}
 
 
 def test_a_release_after_its_candidates_publishes_its_full_version():

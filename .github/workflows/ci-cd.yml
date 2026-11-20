@@ -409,15 +409,18 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up QEMU
+        if: github.ref_type != 'tag'
         env:
           # The binfmt installer must run natively before emulation exists.
           DOCKER_DEFAULT_PLATFORM: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - name: Set up Buildx
+        if: github.ref_type != 'tag'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Make the directory the archive goes in
         run: mkdir -p "$RUNNER_TEMP/image"
       - name: Build linux/amd64 and linux/arm64
+        if: github.ref_type != 'tag'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -427,9 +430,53 @@ jobs:
           sbom: true
           cache-from: type=gha,scope=image
           cache-to: type=gha,mode=max,scope=image
+      - name: Install oras
+        if: github.ref_type == 'tag'
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      # A tag builds nothing: its image is the one main's run built, checked and published for
+      # this commit as sha-<commit> (publish writes that tag once, and only on main). It is read
+      # by its digest, so a later write to that tag cannot change what this run checks, into an
+      # OCI layout that is archived as a build's archive is. The repository is public on a tag
+      # (release_check refuses one that is not), so the read needs no login.
+      - name: Fetch the image main's run published for this commit
+        id: main
+        if: github.ref_type == 'tag'
+        run: |
+          set -o pipefail
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          commit="sha-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          if ! oras manifest fetch "$image:$commit" > "$RUNNER_TEMP/main.json"; then
+            echo "::error::$image:$commit could not be read, so main's run has not published $GITHUB_SHA (it is still running, publishing is off, or it built another commit of that push); run this tag's workflow again once main's run for that commit has published it"
+            exit 1
+          fi
+          main="sha256:$(sha256sum < "$RUNNER_TEMP/main.json" | cut -d' ' -f1)"
+          oras cp --to-oci-layout "$image@$main" "$RUNNER_TEMP/image/layout:main"
+          tar -cf "$RUNNER_TEMP/image/cairn.oci.tar" -C "$RUNNER_TEMP/image/layout" oci-layout index.json blobs
+          echo "digest=$main" >> "$GITHUB_OUTPUT"
       - name: Check the archive and give its digests
         id: archive
         run: python3 scripts/oci_archive.py "$RUNNER_TEMP/image/cairn.oci.tar" --github-output "$GITHUB_OUTPUT"
+      - name: Check that the archive is main's image
+        if: github.ref_type == 'tag'
+        env:
+          MAIN: ${{ steps.main.outputs.digest }}
+          ARCHIVED: ${{ steps.archive.outputs.digest }}
+        run: |
+          if [ "$ARCHIVED" != "$MAIN" ]; then
+            echo "::error::the archive holds $ARCHIVED, not main's image $MAIN"
+            exit 1
+          fi
       # A re-run of this job replaces the artifact (overwrite); its new index digest then
       # differs from a version already published, which `publish` refuses.
       - name: Keep it for the jobs after this one
@@ -770,13 +817,17 @@ jobs:
   # real certificate, a bucket, and the VM's own launcher).
   stack:
     name: stack rehearsal (compose, Caddy, Litestream)
-    needs: changes
+    needs: [changes, image_build]
     if: >-
       (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
       needs.changes.outputs.image != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
     env:
       DOCKER_DEFAULT_PLATFORM: linux/amd64
+      LOCAL: cairn:ci
+      IMAGE: localhost:5000/cairn@${{ needs.image_build.outputs.amd64 }}
+      PLATFORM: linux/amd64
+      ARCH: amd64
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -788,10 +839,92 @@ jobs:
           # The binfmt installer must run natively before emulation exists.
           DOCKER_DEFAULT_PLATFORM: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - name: Build the image
-        run: docker build --platform linux/amd64 -t cairn:ci .
-      - name: Check the image platform
-        run: test "$(docker image inspect --format '{{.Architecture}}' cairn:ci)" = amd64
+      - name: Fetch the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Install oras
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      # The archive image_build made, checked against its SHA-256, pushed by its index's
+      # digest the way `publish` pushes it, to a registry on this runner (registry:2, on the
+      # engine's own platform: emulated, it died at the first push, decision 150), and read
+      # back: the index there must be that digest.
+      - name: Push the build to a registry on the runner, as publish pushes it
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          ARCHIVE: ${{ needs.image_build.outputs.archive }}
+          NATIVE: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/image"
+          printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+          mkdir layout
+          tar -xf cairn.oci.tar -C layout
+          docker run --detach --name cairn-registry --platform "$NATIVE" \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for attempt in $(seq 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
+            sleep 1
+          done
+          image=localhost:5000/cairn
+          oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
+          # Every oras verb the jobs that write use: the listing, a tag by digest, a read back.
+          oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+          grep -Fxq ci "$RUNNER_TEMP/published" || {
+            echo "::error::the registry's tags do not list ci after the push"
+            exit 1
+          }
+          oras tag --plain-http "$image@$DIGEST" rehearsed
+          for name in ci rehearsed; do
+            pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
+      # This leg's image, named by its own manifest digest, read from the registry: one image
+      # (not an index), whose config says it is built for this leg's platform. The registry
+      # answers for exactly that digest, whatever the runner's own platform.
+      - name: Check that this platform's image is built for it
+        run: |
+          set -o pipefail
+          oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+          import json, os, sys
+          manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+          image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+          kind = manifest.get("mediaType")
+          if kind != "application/vnd.oci.image.manifest.v1+json":
+              sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+          built_for = f"{config.get('os')}/{config.get('architecture')}"
+          if built_for != platform:
+              sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+          print(f"{image} is one image, built for {platform}")
+          CHECK
+      # This leg's image, by its own digest, into the engine as LOCAL: one image, so the engine
+      # has no platform to choose.
+      - name: Pull this platform of the build
+        run: |
+          docker pull --platform "$PLATFORM" "$IMAGE"
+          docker tag "$IMAGE" "$LOCAL"
+          test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = "$ARCH"
+      # The rehearsal takes the engine from here: the registry on the runner is not part of it.
+      - name: Stop the registry on the runner
+        run: docker rm --force cairn-registry
       - name: Rehearse the shipped stack
         run: python3 scripts/rehearse_stack.py cairn:ci
 
@@ -802,7 +935,7 @@ jobs:
   # Artifact Registry, a real reboot).
   host:
     name: host rehearsal (units, disk, updater)
-    needs: [test, changes]
+    needs: [test, changes, image_build]
     if: >-
       (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
       needs.changes.outputs.image != 'false'
@@ -810,6 +943,10 @@ jobs:
     timeout-minutes: 60
     env:
       DOCKER_DEFAULT_PLATFORM: linux/amd64
+      LOCAL: cairn:ci
+      IMAGE: localhost:5000/cairn@${{ needs.image_build.outputs.amd64 }}
+      PLATFORM: linux/amd64
+      ARCH: amd64
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -831,10 +968,92 @@ jobs:
       # environment; systemd's own environment reaches every unit started after this.
       - name: Give the units the same platform
         run: sudo systemctl set-environment "DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM"
-      - name: Build the image
-        run: docker build --platform linux/amd64 -t cairn:ci .
-      - name: Check the image platform
-        run: test "$(docker image inspect --format '{{.Architecture}}' cairn:ci)" = amd64
+      - name: Fetch the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Install oras
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      # The archive image_build made, checked against its SHA-256, pushed by its index's
+      # digest the way `publish` pushes it, to a registry on this runner (registry:2, on the
+      # engine's own platform: emulated, it died at the first push, decision 150), and read
+      # back: the index there must be that digest.
+      - name: Push the build to a registry on the runner, as publish pushes it
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          ARCHIVE: ${{ needs.image_build.outputs.archive }}
+          NATIVE: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/image"
+          printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+          mkdir layout
+          tar -xf cairn.oci.tar -C layout
+          docker run --detach --name cairn-registry --platform "$NATIVE" \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for attempt in $(seq 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
+            sleep 1
+          done
+          image=localhost:5000/cairn
+          oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
+          # Every oras verb the jobs that write use: the listing, a tag by digest, a read back.
+          oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+          grep -Fxq ci "$RUNNER_TEMP/published" || {
+            echo "::error::the registry's tags do not list ci after the push"
+            exit 1
+          }
+          oras tag --plain-http "$image@$DIGEST" rehearsed
+          for name in ci rehearsed; do
+            pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
+      # This leg's image, named by its own manifest digest, read from the registry: one image
+      # (not an index), whose config says it is built for this leg's platform. The registry
+      # answers for exactly that digest, whatever the runner's own platform.
+      - name: Check that this platform's image is built for it
+        run: |
+          set -o pipefail
+          oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+          import json, os, sys
+          manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+          image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+          kind = manifest.get("mediaType")
+          if kind != "application/vnd.oci.image.manifest.v1+json":
+              sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+          built_for = f"{config.get('os')}/{config.get('architecture')}"
+          if built_for != platform:
+              sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+          print(f"{image} is one image, built for {platform}")
+          CHECK
+      # This leg's image, by its own digest, into the engine as LOCAL: one image, so the engine
+      # has no platform to choose.
+      - name: Pull this platform of the build
+        run: |
+          docker pull --platform "$PLATFORM" "$IMAGE"
+          docker tag "$IMAGE" "$LOCAL"
+          test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = "$ARCH"
+      # The rehearsal takes the engine from here: the registry on the runner is not part of it.
+      - name: Stop the registry on the runner
+        run: docker rm --force cairn-registry
       # scripts/ci_metadata_fixture.py answers at the metadata address from a network namespace
       # of its own for the length of the rehearsal, so the block is shown by a connection
       # that succeeds before the rules and not after; it fails a run that fell back to the
@@ -929,11 +1148,6 @@ jobs:
       # The amd64 image of that index, by its own digest, for `verify`'s smoke test.
       amd64: ${{ needs.image_build.outputs.amd64 }}
     steps:
-      - name: Fetch the build
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: image
-          path: ${{ runner.temp }}/image
       - name: Install oras
         run: |
           base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
@@ -954,9 +1168,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # A v* tag gives its full version X.Y.Z; a release candidate vX.Y.Z-rc.N gives X.Y.Z-rc.N
-      # (on a pre-release the action makes the whole version of {{version}}) and sha-<commit>.
-      # A push to main gives main and sha-<commit>. Never X.Y or latest: job `aliases` moves
-      # those, once the release is made.
+      # (on a pre-release the action makes the whole version of {{version}}), and nothing else:
+      # its image is main's, already sha-<commit>. A push to main gives main and sha-<commit>
+      # (the action's short SHA, 7 characters by default). Never X.Y or latest: job `aliases`
+      # moves those, once the release is made.
       - name: Image tags
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -967,50 +1182,98 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=ref,event=branch
-            type=sha,enable=${{ github.ref_type == 'branch' || needs.release_check.outputs.candidate == 'true' }}
+            type=sha,enable=${{ github.ref_type == 'branch' }}
+      # The name written once is the full version on a tag and sha-<commit> on main. If the
+      # registry has it, the same digest carries on and another stops the job; if the registry
+      # has the digest itself (main's image, on a tag; or a first attempt's push), the names
+      # are tags of it and the archive is not needed, so a retry works after the artifact has
+      # expired. Only a digest the registry does not hold is copied from image_build's archive.
+      - name: Look for this build in the registry
+        id: decide
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -o pipefail
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          names=""
+          for tag in $TAGS; do names="$names ${tag##*:}"; done
+          names="${names# }"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            first="${GITHUB_REF_NAME#v}"
+            once="a full version is published once"
+            case " $names " in
+              *" sha-"*) echo "::error::the tags asked for [$names] include a sha- tag, but a tag run writes no sha- tag: its image is main's"; exit 1 ;;
+            esac
+          else
+            first="sha-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+            once="a commit's image is published once"
+          fi
+          case " $names " in
+            *" $first "*) ;;
+            *) echo "::error::the tags asked for [$names] do not include $first"; exit 1 ;;
+          esac
+          oras repo tags "$image" > "$RUNNER_TEMP/published" || {
+            echo "::error::the tags of $image could not be listed, so $first is not pushed: $once"
+            exit 1
+          }
+          copy=true
+          if grep -Fxq "$first" "$RUNNER_TEMP/published"; then
+            have="$(oras manifest fetch "$image:$first" | sha256sum)"
+            if [ "sha256:${have%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$first is sha256:${have%% *} already, not this run's build $DIGEST: $once; to finish the run that published it, re-run only its failed jobs"
+              exit 1
+            fi
+            echo "$image:$first is this build already ($DIGEST): it is not pushed again."
+            copy=false
+          fi
+          archive=false
+          if [ "$copy" = true ] && ! oras manifest fetch "$image@$DIGEST" > /dev/null; then
+            archive=true
+          fi
+          {
+            echo "image=$image"
+            echo "names=$names"
+            echo "first=$first"
+            echo "copy=$copy"
+            echo "archive=$archive"
+          } >> "$GITHUB_OUTPUT"
+      - name: Fetch the build
+        if: steps.decide.outputs.archive == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
       - name: Push the scanned build
         id: push
         env:
           DIGEST: ${{ needs.image_build.outputs.digest }}
           ARCHIVE: ${{ needs.image_build.outputs.archive }}
-          TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE: ${{ steps.decide.outputs.image }}
+          NAMES: ${{ steps.decide.outputs.names }}
+          FIRST: ${{ steps.decide.outputs.first }}
+          COPY: ${{ steps.decide.outputs.copy }}
+          FROM_ARCHIVE: ${{ steps.decide.outputs.archive }}
         run: |
           set -o pipefail
-          cd "$RUNNER_TEMP/image"
-          printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
-          mkdir layout
-          tar -xf cairn.oci.tar -C layout
-          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          names=""
-          for tag in $TAGS; do names="$names ${tag##*:}"; done
-          set -- $names
-          first="$1"
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            first="${GITHUB_REF_NAME#v}"
-            oras repo tags "$image" > "$RUNNER_TEMP/published" || {
-              echo "::error::the tags of $image could not be listed, so $first is not pushed: a full version is published once"
-              exit 1
-            }
+          if [ "$COPY" = true ] && [ "$FROM_ARCHIVE" = true ]; then
+            cd "$RUNNER_TEMP/image"
+            printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+            mkdir layout
+            tar -xf cairn.oci.tar -C layout
+            oras cp --from-oci-layout "layout@$DIGEST" "$IMAGE:$FIRST"
+          elif [ "$COPY" = true ]; then
+            oras tag "$IMAGE@$DIGEST" "$FIRST"
           fi
-          if [ "$GITHUB_REF_TYPE" = "tag" ] && grep -Fxq "$first" "$RUNNER_TEMP/published"; then
-            have="$(oras manifest fetch "$image:$first" | sha256sum)"
-            if [ "sha256:${have%% *}" != "$DIGEST" ]; then
-              echo "::error::$image:$first is sha256:${have%% *} already, not this run's build $DIGEST: a full version is published once; to finish the run that published it, re-run only its failed jobs"
-              exit 1
-            fi
-            echo "$image:$first is this build already ($DIGEST): it is not pushed again."
-          else
-            oras cp --from-oci-layout "layout@$DIGEST" "$image:$first"
-          fi
-          for name in $names; do
-            if [ "$name" != "$first" ]; then
-              oras tag "$image@$DIGEST" "$name"
+          for name in $NAMES; do
+            if [ "$name" != "$FIRST" ]; then
+              oras tag "$IMAGE@$DIGEST" "$name"
             fi
           done
-          for name in $names; do
-            pushed="$(oras manifest fetch "$image:$name" | sha256sum)"
+          for name in $NAMES; do
+            pushed="$(oras manifest fetch "$IMAGE:$name" | sha256sum)"
             if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
-              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              echo "::error::$IMAGE:$name is sha256:${pushed%% *}, not the build's $DIGEST"
               exit 1
             fi
           done

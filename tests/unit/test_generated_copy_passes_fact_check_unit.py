@@ -363,6 +363,27 @@ def test_every_gate_that_checks_facts_passes_the_copy(gate, text):
     assert [v.split(":")[0] for v in gate(page, spans).violations] == []
 
 
+def test_a_claim_that_writes_those_underscores_as_asterisks_is_still_refused():
+    """The other direction, for each case of the two products where the URL read differently
+    alone: there the underscore is no emphasis, so a claim with an asterisk in its place
+    changes the fact, and grounding or retention refuses it, as before the fix."""
+    made = cases()
+    notes = [
+        n[0] for f in ("ends", "starts") for n in made[f].values() if reads_differently_alone(n)
+    ]
+    refusals = Counter()
+    for text in notes:
+        spans = {span.id: span for span in chunk("note", text)}
+        claims = (Claim(id="cl_a", text=text.replace("_", "*"), span_ids=tuple(spans)),)
+        body = render_body(TITLE, claims, spans)
+        page = CandidatePage(slug="quill-notes", title=TITLE, body=body, claims=claims)
+        codes = {v.split(":")[0] for v in lint_gate(page, spans).violations}
+        refusals[
+            bool(codes & {"grounding.fact_not_in_cited_passages", "retention.fact_dropped"})
+        ] += 1
+    assert refusals == Counter({True: 42 + 33})
+
+
 def facts_of_every_case() -> list:
     """(passage, fact) for every fact of every content passage of every case."""
     texts = [text for made in cases().values() for notes in made.values() for text in notes]

@@ -99,6 +99,10 @@ To move to the current Ubuntu AMI, follow the backup steps in [Upgrade](#upgrade
 The settings secret starts without a version, so you can sign in with API keys from the start.
 Prepare a local `cairn.env` for the cairn container's environment. From the AWS stack directory,
 upload it without putting its value in your command line or OpenTofu state.
+Compose reads the file: it takes a value as written only between single quotes. Outside them
+a `$` starts a variable, a `#` after a space starts a comment, and quotes around a value are
+removed. When Compose took a `$` for a variable, the unit's journal says so on a line that starts
+with `cairn-quick: compose:`.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -278,6 +282,10 @@ session, save the API key in your credential store, remove the temporary file on
 The settings secret starts without a version, so you can sign in with API keys from the start.
 Prepare a local `cairn.env` for the cairn container's environment. From the Google Cloud stack
 directory, upload it without putting its value in your command line or OpenTofu state.
+Compose reads the file: it takes a value as written only between single quotes. Outside them
+a `$` starts a variable, a `#` after a space starts a comment, and quotes around a value are
+removed. When Compose took a `$` for a variable, the unit's journal says so on a line that starts
+with `cairn-quick: compose:`.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh

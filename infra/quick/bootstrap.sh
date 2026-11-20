@@ -212,6 +212,7 @@ EOF
     fi
     die 'Docker Compose up failed. Check registry access, the image, the settings file syntax and container status.'
   fi
+  say_errors compose "$staging/errors" cairn.env || true  # what a start that worked warned of
 )
 
 first_key() (

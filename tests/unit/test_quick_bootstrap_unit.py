@@ -77,6 +77,9 @@ if cmd == "docker":
             print(os.environ["STANDIN_SECRET"], file=sys.stderr)
             print(os.environ["STANDIN_COMPOSE_ERROR"], file=sys.stderr)
             sys.exit(1)
+        if mode == "compose-warns":
+            print('time="2026-11-20T00:00:00Z" level=warning msg="The \\"value\\" variable is not'
+                  ' set. Defaulting to a blank string."', file=sys.stderr)
         (state / "stack-started").touch()
     elif args[:3] == ["compose", "ps", "--all"]:
         print(os.environ["STANDIN_SECRET"], file=sys.stderr)
@@ -583,6 +586,56 @@ def test_a_failed_secret_read_leaves_existing_settings_and_never_calls_compose(v
     assert list((vm / "deploy").iterdir()) == [existing]
     assert existing.read_text() == "EXISTING=synthetic\n"
     assert not any(call[:2] == ["docker", "compose"] for call in calls(vm))
+
+
+def test_a_start_that_worked_still_says_that_compose_changed_a_setting(vm):
+    """Compose expands a $ in a settings value that is not between single quotes, to nothing
+    when no such variable is set, and says so in a warning only: the stack starts with
+    another value than the secret holds. The boot passes the warning on, in other words,
+    since Compose's own name what follows the $ in the value."""
+    done = run(vm, mode="compose-warns")
+    assert done.returncode == 0, done.stderr
+    assert (vm / "stack-started").exists()
+    (said,) = done.stderr.splitlines()
+    assert said.startswith("cairn-quick: compose: a settings value holds a $")
+    assert "single quotes" in said
+    assert '"value"' not in done.stderr and "$value" not in done.stderr
+
+
+def test_compose_takes_a_setting_as_written_only_between_single_quotes(vm):
+    """What the guide tells a person about writing `cairn.env`, held to Compose itself:
+    the settings arrive in cairn's environment as the secret wrote them only between
+    single quotes."""
+    written = {
+        "PLAIN": "two words, a=b and c#d",
+        "SINGLE": "'pa$word9 #x \"y\"'",
+        "DOLLAR": "pa$word9",
+        "COMMENT": "abc #def",
+        "DOUBLE": '"quoted"',
+    }
+    settings = "".join(f"{name}={value}\n" for name, value in written.items()).encode()
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    # `config` writes a literal $ as $$, so that its output can be read again.
+    got = {
+        name: value.replace("$$", "$") for name, value in compose_service(vm)["environment"].items()
+    }
+    assert got["PLAIN"] == "two words, a=b and c#d"
+    assert got["SINGLE"] == 'pa$word9 #x "y"'
+    assert got["DOLLAR"] == "pa"  # expanded: no variable word9 is set
+    assert got["COMMENT"] == "abc"  # cut at the # after a space
+    assert got["DOUBLE"] == "quoted"  # unquoted
+    guide = " ".join((QUICK / "README.md").read_text().split())
+    sentence = (
+        "Compose reads the file: it takes a value as written only between single quotes."
+        " Outside them a `$` starts a variable, a `#` after a space starts a comment, and"
+        " quotes around a value are removed."
+    )
+    assert guide.count(sentence) == 2  # under the settings of each cloud, in the same words
 
 
 def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):

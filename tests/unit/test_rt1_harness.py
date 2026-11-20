@@ -349,9 +349,14 @@ class Run:
         notes_before = [n for n in store.list_notes(pid) if n.id != note_id]
         on_page_before = self.notes_on_pages()
         preview = store.forget_preview(note_id)
+        archive = io.BytesIO()
+        if self.check_restore:
+            store.export(archive)
         watch = Watch()
         with watch.on():
             answer = Memory(store, lint_gate).forget(PROJECT, note_id)
+        if self.check_restore:
+            self.forget_restored(step, archive, note_id)
         stat: dict[str, Any] = {"step": step, "pages": len(want)}
         if set(answer["rebuilt"]) != set(preview.rebuilt) or set(answer["removed"]) != set(
             preview.removed
@@ -361,6 +366,7 @@ class Run:
         if set(answer["removed"]) != removed or set(answer["rebuilt"]) != set(want) - removed:
             self.fault(step, "pages", f"rebuilt/removed {answer} against oracle {sorted(want)}")
         left_total = 0
+        self.allowed: set = set()
         body0 = max((len(r[3]) for r in watch.renders), default=1)
         for slug, e in want.items():
             page = store.get_page(pid, slug)
@@ -394,6 +400,26 @@ class Run:
         if self.check_restore:
             self.restored(step)
 
+    def forget_restored(self, step: int, archive: io.BytesIO, note_id: str) -> None:
+        """The same forget, on a copy restored from the export made just before it."""
+        with closing(Store(":memory:")) as copy:
+            try:
+                copy.import_export(io.BytesIO(archive.getvalue()))
+            except ValueError as refused:
+                self.fault(step, "import", f"the export before the forget: {refused}")
+                return
+            Memory(copy, lint_gate).forget(PROJECT, note_id)
+            pid = copy.get_project(PROJECT).id
+            mine = {p.slug: (p.title, p.body, p.claims) for p in self.store.list_pages(self.pid)}
+            theirs = {p.slug: (p.title, p.body, p.claims) for p in copy.list_pages(pid)}
+            if mine != theirs:
+                slugs = sorted(
+                    s for s in mine.keys() | theirs.keys() if mine.get(s) != theirs.get(s)
+                )
+                self.fault(
+                    step, "restored-forget", f"the forget on a restored copy differs: {slugs}"
+                )
+
     def compare(self, step, slug, e: Expected, page, watch: Watch, notes) -> None:
         want = [key(c) for c in e.kept]
         if e.body is None:
@@ -413,6 +439,7 @@ class Run:
             extra = [k for k in have if k not in want]
             allowed = declared(watch, e.held, notes, slug)
             naming = sum(1 for r in watch.renders if r[2] is not None)
+            self.allowed |= allowed
             if took or extra:
                 bad = [k for k in took if k not in allowed]
                 if bad:
@@ -467,6 +494,15 @@ class Run:
             for i in c.span_ids
             if i in e.held
         }
+        # the notes of the claims the oracle keeps that the declared class does not cover
+        undeclared = {
+            e.held[i].source_id
+            for e in want.values()
+            for c in e.kept
+            if key(c) not in self.allowed
+            for i in c.span_ids
+            if i in e.held
+        }
         for source in touched:
             if (
                 source != note_id
@@ -474,9 +510,8 @@ class Run:
                 and not after.get(source)
                 and oracle.get(source)
             ):
-                self.fault(
-                    step, "orphan", f"note {source} lost its last claim; the oracle keeps one"
-                )
+                kind = "orphan" if source in undeclared else "orphan-declared"
+                self.fault(step, kind, f"note {source} lost its last claim; the oracle keeps one")
 
     def audit(self, step: int, note_id: str, pages: int, left: int) -> None:
         events = [e for e in self.store.list_audit(50) if e.action == "note.forgotten"]
@@ -637,9 +672,10 @@ class Gen:
 
     # segments: lists of note texts, in the order of their claims
 
-    def list_segment(self) -> list[tuple[str, str]]:
+    def list_segment(self, at_risk: bool = False) -> list[tuple[str, str]]:
         """(role, text) of each note: a list item at the margin, notes under it, a
-        paragraph at the margin, notes after it."""
+        paragraph at the margin, notes after it. `at_risk`: the last note under the item is
+        one sibling, and the first tail is deep enough for its fence to cover."""
         marker = self.rng.choice(MARKERS)
         gap = self.rng.choice((" ", " ", "  ", "   ", "    "))
         column = len(marker) + len(gap)
@@ -654,16 +690,25 @@ class Gen:
             )
         )
         group: list[str] = []
-        for _ in range(self.rng.choice((1, 2, 3, 4, 6, 8, 12, 17, 20))):
+        for _ in range(self.rng.choice((1, 2, 3, 4, 6, 8, 12, 17, 20, 24, 30))):
             kind = self.rng.choice(kinds)
             piece = getattr(self, kind)(ind)
             group.append(piece)
-            if self.rng.random() < 0.6 or kind in ("tabbed",):
+            if self.rng.random() < (0.85 if at_risk else 0.6) or kind in ("tabbed",):
                 out.append(("under", "\n\n".join(group)))
                 group = []
         if group:
             out.append(("under", "\n\n".join(group)))
+        if at_risk:
+            out.append(("under", self.sibling(ind)))
         out.append(("separator", f"Between {self.tok()}."))
+        if at_risk:
+            deep = " " * (len(ind) + self.rng.choice((5, 6, 8)))
+            if self.rng.random() < 0.2:  # a long first line: few claims fit in a question
+                deep += "y" * self.rng.choice((1000, 3000, 6000)) + " "
+            out.append(("tail", deep + self.word()))
+            if self.rng.random() < 0.4:  # an indented example with its own closing line
+                out.append(("tail", self.closed(" " * self.rng.choice((2, 6, 8)))))
         for _ in range(self.rng.choice((1, 1, 2, 3))):
             if self.rng.random() < 0.7:
                 out.append(("tail", self.tail()))
@@ -678,18 +723,18 @@ class Gen:
                 )
         return out
 
-    def spender(self) -> list[tuple[str, str]]:
+    def spender(self, prespent: bool | None = None) -> list[tuple[str, str]]:
         """A list item and indented fences that spend the body's closers: at once (no
         paragraph between, sixteen at most, or the note is refused its page), or once the
         paragraph at the margin between them is forgotten."""
-        if self.rng.random() < 0.5:
+        if prespent if prespent is not None else self.rng.random() < 0.5:
             k = self.rng.choice((15, 16, 16, 16))
             runs = [f"    {self.fence_run()}\n    {self.word()}" for _ in range(k)]
             return [
                 ("parent", f"- item {self.tok()}"),
                 ("under", "\n\n".join([*runs, f"  End {self.tok()}."])),
             ]
-        k = self.rng.choice((16, 16, 17, 20))
+        k = self.rng.choice((16, 16, 17, 20, 33, 40))
         runs = [f"    {self.fence_run()}\n    {self.word()}" for _ in range(k)]
         return [
             ("parent", f"- item {self.tok()}"),
@@ -698,19 +743,29 @@ class Gen:
         ]
 
     def plan(self) -> Plan:
+        """A page. On about half, the oldest note (it gives the title) is the last note of
+        a list's siblings, filed after the notes before it, under a spelling of the topic
+        that no other note uses; then the list's paragraph at the margin is forgotten."""
         rng = self.rng
         family = rng.choice(FAMILIES)
-        spellings = rng.sample(family, rng.choice((1, 2, 2, 3)))
+        giver = rng.random() < 0.55
+        spellings = rng.sample(family, rng.choice((2, 2, 3) if giver else (1, 2, 2, 3)))
         sections = [*spellings, "Steps", "First"]
-        segments = [(self.spender(), rng.choice((None, None, *spellings, "First")))]
-        for _ in range(rng.choice((1, 1, 2))):
-            segments.append((self.list_segment(), rng.choice((None, None, *spellings, "Steps"))))
-        rng.shuffle(segments)
-        segments = [(heading, seg) for seg, heading in segments]
+        spent = self.spender(rng.random() < 0.8 if giver else None)
+        if giver and rng.random() < 0.85:
+            segments = [(spent, None)]  # in the body before the list: its closers go first
+        else:
+            segments = [(spent, rng.choice((None, None, *spellings, "First")))]
+        for n in range(rng.choice((1, 1, 2))):
+            seg = self.list_segment(at_risk=giver and n == 0)
+            segments.append((seg, rng.choice((None, None, *spellings, "Steps"))))
+        if not giver or rng.random() < 0.15:
+            rng.shuffle(segments)
         if rng.random() < 0.5:
-            segments.insert(rng.randrange(len(segments) + 1), (None, [("margin", self.margin())]))
-        roles: list[tuple[str, str]] = []
-        for heading, seg in segments:
+            at = rng.randrange(len(segments) + 1)
+            segments.insert(at, ([("margin", self.margin())], None))
+        roles: list[tuple[str, str, int]] = []
+        for number, (seg, heading) in enumerate(segments):
             shape = rng.choices(("plain", "deeper", "first"), (0.85, 0.1, 0.05))[0]
             sub = rng.choice(sections)
             for role, text in seg:
@@ -726,39 +781,91 @@ class Gen:
                         "first": f"# {here}\n\n",
                     }[shape]
                     text = head + text
-                roles.append((role, text))
+                roles.append((role, text, number))
         # passages that differ only by white space, for a tidy to fold
         if rng.random() < 0.25:
-            role, text = rng.choice(roles)
+            role, text, number = rng.choice(roles)
             spaced = re.sub(r"(\S)$", r"\1  ", text, count=1, flags=re.M)
             roles.insert(
-                rng.randrange(len(roles) + 1), ("copy", spaced + f"\n\nCopy {self.tok()}.")
+                rng.randrange(len(roles) + 1),
+                ("copy", spaced + f"\n\nCopy {self.tok()}.", number),
             )
-        notes = []
-        for role, text in roles:
+        notes, segment_of = [], {}
+        for role, text, number in roles:
             name = f"{role}{next(self.names)}"
             topic, title = rng.choice(spellings), None
             r = rng.random()
             if r < 0.2:
                 topic, title = None, rng.choice(spellings)
+            elif r < 0.26 and not text.startswith("#"):  # titled by its own first heading
+                topic, text = None, f"# {rng.choice(spellings)}\n\n{text}"
+            if rng.random() < 0.05:
+                text = text.replace("\n", "\r\n")
             notes.append(Note(name, text, topic, title))
-        # stored order against filing order: a note files the notes before it in its gate
+            segment_of[name] = number
+        steps: list[Step] = []
         top = notes
-        for _ in range(rng.choice((0, 1, 1, 1, 2))):
-            if len(top) < 2:
-                break
-            under = [n for n in range(1, len(top)) if top[n].name.startswith("under")]
-            j = rng.choice(under) if under and rng.random() < 0.6 else rng.randrange(1, len(top))
-            i = 0 if rng.random() < 0.4 else rng.randrange(0, j)
-            top = [*top[:i], replace(top[j], inner=[*top[j].inner, *top[i:j]]), *top[j + 1 :]]
-        steps = []
-        if rng.random() < 0.25:
-            steps.append(Step("tidy"))
+        if giver:
+            first, rest = spellings[0], spellings[1:]
+            lists = [
+                n
+                for n, note in enumerate(notes)
+                if note.name.startswith("separator") and n and notes[n - 1].name.startswith("under")
+            ]
+            if lists:
+                sep = rng.choice(lists)
+                j = sep - 1
+                for n, note in enumerate(notes):
+                    spelled = first if n == j else rng.choice(rest)
+                    if note.topic is None and note.title is None:
+                        continue
+                    if note.topic is None:
+                        notes[n] = replace(note, title=spelled)
+                    else:
+                        notes[n] = replace(note, topic=spelled)
+                spender = [
+                    n.name
+                    for n in notes
+                    if n.name.startswith("separator")
+                    and n.name != notes[sep].name
+                    and segment_of[n.name] != segment_of[notes[sep].name]
+                ]
+                if spender and rng.random() < 0.5:
+                    steps.append(Step("forget", rng.choice(spender)))
+                steps.append(Step("forget", notes[sep].name))
+                run = j
+                while run and notes[run - 1].name.startswith("under"):
+                    run -= 1
+                if rng.random() < 0.4 and run < j:
+                    # a chain: each note of the run files the ones before it in its gate, so
+                    # the run is stored in the reverse of its order on the page, and older
+                    # than every note before it: each, named, is the oldest note's last claim
+                    inner = notes[:run]
+                    for n in range(run, j + 1):
+                        inner = [replace(notes[n], inner=inner)]
+                    top = [*inner, *notes[j + 1 :]]
+                else:
+                    i = 0 if rng.random() < 0.85 else rng.randrange(0, j)
+                    top = [*notes[:i], replace(notes[j], inner=notes[i:j]), *notes[j + 1 :]]
+        if not steps:
+            for _ in range(rng.choice((0, 1, 1, 1, 2))):
+                if len(top) < 2:
+                    break
+                under = [n for n in range(1, len(top)) if top[n].name.startswith("under")]
+                j = (
+                    rng.choice(under)
+                    if under and rng.random() < 0.6
+                    else rng.randrange(1, len(top))
+                )
+                i = 0 if rng.random() < 0.4 else rng.randrange(0, j)
+                top = [*top[:i], replace(top[j], inner=[*top[j].inner, *top[i:j]]), *top[j + 1 :]]
+        copied = any(note.name.startswith("copy") for note in notes)
+        if rng.random() < (0.7 if copied else 0.15):
+            steps.insert(0, Step("tidy"))
         flat = Plan(top, []).stored()
-        roles_of = {n.name: n.name.rstrip("0123456789") for n in flat}
-        for _ in range(rng.choice((1, 1, 1, 2, 3))):
+        for _ in range(rng.choice((0, 1, 1, 2) if steps else (1, 1, 1, 2, 3))):
             r = rng.random()
-            pool = [n.name for n in flat if roles_of[n.name] == "separator"]
+            pool = [n.name for n in flat if n.name.startswith("separator")]
             if r < 0.6 and pool:
                 target = rng.choice(pool)
             elif r < 0.72:
@@ -772,12 +879,8 @@ class Gen:
             if rng.random() < 0.1:
                 steps.append(Step("again", rng.choice(flat).name))
             if rng.random() < 0.1:
-                steps.append(
-                    Step(
-                        "note",
-                        note=Note(f"late{next(self.names)}", self.tail(), rng.choice(spellings)),
-                    )
-                )
+                late = Note(f"late{next(self.names)}", self.tail(), rng.choice(spellings))
+                steps.append(Step("note", note=late))
             steps.append(Step("forget", target))
         return Plan(top, steps)
 
@@ -789,8 +892,17 @@ def generated(seed: int) -> Plan:
 # Shrinking
 
 
+# What the guide declares, seen and counted, never a fault: a note that lost its last claim to
+# the declared class, and a claim kept past the ceiling that the plain loop drops.
+OBSERVED = frozenset({"orphan-declared", "past-ceiling-kept"})
+
+
 def signature(run: Run) -> set[str]:
-    return {kind for _, kind, _ in run.faults}
+    return {kind for _, kind, _ in run.faults if kind not in OBSERVED}
+
+
+def observed(run: Run) -> set[str]:
+    return {kind for _, kind, _ in run.faults if kind in OBSERVED}
 
 
 def fails(plan: Plan, kinds: set[str], restore: bool) -> bool:
@@ -876,6 +988,8 @@ def main(argv: list[str]) -> None:
                     worst[m] = (ratio, seed, stat["body"])
         for kind in signature(run):
             found.setdefault(kind, []).append(seed)
+        for kind in observed(run):
+            totals[kind] = totals.get(kind, 0) + 1
         run.close()
     print(f"seeds {lo}:{hi} in {time.monotonic() - started:.0f}s")
     print("coverage", totals)

@@ -111,7 +111,46 @@ resource "aws_vpc_security_group_egress_rule" "app" {
 
 resource "aws_s3_bucket" "replica" {
   bucket_prefix = "cairn-quick-"
-  force_destroy = false
+  # False unless a person says the backups may go: a destroy then stops at a bucket that
+  # holds anything. True, once applied, lets it empty the bucket, every version included.
+  force_destroy = var.delete_backups
+}
+
+# A delete or an overwrite, Litestream's own or anyone's, leaves the earlier bytes as a
+# noncurrent version. The VM's role can delete an object and cannot delete a version.
+resource "aws_s3_bucket_versioning" "replica" {
+  bucket = aws_s3_bucket.replica.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Seven days after it was deleted or overwritten a version goes, then the delete marker it
+# left alone. Nothing here gives a current object a lifetime.
+resource "aws_s3_bucket_lifecycle_configuration" "replica" {
+  bucket = aws_s3_bucket.replica.id
+
+  rule {
+    id     = "keep-deleted-seven-days"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.replica]
 }
 
 resource "aws_s3_bucket_public_access_block" "replica" {
@@ -233,6 +272,8 @@ resource "aws_instance" "app" {
     aws_vpc_security_group_egress_rule.app,
     aws_s3_bucket_public_access_block.replica,
     aws_s3_bucket_server_side_encryption_configuration.replica,
+    aws_s3_bucket_versioning.replica,
+    aws_s3_bucket_lifecycle_configuration.replica,
     aws_iam_role_policy.app,
     aws_iam_role_policy_attachment.ssm,
   ]

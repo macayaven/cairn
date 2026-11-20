@@ -127,3 +127,129 @@ def test_the_upgrade_guide_names_the_files_a_replaced_vm_does_not_get_back(tmp_p
     assert "(../../deploy/README.md#restore-by-hand)" in upgrade
     headings = (REPO / "deploy" / "README.md").read_text()
     assert "\n### Restore by hand\n" in headings
+
+
+KEPT = "What is deleted or overwritten in the bucket stays restorable for 7 days"
+
+
+def readme_section(title, level="##"):
+    text = (QUICK / "README.md").read_text()
+    found = re.search(rf"^{level} {re.escape(title)}\n(.*?)(?=^{level} |\Z)", text, re.M | re.S)
+    assert found, f"the guide has no section {title!r}"
+    return found[1]
+
+
+def role_policy(tmp_path):
+    tofu = shutil.which("tofu")
+    if tofu is None:
+        pytest.skip("OpenTofu is needed to evaluate the policy expression")
+    main = (AWS / "main.tf").read_text()
+    expression = re.search(r"^  policy = (jsonencode\(\{.*?^  \}\))$", main, re.M | re.S)[1]
+    expression = expression.replace(
+        "aws_s3_bucket.replica.arn", json.dumps("arn:aws:s3:::example-replica")
+    ).replace(
+        "aws_secretsmanager_secret.settings.arn", json.dumps("arn:aws:secretsmanager:example")
+    )
+    (tmp_path / "policy.tf").write_text(f"locals {{\n  policy = {expression}\n}}\n")
+    done = subprocess.run(
+        [tofu, "console", "-no-color"],
+        input="local.policy\n",
+        cwd=tmp_path,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=20,
+    )
+    assert done.returncode == 0, done.stdout
+    return json.loads(json.loads(done.stdout))["Statement"]
+
+
+def test_the_bucket_keeps_what_is_deleted_or_overwritten_for_seven_days():
+    """Litestream deletes the files it no longer needs, and on a bucket without versions a
+    delete is final: so is one made by a mistyped command or from a VM someone else got
+    into. With versions, a delete leaves the bytes as a noncurrent version (Amazon S3,
+    "Deleting object versions from a versioning-enabled bucket"), and the rule removes them
+    seven days later, then the delete marker left alone, and any upload that never ended."""
+    versioning = block("resource", "aws_s3_bucket_versioning", "replica")
+    assert re.search(r'^\s+status\s*=\s*"Enabled"$', versioning, re.M)
+    lifecycle = block("resource", "aws_s3_bucket_lifecycle_configuration", "replica")
+    assert lifecycle.count("rule {") == 1
+    # The whole bucket, and the rule is on.
+    assert re.search(r"^\s+filter \{\}$", lifecycle, re.M)
+    assert re.search(r'^\s+status\s*=\s*"Enabled"$', lifecycle, re.M)
+    noncurrent = re.search(r"noncurrent_version_expiration \{(.*?)\}", lifecycle, re.S)[1]
+    assert noncurrent.split() == ["noncurrent_days", "=", "7"]
+    # No lifetime for a current object: the rule never removes what nobody deleted.
+    expiration = re.search(r"^\s+expiration \{(.*?)\}", lifecycle, re.M | re.S)[1]
+    assert expiration.split() == ["expired_object_delete_marker", "=", "true"]
+    unfinished = re.search(r"abort_incomplete_multipart_upload \{(.*?)\}", lifecycle, re.S)[1]
+    assert unfinished.split() == ["days_after_initiation", "=", "7"]
+    # A rule on a bucket without versions would keep nothing: versions first, and both
+    # before the VM that writes.
+    assert "depends_on = [aws_s3_bucket_versioning.replica]" in lifecycle
+    waits = block("resource", "aws_instance", "app").split("depends_on = [")[1].split("]")[0]
+    assert "aws_s3_bucket_versioning.replica," in waits
+    assert "aws_s3_bucket_lifecycle_configuration.replica," in waits
+
+
+def test_both_clouds_keep_deletions_as_long_and_the_guide_says_so_in_the_same_words():
+    gcp = (QUICK / "gcp" / "main.tf").read_text()
+    seconds = int(re.search(r"^\s+retention_duration_seconds\s*=\s*(\d+)$", gcp, re.M)[1])
+    lifecycle = block("resource", "aws_s3_bucket_lifecycle_configuration", "replica")
+    days = int(re.search(r"^\s+noncurrent_days\s*=\s*(\d+)$", lifecycle, re.M)[1])
+    assert seconds == days * 86_400 == 7 * 86_400
+    for cloud in ("AWS", "Google Cloud"):
+        assert KEPT in " ".join(readme_section(cloud).split()), cloud
+
+
+def test_the_vm_can_delete_a_backup_file_but_not_its_kept_version(tmp_path):
+    """What the seven days are worth against the VM itself: its role may delete an object
+    (Litestream must), which with versions only hides it. Removing a version, or switching
+    off what keeps versions, takes actions the role does not have."""
+    actions = {
+        action.lower()
+        for statement in role_policy(tmp_path)
+        if statement["Effect"] == "Allow"
+        for action in statement["Action"]
+    }
+    assert "s3:deleteobject" in actions
+    assert not any("*" in action for action in actions)
+    assert not actions & {
+        "s3:deleteobjectversion",
+        "s3:putbucketversioning",
+        "s3:putlifecycleconfiguration",
+        "s3:deletebucket",
+    }
+
+
+def test_destroy_keeps_a_bucket_that_holds_backups_until_a_person_says_otherwise():
+    """With versions, emptying a bucket by its current objects leaves the versions, and S3
+    deletes no bucket that holds any. The provider empties one itself, versions and delete
+    markers included, when `force_destroy` is true in the state (its `emptyBucket`), and
+    the state takes the value at an apply. So: false unless a person says so, and the
+    guide's teardown is an apply of that one resource, then the destroy."""
+    bucket = block("resource", "aws_s3_bucket", "replica")
+    assert re.search(r"^\s+force_destroy\s*=\s*var\.delete_backups$", bucket, re.M)
+    variables = (AWS / "variables.tf").read_text()
+    declared = re.search(r'^variable "delete_backups" \{(.*?)^}', variables, re.M | re.S)
+    assert declared, "the variable that lets a destroy delete the backups is not declared"
+    assert re.search(r"^\s+type\s*=\s*bool$", declared[1], re.M)
+    assert re.search(r"^\s+default\s*=\s*false$", declared[1], re.M)
+
+    teardown = readme_section("AWS teardown", "###")
+    said = " ".join(teardown.split())
+    assert "The destroy operation refuses to delete a bucket" in said
+    commands = [
+        line.strip()
+        for fence in re.findall(r"```sh\n(.*?)```", teardown, re.S)
+        for line in fence.splitlines()
+        if line.startswith("tofu ")
+    ]
+    assert commands == [
+        "tofu destroy",
+        "tofu apply -target=aws_s3_bucket.replica -var delete_backups=true",
+        "tofu destroy -var delete_backups=true",
+    ]
+    # Removing the current objects no longer empties the bucket, so the guide no longer says to.
+    assert "aws s3 rm" not in teardown
+    assert "every version" in said

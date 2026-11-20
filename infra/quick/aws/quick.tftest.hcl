@@ -85,10 +85,35 @@ run "three_inputs_with_safe_defaults" {
   }
 
   assert {
+    condition = (
+      one(aws_s3_bucket_versioning.replica.versioning_configuration).status == "Enabled" &&
+      length(aws_s3_bucket_lifecycle_configuration.replica.rule) == 1 &&
+      aws_s3_bucket_lifecycle_configuration.replica.rule[0].status == "Enabled" &&
+      aws_s3_bucket_lifecycle_configuration.replica.rule[0].noncurrent_version_expiration[0].noncurrent_days == 7 &&
+      aws_s3_bucket_lifecycle_configuration.replica.rule[0].expiration[0].expired_object_delete_marker &&
+      aws_s3_bucket_lifecycle_configuration.replica.rule[0].abort_incomplete_multipart_upload[0].days_after_initiation == 7
+    )
+    error_message = "The bucket keeps what is deleted or overwritten for seven days, then removes it."
+  }
+
+  assert {
     condition = alltrue([for filename in fileset(path.module, "*.tf") :
       length(regexall("(resource|data|ephemeral)\\s+\"(aws_iam_access_key|aws_secretsmanager_secret_version|aws_ssm_parameter)\"", file("${path.module}/${filename}"))) == 0
     ])
     error_message = "Only the secret's metadata belongs in OpenTofu. Do not create or look up key or secret values."
+  }
+}
+
+run "a_destroy_empties_the_bucket_only_when_asked" {
+  command = plan
+
+  variables {
+    delete_backups = true
+  }
+
+  assert {
+    condition     = aws_s3_bucket.replica.force_destroy
+    error_message = "With delete_backups, an apply records that a destroy may empty the bucket."
   }
 }
 

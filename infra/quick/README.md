@@ -25,12 +25,17 @@ the stack, and the [Session Manager plugin](https://docs.aws.amazon.com/systems-
 and permissions for an interactive session. Have a domain whose DNS you can edit.
 
 The stack creates a VPC and subnet, a `t3.small` with a 20 GiB encrypted `gp3` boot disk, a
-reserved public IPv4 address, an instance profile, an S3 bucket and a Secrets Manager secret.
+reserved public IPv4 address, an instance profile, an S3 bucket with versioning and a Secrets
+Manager secret.
 It puts the subnet in the first Availability Zone that offers `t3.small`, and later applies
 leave it there.
+What is deleted or overwritten in the bucket stays restorable for 7 days: it becomes an earlier
+version of the object, a lifecycle rule removes such a version 7 days later, and the VM's role
+can delete an object but not a version.
 While it runs, budget for [EC2 instance time](https://aws.amazon.com/ec2/pricing/on-demand/),
 [the disk](https://aws.amazon.com/ebs/pricing/), [the IPv4 address](https://aws.amazon.com/vpc/pricing/),
-[S3 storage and requests](https://aws.amazon.com/s3/pricing/), [the secret and its API calls](https://aws.amazon.com/secrets-manager/pricing/),
+[S3 storage (replica files Litestream deleted stay 7 days) and requests](https://aws.amazon.com/s3/pricing/),
+[the secret and its API calls](https://aws.amazon.com/secrets-manager/pricing/),
 and billable transfer.
 
 1. Clone at the release tag.
@@ -110,7 +115,9 @@ sudo systemctl restart cairn-quick.service
 ### AWS teardown
 
 Save the bucket and region before destroying the stack. The destroy operation refuses to delete
-a bucket with objects. Secrets Manager schedules the settings secret for deletion.
+a bucket with objects, or with earlier versions of them. Secrets Manager schedules the settings
+secret for deletion. A bucket that stays keeps all it holds: the destroy removed the rule that
+expired earlier versions.
 
 ```sh
 bucket="$(tofu output -raw backup_bucket)"
@@ -118,12 +125,15 @@ region="$(tofu output -raw region)"
 tofu destroy
 ```
 
-To remove a retained bucket too, empty it and retry the destroy. This deletes the backups.
+To remove a retained bucket too, record that the backups may go and retry the destroy. OpenTofu
+then empties the bucket itself, every version in it. This deletes the backups.
 
 ```sh
-aws s3 rm "s3://$bucket/" --region "$region" --recursive
-tofu destroy
+tofu apply -target=aws_s3_bucket.replica -var delete_backups=true
+tofu destroy -var delete_backups=true
 ```
+
+`aws s3 ls "s3://$bucket" --region "$region"` then answers that the bucket does not exist.
 
 ## Google Cloud
 
@@ -149,7 +159,9 @@ The stack enables the Cloud OS Login API (`oslogin.googleapis.com`) for SSH.
 
 The stack creates a VPC and subnet (with Private Google Access), an `e2-small` with Shielded VM
 features and a 20 GiB `pd-balanced` boot disk, a reserved public IPv4 address, a service account, a
-Cloud Storage bucket with a 7-day soft delete policy, and a Secret Manager secret. Rather than
+Cloud Storage bucket with a 7-day soft delete policy, and a Secret Manager secret.
+What is deleted or overwritten in the bucket stays restorable for 7 days: that is the soft
+delete policy, which nobody can cut short for an object already deleted. Rather than
 creating custom project IAM roles (which suffer a 37-day GCP name lockout after teardown), it
 binds predefined roles strictly to those two resources:
 

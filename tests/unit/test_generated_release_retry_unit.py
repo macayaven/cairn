@@ -23,17 +23,20 @@ here shows it). A fault strikes one
 request of the first attempt: the creation refused, or done and its reply lost; the upload
 cut after the first file; the publication refused, or done and its reply lost; the listing
 after a write still showing what was there before it, at one look (the step waits and looks
-again) or at every look of the attempt (it stops after its last). Each fault is run alone and
+again) or at every look of the attempt (it stops after its last); the first read by id
+refused. Each fault is run alone and
 with a
 person publishing before each request up to the one it strikes, where the attempt ends. An
 attempt that stops after a person acted, a fault struck or the step wrote is re-run, twice at
 most, with nobody acting and no fault, as a person re-runs a failed job; one that only read
 and stopped would read the same again.
 
-GitHub and gh are a stand-in `gh` that keeps the releases as data. The listing goes through
-the step's own --jq expression, run by jq. `gh release download` gives a release's files, a
-draft's too (shared/fetch.go, 182 to 270: `FetchRelease` "finds a published repository release
-by its tagName, or a draft release by its pending tag name"), and refuses to write over a
+GitHub and gh are a stand-in `gh` that keeps the releases as data. The listing and the read
+of one release by its id each go through the step's own --jq expression, run by jq; the read
+answers from what is there, which a fault can refuse. `gh release download` gives a
+release's files, a draft's too (shared/fetch.go, 182 to 270: `FetchRelease` "finds a
+published repository release by its tagName, or a draft release by its pending tag name"),
+and refuses to write over a
 file that is there (download/download.go, 304 and 439 to 447). `gh release create` is modelled
 on gh's source, v2.102.0, pkg/cmd/release/create/create.go: `if hasAssets && !opts.Draft {`
 ... `draftWhileUploading = true`, `params["draft"] = true` (lines 500 to 512);
@@ -51,19 +54,19 @@ on a release's id with `draft=false` publishes that release, as `publishRelease`
 
 What must hold, whatever the state, the person, the fault and the moment:
 - the step's writes are the creation, only when its own listing showed no release for the
-  tag and once an attempt, and the publication, only of the one release its last listing
-  showed as this run's draft with the tag's flag, the tag as its title, the notes this run
-  wrote, byte for byte, and its files' names, and after a download later than that listing
-  gave exactly the files this run attested: nothing else, so no delete, no upload onto a
-  release that exists and no other edit;
+  tag and once an attempt, and the publication, only when the request before it was a read
+  of that release by its id which showed it as this run's, with the tag's flag, the tag as
+  its title, the notes this run wrote, byte for byte, and its files' names, and after a
+  download later than the last listing gave exactly the files this run attested: nothing
+  else, so no delete, no upload onto a release that exists and no other edit;
 - a release that is published at any moment is there at the end with the same id, text, flag
   and files, unless the person deleted or changed it (or published the draft `gh release
   create` had just made before that command's own upload, which then reaches it);
-- an attempt that succeeds saw, in its last listing, one release for the tag, published, with
-  the tag's flag, this run's mark, the tag as its title, the notes this run wrote and the
-  files' names, and got from the download after it exactly the files this run attested; that
-  is what GitHub holds at the end, unless the person acted after that listing, and then the
-  step wrote nothing after the person;
+- an attempt that succeeds made, as its last request, a read by id that showed the release
+  published, with the tag's flag, this run's mark, the tag as its title, the notes this run
+  wrote and the files' names, and got from the download after its last listing exactly the
+  files this run attested; that is what GitHub holds at the end, unless the person acted
+  after that listing, and then the step wrote nothing after the person;
 - the releases the step made never leave two for the tag;
 - an attempt that stops says why in exactly one `::error::` line of one sentence, unless a
   call to gh failed by itself.
@@ -113,6 +116,7 @@ FAULTS = (
     ("publication", "lost"),
     ("listing", "stale"),
     ("listing", "behind"),
+    ("read", "refused"),
 )
 
 GH = r"""
@@ -205,10 +209,25 @@ def wrote(kind, target=None, fields=()):
         "target": copy.deepcopy(target),
         "listed": now["listed"][-1] if now["listed"] else None,
         "given": now["given"][-1] if now["given"] else None,
+        "read": now["read"][-1] if now["read"] else None,
     })
     now["stale"] = copy.deepcopy(state["releases"])
 
 
+if args[0] == "api" and "--jq" in args and "--paginate" not in args:
+    # One release read by its id: what is there now, whatever a listing shows.
+    how = request("read")
+    path = next(a for a in args if a.startswith("repos/"))
+    target = by_id(int(path.rsplit("/", 1)[1]))
+    if how == "refused" or target is None:
+        sys.stderr.write("gh: Bad Gateway (HTTP 502)\n" if how else "gh: Not Found (HTTP 404)\n")
+        answer(1)
+    shown = json.dumps({k: v for k, v in target.items() if k != "files"})
+    done = subprocess.run(
+        ["jq", "-r", args[args.index("--jq") + 1]], input=shown, capture_output=True, text=True
+    )
+    now["read"].append({"at": now["requests"], "out": done.stdout})
+    answer(done.returncode, done.stdout)
 if args[0] == "api" and "--jq" in args:
     how = request("listing")
     shown = now["stale"] if how in ("stale", "behind") else state["releases"]
@@ -404,7 +423,8 @@ def attempt(gh: Path, where: Path, state: dict, person="nobody", before=-1, faul
     re-run of a job gets: the files `package` built and nothing else."""
     state["attempts"].append({
         "person": person, "before": before, "fault": fault, "struck": False, "acted": None,
-        "requests": 0, "log": [], "listed": [], "given": [], "stale": None, "failed": None,
+        "requests": 0, "log": [], "listed": [], "given": [], "read": [], "stale": None,
+        "failed": None,
     })  # fmt: skip
     runner = where / f"attempt-{len(state['attempts'])}"
     (runner / "release").mkdir(parents=True)
@@ -479,8 +499,14 @@ def faults(runs: list) -> list[str]:
                 found.append("made a release twice in one attempt")
             made.add(write["attempt"])
         elif write["kind"] == "publish":
-            if target is None or listed is None or listed["out"] != listed_as("true", target["id"]):
-                found.append("published what its last listing did not show as this run's draft")
+            read = write["read"]
+            if target is None or listed is None or read is None or read["at"] != write["at"]:
+                found.append("published without a read by id as the request before it")
+            elif read["out"] not in (
+                listed_as("true", target["id"]),
+                listed_as("false", target["id"]),  # a person published it meanwhile
+            ):
+                found.append("published what the read before it did not show as this run's")
             elif given is None or given["at"] < listed["at"] or given["id"] != target["id"]:
                 found.append("published a draft it had not downloaded since it listed it")
             elif given["files"] != WHOLE:
@@ -506,10 +532,13 @@ def faults(runs: list) -> list[str]:
                 found.append(f"stopped with {len(said_)} ::error:: lines of one sentence")
             continue
         listed = now["listed"][-1]
-        rid = listed["out"].split("\t")[0]
+        read = now["read"][-1] if now["read"] else None
+        rid = read["out"].split("\t")[0] if read else ""
         given = now["given"][-1] if now["given"] else None
-        if listed["out"] != listed_as("false", rid):
-            found.append("succeeded though its last listing did not show this run's release")
+        if read is None or now["log"][-1] != "read" or read["at"] != now["requests"]:
+            found.append("succeeded without a read by id as its last request")
+        elif read["out"] != listed_as("false", rid):
+            found.append("succeeded though its last read did not show this run's release")
         elif given is None or given["at"] < listed["at"] or given["files"] != WHOLE:
             found.append("succeeded without the attested files from a download after its listing")
         elif now["acted"] is not None and now["acted"] > listed["at"]:

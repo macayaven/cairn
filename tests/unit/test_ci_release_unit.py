@@ -410,6 +410,7 @@ def run_create(tmp_path, tag: str, candidate: str):
         "CANDIDATE": "${{ needs.release_check.outputs.candidate }}",
     }
     (tmp_path / "release").mkdir()
+    (tmp_path / "release" / "notes.md").write_text("the notes\n")
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     # No release for the tag yet: the listing of releases holds none, as on a first attempt.
@@ -435,7 +436,7 @@ def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_pat
         "--title",
         "v1.2.3",
         "--notes-file",
-        "notes.md",
+        f"{tmp_path}/body.md",
         "cairn_memory-1.2.3-py3-none-any.whl",
         "cairn_memory-1.2.3.tar.gz",
         "SHA256SUMS",
@@ -451,7 +452,7 @@ def test_a_candidate_is_a_pre_release_never_marked_latest(tmp_path):
         "--title",
         "v1.2.3-rc.2",
         "--notes-file",
-        "notes.md",
+        f"{tmp_path}/body.md",
         "--prerelease",
         "--latest=false",
         "cairn_memory-1.2.3-py3-none-any.whl",

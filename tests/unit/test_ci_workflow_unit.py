@@ -1560,7 +1560,7 @@ def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
         "--title",
         "v1.2.3",
         "--notes-file",
-        "notes.md",
+        f"{tmp_path}/body.md",
         "cairn_memory-1.2.3-py3-none-any.whl",
         "cairn_memory-1.2.3.tar.gz",
         "SHA256SUMS",

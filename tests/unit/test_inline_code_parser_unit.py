@@ -1,20 +1,20 @@
-"""Inline code and open fences are what the Markdown parser says (second report, findings 2
-and 8, and "B3 does not hold").
+"""Inline code beside a block boundary, and fences Markdown leaves open (second report,
+findings 2 and 8, and "B3 does not hold").
 
 A block boundary is not only a blank line: a quote's line of ">" alone, a list item that
-starts inside another, a heading, a table's cell. The parser (markdown-it-py, as the web view
-renders) is asked, through spans.code_spans, given the passage as the note has it, its quote
-and list markers included. Made-up notes."""
+starts inside another, a heading, a table's cell. Since CORE5 no passage is read as Markdown
+to compare it: two passages are the same only when their text is, so the two spellings of
+a name stay two claims whatever block holds them. A fence Markdown leaves open is closed in
+the body before the next claim (cairn.spans.open_fence_closer). Made-up notes."""
 
 import pytest
 from markdown_it import MarkdownIt
 
 from cairn.arrange import repeat_groups, tidy_page
 from cairn.compiler import render_body
-from cairn.facts import normalize
-from cairn.gate import lint_gate, text_reading
+from cairn.gate import lint_gate
 from cairn.memory import Memory
-from cairn.spans import chunk, code_spans
+from cairn.spans import chunk
 from cairn.store import Claim, Store
 
 QUOTED = "> Stray `\n>\n> Keep `{name}` here."
@@ -35,27 +35,6 @@ def store(tmp_path):
     store = Store(tmp_path / "cairn.db")
     yield store
     store.close()
-
-
-def code_contents(text: str) -> list[str]:
-    md = MarkdownIt("commonmark").enable("table")
-    return [
-        child.content
-        for token in md.parse(text)
-        if token.type == "inline"
-        for child in token.children or ()
-        if child.type == "code_inline"
-    ]
-
-
-@pytest.mark.parametrize("shape", NEIGHBOURS, ids=list(NEIGHBOURS))
-def test_markdown_reads_the_name_as_code_and_so_does_cairn(shape):
-    spaced, single = (NEIGHBOURS[shape].format(name=n) for n in (SPACED, SINGLE))
-    assert code_contents(spaced) == [SPACED]  # the parser's own reading, apart from cairn
-    found = code_spans(spaced)
-    assert found is not None and [spaced[a:b] for a, b in found] == [f"`{SPACED}`"]
-    assert text_reading(spaced) != text_reading(single)
-    assert normalize(spaced) != normalize(single)
 
 
 @pytest.mark.parametrize("shape", NEIGHBOURS, ids=list(NEIGHBOURS))
@@ -80,30 +59,6 @@ def test_the_reviewers_two_quoted_notes_stay_two_claims_through_a_tidy(store):
     assert [claim.text for claim in page.claims] == [first, second]
     assert len({claim.span_ids for claim in page.claims}) == 2
     assert all(len(claim.span_ids) == 1 for claim in page.claims)
-
-
-def test_a_backtick_markdown_leaves_as_text_reads_the_passage_exactly():
-    """A run the parser pairs with nothing is a backtick a reader sees; a line the note puts
-    before the passage may pair it (a quote's lazy line), so the passage is compared exactly."""
-    assert code_spans("No `code  here.") is None
-    assert text_reading("No `code  here.") != text_reading("No `code here.")
-    assert text_reading("No \\`code  here.") == text_reading("No \\`code here.")  # escaped
-
-
-def test_no_backtick_needs_no_parser():
-    assert code_spans("Plain words, no code.") == []
-
-
-@pytest.mark.parametrize(
-    "text",
-    ["Keep `a  b` here.\r\nAnd `c  d`.", "Keep `a\tb` and\r`c  d`."],
-    ids=["crlf", "lone-cr"],
-)
-def test_carriage_returns_keep_the_places(text):
-    found = code_spans(text)
-    assert found is not None
-    wanted = sorted(m for m in ("`a  b`", "`c  d`", "`a\tb`") if m in text)
-    assert sorted(text[a:b] for a, b in found) == wanted
 
 
 def body_paragraphs(body: str) -> list[str]:
@@ -176,19 +131,3 @@ def test_an_archive_written_before_the_parser_closed_fences_imports(tmp_path, mo
         assert "After the fence." in body_paragraphs(body)
     finally:
         target.close()
-
-
-def test_a_lazy_line_after_a_quote_is_read_alone_a_known_limit():
-    """What is done for a passage whose container its own text does not show. The splitter
-    makes a line after a quote, with no blank line between, a passage of its own; Markdown
-    reads it as the quote's lazy continuation. The passage is handed to the parser alone. A
-    backtick the passage leaves as text makes the passage read exactly (above), but when the
-    passage's own runs all pair, a run left open in the quote can still move what Markdown
-    calls code: here Markdown reads ` x  y` and ` x y` as two codes, and cairn, reading
-    each passage alone, reads the two passages as one text. Pinned so the limit is seen."""
-    spaced = "> Stray `\nx  y` z` q``w``"
-    single = spaced.replace("x  y", "x y")
-    assert code_contents(spaced) == [" x  y", "w"] and code_contents(single) == [" x y", "w"]
-    alone = [next(s.text for s in chunk("n", t) if s.kind == "paragraph") for t in (spaced, single)]
-    assert alone == ["x  y` z` q``w``", "x y` z` q``w``"]
-    assert text_reading(alone[0]) == text_reading(alone[1])  # the limit

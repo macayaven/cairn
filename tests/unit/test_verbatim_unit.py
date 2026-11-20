@@ -10,77 +10,11 @@ import pytest
 
 from cairn import gate
 from cairn.compiler import CandidatePage, extractive, render_body
-from cairn.gate import _not_verbatim, _refusals, _structure, strict_lint_gate, verbatim_gate
+from cairn.gate import _not_verbatim, _refusals, strict_lint_gate, verbatim_gate
 from cairn.spans import Span, chunk
 from cairn.store import Claim
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
-
-
-# The structure detector: which prose is taken line for line rather than read as words
-
-STRUCTURAL = {
-    "indented four columns": "    dangerous()",
-    "indented with a tab": "\tdangerous()",
-    "a table row": "| a | b |",
-    "a table delimiter row": "|---|:--:|",
-    "a delimiter row without outer pipes": "--- | ---",
-    "a rule of dashes": "---",
-    "a rule of spaced stars": "* * *",
-    "a rule of underscores": "___",
-    "a heading underline of equals": "===",
-    "a heading underline of two dashes": "--",
-    "an underline with a space after it": "=== ",
-    "two dashes with a space after them": "-- ",
-    "a hard break of two spaces": "Alpha.  ",
-    "a hard break of a backslash": "Alpha.\\",
-    "an html tag": "<details>",
-    "a closing html tag": "</details>",
-    "an html comment": "<!-- hidden -->",
-    "a link-reference definition": "[d]: https://example.test/docs",
-    "a footnote definition": "[^1]: A note.",
-    "a code fence": "```bash",
-    "a quoted table row": "> | a | b |",
-    "a quoted indented line": ">     dangerous()",
-    "an item holding a rule": "- ***",
-    "a list marker alone": "*",
-    "a list number alone": "1.",
-}
-PLAIN = ("Plain one.", "Plain two.")
-
-
-@pytest.mark.parametrize("line", STRUCTURAL.values(), ids=STRUCTURAL)
-@pytest.mark.parametrize("where", [1, 2, 3], ids=["first", "middle", "last"])
-def test_each_kind_of_structure_is_found_on_any_line(line, where):
-    lines = [*PLAIN]
-    lines.insert(where - 1, line)
-    assert _structure(lines) == where
-
-
-NEAR_MISSES = {
-    "a sentence that holds a pipe": ["Use a | b here."],
-    "a sentence that holds a dash": ["Pass -- to stop - then go."],
-    "a sentence that holds a backslash": ["Escape \\* with a backslash."],
-    "a line indented three columns": ["   three()"],
-    "two spaces inside a line": ["Alpha.  Beta."],
-    "one trailing space": ["Alpha. "],
-    "a less-than sign": ["a < b holds."],
-    "a reference link used, not defined": ["See [the docs][d] now."],
-    "a line that opens with brackets": ["[Draft] Ship it: soon."],
-    "an item's continuation": ["- Install it", "  and run it."],
-    "a loose list's child": ["- Install it.", "", "    - Then run it."],
-    "a numbered item's continuation": ["10. Ship it", "    when it is ready."],
-    "bold dashes in a sentence": ["Keep **--delete** off."],
-    "a quote continued": ["> Keep it off until", "> the dry run is clean."],
-}
-
-
-@pytest.mark.parametrize("lines", NEAR_MISSES.values(), ids=NEAR_MISSES)
-def test_near_misses_stay_plain(lines):
-    assert _structure(lines) is None
-
-
-# The gate
 
 
 def span(span_id: str, text: str, kind: str = "paragraph", path=("T",)) -> Span:
@@ -137,33 +71,11 @@ def refusals(*claims) -> list[str]:
 
 ACCEPTED = {
     "a paragraph as it is": (PROSE.text, (PROSE,)),
-    "a paragraph wrapped elsewhere": (
-        "Drift mirrors two buckets.\nDeleting the mirror is safe when the run is clean.",
-        (PROSE,),
-    ),
-    "a paragraph with its white space doubled, tabbed and CRLF": (
-        "Drift  mirrors\ttwo buckets. Deleting the mirror\r\nis safe when the run is clean.",
-        (PROSE,),
-    ),
-    "a paragraph with white space at its two ends": (f"\n  {PROSE.text} \n\n", (PROSE,)),
-    "a fold of two passages wrapped apart": (AGAIN.text, (PROSE, AGAIN)),
     "a bullet with its markers": (BULLET.text, (BULLET,)),
-    "a bullet's continuation wrapped elsewhere": (
-        "- **Run:**\n  sync it.\n  - Nested detail\n    here.",
-        (BULLET,),
-    ),
     "a numbered item": (NUMBERED.text, (NUMBERED,)),
     "a number wrapped to a line's start, as it is": (WRAPPED_YEAR.text, (WRAPPED_YEAR,)),
-    "a number that wrapped to a line's start, unwrapped": (
-        "- It shipped in 2020. Then it grew.",
-        (WRAPPED_YEAR,),
-    ),
     "a quote with its markers": (QUOTE.text, (QUOTE,)),
     "a quote with a blank line": (BLANK_QUOTE.text, (BLANK_QUOTE,)),
-    "a dash inside a line, wrapped before another word": (
-        "Pass the flag -\nthen sync.",
-        (DASHED,),
-    ),
     "a code block": (CODE.text, (CODE,)),
     "a code block, white space at the ends of its lines aside": (
         "\n".join(f"{line} \t" for line in CODE.text.split("\n")),
@@ -173,6 +85,12 @@ ACCEPTED = {
     "a table": (TABLE.text, (TABLE,)),
     "a hard line break, whole": (HARD_BREAK.text, (HARD_BREAK,)),
     "a rule, whole, with blank lines around it": (f"\n{RULED.text}\n", (RULED,)),
+    # CORE5: white space at the end of a line is not compared, the two spaces of a hard line
+    # break included
+    "white space at the ends of a paragraph's lines": (f"{PROSE.text} \t", (PROSE,)),
+    "a paragraph with blank lines around it": (f"\n \n{PROSE.text}\n\n", (PROSE,)),
+    "a hard line break at the end": (f"{PROSE.text}  ", (PROSE,)),
+    "a hard line break's spaces changed": ("Alpha.   \nBeta.", (HARD_BREAK,)),
 }
 
 
@@ -233,7 +151,6 @@ REFUSED = {
         "Drift mirrors two buckets.  \nDeleting the mirror is safe when the run is clean.",
         (PROSE,),
     ),
-    "a hard line break at the end": (f"{PROSE.text}  ", (PROSE,)),
     "a rule added": (
         "Drift mirrors two buckets.\n---\nDeleting the mirror is safe when the run is clean.",
         (PROSE,),
@@ -245,10 +162,32 @@ REFUSED = {
     "a closing fence left out": (CODE.text.removesuffix("\n```"), (CODE,)),
     "a table row alone": ("| Drift | 1.8.2 |", (TABLE,)),
     "a hard line break removed": ("Alpha. Beta.", (HARD_BREAK,)),
-    "a hard line break's spaces changed": ("Alpha.   \nBeta.", (HARD_BREAK,)),
     "a rule flattened": ("Before. --- After.", (RULED,)),
     "a sentence beside a rule": ("After.", (RULED,)),
     "a claim that cites nothing": (PROSE.text, ()),
+    # CORE5: two texts are the same only when they are, so white space inside is text
+    "a paragraph wrapped elsewhere": (
+        "Drift mirrors two buckets.\nDeleting the mirror is safe when the run is clean.",
+        (PROSE,),
+    ),
+    "a paragraph with its white space doubled, tabbed and CRLF": (
+        "Drift  mirrors\ttwo buckets. Deleting the mirror\r\nis safe when the run is clean.",
+        (PROSE,),
+    ),
+    "a paragraph with white space at its two ends": (f"\n  {PROSE.text} \n\n", (PROSE,)),
+    "a fold of two passages wrapped apart": (AGAIN.text, (PROSE, AGAIN)),
+    "a bullet's continuation wrapped elsewhere": (
+        "- **Run:**\n  sync it.\n  - Nested detail\n    here.",
+        (BULLET,),
+    ),
+    "a number that wrapped to a line's start, unwrapped": (
+        "- It shipped in 2020. Then it grew.",
+        (WRAPPED_YEAR,),
+    ),
+    "a dash inside a line, wrapped before another word": (
+        "Pass the flag -\nthen sync.",
+        (DASHED,),
+    ),
 }
 
 
@@ -286,18 +225,8 @@ def test_a_refusal_tells_the_model_what_to_do_and_names_the_passage_never_text()
 
 
 def test_a_fold_is_refused_by_the_first_passage_it_is_not():
-    (violation,) = refusals((AGAIN.text, (PROSE, AGAIN, LONGER, QUOTE)))
-    assert LONGER.id in violation and QUOTE.id not in violation
-
-
-def test_structure_added_to_a_passage_is_named_by_its_line():
-    (violation,) = refusals(
-        (
-            "Drift mirrors two buckets.\n\nDeleting the mirror is safe when  \nthe run is clean.",
-            (PROSE,),
-        )
-    )
-    assert "line 3" in violation and PROSE.id in violation and "Deleting" not in violation
+    (violation,) = refusals((AGAIN.text, (AGAIN, LONGER, PROSE, QUOTE)))
+    assert LONGER.id in violation and PROSE.id not in violation and QUOTE.id not in violation
 
 
 def test_a_fence_the_passage_leaves_open_passes_since_the_body_closes_it():
@@ -357,7 +286,7 @@ def test_the_sentence_machinery_is_gone():
 # 8n, the work counted (every character handed to the gate's readers), no clock: linear work
 # grows about 8 times, work that reads a passage once per claim about 64 times.
 
-READERS = ("_text", "_rows", "_structure")
+READERS = ("compared_text",)
 TIMES = 8
 
 
@@ -366,11 +295,10 @@ def work(monkeypatch, claims, spans, judge=_refusals) -> tuple[int, list[str]]:
     read = 0
 
     def counted(original):
-        def reader(lines, *args, **kwargs):
+        def reader(text, *args, **kwargs):
             nonlocal read
-            lines = list(lines)
-            read += sum(len(line) + 1 for line in lines)
-            return original(lines, *args, **kwargs)
+            read += len(text) + 1
+            return original(text, *args, **kwargs)
 
         return reader
 

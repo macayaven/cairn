@@ -29,19 +29,17 @@ Contract (frozen by tests/acceptance/test_t2_facts.py and tests/gold/t2_facts_sy
   every other kind.
 """
 
-import bisect
 import re
 from collections.abc import Callable, Iterator
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from cairn.spans import Span, code_spans, fence_closes
+from cairn.spans import Span, compared_text, fence_closes
 
 FactKind = Literal["code_block", "inline_code", "url", "path", "date", "version", "flag", "number"]
 
 _THOUSANDS_SEPARATOR = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
-_SPACE_RUN = re.compile(r"\s+")  # the white space str.split() splits at
 # A fence line as spans.py opens one; it may also be indented or inside a block quote. The
 # backtick run is possessive (`{3,}+): a shorter run is followed by a backtick, so it always
 # failed "(?!.*`)", and trying each one read the rest of the line again.
@@ -162,69 +160,18 @@ class Fact(BaseModel):
 
 def normalize(value: str) -> str:
     """Normalise text for fact matching (an underscore of emphasis next to a fact reads as
-    "*", as in extract_facts): case folded, each run of white space one space and the ends
-    dropped, except that white space inside inline code is the code's own and kept as it is,
-    as the gate reads prose (review blocker 3): `a  b.txt` and `a b.txt` are two facts."""
-    text = _emphasis(value)
-    return _read(text, _code(value), 0, len(text))
+    "*", as in extract_facts). It reads the text alone, never as Markdown. Where lint reads a
+    page's claims (cairn.lint), it compares a fact by its text as extracted instead."""
+    return _plain(_emphasis(value))
 
 
-def _code(text: str) -> list[tuple[int, int]]:
-    """Where inline code is in `text`, as the gate reads it: cairn.spans.code_spans, the
-    Markdown parser's reading of the text as a document of its own (a fence's runs open no
-    inline code, and a quote's or a list item's blocks end where Markdown ends them). Where
-    the parser's answer cannot be placed (code_spans gives None) the whole text is read as
-    code, its white space kept as it is, as the gate then compares the passage exactly. The
-    text parsed is the span's own, not the emphasised one: `_emphasis` turns underscores
-    into "*" one for one, so the places are the same, and Markdown is read as written. Code
-    lines are read the same way (`_code_lines`).
-
-    Only the spans that hold white space are given: a span without any reads the same kept
-    or collapsed, so a text whose code holds no white space reads as `_plain` reads it, at
-    its cost."""
-    found = code_spans(text)
-    if found is None:
-        return [(0, len(text))] if _SPACE_RUN.search(text) else []
-    return [(left, right) for left, right in found if _SPACE_RUN.search(text, left, right)]
-
-
-def _read(text: str, code: list[tuple[int, int]], start: int, end: int) -> str:
-    """text[start:end] as normalize reads it, `code` being where inline code is in `text`:
-    white space inside code as it is, each other run of it one space, the ends outside code
-    dropped, then case folded and the thousands separators taken out."""
-    first = bisect.bisect_right(code, start, key=lambda c: c[1]) if code else 0
-    if first == len(code) or code[first][0] >= end:  # no code with white space in the range
-        return _plain(text[start:end])
-    pieces: list[tuple[bool, str]] = []  # (inside code, text)
-    pos = start
-    for n in range(first, len(code)):
-        left, right = code[n]  # by index: a slice would copy the rest of `code` for each fact
-        if left >= end:
-            break
-        if left > pos:
-            pieces.append((False, text[pos:left]))
-        pieces.append((True, text[max(left, pos) : min(right, end)]))
-        pos = min(right, end)
-    if pos < end:
-        pieces.append((False, text[pos:end]))
-    read = [(kept, piece if kept else _collapsed(piece)) for kept, piece in pieces]
-    if read and not read[0][0]:
-        read[0] = (False, read[0][1].lstrip(" "))
-    if read and not read[-1][0]:
-        read[-1] = (False, read[-1][1].rstrip(" "))
-    return _THOUSANDS_SEPARATOR.sub("", "".join(piece for _, piece in read).casefold())
-
-
-def _collapsed(piece: str) -> str:
-    """`piece` with each run of white space one space, its ends kept as one space: what
-    _SPACE_RUN.sub(" ", piece) gives, by str.split, which reads the same white space."""
-    words = piece.split()
-    if not words:
-        return " " if piece else ""
-    joined = " ".join(words)
-    if piece[0].isspace():
-        joined = " " + joined
-    return joined + " " if piece[-1].isspace() else joined
+def as_extracted(value: str) -> str:
+    """`value` as lint compares a fact where it reads a page's claims (cairn.lint): as
+    normalize() reads it but with its white space as written, but for what
+    cairn.spans.compared_text leaves out (white space at the end of a line, blank lines
+    around the text), so `a  b.txt` and `a b.txt` are two facts. Case folded, thousands
+    separators taken out, an underscore of emphasis next to a fact read as "*"."""
+    return _THOUSANDS_SEPARATOR.sub("", compared_text(_emphasis(value)).casefold())
 
 
 def _plain(value: str) -> str:
@@ -237,10 +184,9 @@ def extract_facts(span: Span) -> list[Fact]:
     # The span's text with each underscore of emphasis by a fact as "*", one for one: facts are
     # found and normalized in it, as normalize() reads the whole span, and valued in the span.
     text = _emphasis(span.text)
-    code = _code(span.text)  # inline code, whose white space a fact's norm keeps
     for start, end, body_start, body_end in _fenced(span.text):  # a code span is one such block
         claimed.add(start, end)
-        facts.append(_fact(span, text, "code_block", body_start, body_end, code))
+        facts.append(_fact(span, text, "code_block", body_start, body_end))
     for m in _ORDERED_MARKER.finditer(span.text):
         claimed.add(*m.span())  # claimed, no fact
     finders = _FAST if _joined(text) is None else _FINDERS  # G2's filter only where it acts
@@ -250,7 +196,7 @@ def extract_facts(span: Span) -> list[Fact]:
             if claimed.overlaps(*m.span()):
                 continue  # an earlier kind already owns these characters
             claimed.add(*m.span())
-            facts.append(_fact(span, text, kind, *m.span(group), code))
+            facts.append(_fact(span, text, kind, *m.span(group)))
     return sorted(facts, key=lambda f: (f.start, f.end))
 
 
@@ -420,23 +366,13 @@ def _closes(line: re.Match[str], opener: re.Match[str]) -> bool:
     )
 
 
-def _fact(
-    span: Span,
-    read: str,
-    kind: FactKind,
-    start: int,
-    end: int,
-    code: list[tuple[int, int]] | None = None,
-) -> Fact:
-    """One fact. Its norm is its text as normalize reads it in the span, `code` being where
-    inline code is in it: an inline_code fact's white space inside a code span is kept, so it
-    is found in the span's own text. With no `code`, every run of white space is one space."""
-    value = span.text[start:end]
-    lines = _code_lines(read, code or [], start, end) if kind == "code_block" else ()
+def _fact(span: Span, read: str, kind: FactKind, start: int, end: int) -> Fact:
+    value, as_read = span.text[start:end], read[start:end]
+    lines = _code_lines(as_read) if kind == "code_block" else ()
     return Fact(
         kind=kind,
         value=value,
-        norm=_read(read, code, start, end) if code else _plain(read[start:end]),
+        norm=_plain(as_read),
         span_id=span.id,
         start=start,
         end=end,
@@ -444,21 +380,10 @@ def _fact(
     )
 
 
-def _code_lines(read: str, code: list[tuple[int, int]], start: int, end: int) -> tuple[str, ...]:
-    """Normalised lines of the code block read[start:end], without blank and comment-only
-    lines: each as normalize reads it in the span (`_read`), so inline code on a line (a
-    shell's `date  +%s`) keeps its white space on both sides of the match. With no such code,
-    each line is `_plain`'s reading of it, as `_read` would give."""
-    if not code:
-        return tuple(
-            _plain(line)
-            for line in read[start:end].splitlines()
-            if line.strip() and not line.strip().startswith(("#", "//"))
-        )
-    lines, at = [], start
-    for line in read[start:end].splitlines(keepends=True):
-        bare = line.rstrip("\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
-        if bare.strip() and not bare.strip().startswith(("#", "//")):
-            lines.append(_read(read, code, at, at + len(bare)))
-        at += len(line)
-    return tuple(lines)
+def _code_lines(code: str) -> tuple[str, ...]:
+    """Normalised lines of a code block, without blank and comment-only lines."""
+    return tuple(
+        _plain(line)
+        for line in code.splitlines()
+        if line.strip() and not line.strip().startswith(("#", "//"))
+    )

@@ -82,7 +82,9 @@ chooses a note's page, and nothing else does: `page_for`, which asks the store.
   (`filed`); every other outcome is recorded by the caller (cairn.memory).
 """
 
+import hashlib
 import itertools
+import json
 import re
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -92,7 +94,14 @@ from pydantic import BaseModel, ConfigDict
 
 from cairn.candidate import CandidatePage, GateResult
 from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate, whole
-from cairn.spans import Span, claim_id, fence_closes, fence_opener, open_fence_closer
+from cairn.spans import (
+    FenceLeftOpen,
+    Span,
+    claim_id,
+    fence_closes,
+    fence_opener,
+    open_fence_closer,
+)
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
 from cairn.topics import one_line, topic_tag
 
@@ -100,6 +109,7 @@ CONTENT_KINDS = frozenset({"paragraph", "bullet", "code", "table", "quote"})
 SLUG_MAX = 64
 SAVE_TRIES = 3  # reads of a page that keeps moving before a compile gives up
 STALE_PAGE = "compile.stale_page"  # the code of a compile that lost its page SAVE_TRIES times
+FENCE_LEFT_OPEN = "compile.fence_left_open"  # a new claim leaves a fence no closer closes
 TAG_SIZES = (8, 12, 16)  # hex characters of the tag a colliding topic's slug ends with
 _ADDRESS_BATCH = 8  # slugs looked up in one read when choosing a new page's address
 # A code fence, three or more backticks or tildes after any indentation and any list marker
@@ -352,16 +362,33 @@ def _rendered(
 def _closed(text: str) -> str:
     """`text`, and when the Markdown parser leaves a code fence of it open, a line that closes
     it (cairn.spans.open_fence_closer: the opener's own column and run, so it closes inside a
-    list item too), so the claim after it is never read as code (review 7.2, should-fix 8,
-    the second report's finding 8). The parser decides, not a reading of lines: a closer a
-    no-break space or a tab precedes, one indented past Markdown's limit and an opener
-    Markdown does not take are all as Markdown reads them. The claim's text is never
-    changed; a text that holds no backtick or tilde is not parsed."""
-    closer = open_fence_closer(text)
-    if closer is None:
+    list item too), so the claim after it is never read as code (review 7.2, should-fix 8).
+    The parser's line map decides, not a reading of lines and no private character: the
+    fence is open when it covers a line written after the claim. The claim's text is never
+    changed; a text that holds no backtick or tilde is not parsed. A text no closer closes
+    (FenceLeftOpen) is written as it is: compile_note refuses a note that would add one
+    (FENCE_LEFT_OPEN), so only a page saved before can hold one."""
+    try:
+        closer = open_fence_closer(text)
+    except FenceLeftOpen:
         return text
-    closed = f"{text}\n{closer}"
-    return closed if open_fence_closer(closed) is None else text
+    return text if closer is None else f"{text}\n{closer}"
+
+
+def _left_open(claims: Sequence[Claim]) -> list[str]:
+    """FENCE_LEFT_OPEN, once for each claim whose text leaves a code fence open that no closer
+    closes (cairn.spans.FenceLeftOpen), naming the claim, never its text."""
+    out = []
+    for claim in claims:
+        try:
+            open_fence_closer(claim.text)
+        except FenceLeftOpen:
+            out.append(
+                f"{FENCE_LEFT_OPEN}: {claim.id}: the passage leaves a code fence open that no"
+                " closing line after it closes, so the claims after it would read as code:"
+                " close the fence in the note"
+            )
+    return out
 
 
 def _closed_before_review_three(text: str) -> str:
@@ -564,6 +591,14 @@ def compile_note(
                     draft=_add_stats(stats, error.stats),
                 )
             drafted, stats = [s.id for s in new_spans], _add_stats(stats, draft.stats)
+        if left_open := _left_open(draft.claims):
+            return CompileResult(
+                **outcome,
+                status="rejected",
+                version=version,
+                gate=GateResult(passed=False, violations=left_open),
+                draft=stats,
+            )
         candidate = candidate_page(
             slug, title, existing, new_spans, existing_spans=spans, claims=draft.claims
         )
@@ -599,28 +634,52 @@ def compile_note(
 
 
 def rebuilt_folds(claims: tuple[Claim, ...], spans: Mapping[str, Span]) -> tuple[Claim, ...]:
-    """`claims`, each fold that is not the whole of every passage it cites by today's rule, or
-    folds passages under different headings, rebuilt from its passages in its place: one claim
-    for each passage `spans` holds, its text the passage's and its id claim_id(passage), as
-    the extractive compile writes it (second report, finding 5b: a fold a tidy made under an
-    older inline-code rule). The same tuple when none is; only a claim that cites more than
-    one passage is read. A tidy and an arrangement save the rebuilt claims as the page's next
-    version, a note compiles onto them, and an import rebuilds each version that holds such
-    a fold (store.portable)."""
-    if all(len(claim.span_ids) < 2 for claim in claims):
+    """`claims`, each claim that is not the whole of every passage it cites by today's rule
+    (gate.whole), or that folds passages under different headings, rebuilt from its passages
+    in its place: one claim for each passage `spans` holds and no other claim of the page
+    copies alone, its text the passage's, as the extractive compile writes it (CORE5: a fold
+    a tidy made before two passages were the same only when their text is). A claim with no
+    passage in `spans` is kept as it is. The same tuple when none is rebuilt. A tidy and an
+    arrangement save the rebuilt claims as the page's next version, and a note compiles onto
+    them; earlier versions are never rebuilt, and an import takes them as they are.
+
+    Ids: no id is held twice, and none of `claims` is lost but a rebuilt claim's whose every
+    passage another claim already copies alone (none of cairn's tidies made such a page).
+    The first claim rebuilt from a claim keeps that claim's id; each other takes claim_id of
+    its passage when no claim holds that id, else an id made from its place and its passage
+    (as a forgotten note's survivor takes one, store.erasure.kept_claims), drawn again in the
+    rare case that one is held too."""
+    rebuild = [
+        claim
+        for claim in claims
+        if any(i in spans for i in claim.span_ids)
+        and (
+            not whole(claim, spans)
+            or len({spans[i].heading_path for i in claim.span_ids if i in spans}) > 1
+        )
+    ]
+    if not rebuild:
         return claims
-    out: dict[str, Claim] = {}
+    again = {claim.id for claim in rebuild}
+    taken = {claim.id for claim in claims}  # every id of the version, held until its end
+    alone = {  # the passages a claim kept as it is already copies alone
+        claim.span_ids[0] for claim in claims if claim.id not in again and len(claim.span_ids) == 1
+    }
+    out: list[Claim] = []
     for claim in claims:
-        cited = [span_id for span_id in claim.span_ids if span_id in spans]
-        paths = {spans[span_id].heading_path for span_id in cited}
-        if len(claim.span_ids) < 2 or (len(paths) < 2 and whole(claim, spans)):
-            out.setdefault(claim.id, claim)
+        if claim.id not in again:
+            out.append(claim)
             continue
-        for span_id in cited:
-            again = Claim(id=claim_id(span_id), text=spans[span_id].text, span_ids=(span_id,))
-            out.setdefault(again.id, again)
-    rebuilt = tuple(out.values())
-    return claims if rebuilt == claims else rebuilt
+        cited = [i for i in dict.fromkeys(claim.span_ids) if i in spans and i not in alone]
+        for n, span_id in enumerate(cited):
+            new, tries = claim.id if n == 0 else claim_id(span_id), 0
+            while n and new in taken:
+                key = json.dumps([len(out), span_id, tries]).encode()
+                new, tries = "cl_" + hashlib.sha256(key).hexdigest()[:16], tries + 1
+            taken.add(new)
+            alone.add(span_id)
+            out.append(Claim(id=new, text=spans[span_id].text, span_ids=(span_id,)))
+    return tuple(out)
 
 
 def _verbatim_gate() -> Gate:

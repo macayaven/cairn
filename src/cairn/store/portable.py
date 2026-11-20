@@ -1375,7 +1375,6 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     with the cut title."""
     from cairn.compiler import (  # the compiler builds on the store
         previous_render_body,
-        rebuilt_folds,
         render_body,
         render_body_before_review_three,
         render_body_before_review_two,
@@ -1399,36 +1398,9 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
             " writes of its claims"
         )
     title = page.title[: FIELD_MAX["topic"]]  # a page's title is its note's topic or title
-    claims = rebuilt_folds(page.claims, spans)  # finding 5b: an old fold, from its passages
-    if len(claims) > PAGE_CLAIMS_MAX:
-        raise ValueError(
-            f"version {page.version} of {page.slug!r} in {root} holds a fold made under an older"
-            f" rule, and rebuilt from its passages it would hold more than {PAGE_CLAIMS_MAX:,}"
-            " claims"
-        )
-    if title != page.title or claims is not page.claims:  # a title cut, or a fold rebuilt
-        body = render_body(title, claims, spans)
-    return page.model_copy(update={"title": title, "body": body, "claims": claims})
-
-
-def _fold_before_review_three(
-    claim: Claim, spans: Mapping[str, Span], copied: Callable[[Claim, Mapping[str, Span]], bool]
-) -> bool:
-    """Whether `claim` is a fold a tidy made under an older inline-code rule (second report,
-    finding 5b): it cites more than one passage, it is the whole of one of them by today's
-    rule, and every passage it cites says the same but for white space, inside inline code
-    included. Before decision 189 white space inside inline code read as prose's, and at
-    fe47cfd6 a backtick left as text in a quote could still pair across its lines; either
-    way only white space told such passages apart. Imported, the version is rebuilt from
-    its passages (_as_rendered, compiler.rebuilt_folds); any other claim that is not the
-    whole of every passage it cites is refused, as before."""
-    known = [span_id for span_id in claim.span_ids if span_id in spans]
-    if len(claim.span_ids) < 2 or len(known) != len(claim.span_ids):
-        return False
-    said = {_collapsed(spans[span_id].text) for span_id in known}
-    if said != {_collapsed(claim.text)}:
-        return False
-    return any(copied(claim.model_copy(update={"span_ids": (i,)}), spans) for i in known)
+    if title != page.title:
+        body = render_body(title, page.claims, spans)
+    return page.model_copy(update={"title": title, "body": body})
 
 
 def _page_version(
@@ -1437,12 +1409,17 @@ def _page_version(
     """One line of a project's pages.jsonl: the next version of its page (`versions` holds
     each page's latest so far), citing only `spans`, the spans of the project's own notes by
     id. A page cairn could have written (review blocker 2): each claim is the whole of every
-    span it cites, by the verbatim gate's own comparison (cairn.gate.whole: code and
-    structured prose line by line, other prose with its white space read as one space outside
-    inline code), so no citation is false and no code is re-indented; a claim that cites
+    span it cites, by the verbatim gate's own comparison (cairn.gate.whole: the same text but
+    for white space at the ends of lines and blank lines around it), so no citation is false
+    and no code is re-indented; a claim that cites
     several spans (a fold) cites spans of one heading path, the one its section shows; and no
-    two claims of the version share an id, which `evidence` finds a claim by."""
+    two claims of the version share an id, which `evidence` finds a claim by. A claim whole
+    by the gate's comparison before CORE5 is accepted too (store.before_core5): a tidy then
+    could fold passages that differ only by white space, and its version is imported as it
+    is, never rewritten; the next tidy or compile rebuilds the latest (compiler.rebuilt_folds).
+    """
     from cairn.gate import whole as copied  # the gate builds on the store
+    from cairn.store.before_core5 import whole_before_core5
 
     where = f"a line of {root}pages.jsonl"
     if missing := [key for key in _PAGE_LINE if key not in line]:
@@ -1488,7 +1465,7 @@ def _page_version(
             raise ValueError(
                 f"a claim of {slug!r} in {root} cites a passage that is not of its project's notes"
             )
-        if not copied(claim, spans) and not _fold_before_review_three(claim, spans, copied):
+        if not copied(claim, spans) and not whole_before_core5(claim, spans):
             raise ValueError(  # its place, never its text or id (the archive's, not cairn's)
                 f"claim {n} of {slug!r} version {expected} in {root} does not say what a"
                 " passage it cites says"

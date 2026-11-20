@@ -1,8 +1,9 @@
 """Two passages are a repeat only when the verbatim gate would call them the same (review 7.3).
 
 `repeat_groups` (the list a model is sent, the plan tidy_page folds by, the rule a model's
-`same` lists are held to) reads a claim the way verbatim_gate reads a passage: code, tables
-and prose that holds structure line by line, plain prose as text. Made-up notes."""
+`same` lists are held to) compares claims as verbatim_gate compares a claim with a passage:
+the same text, white space at the end of a line and blank lines around it aside (CORE5).
+Made-up notes."""
 
 import itertools
 import json
@@ -11,7 +12,7 @@ import pytest
 
 from cairn.arrange import parse_arrangement, repeat_groups, tidy_page
 from cairn.compiler import CandidatePage, render_body
-from cairn.gate import lint_gate, text_reading, verbatim_gate
+from cairn.gate import lint_gate, verbatim_gate
 from cairn.memory import Memory
 from cairn.spans import chunk
 from cairn.store import Claim, Store
@@ -139,15 +140,19 @@ def test_white_space_inside_inline_code_is_kept(name):
     assert repeat_groups(claims, {}) == [], name
 
 
-def test_inline_code_the_same_still_repeats_when_the_prose_is_wrapped():
+def test_inline_code_the_same_is_no_repeat_when_the_prose_is_wrapped():
+    """CORE5: two texts are the same only when they are; a line break is not a space."""
     claims, _ = claims_of(*PAIRS["inline code the same, prose wrapped"])
-    assert repeat_groups(claims, {}) == [[1, 2]]
+    assert repeat_groups(claims, {}) == []
 
 
-def test_an_escaped_backtick_opens_no_code():
-    assert text_reading("A \\` tick, `a  b` here.") != text_reading("A \\` tick, `a b` here.")
-    # A backtick Markdown leaves as text reads the passage exactly (spans.code_spans).
-    assert text_reading("No `code  here.") != text_reading("No `code here.")
+def test_an_escaped_backtick_or_one_left_as_text_changes_nothing():
+    for first, second in (
+        ("A \\` tick, `a  b` here.", "A \\` tick, `a b` here."),
+        ("No `code  here.", "No `code here."),
+    ):
+        claims, _ = claims_of(first, second)
+        assert repeat_groups(claims, {}) == []
 
 
 def test_two_notes_that_differ_only_inside_inline_code_both_survive_a_tidy(store):

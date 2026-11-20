@@ -5,16 +5,21 @@ and tests/acceptance/test_t3_multisource.py (spans from several sources). `lint_
 in-memory core; `lint` loads one source document and a directory of pages, then calls it.
 
 Matching
-- normalize() keeps white space inside inline code as written, as the gate reads prose, and
-  so does an inline_code fact's norm: `a  b.txt` and `a b.txt` are two facts. Inline code is
-  where the Markdown parser finds it (cairn.spans.code_spans, read once per text in one
-  lint_pages call); a text whose code the parser cannot place keeps all its white space.
 - A fact occurs in a text when its norm is a whole token of normalize(text): the characters
   around it are not [0-9a-z_], so "--json" is not in "--jsonl" and "5" is not in "15". An
-  empty norm always occurs.
+  empty norm always occurs. normalize() reads a text alone, never as Markdown.
 - A code_block fact is matched line by line: each entry of its `lines`.
 - A claim is in the page body when its whitespace-collapsed text is a substring of the
   whitespace-collapsed body.
+- A rendered page (lint_pages(..., rendered=True), what every gate asks, cairn.gate: its
+  body is what compiler.render_body writes of its claims, checked byte for byte) is read
+  by its claims, never by its body as one document (CORE5): retention, the plain metrics
+  and grounding find a fact's text as extracted (facts.as_extracted: white space as
+  written, a code_block fact by each of its lines so read) as a whole token of the claims'
+  texts, each read alone by the same function as the passages it copies; a claim is in the
+  body when its text is, as it is. So the context a claim stands in never changes what is
+  read. A page of the `lint` command is read by its body, as above: such a page's body may
+  hold text no claim holds (tests/acceptance/test_t3_lint.py), and that is what it scores.
 
 Pages and spans
 - The body is the page text minus front matter. The title is the front-matter `title`, else
@@ -75,8 +80,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from cairn.facts import Fact, extract_facts, normalize
-from cairn.spans import Span, chunk, code_read_once
+from cairn.facts import Fact, as_extracted, extract_facts, normalize
+from cairn.spans import Span, chunk
 
 CONTENT_KINDS = frozenset({"paragraph", "bullet", "code", "table", "quote"})
 PLACEMENT_KINDS = frozenset({"flag", "path", "inline_code"})
@@ -144,25 +149,19 @@ def lint_pages(
     spans: Sequence[Span],
     entities: Sequence[Entity] = (),
     unassigned_spans: Collection[str] = (),
+    *,
+    rendered: bool = False,
 ) -> LintReport:
     """The in-memory core: the same rules as `lint`, over spans from any number of sources.
 
     `lint` loads its files and calls this. Contract: tests/acceptance/test_t3_lint.py and
     tests/acceptance/test_t3_multisource.py. Raises LintInputError for unreadable front
-    matter or two pages with one slug. Each text's inline code is parsed once a call
-    (spans.code_read_once)."""
-    with code_read_once():
-        return _lint_pages(pages, spans, entities, unassigned_spans)
-
-
-def _lint_pages(
-    pages: Sequence[PageInput],
-    spans: Sequence[Span],
-    entities: Sequence[Entity],
-    unassigned_spans: Collection[str],
-) -> LintReport:
-    source = _Source(spans, entities)
-    parsed = _parse_pages(pages)
+    matter or two pages with one slug. `rendered`: each cairn-format page's body is what
+    compiler.render_body writes of its claims, so its facts are read from its claims, each
+    alone, as extracted (see Matching)."""
+    reading = _AS_EXTRACTED if rendered else _NORMALISED
+    source = _Source(spans, entities, reading)
+    parsed = _parse_pages(pages, reading)
     violations: list[Finding] = []
     warnings: list[Finding] = []
     for page in parsed:
@@ -445,6 +444,30 @@ def _units(fact: Fact) -> list[tuple[str, str]]:
     return [(fact.norm, fact.value)]
 
 
+def _extracted_units(fact: Fact) -> list[tuple[str, str]]:
+    """_units, each as extracted (facts.as_extracted): a code block's lines, without blank and
+    comment-only lines, each with its indentation and inner white space; else the fact."""
+    if fact.kind == "code_block":
+        lines = [line for line in fact.value.split("\n") if line.strip()]
+        lines = [line for line in lines if not line.strip().startswith(("#", "//"))]
+        return [(as_extracted(line), line.rstrip(" \t\r")) for line in lines]
+    return [(as_extracted(fact.value), fact.value)]
+
+
+@dataclass(frozen=True)
+class _Reading:
+    """How one lint_pages call reads texts and facts: a text, a fact's units, and whether a
+    rendered page is read by its claims."""
+
+    text: Callable[[str], str]
+    units: Callable[[Fact], list[tuple[str, str]]]
+    by_claims: bool
+
+
+_NORMALISED = _Reading(normalize, _units, by_claims=False)
+_AS_EXTRACTED = _Reading(as_extracted, _extracted_units, by_claims=True)
+
+
 def _label(fact: Fact) -> str:
     return "code line" if fact.kind == "code_block" else fact.kind.replace("_", " ")
 
@@ -500,7 +523,10 @@ class _Entity:
 class _Source:
     """The spans under lint, with their facts, normalised texts and entities."""
 
-    def __init__(self, spans: Iterable[Span], entities: Sequence[Entity]) -> None:
+    def __init__(
+        self, spans: Iterable[Span], entities: Sequence[Entity], reading: "_Reading | None" = None
+    ) -> None:
+        self.reading = reading = reading or _NORMALISED
         self.by_id = {s.id: s for s in spans}
         self.spans = list(self.by_id.values())
         self.content = [s for s in self.spans if s.kind in CONTENT_KINDS]
@@ -508,7 +534,7 @@ class _Source:
         self._by_text: dict[str, str] = {}  # span text -> first span id with it
         for span in self.spans:
             self._by_text.setdefault(span.text, span.id)
-        self.norm = {s.id: normalize(s.text) for s in self.spans}
+        self.norm = {s.id: reading.text(s.text) for s in self.spans}
         self.entities = [_Entity.of(i, e) for i, e in enumerate(entities)]
         # Caches, each giving what the call it saves gives: spans share heading segments, and a
         # span may be asked about one entity for every claim that cites it and every value of
@@ -577,20 +603,26 @@ class _Page:
     body_spans: list[Span]
     claims: list[ClaimInput] | None
     omitted: set[str]  # fact ids declared omitted
-    norm_body: str = ""
+    rendered: bool = False  # its body is its claims rendered: read by its claims (Matching)
+    norm_body: str = ""  # what facts are found in: its body, or its claims, each read alone
     flat_body: str = ""
     cited: list[Span] = field(default_factory=list)  # distinct known spans its claims cite
 
-    def __post_init__(self) -> None:
-        self.norm_body = normalize(self.body)
-        self.flat_body = _flat(self.body)
 
-
-def _parse_pages(pages: Sequence[PageInput]) -> list[_Page]:
+def _parse_pages(pages: Sequence[PageInput], reading: "_Reading") -> list[_Page]:
     slugs = Counter(p.slug for p in pages)
     if duplicated := sorted(s for s, n in slugs.items() if n > 1):
         raise LintInputError(f"duplicate page slug: {', '.join(duplicated)}")
-    return [_parse_page(p) for p in pages]
+    out = []
+    for parsed in (_parse_page(p) for p in pages):
+        if reading.by_claims and parsed.claims is not None:
+            parsed.rendered = True
+            parsed.norm_body = "\n\n".join(reading.text(c.text) for c in parsed.claims)
+        else:
+            parsed.norm_body = reading.text(parsed.body)
+            parsed.flat_body = _flat(parsed.body)
+        out.append(parsed)
+    return out
 
 
 def _parse_page(page: PageInput) -> _Page:
@@ -660,7 +692,10 @@ def _check_claims(
     claims = page.claims or []
     claim_facts = [_claim_facts(page.slug, claim, source) for claim in claims]
     grounded = _grounded(claims, claim_facts, source)
-    in_body = _in_body([_flat(claim.text) for claim in claims], page.flat_body)
+    if page.rendered:  # a claim is in the body as it is
+        in_body = _in_body([claim.text for claim in claims], page.body)
+    else:
+        in_body = _in_body([_flat(claim.text) for claim in claims], page.flat_body)
     for claim, facts, claim_in_body, claim_grounded in zip(
         claims, claim_facts, in_body, grounded, strict=True
     ):
@@ -697,7 +732,7 @@ def _check_claims(
                 )
             )
         if known:
-            violations += _grounding(page.slug, claim, facts, claim_grounded)
+            violations += _grounding(page.slug, claim, facts, claim_grounded, source.reading)
         if entity is not None:
             violations += _attribution(page.slug, claim, known, entity, source, warnings)
         cited.update((s.id, s) for s in known)
@@ -753,7 +788,8 @@ def _grounded(
     code line is one line), so no occurrence crosses a joint, and a line break is a non-token
     character, as the edge of a span is. So a norm occurs as a whole token in the joined text
     exactly when it does in one of the spans."""
-    norms = [{norm for fact in facts for norm, _ in _units(fact)} for facts in claim_facts]
+    units = source.reading.units
+    norms = [{norm for fact in facts for norm, _ in units(fact)} for facts in claim_facts]
     known = [[s for s in dict.fromkeys(c.span_ids) if s in source.by_id] for c in claims]
     by_span: dict[str, set[str]] = {}
     for asked, spans in zip(norms, known, strict=True):
@@ -769,11 +805,11 @@ def _grounded(
 
 
 def _grounding(
-    slug: str, claim: ClaimInput, facts: list[Fact], grounded: set[str]
+    slug: str, claim: ClaimInput, facts: list[Fact], grounded: set[str], reading: "_Reading"
 ) -> list[Finding]:
     out, seen = [], set()
     for fact in facts:
-        for norm, shown in _units(fact):
+        for norm, shown in reading.units(fact):
             if norm not in seen and norm not in grounded:
                 out.append(
                     Finding(
@@ -832,7 +868,8 @@ def _attribution(
 def _retention(page: _Page, source: _Source) -> list[Finding]:
     out = []
     # Whether the page's body holds each value: the body is read once for all of them.
-    units = (norm for s in page.cited for f in source.facts[s.id] for norm, _ in _units(f))
+    read = source.reading.units
+    units = (norm for s in page.cited for f in source.facts[s.id] for norm, _ in read(f))
     on_page = _Needles(units).found_in(page.norm_body)
     kept = on_page.__contains__
 
@@ -847,12 +884,12 @@ def _retention(page: _Page, source: _Source) -> list[Finding]:
                         fact=line,
                         message=f"code line {line!r} of the cited passage is not on the page",
                     )
-                    for line in fact.lines
-                    if not kept(line)
+                    for norm, line in read(fact)
+                    if not kept(norm)
                 ]
                 continue
             fid = fact_id(span.id, fact.start)
-            if not kept(fact.norm) and fid not in page.omitted:
+            if not kept(read(fact)[0][0]) and fid not in page.omitted:
                 out.append(
                     Finding(
                         code="retention.fact_dropped",
@@ -876,12 +913,15 @@ def _placement(page: _Page, entity: int | None, source: _Source) -> list[Finding
         return []
     page_entity = source.entities[entity]
     facts, seen = [], set()
+    norm_of = {}  # a fact's norm, as this call reads facts
     for fact in (f for s in page.body_spans for f in source.facts_of(s)):
         if fact.kind not in PLACEMENT_KINDS or len(fact.value) < PLACEMENT_MIN_CHARS:
             continue
-        if not fact.norm or fact.norm in seen:
+        norm = source.reading.units(fact)[0][0]
+        if not norm or norm in seen:
             continue
-        seen.add(fact.norm)
+        seen.add(norm)
+        norm_of[id(fact)] = norm
         facts.append(fact)
     # The source spans holding each value, in source order: each span is read once for all
     # the values, where each value used to read every span.
@@ -892,7 +932,7 @@ def _placement(page: _Page, entity: int | None, source: _Source) -> list[Finding
             holding[norm].append(span)
     out = []
     for fact in facts:
-        holders = holding[fact.norm]
+        holders = holding[norm_of[id(fact)]]
         owners = {source.owners[s.id] for s in holders}
         if len(owners) != 1:
             continue  # in no source span, or in spans about different entities
@@ -937,8 +977,9 @@ def _duplicates(pages: list[_Page]) -> list[Finding]:
 
 def _plain_metrics(pages: list[_Page], source: _Source, placements: int) -> dict[str, Any]:
     # The values found in at least one page body: each body is read once for all of them.
+    read = source.reading.units
     needles = _Needles(
-        norm for s in source.content for f in source.facts[s.id] for norm, _ in _units(f)
+        norm for s in source.content for f in source.facts[s.id] for norm, _ in read(f)
     )
     on_pages: set[str] = set()
     for page in pages:
@@ -950,7 +991,7 @@ def _plain_metrics(pages: list[_Page], source: _Source, placements: int) -> dict
     for span in source.content:
         hits = []
         for fact in source.facts[span.id]:
-            for norm, _ in _units(fact):
+            for norm, _ in read(fact):
                 hit = found(norm)
                 hits.append(hit)
                 if fact.kind == "code_block":

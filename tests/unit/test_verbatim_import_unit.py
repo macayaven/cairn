@@ -8,6 +8,11 @@ cites, compared as the gate compares. This test calls the import's own check on 
 generated passages that hold the Unicode white space where the two comparisons parted: a
 no-break space, a line or paragraph separator, a form feed, a vertical tab, a next-line
 character, an ideographic space; the import and the gate now say the same of every one.
+
+CORE5: the import also takes a claim the gate as it was before CORE5 passed
+(cairn.store.before_core5, the gate's code at 951a904d), so a version a tidy saved then
+imports unchanged; it takes nothing else, and no space but the gate's own four ever made
+two texts one for either rule.
 """
 
 import random
@@ -18,6 +23,7 @@ from cairn.compiler import CONTENT_KINDS
 from cairn.gate import _not_verbatim
 from cairn.spans import Span, chunk
 from cairn.store import Claim
+from cairn.store.before_core5 import whole_before_core5
 from cairn.store.portable import _page_version
 
 # Read as white space by the gate (the first four) or by str.split alone (the rest), by code
@@ -83,7 +89,7 @@ def imported(text: str, cited: list[Span]) -> bool:
 
 
 @pytest.mark.parametrize("seed", range(20))
-def test_an_import_takes_what_the_gate_passes_and_nothing_else(seed):
+def test_an_import_takes_what_the_gate_passes_or_passed_and_nothing_else(seed):
     rng = random.Random(seed)
     passed = refused = 0
     for _ in range(25):
@@ -96,8 +102,10 @@ def test_an_import_takes_what_the_gate_passes_and_nothing_else(seed):
                 for text in claims_of(span, rng):
                     claim = Claim(id="cl_" + "0" * 16, text=text, span_ids=tuple(by_id))
                     gate = _not_verbatim(claim, by_id) is None
+                    before = whole_before_core5(claim, by_id)
                     takes = imported(text, cited)
-                    assert takes == gate, (text, [s.text for s in cited])
+                    assert takes == (gate or before), (text, [s.text for s in cited])
+                    assert before or not gate, (text, [s.text for s in cited])
                     passed += gate
                     refused += not gate  # what the import took before, white space aside
     assert passed > 100 and refused > 0, (passed, refused)

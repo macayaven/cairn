@@ -21,21 +21,16 @@ This file makes the gate for a model's drafts keep it too.
   every passage it cites: nothing of a passage left out, nothing added, and two passages never
   joined into one claim. A claim that cites several passages is a fold: each of them says the
   same, in the same words.
-- How text is compared, nowhere looser than before:
-  - A code or table passage, and a prose passage that holds structure (a hard line break, a
-    rule, a line indented four columns, a table row, a code fence, HTML, a link or footnote
-    definition, a list marker alone on its line), line for line, exactly. Only white space at
-    the end of a line may differ, and only for code and tables; blank lines before and after
-    the claim's text are not read.
-  - Any other prose passage (a paragraph, a bullet, a quote): the same characters, with a run
-    of white space (space, tab, CR, LF and nothing else) read as one space and white space at
-    the two ends dropped, so a hard-wrapped passage may be wrapped elsewhere. There is no case
-    folding and no Unicode normalisation: a no-break space, a zero-width character or a
-    bidirectional control is text. A list or quote marker ("- ", "* ", "+ ", ">") is part of
-    the passage's text: it is neither dropped nor added, and a line of the claim starts with
-    one where a line of the passage does and nowhere else; a line that is markers alone (a
-    quote's blank line) stays a line of its own. A list number ("1. ") is text like any other
-    word. The claim adds no structure: no hard line break, rule or indented code.
+- How text is compared (CORE5, the maintainer's decision, which replaced the reading of prose
+  as words below): every passage the same way, character for character. Only the spaces, tabs
+  and carriage returns at the end of a line, and the blank lines before and after the
+  claim's text, are not read. Indentation, runs of white space, line breaks, tabs, no-break,
+  zero-width and every other space, and bidirectional controls are text; there is no case
+  folding and no Unicode normalisation. So a hard-wrapped passage wrapped elsewhere is
+  another text, and a list or quote marker is text like any other. (Before CORE5 a prose
+  passage without structure was read with each run of white space as one space; two
+  passages that differ by white space could fold, and Markdown kept finding places where
+  white space means something.)
 - A refusal is one violation per claim, "grounding.not_verbatim: <claim id>: ...". It says in
   plain words that a claim must be the whole of each passage it cites, and names the passage
   it is not (or a line number), never a claim's or a passage's text. The violations follow
@@ -211,12 +206,16 @@ def test_the_extractive_draft_of_the_note_passes_and_equals_the_strict_gate():
 
 
 def test_a_fold_of_two_notes_that_say_the_same_passes():
-    (one,) = passages("# Release\n\nDeleting the mirror is safe when\nthe dry run is clean.\n")
+    (one,) = passages("# Release\n\nDeleting the mirror is safe when the dry run is clean.  \n")
     (other,) = passages(
         "# Release\n\nDeleting the mirror is safe when the dry run is clean.\n", "cap_t5d_two"
     )
     assert_passes((one.text, [one, other]))
     assert_passes((other.text, [one, other]))
+    (wrapped,) = passages(
+        "# Release\n\nDeleting the mirror is safe when\nthe dry run is clean.\n", "cap_t5d_three"
+    )
+    assert_refused(other.text, [other, wrapped], wrapped)  # CORE5: wrapped otherwise
     code = "```bash\ndrift sync --src ./a --dst ./b\n```"
     (a,) = passages(f"# Release\n\n{code}\n")
     (b,) = passages(f"# Release\n\n{code}\n", "cap_t5d_two")
@@ -392,25 +391,28 @@ def test_a_marker_dropped_added_moved_or_changed_is_refused(every, name):
 # White space
 
 
-def test_rewrapping_a_prose_passage_passes(every):
+def test_rewrapping_a_prose_passage_is_refused(every):
+    """CORE5: a line break, a tab, a doubled space or indentation is text."""
     reproduction = every["the reproduction"]
     wrapped = every["a hard-wrapped paragraph"]
     nested = every["a bullet with nested items"]
     quote = every["a quote"]
-    assert_passes(
-        ("The synthetic release is safe.\nOnly after a reviewer approves it.", [reproduction]),
+    for text, span in (
+        ("The synthetic release is safe.\nOnly after a reviewer approves it.", reproduction),
         (
             "The mirror is copied every night.\tDeleting the mirror\r\nis safe when the  dry run"
             " is clean.\nAsk the owner first.",
-            [wrapped],
+            wrapped,
         ),
         (
             "- Deleting the mirror\n  is safe.\n  - Only after a clean\n    dry run.\n  - Never on"
             " a Friday.",
-            [nested],
+            nested,
         ),
-        (f"\n\n  {quote.text}\n", [quote]),
-    )
+        (f"\n\n  {quote.text}\n", quote),
+    ):
+        assert_refused(text, [span], span)
+    assert_passes((f"\n\n{quote.text}  \n", [quote]))
 
 
 SPACES = {
@@ -458,7 +460,6 @@ LINE_FOR_LINE = [
     "a table row alone",
     "a table without its header",
     "a hard line break removed",
-    "a hard line break's spaces changed",
     "a rule flattened",
     "a sentence beside a rule",
     "indented code read out",
@@ -482,10 +483,6 @@ def test_code_tables_and_structured_prose_are_taken_line_for_line(every, name):
         "a table row alone": (rows[2], table),
         "a table without its header": ("\n".join(rows[1:]), table),
         "a hard line break removed": ("Alpha holds. Beta follows.", every["a hard line break"]),
-        "a hard line break's spaces changed": (
-            "Alpha holds.   \nBeta follows.",
-            every["a hard line break"],
-        ),
         "a rule flattened": ("Before the rule. *** After the rule.", every["a rule"]),
         "a sentence beside a rule": ("After the rule.", every["a rule"]),
         "indented code read out": ("dangerous() safe().", every["indented code"]),
@@ -589,9 +586,9 @@ def test_a_model_draft_that_copies_each_passage_whole_is_saved(store):
     project, note, spans = note_of(store, NOTE)
     assert any(s.text.startswith("    ") for s in spans)
     reproduction, *rest = spans
-    rewrapped = reproduction.text.replace("safe. ", "safe.\n")
+    spaced = reproduction.text + "  "  # CORE5: white space at a line's end is not read
     result = compiled(
-        store, note, (rewrapped, [reproduction]), *((f"\n{s.text}\n\n", [s]) for s in rest)
+        store, note, (spaced, [reproduction]), *((f"\n{s.text}\n\n", [s]) for s in rest)
     )
     assert result.status == "saved", result.gate.violations
     page = store.get_page(project.id, "release")
@@ -640,10 +637,10 @@ def test_every_fixture_compiles_through_the_gate_with_the_extractive_composer(st
         assert result.gate == strict_lint_gate(result.candidate, cited), path.name
 
 
-# NOTE again, as a second note might say it: one paragraph wrapped elsewhere, white space at
-# the end of a code line and of a table row.
+# NOTE again, as a second note might say it: white space at the end of a prose line,
+# of a code line and of a table row (CORE5: a paragraph wrapped elsewhere is no repeat).
 REWRAPPED = (
-    NOTE.replace("safe when\nthe dry run", "safe\nwhen the dry run")
+    NOTE.replace("safe when\nthe dry run", "safe when \nthe dry run")  # CORE5: not rewrapped
     .replace("--dry-run\n", "--dry-run  \n")
     .replace("| --dry-run | list only |", "| --dry-run | list only |\t")
 )

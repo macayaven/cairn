@@ -55,18 +55,14 @@ Known limits:
 - Tabs count as one column of indentation.
 """
 
-import bisect
 import hashlib
 import json
 import re
 from collections import Counter
 from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import Literal
 
 from markdown_it import MarkdownIt
-from markdown_it.rules_inline.backticks import backtick
 from pydantic import BaseModel, ConfigDict
 
 SpanKind = Literal["frontmatter", "heading", "paragraph", "bullet", "code", "table", "quote"]
@@ -303,270 +299,67 @@ def claim_id(span_id: str) -> str:
     return "cl_" + span_id.removeprefix("sp_")
 
 
-# Inline code, as the Markdown parser reads it (second report, finding 2). A passage is
-# handed to the parser as the note has it: a quote's ">" and a list item's marker and
-# indentation are in its text, so its container is the parser's to read. Two readings are
-# asked, raw HTML off (as the web view renders) and on (as a reader of the raw Markdown may),
-# and code is where either finds it: reading too much as code keeps two texts apart, the safe
-# side.
+# What is the same text (CORE5): two passages, a claim and a passage, two claims are the same
+# only when their text is, character for character, but for what `compared_text` leaves out.
 
 
-_LINE_BREAK = re.compile("\n")
-_CR_LF = re.compile("\r\n")
-_PARSER_LINES = re.compile(r"\r\n?|\n")
-_TAG_START = re.compile(r"<[A-Za-z/!?]")  # where raw HTML or an autolink may start
-_BLOCK_LEAD = re.compile(r"[ \t>*+\-0-9.)]*")  # what may come before an HTML block's "<"
+def compared_text(text: str) -> str:
+    """`text` as two texts are compared: each line without the spaces, tabs and carriage
+    returns at its end, and without the blank lines before the first and after the last line
+    that holds anything else. Nothing else is left out: indentation, runs of white space
+    inside a line, tabs, line breaks, no-break and every other Unicode space are text. The
+    verbatim gate (a claim is the whole of each passage it cites), the repeat key (two claims
+    fold) and the fact check (a page's facts are its claims') compare by this one function."""
+    rows = [line.rstrip(" \t\r") for line in text.split("\n")]
+    first = next((n for n, row in enumerate(rows) if row), len(rows))
+    last = next((n for n in range(len(rows), first, -1) if rows[n - 1]), first)
+    return "\n".join(rows[first:last])
 
 
-def _placed_rule(rule):
-    """The parser's backtick rule, noting where each code span it makes starts and ends in
-    the text it parses (`meta["at"]`), and in `env` when it leaves a run as text."""
+# Whether a claim leaves a code fence open, the one question still put to the Markdown parser:
+# render_body closes such a fence before the next claim (review 7.2).
 
-    def placed(state, silent: bool) -> bool:
-        start, made = state.pos, len(state.tokens)
-        if not rule(state, silent):
-            return False
-        if not silent:
-            if len(state.tokens) > made and state.tokens[-1].type == "code_inline":
-                state.tokens[-1].meta["at"] = (start, state.pos, state.src)
-            else:
-                state.env.setdefault("text_ticks", set()).add(state.src)
-        return True
-
-    return placed
+_PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
+_PARSER_LINES = re.compile(r"\r\n?|\n")  # how the parser breaks lines: CR LF, a lone CR, LF
+_KNOWN = "cairn"  # the line written after a claim's text, to see what holds it
 
 
-def _parser(html: bool) -> MarkdownIt:
-    """CommonMark with tables, raw HTML off or on, reading only what decides where inline code
-    is: every block rule, and of the inline rules escapes, code spans, autolinks and raw HTML
-    (which bind as tightly as code spans or more), never emphasis, links, images or entities
-    (which code spans bind more tightly than: they move no code span)."""
-    md = MarkdownIt("commonmark", {"html": html}).enable("table")
-    md.disable(["emphasis", "link", "image", "entity", "balance_pairs", "fragments_join"])
-    md.disable("text_join")
-    md.inline.ruler.at("backticks", _placed_rule(backtick))
-    return md
-
-
-_PARSERS = (_parser(html=False), _parser(html=True))
-
-
-def code_spans(text: str) -> list[tuple[int, int]] | None:
-    """Where inline code is in Markdown text, as the parser (markdown-it-py, CommonMark with
-    tables) reads the text as a document of its own: (start, end) of each code span, its
-    backtick runs included, in order and apart. The one finder of inline code: the gate's
-    reading of prose (cairn.gate), the repeat key that shares it (cairn.arrange) and the fact
-    check's normalize (cairn.facts) call it.
-
-    None when the parser's answer cannot be trusted to be the reader's, and the caller then
-    reads the whole text exactly, white space included: a backtick run the parser pairs with
-    nothing in the text's first paragraph when that paragraph is in no quote or list (the
-    one container a passage's text may not show: cairn.spans ends a quote at a line without
-    ">", which Markdown reads on as the quote's, so a backtick the quote leaves open may pair
-    with one of the passage's), or code whose place in the text the
-    parser's own text does not show (a tab partly read as indentation).
-
-    A text with no backtick is not parsed. CR LF is read as a line break and a lone CR as
-    one, as the parser reads them; the places are the text's own."""
-    if "`" not in text:
-        return []
-    memo = _READ_ONCE.get()
-    if memo is not None and text in memo:
-        return memo[text]
-    found = _code_spans(text)
-    if memo is not None:
-        memo[text] = found
-    return found
-
-
-_READ_ONCE: ContextVar[dict[str, list[tuple[int, int]] | None] | None] = ContextVar(
-    "cairn_code_read_once", default=None
-)
-
-
-@contextmanager
-def code_read_once() -> Iterator[None]:
-    """Within the block, code_spans parses each text once and gives the same answer each time
-    it is asked again (a passage's facts and its norm, a claim and the passage it copies).
-    The answers are dropped when the outermost block ends: nothing is kept between calls."""
-    if _READ_ONCE.get() is not None:
-        yield
-        return
-    token = _READ_ONCE.set({})
-    try:
-        yield
-    finally:
-        _READ_ONCE.reset(token)
-
-
-def _code_spans(text: str) -> list[tuple[int, int]] | None:
-    """code_spans, parsed: the text read as the parser reads it (each CR LF one line break,
-    a lone CR one, NUL as U+FFFD), and each place found put back at its place in `text`."""
-    src = text.replace("\r\n", "\n").replace("\r", "\n").replace("\0", "\ufffd")
-    found = _code_read(_PARSERS[0], src)
-    if found is None:
-        return None
-    if _html_may_differ(src, found):
-        read = _code_read(_PARSERS[1], src)
-        if read is None:
-            return None
-        found.extend(read)
-    if len(src) < len(text):  # a CR LF read as one character: back to the text's places
-        back = [m.start() - n for n, m in enumerate(_CR_LF.finditer(text))]  # their LFs, read
-        found = [(_back(back, left), _back(back, right - 1) + 1) for left, right in found]
-        found = [(left, right + (text[right - 1 : right + 1] == "\r\n")) for left, right in found]
-    return _apart(found)
-
-
-def _html_may_differ(src: str, code: list[tuple[int, int]]) -> bool:
-    """Whether the reading with raw HTML on may place code apart from the one with it off.
-    Raw HTML changes a reading only where a tag may start ("<" and a letter, "/", "!" or "?").
-    One inside a code span of the reading with HTML off, past the span's opening run, is not
-    read as HTML by the other either: the inline rules meet the opening backticks first and
-    take the same span. A line whose "<" has only white space or container and list markers
-    before it may open an HTML block, which changes the blocks themselves, so it is read. A
-    text with no tag start at all needs no second reading."""
-    for match in _TAG_START.finditer(src):
-        at = match.start()
-        line = src[src.rfind("\n", 0, at) + 1 : at]
-        if _BLOCK_LEAD.fullmatch(line) or not any(left < at < right for left, right in code):
-            return True
-    return False
-
-
-def _back(back: list[int], at: int) -> int:
-    """The place in the text of place `at` of the text with each CR LF read as one LF: past
-    every CR LF before it, one character more. `back` holds each CR LF's LF as read so."""
-    return at + bisect.bisect_left(back, at)
-
-
-def _code_read(md: MarkdownIt, src: str) -> list[tuple[int, int]] | None:
-    """The code spans one parser reads in `src`, placed in it; None as code_spans says."""
-    env: dict = {}
-    tokens = md.parse(src, env)
-    ticks = env.get("text_ticks", set())
-    lines = src.split("\n")
-    starts = [0]
-    for line in lines[:-1]:
-        starts.append(starts[-1] + len(line) + 1)
-    cursors: dict[int, int] = {}  # each line's place past the last cell found on it
-    found: list[tuple[int, int]] = []
-    for n, token in enumerate(tokens):
-        if token.type != "inline" or not token.children:
-            continue
-        opener = tokens[n - 1]
-        if token.content in ticks and _may_go_on(opener):
-            return None
-        codes = [c.meta["at"] for c in token.children if c.type == "code_inline"]
-        if not codes:
-            continue
-        content = token.content
-        if any(read_in is not content and read_in != content for _, _, read_in in codes[:1]):
-            return None  # read in a text of its own, at places of its own
-        breaks = [0, *(m.end() for m in _LINE_BREAK.finditer(content)), len(content) + 1]
-        needed = {
-            row
-            for left, right, _ in codes
-            for row in range(
-                bisect.bisect_right(breaks, left) - 1, bisect.bisect_right(breaks, right - 1)
-            )
-        }
-        where = _rows_placed(token, opener, lines, cursors, needed)
-        if where is None:
-            return None
-        line, rows = where
-        for left, right, _ in codes:
-            # One piece a line: a quote's markers or a list item's indentation between two
-            # lines of a code span are the container's, not the code's.
-            row = bisect.bisect_right(breaks, left) - 1
-            while left < right:
-                end = min(right, breaks[row + 1])  # a line's piece holds its line break
-                begin = starts[line + row] + (rows[row] or 0) + left - breaks[row]
-                if src[begin : begin + end - left] != content[left:end]:
-                    return None
-                found.append((begin, begin + end - left))
-                left, row = end, row + 1
-    return found
-
-
-def _may_go_on(opener) -> bool:
-    """Whether a paragraph may be the lazy end of one the note writes before the passage: the
-    first block of the text, a paragraph outside any quote or list (cairn.spans ends a quote
-    at a line without ">", where Markdown reads that line on as the quote's)."""
-    return opener.type == "paragraph_open" and opener.level == 0 and opener.map[0] == 0
-
-
-def _rows_placed(
-    token, opener, lines: list[str], cursors: dict[int, int], needed: set[int]
-) -> tuple[int, list[int | None]] | None:
-    """The source line an inline token's text starts on, and where each line of the text starts
-    in its line of the source (None for a line not so found), every line in `needed` found: a
-    paragraph's lines (a setext heading's too) are the ends of theirs, its last up to its
-    trailing white space (the parser strips the paragraph's ends as str.strip does, so a first
-    line of no-break spaces alone may be gone; a tab the parser splits adds spaces, so that
-    line is not found); an ATX heading's text is the last of its line holding it, and a table's
-    cells are found left to right. None when a line in `needed` is not found."""
-    rows = token.content.split("\n")
-    first, end = token.map
-    if opener.type == "paragraph_open" or opener.markup in ("=", "-"):
-        for line in range(first, end - len(rows) + 1):  # past lines the strip took
-            placed = _paragraph_rows(rows, lines[line : line + len(rows)])
-            if all(placed[row] is not None for row in needed):
-                return line, placed
-        return None
-    if len(rows) != end - first:
-        return None
-    placed: list[int | None] = []
-    for i, row in enumerate(rows):
-        line = lines[first + i]
-        if opener.type == "heading_open":
-            at = line.rfind(row)
-        else:  # a table cell
-            at = line.find(row, cursors.get(first + i, 0))
-            cursors[first + i] = at + len(row)
-        placed.append(at if at >= 0 else None)
-    return (first, placed) if all(placed[row] is not None for row in needed) else None
-
-
-def _paragraph_rows(rows: list[str], lines: list[str]) -> list[int | None]:
-    placed: list[int | None] = []
-    for i, (row, line) in enumerate(zip(rows, lines, strict=True)):
-        whole = line if i < len(rows) - 1 else line.rstrip()
-        placed.append(len(whole) - len(row) if whole.endswith(row) else None)
-    return placed
-
-
-def _apart(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """The spans in order, those that overlap or touch made one."""
-    out: list[tuple[int, int]] = []
-    for left, right in sorted(spans):
-        if out and left <= out[-1][1]:
-            out[-1] = (out[-1][0], max(out[-1][1], right))
-        else:
-            out.append((left, right))
-    return out
-
-
-_PROBE = ""  # a character of the private use area: no note's Markdown means it
+class FenceLeftOpen(ValueError):
+    """A claim's text leaves a code fence open that no closer written after it closes."""
 
 
 def open_fence_closer(text: str) -> str | None:
-    """The line that closes the code fence the Markdown parser (as the web view reads it)
-    leaves open at the end of `text`, or None when none is: the opener's run, written at the
-    opener's column (tabs read as Markdown reads them, to the next stop of four).
+    """The line that closes the code fence the Markdown parser leaves open at the end of
+    `text`, or None when it leaves none open; FenceLeftOpen when one is open and neither
+    closer below closes it.
 
-    A fence is open when a line written after `text` and a blank line, indented past every
-    list item `text` may open, is read as the fence's code: so a fence in a list item counts
-    when the next block could still be the item's, and one in a quote never does, as the blank
-    line ends the quote. A text with no backtick and no tilde holds no fence and is not
-    parsed."""
+    The question, asked of the parser's line map and of no character of the text: a known
+    line is written after `text` and a blank line, as render_body writes the next claim,
+    indented past every column `text` reaches, so a fence in a list item counts when the next
+    block could still be the item's. The fence is open when a fence token that starts in
+    `text` covers that line. Its closer is the opener's run at the opener's column (tabs read
+    to the next stop of four), else the run at the margin; a closer is kept only when, written
+    after `text`, no fence covers the known line any more. A text with no backtick and no
+    tilde holds no fence and is not parsed."""
     if "`" not in text and "~" not in text:
         return None
-    lines = _PARSER_LINES.split(text)  # as the parser breaks lines: CR LF, a lone CR, LF
+    lines = _PARSER_LINES.split(text)
+    fence = _covering_fence(text, len(lines), lines)
+    if fence is None:
+        return None
+    opener = lines[fence.map[0]].expandtabs(4)
+    for closer in (" " * max(opener.find(fence.markup), 0) + fence.markup, fence.markup):
+        if _covering_fence(f"{text}\n{closer}", len(lines) + 1, lines) is None:
+            return closer
+    raise FenceLeftOpen("a claim leaves a code fence open that no closer line closes")
+
+
+def _covering_fence(text: str, count: int, lines: list[str]):
+    """The fence token that starts in the first `count` lines of `text` and covers the known
+    line written after it and a blank line, or None."""
     depth = max(len(line.expandtabs(4)) for line in lines) + 1
-    tokens = _PARSERS[0].parse(f"{text}\n\n{' ' * depth}{_PROBE}")
-    for token in tokens:
-        if token.type == "fence" and _PROBE in token.content and token.map:
-            opener = lines[token.map[0]].expandtabs(4)
-            return " " * opener.find(token.markup) + token.markup
+    known = count + 1  # the line's index: `count` lines, then the blank one
+    for token in _PARSER.parse(f"{text}\n\n{' ' * depth}{_KNOWN}"):
+        if token.type == "fence" and token.map and token.map[0] < count <= known < token.map[1]:
+            return token
     return None

@@ -1,17 +1,25 @@
-"""A version whose fold was made under an old inline-code rule is rebuilt from its passages
-when it is next touched (second report, finding 5b).
+"""A version that holds a fold made under an older rule (CORE5 item 6).
 
-Before decision 189 a tidy read white space inside inline code as prose, and at fe47cfd6 a
-backtick left as text in a quote could still pair across the quote's lines; either way two
-passages that differ only inside code were folded into one claim, which today's gate does
-not call the whole of both. Such a version is built here at the store's level, as that tidy
-saved it. What happens to it, found first: a tidy and an arrangement answered "unchanged",
-sending either note again answered "unchanged", a new note to its page was refused
-(retention.fact_dropped), and an import refused the archive. Now a tidy, an arrangement and
-a new note rebuild the fold (one claim per passage, its text the passage's) and an import
-rebuilds each version that holds one; sending a note again still changes nothing, and
-forgetting the note whose words the fold holds takes the page until the other note is sent
-again. Made-up notes; every model is a FakeModel."""
+Before CORE5 a tidy, the arranger and a model's draft could fold passages that differ only
+by white space: inside inline code before decision 189, across a quote's lines at fe47cfd6,
+and in any prose wrapped otherwise until CORE5. Today two passages are the same only when
+their text is, so such a fold is not the whole of every passage it cites. It is built here
+at the store's level, as that tidy saved it, and every way to touch it is run:
+
+- a tidy, an arrangement and the operator's command save the latest version again, rebuilt
+  from its passages; earlier versions stay as they were and their evidence answers as it did;
+- a new note to the page saves, on the rebuilt claims;
+- sending either note again changes nothing (nothing new to file, so nothing is compiled);
+- forgetting the note whose words the fold holds takes the claim, and the page with it,
+  until the other note is sent again; forgetting the other note leaves the fold whole;
+- an export holds every version as it is, and an import accepts each version unchanged when
+  each claim is whole by today's rule or by the old gate's own (store.portable,
+  cairn.gate.whole_before_core5); nothing it brings is rewritten.
+
+Ids: a rebuilt claim of a fold's first passage keeps the fold's id; each other one takes
+claim_id of its passage, or, when a claim of the version holds that id, an id made from its
+place and passage; no id of the version is lost or held twice (the cross-reader's `Third.`
+case). Made-up notes; every model is a FakeModel."""
 
 import asyncio
 import io
@@ -19,13 +27,13 @@ import json
 
 import pytest
 
-import cairn.compiler
 from cairn.arrange import Arranger, arrange_page, tidy_page
 from cairn.compiler import CandidatePage, render_body
 from cairn.gate import lint_gate, verbatim_gate, whole
 from cairn.llm import FakeModel, Reply
 from cairn.memory import Memory
 from cairn.store import Claim, Store
+from cairn.store.before_core5 import whole_before_core5
 
 OLD = {
     "before decision 189": ("Keep `a  b.txt` here.", "Keep `a b.txt` here."),
@@ -33,6 +41,7 @@ OLD = {
         "> Stray `\n>\n> Keep `a  b.txt` here.",
         "> Stray `\n>\n> Keep `a b.txt` here.",
     ),
+    "prose wrapped otherwise": ("Ada keeps the log\nnightly.", "Ada keeps the log nightly."),
 }
 
 
@@ -91,6 +100,18 @@ def test_the_worker_without_a_model_rebuilds_the_fold(store, old):
     assert tidy_page(store, project.id, "files").status == "unchanged"  # and stays so
 
 
+def test_a_tidy_saves_a_new_version_and_the_fold_answers_as_it_did(store, old):
+    project, memory, cited, first, second = old
+    fold = store.get_page(project.id, "files")
+    asked = memory.evidence("alpha", "files", fold.claims[0].id, version=fold.version)
+    assert tidy_page(store, project.id, "files").status == "arranged"
+    rebuilt(store, project.id, first, second, cited)
+    assert store.get_page(project.id, "files", fold.version) == fold
+    again = memory.evidence("alpha", "files", fold.claims[0].id, version=fold.version)
+    assert again == asked
+    assert [p["text"] for p in again["passages"]] == [first, second]
+
+
 def test_an_arrangement_rebuilds_the_fold_before_any_model_is_asked(store, old):
     project, _, cited, first, second = old
     model = FakeModel([Reply(text=json.dumps({"order": [1], "same": []}), prompt_tokens=1)])
@@ -118,19 +139,40 @@ def test_sending_either_note_again_changes_nothing(store, old, which):
     assert store.get_page(project.id, "files") == before
 
 
-def test_an_archive_that_holds_the_fold_imports_with_every_version_rebuilt(store, old, tmp_path):
+def versions_of(store: Store, project_id: str) -> list:
+    return [
+        store.get_page(project_id, "files", v) for v in store.page_versions(project_id, "files")
+    ]
+
+
+def same_versions(source: Store, target: Store) -> None:
+    """Every version of the page imported as it was exported: claims, ids, citations, body."""
+    mine = versions_of(source, source.get_project("alpha").id)
+    theirs = versions_of(target, target.get_project("alpha").id)
+    assert [(p.version, p.title, p.body, p.claims) for p in theirs] == [
+        (p.version, p.title, p.body, p.claims) for p in mine
+    ]
+
+
+def test_an_archive_that_holds_the_fold_imports_unchanged(store, old, tmp_path):
     _, _, cited, first, second = old
     archive = io.BytesIO()
     store.export(archive)  # the latest version is the fold
     target = Store(tmp_path / "imported.db")
     try:
         target.import_export(io.BytesIO(archive.getvalue()))
-        rebuilt(target, target.get_project("alpha").id, first, second, cited)
+        same_versions(store, target)
+        alpha = target.get_project("alpha").id
+        assert [(c.text, c.span_ids) for c in target.get_page(alpha, "files").claims] == [
+            (first, cited)
+        ]
+        assert tidy_page(target, alpha, "files").status == "arranged"  # rebuilt where it is
+        rebuilt(target, alpha, first, second, cited)
     finally:
         target.close()
 
 
-def test_an_archive_with_the_fold_in_its_history_imports(store, old, tmp_path):
+def test_an_archive_with_the_fold_in_its_history_imports_unchanged(store, old, tmp_path):
     project, _, cited, first, second = old
     assert tidy_page(store, project.id, "files").status == "arranged"  # latest rebuilt
     archive = io.BytesIO()
@@ -138,14 +180,31 @@ def test_an_archive_with_the_fold_in_its_history_imports(store, old, tmp_path):
     target = Store(tmp_path / "imported.db")
     try:
         target.import_export(io.BytesIO(archive.getvalue()))
-        alpha = target.get_project("alpha").id
-        rebuilt(target, alpha, first, second, cited)
-        spans = target.get_spans(cited)
-        versions = target.page_versions(alpha, "files")
-        assert len(versions) == 4
-        for version in versions:
-            claims = target.get_page(alpha, "files", version).claims
-            assert all(whole(claim, spans) for claim in claims), version
+        same_versions(store, target)
+        assert len(versions_of(target, target.get_project("alpha").id)) == 4
+        rebuilt(target, target.get_project("alpha").id, first, second, cited)
+    finally:
+        target.close()
+
+
+def test_a_fold_no_rule_ever_accepted_is_refused_naming_page_and_version(store, tmp_path):
+    """A no-break space was text for the old gate too (the reference is its code, not an
+    approximation): such a fold was never saved by cairn, and an archive that holds one is
+    refused, naming the page and the version, never the text."""
+    first, second = "Ada keeps the\u00a0log.", "Ada keeps the log."
+    project, _, cited = old_fold(store, first, second)
+    spans = store.get_spans(cited)
+    fold = Claim(id="cl_0000000000000001", text=first, span_ids=cited)
+    assert not whole(fold, spans) and not whole_before_core5(fold, spans)
+    version = store.get_page(project.id, "files").version
+    archive = io.BytesIO()
+    store.export(archive)
+    target = Store(tmp_path / "imported.db")
+    try:
+        with pytest.raises(ValueError) as refused:
+            target.import_export(io.BytesIO(archive.getvalue()))
+        assert f"'files' version {version}" in str(refused.value)
+        assert "Ada" not in str(refused.value)
     finally:
         target.close()
 
@@ -169,22 +228,6 @@ def test_a_false_citation_beside_an_old_fold_is_still_refused(store, tmp_path):
             target.import_export(io.BytesIO(archive.getvalue()))
     finally:
         target.close()
-
-
-def test_a_page_with_no_fold_is_never_read_for_one(store, monkeypatch):
-    """No parse unless a claim cites more than one passage: a tidy and a note of a page whose
-    claims each cite one passage never ask whether a fold is whole."""
-    memory = Memory(store, lint_gate)
-    store.create_project("alpha")
-    memory.note("alpha", "Keep `a  b.txt` here.\n\nBrook too.", title="Files")
-
-    def never(*_):
-        raise AssertionError("a page with no fold was read for one")
-
-    monkeypatch.setattr(cairn.compiler, "whole", never)
-    memory.note("alpha", "Quill too.", title="Files", topic="Files")
-    project = store.get_project("alpha")
-    assert tidy_page(store, project.id, "files").status == "unchanged"
 
 
 def test_the_operator_command_rebuilds_every_such_page(tmp_path, capsys):
@@ -284,3 +327,50 @@ def test_an_archive_that_holds_a_fold_under_two_headings_is_still_refused(store,
             target.import_export(io.BytesIO(archive.getvalue()))
     finally:
         target.close()
+
+
+def test_a_rebuilt_claim_never_takes_an_id_another_claim_holds(store, tmp_path):
+    """The cross-reader's `Third.` case: a claim of the version already holds the id the
+    second passage would give its claim (claim_id of that passage). The rebuilt claim of the
+    fold's first passage keeps the fold's id, `Third.` keeps its own, and the other rebuilt
+    claim takes an id no claim of the version holds. The archive of that version imports
+    unchanged, ids and all."""
+    from cairn.spans import claim_id
+
+    first, second = OLD["prose wrapped otherwise"]
+    project, memory, cited = old_fold(store, first, second)
+    (fold,) = store.get_page(project.id, "files").claims
+    memory.note("alpha", "Third.", title="Files", topic="Files")  # rebuilds the fold, too
+    page = store.get_page(project.id, "files")
+    third = next(c for c in page.claims if c.text == "Third.")
+    spans = store.get_spans([*cited, *third.span_ids])
+    taken = Claim(id=claim_id(cited[1]), text="Third.", span_ids=third.span_ids)
+    claims = [fold, taken]
+    body = render_body("Files", claims, spans)
+    store.save_page(project.id, "files", "Files", body, claims, expected_version=page.version)
+    held = {fold.id, taken.id}
+
+    archive = io.BytesIO()
+    store.export(archive)
+    target = Store(tmp_path / "imported.db")
+    try:
+        target.import_export(io.BytesIO(archive.getvalue()))
+        same_versions(store, target)
+    finally:
+        target.close()
+
+    assert tidy_page(store, project.id, "files").status == "arranged"
+    after = store.get_page(project.id, "files").claims
+    ids = [c.id for c in after]
+    assert len(ids) == len(set(ids)) == 3
+    assert held <= set(ids)
+    assert [(c.text, c.span_ids) for c in after] == [
+        (first, (cited[0],)),
+        (second, (cited[1],)),
+        ("Third.", third.span_ids),
+    ]
+    assert after[0].id == fold.id and after[2].id == taken.id
+    candidate = CandidatePage(
+        slug="files", title="Files", body=store.get_page(project.id, "files").body, claims=after
+    )
+    assert verbatim_gate(candidate, spans).passed

@@ -1,9 +1,11 @@
-"""The fact check reads white space inside inline code as the gate's text reading does: it is
-the code's own, so two file names that differ by spaces inside backticks are two facts.
+"""The fact check keeps white space as the gate does: two file names that differ by spaces
+inside backticks are two facts.
 
-One finder of code spans (cairn.spans.code_spans) serves the gate's reading and lint's
-normalize. It pairs backticks within a block, as CommonMark does, so a stray backtick in one
-paragraph never moves the code of the next, and a fenced block is code lines, not a span."""
+Since CORE5 no text is read as Markdown to compare it: where the gate lints a page (its body
+its claims rendered), a fact is compared by its text as extracted (facts.as_extracted, white
+space as written but for what cairn.spans.compared_text leaves out), the one function the
+gate and the repeat key compare with. normalize() reads the text alone and collapses white
+space, as the lint command's matching rules say. A fenced block is code lines, not a span."""
 
 import random
 
@@ -11,7 +13,7 @@ import pytest
 
 from cairn import facts, gate, spans
 from cairn.compiler import CONTENT_KINDS, CandidatePage, extractive, render_body
-from cairn.facts import extract_facts, normalize
+from cairn.facts import as_extracted, extract_facts, normalize
 from cairn.gate import lint_gate
 from cairn.spans import Span, chunk
 from cairn.store import Claim
@@ -54,34 +56,25 @@ def test_the_claim_that_keeps_the_code_as_written_passes_lint_gate():
 def test_two_names_that_differ_by_spaces_in_backticks_are_two_facts():
     (one,) = passages(SPACED).values()
     (two,) = passages(ONE_SPACE).values()
-    norms = {f.norm for s in (one, two) for f in extract_facts(s) if f.kind == "inline_code"}
-    assert norms == {"a  b.txt", "a b.txt"}
+    found = {f.value for s in (one, two) for f in extract_facts(s) if f.kind == "inline_code"}
+    assert {as_extracted(value) for value in found} == {"a  b.txt", "a b.txt"}
 
 
-def test_normalize_keeps_code_white_space_and_collapses_the_rest():
-    assert normalize("Open   `a  b.txt`\n now ") == "open `a  b.txt` now"
-    assert normalize("No  code\there.") == "no code here."
+def test_normalize_collapses_and_the_reading_as_extracted_keeps_white_space():
+    assert normalize("Open   `a  b.txt`\n now ") == "open `a b.txt` now"
+    assert as_extracted("Open   `a  b.txt`\n now \t\r\n\n") == "open   `a  b.txt`\n now"
 
 
-def test_the_gate_and_the_fact_check_find_code_with_one_function():
-    assert gate.code_spans is spans.code_spans
-    assert facts.code_spans is spans.code_spans
+def test_the_gate_and_the_fact_check_compare_with_one_function():
+    assert gate.compared_text is spans.compared_text
+    assert facts.compared_text is spans.compared_text
 
 
 def test_a_stray_backtick_in_one_paragraph_does_not_move_the_next_paragraphs_code():
     text = "It`s odd.\n\n" + SPACED
-    assert "`a  b.txt`" in normalize(text)
     held = passages(text)
     result = lint_gate(page(*verbatim(held)), held)
     assert (result.passed, result.violations) == (True, [])
-
-
-def test_code_spans_pair_backticks_within_a_block_only():
-    text = "Intro.\n\na `b\n\nc d `e  f`"
-    assert spans.code_spans(text) == [(text.index("`e"), len(text))]
-    # A backtick left as text in the first paragraph, which a quote before the passage may
-    # continue: the passage is read exactly (spans.code_spans gives None).
-    assert spans.code_spans("a `b\n\nc d `e  f`") is None
 
 
 def test_a_fenced_block_with_aligned_spaces_still_keeps_its_code_lines():

@@ -25,10 +25,11 @@ Arranging one page
   number of claims) or by its id, and may mix the two; the numbers are read as ids first, and
   every rule below then holds for both alike.
 - cairn checks that, and that the claims of each `same` list repeat one another: the same
-  heading path (the one their section shows) and the same passage as the gate reads one
-  (gate.text_reading: code, tables and prose that holds structure line by line, other prose
-  with each run of white space outside inline code one space; `repeat_groups`, the one rule,
-  which also lists the repeats in the request).
+  heading path (the one their section shows) and the same text, character for character but
+  for the white space at the end of a line and blank lines around it (CORE5:
+  cairn.spans.compared_text, the verbatim gate's own equality; `repeat_groups`, the one rule,
+  which also lists the repeats in the request). Two notes that say the same thing wrapped or
+  spaced otherwise stay two claims.
   A `same` list need not be one the request listed, only one that rule allows. Anything else
   is not an arrangement: a claim missing or named twice (by number, id or both), a number or
   id the page does not have (0, a negative number, one past the last claim), a `same` list of
@@ -216,14 +217,14 @@ Tidying a page, with no model
   and asks no model: the plan is computed, not asked for. Its order is the page's order less
   the later claims of each group `repeat_groups` finds, put through `tree_order`; each group is
   folded into its first claim. So each heading's claims are together, in the order they had,
-  and each run of repeats (what the gate reads as the same passage, `repeat_groups`) is one
-  claim citing every source. On a page
+  and each run of repeats (claims whose texts are the same, `repeat_groups`) is one claim
+  citing every source. On a page
   with repeats it saves the page `arrange_page` saves for a model that keeps the order it was
-  given. First, a fold the gate no longer calls whole (one an earlier tidy made under an
-  older inline-code rule, or a model's under two headings) is rebuilt from its passages
-  (compiler.rebuilt_folds, the second report's finding 5b), and the page is saved even when
-  nothing else changes; `arrange_page` hands such a page to the tidy before any model is
-  asked.
+  given. First, a claim the gate does not call whole (a fold an earlier tidy made before
+  CORE5 of passages that differ by white space, or a model's under two headings) is rebuilt
+  from its passages (compiler.rebuilt_folds), and the page is saved as its next version even
+  when nothing else changes; earlier versions keep it. `arrange_page` hands such a page to
+  the tidy before any model is asked.
 - From the plan on it is arrange_page's own code (_save_plan): the folded citations, `moved`
   and `merged`, the body, `verbatim_gate` ("rejected"), the save with `expected_version`
   ("stale"), the audit event "page.arranged" and `arranged_by`, both naming TIDY ("cairn").
@@ -353,12 +354,12 @@ from typing import Any, Literal, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from cairn.compiler import CandidatePage, DraftStats, rebuilt_folds, render_body
-from cairn.gate import text_reading, verbatim_gate
+from cairn.gate import verbatim_gate
 from cairn.guard import Guard
 from cairn.llm import ChatModel, LLMError, draw_tag, failure_text, new_boundary
 from cairn.llm import unwrap_reply as _unwrap
 from cairn.memory import access_log
-from cairn.spans import Span
+from cairn.spans import Span, compared_text
 from cairn.store import Claim, KeptFromModels, Page, StalePage, Store
 from cairn.store.memory import NAME_MAX
 
@@ -535,12 +536,10 @@ def messages(
 
 def _repeat_key(claim: Claim, sections: Mapping[str, tuple[str, ...]]) -> tuple[Any, Any]:
     """The one rule for claims that repeat one another: the same heading path, and the same
-    passage as verbatim_gate reads one (gate.text_reading: code, tables and prose that holds
-    structure line by line, other prose with each run of white space outside inline code one
-    space), so the gate
-    accepts every fold this rule allows (review 7.3). Claims repeat when their keys are equal."""
-    reading = text_reading(claim.text)  # None for text no claim copies: then the text alone
-    return tuple(sections.get(claim.id, ())), claim.text if reading is None else reading
+    text but for what cairn.spans.compared_text leaves out (white space at the end of a line,
+    blank lines around the text), the verbatim gate's own equality, so the gate accepts every
+    fold this rule allows (review 7.3). Claims repeat when their keys are equal."""
+    return tuple(sections.get(claim.id, ())), compared_text(claim.text)
 
 
 def repeat_groups(
@@ -767,7 +766,7 @@ def arrange_page(
         return outcome("large", page.version)
     if spans is None:
         spans = view.get_spans(cited)
-    if rebuilt_folds(page.claims, spans) is not page.claims:  # finding 5b: no model needed
+    if rebuilt_folds(page.claims, spans) is not page.claims:  # an old fold: no model needed
         return tidy_page(view, project_id, slug)
     headings = (" > ".join(span.heading_path) for span in spans.values())
     quoted = (page.title, *(claim.text for claim in page.claims), *headings)
@@ -933,7 +932,7 @@ def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
         problem = f"the page names claim {repeated} more than once"
         return outcome("invalid page", page.version, problem=problem)
     spans = view.get_spans([i for claim in page.claims for i in claim.span_ids])
-    claims = rebuilt_folds(page.claims, spans)  # finding 5b: an old fold, from its passages
+    claims = rebuilt_folds(page.claims, spans)  # an old fold, from its passages
     if rebuilt := claims is not page.claims:
         page = page.model_copy(update={"claims": claims})
     sections = {claim.id: _section_of(claim, spans) for claim in page.claims}

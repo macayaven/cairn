@@ -3,7 +3,9 @@
 Contract (frozen by tests/acceptance/test_w3_gate.py):
 - `lint_gate(page, spans)` lints the candidate as one cairn-format page (claims as given,
   body = page.body) against exactly the spans its claims cite, via `lint.lint_pages` with no
-  entities and no unassigned spans. It passes when the report has no violations.
+  entities and no unassigned spans, as a rendered page: its facts are read from its claims,
+  each alone, as extracted (CORE5; the body is its claims, by the reverse check below). It
+  passes when the report has no violations.
 - violations: one string per lint violation, "<code>: <claim_id or ->: <message>", and
   provenance.unclaimed_line when the body is not what compiler.render_body writes of the
   page's claims and the passages given (`unclaimed_line`, review blocker 1 and the second
@@ -32,32 +34,16 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   when no gate is named and the composer is not the extractive one; lint_gate and
   strict_lint_gate stay available to a caller who names them, and nothing in `serve` does so
   for a model.
-- A code or table passage is compared line for line: every line in order, with its
-  indentation and both fence lines. Only white space at the end of a line may differ.
-- A prose passage (paragraph, bullet, quote) that holds structure is compared line for line
-  too, but exactly, white space at the end of a line included. Structure is what `_structure`
-  finds, once quote markers are set aside: a line indented four columns or more past the
-  text of its list item (or past the margin), a code fence, a table row, a rule or heading
-  underline, a hard line break (two spaces or a backslash at a line's end), a line that opens
-  an HTML tag, a link-reference or footnote definition, or a list marker or number alone on
-  its line. For both kinds of block, blank lines before and after the claim's text are not
-  read.
-- Any other prose passage is compared as text: the same characters, with each run of white
-  space read as one space and the white space at the two ends dropped, so a hard-wrapped
-  passage may be wrapped elsewhere. White space inside inline code (as the Markdown parser
-  reads the passage: cairn.spans.code_spans) is the code's and is compared as it is, so
-  `a  b.txt` and `a b.txt` are two texts (review blocker 3, the second report's finding 2);
-  lint's fact check reads code the same way, with the same finder. A passage whose code the
-  parser cannot place (a backtick left as text in its first paragraph) is compared exactly.
-  White space is space, tab, CR and LF only. Nothing else is normalised: no case folding,
-  no Unicode normalisation, and zero-width, no-break and
-  bidirectional characters are text, so a homoglyph or an override never matches. A list or
-  quote marker ("- ", "* ", "+ ", ">") is text too, never dropped or added, and it keeps its
-  place: a line of the claim starts with one where a line of the passage does and nowhere
-  else, and a line that is markers alone (a quote's blank line) stays a line of its own. A
-  list number ("1. ", "2020. ") is text like any other word. The claim holds no structure the
-  passage does not: no hard line break, rule or indented code (`_structure`, read from the
-  claim's first non-blank line).
+- Every passage is compared the same way (CORE5): a claim is the whole of a passage when
+  their texts are the same, character for character, but for what cairn.spans.compared_text
+  leaves out: the spaces, tabs and carriage returns at the end of a line, and the blank lines
+  before the first and after the last line. Indentation, runs of white space inside a line,
+  tabs, line breaks, no-break, zero-width and every other space are text, so `a  b.txt` and
+  `a b.txt` are two texts, a list nested otherwise is another list, and prose wrapped
+  otherwise is another passage. Nothing is read as Markdown: no inline code, link, list or
+  quote. No case folding, no Unicode normalisation; a homoglyph or an override never matches.
+  Code, tables and prose (paragraph, bullet, quote) are copied; a passage of any other kind
+  is cited by no claim.
 - A claim that breaks the rule is one violation, "grounding.not_verbatim: <claim id>: ...". It
   says in plain words that a claim must be the whole of each passage it cites, names the first
   passage the claim is not (and the line, where the claim adds structure), never text, and
@@ -75,42 +61,20 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   however many passages it cites, so the work is linear in their text.
 - What it cannot do: it keeps a passage whole; it does not keep two passages together. A
   condition the author put in the next passage is a claim of its own: the strict gate's
-  coverage rule puts it on the page, and the arrangement decides where. It reads lines and
-  does not render the page, so it cannot see all a Markdown renderer would: a list item
-  re-nested by indentation under four columns still passes.
+  coverage rule puts it on the page, and the arrangement decides where. Spaces at a line's
+  end are not compared, so a claim may add or drop the two that make a Markdown hard line
+  break.
 """
 
-import bisect
-import re
 from collections.abc import Iterable, Mapping
 
 from cairn.candidate import CandidatePage, GateResult
 from cairn.lint import ClaimInput, PageInput, lint_pages
-from cairn.spans import Span, chunk, code_spans
+from cairn.spans import Span, compared_text
 from cairn.store import Claim
 
 PROSE_KINDS = frozenset({"paragraph", "bullet", "quote"})
 LINE_KINDS = frozenset({"code", "table"})
-# Whitespace is these four characters and nothing else: a no-break space, a zero-width
-# character or a bidirectional control is text, compared like any other character.
-_WHITESPACE = re.compile(r"[ \t\r\n]+")
-# On a line whose white space is collapsed: one that opens with a list marker ("- ", "* ",
-# "+ ", or one alone) or a quote marker (">"), and one that is nothing but such markers.
-_LEADS = re.compile(r"[-*+](?: |$)|>")
-_MARKERS_ALONE = re.compile(r"(?:[-*+](?: |$)|> ?)+")
-_QUOTED = re.compile(r"^[ \t]*(?:> ?)+")  # a line's quote markers, set aside to find code
-_ITEM = re.compile(r"(?:[-*+]|\d{1,9}[.)])(?: |$)")  # a list item's marker, at its text's start
-# A line's text (indentation and quote markers aside) that Markdown reads as structure.
-_STRUCTURE = re.compile(
-    r"`{3,}|~{3,}"  # a code fence
-    r"|\||:?-+:?[ \t]*\|"  # a table row or delimiter row
-    r"|(?:=+|-+|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*$"  # a rule or underline
-    r"|</?[A-Za-z]|<!|<\?"  # an HTML tag, comment or declaration
-    r"|\[[^\]]+\]:"  # a link-reference or footnote definition
-)
-# How a passage is compared, and what it is under that comparison.
-_LINES, _EXACT, _TEXT = "lines", "exact", "text"
-_Reading = tuple[str, str | tuple[str, ...]] | None
 _WHOLE = "a claim must be the whole of each passage it cites, copied exactly"
 
 
@@ -123,6 +87,7 @@ def lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     report = lint_pages(
         [PageInput(slug=page.slug, text=page.body, claims=claims)],
         [spans[span_id] for span_id in cited if span_id in spans],
+        rendered=True,  # unclaimed_violations checks the body is its claims rendered
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
     unclaimed = unclaimed_violations(page, spans)
@@ -149,7 +114,9 @@ def strict_lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResu
     cited = list(dict.fromkeys(span_id for claim in page.claims for span_id in claim.span_ids))
     claims = [ClaimInput(id=c.id, text=c.text, span_ids=list(c.span_ids)) for c in page.claims]
     report = lint_pages(
-        [PageInput(slug=page.slug, text=page.body, claims=claims)], list(spans.values())
+        [PageInput(slug=page.slug, text=page.body, claims=claims)],
+        list(spans.values()),
+        rendered=True,  # unclaimed_violations checks the body is its claims rendered
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
     unclaimed = unclaimed_violations(page, spans)
@@ -177,18 +144,16 @@ def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     one.
 
     The rule: a claim is one passage, whole. Its text is the text of every passage it cites,
-    compared line for line for code, tables and prose that holds structure, and otherwise as
-    text whose runs of white space read as one space, with every list or quote marker kept at
-    the start of its line. Nothing is left out, nothing is added, and no two passages are
-    joined; a claim that cites several passages is a fold of passages that say the same,
-    under one heading path, as the import asks.
+    the same character for character but for the white space at the end of a line and the
+    blank lines around it (cairn.spans.compared_text). Nothing is left out, nothing is added,
+    and no two passages are joined; a claim that cites several passages is a fold of passages
+    whose texts are the same, under one heading path, as the import asks.
 
     What it guarantees, and what it does not: it keeps a passage whole; it does not keep two
     passages together. "The operation is safe." cannot be cut from "The operation is safe.
     Only if approved." But when the author put "Only if approved." in a passage of its own,
     that is a claim of its own: the strict gate's coverage rule puts it on the page, and the
-    arrangement decides where. It reads lines and does not render the page, so a list item
-    re-nested by indentation under four columns still passes."""
+    arrangement decides where."""
     strict = strict_lint_gate(page, spans)
     refused = _refusals(page.claims, spans)
     return GateResult(
@@ -211,7 +176,7 @@ def _refusals(claims: Iterable[Claim], spans: Mapping[str, Span]) -> list[str]:
     headings (the import's rule, store.portable._page_version: the body shows a claim under
     one section, so what is saved can always be exported and imported; second report,
     finding 5a). Never the headings: the note's text."""
-    readings: dict[str, _Reading] = {}
+    readings: dict[str, str | None] = {}
     return [
         v
         for claim in claims
@@ -228,19 +193,11 @@ def _folds_sections(claim: Claim, spans: Mapping[str, Span]) -> str | None:
 
 
 def _not_verbatim(
-    claim: Claim, spans: Mapping[str, Span], readings: dict[str, _Reading] | None = None
+    claim: Claim, spans: Mapping[str, Span], readings: dict[str, str | None] | None = None
 ) -> str | None:
     """The claim's grounding.not_verbatim violation, or None when it is every passage it cites,
-    whole. `readings` keeps each passage's reading between calls of one gate."""
+    whole. `readings` keeps each passage's compared text between calls of one gate."""
     readings = {} if readings is None else readings
-    lines = claim.text.split("\n")
-    read: dict[str, str | tuple[str, ...] | None] = {}  # the claim, read each way a passage asks
-
-    def claim_as(how: str) -> str | tuple[str, ...] | None:
-        if how not in read:
-            read[how] = _text(lines) if how == _TEXT else _rows(lines, how == _EXACT)
-        return read[how]
-
     # An id the gate was not given is the strict gate's provenance.unknown_passage; here it is
     # passed over, and never repeated, since a model wrote it.
     known = [span_id for span_id in dict.fromkeys(claim.span_ids) if span_id in spans]
@@ -248,174 +205,24 @@ def _not_verbatim(
         return _refusal(
             claim, f"{_WHOLE}; it cites no passage that was given: cite the id of the one it copies"
         )
-    structure: list[int | None] = []  # the claim's first line of structure, once found
+    text = compared_text(claim.text)
     for span_id in known:
         span = spans[span_id]
         if span_id not in readings:
-            readings[span_id] = _reading(span)
+            copied = span.kind in PROSE_KINDS or span.kind in LINE_KINDS
+            readings[span_id] = compared_text(span.text) if copied else None
         if (reading := readings[span_id]) is None:
             return _refusal(
                 claim,
                 f"{_WHOLE}; {span_id} is a {span.kind}, which no claim copies: cite only "
                 "the passage it copies",
             )
-        how, text = reading
-        if claim_as(how) != text:
+        if text != reading:
             return _refusal(
                 claim,
                 f"{_WHOLE}; it is not the whole of {span_id}: copy all of {span_id}, leave "
                 "nothing out, add nothing, and join no other passage to it",
             )
-        if how == _TEXT and not structure:
-            structure.append(_added_structure(lines))
-        if how == _TEXT and (at := structure[0]) is not None:
-            return _refusal(
-                claim,
-                f"{_WHOLE}; line {at} adds a line break, a rule or indentation that "
-                f"{span_id} does not have: keep the lines of {span_id} as they are",
-            )
-    return None
-
-
-def text_reading(text: str) -> _Reading:
-    """What verbatim_gate reads in a passage of this text, read as a note's text is: its kind
-    is the kind of its first block (cairn.spans.chunk). Two claims that copy passages whole
-    say the same, by the gate's own equality, exactly when their readings are equal
-    (arrange.repeat_groups, review 7.3); None for text that holds no passage a claim copies."""
-    blocks = chunk("", text)
-    if not blocks:
-        return None
-    return _reading(blocks[0].model_copy(update={"text": text}))
-
-
-def _reading(span: Span) -> _Reading:
-    """How a passage is compared and what it is so read, or None for a kind no claim copies:
-    code and tables line by line with white space at the end of each line aside, prose that
-    holds structure line by line exactly, and other prose as text."""
-    lines = span.text.split("\n")
-    if span.kind in LINE_KINDS:
-        return _LINES, _rows(lines, exact=False)
-    if span.kind not in PROSE_KINDS:
-        return None
-    if _structure(lines) is None and (text := _text(lines)) is not None:
-        return _TEXT, text
-    return _EXACT, _rows(lines, exact=True)  # structure, or code the parser cannot place
-
-
-def _rows(lines: list[str], exact: bool) -> tuple[str, ...]:
-    """Lines compared one by one: CR (and, unless exact, white space) at each end of line
-    aside, and the blank lines before the first and after the last line of text dropped."""
-    rows = [line.rstrip("\r" if exact else " \t\r") for line in lines]
-    first = next((n for n, row in enumerate(rows) if row.strip(" \t\r")), len(rows))
-    last = next((n for n in range(len(rows), first, -1) if rows[n - 1].strip(" \t\r")), first)
-    return tuple(rows[first:last])
-
-
-def _text(lines: Iterable[str]) -> str | None:
-    """Prose read as text: each run of white space one space and the ends dropped, except that
-    a line break stays before a line that opens with a list or quote marker and after a line
-    that is markers alone, so every marker stays at the start of its line. White space inside
-    inline code is the code's own and is kept as it is, line breaks included (a CR before one
-    aside), so `a  b.txt` and `a b.txt` are two texts (review blocker 3). Inline code is what
-    the Markdown parser reads (cairn.spans.code_spans, which the repeat key and the fact
-    check's normalize share); None when the parser's answer cannot be placed, and the text is
-    then compared exactly."""
-    rows = [raw.removesuffix("\r") for raw in lines]
-    text = "\n".join(rows)
-    code = code_spans(text)
-    if code is None:
-        return None
-    out: list[str] = []
-    alone = False
-    at = 0
-    for raw in rows:
-        start, at = at, at + len(raw) + 1
-        in_code = _within(code, start - 1)  # the line break before this line is code's
-        line = _line_text(raw, start, code)
-        if not line and not in_code:
-            continue
-        if out:
-            out.append("\n" if in_code or alone or _LEADS.match(line) else " ")
-        out.append(line)
-        alone = not in_code and _MARKERS_ALONE.fullmatch(line) is not None
-    return "".join(out)
-
-
-def _line_text(raw: str, start: int, code: list[tuple[int, int]]) -> str:
-    """One line read as text: its white space outside inline code one space, the white space
-    at its two ends dropped where it is outside inline code, and inline code as it is.
-    `start` is where the line begins in the text `code` was found in."""
-    if not code or not raw:
-        return _WHITESPACE.sub(" ", raw).strip(" ")
-    pieces: list[tuple[bool, str]] = []  # (kept as it is, text)
-    pos, end = start, start + len(raw)
-    for n in range(bisect.bisect_right(code, start, key=lambda span: span[1]), len(code)):
-        left, right = code[n]
-        if left >= end:
-            break
-        if left > pos:
-            pieces.append((False, raw[pos - start : left - start]))
-        pieces.append((True, raw[max(left, pos) - start : min(right, end) - start]))
-        pos = min(right, end)
-    if pos < end:
-        pieces.append((False, raw[pos - start :]))
-    read = [(kept, piece if kept else _WHITESPACE.sub(" ", piece)) for kept, piece in pieces]
-    if not read[0][0]:
-        read[0] = (False, read[0][1].lstrip(" "))
-    if not read[-1][0]:
-        read[-1] = (False, read[-1][1].rstrip(" "))
-    return "".join(piece for _, piece in read)
-
-
-def _within(code: list[tuple[int, int]], at: int) -> bool:
-    """Whether the character at `at` is inside one of the spans of `code`."""
-    n = bisect.bisect_right(code, at, key=lambda span: span[0]) - 1
-    return n >= 0 and at < code[n][1]
-
-
-def _added_structure(lines: list[str]) -> int | None:
-    """The number of the first line from the claim's first line of text on that Markdown reads
-    as structure, or None: a claim read as text may hold none."""
-    first = next((n for n, line in enumerate(lines) if line.strip(" \t\r")), len(lines))
-    at = _structure(lines[first:])
-    return None if at is None else first + at
-
-
-def _structure(lines: Iterable[str]) -> int | None:
-    """The number of the first line that Markdown reads as structure rather than as running
-    text, or None. One test for passages and claims: a passage with such a line is compared
-    line for line, and a claim compared as text may have none.
-
-    Structure is, once a line's quote markers are set aside: a line indented four columns or
-    more past the text of the list item it sits in (or past the margin), a code fence, a table
-    row or delimiter row, a rule or heading underline, a hard line break (two spaces or a
-    backslash at the end), a line that opens an HTML tag, a link-reference or footnote
-    definition, or a list marker or number with nothing after it on its line. In doubt a line
-    is structure. A quote marker alone is a quote's blank line, not structure."""
-    items: list[int] = []  # the text column of each list item the current line may sit in
-    for number, raw in enumerate(lines, 1):
-        line = raw.rstrip("\r")
-        if line.endswith(("  ", "\\")):
-            return number
-        expanded = line.expandtabs(4)
-        outer = len(expanded) - len(expanded.lstrip(" "))  # before any quote marker
-        quoted = _QUOTED.match(expanded)
-        margin = quoted.end() if quoted else 0  # where a quote's text may start
-        text = expanded[margin:].lstrip(" ")
-        if not text:
-            continue
-        if outer - (items[-1] if items else 0) >= 4:
-            return number
-        column = len(expanded) - len(text)
-        while items and column < items[-1]:
-            items.pop()
-        if column - max(items[-1] if items else 0, margin) >= 4 or _STRUCTURE.match(text):
-            return number
-        if item := _ITEM.match(text):
-            rest = text[item.end() :]
-            if not rest.strip(" ") or rest.startswith("    ") or _STRUCTURE.match(rest):
-                return number  # an item with no text on its line, or with code or a rule
-            items.append(column + item.end())
     return None
 
 

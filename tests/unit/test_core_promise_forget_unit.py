@@ -26,14 +26,19 @@ def test_a_negating_passage_does_not_hold_up_the_claim_it_contains():
     assert kept_claims([claim], frozenset({gone.id}), {negating.id: negating}) == ()
 
 
-def test_a_fold_of_the_same_passage_rewrapped_is_kept_citing_what_remains():
+def test_a_fold_of_the_same_passage_rewrapped_goes_with_the_note_whose_words_it_holds():
+    """CORE5: a line break is not a space, so such a fold (one a tidy made before) is not the
+    whole of the passage left: it goes, as any claim that says other words does."""
     gone, again = (
         one("n1", "Brook rotates the keys\nevery month."),
         one("n2", "Brook rotates the keys every month."),
     )
     claim = Claim(id="cl_fold", text=gone.text, span_ids=(gone.id, again.id))
-    (kept,) = kept_claims([claim], frozenset({gone.id}), {again.id: again})
-    assert (kept.text, kept.span_ids) == (gone.text, (again.id,))
+    assert kept_claims([claim], frozenset({gone.id}), {again.id: again}) == ()
+    same = one("n3", "Brook rotates the keys\nevery month.")
+    fold = Claim(id="cl_fold", text=gone.text, span_ids=(gone.id, same.id))
+    (kept,) = kept_claims([fold], frozenset({gone.id}), {same.id: same})
+    assert (kept.text, kept.span_ids) == (gone.text, (same.id,))
 
 
 def test_code_kept_by_the_gates_equality_not_by_containment():
@@ -82,7 +87,7 @@ def test_a_page_left_after_forgetting_a_folded_note_passes_the_gate(store):
         source_ref="again",
     )
     project = store.get_project("alpha")
-    assert tidy_page(store, project.id, first["page"]).merged == 1
+    assert tidy_page(store, project.id, first["page"]).merged == 0  # CORE5: two texts
     store.forget_note(first["note_id"])
     page = store.get_page(project.id, first["page"])
     spans = store.get_spans([i for claim in page.claims for i in claim.span_ids])
@@ -92,5 +97,5 @@ def test_a_page_left_after_forgetting_a_folded_note_passes_the_gate(store):
         body=render_body(page.title, page.claims, spans),
         claims=page.claims,
     )
-    assert [claim.text for claim in page.claims] == ["Brook rotates the keys every month."]
+    assert [claim.text for claim in page.claims] == ["Brook rotates the keys\nevery month."]
     assert verbatim_gate(candidate, spans).passed

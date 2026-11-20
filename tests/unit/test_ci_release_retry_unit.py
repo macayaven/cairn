@@ -1156,8 +1156,9 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
         " (the table has the line for both). Any other release for the tag that a look lists"
         " stops the job, but one a person makes while the job runs, or the draft of an earlier"
         " attempt just before a re-run, can be missing from the listing, which can be seconds"
-        " behind a write, so the job does not see it and can make or publish its own release"
-        " beside it: that is a stated limit, and what the job still"
+        " behind a write, so the job, a re-run as much as a first run, does not see it and can"
+        " make or publish a second release for the tag beside it: that is a stated limit, and"
+        " what the job still"
         " guarantees is that the release it publishes and succeeds on is its own, judged by its"
         " id, with this run's mark, title, notes and files."
     ) in readme
@@ -1173,11 +1174,12 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
     (limits,) = [" ".join(p.split()) for p in README.split("\n") if p.startswith("Three limits.")]
     assert limits.endswith(
         " The third limit is job `release`'s: no request compares and publishes at once, so a"
-        " draft a person changes after the job's last read of it and before its publication is"
-        " published as changed; the job reads it and compares its files again after it"
-        " publishes, stops on a difference it sees then and deletes nothing, so the changed"
-        " release stays public, and a change made after its last read, before it ends, it does"
-        " not see: do not edit this tag's release by hand while the `release` job runs."
+        " draft whose title, notes, files or flags a person changes after the job's last read of"
+        " it and before its publication is published as changed; the job reads it and compares"
+        " its files again after it publishes, stops on a difference it sees then and deletes"
+        " nothing, so the changed release stays public, and a change made after its last read,"
+        " before it ends, it does not see: do not edit this tag's release by hand while the"
+        " `release` job runs."
     )
     assert "deleted if it is still the same draft" not in readme
     assert "either way `aliases` runs" not in readme

@@ -271,8 +271,8 @@ def test_the_step_s_comment_and_the_readme_say_where_the_files_come_from():
         " sizes, update times), title, notes and flags."
     ) in readme
     assert (
-        "What a person changes in the moment after the job's last read of the release, before"
-        " the publication or before the job ends, the job does not see: that moment is the"
-        " stated race."
+        "What a person changes in the release, its title, notes, files or flags, in the moment"
+        " after the job's last read of it, before the publication or before the job ends, the"
+        " job does not see: that moment is the stated race."
     ) in readme
     assert TAG_READ.startswith("gh api -H")

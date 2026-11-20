@@ -100,15 +100,7 @@ def signing_in_handlers(
     """The handlers of /setup and /welcome, as ui_routes registers them."""
 
     def setup(request: Request) -> Response:
-        return _ui(
-            request,
-            "setup.html",
-            app_url=app_url,  # this server's own address, or a placeholder without one
-            mcp_url=mcp_url,
-            public_url=public_url,
-            oauth=by_url,
-            sign_in=sign_in,
-        )
+        return RedirectResponse("/start/connect", status_code=303)
 
     def welcome(request: Request) -> Response:
         """Where a new person lands: how to connect an agent, and the way back to where they

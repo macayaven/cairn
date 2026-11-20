@@ -476,7 +476,9 @@ def test_an_app_key_from_connect_is_shown_once_with_its_two_lines(env):
     for page in ("/start/connect", "/keys", "/start/connect"):  # going back, and back again
         later = env.client.get(page)
         assert later.status_code == 200 and later.headers["cache-control"] == "no-store"
-        assert key not in later.text and "CAIRN_API_KEY=" not in later.text, page
+        assert key not in later.text and f"CAIRN_API_KEY={key}" not in later.text, page
+        if page == "/keys":
+            assert "CAIRN_API_KEY=" not in later.text
 
 
 def test_what_fill_writes_passes_the_strictest_guard(env):

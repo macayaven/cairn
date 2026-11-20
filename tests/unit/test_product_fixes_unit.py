@@ -226,3 +226,45 @@ def test_read_only_project_hides_write_cta_and_returns_403_on_composer(tmp_path)
             assert client.get("/b/ada-only/new").status_code == 200
     finally:
         store.close()
+
+
+def test_setup_redirects_to_unified_connect_page_and_all_links_match(tmp_path):
+    store = Store(tmp_path / "cairn.db")
+    try:
+        key = store.create_key("owner")
+        store.create_project("payments-api", kind="repo")
+        with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+            _login(client, key)
+
+            redirect = client.get("/setup", follow_redirects=False)
+            assert redirect.status_code == 303
+            assert redirect.headers["location"] == "/start/connect"
+
+            connect = client.get("/start/connect")
+            assert connect.status_code == 200
+            text = connect.text
+            assert "With only the URL" in text
+            assert "With an API key" in text
+            assert text.index("With only the URL") < text.index("With an API key")
+            assert "Keep one core project" not in text
+            assert "business documents" in text and "personal notes" in text
+            assert '<a href="/workspace">Workspace</a> /' in text
+            assert 'href="/setup"' not in client.get("/agents").text
+            assert 'href="/setup"' not in text
+    finally:
+        store.close()
+
+
+def test_welcome_without_oauth_links_to_unified_connect_page(tmp_path):
+    store = Store(tmp_path / "cairn.db")
+    try:
+        key = store.create_key("owner")
+        with TestClient(
+            create_app(store, public_url="http://cairn.example.net"), base_url=BASE
+        ) as client:
+            _login(client, key)
+            welcome = client.get("/welcome").text
+            assert 'href="/start/connect"' in welcome
+            assert 'href="/setup"' not in welcome
+    finally:
+        store.close()

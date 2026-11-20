@@ -116,8 +116,8 @@ ALLOWED_SAID = (
     " their claims in order."
 )
 NEVER_SAID = (
-    "Models: never. No model is sent this project's pages, whatever their notes say or the"
-    " operator set. Pages already arranged stay as they are."
+    "Models: never. A model the operator connects is not sent this project's pages, whatever"
+    " their notes say or the operator set. Pages already arranged stay as they are."
 )
 PERSONAL_SAID = "Personal notes start this way."
 UNDECIDED_SAID = "Models: not decided. Nobody has chosen for this project"  # Privacy 4

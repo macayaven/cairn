@@ -21,8 +21,8 @@ GOVERNS = (
 )
 SAID = {
     "never": (
-        "Models: never. No model is sent this project's pages, whatever their notes say or the"
-        " operator set. Pages already arranged stay as they are."
+        "Models: never. A model the operator connects is not sent this project's pages,"
+        " whatever their notes say or the operator set. Pages already arranged stay as they are."
     ),
     "allowed": (
         "Models: allowed. A model the operator connects can be sent this project's pages, to"
@@ -35,6 +35,10 @@ SAID = {
     ),
 }
 FORM = 'action="/b/ops/models"'
+BUTTONS = {"allowed": "Allow a model", "never": "Keep from the arranging model"}
+# What Models does not do, and so what no page here may say of it (sixth report, must-fix 5):
+# the assistants people connect are models too, and they read what they reach.
+OVERSAID = re.compile(r"\b(every|no)\s+model", re.I)
 MAY_CHANGE = {"Ada": True, "Dee": True, "Brook": False, "Quill": False}
 
 
@@ -71,10 +75,11 @@ def world(tmp_path):
         ada.set_project_access(ops.id, people=levels)
         with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
 
-            def page(name: str, project: str = "ops") -> str:
+            def page(name: str, project: str = "ops", *, path: str | None = None) -> str:
+                """The project's page as `name` reads it; or what `path` answers them."""
                 client.cookies.set(session_cookie("https"), people[name].token)
-                shown = client.get(f"/b/{project}")
-                assert shown.status_code == 200, (name, shown.status_code)
+                shown = client.get(path or f"/b/{project}")
+                assert path or shown.status_code == 200, (name, shown.status_code)
                 return shown.text
 
             yield ada, ops, page
@@ -100,12 +105,14 @@ def test_only_who_may_change_models_is_given_the_form(world, state):
     ada, ops, page = world
     if state:
         ada.set_project_models(ops.id, state)
-    offered = {choice for choice in ("allowed", "never") if choice != state}
+    offered = {choice: label for choice, label in BUTTONS.items() if choice != state}
     for name, may in MAY_CHANGE.items():
         html = page(name)
-        found = set(re.findall(r'<button\b[^>]*name="models" value="([^"]+)"', html))
+        found = dict(
+            re.findall(r'<button\b[^>]*name="models" value="([^"]+)"[^>]*>([^<]*)</button>', html)
+        )
         assert (FORM in html) is may, name
-        assert found == (offered if may else set()), name
+        assert found == (offered if may else {}), name  # each button by the words on it
 
 
 def test_a_reader_of_personal_notes_reads_what_models_governs_after_how_they_start(world):
@@ -115,3 +122,18 @@ def test_a_reader_of_personal_notes_reads_what_models_governs_after_how_they_sta
     whole = f"{SAID['never']} Personal notes start this way. {GOVERNS}"
     for name in ("Ada", "Quill"):
         assert said(page(name, "diary")) == whole
+
+
+@pytest.mark.parametrize("state", ["never", "allowed", None], ids=["never", "allowed", "undecided"])
+def test_no_page_a_person_reads_here_says_every_model_or_no_model(world, state):
+    """The project's page (a Personal notes one too), the home page and both note forms, in
+    every state and for every person: the words, the buttons and what the markup holds."""
+    ada, ops, page = world
+    diary = ada.create_project("diary", kind="personal")
+    ada.set_project_access(diary.id, everyone="read")
+    if state:
+        ada.set_project_models(ops.id, state)
+    for name in MAY_CHANGE:
+        for path in ("/b/ops", "/b/diary", "/", "/new", "/b/ops/new", "/b/diary/new"):
+            said_there = OVERSAID.findall(unescape(page(name, path=path)))
+            assert not said_there, (name, path)

@@ -280,7 +280,7 @@ UNDECIDED_SAID = (
     " allowed, and then it is sent none."
 )
 ALLOWED_SAID = "Models: allowed. A model the operator connects can be sent this project's pages"
-NEVER_SAID = "Models: never. No model is sent this project's pages"
+NEVER_SAID = "Models: never. A model the operator connects is not sent this project's pages"
 
 
 def visible(html: str) -> str:
@@ -306,7 +306,7 @@ def test_the_project_page_says_not_decided_and_offers_both_choices(store, web):
     assert visible(shown.text).count(UNDECIDED_SAID) == 1
     assert ALLOWED_SAID not in visible(shown.text) and NEVER_SAID not in visible(shown.text)
     assert 'name="models" value="allowed"' in part and 'name="models" value="never"' in part
-    assert "Allow a model" in part and "Keep from every model" in part
+    assert "Allow a model" in part and "Keep from the arranging model" in part
     chose = web.post("/b/ops/models", data={"models": "allowed"}, headers=SAME_ORIGIN)
     assert chose.status_code == 200  # followed back to the project's page
     assert store.models_choices([project.id]) == {project.id: "allowed"}

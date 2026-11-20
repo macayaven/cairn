@@ -97,6 +97,7 @@ from cairn.candidate import CandidatePage, GateResult
 from cairn.gate import (
     BREADCRUMB,
     fence_left_open,
+    repeated_ids,
     unclaimed_violations,
     verbatim_gate,
     whole,
@@ -491,8 +492,8 @@ def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResul
     """The default gate. Violations: a claim with no span ids, a span id missing from `spans`,
     a claim text missing from the body as it is written (CORE5), and the reverse: a body that is
     not what render_body writes of the claims and `spans` (gate.unclaimed_line, review blocker
-    1 and the second report's finding 1). Metrics: {"claims": n, "spans_cited": distinct cited
-    span count}.
+    1 and the second report's finding 1), and an id two claims hold (gate.repeated_ids).
+    Metrics: {"claims": n, "spans_cited": distinct cited span count}.
 
     Each violation reads "<code>: <claim id>: <message>", like cairn.gate.lint_gate's."""
     violations = []
@@ -511,6 +512,7 @@ def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResul
                 f"provenance.claim_not_in_body: {claim.id}: the claim text is not in the body"
             )
     violations.extend(unclaimed_violations(page, spans))  # the reverse (review blocker 1)
+    violations.extend(repeated_ids(page.claims))  # an id held twice (gate.repeated_ids)
     cited = {span_id for claim in page.claims for span_id in claim.span_ids}
     return GateResult(
         passed=not violations,

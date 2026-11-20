@@ -13,7 +13,10 @@ Contract (frozen by tests/acceptance/test_w3_gate.py):
   no statement, as the gate reads nothing from the store); and compile.fence_left_open for
   each claim that leaves a code fence open that no line the body could write after it
   closes (`fence_left_open`; none is known), naming the claim, never its text. Every gate
-  asks both (`unclaimed_violations`), and the import refuses such a claim too.
+  asks both (`unclaimed_violations`), and the import refuses such a claim too. Every gate
+  also refuses a page two of whose claims hold one id, compile.claim_id_repeated once for
+  each such id (`repeated_ids`, the third report's must-fix 1): an import refuses the
+  version, and `evidence` finds a claim by its id.
 - metrics: {"claims": claim count, "spans_cited": distinct cited span count,
   "retention": plain retention overall, "code_line_retention": plain code-line retention,
   "span_coverage": cairn span coverage, "omission_rate": cairn omission rate}.
@@ -72,6 +75,7 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   break.
 """
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
 
 from cairn.candidate import CandidatePage, GateResult
@@ -96,7 +100,7 @@ def lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
         rendered=True,  # unclaimed_violations checks the body is its claims rendered
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
-    unclaimed = unclaimed_violations(page, spans)
+    unclaimed = [*unclaimed_violations(page, spans), *repeated_ids(page.claims)]
     return GateResult(
         passed=not report.violations and not unclaimed,
         violations=[
@@ -125,7 +129,7 @@ def strict_lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResu
         rendered=True,  # unclaimed_violations checks the body is its claims rendered
     )
     plain, cairn = report.metrics["plain"], report.metrics["cairn"]
-    unclaimed = unclaimed_violations(page, spans)
+    unclaimed = [*unclaimed_violations(page, spans), *repeated_ids(page.claims)]
     return GateResult(
         passed=not report.violations and not unclaimed,
         violations=[
@@ -141,6 +145,25 @@ def strict_lint_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResu
             "omission_rate": cairn["omission_rate"],
         },
     )
+
+
+CLAIM_ID_REPEATED = "compile.claim_id_repeated"  # two claims of one page hold one id
+
+
+def repeated_ids(claims: Iterable[Claim]) -> list[str]:
+    """CLAIM_ID_REPEATED, once for each id that more than one of `claims` holds, in the order
+    the ids first stand on the page, naming the id and how many hold it, never a claim's
+    text. Every gate asks it of the whole candidate (lint_gate and strict_lint_gate here, so
+    verbatim_gate too, and compiler.provenance_gate), so no compile, tidy or arrangement
+    saves a version an import refuses for it (store.portable.version_faults), whether a
+    composer returned one claim twice or gave a claim the id of one the page holds."""
+    held = Counter(claim.id for claim in claims)
+    return [
+        f"{CLAIM_ID_REPEATED}: {claim_id}: {count} claims of the page hold this id: give each"
+        " claim its own"
+        for claim_id, count in held.items()
+        if count > 1
+    ]
 
 
 def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:

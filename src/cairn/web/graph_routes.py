@@ -222,7 +222,8 @@ def graph_routes(explorer: bool = False) -> list[Route]:
             Route("/api/graph", _logged("graph", api)),
             Route("/b/{project}/graph", _logged("graph", page)),
         ]
-    # a related view waits for the one read of related pages at a time, holding no thread
+    # a related view waits for its caller's turn, then the one read of related pages at a
+    # time, holding no thread
     a_view = _logged("graph", explore)
     related_view = _logged("related", related, RELATED_READS)
 

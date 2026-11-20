@@ -90,7 +90,7 @@ from cairn.store.audit import AUDIT_LIMIT_MAX
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.store.usage import OverLimit
 from cairn.web.auth import _memory, may_manage_credentials
-from cairn.web.turns import RELATED_READS, Compiles, compile_turn
+from cairn.web.turns import RELATED_READS, RelatedReads, caller_of, compile_turn
 
 Handler = Callable[[Request], Response | Awaitable[Response]]
 AUDIT_AT_ONCE = 100  # the events GET /api/audit answers when no `limit` is given
@@ -99,15 +99,15 @@ AUDIT_LIMIT = f"'limit' is a whole number, 1 to {AUDIT_LIMIT_MAX}"
 
 
 def _logged(
-    action: str, handler: Handler, turn: Compiles | None = None
+    action: str, handler: Handler, turn: RelatedReads | None = None
 ) -> Callable[[Request], Awaitable[Response]]:
     """`handler` as one access-log record named `action`, whatever it answers. A sync
     handler still runs on a worker thread, as Starlette runs one: it reads the database. The
     access runs on that thread with it, so a read's audit event (`serve --audit-reads`),
     written behind the store's lock, never holds up the event loop. `__wrapped__` is the
     handler, so a test can read what it reads (inspect.unwrap). With a `turn`, a sync
-    handler waits for one of it on the event loop, holding no thread, before its thread
-    is taken."""
+    handler waits for its caller's turn of it and then the process's on the event loop,
+    holding no thread, before its thread is taken."""
 
     async def endpoint(request: Request) -> Response:
         memory = _memory(request)
@@ -121,7 +121,7 @@ def _logged(
 
         if turn is None:
             return await run_in_threadpool(accessed)
-        async with turn.turn():
+        async with turn.turn(caller_of(memory)):
             return await run_in_threadpool(accessed)
 
     endpoint.__wrapped__ = handler  # type: ignore[attr-defined]

@@ -59,7 +59,7 @@ from cairn.web.graph_resource import (
     reject_graph_uri,
     valid_graph_uri,
 )
-from cairn.web.turns import RELATED_READS, compile_turn
+from cairn.web.turns import RELATED_READS, caller_of, compile_turn
 
 _INSTRUCTIONS = """\
 {product} is shared memory for agents. It compiles notes into pages, and every claim on a page \
@@ -459,9 +459,10 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
             with _call(ctx, "related") as memory:
                 return memory.related(project, slug, limit)
 
-        # One read of related pages at a time in the process, waited for on the event loop,
-        # holding no thread; then the read on a worker thread, as every other tool runs.
-        async with RELATED_READS.turn():
+        # The caller's turn and then the process's (one read of related pages at a time),
+        # waited for on the event loop, holding no thread; then the read on a worker thread,
+        # as every other tool runs.
+        async with RELATED_READS.turn(caller_of(_caller(ctx))):
             return await run_in_threadpool(found)
 
     return mcp

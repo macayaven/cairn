@@ -657,7 +657,7 @@ cmd_compact() {
 
 # compact-if-due, from cairn-compact.timer once a night: `compact` when, and only when, a
 # deletion waits for a compaction, with cairn's `compact --if-due` at step 4, so a deletion
-# serve already rewrote the file for costs no second rewrite. On success one line with the sizes before and after. On
+# serve already rewrote the file for costs no second rewrite once serve recorded it. On success one line with the sizes before and after. On
 # failure Litestream runs again (compact's trap) and an "Error: compact: ..." line goes into
 # the litestream container's log, which the replica alert matches (monitoring.tf), and into
 # the journal.

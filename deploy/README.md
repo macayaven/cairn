@@ -175,7 +175,7 @@ docker compose start litestream
 sleep 15; docker compose exec litestream litestream ltx -level 0 /data/cairn.db | tail -n 1
 ```
 
-`compact` says how many old page versions it removed and the database's size before and after, and exits 1 when it could not finish; the deletion then stays recorded as due, and running the four again is safe. Start `litestream` again whatever `compact` did: while it is stopped nothing reaches the replica, and cairn takes writes as usual. The last command prints the replica's newest file: its last column, the time Litestream made it, must be later than your `start`. An earlier time means Litestream has not copied yet; wait a few seconds and run that command again, and if it stays so, `docker compose logs litestream` says why. A write that arrives while `litestream` is stopped is copied once it starts.
+`compact` says how many old page versions it removed and the database's size before and after, and exits 1 when it could not finish; the deletion then stays recorded as due, and running the four again is safe. It exits 3, having changed nothing, when another compaction (the server's own, or another command's) is running on the database: one runs at a time. Start `litestream` again whatever `compact` did: while it is stopped nothing reaches the replica, and cairn takes writes as usual. The last command prints the replica's newest file: its last column, the time Litestream made it, must be later than your `start`. An earlier time means Litestream has not copied yet; wait a few seconds and run that command again, and if it stays so, `docker compose logs litestream` says why. A write that arrives while `litestream` is stopped is copied once it starts.
 
 ### Check that a restore works
 

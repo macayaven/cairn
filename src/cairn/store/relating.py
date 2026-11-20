@@ -141,8 +141,10 @@ which the index reads as another word, so a claim that writes the separator stat
 the index finds. Such a term relates nothing, from either side.
 """
 
+import contextlib
 import json
 import sqlite3
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
@@ -184,7 +186,9 @@ AT_ONCE = 64  # terms one statement asks the index for
 #   250,000     0.32 s         0.33 s
 #   no bound    0.70 s         0.51 s
 # about 1.3 microseconds and 19 of SQLite's steps a row handed over. 150,000 is the value whose
-# index part is about a fifth of a second; the whole read then takes 0.20 s. Not bounded by it:
+# index part is about a fifth of a second; the whole read then takes 0.20 s. Long claims cost
+# less a row: 8,000 of 2,816 bytes, each every one of the 256 terms, 0.09 s at 150,000 rows
+# (2,056,516 rows and 1.6 to 2.1 s with no bound). Not bounded by it:
 # claims among the project's rows that hold the words of 8 of its terms apart, not side by
 # side, which the index reads and passes over without handing them over: 64,000 of them take
 # the index part from 0.006 s to 0.14 s, 256,000 to 0.55 s, and SQLite's steps do not see it.
@@ -299,15 +303,28 @@ class _Visits:
         return max(0, ROWS_MAX - self.total)
 
 
+_READ = threading.local()  # the count of the read under way on this thread (`_counting`)
+
+
+def _visited(part: int) -> int:
+    return _READ.visits.visit(part)
+
+
+def _rows_left() -> int:
+    return _READ.visits.left()
+
+
 def _counting(con: sqlite3.Connection) -> _Visits:
-    """A count of the rows this read is handed, on `con`, which serves this read alone
-    (Store.related_pages). Its two functions are given to the connection again at each read,
-    in place of the last read's; that is refused while a statement of the connection is left
-    under way, which no statement of a read is: each is read to its end (`_listed`), and one
-    that fails is ended by SQLite with it."""
-    visits = _Visits()
-    con.create_function("cairn_visited", 1, visits.visit)
-    con.create_function("cairn_rows_left", 0, visits.left)
+    """A fresh count of the rows this read is handed, on `con`, which serves this read alone
+    (Store.related_pages). SQLite calls the two functions the statements count by on the
+    thread that runs the read, and they count on that thread's count, so they are the same
+    two for every read: they are given to the connection at each read, and where SQLite
+    refuses to give them again, as it does while a statement of the connection is left
+    under way, the connection holds them already."""
+    _READ.visits = visits = _Visits()
+    with contextlib.suppress(sqlite3.OperationalError):  # refused: given already
+        con.create_function("cairn_visited", 1, _visited)
+        con.create_function("cairn_rows_left", 0, _rows_left)
     return visits
 
 

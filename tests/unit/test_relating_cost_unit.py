@@ -24,10 +24,12 @@ term's own claim among them) + 3 for each candidate claim read + what is given.
 The counts are those the store's connection reports to its trace callback and hands to its
 row factory. What they cannot see is counted in SQLite's steps: the same read costs the
 same steps when the project holds two thousand claims more, on other pages, that hold none
-of the page's words; and beside 1,000 and 8,000 claims of another project that hold every
-one of them and the title, wherever those were saved, a claim of the project that names the
-title given cut among what is read. A page of the project costs a few steps in each
-statement that lists claims by their words (PAGE_STEPS), whatever it holds.
+of the page's words, and beside claims of another project that hold every one of them and
+the title saved outside the project's span, before its pages or after them; claims saved
+inside it cost ROW_STEPS steps at most for each row of the index handed over, ROWS_MAX rows
+in all (`visited`), a claim of the project that names the title given cut among what is
+read. A page of the project costs a few steps once a read, to find the span (PAGE_STEPS),
+whatever it holds.
 """
 
 import contextlib
@@ -702,6 +704,54 @@ def test_a_read_that_fails_while_it_lists_claims_leaves_the_next_read_whole(tmp_
     assert listing.is_set()
     assert (shown(again), again.left) == (shown(found), found.left)
     assert seen_again.visited == seen.visited > 0
+
+
+def test_a_read_that_fails_while_a_statement_is_half_read_leaves_the_next_read_whole(
+    tmp_path, monkeypatch
+):
+    """A read that fails in Python while a statement of its connection is read in part (here
+    the second passage it reads cannot be made), the error kept: the statement is left under
+    way, and the next read on the same store, on the same connection, answers as before."""
+    store, project_id = project_of(tmp_path, 200)
+    made = relating.Span
+    try:
+        found, seen = counted(store, project_id)
+        calls = []
+
+        def failing(**fields):
+            calls.append(fields["id"])
+            if len(calls) == 2:
+                raise ValueError("a passage that cannot be made")
+            return made(**fields)
+
+        monkeypatch.setattr(relating, "Span", failing)
+        with pytest.raises(ValueError) as kept:
+            store.related_pages(project_id, "asked", RELATED_MAX)
+        monkeypatch.setattr(relating, "Span", made)
+        again, seen_again = counted(store, project_id)
+    finally:
+        store.close()
+    assert kept.value is not None and len(calls) == 2
+    assert (shown(again), again.left) == (shown(found), found.left)
+    assert seen_again.visited == seen.visited > 0
+
+
+def test_a_read_counts_its_own_rows_on_a_connection_with_a_statement_left_under_way():
+    """The two functions the statements count rows by are given to the connection at each
+    read. Where a statement of it is left under way (by anything that read on it before),
+    SQLite refuses to give them again, and the two it holds already count for the read under
+    way on that thread."""
+    con = sqlite3.connect(":memory:")
+    try:
+        relating._counting(con)
+        left = con.execute("SELECT value FROM json_each('[1, 2, 3]')")
+        assert left.fetchone() == (1,)  # under way: two rows not read
+        visits = relating._counting(con)
+        counted = con.execute("SELECT cairn_visited(7), cairn_rows_left()").fetchone()
+        assert counted == (1, relating.ROWS_MAX - 1)
+        assert (visits.total, visits.by) == (1, {7: 1})
+    finally:
+        con.close()
 
 
 # The layouts of the second attack (RT4): a project's pages saved together, or each in turn

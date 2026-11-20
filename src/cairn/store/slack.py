@@ -49,10 +49,11 @@ The install
   (6 hours), at most CHECKS_AT_ONCE (20), each stamped as checked when taken;
   `slack_token_checked` records what Slack said: two ENDED answers in a row (invalid_auth,
   account_inactive, token_revoked) do what revoke_slack_bot does, a good one starts the count
-  again, anything else changes nothing; an answer about a token replaced since changes
-  nothing. `remove_gone_slack_installs`: an install with no bot token for more than GONE_DAYS
-  (3) since `bot_gone_at` is removed as an owner removes it, the audit record naming no person
-  and saying why; one an owner only switched off holds its token and is never removed so.
+  again, anything else changes nothing. A result applies to the set-up it checked while it
+  still holds a bot token. `remove_gone_slack_installs`: an install with no bot token for
+  more than GONE_DAYS (3) since `bot_gone_at` is removed as an owner removes it, the audit
+  record naming no person and saying why; one an owner only switched off holds its token
+  and is never removed so.
 - What is due (a claim with no note never is): `slack_notes_due` (the server's, every
   workspace, the oldest first) gives (workspace, note) pairs whose time came;
   cairn.web.slack.Keeper forgets each with cairn's own forgetting (Store.forget_note, H5b, by
@@ -296,14 +297,12 @@ class SlackClaim(NamedTuple):
 
 @dataclass(frozen=True)
 class SlackCheck:
-    """An install whose bot token is to be checked with Slack: the token opened, and the
-    sealed value it was read from, so an answer about a token replaced since changes nothing.
-    Neither is in a repr."""
+    """A bot token to check with Slack and the set-up it belongs to."""
 
     install_id: str
     account_id: str
     token: str = field(repr=False)
-    sealed: str = field(repr=False)
+    made_at: str
 
 
 @dataclass(frozen=True)
@@ -961,41 +960,42 @@ class SlackMethods(StoreBase):
         sealer = self._slack_sealer()
         with self._write() as con:
             found = con.execute(
-                "SELECT id, account_id, bot_token FROM slack_installs WHERE bot_token IS NOT NULL"
+                "SELECT id, account_id, bot_token, made_at FROM slack_installs"
+                " WHERE bot_token IS NOT NULL"
                 " AND state != 'removed' AND (checked_at IS NULL OR checked_at <= ?)"
                 " ORDER BY checked_at IS NOT NULL, checked_at, id LIMIT ?",
                 (_iso(self._instant() - CHECK_EVERY), limit),
             ).fetchall()
             con.executemany(
                 "UPDATE slack_installs SET checked_at = ? WHERE id = ?",
-                [(self._stamp(), install_id) for install_id, _, _ in found],
+                [(self._stamp(), install_id) for install_id, _, _, _ in found],
             )
         checks = []
-        for install_id, account_id, sealed in found:
+        for install_id, account_id, sealed, made_at in found:
             token = sealer.open(sealed, _associated("bot_token", install_id, account_id))
             if token is not None:
-                checks.append(SlackCheck(install_id, account_id, token, sealed))
+                checks.append(SlackCheck(install_id, account_id, token, made_at))
         return checks
 
     def slack_token_checked(self, check: SlackCheck, answer: str) -> SlackInstall | None:
         """The server's: what Slack said of the token `check` holds (ANSWERS). "works": the
         count of ended answers starts again; "unclear" changes nothing; "ended": counted, and
-        the second in a row does what revoke_slack_bot does (bot_gone_at set). An install
-        whose token was replaced or deleted since changes nothing. The install as it is now;
-        None when it is gone."""
+        the second in a row does what revoke_slack_bot does (bot_gone_at set). The answer
+        applies while the set-up still holds a token. Resealing keeps the set-up stamp.
+        The install as it is now; None when it is gone."""
         if answer not in ANSWERS:
             raise ValueError(f"a check comes to {', '.join(ANSWERS)}")
         with self._write() as con:
-            same = "id = ? AND bot_token = ?", (check.install_id, check.sealed)
+            same = "id = ? AND account_id = ? AND made_at = ? AND bot_token IS NOT NULL"
+            binding = (check.install_id, check.account_id, check.made_at)
             if answer == "works":
-                con.execute(f"UPDATE slack_installs SET dead_checks = 0 WHERE {same[0]}", same[1])
+                con.execute(f"UPDATE slack_installs SET dead_checks = 0 WHERE {same}", binding)
             elif answer == "ended":
                 con.execute(
-                    f"UPDATE slack_installs SET dead_checks = dead_checks + 1 WHERE {same[0]}",
-                    same[1],
+                    f"UPDATE slack_installs SET dead_checks = dead_checks + 1 WHERE {same}", binding
                 )
                 ended = con.execute(
-                    f"SELECT 1 FROM slack_installs WHERE {same[0]} AND dead_checks >= 2", same[1]
+                    f"SELECT 1 FROM slack_installs WHERE {same} AND dead_checks >= 2", binding
                 ).fetchone()
                 if ended:
                     self._revoke(con, check.install_id)

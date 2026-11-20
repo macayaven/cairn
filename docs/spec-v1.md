@@ -171,4 +171,4 @@ Each line names its evidence and who it waits on.
 
 ## Out of scope for v1
 
-Semantic search, per-document access lists, and a native mobile app. A graph of a project's pages and notes exists behind a switch that is off (`serve --graph-explorer`, decision 160).
+Semantic search, per-document access lists, and a native mobile app. A graph of a project's pages and notes is not out of scope: it exists and is shown unless `serve --no-graph-explorer` switches its script off (decisions 160 and 201).

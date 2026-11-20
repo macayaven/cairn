@@ -30,8 +30,10 @@ and the latest version of every page holds invariant (a) of test_generated_invar
 
 And of the walk itself: no note is refused its page; a note sent again changes nothing; no
 tidy or arrangement is refused, but a fold the arranger must not make; a forget does what
-its preview said; and every note still held is cited by the latest version of a page (a
-forget takes the forgotten note's claims and no other).
+its preview said; every passage of every note still held is cited by the latest version of a
+page; and no forget drops a claim because an import would refuse it (the store's log has no
+such line): a forget takes the forgotten note's claims and no other, so (1) is never true
+only because a claim left.
 
 (3) is the stronger of two properties. The import asks that a claim say what each passage it
 cites says under the rule, and that a version's claims hold at most twice the bytes of its
@@ -50,6 +52,7 @@ their place in `pool`), never a note's text. Made-up notes."""
 import io
 import itertools
 import json
+import logging
 import random
 from collections import Counter
 
@@ -59,7 +62,7 @@ from test_generated_invariants_unit import note as grammar_note
 from test_generated_invariants_unit import reversed_order, rows, words
 
 from cairn.arrange import arrange_page, tidy_page
-from cairn.compiler import render_body
+from cairn.compiler import CONTENT_KINDS, render_body
 from cairn.gate import lint_gate
 from cairn.llm import FakeModel
 from cairn.memory import Memory, RequestError
@@ -88,7 +91,8 @@ NOT_ARRANGED = "an arrangement was refused"
 LATEST = "a latest version breaks the saved-page invariants"
 NOT_AGAIN = "a note sent again changed its page"
 NOT_PREVIEWED = "a forget did not do what its preview said"
-NOT_CITED = "a note still held is on no page"
+NOT_CITED = "a passage of a note still held is on no page"
+DROPPED = "a forget dropped a claim an import would refuse"
 
 Fault = tuple[str, str]  # (which kind, where: a page, a version, a claim id; never text)
 
@@ -215,10 +219,16 @@ def walk(store: Store, name: str, rng: random.Random, tmp_path) -> tuple[list[st
 
     def check(trip: bool) -> None:
         new = held_faults(store, project.id)
+        cited = {
+            span_id
+            for page in store.list_pages(project.id)
+            for claim in page.claims
+            for span_id in claim.span_ids
+        }
         new += [
             (NOT_CITED, f"the note at {place}")
             for note_id, place in filed.items()
-            if store.note_page(project.id, note_id)[1] is None
+            if any(s.kind in CONTENT_KINDS and s.id not in cited for s in store.note_spans(note_id))
         ]
         if trip:
             new += [(LATEST, fault) for fault in latest_faults(store, project.id)]
@@ -332,17 +342,23 @@ def test_the_reviewers_input_forgotten_leaves_the_survivors_bytes_and_round_trip
         target.close()
 
 
-def test_every_walk_exports_and_imports_every_version_and_keeps_only_bytes_it_cites(tmp_path):
+def test_every_walk_exports_and_imports_every_version_and_keeps_only_bytes_it_cites(
+    tmp_path, caplog
+):
     found: dict[str, list[tuple[str, str, list[str]]]] = {}
     totals: Counter = Counter()
+    caplog.set_level(logging.WARNING, logger="cairn.store")
     for n in range(CASES):
         name = f"w{n:03d}"
         store = Store(tmp_path / f"{name}.db")  # its own, so a refused import hides no other
+        caplog.clear()
         try:
             store.create_project(name)
             steps, faults, done = walk(store, name, random.Random(SEED * 1000 + n), tmp_path)
         finally:
             store.close()
+        dropped = sum(r.getMessage().startswith("forget:") for r in caplog.records)
+        faults += [(DROPPED, f"{dropped} lines on the store's log")] * bool(dropped)
         totals += done
         for kind, where in faults:
             found.setdefault(kind, []).append((name, where, steps))

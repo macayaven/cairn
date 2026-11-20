@@ -127,11 +127,18 @@ def test_the_later_of_two_claims_with_one_id_leaves(store, tmp_path, caplog):
         return [claims[0], claims[1].model_copy(update={"id": claims[0].id}), claims[2]]
 
     built = Built(store, [SAME, "Brook owns the rollback.", "Quill keeps the log."], doubled)
+    waits = built.memory.note("alpha", "Wren reads the log.", title="Net", topic="Net")
+    assert waits["status"] == "rejected"  # the page takes no note while it holds the id twice
+    assert waits["violations"][0].startswith("compile.claim_id_repeated:")
     with caplog.at_level(logging.INFO, logger="cairn.store"):
         store.forget_note(built.notes[2])
     assert [claim.text for claim in built.page().claims] == [SAME]
     assert len(built.imported(tmp_path)) == 1
     assert len(lines(caplog)) == 1 and "1 claim" in lines(caplog)[0]
+    # and takes one again once the forget dropped the later claim
+    again = built.memory.note("alpha", "Wren reads the log.", title="Net", topic="Net")
+    assert (again["note_id"], again["status"]) == (waits["note_id"], "saved")
+    assert [claim.text for claim in built.page().claims] == [SAME, "Wren reads the log."]
 
 
 def test_a_claim_citing_a_passage_of_another_project_leaves(store, tmp_path):

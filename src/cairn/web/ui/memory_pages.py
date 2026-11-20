@@ -237,14 +237,14 @@ def _quoted(claim: Mapping[str, Any], mention: bool) -> dict[str, Any]:
     to quote. A
     claim that is cut is never taken to hold a text. `says`: the sentence that a claim is
     longer than what is shown, None for a whole one. And who wrote the notes it cites, each
-    said once in the page view's words (writer_words; a Slack message someone filed as
-    search_hits says it), how many notes that is, when the newest was written and whether
-    any is outside text."""
+    said once: `who`, in the page view's words (writer_words), which end with the writer's
+    name, and `filed`, what a Slack message someone filed says of its words (search_hits
+    says the same), kept apart so that the page sets the name apart from it; how many notes
+    that is, when the newest was written and whether any is outside text."""
     entries = claim["written_by"]
     more = claim.get("written_by_more", 0)
     writers = dict.fromkeys(
-        writer_words(entry["kind"], entry["name"])
-        + (f": {entry['filed_message']}" if entry.get("filed_message") else "")
+        (writer_words(entry["kind"], entry["name"]), entry.get("filed_message"))
         for entry in entries
     )
     cut = bool(claim.get("text_cut"))
@@ -266,7 +266,7 @@ def _quoted(claim: Mapping[str, Any], mention: bool) -> dict[str, Any]:
         "text": text,
         "cut": cut,
         "says": says,
-        "writers": list(writers),
+        "writers": [{"who": who, "filed": filed} for who, filed in writers],
         "notes": len(entries) + more,
         "notes_more": more,
         "written_at": claim["written_at"],

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_components.html" import crumbs %}
+{% from "_components.html" import crumbs, noted %}
 {% block title %}{{ project }} graph{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ explorer_stylesheet }}">{% endblock %}
 {% block main %}
@@ -74,13 +74,13 @@
 <h2>Graph content</h2>
 <ul>
 {% for node in nodes %}
-<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ node.label }}</a>{% else %}{{ node.label }}{% endif %}{% if node.explore_href %} <a href="{{ node.explore_href }}" aria-label="Open the view of {{ node.kind }} {{ node.label }}">Open its view</a>{% endif %}{% if node.related_href %} <a href="{{ node.related_href }}" aria-label="Open the related pages of {{ node.label }}">Related pages</a>{% endif %}{% if node.kind == 'note' %}{% if node.source_ref %}; source_ref: {{ node.source_ref }}{% endif %}{% if node.via %}; via: {{ node.via }}{% endif %}{% endif %}</li>
+<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ noted(node.label) }}</a>{% else %}{{ noted(node.label) }}{% endif %}{% if node.explore_href %} <a href="{{ node.explore_href }}" aria-label="Open the view of {{ node.kind }} {{ node.label }}">Open its view</a>{% endif %}{% if node.related_href %} <a href="{{ node.related_href }}" aria-label="Open the related pages of {{ node.label }}">Related pages</a>{% endif %}{% if node.kind == 'note' %}{% if node.source_ref %}; source_ref: {{ noted(node.source_ref) }}{% endif %}{% if node.via %}; via: {{ node.via }}{% endif %}{% endif %}</li>
 {% endfor %}
 </ul>
 <h2>Relationships</h2>
 <ul>
 {% for edge in edges %}
-<li data-graph-area="list" data-graph-edge="{{ edge.number }}"{% if edge.reason %} data-graph-reason="{{ edge.reason }}" data-graph-term="{{ edge.term }}" data-graph-more="{{ edge.more }}"{% endif %}><a href="#{{ edge.source.anchor }}">{{ edge.source.kind }}: {{ edge.source.label }}</a> {{ edge.kind }}{% if edge.code %} <code>{{ edge.code }}</code> with{% endif %} <a href="#{{ edge.target.anchor }}">{{ edge.target.kind }}: {{ edge.target.label }}</a>{% if edge.more %}, and {{ edge.more }} more {{ "reason" if edge.more == 1 else "reasons" }}{% endif %}{% if edge.href %} · <a href="{{ edge.href }}" aria-label="See the claims that relate {{ edge.target.label }} to {{ edge.source.label }}">See the claims</a>{% endif %}</li>
+<li data-graph-area="list" data-graph-edge="{{ edge.number }}"{% if edge.reason %} data-graph-reason="{{ edge.reason }}" data-graph-term="{{ edge.term }}" data-graph-more="{{ edge.more }}"{% endif %}><a href="#{{ edge.source.anchor }}">{{ edge.source.kind }}: {{ noted(edge.source.label) }}</a> {{ edge.kind }}{% if edge.code %} <bdi><code>{{ edge.code }}</code></bdi> with{% endif %} <a href="#{{ edge.target.anchor }}">{{ edge.target.kind }}: {{ noted(edge.target.label) }}</a>{% if edge.more %}, and {{ edge.more }} more {{ "reason" if edge.more == 1 else "reasons" }}{% endif %}{% if edge.href %} · <a href="{{ edge.href }}" aria-label="See the claims that relate {{ edge.target.label }} to {{ edge.source.label }}">See the claims</a>{% endif %}</li>
 {% endfor %}
 </ul>
 </div>

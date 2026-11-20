@@ -12,6 +12,7 @@ is hers, read by every member, written by Brook and managed by Cy, so Dee only r
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -194,9 +195,9 @@ def test_it_shows_each_related_page_and_each_reason_in_words_with_the_claims(w, 
     assert mention["there"]["links"] == [f"/b/ops/p/retention#{theirs.id}"]
     # the term is code, and the page says what it is the related pages of
     html = main_of(r.text)
-    assert "Both pages state the code <code>--audit-keep</code>." in html
-    assert "<h1>Pages related to Deploy</h1>" in html
-    assert '<a href="/b/ops/p/deploy">Deploy</a>' in html
+    assert "Both pages state the code <bdi><code>--audit-keep</code></bdi>." in html
+    assert "<h1>Pages related to <bdi>Deploy</bdi></h1>" in html
+    assert '<a href="/b/ops/p/deploy"><bdi>Deploy</bdi></a>' in html  # the way back, a crumb
     assert "1 related page, for version 1 of Deploy, its latest." in flat(tree(html).text())
     assert "This is not all of it" not in html and "limit=" not in html
 
@@ -262,7 +263,7 @@ def test_under_each_claim_who_wrote_its_notes_and_when_in_the_page_views_words(w
     assert f'<time datetime="{WHEN}">3 February 2099, 04:05 UTC</time>' in r.text
     # the same words as the page view says under the claim's source
     assert '<span class="writer">written by Ada</span>' in get(w, "/b/ops/p/deploy").text
-    assert '<span class="writer">written by Ada</span>' in r.text
+    assert '<span class="writer"><bdi>written by Ada</bdi></span>' in r.text
     assert "outside text" not in r.text
 
 
@@ -406,7 +407,7 @@ def test_the_view_shows_a_claim_by_what_its_answer_holds_and_never_assumes_its_t
         False,
         True,
     ]
-    assert lined["there"]["writers"] == [f"written by Ada: {filed}"]
+    assert lined["there"]["writers"] == [{"who": "written by Ada", "filed": filed}]
     assert (lined["there"]["notes"], lined["there"]["notes_more"]) == (2, 1)
     assert mention["there"]["writers"] == [] and mention["there"]["notes"] == 0
     assert (view["left_out"], view["more_href"]) == (None, None)
@@ -454,7 +455,8 @@ HOSTILE = {
     "link": '[Asked](javascript:alert(3)) and <a href="javascript:alert(4)">Asked</a>',
     "heading": "# Asked\n\nAsked\n=====\n\n- [ ] Asked",
 }
-QUOTING = {"figure", "figcaption", "strong", "a", "div", "span"}  # what a quoted claim is made of
+# What a quoted claim is made of: the page's own elements, and no other.
+QUOTING = {"figure", "figcaption", "strong", "a", "div", "span", "bdi"}
 
 
 def quoted(node: Node) -> list[Node]:
@@ -562,6 +564,79 @@ def test_a_long_claim_that_names_the_title_is_shown_as_its_answer_gives_it(w):
     wanted = "names the title" if there["part"] == "line" else "these are its first"
     assert there["says"].startswith(LONGER) and wanted in there["says"]
     assert there["link_says"] == ["Read the whole claim on Long"]
+
+
+# Text of a note is set apart from the page's own words
+
+
+RLO = "\u202e"  # a right-to-left override, which nothing in these texts closes
+ISOLATED = "\u2068[^\u2069]*\u2069"  # between a first-strong isolate and its end
+# The elements that begin a line of their own, where an override that nothing closes ends.
+BLOCKS = {"p", "li", "div", "h1", "h2", "h3", "figcaption", "td", "th", "nav", "text", "title"}
+
+
+def unisolated(html: str, mark: str = RLO) -> list[str]:
+    """Each place of a response where text holding `mark` shares its line with other words:
+    not in a <bdi>, not alone in an element that begins a line of its own (as a claim's text
+    is in the page view), and, in the document's title, not between isolate characters."""
+    found = []
+    for node in tree(html).walk():
+        for child in node.children:
+            if not isinstance(child, str) or mark not in child:
+                continue
+            at = node
+            while at is not None and at.tag != "bdi" and at.tag not in BLOCKS:
+                at = at.parent
+            if at is not None and at.tag == "bdi":
+                continue
+            if at is not None and at.tag == "title":
+                if mark not in re.sub(ISOLATED, "", at.text()):
+                    continue
+            elif at is not None and at.text().strip() == child.strip():
+                continue
+            found.append(f"<{node.tag}> {flat(child)[:40]!r}")
+    return found
+
+
+def test_every_text_of_a_note_is_set_apart_from_the_pages_own_words_for_direction(w):
+    """A term, both titles, the claims and a writer's name each hold an override that nothing
+    closes. On the related page each stands in a <bdi>, or alone in a line of its own, so
+    the page's own words after it keep their direction."""
+    eve = SimpleNamespace(writes=w.ada.view.writing_as("person", f"Eve{RLO}"))
+    note(w, f"Quill{RLO} ledger", f"Use `a{RLO}b1.cfg` here.\n", who=eve)
+    note(w, f"Lo{RLO}ng", f"Also `a{RLO}b1.cfg` there; {RLO}see the Quill ledger.\n", who=eve)
+    answer = Memory(w.ada.view, lint_gate).related("ops", "quill-ledger", RELATED_SHOWN)
+    (page,) = answer["related"]
+    assert [reason["kind"] for reason in page["why"]] == ["mentioned_by", "shares"]
+    assert RLO in answer["title"] and RLO in page["title"] and RLO in page["why"][1]["term"]
+    r = get(w, "/b/ops/p/quill-ledger/related")
+    assert r.status_code == 200 and r.text.count(RLO) >= 12
+    assert unisolated(r.text) == []
+    body = main_of(r.text)
+    assert f"Both pages state the code <bdi><code>a{RLO}b1.cfg</code></bdi>. 2 pages of" in body
+    assert (
+        f"A claim of <bdi>Lo{RLO}ng</bdi> names this page's title,"
+        f" <bdi>Quill{RLO} ledger</bdi>." in body
+    )
+    assert f'<span class="writer"><bdi>written by Eve{RLO}</bdi></span>' in body
+    # the words themselves are as they were
+    said = flat(tree(body).text())
+    assert f"Both pages state the code a{RLO}b1.cfg. 2 pages of ops hold it." in said
+    # and what the check finds when a text is not set apart: the page view's crumbs do not
+    # hold a title, so its one line of the page's own words with a title is its <title>
+    assert unisolated(f"<p>Both pages state <code>a{RLO}b</code>. 2 pages hold it.</p>") != []
+    assert unisolated(f"<div>a{RLO}b</div><p>Both state <bdi>a{RLO}b</bdi>.</p>") == []
+
+
+def test_a_related_page_with_no_page_found_sets_the_title_apart_too(w, monkeypatch):
+    note(w, f"Qu{RLO}eue", "Brook drains the queue at noon.\n")
+    none = get(w, "/b/ops/p/queue/related")
+    assert f"is related to <bdi>Qu{RLO}eue</bdi>:" in none.text and unisolated(none.text) == []
+    monkeypatch.setattr(relating, "TERMS_MAX", 0)
+    note(w, f"As{RLO}ked", "Use `a.cfg` daily.\n")
+    left = get(w, "/b/ops/p/asked/related")
+    assert f"No page related to <bdi>As{RLO}ked</bdi> was found" in left.text
+    assert unisolated(left.text) == []
 
 
 # What the read left out, and no related page

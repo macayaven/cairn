@@ -17,7 +17,18 @@ from types import SimpleNamespace
 
 import pytest
 from test_design_system_unit import tree
-from test_related_page_unit import ADMISSION, Watch, build, flat, get, main_of, note, read_alone
+from test_related_page_unit import (
+    ADMISSION,
+    RLO,
+    Watch,
+    build,
+    flat,
+    get,
+    main_of,
+    note,
+    read_alone,
+    unisolated,
+)
 
 from cairn import graph as graphs
 from cairn import relations
@@ -236,6 +247,30 @@ def test_the_view_is_made_of_the_answer_and_of_nothing_else():
     assert "never drawn" not in json.dumps(made)
 
 
+def test_every_text_of_a_note_in_the_explorers_list_is_set_apart_for_direction(w):
+    """Titles, a term, a claim's text and a note's source hold an override that nothing
+    closes: in the list under the drawing each stands in a <bdi>, in every view."""
+    note(w, f"Quill{RLO} ledger", f"Use `a{RLO}b1.cfg` here.\n")
+    note(w, f"Lo{RLO}ng", f"Also `a{RLO}b1.cfg` there; {RLO}see the Quill ledger.\n")
+    note(w, f"Sh{RLO}ort", f"Then `a{RLO}b1.cfg` again.\n")
+    w.ada.writes.add_note(
+        w.ops.id, f"A {RLO}loose note.\n", title=f"Lo{RLO}ose", source_ref=f"desk{RLO}:1"
+    )
+    related = get(w, RELATED + "short")
+    view = drawn(related.text)
+    assert list(view.nodes) == ["page:short", "page:long", "page:quill-ledger"]
+    assert view.edges[0]["code"] == [f"a{RLO}b1.cfg"]
+    assert f"shares <bdi><code>a{RLO}b1.cfg</code></bdi> with" in related.text
+    assert f"page: <bdi>Sh{RLO}ort</bdi></a>" in related.text
+    assert unisolated(related.text) == []
+    claims = get(w, "/b/ops/graph?focus=page%3Along")
+    for path in ("/b/ops/graph", "/b/ops/graph?focus=notes", RELATED + "quill-ledger"):
+        r = get(w, path)
+        assert r.status_code == 200 and RLO in main_of(r.text), path
+        assert unisolated(r.text) == [], path
+    assert RLO in main_of(claims.text) and unisolated(claims.text) == []
+
+
 # Walking from page to page
 
 
@@ -430,7 +465,7 @@ def test_a_kind_of_reason_the_view_has_no_words_for_is_said_by_its_name():
     (edge,) = related_graph(answer)["edges"]
     assert (edge["kind"], edge["reason"], edge["term"]) == ("cites same", "cites_same", "RFC 9110")
     html = render_explorer("ops", related_graph(answer), brand=None, person=None).body.decode()
-    assert "page: Deploy</a> cites same <a" in html and "<code>" not in html
+    assert "page: <bdi>Deploy</bdi></a> cites same <a" in html and "<code>" not in html
 
 
 def test_a_page_that_is_gone_and_a_project_out_of_reach_answer_as_the_other_views(w, world):

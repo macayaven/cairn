@@ -254,6 +254,29 @@ def test_the_contract_says_no_page_found_is_not_no_page_when_the_answer_is_not_c
     for said in (page, view):
         assert "is related to" not in said.split("two pages are related")[0]
         assert "This is not all of it: 1 of the page's 2 terms was not looked up." in said
-    whole = get(w, "/b/ops/p/queue/related").text  # complete, and none: said outright
+    # complete, and none: said outright
+    whole = flat(tree(get(w, "/b/ops/p/queue/related").text).text())
     assert "No page of ops is related to Queue" in whole
     assert "No page is related to the page in focus." in drawn(get(w, RELATED + "queue").text).text
+
+
+def test_the_contract_says_text_of_a_note_is_set_apart_from_the_pages_own_words(w):
+    from test_related_page_unit import RLO, unisolated
+
+    doc_says(
+        cairn.server.__doc__,
+        "Words that come from a note or name its writer (a title, a term, a writer's name)"
+        " stand in a <bdi>, and what is quoted of a claim alone in an element of its own, so an"
+        " override that nothing in them closes turns none of the page's own words.",
+    )
+    doc_says(
+        graph_routes.__doc__,
+        "In the list under the drawing, in every view, each label, a note's `source_ref` and a"
+        " relationship's term stand in a <bdi>, so that an override nothing in them closes turns"
+        " none of the page's own words.",
+    )
+    note(w, f"Quill{RLO} ledger", f"Use `a{RLO}b1.cfg` here.\n")
+    note(w, f"Lo{RLO}ng", f"Also `a{RLO}b1.cfg` there; see the Quill ledger.\n")
+    for path in ("/b/ops/p/quill-ledger/related", RELATED + "quill-ledger", "/b/ops/graph"):
+        r = get(w, path)
+        assert r.status_code == 200 and RLO in r.text and unisolated(r.text) == [], path

@@ -704,7 +704,10 @@ Web UI (server-rendered HTML)
   when left out), and any
   other is a 400 page that says so in REST's sentence; a project out of reach or a page
   that is not there is the 404 the page view gives. A parameter it does not take is
-  ignored. The page view runs no statement more for the link. No script.
+  ignored. Words that come from a note or name its writer (a title, a term, a writer's
+  name) stand in a <bdi>, and what is quoted of a claim alone in an element of its own, so
+  an override that nothing in them closes turns none of the page's own words. The page
+  view runs no statement more for the link. No script.
 - GET /setup: how agents connect: with only the URL when OAuth is on (the MCP URL, and the
   `claude mcp add --transport http cairn <url>` and `codex mcp add cairn --url <url>`
   commands; else how to turn it on), and with an API key: the MCP URL (public_url + "/mcp",

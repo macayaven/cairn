@@ -493,7 +493,8 @@ def hardening_problems(name: str, config: dict[str, Any], limits: tuple[int, int
     problems = []
     if (config.get("CapDrop") or []) != ["ALL"]:
         problems.append(f"{name} drops {config.get('CapDrop')}, not ['ALL']")
-    if (config.get("CapAdd") or []) != added:
+    # An engine answers a capability as it was given or with CAP_ before it: one name.
+    if [cap.removeprefix("CAP_") for cap in config.get("CapAdd") or []] != added:
         problems.append(f"{name} adds {config.get('CapAdd')}, not {added}")
     if (config.get("SecurityOpt") or []) != ["no-new-privileges:true"]:
         problems.append(f"{name} has security options {config.get('SecurityOpt')}")

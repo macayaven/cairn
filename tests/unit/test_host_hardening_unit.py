@@ -256,11 +256,23 @@ def test_the_rehearsal_accepts_a_container_started_as_compose_does():
     assert rehearse.hardening_problems("caddy", caddy, (256, 256)) == []
 
 
+def test_the_rehearsal_reads_a_capability_as_either_docker_writes_it():
+    """The Docker engine of GitHub's runner answers `CAP_NET_BIND_SERVICE` for
+    `--cap-add NET_BIND_SERVICE`; an engine may also answer the name as it was given. The
+    rehearsal's first run with this check on GitHub refused Caddy for the prefix alone and,
+    having no key yet, failed eight more checks with 401."""
+    caddy = host_config(CapAdd=["CAP_NET_BIND_SERVICE"])
+    assert rehearse.hardening_problems("caddy", caddy, (256, 256)) == []
+
+
 @pytest.mark.parametrize(
     ("name", "changes", "said"),
     [
         ("cairn", {"CapDrop": None}, "drops"),
         ("cairn", {"CapAdd": ["NET_BIND_SERVICE"]}, "adds"),
+        ("cairn", {"CapAdd": ["CAP_NET_BIND_SERVICE"]}, "adds"),
+        ("caddy", {"CapAdd": ["CAP_NET_BIND_SERVICE", "CAP_CHOWN"]}, "adds"),
+        ("caddy", {"CapAdd": ["CAP_NET_ADMIN"]}, "adds"),
         ("caddy", {"CapAdd": None}, "adds"),
         ("caddy", {"CapAdd": ["NET_BIND_SERVICE", "CHOWN"]}, "adds"),
         ("litestream", {"SecurityOpt": None}, "security options"),

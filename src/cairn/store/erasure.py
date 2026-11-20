@@ -443,10 +443,13 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     No number of renders is promised. A render that names a claim takes that claim, so the
     loop ends, and no render takes more than the two kinds above, however many came before
     it: that is all that holds by construction. On the generated pages a forget rendered
-    CLOSERS_MAX + 2 times at most (tests/unit/test_generated_forget_fences_unit.py), and
-    two things are known to take more, on ordinary notes: a new title can uncover a fence
-    the old one kept apart (nineteen renders: test_forget_changed_title_unit.py), and a
-    long line after many claims lets few be asked in a render (twenty-two:
+    CLOSERS_MAX + 2 times at most (tests/unit/test_generated_forget_fences_unit.py). Three
+    things are known to take more, on ordinary notes, and each is a test that states its
+    count: a new title uncovers a fence the old one kept apart (nineteen renders:
+    test_forget_changed_title_unit.py); the claims of a run are each the last of the note
+    that gives the title then, though every note spells it alike (a render for each claim,
+    nineteen: the same file), which is what holding to the note and not to the spelling
+    costs; and a long line after many claims lets few be asked in a render (twenty-two:
     test_forget_siblings_unit.py).
     It reads the project's page versions, never the rest of the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store

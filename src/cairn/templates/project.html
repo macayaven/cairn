@@ -5,7 +5,7 @@
 {{ crumbs((("/", "Projects"),)) }}
 <div class="heading-row">
   <h1>{{ project.name }}</h1>
-  <a class="button" href="/b/{{ project.name|seg }}/new">Write a note</a>
+  {% if can_write %}<a class="button" href="/b/{{ project.name|seg }}/new">Write a note</a>{% endif %}
 </div>
 {% if project.description %}<p class="lede">{{ project.description }}</p>{% endif %}
 <p class="row">{% if sharing and sharing.startswith("Private") %}<span class="tag is-private">private</span> {% endif %}<span class="meta">{% if sharing %}<strong class="sharing">{{ sharing }}</strong>.{% else %}Every member reads and writes.{% endif %}</span></p>

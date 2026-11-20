@@ -17,7 +17,7 @@ from cairn.store.models import shown_metrics
 from cairn.web.auth import _memory
 from cairn.web.components import numbered_lines
 from cairn.web.rest import _whole_number
-from cairn.web.sharing import sharing_words, words_for
+from cairn.web.sharing import words_for
 from cairn.web.ui.common import _ui
 
 UI_HITS = 30
@@ -204,6 +204,16 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
         target = memory.project(request.path_params["project"])
         after = request.query_params.get("after") or None
         part = memory.pages_part(target, None, after, WEB_PAGES_AT_ONCE)
+        try:
+            shared = memory.store.project_sharing(target.id)
+        except KeyError:
+            shared = None
+        rule = _sees_rule(memory, target)
+        can_write = (
+            rule
+            or (shared is not None and shared.everyone == "write")
+            or any(p.id == target.id for p in memory.store.writable_projects())
+        )
         return _ui(
             request,
             "project.html",
@@ -213,9 +223,10 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
             pages_total=part.get("pages_total", len(part["pages"])),
             pages_next=part.get("pages_next"),
             after=after,
-            rule=_sees_rule(memory, target),
+            rule=rule,
             erase=memory.may_erase(target),
-            sharing=sharing_words(memory, target.id),
+            can_write=can_write,
+            sharing=words_for(shared, memory.store.user_id),
             # M4, Privacy 4: "allowed", "never" or None (nobody decided), in one read;
             # whoever sees `rule` may change it
             models=memory.store.models_choices([target.id]).get(target.id),

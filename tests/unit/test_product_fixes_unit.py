@@ -156,3 +156,73 @@ def test_static_graph_scales_with_viewbox_avoids_crossing_labels_and_omits_blank
         encoding="utf-8"
     )
     assert ".graph-diagram > svg" in css and "max-width: 100%" in css and "height: auto" in css
+
+
+def test_read_only_project_hides_write_cta_and_returns_403_on_composer(tmp_path):
+    from cookie_names import session_cookie
+
+    store = Store(tmp_path / "cairn.db")
+    try:
+        ada_s = store.sign_in(
+            "sso",
+            "ada",
+            "ada@example.test",
+            "Ada",
+            issuer="https://id.example.test",
+            join="default",
+        )
+        sam_s = store.sign_in(
+            "sso",
+            "sam",
+            "sam@example.test",
+            "Sam",
+            issuer="https://id.example.test",
+            join="default",
+        )
+        ada = store.for_account(ada_s.account_id, ada_s.user.id)
+        handbook_p = ada.create_project("handbook", everyone="read")
+        ada.create_project("team-ops", everyone="write")
+        ada_only = ada.create_project("ada-only", everyone="none")
+        shared_ro = ada.create_project("shared-ro", everyone="none")
+        ada.set_project_access(shared_ro.id, people={sam_s.user.id: "read"})
+
+        with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+            cookie_name = session_cookie("https")
+
+            # Member Sam on read-only handbook: no CTA, and GET /new returns 403
+            client.cookies.set(cookie_name, sam_s.token)
+            handbook = client.get("/b/handbook")
+            assert handbook.status_code == 200
+            assert "Write a note" not in handbook.text
+            assert "/b/handbook/new" not in handbook.text
+
+            new_ro = client.get("/b/handbook/new")
+            assert new_ro.status_code == 403
+            assert "This project is read-only for you: you can read it but not write to it." in (
+                new_ro.text
+            )
+            assert "<textarea" not in new_ro.text
+
+            # Member Sam on private project shared as read-only: no CTA, 403 on GET /new
+            assert "Write a note" not in client.get("/b/shared-ro").text
+            assert client.get("/b/shared-ro/new").status_code == 403
+
+            # Member Sam on writable team-ops: CTA shown and composer opens 200
+            ops = client.get("/b/team-ops")
+            assert ops.status_code == 200 and 'href="/b/team-ops/new"' in ops.text
+            assert client.get("/b/team-ops/new").status_code == 200
+
+            # Member Sam on private ada-only: still 404, never 403
+            assert client.get("/b/ada-only/new").status_code == 404
+
+            # Granting Sam explicit write on handbook restores CTA and 200 on GET /new
+            ada.set_project_access(handbook_p.id, people={sam_s.user.id: "write"})
+            assert 'href="/b/handbook/new"' in client.get("/b/handbook").text
+            assert client.get("/b/handbook/new").status_code == 200
+
+            # Owner Ada on private project: CTA shown and composer opens 200
+            client.cookies.set(cookie_name, ada_s.token)
+            assert 'href="/b/ada-only/new"' in client.get(f"/b/{ada_only.name}").text
+            assert client.get("/b/ada-only/new").status_code == 200
+    finally:
+        store.close()

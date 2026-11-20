@@ -33,6 +33,7 @@ from cairn.memory import (
     BadRequest,
     Conflict,
     FiledOnce,
+    Forbidden,
     Memory,
     NoteForgotten,
     OverQuota,
@@ -40,7 +41,7 @@ from cairn.memory import (
     Refused,
 )
 from cairn.sources import near_miss, withheld_forms
-from cairn.store import Project
+from cairn.store import READ_ONLY_PROJECT, Project
 from cairn.web.auth import _memory
 from cairn.web.brand import Brand, product_of
 from cairn.web.sharing import sharing_words
@@ -234,6 +235,8 @@ def compose_routes() -> list[Route]:
     def project_composer(request: Request) -> Response:
         memory = _memory(request)
         target = memory.project(request.path_params["project"])
+        if not any(p.id == target.id for p in memory.store.writable_projects()):
+            raise Forbidden(READ_ONLY_PROJECT)
         return _composer(memory, brand=brand_of(request), project=target, projects=None, values={})
 
     async def project_note(request: Request) -> Response:

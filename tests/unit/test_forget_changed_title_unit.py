@@ -12,11 +12,14 @@ ways, a claim left that the plain loop keeps.
 
 Now what would leave with the claim named is checked against each body the plain loop
 would render on the way: the claims leave in the order it would name them, and each must be
-named under the title the question was asked under (its text: another note that spells it
-the same changes nothing) with the blocks up to the one that follows them as asked. Where
-the title changes at a step, the claims before that step leave together and the next render
-starts from there (decision 1 of the eighth round, RT1's finding: holding to the note and not
-to its spelling cost a render for each claim of a run stored in reverse).
+named in a body written as the one the question was asked of below its title line, with the
+blocks up to the one that follows them as asked. A new title changes more than that line
+only where the first heading over a claim left says the old title or the new one. Where a
+step changes more, the claims before that step leave together and the next render starts
+from there (decision 1 of the eighth round, RT1's finding: holding to the note and not to
+its spelling cost a render for each claim of a run stored in reverse; and the rule loosened
+after it, since holding to the spelling cost as much where the spelling alternates). The
+title line alone changing: test_forget_title_line_unit.py.
 
 The oldest note is filed after its neighbours here as two writers would interleave: its
 gate files the others, and its own save, found stale, is made again. The plain loop beside
@@ -42,8 +45,10 @@ TITLED = (  # the guide's sentence that the tests of both its halves run
     "A forget titles the page by the oldest note still on it, and a heading that says the title"
     " is not written, so taking claims can change where the page writes the others: of the"
     " claims above, only as many leave at once as would each be at fault in turn with the"
-    " page's title unchanged, another note that spells it the same way changing nothing, and"
-    " the forget reads the page again from the first claim whose going would change it."
+    " page written the same below its title line, and the forget reads the page again from"
+    " the first claim whose going would change it. A new title changes more than that line"
+    " only where the first heading over a claim still on the page says the old title or the"
+    " new one."
 )
 
 
@@ -143,11 +148,12 @@ def test_the_claim_before_stays_when_taking_the_one_named_changes_the_title(desk
     assert "\n## Ops\n\n      Tail.\n" in after.body
 
 
-def test_the_claims_before_leave_in_the_next_render_when_the_new_title_changes_nothing_else(desk):
+def test_the_claims_before_leave_in_the_same_render_when_the_new_title_changes_nothing_else(desk):
     """One step past: the tail has no heading, so the body under OPS is the body under Ops
-    but for its first line. The claim named still leaves alone, since the title is not the
-    one the question was asked under; the next render names the claim before it and asks
-    again, and the five before leave together. Three renders, and the plain loop's claims."""
+    but for its first line, which the parser reads as one heading whatever it says. The
+    five before leave with the claim named, in the first render, and a second finds
+    nothing: two renders, and the plain loop's claims. (Three while the rule held to the
+    title's text: the claim named left alone, then the five.)"""
     before = [f"    - ~~~\n      Brook keeps almanac {n}." for n in range(5)]
 
     def others():
@@ -161,7 +167,7 @@ def test_the_claims_before_leave_in_the_next_render_when_the_new_title_changes_n
     filed(desk, TAIL)
     named, title, claims = plain_loop(desk.store, separator)
     assert named == [("Ops", NAMED), *(("OPS", text) for text in reversed(before))]
-    assert forgotten(desk, separator) == ["Ops", "OPS", "OPS"]
+    assert forgotten(desk, separator) == ["Ops", "OPS"]
     after = page(desk.store)
     assert (after.title, after.claims) == (title, claims)
 
@@ -193,15 +199,16 @@ def test_a_title_that_would_come_back_does_not_let_the_claim_before_leave(desk):
 SIX = [f"    - ~~~\n      Brook keeps almanac {n}." for n in range(6)]  # the last is named first
 
 
-@pytest.mark.parametrize(("oldest", "titles"), [(5, "ABB"), (2, "ABB"), (0, "AB")])
+@pytest.mark.parametrize(("oldest", "titles"), [(5, "AB"), (2, "AB"), (0, "AB")])
 def test_the_nearest_claims_that_leave_the_body_as_asked_go_together(desk, oldest, titles):
     """One step past: six siblings, one of them the oldest note's only claim, and no heading
     that says the title. Not all or none: of the claims before the one named, the nearest
-    leave with it for as far as the plain loop names them under the old title, the oldest
-    note's claim included, since the plain loop names it while it still gives the title;
-    the rest leave under the new title. Two renders or three (three or four while the rule
-    held to the note after the whole batch), and the plain loop's claims, wherever in the
-    run the claim stands."""
+    leave with it for as far as the plain loop names them in a body written the same below
+    its title. Here no heading says either spelling, so the new title that the oldest
+    note's claim takes with it changes the title line alone, and all six leave in the first
+    render: two renders (three while the rule held to the title's text, four while it held
+    to the note after the whole batch), and the plain loop's claims, wherever in the run the
+    claim stands."""
 
     def others():
         nonlocal separator
@@ -353,12 +360,18 @@ def test_past_the_ceiling_a_later_claim_stays_when_taking_the_one_named_changes_
     says("security", CHECKS, TITLED)
 
 
-def test_past_the_ceiling_only_as_many_later_claims_leave_as_keep_the_title(desk):
+@pytest.mark.parametrize("aside", [True, False], ids=["a heading says Ops", "no heading"])
+def test_past_the_ceiling_only_as_many_later_claims_leave_as_keep_the_page_below_its_title(
+    desk, aside
+):
     """And with the claim named another note's: the oldest note holds three indented
     examples after the list, each closed where it stands. Past the ceiling they are later
-    claims that can open a fence; all three gone, another note would give the title. So
-    the two nearest leave and the third stays, with the title; the next render finds
-    nothing. The plain loop keeps all three: the two are the declared class."""
+    claims that can open a fence; all three gone, another note would give the title, OPS.
+    With an aside under `## Ops` that changes more than the title line (the aside is written
+    under its heading, not with none), so the two nearest leave and the third stays, with
+    the title; the next render finds nothing. With no such heading the new title changes
+    that line alone, and all three leave (two while the rule held to the title's text). The
+    plain loop keeps all three: those that leave are the declared class."""
     examples = [f"    ```text\n    Ada keeps gate {n}.\n    ```" for n in range(3)]
 
     def others():
@@ -367,13 +380,17 @@ def test_past_the_ceiling_only_as_many_later_claims_leave_as_keep_the_title(desk
 
     separator = None
     filed(desk, "\n\n".join(examples), "Ops", first=others)
+    if aside:
+        filed(desk, "## Ops\n\nAn aside.")
     named, title, claims = plain_loop(desk.store, separator)
     assert len(named) == CLOSERS_MAX + 1 and title == "Ops"
     assert set(examples) <= {claim.text for claim in claims}
-    assert forgotten(desk, separator) == ["Ops"] * (CLOSERS_MAX + 2)
+    left = examples[2:] if aside else []
+    titles = ["Ops"] * (CLOSERS_MAX + 1) + (["Ops"] if left else ["OPS"])
+    assert forgotten(desk, separator) == titles
     after = page(desk.store)
-    assert after.title == "Ops"
-    assert [c.text for c in claims if c not in after.claims] == examples[:2]
+    assert after.title == titles[-1]
+    assert [c.text for c in claims if c not in after.claims] == examples[: 3 - len(left)]
     says("security", CHECKS, TITLED)
 
 

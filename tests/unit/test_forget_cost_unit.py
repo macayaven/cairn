@@ -76,6 +76,20 @@ def eighteen() -> Plan:
     )
 
 
+def alternating(count: int, headings: list[str]) -> Plan:
+    """`count` siblings, each its own note, the nearest the tail the oldest, spelling the
+    topic Ops and OPS in turn, so that the title changes at every step of the plain loop;
+    then the paragraph at the margin, the tail, and an aside under each of `headings`,
+    filed last so that no aside gives the title (test_forget_title_line_unit.py)."""
+    inner = older()
+    for n in range(count):
+        inner = [Note(f"s{n}", f"    - ~~~\n      sample {n}", ("Ops", "OPS")[n % 2], inner=inner)]
+    asides = [Note(f"aside{n}", f"## {h}\n\nAn aside {n}.", "Ops") for n, h in enumerate(headings)]
+    return Plan(
+        [*inner, Note("sep", "Between.", "Ops"), Note("tail", "        End.", "Ops"), *asides], []
+    )
+
+
 OPEN, SHUT = "    - ~~~\n      sample {n}", "    - ~~~\n      sample {n}\n      ~~~"
 
 
@@ -111,6 +125,7 @@ PAGES = {
     "a thousand siblings, a line of 40,000": lambda: siblings(1000, "        " + "tail " * 8000),
     "eighteen notes and an example after the tail": eighteen,
     "open and closed items behind a prefix, before a long opener": mixed,
+    "a hundred notes spelled Ops and OPS in turn": lambda: alternating(100, []),
 }
 
 
@@ -143,6 +158,42 @@ def test_the_testers_pages_cost_two_renders(name):
 # the tester's generated test runs 0:200; 199 is the one of 0:400 that renders once more than
 # the plain loop (nineteen against eighteen, past sixteen named)
 SEEDS = [199, *range(200, 300)]
+
+WORST = (100, 300)  # notes asserted here; a thousand was measured only (the docstring below)
+
+
+@pytest.mark.parametrize("count", WORST)
+def test_the_worst_case_renders_once_a_claim_as_the_plain_loop_does(count):
+    """The stated worst case: the title alternates at every step and a heading says one of
+    its spellings, so that the body really differs at each step (the aside's heading is
+    written, then left out) and the plain loop renders once for each sibling. The forget
+    renders as often, and no more. The plain loop is run beside it on a hundred.
+
+    Measured once on one machine (the forget call, the middle of three runs on the page
+    as filed; counts are asserted, never time): a hundred notes, 101 renders, 1,079 bodies
+    of parser input, 3.0 s; three hundred, 301, 2,948 bodies, 18 s; a thousand, 1,001,
+    9,519 bodies, 100 s (98 to 107 s), and nine minutes to file the page."""
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 20_000))
+    run = Run(alternating(count, ["Ops"]), check_restore=False)
+    try:
+        assert set(run.status.values()) == {"saved"}, run.status
+        store, pid = run.store, run.pid
+        before = [claim.text for claim in store.get_page(pid, "ops").claims]
+        want = [text for text in before if "sample" not in text and text != "Between."]
+        plain = count + 1  # one sibling a render, and one that finds nothing
+        if count == 100:
+            loop = expected(store, pid, run.ids["sep"])["ops"]
+            assert (len(loop.titles), [claim.text for claim in loop.kept]) == (plain, want)
+        watch = Watch()
+        with watch.on():
+            Memory(store, lint_gate).forget("alpha", run.ids["sep"])
+        assert [claim.text for claim in store.get_page(pid, "ops").claims] == want
+        body = max(len(rendered[3]) for rendered in watch.renders)
+        assert len(watch.renders) == plain  # within RENDERS_OVER of it: exactly it
+        assert sum(watch.inputs) <= PER_RENDER * len(watch.renders) * body
+        assert max(watch.inputs) <= 2 * body
+    finally:
+        run.close()
 
 
 def test_generated_forgets_cost_what_the_plain_loop_costs():

@@ -38,6 +38,7 @@ removes; the events themselves stay.
 import hashlib
 import json
 import sqlite3
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 
 from cairn.spans import (
@@ -438,13 +439,15 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
 
     Both kinds are chosen on the body just rendered, and the page is titled again by the
     claims left: a claim under a heading that says the title is written with no heading,
-    so another title is another body. They leave in the order the plain rule would name
-    them, nearest first, and only as far as it would name each under this render's title
-    (`_with_it`; sixth report, must-fix 1): the title's text after each claim that leaves
-    is read once for all of them (`_Titles`), another note that spells it the same is no
-    change, and where it changes at a step the claims before that step leave and the next
-    render starts from there (RT1: holding to the note that gave the title, and not to its
-    spelling, cost a render for each claim of a run stored in reverse).
+    so another title can be another body. They leave in the order the plain rule would name
+    them, nearest first, and only as far as it would name each in a body written as this
+    render's below its title line (`_with_it`; sixth report, must-fix 1): the title after
+    each claim that leaves, and the first heading of each claim, are read once for all of
+    them (`_Titles`); a new title changes more than its line only where the first heading
+    of a claim still on the page says it or this render's title, and where it does at a
+    step the claims before that step leave and the next render starts from there (RT1:
+    holding to the note that gave the title cost a render for each claim of a run stored in
+    reverse, and holding to its spelling a render a claim where the spelling alternates).
 
     What it costs. Until a forget has named CLOSERS_MAX claims, each render is one the plain
     rule makes too and takes at least the claim it names, so a forget renders no more often
@@ -457,7 +460,10 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     most. On the pages tried a forget rendered at most once more than the plain rule, and
     that only past CLOSERS_MAX, and handed the parser at most 25 characters for each
     character of its body in each render (tests/unit/test_forget_cost_unit.py): counts
-    from those pages, not bounds.
+    from those pages, not bounds. A forget still renders once a claim where the plain rule
+    must: where the title changes at every step and a first heading says one of its
+    spellings, so that the body differs at each step (a thousand notes: 1,001 renders, as
+    in the plain rule, and a minute and a half or more on the machine measured).
     It reads the project's page versions, never the rest of the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
 
@@ -486,7 +492,7 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
         cited = [i for claim in claims for i in claim.span_ids if i not in gone]
         spans = _held_spans(con, project_id, cited)
         kept, refused, body, renders = kept_claims(claims, gone, spans), 0, "", 0
-        titles = _Titles(con, kept, slug)  # the title the page has as its claims leave
+        titles = _Titles(con, kept, spans, slug)  # the title the page has as claims leave
         while kept:  # until the claims left are a version an import takes: once, but for a
             # fence that the claims before it open, where each time the first such claim leaves
             title = titles.of(kept)
@@ -533,19 +539,22 @@ def _with_it(
     each must be named in the body this one is after the claims before it in the order
     have left (sixth report, must-fix 1; RT1). The page is titled again by the claims left,
     and a claim under a heading that says the title is written with no heading: with
-    another title the body writes its claims elsewhere, and a heading may stand where a
-    fence was to reach. With the same title it writes them where it did: the claims before
-    the one named stand where they stood, the block that follows them is the one asked
-    about (claims next to one another with no heading between them have one section, so
-    the headings written after them are the same whichever of them is last), and the
-    closers before them are the same. So what is checked at each step is the title's text
-    (`_Titles.steady`: another note that spells it the same is no change, and a title that
-    changes and comes back is a change at the step where it changed), read once for all the
-    claims, and the block that follows is laid out once. Where the title changes at a step,
-    the claims before that step leave and the next render starts from there; the claim
-    named leaves alone where its own going changes it. The first kind leaves only as far as
-    the title holds, and the second only when all the first did, so that what follows the
-    claims before is the body's."""
+    another title the body can write its claims elsewhere, and a heading may stand where a
+    fence was to reach. Where every claim keeps its section it writes them where it did:
+    the claims before the one named stand where they stood, the block that follows them is
+    the one asked about (claims next to one another with no heading between them have one
+    section, so the headings written after them are the same whichever of them is last),
+    and the closers before them are the same; the title line alone may differ, and it is
+    one heading to the parser whatever it says. Every claim keeps its section when the
+    title's text is the same (another note that spells it the same is no change), and when
+    no claim left has a first heading that says this render's title or the new one
+    (`_Titles.steady`, which compares with this render's title at each step, so a title
+    that changes and comes back is a change at the step where it changed). That is read
+    once for all the claims, and the block that follows is laid out once. Where a step
+    changes a section, the claims before that step leave and the next render starts from
+    there; the claim named leaves alone where its own going does. The first kind leaves
+    only as far as the sections hold, and the second only when all the first did, so that
+    what follows the claims before is the body's."""
     from cairn.compiler import _blocks, heading_text, section_headings  # it builds on the store
 
     def laid_out(claims: Sequence[Claim]) -> list[tuple[str, Claim | None]]:
@@ -578,9 +587,22 @@ class _Titles:
     oldest note (in the order notes were stored) that one of the claims left cites, which
     is what a page made by that note alone is titled (cairn.compiler.compile_note), else
     the page's slug. Read once for all the page's claims, in one query, never once a render
-    or a step."""
+    or a step. And each claim's first heading, as the body takes it (compiler._blocks: the
+    heading path of the first span it cites that is held), which is all of a claim that a
+    title is compared with (compiler.section_headings)."""
 
-    def __init__(self, con: sqlite3.Connection, claims: Sequence[Claim], slug: str) -> None:
+    def __init__(
+        self,
+        con: sqlite3.Connection,
+        claims: Sequence[Claim],
+        spans: Mapping[str, Span],
+        slug: str,
+    ) -> None:
+        self._head = {  # each claim's first heading, None for a claim with none
+            id(claim): next((spans[i].heading_path for i in claim.span_ids if i in spans), ())[:1]
+            or None
+            for claim in claims
+        }
         cited = [i for claim in claims for i in claim.span_ids]
         rows = con.execute(
             "SELECT spans.id, notes.seq, COALESCE(NULLIF(notes.topic, ''), notes.title)"
@@ -604,19 +626,28 @@ class _Titles:
 
     def steady(self, claims: Sequence[Claim], leaving: Sequence[Claim], title: str) -> int:
         """How many of `leaving` (claims of `claims`), taken in their order, can leave one
-        after another with the page titled `title` after each: the largest m such that
-        `claims` without the first j of `leaving` are titled `title` for every j up to m.
-        The same text from another note is no change. One sort, then a step for each."""
+        after another with the page written the same below its title line as when titled
+        `title`: the largest m such that, for every j up to m, `claims` without the first j
+        of `leaving` are titled `title`, or by a text that no first heading of theirs says
+        and `title` is not said by one either. A claim's section is its heading path less a
+        first heading that says the title, compared as stored (compiler.section_headings);
+        where neither title is such a heading every claim keeps its section, so the blocks
+        are the same and in the same order, and the bodies differ in the title line alone,
+        one heading to the parser whatever it says. The same text from another note is no
+        change. One sort and one count, then a step for each."""
         place = {id(claim): n for n, claim in enumerate(claims)}
         ranked = sorted((o[0], n) for n, c in enumerate(claims) if (o := self._oldest[id(c)]))
+        heads = Counter(self._head[id(claim)] for claim in claims)  # of the claims not gone
         gone: set[int] = set()
         first = 0  # the oldest of `ranked` not gone
         for count, claim in enumerate(leaving):
             gone.add(place[id(claim)])
+            heads[self._head[id(claim)]] -= 1
             while first < len(ranked) and ranked[first][1] in gone:
                 first += 1
             oldest = self._oldest[id(claims[ranked[first][1]])] if first < len(ranked) else None
-            if self._text(oldest) != title:
+            now = self._text(oldest)
+            if now != title and (heads[(now,)] or heads[(title,)]):
                 return count
         return len(leaving)
 
@@ -626,9 +657,9 @@ def _before_it(
 ) -> set[int]:
     """Which blocks directly before the block at `at`, the one `body` leaves to run on, leave
     with it: those the plain loop would name one after another, a render each, the nearest
-    `most` of them at most (_with_it: those it would name under this title). `blocks` are
-    the body's (compiler._blocks, each claim's text as given), `line` the first line of the
-    block that will follow them.
+    `most` of them at most (_with_it: those it would name with the page written the same
+    below its title). `blocks` are the body's (compiler._blocks, each claim's text as
+    given), `line` the first line of the block that will follow them.
 
     Why any would: a fence with no closing line ends where its list item ends. The claim
     before the one named may hold such a fence, ended only because the claim named began

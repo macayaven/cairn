@@ -112,7 +112,7 @@ once (cairn.store.ranking.found); `searched` words them, and nothing else does: 
 /api/search and the `recall` tool answer this dict, and the search page shows its `said`.
 
 Related pages (KG1; the rules are cairn.relations, the read cairn.store.relating).
-`related(project, slug, limit=8)` answers {"project", "page", "title", "version", "related",
+`related(project, slug, limit=5)` answers {"project", "page", "title", "version", "related",
 "searched"}: the pages of the project most related to the page, best first, at most `limit`
 (a whole number of 1 to relations.RELATED_MAX, any other refused, never cut), each as
 {"page", "title", "version", "why", "more"}. `why` holds at most relations.WHY_MAX reasons,
@@ -140,7 +140,7 @@ relations.WHY_MAX reasons, each a term of relations.TERM_MAX characters at most 
 claims of TEXT_MAX and LINE_MAX characters, PASSAGES_MAX passages and WRITTEN_BY_MAX
 writers. The largest answer they allow at `limit` 20 is 353,924 bytes over REST and 468,625
 over MCP for text of one byte a character, and 1,466,924 and 1,804,225 whatever the text
-holds; at the default `limit` of 8, 141,944 and 187,945, and 587,744 and 722,905
+holds; at the default `limit` of 5, 88,949 and 117,775, and 367,949 and 452,575
 (tests/unit/test_related_size_unit.py builds that answer from the constants, and checks
 answers made from claims of 322,320 characters against it field by field). No answer shows
 a weight.
@@ -170,7 +170,7 @@ from cairn.compiler import (
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
 from cairn.plans import Plan, Plans, limit_sentence
-from cairn.relations import PASSAGES_MAX, RELATED_MAX, SHARES, Reason
+from cairn.relations import PASSAGES_MAX, RELATED_DEFAULT, RELATED_MAX, SHARES, Reason
 from cairn.sources import KINDS as SOURCE_KINDS
 from cairn.spans import Span, chunk
 from cairn.store import (
@@ -1525,7 +1525,7 @@ class Memory:
             answers.append(answer)
         return {"hits": answers, "searched": searched(found.searched)}
 
-    def related(self, project: str, slug: str, limit: int = 8) -> dict[str, Any]:
+    def related(self, project: str, slug: str, limit: int = RELATED_DEFAULT) -> dict[str, Any]:
         """The pages of the project most related to its page `slug`, each with why and the
         claims it rests on, and what the read left out (the module's docstring, Related
         pages). Every claim says who wrote what it cites (A1), from the store's one read

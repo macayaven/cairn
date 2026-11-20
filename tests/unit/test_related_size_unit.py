@@ -50,13 +50,13 @@ TABLE = 322_320  # characters of the largest claim measured: this repository's t
 # The numbers stated: the most bytes an answer takes, by surface and limit, for any text and
 # for text of one byte a character (plain English). Each is a size of `largest`.
 STATED = {
-    ("rest", 8, "any text"): 587_744,
+    ("rest", 5, "any text"): 367_949,
     ("rest", 20, "any text"): 1_466_924,
-    ("mcp", 8, "any text"): 722_905,
+    ("mcp", 5, "any text"): 452_575,
     ("mcp", 20, "any text"): 1_804_225,
-    ("rest", 8, "plain text"): 141_944,
+    ("rest", 5, "plain text"): 88_949,
     ("rest", 20, "plain text"): 353_924,
-    ("mcp", 8, "plain text"): 187_945,
+    ("mcp", 5, "plain text"): 117_775,
     ("mcp", 20, "plain text"): 468_625,
 }
 
@@ -242,7 +242,7 @@ def test_the_stated_numbers_are_the_size_of_the_largest_answer_the_constants_all
     worked = {
         (surface, limit, text): SENT[surface](largest(limit, character))
         for surface in ("rest", "mcp")
-        for limit in (8, relations.RELATED_MAX)
+        for limit in (relations.RELATED_DEFAULT, relations.RELATED_MAX)
         for text, character in (("any text", COSTLIEST), ("plain text", "a"))
     }
     assert worked == STATED
@@ -250,12 +250,12 @@ def test_the_stated_numbers_are_the_size_of_the_largest_answer_the_constants_all
     assert (
         "The largest answer they allow at `limit` 20 is 353,924 bytes over REST and 468,625"
         " over MCP for text of one byte a character, and 1,466,924 and 1,804,225 whatever the"
-        " text holds; at the default `limit` of 8, 141,944 and 187,945, and 587,744 and"
-        " 722,905 ("
+        " text holds; at the default `limit` of 5, 88,949 and 117,775, and 367,949 and"
+        " 452,575 ("
     ) in said
     for number in STATED.values():
         assert f"{number:,}" in said
-    assert (relations.RELATED_MAX, relations.WHY_MAX) == (20, 3)
+    assert (relations.RELATED_DEFAULT, relations.RELATED_MAX, relations.WHY_MAX) == (5, 20, 3)
     assert (relations.TEXT_MAX, relations.LINE_MAX, relations.TERM_MAX) == (600, 400, 200)
     assert (relations.PASSAGES_MAX, WRITTEN_BY_MAX, ACTOR_NAME_MAX) == (8, 3, 200)
 
@@ -373,9 +373,9 @@ def test_as_shipped_the_bytes_read_stop_at_three_such_claims_and_the_answer_says
     }
     assert within(answer, largest(20, "a")) == []
     # asked of one of the others, whose one candidate is the first page's claim: complete
-    back = both(tables, "page-00", 8)
+    back = both(tables, "page-00", 5)
     assert back["searched"]["complete"] is True and len(back["related"]) == 1
-    assert within(back, largest(8, "a")) == []
+    assert within(back, largest(5, "a")) == []
 
 
 # The largest answer the shipped bounds reach
@@ -396,7 +396,7 @@ def long_claim(lead: str, filler: str) -> str:
         ("any text", "\U0001f600"),  # four
     ],
 )
-@pytest.mark.parametrize("limit", [8, 20])
+@pytest.mark.parametrize("limit", [5, 20])
 def test_the_largest_answer_made_through_the_product_is_within_the_largest_allowed(
     served, kind, filler, limit
 ):
@@ -443,11 +443,11 @@ def test_claims_that_mention_the_page_with_its_title_spread_wide_are_within_the_
     apart = "Quill" + " \u2014" * 300 + " ledger"
     for page in range(relations.COMMON):
         note(served, f"Page {page}", "Ada waits. " * 60 + f"On day {page} she opens the {apart}.\n")
-    answer = both(served, "quill-ledger", 8)
+    answer = both(served, "quill-ledger", 5)
     assert len(answer["related"]) == relations.COMMON
     for reason, claim in sides(answer):
         assert reason["kind"] == "mentioned_by" and claim["text_cut"] is True
         assert (claim["line"], claim["line_cut"]) == (apart[: relations.LINE_MAX], True)
-    assert within(answer, largest(8, "a")) == []
+    assert within(answer, largest(5, "a")) == []
     for surface, sent in SENT.items():
-        assert sent(answer) <= STATED[surface, 8, "any text"]
+        assert sent(answer) <= STATED[surface, 5, "any text"]

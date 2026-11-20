@@ -180,9 +180,26 @@ def test_limit_takes_the_best_and_the_answer_counts_the_pages_left_out(env):
     assert [page["page"] for page in found["related"]] == ["two"]
     assert found["searched"]["pages_left_out"] == 1 and found["searched"]["complete"] is False
     assert rest(env, "asked", "?limit=1").json() == found
-    eight = answer(env.client, env.key, "related", project="ops", slug="asked")
-    assert [page["page"] for page in eight["related"]] == ["two", "one"]
-    assert eight["searched"]["complete"] is True and rest(env, "asked").json() == eight
+    both = answer(env.client, env.key, "related", project="ops", slug="asked")
+    assert [page["page"] for page in both["related"]] == ["two", "one"]
+    assert both["searched"]["complete"] is True and rest(env, "asked").json() == both
+
+
+def test_five_pages_are_given_when_no_limit_is_asked_for(env):
+    """The default, relations.RELATED_DEFAULT, over MCP, over REST and of Memory.related:
+    of seven related pages the best five, and the two left out counted."""
+    terms = [f"`t{n}.cfg`" for n in range(7)]
+    note(env, "Asked", "Use " + ", ".join(terms) + ".\n")
+    for n, term in enumerate(terms):
+        note(env, f"Page {n}", f"Brook sets {term}.\n")
+    found = answer(env.client, env.key, "related", project="ops", slug="asked")
+    assert [page["page"] for page in found["related"]] == [f"page-{n}" for n in range(5)]
+    assert found["searched"]["pages_left_out"] == 2 and found["searched"]["complete"] is False
+    assert rest(env, "asked").json() == found == rest(env, "asked", "?limit=5").json()
+    assert Memory(env.store, lint_gate).related("ops", "asked") == found
+    assert len(env.store.related_pages(env.ops.id, "asked").pages) == 5  # and the store's own
+    six = answer(env.client, env.key, "related", project="ops", slug="asked", limit=6)
+    assert len(six["related"]) == 6 and six["searched"]["pages_left_out"] == 1
 
 
 def test_a_term_whose_claims_were_not_all_read_gives_no_reason_and_the_answer_counts_them(
@@ -564,7 +581,8 @@ def test_the_tool_reads_only_and_takes_a_project_a_page_and_a_limit():
     assert list(schema["properties"]) == ["project", "slug", "limit"]
     assert schema["required"] == ["project", "slug"]
     limit = schema["properties"]["limit"]
-    assert (limit["default"], limit["minimum"], limit["maximum"]) == (8, 1, relations.RELATED_MAX)
+    assert (limit["default"], limit["minimum"], limit["maximum"]) == (5, 1, relations.RELATED_MAX)
+    assert relations.RELATED_DEFAULT == 5
     assert list(tools())[-1] == "related"  # after the tools there were
 
 

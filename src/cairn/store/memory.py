@@ -13,7 +13,7 @@ import yaml
 
 from cairn import facts as _facts
 from cairn.kinds import GENERAL, KINDS
-from cairn.relations import RELATED_MAX
+from cairn.relations import RELATED_DEFAULT, RELATED_MAX
 from cairn.spans import Span, chunk
 from cairn.store import ranking, relating
 from cairn.store.access import LEVELS, MODELS_PREFIX, KeptFromModels, _keep_from_models
@@ -1185,7 +1185,9 @@ class MemoryMethods(StoreBase):
             raise KeyError(project_id)
 
     # Related pages
-    def related_pages(self, project_id: str, slug: str, limit: int = 8) -> relating.Related | None:
+    def related_pages(
+        self, project_id: str, slug: str, limit: int = RELATED_DEFAULT
+    ) -> relating.Related | None:
         """The pages of the project related to its page `slug`, the best `limit` first (at most
         relations.RELATED_MAX, whatever is asked), each with the claims the relation rests on,
         and what the read left out (cairn.store.relating;

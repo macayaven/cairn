@@ -77,6 +77,7 @@ COMMON = 5  # a term more pages of the project hold than this relates none
 CLAIMS_COMMON = 64  # nor does one whose words more claims of the project hold than this
 WHY_MAX = 3  # the reasons an answer gives for one related page; it counts the rest
 RELATED_MAX = 20  # the most related pages one answer gives
+RELATED_DEFAULT = 5  # the related pages an answer gives when no number is asked for
 TEXT_MAX = 600  # the characters of a claim's text an answer gives; a longer one is cut
 LINE_MAX = 400  # the characters of the line that holds a term, given beside a claim cut
 PASSAGES_MAX = 8  # the passages a claim given names, the first it cites; it counts the rest

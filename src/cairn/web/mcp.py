@@ -49,7 +49,7 @@ from cairn.memory import (
     record_access,
     without_missing_page,
 )
-from cairn.relations import RELATED_MAX
+from cairn.relations import RELATED_DEFAULT, RELATED_MAX
 from cairn.web.auth import _memory
 from cairn.web.brand import SOFTWARE, Brand, product_of
 from cairn.web.graph_resource import (
@@ -421,7 +421,7 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
                 # stated for clients to check; related refuses any other in one sentence
                 json_schema_extra={"minimum": 1, "maximum": RELATED_MAX},
             ),
-        ] = 8,
+        ] = RELATED_DEFAULT,
     ) -> dict:
         """The pages of a project most related to one of its pages, best first, each with why. A
         reason is `shares`: both pages state `term` (a URL, a path, a flag, a version, or code

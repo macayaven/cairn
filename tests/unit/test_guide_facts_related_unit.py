@@ -72,10 +72,10 @@ def why(answer: dict) -> dict[str, list[tuple[str, str]]]:
 # connect.md
 
 
-def test_related_gives_the_best_pages_eight_unless_limit_says(store, memory):
+def test_related_gives_the_best_pages_five_unless_limit_says(store, memory):
     says(
         "connect",
-        "`related` gives the pages of a project most related to one of its pages, best first: 8"
+        "`related` gives the pages of a project most related to one of its pages, best first: 5"
         " of them unless `limit` asks for another number from 1 to 20.",
         "Over REST it is `GET /api/projects/<project>/pages/<slug>/related`.",
     )
@@ -86,7 +86,8 @@ def test_related_gives_the_best_pages_eight_unless_limit_says(store, memory):
         file(memory, f"Page {n}", f"Brook sets {term}{more}.\n")
     file(memory, "Other", "Ada sets `both.cfg` too.\n")  # both.cfg: three pages hold it
     answer = memory.related("ops", "asked")
-    assert len(pages(answer)) == 8 and answer["searched"]["pages_left_out"] == 3
+    assert len(pages(answer)) == 5 and answer["searched"]["pages_left_out"] == 6
+    assert relations.RELATED_DEFAULT == 5
     # best first: the page that states two of its terms, then those that state one only two
     # pages hold, by slug; the page that states one three pages hold comes last of all
     assert pages(answer)[:3] == ["page-9", "page-0", "page-1"]
@@ -122,7 +123,7 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
     file(memory, "Sync", "Nightly, `quill sync --all` runs.\n")
     file(memory, "Word", "Set `retries` to three.\n")  # a plain word in backticks
     file(memory, "Pointer", "Read the runbook before a deploy.\n")
-    answer = memory.related("ops", "runbook")
+    answer = memory.related("ops", "runbook", 20)  # six pages: one more than the default gives
     assert why(answer) == {
         "address": [("shares", "https://example.invalid/quill")],
         "flag": [("shares", "--dry-run")],

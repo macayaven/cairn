@@ -391,7 +391,7 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
   graph(project, limit=20) -> the project's graph, as GET /api/graph answers it (below) and
       the resource graph://project/<project>/<limit> gives it (cairn.web.graph_resource): its
       pages, their claims, the passages those cite and their notes; `limit` is 1 to 20 pages
-  related(project, slug, limit=8) -> {"project", "page", "title", "version", "related":
+  related(project, slug, limit=5) -> {"project", "page", "title", "version", "related":
       [{"page", "title", "version", "why": [{"kind": "shares", "term", "term_kind", "pages",
       "here", "there"} or {"kind": "mentioned_by", "term", "term_kind": "title", "there"}],
       "more"}], "searched": {"complete", "terms_looked_up", "terms_not_looked_up",

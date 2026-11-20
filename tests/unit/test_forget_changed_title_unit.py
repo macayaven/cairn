@@ -10,11 +10,13 @@ The claims before the one named were chosen on the body under the old title
 (erasure._may_open_a_fence); on the first render of a page whose notes spell one topic two
 ways, a claim left that the plain loop keeps.
 
-Now what would leave with the claim named is checked against what the forget will really
-write: the note that gives the claims left their title, and their blocks up to the one that
-follows the claims taken. Of the claims that would leave, the nearest to the claim named
-do, as many as leave the body the one that was asked about; where not one does, the claim
-named leaves alone. The next render asks again, of the body as it then is.
+Now what would leave with the claim named is checked against each body the plain loop
+would render on the way: the claims leave in the order it would name them, and each must be
+named under the title the question was asked under (its text: another note that spells it
+the same changes nothing) with the blocks up to the one that follows them as asked. Where
+the title changes at a step, the claims before that step leave together and the next render
+starts from there (decision 1 of the eighth round, RT1's finding: holding to the note and not
+to its spelling cost a render for each claim of a run stored in reverse).
 
 The oldest note is filed after its neighbours here as two writers would interleave: its
 gate files the others, and its own save, found stale, is made again. The plain loop beside
@@ -39,9 +41,9 @@ CHECKS = "## What the checks on pages catch"  # the section of the security guid
 TITLED = (  # the guide's sentence that the tests of both its halves run
     "A forget titles the page by the oldest note still on it, and a heading that says the title"
     " is not written, so taking claims can change where the page writes the others: of the"
-    " claims above, only as many leave at once as leave that note on the page, the claim at"
-    " fault alone where it is that note's last, and the forget reads the page again as it then"
-    " is."
+    " claims above, only as many leave at once as would each be at fault in turn with the"
+    " page's title unchanged, another note that spells it the same way changing nothing, and"
+    " the forget reads the page again from the first claim whose going would change it."
 )
 
 
@@ -169,9 +171,8 @@ def test_a_title_that_would_come_back_does_not_let_the_claim_before_leave(desk):
     named is the oldest note's (`Ops`), the claim before it the second oldest's (`ops`),
     and every other note says `Ops`. Without both, the page is titled Ops again, as when
     the question was asked. But without the claim named alone it is titled ops: the
-    heading `## Ops` stands before the tail, and the claim before covers nothing. So what
-    must stay the same is the note that gives the title, which does not come back once it
-    has left, and not the title's spelling."""
+    heading `## Ops` stands before the tail, and the claim before covers nothing. So the
+    title is compared after each claim that would leave, never once after all of them."""
 
     def others():
         nonlocal separator
@@ -192,14 +193,15 @@ def test_a_title_that_would_come_back_does_not_let_the_claim_before_leave(desk):
 SIX = [f"    - ~~~\n      Brook keeps almanac {n}." for n in range(6)]  # the last is named first
 
 
-@pytest.mark.parametrize(("oldest", "titles"), [(5, "ABB"), (2, "AABB"), (0, "AAB")])
+@pytest.mark.parametrize(("oldest", "titles"), [(5, "ABB"), (2, "ABB"), (0, "AB")])
 def test_the_nearest_claims_that_leave_the_body_as_asked_go_together(desk, oldest, titles):
     """One step past: six siblings, one of them the oldest note's only claim, and no heading
     that says the title. Not all or none: of the claims before the one named, the nearest
-    leave with it for as far as the title stays (those nearer the tail than the oldest
-    note's claim); that claim is then named and leaves alone, since the title goes with it;
-    the rest leave under the new title. Three renders or four, and the plain loop's claims,
-    wherever in the run the claim stands."""
+    leave with it for as far as the plain loop names them under the old title, the oldest
+    note's claim included, since the plain loop names it while it still gives the title;
+    the rest leave under the new title. Two renders or three (three or four while the rule
+    held to the note after the whole batch), and the plain loop's claims, wherever in the
+    run the claim stands."""
 
     def others():
         nonlocal separator
@@ -220,11 +222,12 @@ def test_the_nearest_claims_that_leave_the_body_as_asked_go_together(desk, oldes
     assert (after.title, after.claims) == (title, claims)
 
 
-def test_a_run_that_is_all_of_the_oldest_note_leaves_but_for_its_last_claim(desk):
+def test_a_run_that_is_all_of_the_oldest_note_leaves_in_one_render(desk):
     """And the input that makes all-or-none cost a render for each claim: forty siblings in
-    one note, the oldest. Taking them all changes the title, so thirty-nine leave with the
-    title as it is, the fortieth is named and leaves alone, and a third render under the
-    new title finds nothing."""
+    one note, the oldest. Taking them all changes the title, but the plain loop names each
+    of them while the note still holds one, under the old title: so all forty leave in the
+    first render (thirty-nine, and the fortieth alone, while the rule held to the note after
+    the whole batch), and a second render under the new title finds nothing."""
     siblings = [f"    - ~~~\n      Brook keeps almanac {n}." for n in range(40)]
 
     def others():
@@ -237,19 +240,20 @@ def test_a_run_that_is_all_of_the_oldest_note_leaves_but_for_its_last_claim(desk
     filed(desk, TAIL)
     named, title, claims = plain_loop(desk.store, separator)
     assert len(named) == 40 and title == "OPS"
-    assert forgotten(desk, separator) == ["Ops", "Ops", "OPS"]
+    assert forgotten(desk, separator) == ["Ops", "OPS"]
     after = page(desk.store)
     assert (after.title, after.claims) == (title, claims)
 
 
-def test_a_run_of_notes_each_older_than_the_one_before_it_takes_a_render_for_each(desk):
-    """What comparing the note, and not the spelling, costs. Eighteen siblings, each a note
-    of its own, the nearest the tail the oldest and so on back; every note spells the topic
-    alike, so the title never changes and neither does the body but for the claims that
-    leave. Each claim named is the last of the note that gives the title then, so it leaves
-    alone: nineteen renders, where the release before took two. The claims left are the
-    plain loop's. And one note that holds a whole run, spelled like the rest, takes three
-    renders where it took two."""
+def test_a_run_of_notes_each_older_than_the_one_before_it_leaves_in_one_render(desk):
+    """What comparing the note, and not the spelling, cost (RT1). Eighteen siblings, each a
+    note of its own, the nearest the tail the oldest and so on back; every note spells the
+    topic alike, so the title never changes and neither does the body but for the claims
+    that leave. Each claim named was the last of the note that gave the title then, so it
+    left alone: nineteen renders. The title's text is compared now, so the eighteen leave
+    in the first render and a second finds nothing, as before that rule. The claims left
+    are the plain loop's. And one note that holds a whole run, spelled like the rest, takes
+    two renders again (it took three)."""
     siblings = [f"    - ~~~\n      Brook keeps almanac {n}." for n in range(CLOSERS_MAX + 2)]
 
     def others():
@@ -268,12 +272,12 @@ def test_a_run_of_notes_each_older_than_the_one_before_it_takes_a_render_for_eac
     filed(desk, TAIL)
     named, title, claims = plain_loop(desk.store, separator)
     assert [text for _, text in named] == siblings[::-1] and title == "OPS"
-    assert forgotten(desk, separator) == ["OPS"] * (len(siblings) + 1) == ["OPS"] * 19
+    assert forgotten(desk, separator) == ["OPS"] * 2
     after = page(desk.store)
     assert (after.title, after.claims) == (title, claims)
 
 
-def test_a_run_in_the_oldest_note_spelled_like_the_rest_takes_three_renders(desk):
+def test_a_run_in_the_oldest_note_spelled_like_the_rest_takes_two_renders(desk):
     siblings = [f"    - ~~~\n      Brook keeps almanac {n}." for n in range(40)]
 
     def others():
@@ -286,9 +290,41 @@ def test_a_run_in_the_oldest_note_spelled_like_the_rest_takes_three_renders(desk
     filed(desk, TAIL)
     named, title, claims = plain_loop(desk.store, separator)
     assert len(named) == 40 and title == "OPS"
-    assert forgotten(desk, separator) == ["OPS"] * 3
+    assert forgotten(desk, separator) == ["OPS"] * 2
     after = page(desk.store)
     assert (after.title, after.claims) == (title, claims)
+
+
+def test_a_title_that_changes_inside_the_run_and_comes_back_at_its_end_stops_the_run_there(
+    desk,
+):
+    """Six siblings. The claim named is the oldest note's (`Ops`), the one before it the
+    second oldest's (`Ops`), the one before that the third oldest's (`ops`), and the notes
+    of the rest of the page say `Ops`; the tail stands under `## Ops`. Without the six the
+    page is titled Ops again, as when the question was asked. The plain loop names the two
+    nearest under Ops; without them the page is titled ops, `## Ops` is written before the
+    tail, and nothing more is at fault. So the forget compares the title at each step: the
+    two leave in the first render, and the second, titled ops, finds nothing."""
+
+    def others():
+        nonlocal separator
+        separator = a_list_that_spends_the_closers(desk, topic="Ops")
+        filed(desk, "- parent", "Ops")
+        filed(desk, "\n\n".join(SIX[:3]), "Ops")
+
+    def third():
+        filed(desk, SIX[3], "ops", first=others)
+
+    separator = None
+    filed(desk, SIX[5], "Ops", first=lambda: filed(desk, SIX[4], "Ops", first=third))
+    filed(desk, f"## Ops\n\n{TAIL}", "Ops")
+    named, title, claims = plain_loop(desk.store, separator)
+    assert (named, title) == ([("Ops", SIX[5]), ("Ops", SIX[4])], "ops")
+    assert forgotten(desk, separator) == ["Ops", "ops"]
+    after = page(desk.store)
+    assert (after.title, after.claims) == (title, claims)
+    assert set(SIX[:4]) <= {claim.text for claim in claims}
+    says("security", CHECKS, TITLED)
 
 
 def test_past_the_ceiling_a_later_claim_stays_when_taking_the_one_named_changes_the_title(desk):

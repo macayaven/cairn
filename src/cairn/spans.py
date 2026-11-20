@@ -430,25 +430,36 @@ def fences_reaching(before: str, blocks: Sequence[str], line: str) -> list[bool]
     """Of each of `blocks`, whether a code fence that starts in it takes `line` in, where
     `line` is written after it as the first line of the next block of a body is: after a
     blank line. `before` is the body up to the first of them, ending in its blank line; the
-    blocks follow one another as a body writes them, each with `line` after it.
+    blocks follow one another as a body writes them, with no code fence running from one
+    into the next (the claims a forget asks of: the body closed or named every such fence
+    before them), each with `line` after it as `asked_line` writes it.
 
     The parser's line map decides, as in _leaving_fence: the fence's token starts in the
     block and its map ends past the line. One parse, of `before` and the blocks.
 
     What an answer is worth. A line that a fence takes in is code, or the fence's closing
-    line: the lines after it are read as if it were not there. A line that no fence takes
-    is a block of its own, which may change how the blocks after it are read. So the
-    answers up to the first False, that one included, are the parser's own for the body in
-    which that block is followed by a block starting with `line`; the answers after it are
-    a guess. A caller that acts on them asks again, without the lines before
-    (store.erasure._before_it)."""
+    line, and the first line of the next block ends that fence and its list item as it did
+    in the body (it is not the fence's, or the fence would run into it): the lines after
+    are read as if the line were not there. A line that no fence takes is a block of its
+    own, which may change how the blocks after it are read. So the answers up to the first
+    False, that one included, are the parser's own for the body in which that block is
+    followed by a block starting with `line`; the answers after it are a guess. A caller
+    that acts on them asks again, without the lines before (store.erasure._before_it).
+
+    What an answer depends on (asked_line): whether a fence that is open after the block
+    and its blank line takes a line in is whether the line is blank or indented at least
+    as far as the fence's list item: the parser ends such a fence at the first line that
+    holds anything and is indented less, and takes any other line in, as code or as the
+    fence's closing line (tests/unit/test_fences_reaching_unit.py, a table and generated
+    blocks). So the line is written as asked_line cuts it, and the answers up to the first
+    False are the same as with it whole; the guesses after it can differ."""
     parts, first, asked, count = [before], [], [], len(_PARSER_LINES.findall(before))
     for block in blocks:
         first.append(count)
         count += len(_PARSER_LINES.findall(f"{block}\n\n"))
         asked.append(count)  # where `line` stands after this block
         count += 2
-        parts.append(f"{block}\n\n{line}\n\n")
+        parts.append(f"{block}\n\n{asked_line(line, block)}\n\n")
     taken = [False] * len(first)
     for token in _PARSER.parse("".join(parts)):
         if token.type == "fence" and token.map:
@@ -456,6 +467,31 @@ def fences_reaching(before: str, blocks: Sequence[str], line: str) -> list[bool]
             if at >= 0 and token.map[0] < asked[at] < token.map[1]:
                 taken[at] = True
     return taken
+
+
+def asked_line(line: str, block: str) -> str:
+    """The line fences_reaching writes after `block` to ask whether a fence of it takes
+    `line` in: `line` itself when it is no longer than the block's longest line, so a
+    question never holds more of it than of the block; else cut to what the answer depends
+    on (fences_reaching): nothing for a line of spaces and tabs only, which the parser
+    reads as blank, and for any other its indentation and its first other character. An
+    indentation deeper than any line of the block reaches (tabs read to the next stop of
+    four, as the parser reads them) is written as deep as that, in tabs and then spaces: a
+    fence's list item starts its text on a line of the block, so no deeper indentation
+    gets another answer. One character more than that indentation, whatever the line's
+    length (a closing line of either character, a quotation or list marker, a run of fence
+    characters with a letter far along: tests/unit/test_fences_reaching_unit.py)."""
+    rows = _PARSER_LINES.split(block)
+    if len(line) <= max(map(len, rows)):
+        return line
+    rest = line.lstrip(" \t")  # the parser's own blanks: no other character indents
+    if not rest:
+        return ""
+    indentation = line[: len(line) - len(rest)]
+    deepest = max(len(row.expandtabs(4)) for row in rows)
+    if len(indentation.expandtabs(4)) > deepest:
+        indentation = "\t" * (deepest // 4) + " " * (deepest % 4)
+    return indentation + rest[0]
 
 
 def _closer(opener: str, run: str) -> str:

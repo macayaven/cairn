@@ -3,19 +3,25 @@
 The note holds one heading, its first line: who wrote the message and when, as the caller
 verified. Where a heading begins is asked of the note as written, never worked out from the
 message: of the passage splitter (cairn.spans.chunk), whose heading paths say whose words a
-passage is, and of the Markdown parser as the web view reads. Every line either finds a
-heading on is written as text, and no other line where a line at a reading can tell
-(_one_heading): the note says whose words it holds, so a backslash no reader asked for is a
-false quotation. For the same reason a line both readers read as code in the finished note,
-where every character is shown as it is, holds what Slack displayed and none of the marks
-that write prose (_code_as_shown). The splitter's line boundaries (str.splitlines: more than
-a line feed) are each written as a line feed first, a CR LF as one.
+passage is, of the Markdown parser as the web view reads, and of that parser reading each
+passage alone, as a page shows a claim (_headings). Every line one of them finds a heading
+on is written as text, and no other line where a line at a reading can tell (_one_heading):
+the note says whose words it holds, so a backslash no reader asked for is a false quotation.
+
+What Slack displayed as it is, is markup nowhere. A code block of Slack's own is a fence on
+lines of its own, which every reader reads as one block of code; code within a line stands
+between the note's only bare backticks (_render). A line both readers read as code in the
+finished note, where every character is shown as it is, holds what Slack displayed and none
+of the marks that write prose (_code_as_shown). The splitter's line boundaries
+(str.splitlines: more than a line feed) are each written as a line feed first, a CR LF as
+one.
 """
 
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import pairwise
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 from markdown_it import MarkdownIt
@@ -29,6 +35,13 @@ _TIMESTAMP = re.compile(r"[0-9]{1,12}\.[0-9]{6}")
 _PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
 # A line that can underline the text above it into a heading, inside a quote or not.
 _UNDERLINE = re.compile(r"[ \t>]*(=+|-+)[ \t]*")
+# A line that can make the one above it a table's first row, and cut that row at its bars.
+_SECOND_ROW = re.compile(r"[ \t>]*[|:-][|: \t-]*")
+# What stands before a code block on its line when the block is in a quotation, as Slack
+# sends it; and a quotation's mark at the start of a line, as Slack displayed it.
+_QUOTED = re.compile(r"(?:[ \t]*&gt;[ \t]?)+[ \t]*")
+_QUOTE_MARK = re.compile(r"^[ \t]*>[ \t]?")
+_CODE_NODES = 10_000  # see _displayed_code
 _PASSES = 8  # see _one_heading
 
 
@@ -59,9 +72,12 @@ def _name(name: str, literal: Callable[[str], str] = _literal) -> str:
 
 
 def _prose(text: str) -> str:
+    """Text Slack displayed as prose, as Markdown that displays the same. A backtick here is
+    one Slack paired with no other and displayed as it is: left bare, Markdown would pair it
+    with the backtick that opens a code span (_render) and read that span's code as prose."""
     text = _redact(_decode(text))
     text = text.replace("&", "&amp;").replace("<", "&lt;")
-    text = re.sub(r"([\\\[\]()!])", r"\\\1", text)
+    text = re.sub(r"([\\\[\]()!`])", r"\\\1", text)
     text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"**\1**", text)
     return re.sub(r"(?<!~)~([^~\n]+)~(?!~)", r"~~\1~~", text)
 
@@ -100,21 +116,31 @@ def _link_target(target: str) -> str | None:
 
 def _headings(text: str) -> dict[int, str]:
     """Each line after the first that makes a heading in `text`, with the character that makes
-    it one: a line's first "#", or the "=" or "-" of a line that underlines a heading. A line
-    written as text joins the paragraph above it, and a line of "=" or "-" below would
+    it one: a line's first "#", or the "=" or "-" of a line that underlines a heading. Three
+    readings find them: the splitter's; the Markdown parser's of the whole; and the parser's
+    of each passage alone, which is what a page shows of a claim and what its body holds one
+    after another (dashes under a line that a quotation takes in are a rule to the note
+    whole, and underline that line where it stands alone). The third parses a passage only
+    when a line of it could make a heading there.
+
+    A line written as text joins the paragraph above it, and a line of "=" or "-" below would
     underline that paragraph next; so once a heading is found, every such line below it that
     is not in a code fence is given too, and a run of them costs one more reading, not one
     each. (Indented code is not spared: the paragraph a line joins can take it in.) Not every
     line so given would read as a heading: _one_heading says when they are all written."""
-    lines = text.split("\n")
-    found = {span.start_line - 1: "#" for span in chunk("", text) if span.kind == "heading"}
+    lines, passages = text.split("\n"), chunk("", text)
+    found = {span.start_line - 1: "#" for span in passages if span.kind == "heading"}
     code: set[int] = set()
-    for token in _PARSER.parse(text):
-        if token.type == "heading_open" and token.map:
-            underlined = token.markup in ("=", "-")
-            found[token.map[1] - 1 if underlined else token.map[0]] = token.markup[0]
-        elif token.type == "fence" and token.map:
-            code.update(range(*token.map))
+    for first, read in [(0, text), *[(span.start_line - 1, span.text) for span in passages[1:]]]:
+        rest = read.split("\n")[1:] if first else [""]
+        if not first or "#" in read or any(_UNDERLINE.fullmatch(row) for row in rest):
+            for token in _PARSER.parse(read):
+                if token.type == "heading_open" and token.map:
+                    underlined = token.markup in ("=", "-")
+                    at = first + (token.map[1] - 1 if underlined else token.map[0])
+                    found.setdefault(at, token.markup[0])
+                elif token.type == "fence" and token.map and not first:
+                    code.update(range(*token.map))
     found.pop(0, None)
     for below in range(min(found, default=len(lines)) + 1, len(lines)):
         if (
@@ -253,24 +279,156 @@ def _code_as_shown(text: str, shown: str) -> str:
     return second if _read(second) == read else first
 
 
+def _apart(text: str, below: bool, above: bool, more: bool) -> str:
+    """`text`, what a message holds between two of its tokens, with a code block of Slack's
+    own kept on lines of its own: when one stands above it (`below`), the blanks that follow
+    the block on its last line go and, if anything follows (`more`), it starts a line; when
+    one stands under it (`above`), the blanks before the block on its first line go (_render
+    then ends the line, whatever is written on it)."""
+    if below:
+        text = text.lstrip(" \t")
+        if (text or more) and not text.startswith("\n"):
+            text = "\n" + text
+    return text.rstrip(" \t") if above else text
+
+
+def _lines(text: str) -> str:
+    """`text` with each boundary the passage splitter breaks at as a line feed, and no other
+    control character but the tab."""
+    text = "\n".join(text.splitlines())
+    return "".join(character for character in text if character in "\n\t" or ord(character) >= 32)
+
+
+def _displayed_code(message: Mapping) -> list[tuple[bool, str]]:
+    """What Slack's own account of the message, its rich text, displayed as code, in order:
+    whether as a block, and the characters. A message's text marks code with backticks and
+    so cannot say which backticks were displayed inside it; where the rich text names a
+    block or a span, that is what Slack displayed. Anything not of that shape is passed over
+    (the first _CODE_NODES elements are looked at), and the text then decides alone."""
+    found: list[tuple[bool, str]] = []
+    left: list[object] = [message.get("blocks")]
+    for _ in range(_CODE_NODES):
+        if not left:
+            break
+        node = left.pop()
+        if isinstance(node, list):
+            left.extend(reversed(node))
+        elif isinstance(node, Mapping):
+            inside = node.get("elements")
+            if node.get("type") == "rich_text_preformatted" and isinstance(inside, list):
+                parts = [part.get("text") for part in inside if isinstance(part, Mapping)]
+                if len(parts) == len(inside) and all(isinstance(part, str) for part in parts):
+                    found.append((True, _lines("".join(parts))))
+            elif isinstance(node.get("style"), Mapping) and node["style"].get("code") is True:
+                if isinstance(node.get("text"), str) and node.get("type") == "text":
+                    found.append((False, _lines(node["text"])))
+            else:
+                left.append(inside)
+    return found
+
+
+def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int, str, object]]:
+    """Where `text` holds the `code` Slack's rich text names (_displayed_code), each after
+    the one before: its start and end with its backticks, "block" or "code", and what it
+    displayed. In the text it stands between backticks with its "&", "<" and ">" as
+    entities, a block with or without a line feed after its opening and before its closing
+    fence. One that is not found so is left to the backticks of the text."""
+    places: list[tuple[int, int, str, object]] = []
+    at = 0
+    for block, shown in code:
+        sent = shown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if block:
+            ways = [f"```{above}{sent}{below}```" for above in ("\n", "") for below in ("\n", "")]
+        else:
+            ways = [f"`{sent}`"] if sent and "\n" not in sent else []
+        found = min(
+            ((text.find(way, at), -len(way)) for way in ways if way in text[at:]), default=None
+        )
+        if found is not None:
+            at = found[0] - found[1]
+            lines = _redact(shown).split("\n")
+            places.append(
+                (found[0], at, "block", lines) if block else (found[0], at, "code", lines[0])
+            )
+    return places
+
+
+def _block_lines(text: str, start: int, token: str) -> list[str]:
+    """The lines a code block of Slack's own displayed, the white space at their ends
+    included, as the backticks of the message's text bound it: from the first three to the
+    next three. What stands on the opening fence's line after it, or on the closing fence's
+    before it, is a line of the block unless it is blank; and in a quotation the mark that
+    starts each line is the quotation's."""
+    lines = _shown(token[3:-3]).split("\n")
+    if _QUOTED.fullmatch(text, text.rfind("\n", 0, start) + 1, start):
+        lines = [_QUOTE_MARK.sub("", line, count=1) for line in lines]
+    for edge in (0, -1):
+        if lines and not lines[edge].strip(" \t") and (len(lines) > 1 or not lines[edge]):
+            del lines[edge]
+    return lines
+
+
+def _fence(lines: list[str]) -> str:
+    """A code block of Slack's own as a Markdown fence that the parser and the splitter both
+    read as one block of code, wherever it stands: the opening and the closing fence on lines
+    of their own (_apart) and at the margin, longer than any run of backticks inside, and
+    between them the lines Slack displayed."""
+    fence = "`" * max(3, 1 + max(map(len, re.findall("`+", "\n".join(lines))), default=0))
+    return "\n".join([fence, *lines, fence])
+
+
 def _render(
     text: str,
     names: Mapping[str, str],
-    prose: Callable[[str], str] = _prose,
-    literal: Callable[[str], str] = _literal,
+    displayed: bool = False,
+    bars: bool = True,
+    code: list[tuple[bool, str]] | None = None,
 ) -> str:
-    """`text` as the note holds it: its prose by `prose`, a name or a link's label by
-    `literal`, a code span or block of Slack's own as it was displayed. With _shown for both,
-    the whole of it as Slack displayed it, and the same lines."""
-    pieces: list[str] = []
+    """`text` as the note holds it: its prose by _prose and a name or a link's label by
+    _literal; a code block of Slack's own as a fence (_fence); and code within a line between
+    backticks, more of them than any run it holds, the same number for every such code of
+    the message, and the only bare backticks of the note's prose, so they pair as Slack
+    paired them. What is code is what the rich text says (`code`: _known_code), else what the
+    backticks of the text bound. Without `bars`, code within a line that holds a bar is
+    written by _literal, backticks and all: a table's row is cut at its bars before its code
+    is read. `displayed`: the whole of it as Slack displayed it (_shown, and code within a
+    line between the backticks it was sent with), with the same lines."""
+    prose, literal = (_shown, _shown) if displayed else (_prose, _literal)
+    tokens: list[tuple[int, int, str, object]] = []
     offset = 0
-    for match in _TOKENS.finditer(text):
-        pieces.append(prose(text[offset : match.start()]))
-        token = match.group()
-        if token.startswith("`"):
-            pieces.append(_shown(token))
+    for known in [*_known_code(text, code or []), (len(text), len(text), "", None)]:
+        for match in _TOKENS.finditer(text, offset, known[0]):
+            token = match.group()
+            if token.startswith("```"):
+                found: tuple[str, object] = ("block", _block_lines(text, match.start(), token))
+            elif token.startswith("`") and token != "``":
+                found = ("code", _shown(token[1:-1]))
+            else:  # a reference, or two backticks with no code between them
+                found = ("", token)
+            tokens.append((match.start(), match.end(), *found))
+        tokens.append(known)
+        offset = known[1]
+    held = [what for _, _, kind, what in tokens if kind == "code" and isinstance(what, str)]
+    ticks = "`" * (1 + max(map(len, re.findall("`+", "\n".join(held))), default=0))
+    pieces: list[str] = []
+    offset, below, fresh = 0, False, True  # fresh: nothing is written yet on the line
+    for start, end, kind, what in tokens[:-1]:
+        pieces.append(prose(_apart(text[offset:start], below, kind == "block", True)))
+        fresh = pieces[-1].endswith("\n") if pieces[-1] else fresh
+        if isinstance(what, list):
+            pieces.append(_fence(what) if fresh else "\n" + _fence(what))
+        elif kind == "code" and isinstance(what, str):
+            if displayed:
+                pieces.append(_shown(text[start:end]))
+            elif "|" in what and not bars:
+                pieces.append(literal(text[start:end]))
+            else:  # a space each side where Markdown would take one, or read a longer run
+                pad = " " if what.strip(" ") and (what[0] in "` " or what[-1] in "` ") else ""
+                pieces.append(f"{ticks}{pad}{what}{pad}{ticks}")
+        elif text[start] == "`":
+            pieces.append(prose(text[start:end]))
         else:
-            target, separator, label = token[1:-1].partition("|")
+            target, separator, label = text[start + 1 : end - 1].partition("|")
             if target.startswith("@"):
                 pieces.append("@" + _name(names.get(target[1:], target[1:]), literal))
             elif target.startswith("#"):
@@ -284,8 +442,8 @@ def _render(
                     pieces.append(shown)
                 else:
                     pieces.append("[link omitted]")
-        offset = match.end()
-    pieces.append(prose(text[offset:]))
+        offset, below, fresh = end, kind == "block", fresh and not pieces[-1]
+    pieces.append(prose(_apart(text[offset:], below, False, False)))
     return "".join(pieces)
 
 
@@ -341,15 +499,24 @@ def note_from_message(
         _timestamp(root)
         if root != timestamp:
             source += "?" + urlencode({"thread_ts": root, "cid": conversation_id})
-    raw = "\n".join(raw.splitlines())  # each boundary the passage splitter breaks at: a line feed
-    raw = "".join(character for character in raw if character in "\n\t" or ord(character) >= 32)
-    body = _render(raw.strip(), names).strip()
+    raw, code = _lines(raw), _displayed_code(message)
+    body = _render(raw.strip(), names, code=code).strip()
     if not body:
         raise NotText("The selected message has no text")
+    rows = body.split("\n")
+    if any(
+        "|" in above and "-" in row and _SECOND_ROW.fullmatch(row) for above, row in pairwise(rows)
+    ):
+        body = _render(raw.strip(), names, bars=False, code=code).strip()  # it may hold a table
     who = _literal(" ".join((author or "Unknown author").split()))
     heading = f"## {who} · {when:%Y-%m-%d %H:%M:%S} UTC\n\n"
     link = f"\n\n[Source in Slack]({source})"
-    shown = _render(raw.strip(), names, _shown, _shown).strip()
-    text = _code_as_shown(heading + body + link, heading + shown + link)
+    # As displayed, the white space that ends the message's last line is kept: a line both
+    # readers read as code holds it (_code_as_shown), and prose never did.
+    ended = raw.strip() + raw[len(raw.rstrip()) :].split("\n", 1)[0]
+    shown = _render(ended, names, displayed=True, code=code).lstrip().split("\n")
+    while not shown[-1].strip():
+        del shown[-1]
+    text = _code_as_shown(heading + body + link, heading + "\n".join(shown) + link)
     title = next(line.strip() for line in text.split("\n")[1:] if line.strip())
     return Draft(title, text, source)

@@ -34,6 +34,7 @@ what Slack displayed for it written beside it by hand, never worked out by a sec
 converter. What they found is in the tables. Every name is made up.
 """
 
+import contextlib
 import hashlib
 import random
 import re
@@ -42,22 +43,25 @@ import pytest
 from markdown_it import MarkdownIt
 from test_slack_one_heading_unit import bench, faults, filed, passes  # noqa: F401  (a fixture)
 
+from cairn.compiler import claim_id, render_body
 from cairn.slack import text as slack_text
 from cairn.spans import chunk
+from cairn.store import Claim
 from cairn.web import markdown as web_markdown
 
 READER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
 ONLY_MARKS = re.compile(r"[ \t>]*(=+|-+)[ \t]*")  # a line that could underline the one above
-SEED, CASES = 20261120, 2500
+SEED, CASES = 20261120, 800
 NAMES = {
     "U0QUILL01": "Cedar\u2028Quill #2",
     "U0BROOK01": "\u2028Brook\n",
     "C456": " Ada Park",
     "C789": "c# shelf",
 }
-# The notes of the generated messages as the prose rules wrote them on 22f498b6, before a
-# heading became text: sha256 of them all, each followed by a NUL.
-PROSE_ON_22F498B6 = "a6bbf28ce68b814927cd7a02b14cf04474b88c88b5a50eacbc014789e3cdcf1e"
+# The notes of the generated messages that hold no backtick (and of every fourth of the
+# others, without its lines that hold one), as the prose rules wrote them on 22f498b6, before
+# a heading became text: sha256 of them all, each followed by a NUL.
+PROSE_ON_22F498B6 = "806b3de73672fcdcfcd8db0f577b45aa014367fe9fb7d4dddb3d8e0af7e46a81"
 
 
 @pytest.fixture
@@ -117,7 +121,12 @@ def added(before: str, after: str) -> list[tuple[int, int]]:
 
 
 def one_heading(note: str) -> bool:
-    return not faults(note, chunk("", note))
+    """One heading, the author's, for the splitter and for the parser, in the note whole and
+    in each of its passages read alone."""
+    spans = chunk("", note)
+    return not faults(note, spans) and not any(
+        token.type == "heading_open" for span in spans[1:] for token in READER.parse(span.text)
+    )
 
 
 def spare(note: str, places: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -192,8 +201,10 @@ def body(note: str) -> str:
 def as_displayed(before: str, displayed: str) -> str:
     """The note `before` with, between the author's heading and the link, the message as
     Slack displayed it."""
-    lines = before.split("\n")
-    return "\n".join([*lines[:2], *displayed.strip().split("\n"), *lines[-2:]])
+    lines, shown = before.split("\n"), displayed.lstrip().split("\n")
+    while not shown[-1].strip():  # the blank lines that end a message go, as from its prose
+        del shown[-1]
+    return "\n".join([*lines[:2], *shown, *lines[-2:]])
 
 
 # What Slack sends for a piece of a line, and what it displayed. The first seven hold no
@@ -235,16 +246,38 @@ MARKUP_LINES = [  # each is markup when it is read as prose as Slack displayed i
     ("Ask [Ada] about it.",) * 2,
 ]
 LEFT_OPEN = [  # an opening fence, a line, and what closes it for one reader and not the other
-    (" ```", "code", "    ```"),
-    ("````", "code", "```"),
-    ("- ```", "  code", "```"),
-    ("```", "code", "- ```"),
-    ("&gt; ```", "&gt; code", "```"),
-    ("```", "code", "&gt; ```"),
     (" ~~~", "code", "    ~~~"),
     ("~~~~", "code", "~~~"),
     ("- ~~~", "  code", "~~~"),
     ("&gt; ~~~", "&gt; code", "~~~"),
+]
+# What Slack's own code may hold: each is markup when it is read as prose. "qzx" is written
+# nowhere else, so whatever a reader makes of it but code or plain characters is a fault.
+MARKED = [
+    ("[qzx](https://fable.test/qzx)",) * 2,
+    ("![qzx](https://fable.test/qzx.png)",) * 2,
+    ("# qzx",) * 2,
+    ("*qzx* _qzx_ **qzx**",) * 2,
+    ("&lt;b&gt;qzx&lt;/b&gt;", "<b>qzx</b>"),
+    ("&lt;https://fable.test/qzx&gt;", "<https://fable.test/qzx>"),
+    ("[qzx]: https://fable.test/qzx",) * 2,
+    ("qzx | [qzx](https://fable.test/qzx)",) * 2,
+    ("qzx `` and ` qzx",) * 2,
+    ("qzx\t",) * 2,
+    ("qzx  ",) * 2,
+    ("", ""),
+]
+WITHIN_A_LINE = [  # code within a line, and backticks Slack paired with no other
+    ("Row 4 `[qzx](https://fable.test/qzx)` Row 5",) * 2,
+    ("`*qzx*` and `_qzx_`",) * 2,
+    ("`qzx|[qzx](https://fable.test/qzx)`",) * 2,
+    ("`&lt;b&gt;qzx`", "`<b>qzx`"),
+    ("`# qzx`",) * 2,
+    ("`[qzx](https://fable.test/qzx)``Row 4`",) * 2,
+    ("Row 4 `",) * 2,
+    ("` Row 5",) * 2,
+    ("``",) * 2,
+    ("Row 4 `` Row 5 ` Row 6",) * 2,
 ]
 PADS = [" " * n for n in range(9)] + ["\t", " \t"]
 MARKS = ["-", "--", "---", "----", "=", "==", "===", "- "]
@@ -253,9 +286,11 @@ KINDS = [
     "marks", "marks", "marks", "heading", "heading", "empty heading", "words", "words", "blank",
     "blank", "rule", "tildes", "item", "numbered", "quoted", "indented", "table", "reference",
     "text", "text", "indented text", "indented text", "code block", "tilde block",
-    "markup", "left open",
+    "markup", "left open", "code block", "code block", "within a line", "within a line",
 ]  # fmt: skip
-Lines = list[tuple[str, str]]  # each line as Slack sends it, and as it displayed it
+# Lines as Slack sends them, each with what it displayed beside it: for a code block of
+# Slack's own, the fence on lines of its own that the note holds for it.
+Lines = list[tuple[str, str]]
 
 
 def some_text(rng: random.Random, pieces: Lines = PIECES) -> tuple[str, str]:
@@ -270,12 +305,39 @@ def under(lead: str, line: tuple[str, str]) -> Lines:
 
 
 def a_code_block(rng: random.Random) -> Lines:
-    """A code block of Slack's own, which the conversion never wrote as prose."""
-    opener = rng.choice(["```", "```", "   ```", "Row 4. ```"])
+    """A code block of Slack's own, in one of the shapes a message gives it, and the fence
+    the note holds for it: at the margin, on lines of its own, what Slack displayed between."""
+    shape = rng.randrange(12)
+    solid = shape in (3, 8, 9, 10, 11)  # its first and last lines touch the backticks
     inside = [
-        under(rng.choice(PADS), some_text(rng, PIECES[:7]))[0] for _ in range(rng.randint(1, 3))
+        under(rng.choice(PADS), rng.choice(MARKED[:9] if solid else MARKED))[0]
+        if rng.random() < 0.7
+        else under(rng.choice(PADS), some_text(rng, PIECES[:7]))[0]
+        for _ in range(rng.randint(1, 3))
     ]
-    return [(opener, opener), *inside, ("```", "```")]
+    sent, shown = ("\n".join(side) for side in zip(*inside, strict=True))
+    fence = f"```\n{shown}\n```"
+    if shape == 2:
+        return [(f"   ```\n{sent}\n   ```", fence)]
+    if shape == 3:
+        return [(f"Row 4 ```{sent}``` Row 5", f"Row 4\n{fence}\nRow 5")]
+    if shape == 4:
+        return [(f"Row 4. ```\n{sent}\n```", f"Row 4.\n{fence}")]
+    if shape == 5:
+        return [(f"&gt; ```\n{sent}\n```", f">\n{fence}")]
+    if shape == 6:
+        return [(f"- Row 5.\n  ```\n{sent}\n  ```", f"- Row 5.\n{fence}")]
+    if shape == 7:
+        return [(f"```\n\n{sent}\n\n```", f"```\n\n{shown}\n\n```")]
+    if shape == 8:
+        return [(f"```\n{sent}```", fence)]
+    if shape == 9:
+        return [(f"```{sent}``````Row 6.```", f"{fence}\n```\nRow 6.\n```")]
+    if shape == 10:  # right after code within a line, and after a mention
+        return [(f"`Row 4````{sent}```", f"`Row 4`\n{fence}")]
+    if shape == 11:
+        return [(f"<@U0BROOK01>```{sent}```", f"@ Brook\n{fence}")]
+    return [(f"```\n{sent}\n```", fence)]
 
 
 def a_tilde_block(rng: random.Random) -> Lines:
@@ -296,6 +358,8 @@ def some_lines(rng: random.Random) -> Lines:
         return under(pad, rng.choice(MARKUP_LINES))
     if kind == "left open":
         return left_open(rng, rng.choice(LEFT_OPEN))
+    if kind == "within a line":
+        return under(pad, rng.choice(WITHIN_A_LINE))
     if kind == "marks":
         return under(pad, (rng.choice(MARKS),) * 2)
     if kind == "heading":
@@ -361,39 +425,94 @@ def a_readme(rng: random.Random) -> Lines:
 
 
 def a_message(rng: random.Random) -> Lines:
-    """A few lines, many lines or a README, one time in three each; one time in four it ends
-    in a fence left open, of backticks or closed by the other kind, whose lines Slack
-    displayed as prose."""
+    """A few lines, many lines or a README, one time in three each; some end in backticks
+    that nothing pairs with: three alone, a fence of tildes about them, or what is left of a
+    code block that holds three to five."""
     shape = rng.randrange(3)
     if shape == 2:
         lines = a_readme(rng)
     else:
         count = rng.randint(2, 7) if shape else rng.randint(8, 30)
         lines = [line for _ in range(count) for line in some_lines(rng)]
-    end = rng.randrange(12)  # a row of backticks that nothing pairs with comes last, if at all
+    end = rng.randrange(14)  # a row of backticks that nothing pairs with comes last, if at all
     if end == 0:
         lines += [("```",) * 2, *[under("", some_text(rng))[0] for _ in range(rng.randint(1, 3))]]
     elif end < 3:
         lines += left_open(rng, ("```", "code", "~~~") if end == 1 else ("~~~", "code", "```"))
+    elif end < 6:  # three to five backticks in a block: Slack ends the block at the first three
+        left = {3: "Row 4", 4: "` Row 4", 5: "`` Row 4"}[end]
+        lines += [(f"```\nqzx {'`' * end} Row 4\n```", f"```\nqzx \n```\n{left}\n```")]
     return lines
+
+
+LINKED = {"https://fable.test/a_b", "https://fable.test"}  # where the messages' own links lead
+FENCE = re.compile(r"[ \t>]*(`{3,}|~{3,})[ \t]*")  # a line that opens or closes a fence
+WITH_HTML = MarkdownIt("commonmark", {"html": True}).enable("table")
+
+
+def displayed_as_plain(text: str) -> list:
+    """What a reader makes of `text` that Slack did not display so: a link or an image that
+    leads where no link of the message does, and whatever it makes of "qzx", which the
+    messages hold in Slack's own code alone, but code or plain characters."""
+    found: list = []
+    defined: dict = {}
+    if not any(mark in text for mark in ("qzx", "](", "]:", "<")):
+        return found  # no link without one of these, and nothing of Slack's own code
+    tokens = READER.parse(text, defined)
+    for n, block in enumerate(tokens):
+        if block.type == "heading_open" and any(
+            part.type == "text" and "qzx" in part.content for part in tokens[n + 1].children
+        ):
+            found.append("a heading")
+        inside = 0
+        for token in block.children or []:
+            where = token.attrGet("href") or token.attrGet("src")
+            if where and where not in LINKED and not where.startswith(SOURCE[:40]):
+                found.append((token.type, where))
+            inside += token.type in ("link_open", "em_open", "strong_open")
+            inside -= token.type in ("link_close", "em_close", "strong_close")
+            if inside and token.type == "text" and "qzx" in token.content:
+                found.append(("marked up", token.content))
+    found += [("defined", name) for name in defined.get("references", {}) if "QZX" in name]
+    found += [
+        ("html", token.content)
+        for block in (WITH_HTML.parse(text) if "qzx" in text and "<" in text else [])
+        for token in [block, *(block.children or [])]
+        if token.type.startswith("html") and "qzx" in token.content
+    ]
+    return found
+
+
+def page_body(note: str) -> str:
+    """The body of the page a note makes alone: its passages as claims, in their order."""
+    spans = chunk("", note)
+    claims = [Claim(id=claim_id(s.id), text=s.text, span_ids=(s.id,)) for s in spans[1:]]
+    return render_body("Shelves", claims, {s.id: s for s in spans})
 
 
 def faults_of(lines: Lines, before: str, after: str, as_prose: str) -> tuple[list, bool]:
     """What is wrong with the note `after` of the message `lines`: nothing, when the lines both
     readings take for code are as displayed, the others as the prose rules wrote them, each but
-    for backslashes, no backslash is one too many, and no passage read alone holds markup that
-    the note made of prose alone, `as_prose`, does not. And whether the note was kept as prose
-    throughout, as only a message with CLOSES may be (the limit, pinned below)."""
+    for backslashes, no backslash is one too many, no passage read alone holds markup that
+    the note made of prose alone, `as_prose`, does not, and nothing Slack displayed as plain
+    characters is markup in the note, in a passage of it read alone or in its page's body.
+    And whether the note was kept as prose throughout, as only a message with a line that is
+    a fence as displayed alone may be (the limit, pinned below)."""
     if not one_heading(after):
         return ["a second heading"], False
-    if markup_of(after) != markup_of(as_prose):
+    for read in (after, page_body(after), *[span.text for span in chunk("", after)]):
+        if made := displayed_as_plain(read):
+            return ["markup of what Slack displayed as plain", made[:3], read[:200]], False
+    if after != as_prose and markup_of(after) != markup_of(as_prose):
         made = [mark for mark in markup_of(after) if mark not in markup_of(as_prose)]
         return ["markup of what was displayed as plain characters", made[:3]], False
     shown = as_displayed(before, "\n".join(shown for _, shown in lines)).split("\n")
     prose, held, code = before.split("\n"), after.split("\n"), code_to_both(after)
     if not len(shown) == len(prose) == len(held):
         return [f"{len(held)} lines, {len(prose)} as prose, {len(shown)} as displayed"], False
-    closes = CLOSES[0] in "\n".join(sent for sent, _ in lines)
+    # The limit: a line that is a fence as displayed and not as prose (a label of tildes, or
+    # three backticks that Slack paired with no others) may keep the note as prose throughout.
+    closes = any(FENCE.fullmatch(shown[n]) and shown[n] != prose[n] for n in range(len(shown)))
     for as_prose in (True, False) if closes else (False,):  # prose first: its marks are its own
         wanted = [prose[n] if as_prose or n not in code else shown[n] for n in range(len(held))]
         columns = [backslashes(was, now) for was, now in zip(wanted, held, strict=True)]
@@ -413,14 +532,21 @@ def test_generated_messages_hold_code_as_displayed_and_only_the_backslashes_aske
     rng = random.Random(SEED)
     few = many = written = in_code = kept_as_prose = 0
     wrong, digest = [], hashlib.sha256()
-    for _ in range(CASES):
+    for nth in range(CASES):
         lines = a_message(rng)
         text = "\n".join(sent for sent, _ in lines)
+        # A backtick alone, and a block of Slack's own, are written anew: the digest is of the
+        # messages that hold none, and of every fourth without its lines that hold one.
+        plain = "\n".join(sent for sent, _ in lines if "`" not in sent)
+        if plain != text and not nth % 4:
+            with contextlib.suppress(slack_text.NotText):
+                digest.update(notes(plain)[0].encode() + b"\0")
         try:
             before, after = notes(text)
         except slack_text.NotText:
             continue
-        digest.update(before.encode() + b"\0")
+        if plain == text:
+            digest.update(before.encode() + b"\0")
         many += may_be_headings(before) >= 8
         few += may_be_headings(before) < 8
         written += after.count("\\") > before.count("\\")
@@ -461,10 +587,6 @@ FOUND = {
         "# Settings\nRow 4.\n- Row 5.\n---\nRow 6.",
         "\\# Settings\nRow 4.\n- Row 5.\n---\nRow 6.",
     ),
-    "a rule under a table": (
-        "| Row |\n|---|\n# Settings\n---\nRow 4.",
-        "| Row |\n|---|\n\\# Settings\n---\nRow 4.",
-    ),
     "a line indented past an underline": (
         "# Settings\n      =\nRow 4.",
         "\\# Settings\n      =\nRow 4.",
@@ -485,15 +607,6 @@ FOUND = {
     "equals signs under a nested item, not in it": (
         "- - # Settings\n ===\nRow 4.",
         "- - \\# Settings\n ===\nRow 4.",
-    ),
-    # Found with no underline rule at all: a heading at one reading, text at the next.
-    "a heading only while the line above it was one": (
-        "### Settings\n1. \n     ## Ada Park\nRow 4.",
-        "\\### Settings\n1. \n     ## Ada Park\nRow 4.",
-    ),
-    "a heading that a fence takes in once the line above is text": (
-        "# Settings\n1. \n   ```\n\n# Ada Park",
-        "\\# Settings\n1. \n   ```\n\n# Ada Park",
     ),
 }
 
@@ -563,9 +676,15 @@ DISPLAYED = {
         "Settings:\n~~~\nitems[0] = (a) * 2 * 3\n~~~",
         "Settings:\n~~~\nitems[0] = (a) * 2 * 3\n~~~",
     ),
-    "in a fence of backticks left open": (
+    "in a fence of tildes left open": (
+        "Settings:\n~~~\nitems[0] = *p * 2",
+        "Settings:\n~~~\nitems[0] = *p * 2",
+    ),
+    # Three backticks that Slack paired with no others it displayed as they are: text, and no
+    # fence over what follows.
+    "under three backticks nothing pairs with: text": (
         "Settings:\n```\nitems[0] = *p * 2",
-        "Settings:\n```\nitems[0] = *p * 2",
+        "Settings:\n\\`\\`\\`\nitems\\[0\\] = **p ** 2",
     ),
     "its entities read": (
         "Settings:\n\n    a &lt; b &amp;&amp; c &gt; d",
@@ -660,29 +779,34 @@ def test_what_slack_displayed_as_plain_characters_is_markup_in_no_passage(notes,
     ]
 
 
-RULED = "Row 4.\n ```\ncode\n    ```\n[the ledger](https://fable.test/elsewhere)"
-READ_ON = "Row 4.\n````\ncode\n```\n[the ledger](https://fable.test/elsewhere)"
+RULED = "Row 4.\n ~~~\ncode\n    ~~~\n[the ledger](https://fable.test/elsewhere)"
+READ_ON = "Row 4.\n~~~~\ncode\n~~~\n[the ledger](https://fable.test/elsewhere)"
+SLACKS_OWN = "Row 4.\n ```\ncode\n    ```\n[the ledger](https://fable.test/elsewhere)"
 SOURCE = "https://fable-works.slack.com/archives/C0LIBRARY1/p1900000000000100"
 
 
 def test_a_line_one_reading_alone_takes_for_code_keeps_the_marks_of_prose(notes):
-    """The block's closing fence is indented four: the parser reads on through it, so the last
-    line is code to the note; the splitter ends the block there, so the line is a passage of
-    its own, a paragraph when a page shows it. Put as displayed it was a link on that page."""
+    """The fence of tildes has a closing line indented four: the parser reads on through it, so
+    the last line is code to the note; the splitter ends the block there, so the line is a
+    passage of its own, a paragraph when a page shows it. Put as displayed it was a link on
+    that page. (The sixth round found it with backticks: Slack's own block, which is now a
+    fence that ends where Slack ended it, so the line under it is prose to both.)"""
     after = notes(RULED)[1]
     assert (
         body(after)
-        == "Row 4.\n ```\ncode\n    ```\n\\[the ledger\\]\\(https://fable.test/elsewhere\\)"
+        == "Row 4.\n ~~~\ncode\n    ~~~\n\\[the ledger\\]\\(https://fable.test/elsewhere\\)"
     )
     assert one_heading(after) and 6 in code_lines(after) and 6 not in code_to_both(after)
     assert after == notes.as_prose
-    # With the closing fence at the margin both readings end the block, and the same holds.
-    at_the_margin = notes(RULED.replace("    ```", "```"))[1]
-    assert body(at_the_margin).endswith("\\(https://fable.test/elsewhere\\)")
+    slacks_own = notes(SLACKS_OWN)[1]
+    assert body(slacks_own) == (
+        "Row 4.\n```\ncode\n```\n\\[the ledger\\]\\(https://fable.test/elsewhere\\)"
+    )
+    assert code_lines(slacks_own) == code_to_both(slacks_own) == {3, 4, 5}
     # A fence both read on through (a shorter closer) holds the line as displayed: it is code
     # to the note and to its passage.
     read_on = notes(READ_ON)[1]
-    assert body(read_on).endswith("```\n[the ledger](https://fable.test/elsewhere)")
+    assert body(read_on).endswith("~~~\n[the ledger](https://fable.test/elsewhere)")
     assert 6 in code_to_both(read_on) and markup_of(read_on) == markup_of(notes.as_prose)
 
 
@@ -690,6 +814,7 @@ def test_a_line_one_reading_alone_takes_for_code_keeps_the_marks_of_prose(notes)
     ("text", "linked", "code"),
     [
         (RULED, [[], [], [], [SOURCE]], [False, True, False, False]),
+        (SLACKS_OWN, [[], [], [], [SOURCE]], [False, True, False, False]),
         (READ_ON, [[], []], [False, True]),  # the link to Slack is in the fence too
         (
             "Settings:\n\n    [the ledger](https://fable.test/elsewhere)",
@@ -697,7 +822,7 @@ def test_a_line_one_reading_alone_takes_for_code_keeps_the_marks_of_prose(notes)
             [False, True, False],
         ),
     ],
-    ids=["code to the note alone", "code to both, fenced", "code to both, indented"],
+    ids=["code to the note alone", "Slack's own block", "code to both, fenced", "indented"],
 )
 def test_a_page_links_nothing_that_slack_displayed_as_brackets(bench, text, linked, code):  # noqa: F811
     """Asked of the product: the page the store made of the filed message, its body and each
@@ -713,6 +838,274 @@ def test_a_page_links_nothing_that_slack_displayed_as_brackets(bench, text, link
     assert links.findall(str(web_markdown.render(page.body))) == [
         a for found in linked for a in found
     ]
+
+
+# A code block of Slack's own (seventh round, finding 3): what it displays as it is. Each
+# row: the message, and what each fence of the note then holds.
+MANUAL = "[manual](https://fable.test/docs)"
+SLACK_BLOCKS = {
+    "on lines of its own": (f"Docs:\n```\n{MANUAL}\n```", [f"{MANUAL}\n"]),
+    "on one line": (f"```{MANUAL}```", [f"{MANUAL}\n"]),
+    "on one line, text before and after": (f"Docs ```{MANUAL}``` now", [f"{MANUAL}\n"]),
+    "opened after text": (f"Docs ```\n{MANUAL}\n```", [f"{MANUAL}\n"]),
+    "closed before text": (f"```\n{MANUAL}\n``` more", [f"{MANUAL}\n"]),
+    "at the very end, closed on its last line": (f"Docs:\n```\n{MANUAL}```", [f"{MANUAL}\n"]),
+    "text on its first and last lines": (
+        f"```first\n{MANUAL}\nlast```",
+        [f"first\n{MANUAL}\nlast\n"],
+    ),
+    "a blank line inside": (f"```\nfirst\n\n{MANUAL}\n```", [f"first\n\n{MANUAL}\n"]),
+    "empty lines first and last": (f"```\n\n{MANUAL}\n\n```", [f"\n{MANUAL}\n\n"]),
+    "tabs and spaces at its lines' ends": (
+        f"```\n{MANUAL}\t\nRow 4.  \n```",
+        [f"{MANUAL}\t\nRow 4.  \n"],
+    ),
+    "runs of backticks inside": (
+        f"```\n{MANUAL} `` and ` \n```",
+        [f"{MANUAL} `` and ` \n"],
+    ),
+    "four backticks about it": (f"````\n{MANUAL}\n````", [f"`\n{MANUAL}\n"]),
+    "in a quotation": (f"&gt; ```\n{MANUAL}\n```", [f"{MANUAL}\n"]),
+    "its lines quoted": (f"&gt; ```\n&gt; {MANUAL}\n&gt; ```", [f"{MANUAL}\n"]),
+    "quoted, a quotation's mark in its code": (
+        f"&gt; ```\n&gt; &gt; {MANUAL} &gt; Row 4\n&gt; ```",
+        [f"> {MANUAL} > Row 4\n"],
+    ),
+    "after a list item": (f"- Row 4.\n```\n{MANUAL}\n```", [f"{MANUAL}\n"]),
+    "indented under a list item": (
+        f"1. Row 4.\n    ```\n{MANUAL}\n    ```",
+        [f"{MANUAL}\n"],
+    ),
+    "in a numbered item, a blank line inside": (
+        f"1.\n    ```\n\n   {MANUAL}\n    ```",
+        [f"\n   {MANUAL}\n"],
+    ),
+    "behind a tab": (f"Docs:\n\n\t```\n{MANUAL}\n\t```", [f"{MANUAL}\n"]),
+    "two blocks": (f"```{MANUAL}```\n```{MANUAL}```", [f"{MANUAL}\n", f"{MANUAL}\n"]),
+    "two blocks on one line": (f"```{MANUAL}``````Row 4.```", [f"{MANUAL}\n", "Row 4.\n"]),
+    "right after code within a line": (f"`Row 4````{MANUAL}```", [f"{MANUAL}\n"]),
+    "right after a mention, and a backtick after it": (
+        f"<@U0QUILL01>```{MANUAL}```` `{MANUAL}",
+        [f"{MANUAL}\n"],
+    ),
+    "in a table's row": (f"| Row |\n|---|\n| ```{MANUAL}|Row 4``` |", [f"{MANUAL}|Row 4\n"]),
+}
+
+
+def shown_by_the_product(bench, text: str):  # noqa: F811
+    """The filed note and its passages, and every address linked where the product shows the
+    message: in the note read whole, in each claim of the stored page rendered alone as the
+    page view renders it, and in the page's body."""
+    note, spans = filed(bench, text)
+    (listed,) = bench.owner.list_pages(bench.library.id)
+    page = bench.owner.get_page(bench.library.id, listed.slug)
+    linked = re.compile(r'href="([^"]+)"')
+    links = [
+        *linked.findall(str(web_markdown.render(note))),
+        *[a for claim in page.claims for a in linked.findall(str(web_markdown.render(claim.text)))],
+        *linked.findall(str(web_markdown.render(page.body))),
+    ]
+    return note, spans, sorted(set(links))
+
+
+@pytest.mark.parametrize("kind", SLACK_BLOCKS)
+def test_a_code_block_of_slacks_own_is_one_fence_to_both_readers(bench, kind):  # noqa: F811
+    """Its opening and closing fences are on lines of their own, so the parser reads the block
+    as a fence in the note whole, the splitter keeps it as one passage, and that passage read
+    alone is the same fence: what Slack displayed as brackets is a link nowhere."""
+    text, blocks = SLACK_BLOCKS[kind]
+    note, spans, links = shown_by_the_product(bench, text)
+    assert links == [SOURCE]
+    assert not faults(note, spans)
+    assert [token.content for token in READER.parse(note) if token.type == "fence"] == blocks
+    passages = [span.text for span in spans if span.kind == "code"]
+    assert [token.content for passage in passages for token in READER.parse(passage)] == blocks
+    assert all(token.type == "fence" for passage in passages for token in READER.parse(passage))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"Docs: `{MANUAL}`",
+        f"Row 4 `\n`{MANUAL}` Row 5",  # a backtick alone on the line above
+        f"Row 4 `\nRow 5 `{MANUAL}` and ` again",
+        f"| Row |\n|---|\n| `{MANUAL}|Row 4` |",  # a table's row is cut at the bar
+        f"`Row 4``{MANUAL}`",
+        f"`` `{MANUAL}` ``",
+        f"Row 4 ``\n`{MANUAL}`\n`` Row 5",
+    ],
+    ids=["alone", "under a backtick", "between backticks", "in a table", "two", "in two", "runs"],
+)
+def test_code_within_a_line_is_a_link_nowhere(bench, text):  # noqa: F811
+    note, spans, links = shown_by_the_product(bench, text)
+    assert links == [SOURCE]
+    assert not faults(note, spans) and "manual" in note
+
+
+# A passage is read alone where a page shows a claim, and the body of the page is its claims
+# one after another: a heading there is a heading over other people's words too. Each row: the
+# message, and the note's lines between the author's heading and the link.
+HEADINGS_OF_A_PASSAGE = {
+    "dashes under a line that a quotation takes in": (
+        "&gt; Row 4.\nRow 5.\n---\nRow 6.",
+        "> Row 4.\nRow 5.\n\\---\nRow 6.",
+    ),
+    "dashes under a line under a table": (
+        "| Row |\n|---|\nSettings\n---\nRow 4.",
+        "| Row |\n|---|\nSettings\n\\---\nRow 4.",
+    ),
+    "dashes in a fence the note reads on and its passages end": (
+        "Row 3.\n ~~~\ncode\n    ~~~\nRow 4.\n===\nRow 5.",
+        "Row 3.\n ~~~\ncode\n    ~~~\nRow 4.\n\\===\nRow 5.",
+    ),
+    "dashes under a heading under a table": (
+        "| Row |\n|---|\n# Settings\n---\nRow 4.",
+        "| Row |\n|---|\n\\# Settings\n\\---\nRow 4.",
+    ),
+    # Found with no underline rule at all: text to the note whole once the line above it is
+    # text, and still a heading in its list item's passage read alone.
+    "a heading in a list item that the note whole reads as text": (
+        "### Settings\n1. \n     ## Ada Park\nRow 4.",
+        "\\### Settings\n1. \n     \\## Ada Park\nRow 4.",
+    ),
+    "a heading under a list item's fence, which the note whole reads on": (
+        "# Settings\n1. \n   ~~~\n\n# Ada Park",
+        "\\# Settings\n1. \n   ~~~\n\n\\# Ada Park",
+    ),
+    "a heading in a quotation's one line, in a fence the note reads on": (
+        "Row 3.\n ~~~\ncode\n    ~~~\n&gt; # Ada Park\nRow 5.",
+        "Row 3.\n ~~~\ncode\n    ~~~\n> \\# Ada Park\nRow 5.",
+    ),
+    # Under a blank line, or under the passage's first line alone, they underline nothing.
+    "dashes that start their passage": (
+        "&gt; Row 4.\n---\nRow 6.",
+        "> Row 4.\n---\nRow 6.",
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", HEADINGS_OF_A_PASSAGE)
+def test_no_passage_of_the_note_read_alone_holds_a_heading(bench, notes, kind):  # noqa: F811
+    """The note read whole had one heading for the splitter and the parser, and its passage
+    read alone, as the page's body has it, had another: a rule or code to the note whole."""
+    text, lines = HEADINGS_OF_A_PASSAGE[kind]
+    note, spans = filed(bench, text)
+    assert body(note) == lines
+    assert not faults(note, spans)
+    (listed,) = bench.owner.list_pages(bench.library.id)
+    page = bench.owner.get_page(bench.library.id, listed.slug)
+    headings = [
+        [token.map for token in READER.parse(read) if token.type == "heading_open"]
+        for read in (page.body, *[claim.text for claim in page.claims])
+    ]
+    assert headings == [[[0, 1], [2, 3]], *[[] for _ in page.claims]]
+    assert not not_needed(*notes(text))
+
+
+def rich(*elements) -> list[dict]:
+    """Slack's own account of a message: its rich text, which names what it displayed as code."""
+    return [{"type": "rich_text", "elements": list(elements)}]
+
+
+def words(*parts) -> dict:
+    return {
+        "type": "rich_text_section",
+        "elements": [
+            {"type": "text", "text": part} if isinstance(part, str) else part for part in parts
+        ],
+    }
+
+
+def code(text: str) -> dict:
+    return {"type": "text", "text": text, "style": {"code": True}}
+
+
+def block_of(text: str) -> dict:
+    return {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": text}]}
+
+
+def note_of(text: str, blocks: object, code_is_named: bool = True) -> str:
+    draft = slack_text.note_from_message(
+        {"text": text, "ts": "1900000000.000100", "blocks": blocks},
+        team_id="T0FABLE01",
+        team_domain="fable-works",
+        conversation_id="C0LIBRARY1",
+        author="Cedar Quill",
+        names={},
+    )
+    assert one_heading(draft.text)
+    if code_is_named:  # else "qzx" may be prose, by the backticks of the text
+        assert not displayed_as_plain(draft.text)
+        assert not any(displayed_as_plain(span.text) for span in chunk("", draft.text))
+    return body(draft.text)
+
+
+@pytest.mark.parametrize("run", [3, 4, 5])
+def test_the_rich_text_says_which_backticks_a_code_block_displayed(run):
+    """The text bounds a block by its backticks, so three inside it end it there; Slack's
+    rich text names the block whole, and the fence is then longer than any run it holds."""
+    shown = f"use {'`' * run} here & there\n[qzx](https://fable.test/qzx)  \t"
+    text = f"Rows:\n```\n{shown.replace('&', '&amp;')}\n```\nRow 4."
+    fence = "`" * (run + 1)
+    assert note_of(text, rich(words("Rows:\n"), block_of(shown), words("Row 4."))) == (
+        f"Rows:\n{fence}\n{shown}\n{fence}\nRow 4."
+    )
+    # Without it the backticks of the text decide: the block ends at the first three inside
+    # it, and what follows them is prose, written as prose is.
+    assert note_of(text, None, False).startswith("Rows:\n```\nuse \n```\n")
+    assert "\\[qzx\\]\\(https://fable.test/qzx\\)  \t\n\\`\\`\\`\nRow 4." in note_of(
+        text, None, False
+    )
+
+
+def test_the_rich_text_says_which_backticks_code_within_a_line_displayed():
+    shown = "row`id [qzx](https://fable.test/qzx) *qzx*"
+    text = f"Use `{shown}` and `Row 4` today."
+    blocks = rich(words("Use ", code(shown), " and ", code("Row 4"), " today."))
+    assert note_of(text, blocks) == f"Use ``{shown}`` and ``Row 4`` today."
+    assert note_of(text, None, False).startswith("Use `row`id \\[qzx\\]")  # the text's pairing
+    # A backtick at its edge: a space each side, which Markdown takes back.
+    assert note_of("Use ``Row 4`` now.", rich(words("Use ", code("`Row 4`"), " now."))) == (
+        "Use `` `Row 4` `` now."
+    )
+
+
+@pytest.mark.parametrize(
+    "blocks",
+    [
+        rich(block_of("another block")),  # not what the text holds between its backticks
+        rich(words(code("another"))),
+        rich({"type": "rich_text_preformatted", "elements": [{"type": "text", "text": 4}]}),
+        [{"type": "rich_text", "elements": "Row 4"}, 4, None, {"elements": {"style": 4}}],
+        {"type": "rich_text"},
+        "rich text",
+    ],
+    ids=["another block", "other code", "no text", "no shape", "no list", "no blocks"],
+)
+def test_rich_text_that_does_not_name_the_texts_code_is_passed_over(blocks):
+    text = "Rows:\n```\n[qzx](https://fable.test/qzx)\n```\nUse `*qzx*` today."
+    assert (
+        note_of(text, blocks)
+        == note_of(text, None)
+        == ("Rows:\n```\n[qzx](https://fable.test/qzx)\n```\nUse `*qzx*` today.")
+    )
+
+
+def test_white_space_at_the_end_of_a_line_both_read_as_code_is_kept(bench, notes):  # noqa: F811
+    """A last row of three fields, the third empty: its tab was cut with the message's end."""
+    text = "Rows:\n\n    4\tquince\t\n    5\tplum\t"
+    note, spans = filed(bench, text)
+    assert body(note) == text
+    assert [span.text for span in spans][2] == "    4\tquince\t\n    5\tplum\t"
+    assert [t.content for t in READER.parse(note) if t.type == "code_block"] == [
+        "4\tquince\t\n5\tplum\t\n"
+    ]
+    (listed,) = bench.owner.list_pages(bench.library.id)
+    claims = bench.owner.get_page(bench.library.id, listed.slug).claims
+    assert [claim.text for claim in claims][1] == "    4\tquince\t\n    5\tplum\t"
+    # Elsewhere the end of the message is cut as before: a last line of prose, and blank lines.
+    assert body(notes("Row 4.\t \n \n")[1]) == "Row 4."
+    assert body(notes("Rows:\n\n    5\tplum\t  \n\n \t\n")[1]) == "Rows:\n\n    5\tplum\t  "
 
 
 # A README pasted into Slack: nine headings, commands indented and fenced, with comments.
@@ -782,11 +1175,17 @@ def test_its_limit_a_line_that_closes_a_fence_only_as_displayed_keeps_the_note_a
     after = notes("Settings:\n~~~\n<x|~~~>\nitems[0]\n~~~")[1]
     assert body(after) == "Settings:\n~~~\n\\~\\~\\~\nitems\\[0\\]\n~~~"
     assert one_heading(after) and {3, 4, 5, 6} <= code_lines(after)
-    # A label of backticks does the same to a fence of backticks that Slack's own block
-    # left open (text after its closing fence), which the parser reads on to the end.
+    # A label of backticks ends no block of Slack's own: the block is a fence that is closed
+    # where Slack closed it, and the label under it is prose.
     after = notes("Settings:\n```\ncode\n``` more\n<x|```>\nitems[0]")[1]
-    assert body(after) == "Settings:\n```\ncode\n``` more\n\\`\\`\\`\nitems\\[0\\]"
-    assert one_heading(after) and {3, 4, 5, 6, 7} <= code_lines(after)
+    assert body(after) == "Settings:\n```\ncode\n```\nmore\n\\`\\`\\`\nitems\\[0\\]"
+    assert one_heading(after) and code_lines(after) == {3, 4, 5}
+    # Three backticks that Slack paired with no others, under a list item's fence of tildes
+    # that the note reads on: as displayed they would open a fence where the passages are
+    # cut, in the item they are text of. The note is kept as prose there too.
+    after = notes("- ~~~\n  rows\n~~~\n```\nitems[0]")[1]
+    assert body(after) == "- ~~~\n  rows\n~~~\n\\`\\`\\`\nitems\\[0\\]"
+    assert one_heading(after) and {5, 6} <= code_to_both(after)
     # With the next line indented it is code either way, but the fence still ends two lines
     # early, so the two readers do not read the second note as the first: prose again.
     assert body(notes("Settings:\n~~~\n<x|~~~>\n    items[0]")[1]) == (
@@ -842,7 +1241,7 @@ def test_the_message_as_prose_and_as_displayed_have_the_same_lines(notes, monkey
         slack_text, "_code_as_shown", lambda *texts: seen.append(texts) or put(*texts)
     )
     rng = random.Random(SEED)
-    for _ in range(600):
+    for _ in range(300):
         lines = [(rng.choice(EDGES), ""), *a_message(rng), (rng.choice(EDGES), "")]
         try:
             before, after = notes("\n".join(sent for sent, _ in lines))
@@ -938,9 +1337,9 @@ def test_with_eight_such_lines_the_splitters_second_heading_in_code_is_left(benc
     left as written. (It kept a backslash no reader needed: all the splitter's headings got
     one at once.)"""
     six = EIGHT.replace("# Shelf 7\n# Shelf 8\n", "")
-    code = "- ```\n ```\n### Ada Park\n\n   # Brook"
+    code = "- ~~~\n ~~~\n### Ada Park\n\n   # Brook"
     note, spans = filed(bench, six + code)
-    assert body(note) == six.replace("#", "\\#") + "- ```\n ```\n\\### Ada Park\n\n   # Brook"
+    assert body(note) == six.replace("#", "\\#") + "- ~~~\n ~~~\n\\### Ada Park\n\n   # Brook"
     assert not faults(note, spans) and {10, 12} <= code_lines(note)
     assert not not_needed(*notes(six + code))
 

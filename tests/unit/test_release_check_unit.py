@@ -378,6 +378,25 @@ def test_gh_that_fails_or_cannot_list_every_release_refuses_the_tag(tmp_path, ca
         assert capsys.readouterr().err == f"release refused: {said}\n"
 
 
+@pytest.mark.parametrize(
+    ("listed", "passes"),
+    [(999, True), (1000, False)],
+)
+def test_the_listing_s_cap_at_its_boundary(tmp_path, capsys, listed, passes):
+    """999 releases, candidates' pre-releases counted, are all of them; 1,000 may not be, and
+    the tag is refused saying so rather than passed on a listing that may be cut short."""
+    names = [{"tagName": f"v0.0.{n}-rc.1" if n % 2 else f"v0.0.{n}"} for n in range(listed)]
+    gh = FakeGh(out=json.dumps(names))
+    code = release_check.main(["v1.2.3", *files(tmp_path), "--not-released"], gh=gh)
+    assert (code == 0) is passes
+    if not passes:
+        assert capsys.readouterr().err == (
+            "release refused: gh listed 1000 releases, the most it asks for,"
+            " so v1.2.3 may have one\n"
+        )
+    assert release_check.RELEASES_ASKED == 1000
+
+
 def test_gh_is_not_asked_without_the_flag_or_for_a_tag_already_refused(tmp_path):
     gh = FakeGh(out='[{"tagName": "v1.2.3"}]')
     assert release_check.main(["v1.2.3", *files(tmp_path)], gh=gh) == 0
@@ -471,8 +490,8 @@ def test_a_candidate_needs_the_version_its_section_its_entry_and_a_date_not_in_t
 
 def test_the_notes_of_a_candidate_begin_with_the_sentence_that_says_what_it_is(tmp_path, capsys):
     said = (
-        "This is release candidate v1.2.3-rc.2: its files carry the version 1.2.3 and are"
-        " replaced by the release v1.2.3.\n\n"
+        "This is release candidate v1.2.3-rc.2: its files carry the version 1.2.3, and the"
+        " release v1.2.3 is a GitHub release of its own, with files of its own.\n\n"
     )
     assert release_check.notes("1.2.3", CHANGELOG, "v1.2.3-rc.2") == said + (
         release_check.notes("1.2.3", CHANGELOG)

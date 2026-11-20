@@ -135,7 +135,7 @@ from cairn.sources import (
     holds_secret,
 )
 from cairn.sources import url as source_url
-from cairn.sources.config import ENV_NAME, check_projects
+from cairn.sources.config import check_env_name, check_projects
 from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
 from cairn.sources.url import URL_MAX as URL_MAX
@@ -259,22 +259,18 @@ def check_config(config: object) -> dict[str, Any]:
     if "url" not in config:
         raise ValueError("a connector source needs url: the connector's address")
     url = check_url(config["url"])
-    if "secret_env" not in config:
-        raise ValueError(
-            "a connector source needs secret_env: the name of the environment variable that"
-            " holds the secret the connector checks"
-        )
-    secret_env = config["secret_env"]
-    if isinstance(secret_env, str) and looks_like_a_credential(secret_env):
-        raise ValueError(
-            "secret_env holds what looks like a secret: put the secret in an environment"
-            " variable of the process that syncs, and name that variable here"
-        )
-    if not isinstance(secret_env, str) or not ENV_NAME.fullmatch(secret_env):
-        raise ValueError(
+    secret_env = check_env_name(
+        config,
+        "secret_env",
+        kind="connector",
+        holds="the secret the connector checks",
+        secret="secret",
+        looks_like=looks_like_a_credential,
+        wrong=(
             "secret_env names an environment variable (capitals, digits and _, at most 128),"
             " which holds the secret: the secret itself never goes in a config"
-        )
+        ),
+    )
     default, least, most = LIMIT
     asked = config.get("limit", default)
     if isinstance(asked, bool) or not isinstance(asked, int) or not least <= asked <= most:

@@ -145,10 +145,9 @@ from typing import Any
 import httpx
 
 from cairn.sources import Clock, NoteDraft, Pulled, Skip, SourceError, SourceKind, fit, names
-from cairn.sources.config import check_projects
+from cairn.sources.config import check_env_name, check_projects
 from cairn.sources.google_api import (
     EMAIL,
-    ENV_NAME,
     RETRIES,
     SETTING_NAME,
     SIGN_IN_LATE,
@@ -279,24 +278,16 @@ def check_config(config: object) -> dict[str, Any]:
             "a google_meet source does not take one of the settings given: it takes"
             f" {', '.join(SETTINGS)}"
         )
-    variable = config.get("credentials_env")
-    if variable is None:
-        raise ValueError(
-            "a google_meet source needs credentials_env: the name of the environment variable"
-            " that holds the Google credential"
+    checked: dict[str, Any] = {
+        "credentials_env": check_env_name(
+            config,
+            "credentials_env",
+            kind="google_meet",
+            holds="the Google credential",
+            secret="credential",
+            looks_like=_looks_like_a_credential,
         )
-    if isinstance(variable, str) and _looks_like_a_credential(variable):
-        raise ValueError(
-            "credentials_env holds what looks like a credential: put the credential in an"
-            " environment variable of the process that syncs, and name that variable here"
-        )
-    if not isinstance(variable, str) or not ENV_NAME.fullmatch(variable):
-        raise ValueError(
-            "credentials_env names an environment variable (capitals, digits and _, at most"
-            " 128), which holds the Google credential: the credential itself never goes in a"
-            " config"
-        )
-    checked: dict[str, Any] = {"credentials_env": variable}
+    }
     subject = config.get("subject")
     if subject is not None:
         if isinstance(subject, str) and _looks_like_a_credential(subject):

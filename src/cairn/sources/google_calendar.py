@@ -140,10 +140,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from cairn.sources import Clock, NoteDraft, Pulled, Skip, SourceError, SourceKind, fit, names
-from cairn.sources.config import check_projects
+from cairn.sources.config import check_env_name, check_projects
 from cairn.sources.google_api import (
     EMAIL,
-    ENV_NAME,
     RETRIES,
     SETTING_NAME,
     SIGN_IN_LATE,
@@ -221,7 +220,16 @@ def check_config(config: object) -> dict[str, Any]:
         raise ValueError(
             f"a {KIND_NAME} source does not take one of the settings given: {_what_it_takes()}"
         )
-    checked: dict[str, Any] = {"credentials_env": _check_variable(config.get("credentials_env"))}
+    checked: dict[str, Any] = {
+        "credentials_env": check_env_name(
+            config,
+            "credentials_env",
+            kind=KIND_NAME,
+            holds="the Google credential",
+            secret="credential",
+            looks_like=looks_like_a_credential,
+        )
+    }
     subject = config.get("subject")
     if subject is not None:
         if isinstance(subject, str) and looks_like_a_credential(subject):
@@ -237,26 +245,6 @@ def check_config(config: object) -> dict[str, Any]:
     )
     checked["base_url"] = check_base_url(config.get("base_url", DEFAULT_BASE_URL), API)
     return checked
-
-
-def _check_variable(variable: object) -> str:
-    if variable is None:
-        raise ValueError(
-            f"a {KIND_NAME} source needs credentials_env: the name of the environment variable"
-            " that holds the Google credential"
-        )
-    if isinstance(variable, str) and looks_like_a_credential(variable):
-        raise ValueError(
-            "credentials_env holds what looks like a credential: put the credential in an"
-            " environment variable of the process that syncs, and name that variable here"
-        )
-    if not isinstance(variable, str) or not ENV_NAME.fullmatch(variable):
-        raise ValueError(
-            "credentials_env names an environment variable (capitals, digits and _, at most"
-            " 128), which holds the Google credential: the credential itself never goes in a"
-            " config"
-        )
-    return variable
 
 
 def _check_calendar_id(value: object) -> str:

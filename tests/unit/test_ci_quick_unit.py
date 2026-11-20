@@ -21,8 +21,8 @@ ON = "needs.changes.outputs.quick != 'false'"
 def test_the_job_publish_needs_runs_on_hosted_amd64_reading_the_repository_only():
     assert "quick" in needs(JOBS["publish"])
     assert needs(QUICK) == {"changes"}
-    # The AWS lock holds the providers' hashes for linux_amd64 and darwin_arm64 only, so not
-    # CAIRN_GATE_RUNNER, which may name an arm64 runner.
+    # The hosted runner is where the stacks' `tofu test` has been seen to pass; the locks now
+    # hold hashes for five platforms, so this is a choice of where it is proven, not a need.
     assert QUICK["runs-on"] == "ubuntu-latest"
     assert QUICK["permissions"] == {"contents": "read"}
     configuration = yaml.safe_dump(QUICK)

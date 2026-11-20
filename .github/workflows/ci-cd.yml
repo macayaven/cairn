@@ -721,8 +721,9 @@ jobs:
   # The quick deploy's OpenTofu definitions (infra/quick/aws and infra/quick/gcp), with no
   # cloud credentials: formatting, init from the committed lock files (read-only, no
   # backend), validate, and their mocked `tofu test`. On GitHub's hosted linux/amd64 runner
-  # and not on CAIRN_GATE_RUNNER: the AWS lock holds the providers' hashes for linux_amd64
-  # and darwin_arm64 only. Its steps run when the change touches what scripts/ci_changes.py
+  # and not on CAIRN_GATE_RUNNER: that is where its `tofu test` has been seen to pass (the
+  # lock files hold the providers' hashes for linux and macOS on amd64 and arm64 and for
+  # Windows on amd64, so `tofu init` works on those). Its steps run when the change touches what scripts/ci_changes.py
   # lists in QUICK_WORK, and always on a tag; the job itself always runs, so that `publish`,
   # which needs it, is never skipped for it.
   quick:

@@ -461,3 +461,14 @@ def test_the_specification_says_the_graph_is_on_unless_switched_off():
     assert "behind a switch that is off" not in scope
     assert "`serve --no-graph-explorer`" in scope
     assert cli.GRAPH_EXPLORER_BY_DEFAULT is True
+
+
+def test_the_changelog_says_models_of_the_model_the_operator_connects():
+    """Sixth report, finding 4's remark: what a project's people decide is what the model the
+    operator connects is sent; assistants people connect read what they reach. So the
+    changelog does not say that every model is kept out."""
+    sources = next(
+        line for line in read("CHANGELOG.md").splitlines() if line.startswith("- **Sources.**")
+    )
+    assert "every model" not in sources
+    assert "a project's people can allow that model, keep it out, or leave it undecided" in sources

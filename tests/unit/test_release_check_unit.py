@@ -173,7 +173,7 @@ def test_the_repository_itself_would_release_its_version(capsys):
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
         "version"
     ]
-    today = ["--today", "2026-11-19"]  # the section's date: pinned, not the clock's
+    today = ["--today", "2026-11-20"]  # the section's date: pinned, not the clock's
     assert release_check.main([f"v{version}", "--root", str(ROOT), *today]) == 0
     assert release_check.main([f"v{version}", "--notes", "--root", str(ROOT), *today]) == 0
     text = capsys.readouterr().out.split("\n", 1)[1]

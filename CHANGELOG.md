@@ -6,7 +6,7 @@ Each release has a section headed `## <version> - <date>`, and the tag `v<versio
 
 ## Unreleased
 
-## 0.1.0 - 2026-11-19
+## 0.1.0 - 2026-11-20
 
 The first public version.
 

@@ -521,13 +521,28 @@ def test_a_rewrite_that_did_not_happen_does_not_say_a_deletion_came(db, monkeypa
         store.close()
 
 
+RUN_NOTHING_DUE_SAYS = (
+    "`compact skipped: nothing was due once another compaction ended in N ms`: another"
+    " compaction finished between this one's decision and its start; nothing was left to do,"
+    " and the file is not rewritten again."
+)
+RUN_FAILED_SAYS = (
+    "`compact failed: <error type> in N ms`: the run stopped on an error, named by its type"
+    " and never its text; it does not wait for the interval, and tries again at the next poll."
+)
+
+
 def test_the_compactor_rewrites_nothing_when_another_compaction_did_it_since_its_decision(
     two, db, caplog
 ):
     """The command line's `compact` finishes between the server's decision (due) and its
-    run: read again once the lock is held, nothing is due, and the file is not rewritten."""
+    run: read again once the lock is held, nothing is due, and the file is not rewritten.
+    The run guide's sentence for that line, once, is what this shows."""
+    from guide_source import guide_source
+
     from cairn.web.compactor import Compactor
 
+    assert _one_line(guide_source("run")).count(RUN_NOTHING_DUE_SAYS) == 1
     server, command = two
     deleted(server)
     compactor = Compactor(server, hours=24, clock=lambda: T0)
@@ -608,3 +623,39 @@ def test_a_full_command_that_meets_a_deletion_says_a_rewrite_is_due(db, monkeypa
     out = capsys.readouterr().out
     assert f"compacted {db}" in out
     assert f"{STILL_DUE}: run compact --if-due again" in out
+
+
+def test_the_run_guide_says_a_failed_run_is_named_by_type_and_tried_again_at_the_next_poll(
+    two, db, monkeypatch, caplog
+):
+    """The sentence, once, then what it says: a run that stops on an error writes the
+    error's type and not its text, the next decision is due at once (no interval is waited),
+    and the next run does the work."""
+    from guide_source import guide_source
+
+    from cairn.web.compactor import Compactor
+
+    assert _one_line(guide_source("run")).count(RUN_FAILED_SAYS) == 1
+    server, _ = two
+    deleted(server)
+    compactor = Compactor(server, hours=24, clock=lambda: T0, ticks=lambda: 0.0)
+    assert compactor.due() is True
+    real = server.compact
+
+    def broken() -> None:
+        raise RuntimeError("the text of a row that must not be logged")
+
+    monkeypatch.setattr(server, "compact", broken)
+    with caplog.at_level(logging.INFO, logger="cairn.access"):
+        assert compactor.run_once() is False
+    (line,) = access_lines(caplog)
+    assert line.startswith("compact failed: RuntimeError in ")
+    assert "must not be logged" not in line
+    assert compactor.due() is True  # on the same tick: the next poll, not the interval
+    monkeypatch.setattr(server, "compact", real)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="cairn.access"):
+        assert compactor.run_once() is True
+    (line,) = access_lines(caplog)
+    assert line.startswith("compact done in ")
+    assert compactor.due() is False

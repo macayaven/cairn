@@ -48,7 +48,7 @@ def test_the_package_the_pages_and_the_command_line_say_the_version(tmp_path):
 
 def test_the_changelog_dates_the_version_and_says_what_slack_was_tested_against():
     changes = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert f"\n## {VERSION} - 2026-11-19\n" in changes
+    assert f"\n## {VERSION} - 2026-11-20\n" in changes
     section = changes[changes.index(f"## {VERSION} - ") :]
     slack = next(line for line in section.splitlines() if line.startswith("- **From Slack.**"))
     assert "Off unless switched on with `serve --slack`." in slack

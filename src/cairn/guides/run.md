@@ -305,8 +305,8 @@ After a workspace, a project or a note is deleted, `serve` compacts the database
 - `compact not finished: another connection held the file (no rewrite: only the write-ahead log was due) in N ms`: the next try, after the interval or at the first poll after a restart, empties the log alone: a rewrite is not repeated for the same deletion once it is recorded (one killed before its record runs again); this one found the log still held.
 - `compact done (no rewrite: only the write-ahead log was due) in N ms`: the log is emptied, and the compaction is done. A deletion after the rewrite starts a new one.
 - `compact skipped: another compaction is running on this database in N ms`: the command line's `compact` was running; nothing changed, and it tries again at the next poll.
-- `compact skipped: nothing was due once another compaction ended in N ms`: the command line's `compact` did the work while this one waited; nothing is left to do.
-- `compact failed: <error type> in N ms`: the run stopped on an error, named by its type only; it tries again at the next poll.
+- `compact skipped: nothing was due once another compaction ended in N ms`: another compaction finished between this one's decision and its start; nothing was left to do, and the file is not rewritten again.
+- `compact failed: <error type> in N ms`: the run stopped on an error, named by its type and never its text; it does not wait for the interval, and tries again at the next poll.
 - A line whose parentheses end with `a deletion recorded during the run still asks for a rewrite`: what it names was done, and a workspace deleted while it ran still needs a rewrite of its own, after the interval.
 
 ## A graph to explore

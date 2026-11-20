@@ -419,3 +419,28 @@ def test_a_person_is_answered_for_the_projects_their_rule_reaches(store):
         "retention": [(SHARES, "--audit-keep", "inline_code", 2)]
     }
     assert brook.related_pages(private.id, "deploy") is None
+
+
+def test_the_rules_and_the_read_ask_no_model_and_nothing_of_the_web_layer():
+    """Their imports, read: the fact extractor, the passages' model and the index's own match.
+    No model, no network and no web layer can be asked by code that does not import them."""
+    import ast
+    from pathlib import Path
+
+    from cairn import relations
+
+    def imported(module) -> set[str]:
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                found.add(node.module)
+            elif isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+        return {name for name in found if name.split(".")[0] == "cairn"}
+
+    assert imported(relations) == {"cairn.facts", "cairn.spans"}
+    assert imported(relating) == {"cairn", "cairn.relations", "cairn.spans", "cairn.store"}
+    source = Path(relating.__file__).read_text(encoding="utf-8")
+    assert "from cairn import relations\n" in source
+    assert "from cairn.store import ranking\n" in source

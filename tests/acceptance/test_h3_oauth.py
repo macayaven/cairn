@@ -87,7 +87,10 @@ REDIRECT = "http://127.0.0.1:33418/callback"
 CLIENT_NAME = "h3-test-agent"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
-TOOLS = {"projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph"}
+TOOLS = {
+    "projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph",
+    "related",  # KG1
+}  # fmt: skip
 NOTE = "# Retry policy\n\nQuill retries 3 times before failing.\n"
 
 

@@ -388,6 +388,24 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       version of the page holds it, with the passages that version cites; None: the latest)
   overview(project) -> {"project", "kind", "guidance", "notes", "pages": [{"slug", "title",
       "version", "claims", "updated_at"}]}
+  related(project, slug, limit=8) -> {"project", "page", "title", "version", "related":
+      [{"page", "title", "version", "why": [{"kind": "shares", "term", "term_kind", "pages",
+      "here", "there"} or {"kind": "mentioned_by", "term", "term_kind": "title", "there"}],
+      "more"}], "searched": {"complete", "terms_searched", "terms_left_out", "terms_cut",
+      "title_cut", "claims_read", "pages_left_out"}}
+      (KG1; cairn.memory, Related pages; the rules are cairn.relations and the read
+      cairn.store.relating.) The pages of the project most related to the page, best first:
+      one that states a term the page states (a url, a path, a flag, a version, or inline
+      code that is not a plain word; none that more than 5 pages hold), or whose claim holds
+      the page's title. `here` and `there` are claims as a hit of `recall` carries one:
+      "claim_id", "text", "passage_ids", "outside", "written_by", "written_at". `why` holds 3
+      reasons at most and `more` counts the rest; `limit` is 1 to 20, and any other is a
+      tool error that says so. Worked out by rule when asked, from the pages as they are, in
+      one read: nothing of a relation is stored, no model is asked, and a forgotten note is
+      out of it with the write that forgets it. Not in this version: a relation across
+      projects, the pages a page mentions, paths of several steps, groups over a whole
+      project, anything inferred from meaning. `searched` says what the read's bounds left
+      out, always. A read of the page for the audit log (read.page), which never holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments
@@ -500,6 +518,9 @@ REST (JSON; project = id or name; unknown project or page, or another account's 
   and the composer's form again (400) also say; a source's draft like that is skipped
 - GET /api/projects/{project}/pages; GET /api/projects/{project}/pages/{slug}[?version=N]
 - GET /api/projects/{project}/pages/{slug}/claims/{claim_id}/evidence[?version=N] (E1)
+- GET /api/projects/{project}/pages/{slug}/related[?limit=N] (KG1): what `related` answers;
+  N is 1 to 20 (8 when left out), and any other is a 400 that says so; a page that is not
+  there is the 404 `page` gives, with the nearest page names
 - GET /api/search?q=...[&project=...][&limit=N]: what `recall` answers, `searched` included;
   N is 1 to 50 (8 when left out), and any other is a 400 that says so (Q3)
 - GET /api/usage: the workspace's plan and what it has used of each cap (Plans, below)

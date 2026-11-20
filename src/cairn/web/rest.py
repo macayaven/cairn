@@ -73,6 +73,7 @@ from starlette.routing import Route
 from cairn.kinds import GENERAL
 from cairn.memory import (
     HITS_RANGE,
+    RELATED_RANGE,
     WAITING,
     BadRequest,
     Conflict,
@@ -223,6 +224,16 @@ def rest_routes() -> list[Route]:
         limit, before = _whole_number(query, "limit"), _whole_number(query, "before")
         memory = _memory(request)
         found = memory.page(params["project"], params["slug"], version, limit=limit, before=before)
+        return JSONResponse(found)
+
+    def related(request: Request) -> Response:
+        """GET /api/projects/<project>/pages/<slug>/related: the pages related to the page,
+        each with why (Memory.related); `limit`, 1 to 20, 8 when left out."""
+        limit = _whole_number(_query(request, "limit"), "limit", RELATED_RANGE)
+        params = request.path_params
+        found = _memory(request).related(
+            params["project"], params["slug"], 8 if limit is None else limit
+        )
         return JSONResponse(found)
 
     def evidence(request: Request) -> Response:
@@ -420,6 +431,7 @@ def rest_routes() -> list[Route]:
         ),
         Route(pages_path, _logged("pages", pages)),
         Route(pages_path + "/{slug}", _logged("page", page)),
+        Route(pages_path + "/{slug}/related", _logged("related", related)),
         Route(pages_path + "/{slug}/claims/{claim_id}/evidence", _logged("evidence", evidence)),
         Route("/api/search", _logged("recall", search)),
         Route("/api/usage", _logged("usage", usage), methods=["GET"]),

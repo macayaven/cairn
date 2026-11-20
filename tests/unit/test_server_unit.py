@@ -616,6 +616,7 @@ def test_read_tools_say_they_are_read_only(env):
         "note": False,
         "new_project": False,
         "graph": True,  # 8.3
+        "related": True,  # KG1
     }
     assert all(t["description"] for t in tools)
 
@@ -1367,4 +1368,5 @@ def test_no_tool_takes_the_request_context_as_an_argument(env):
         ),
         "overview": ({"project", "limit", "after"}, {"project"}),  # Q1
         "graph": ({"project", "limit"}, {"project"}),  # 8.3
+        "related": ({"project", "slug", "limit"}, {"project", "slug"}),  # KG1
     }

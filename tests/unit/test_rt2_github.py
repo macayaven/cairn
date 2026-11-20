@@ -251,6 +251,7 @@ class Event:
     truth_before: dict | None = None
     truth_after: dict | None = None
     shown: object = None  # what a read answered
+    others: tuple = ()  # a listing: the other tags' published stable releases it showed
     command: int = 0  # which gh call of the attempt
 
 
@@ -524,6 +525,8 @@ class Hub:
                 "target_commitish": "main",
             }
             self.write("person", ("create", rid, fields), "person")
+            if act == "second-public" and not fields["prerelease"]:
+                self.write("person", ("latest", rid), "person")
         else:
             ops = act if isinstance(act, list) else [act]
             for op in ops:
@@ -532,6 +535,11 @@ class Hub:
                 rid = op[1] if op[0] != "tag" else None
                 kind = "person"
                 self.write(kind, op, "person")
+            r = self._truth["releases"].get(rid) if rid is not None else None
+            was = before["releases"].get(rid) if rid is not None else None
+            published = r is not None and was is not None and was["draft"] and not r["draft"]
+            if published and not r["prerelease"]:  # by hand: make_latest's default, true
+                self.write("person", ("latest", rid), "person")
         self.event(
             "person", f"a person {name}", rid=rid, truth_before=before, truth_after=self.snap()
         )
@@ -683,12 +691,18 @@ class Hub:
             ordered = [self.to_json(r) for _, r in sorted(view["releases"].items(), reverse=True)]
             chunk = ordered[page * per_page : (page + 1) * per_page]
             shown = [r for r in chunk if r["tag_name"] == self.tag]
+            others = tuple(
+                r["tag_name"]
+                for r in chunk
+                if r["tag_name"] != self.tag and not r["draft"] and not r["prerelease"]
+            )
             self.event(
                 "request",
                 f"GET releases page {page + 1}",
                 kind="listing",
                 truth_before=before,
                 shown=shown,
+                others=others,
             )
             out.append(jq_eval(jq, json.dumps(chunk)) if jq else json.dumps(chunk))
             if len(ordered) <= (page + 1) * per_page:
@@ -863,11 +877,13 @@ class Hub:
             self.write("publish", ("tag", r["tag_name"], sha), "step")
         # make_latest (REST docs): "true" makes it Latest, "false" leaves Latest where it is,
         # and left out it defaults to true for a release newly published
-        latest = fields.get("make_latest", "true")
-        if publishing and not r["prerelease"] and latest in ("true", True):
-            self.write("publish", ("latest", rid), "step")
-        elif latest not in ("true", True, "false", False):
+        latest = fields.get("make_latest", "true" if publishing else None)
+        now = self._truth["releases"].get(rid)
+        if latest not in (None, "true", True, "false", False):
             raise Unmodelled(f"make_latest={latest}")
+        # drafts and pre-releases cannot be Latest
+        if latest in ("true", True) and now is not None and not now["draft"] | now["prerelease"]:
+            self.write("publish", ("latest", rid), "step")
         self.event(
             "request",
             f"PATCH releases/{rid} {fields}" + (": done, reply lost" if fate == "lost" else ""),

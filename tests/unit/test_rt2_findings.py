@@ -250,3 +250,14 @@ def test_a_title_edited_in_the_stated_race_is_reported_on_a_draft_that_is_public
     Invariant 5 (every line true)."""
     ex = replay([(r"person, before PATCH", "edits the title")], lag=lags(publish=1))
     assert not broken(ex, "5"), trace(ex)
+
+
+def test_a_draft_a_person_changed_in_the_first_attempt_is_said_left_by_an_earlier_attempt():
+    """A person replaces the draft's wheel with a file of the same size before the job's first
+    read of it by id. The fetch by the new asset's id gives other bytes, and the job stops on
+    'is a draft that an earlier attempt of run ... left unfinished' in the run's first attempt,
+    which made that draft itself; no upload was cut. The advice (delete it and re-run) is safe.
+    Invariant 5 (every line true); the README row gives the cause as a cut upload."""
+    ex = replay([(r"person, before GET releases/88$", "replaces the wheel")])
+    assert "left unfinished" in ex.attempts[0].errors[0], trace(ex)
+    assert not broken(ex, "5"), trace(ex)

@@ -1466,7 +1466,7 @@ jobs:
           fi
           pulled="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/pull.log")"
           if [ "$pulled" != "$DIGEST" ]; then
-            echo "::error::$image, pulled with no login, is ${pulled:-no digest} by the digest the pull printed, not $DIGEST, the digest publish pushed, so the tag was moved after publish: release nothing from this run, and re-run this job once the package's page shows the tag at the digest publish pushed"
+            echo "::error::$image, pulled with no login, is ${pulled:-no digest} by the digest the pull printed, not $DIGEST, the digest publish pushed, so the tag was moved after publish; release nothing from this run, and re-run this job once the package's page shows the tag at the digest publish pushed"
             exit 1
           fi
       - name: Log in to GHCR
@@ -1816,7 +1816,7 @@ jobs:
           image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           released="$(gh release list --limit 1000 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName')"
           if [ "$(printf '%s\n' "$released" | grep -c .)" -ge 1000 ]; then
-            echo "::error::gh listed 1000 releases, the most it asks for, so a higher one may be missing"
+            echo "::error::gh listed 1000 releases, the most it asks for, so a higher one may be missing; raise this step's limit and job release_check's together on main, then run job aliases in the run of a commit that has them"
             exit 1
           fi
           oras repo tags "$image" > "$RUNNER_TEMP/published"

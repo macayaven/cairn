@@ -306,7 +306,7 @@ def test_the_pull_with_no_login_fails_unless_this_pull_printed_the_published_dig
     assert out.splitlines()[-1] == (
         f"::error::ghcr.io/owner/repo:1.2.3, pulled with no login, is {pulled or 'no digest'}"
         f" by the digest the pull printed, not {PUSHED_INDEX}, the digest publish pushed, so"
-        " the tag was moved after publish: release nothing from this run, and re-run this job"
+        " the tag was moved after publish; release nothing from this run, and re-run this job"
         " once the package's page shows the tag at the digest publish pushed"
     )
 
@@ -1768,3 +1768,34 @@ def test_the_jobs_that_run_gh_are_named_with_their_runner_in_the_header_and_the_
     assert said in header
     readme = " ".join((REPO / "README.md").read_text().replace("`", "").split())
     assert said in readme
+
+
+# A shell or python expansion in an error line, written `…` in the README's table.
+EXPANSION = re.compile(
+    r"\$\{[^}]*\}|\$\((?:[^()]|\([^)]*\))*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9]|\{[a-z_]+\}"
+)
+ERROR = re.compile(r"::error::(.*?)(?:\"\s*(?:;|$|\n)|\"\)|'\))", re.M)
+
+
+def stops() -> set[str]:
+    """Each `::error::` line a step of the workflow can print, as the README's table names it:
+    expansions as `…`, cut before its first `; `, where its next step starts."""
+    return {
+        EXPANSION.sub("…", found.group(1)).split("; ")[0]
+        for job in JOBS.values()
+        for step in job.get("steps", [])
+        for found in ERROR.finditer(step.get("run", "") + "\n")
+    }
+
+
+def test_every_stop_of_the_workflow_has_its_row_in_the_readme_and_no_row_is_stale():
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    part = readme[readme.index("### When a run stops") : readme.index("## Planned")]
+    rows = [line for line in part.splitlines() if line.startswith("| `")]
+    named = {}
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split(" | ")]
+        assert len(cells) == 3 and all(cells), row
+        named[cells[0].strip("`")] = cells
+    assert len(stops()) > 25
+    assert set(named) == stops()

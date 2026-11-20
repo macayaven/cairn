@@ -615,7 +615,9 @@ def test_the_aliases_listing_s_cap_at_its_boundary(tmp_path, listed, moves):
         assert done.returncode == 1
         assert runner.tags() == before
         assert done.stdout.strip().splitlines()[-1] == (
-            "::error::gh listed 1000 releases, the most it asks for, so a higher one may be missing"
+            "::error::gh listed 1000 releases, the most it asks for, so a higher one may be"
+            " missing; raise this step's limit and job release_check's together on main, then run"
+            " job aliases in the run of a commit that has them"
         )
     assert "--limit 1000 " in step("aliases", ALIAS)["run"]
 

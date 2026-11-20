@@ -341,6 +341,43 @@ Two limits. `release_check.py` and job `aliases` each ask GitHub for at most 1,0
 
 Nothing is published from a pull request. Actions are pinned to commit SHAs, and Dependabot updates them, the base images and `uv.lock` weekly.
 
+### When a run stops
+
+Every stop prints one line that starts with `::error::`. The table names each by its words, with `…` where the line gives a name or a number, up to where it says what to do. `scripts/release_check.py` and `scripts/oci_archive.py` print their own reasons after `release refused:` and `the build's archive is refused:`.
+
+| The run says | What it means | Next step |
+| --- | --- | --- |
+| `pip-audit could not audit the dependencies (exit …)` | pip-audit itself failed, before it judged anything (its own words are in the log above) | Re-run the job once the cause the log names, often the network, is gone. |
+| `no gitleaks archive is pinned for a runner of …` | The runner is neither x64 nor arm64, the two whose archives are pinned | Name an x64 or arm64 runner in `CAIRN_GATE_RUNNER`, or unset it. |
+| `no oras archive is pinned for a runner of …` | The runner is neither x64 nor arm64, the two whose archives are pinned | Name an x64 or arm64 runner in the variable of that job's runner, or unset it. |
+| `no trivy archive is pinned for a runner of …` | The runner is neither x64 nor arm64, the two whose archives are pinned | Name an x64 or arm64 runner in `CAIRN_GATE_RUNNER`, or unset it. |
+| `…:… could not be read, so main's run has not published … (it is still running, publishing is off, or it built another commit of that push)` | The tag's commit has no `sha-<commit>` image yet | Re-run the tag's workflow once `main`'s run for that commit has published it, or tag a commit it did. |
+| `gh is not on this runner, so main's attestation of … cannot be checked` | The gate's runner has no GitHub CLI | Install `gh` 2.102.0 or later on the runner `CAIRN_GATE_RUNNER` names, or unset it, then re-run the job. |
+| `gh on this runner is …, before 2.102.0, which fixed how gh attestation verify matches --signer-workflow and --source-ref, so it is not trusted with main's attestation` | The runner's `gh` predates the fix of both advisories | Update `gh` on the runner `CAIRN_GATE_RUNNER` names, or unset it, then re-run the job. |
+| `… has no attestation signed by this repository's ci-cd.yml for a run on refs/heads/main at …, so nothing shows it is main's image of this commit` | Job `attest_main` of `main`'s run for that commit has not attested this digest | Re-run `main`'s failed jobs for that commit until `attest_main` passes, then re-run the tag's workflow; never promote the digest by hand. |
+| `gh attestation verify could not check …: the tool failed or GitHub's API could not be reached, as its own words above say` | The check did not run to an answer | Re-run the job. |
+| `the registry's tags do not list ci after the push` | The runner's own registry did not keep the push | Re-run the job. |
+| `…:… is sha256:…, not the build's …` | A registry holds another digest under the tag just written: the runner's own one in a scan or rehearsal, GHCR in `publish` | In a scan or rehearsal, re-run the job; in `publish`, find who wrote the tag before re-running anything. |
+| `the copy read back from the registry is … (index, amd64, arm64), not the build's …` | oras copied something other than the build | Release nothing; re-run the job, and if it repeats, the copy step is wrong: fix it on a branch. |
+| `… is a …, not one image` | A platform's digest names an index, not an image | The archive is wrong: re-run `image_build` and the jobs after it. |
+| `… is built for …, not …` | The image's own config is for another platform | The archive is wrong: re-run `image_build` and the jobs after it. |
+| `the tags asked for […] include a sha- tag, but a tag run writes no sha- tag: its image is main's` | The workflow's tag rules give a tag run a `sha-` tag | Fix the tag rules of `publish` on a branch; nothing was pushed. |
+| `the tags asked for […] do not include …` | The workflow's tag rules lost the tag this run must write | Fix the tag rules of `publish` on a branch; nothing was pushed. |
+| `the tags of … could not be listed, so … is not pushed: …` | GHCR did not list the package's tags (or, in a fresh fork, there is no package yet) | Re-run the job; in a fresh fork, create the package first. |
+| `…:… is sha256:… already, not this run's build …: …` | The version, or the commit's `sha-` tag, is in the registry with another digest, and it never moves | On `main`, re-run only the failed jobs of the run that published it; for a version, tag the next version. |
+| `…:… is written, but the head of main could not be read, so …:… is left as it was` | The first tag is pushed and `main` is not moved | Re-run the job; it moves `main` only if this commit is still the head. |
+| `The publish job reported no image digest` | `publish` did not run to its end, or was skipped | Re-run `publish` and the jobs after it. |
+| `The publish job reported no digest for the amd64 image` | `publish` did not run to its end | Re-run `publish` and the jobs after it. |
+| `docker pull … with no login failed (exit …), so nobody can pull it as the run guide says now` | The package is not public, or GHCR failed | Make the package public in its settings on GitHub, then re-run the job. |
+| `…, pulled with no login, is … by the digest the pull printed, not …, the digest publish pushed, so the tag was moved after publish` | Someone moved the tag after `publish` wrote it | Release nothing from this run; re-run the job once the package's page shows the tag at the digest `publish` pushed. |
+| `package's artifact holds […], not one wheel, one source archive, the text and SHA256SUMS of …` | `package` handed on other files than the release's | Re-run `package` and the jobs after it; if it repeats, fix `package` on a branch. |
+| `SHA256SUMS does not list exactly the wheel, the source archive and the text of …` | `package`'s checksums do not cover the release's files | Re-run `package` and the jobs after it; if it repeats, fix `package` on a branch. |
+| `a file of package's artifact does not match its checksum in SHA256SUMS` | A file changed after `package` summed it | Release nothing; re-run `package` and the jobs after it. |
+| `the repository's releases could not be listed, so whether … has one is not known` | GitHub's API did not answer | Re-run the job. |
+| `a GitHub release for … exists and is not one this run can finish: …` | A release for the tag exists that this run did not make, or one it made that has changed | Look at it on the repository's releases page, delete it if nobody should publish it, and re-run the job. |
+| `gh listed 1000 releases, the most it asks for, so a higher one may be missing` | The repository has reached the cap the workflow asks GitHub for | Raise the cap here and in `scripts/release_check.py` together on `main`, then run `aliases` in the run of a commit that has it. |
+| `Set these secrets on the production environment:…` | Deploy has no value for the secrets it names | Set them on the GitHub environment `production`, then re-run `deploy`. |
+
 ## Planned
 - Entity resolution: knowing that two names in two notes are one thing. Today the linter takes a hand-written list of names and aliases (`--entities`), and the compiler resolves nothing.
 - Semantic search: search today is SQLite FTS5 full-text search, matching words, not meaning.

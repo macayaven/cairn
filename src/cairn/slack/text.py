@@ -6,7 +6,7 @@ message: of the passage splitter (cairn.spans.chunk), whose heading paths say wh
 passage is, and of the Markdown parser as the web view reads. Every line either finds a
 heading on is written as text, and no other line where a line at a reading can tell
 (_one_heading): the note says whose words it holds, so a backslash no reader asked for is a
-false quotation. For the same reason a line the parser reads as code in the finished note,
+false quotation. For the same reason a line both readers read as code in the finished note,
 where every character is shown as it is, holds what Slack displayed and none of the marks
 that write prose (_code_as_shown). The splitter's line boundaries (str.splitlines: more than
 a line feed) are each written as a line feed first, a CR LF as one.
@@ -43,7 +43,7 @@ def _decode(text: str) -> str:
 
 def _shown(text: str) -> str:
     """Text as Slack displayed it, an email address removed: what _literal and _prose start
-    from, and what a line the note reads as code holds (_code_as_shown)."""
+    from, and what a line both readers read as code holds (_code_as_shown)."""
     return _redact(_decode(text))
 
 
@@ -151,6 +151,20 @@ def _code(note: str) -> set[int]:
     }
 
 
+def _read(note: str) -> tuple[list[tuple[str, int, int]], set[int], set[int]]:
+    """How the two readers read `note`: the passages the splitter cuts it into; the lines the
+    Markdown parser reads as code in the whole of it; and those of them it also reads as code
+    in their own passage alone, which is what a claim's text is and what a page shows."""
+    passages, code = chunk("", note), _code(note)
+    alone = {
+        span.start_line - 1 + line
+        for span in passages
+        if not code.isdisjoint(range(span.start_line - 1, span.end_line))
+        for line in _code(span.text)
+    }
+    return [(span.kind, span.start_line, span.end_line) for span in passages], code, code & alone
+
+
 def _code_as_written(text: str, note: str) -> str:
     """`note`, made of `text` by backslashes alone, with each line its Markdown parser reads
     as code as `text` has it, but for a backslash where a reader then finds a heading (the
@@ -205,25 +219,29 @@ def _one_heading(text: str) -> str:
 
 def _code_as_shown(text: str, shown: str) -> str:
     """The note of a message: `text`, the message as the prose rules write it, with one
-    heading (_one_heading), and each line the Markdown parser reads as code in that note,
-    fenced or indented, as `shown` has it: the message as Slack displayed it, line for line.
-    Slack has no indented code and Markdown has, so the rules that write prose (a backslash
-    before a bracket, a doubled asterisk) wrote on lines that the note shows as they are.
+    heading (_one_heading), and each line both readers read as code in that note (_read: the
+    parser in the note whole, and in the line's own passage alone) as `shown` has it: the
+    message as Slack displayed it, line for line. Slack has no indented code and Markdown
+    has, so the rules that write prose (a backslash before a bracket, a doubled asterisk)
+    wrote on lines that the note shows as they are.
 
-    Which lines are code is asked of the finished note, so it is made twice: of `text`, and
-    then of `text` with the lines that were code as `shown` has them. The second is the note
-    only if the parser reads exactly those lines of it as code. What is displayed is not
-    escaped, and may be read as Markdown nowhere else: a link's label of tildes is "~~~" as
-    displayed and would end the fence it stands in. Then, or should the second making refuse
-    or the two texts not have the same lines, the note is the first, as prose throughout.
-    One making when no line that is code differs between the two texts; so the readings of
-    _one_heading, or twice them."""
+    What is displayed is not escaped, so it may be read as Markdown nowhere: a line the note
+    reads as code and its passage does not (a fence the parser reads on and the splitter
+    ends) would be a link or a heading on a page, and keeps the prose. And which lines are
+    code is asked of the finished note, so it is made twice: of `text`, and then of `text`
+    with those lines as `shown` has them. The second is the note only if both readers read
+    it as they read the first, passage for passage and line for line: a link's label of
+    tildes is "~~~" as displayed and would end the fence it stands in. Then, or should the
+    second making refuse or the two texts not have the same lines, the note is the first, as
+    prose throughout. One making when no such line differs between the two texts; so the
+    readings of _one_heading, or twice them."""
     first = _one_heading(text)
     written, displayed = text.split("\n"), shown.split("\n")
     if len(written) != len(displayed):
         return first
     differs = {at for at, line in enumerate(written) if line != displayed[at]}
-    code = differs and differs & _code(first)
+    read = differs and _read(first)
+    code = read and differs & read[2]
     if not code:
         return first
     try:
@@ -232,7 +250,7 @@ def _code_as_shown(text: str, shown: str) -> str:
         )
     except ValueError:
         return first
-    return second if differs & _code(second) == code else first
+    return second if _read(second) == read else first
 
 
 def _render(

@@ -13,11 +13,16 @@ quotation.
 What holds, asked of the two readers themselves (the passage splitter and the Markdown parser
 as the web view reads) and never of the converter:
 - the note has one heading for both readers;
-- a line the parser reads as code, fenced or indented, holds what Slack displayed for it:
-  its entities read, a name, a mention and a link in the converter's words, an email address
-  removed, and no backslash and no doubled mark of the prose rules;
+- a line the parser reads as code, fenced or indented, both in the note whole and in its own
+  passage alone (as the splitter cut it, which is what a page shows of a claim), holds what
+  Slack displayed for it: its entities read, a name, a mention and a link in the converter's
+  words, an email address removed, and no backslash and no doubled mark of the prose rules;
 - every other line is as the prose rules wrote it on 22f498b6 (their text for these messages
-  is pinned by its digest), but for the backslashes that keep one heading;
+  is pinned by its digest), but for the backslashes that keep one heading; so a line only one
+  of the two readings takes for code keeps its backslashes;
+- no passage, read alone, holds a link, an image, emphasis, a heading or a reference that the
+  note made of prose alone does not hold there: what Slack displayed as plain characters is
+  never markup on a page;
 - when the message has fewer than eight lines that hold a "#" or are only "=" or "-" under a
   line that is not blank, every one of those backslashes is needed: taken out alone, a
   reader finds a second heading;
@@ -37,8 +42,10 @@ import pytest
 from markdown_it import MarkdownIt
 from test_slack_one_heading_unit import bench, faults, filed, passes  # noqa: F401  (a fixture)
 
+from cairn.compiler import claim_id, render_body
 from cairn.slack import text as slack_text
 from cairn.spans import chunk
+from cairn.store import Claim
 
 READER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
 ONLY_MARKS = re.compile(r"[ \t>]*(=+|-+)[ \t]*")  # a line that could underline the one above
@@ -51,23 +58,26 @@ NAMES = {
 }
 # The notes of the generated messages as the prose rules wrote them on 22f498b6, before a
 # heading became text: sha256 of them all, each followed by a NUL.
-PROSE_ON_22F498B6 = "59b0b4fde9dc6294820001a9df0b870e1e23f6c226c08cefd56604e180acfd34"
+PROSE_ON_22F498B6 = "a6bbf28ce68b814927cd7a02b14cf04474b88c88b5a50eacbc014789e3cdcf1e"
 
 
 @pytest.fixture
 def notes(monkeypatch):
     """From a message's text to its note as the prose rules write it, before its headings
-    become text, and to the note that is filed."""
-    seen, make_text = [], slack_text._one_heading
+    become text, and to the note that is filed. `as_prose` is then the note made of that
+    prose alone, as 8c502b3c filed it."""
+    seen, made, make_text = [], [], slack_text._one_heading
 
     def watched(note: str) -> str:
         seen.append("\n".join(note.splitlines()))
-        return make_text(note)
+        made.append(make_text(note))
+        return made[-1]
 
     monkeypatch.setattr(slack_text, "_one_heading", watched)
 
     def convert(text: str) -> tuple[str, str]:
         seen.clear()
+        made.clear()
         draft = slack_text.note_from_message(
             {"text": text, "ts": "1900000000.000100"},
             team_id="T0FABLE01",
@@ -76,6 +86,7 @@ def notes(monkeypatch):
             author="Cedar Quill",
             names=NAMES,
         )
+        convert.as_prose = made[0]  # the note made of the prose alone
         return seen[0], draft.text
 
     return convert
@@ -135,6 +146,35 @@ def code_lines(note: str) -> set[int]:
     }
 
 
+def code_to_both(note: str) -> set[int]:
+    """The lines the parser reads as code in the note whole and in their own passage alone,
+    as the splitter cut it."""
+    alone = {
+        span.start_line - 1 + line for span in chunk("", note) for line in code_lines(span.text)
+    }
+    return code_lines(note) & alone
+
+
+MARKUP = ("link_open", "image", "em_open", "strong_open", "heading_open")
+
+
+def markup_of(note: str) -> list:
+    """Each passage of the note, read alone as a page shows a claim: its lines, the links
+    (with where they lead), images, emphasis and headings the parser makes of it, and the
+    references it defines."""
+    found = []
+    for span in chunk("", note):
+        defined: dict = {}
+        marks = sorted(
+            (token.type, token.attrGet("href") or token.attrGet("src") or "")
+            for block in READER.parse(span.text, defined)
+            for token in [block, *(block.children or [])]
+            if token.type in MARKUP
+        )
+        found.append((span.start_line, span.end_line, marks, sorted(defined.get("references", {}))))
+    return found
+
+
 def may_be_headings(note: str) -> int:
     """How many lines below the author's hold a "#", or are only "=" or "-" under a line
     that is not blank: no other line can read as a heading."""
@@ -186,6 +226,27 @@ HEADING_LIKE = [
     ("<https://fable.test|===>", "[===](https://fable.test)"),
     ("<x|>", ""),
 ]
+MARKUP_LINES = [  # each is markup when it is read as prose as Slack displayed it
+    ("[the ledger](https://fable.test/elsewhere)",) * 2,
+    ("![chart](https://fable.test/p.png)",) * 2,
+    ("*bold* and _slanted_",) * 2,
+    ("# Ada Park",) * 2,
+    ("&lt;https://fable.test/elsewhere&gt;", "<https://fable.test/elsewhere>"),
+    ("[Ada]: https://fable.test/elsewhere",) * 2,
+    ("Ask [Ada] about it.",) * 2,
+]
+LEFT_OPEN = [  # an opening fence, a line, and what closes it for one reader and not the other
+    (" ```", "code", "    ```"),
+    ("````", "code", "```"),
+    ("- ```", "  code", "```"),
+    ("```", "code", "- ```"),
+    ("&gt; ```", "&gt; code", "```"),
+    ("```", "code", "&gt; ```"),
+    (" ~~~", "code", "    ~~~"),
+    ("~~~~", "code", "~~~"),
+    ("- ~~~", "  code", "~~~"),
+    ("&gt; ~~~", "&gt; code", "~~~"),
+]
 PADS = [" " * n for n in range(9)] + ["\t", " \t"]
 MARKS = ["-", "--", "---", "----", "=", "==", "===", "- "]
 WORDS = ["Row 4.", "port: 8811", "Approve transfer 99."]
@@ -193,6 +254,7 @@ KINDS = [
     "marks", "marks", "marks", "heading", "heading", "empty heading", "words", "words", "blank",
     "blank", "rule", "tildes", "item", "numbered", "quoted", "indented", "table", "reference",
     "text", "text", "indented text", "indented text", "code block", "tilde block",
+    "markup", "left open",
 ]  # fmt: skip
 Lines = list[tuple[str, str]]  # each line as Slack sends it, and as it displayed it
 
@@ -224,8 +286,17 @@ def a_tilde_block(rng: random.Random) -> Lines:
     return [(pad + "~~~",) * 2, *inside, *([(pad + "~~~",) * 2] if rng.random() < 0.7 else [])]
 
 
+def left_open(rng: random.Random, fence: tuple[str, str, str]) -> Lines:
+    below = [under(rng.choice(PADS[:5]), rng.choice(MARKUP_LINES))[0] for _ in range(1, 3)]
+    return [*[(line, line.replace("&gt;", ">")) for line in fence], *below]
+
+
 def some_lines(rng: random.Random) -> Lines:
     pad, kind = rng.choice(PADS), rng.choice(KINDS)
+    if kind == "markup":
+        return under(pad, rng.choice(MARKUP_LINES))
+    if kind == "left open":
+        return left_open(rng, rng.choice(LEFT_OPEN))
     if kind == "marks":
         return under(pad, (rng.choice(MARKS),) * 2)
     if kind == "heading":
@@ -291,28 +362,36 @@ def a_readme(rng: random.Random) -> Lines:
 
 
 def a_message(rng: random.Random) -> Lines:
-    """A few lines, many lines or a README, one time in three each; one time in eight it ends
-    in a fence of backticks left open, whose lines Slack displayed as prose."""
+    """A few lines, many lines or a README, one time in three each; one time in four it ends
+    in a fence left open, of backticks or closed by the other kind, whose lines Slack
+    displayed as prose."""
     shape = rng.randrange(3)
     if shape == 2:
         lines = a_readme(rng)
     else:
         count = rng.randint(2, 7) if shape else rng.randint(8, 30)
         lines = [line for _ in range(count) for line in some_lines(rng)]
-    if not rng.randrange(8):
+    end = rng.randrange(12)  # a row of backticks that nothing pairs with comes last, if at all
+    if end == 0:
         lines += [("```",) * 2, *[under("", some_text(rng))[0] for _ in range(rng.randint(1, 3))]]
+    elif end < 3:
+        lines += left_open(rng, ("```", "code", "~~~") if end == 1 else ("~~~", "code", "```"))
     return lines
 
 
-def faults_of(lines: Lines, before: str, after: str) -> tuple[list, bool]:
-    """What is wrong with the note `after` of the message `lines`: nothing, when the lines the
-    parser reads as code are as displayed, the others as the prose rules wrote them, each but
-    for backslashes, and no backslash is one too many. And whether the note was kept as prose
+def faults_of(lines: Lines, before: str, after: str, as_prose: str) -> tuple[list, bool]:
+    """What is wrong with the note `after` of the message `lines`: nothing, when the lines both
+    readings take for code are as displayed, the others as the prose rules wrote them, each but
+    for backslashes, no backslash is one too many, and no passage read alone holds markup that
+    the note made of prose alone, `as_prose`, does not. And whether the note was kept as prose
     throughout, as only a message with CLOSES may be (the limit, pinned below)."""
     if not one_heading(after):
         return ["a second heading"], False
+    if markup_of(after) != markup_of(as_prose):
+        made = [mark for mark in markup_of(after) if mark not in markup_of(as_prose)]
+        return ["markup of what was displayed as plain characters", made[:3]], False
     shown = as_displayed(before, "\n".join(shown for _, shown in lines)).split("\n")
-    prose, held, code = before.split("\n"), after.split("\n"), code_lines(after)
+    prose, held, code = before.split("\n"), after.split("\n"), code_to_both(after)
     if not len(shown) == len(prose) == len(held):
         return [f"{len(held)} lines, {len(prose)} as prose, {len(shown)} as displayed"], False
     closes = CLOSES[0] in "\n".join(sent for sent, _ in lines)
@@ -348,14 +427,14 @@ def test_generated_messages_hold_code_as_displayed_and_only_the_backslashes_aske
         written += after.count("\\") > before.count("\\")
         prose, held = before.split("\n"), after.split("\n")
         in_code += any(n < len(prose) and prose[n] != held[n] for n in code_lines(after))
-        found, as_prose = faults_of(lines, before, after)
+        found, as_prose = faults_of(lines, before, after, notes.as_prose)
         kept_as_prose += as_prose
         if found:
             wrong.append((text, body(after), found))
     wrong.sort(key=lambda found: len(found[0]))
     assert not wrong, f"{len(wrong)} of {few + many}: {wrong[:6]}"
     assert few > CASES / 4 and many > CASES / 4 and written > CASES / 4 and in_code > CASES / 8
-    assert 0 < kept_as_prose < CASES / 25  # the limit is run, and is the exception
+    assert 0 < kept_as_prose < CASES / 10  # the limit is run, and is the exception
     assert digest.hexdigest() == PROSE_ON_22F498B6
 
 
@@ -532,7 +611,7 @@ def test_a_line_the_note_reads_as_code_holds_what_slack_displayed(notes, kind):
     before, after = notes(text)
     assert body(after) == lines
     assert one_heading(after)
-    assert faults_of([(text, lines)], before, after) == ([], False)
+    assert faults_of([(text, lines)], before, after, notes.as_prose) == ([], False)
 
 
 def test_the_smallest_message_is_stored_as_displayed(bench):  # noqa: F811
@@ -540,6 +619,79 @@ def test_the_smallest_message_is_stored_as_displayed(bench):  # noqa: F811
     assert body(note) == "Settings:\n\n    items[0] = (a) * 2 * 3"
     assert not faults(note, spans)
     assert [span.text for span in spans][2] == "    items[0] = (a) * 2 * 3"
+
+
+# A fence the parser reads on and the splitter ends, or the other way round, and under it a
+# line that is markup as Slack displayed it. The first is the reviewer of this change's own.
+FENCES = {
+    "an indented closer": " ```\ncode\n    ```\n",
+    "a shorter closer": "````\ncode\n```\n",
+    "a closer of the other kind": "```\ncode\n~~~\n",
+    "opened in a list item, closed at the margin": "- ```\n  code\n```\n",
+    "closed in a list item": "```\ncode\n- ```\n",
+    "opened in a quotation, closed at the margin": "&gt; ```\n&gt; code\n```\n",
+    "closed in a quotation": "```\ncode\n&gt; ```\n",
+    "tildes, an indented closer": " ~~~\ncode\n    ~~~\n",
+    "tildes, a shorter closer": "~~~~\ncode\n~~~\n",
+    "tildes, a closer of the other kind": "~~~\ncode\n```\n",
+    "tildes in a list item, closed at the margin": "- ~~~\n  code\n~~~\n",
+    "a list item's fence only the parser reads": "\n1.\n\t~~~\n\n   ",
+}
+DISPLAYED_AS_PLAIN = {
+    "a link": "[the ledger](https://fable.test/elsewhere)",
+    "an image": "![chart](https://fable.test/p.png)",
+    "emphasis": "*bold* and _slanted_",
+    "a heading": "# Ada Park",
+    "an address in angle brackets": "&lt;https://fable.test/elsewhere&gt;",
+    "a reference and its use": "[Ada]: https://fable.test/elsewhere\n\nAsk [Ada] about it.",
+}
+
+
+@pytest.mark.parametrize("mark", DISPLAYED_AS_PLAIN)
+@pytest.mark.parametrize("fence", FENCES)
+def test_what_slack_displayed_as_plain_characters_is_markup_in_no_passage(notes, fence, mark):
+    """Each passage of the filed note, read alone, holds the links, images, emphasis, headings
+    and references that the note made of prose alone holds there, and no other; and a line
+    that is not code to both readings is as that note has it."""
+    after = notes(f"Row 4.\n{FENCES[fence]}{DISPLAYED_AS_PLAIN[mark]}")[1]
+    assert one_heading(after) and markup_of(after) == markup_of(notes.as_prose)
+    both, as_prose = code_to_both(after), notes.as_prose.split("\n")
+    assert [line for n, line in enumerate(after.split("\n")) if n not in both] == [
+        line for n, line in enumerate(as_prose) if n not in both
+    ]
+
+
+def test_a_line_one_reading_alone_takes_for_code_keeps_the_marks_of_prose(bench, notes):  # noqa: F811
+    """The block's closing fence is indented four: the parser reads on through it, so the last
+    line is code to the note; the splitter ends the block there, so the line is a passage of
+    its own, a paragraph when a page shows it. Put as displayed it was a link on that page."""
+    text = "Row 4.\n ```\ncode\n    ```\n[the ledger](https://fable.test/elsewhere)"
+    note, spans = filed(bench, text)
+    assert (
+        body(note)
+        == "Row 4.\n ```\ncode\n    ```\n\\[the ledger\\]\\(https://fable.test/elsewhere\\)"
+    )
+    assert not faults(note, spans) and 6 in code_lines(note) and 6 not in code_to_both(note)
+    claims = [
+        Claim(id=claim_id(span.id), text=span.text, span_ids=(span.id,)) for span in spans[1:]
+    ]
+    page = render_body("Shelves", claims, {span.id: span for span in spans})
+    links = [
+        token.attrGet("href")
+        for block in READER.parse(page)
+        for token in block.children or []
+        if token.type == "link_open"
+    ]
+    assert links == ["https://fable-works.slack.com/archives/C0LIBRARY1/p1900000000000100"]
+    # With the closing fence at the margin both readings end the block, and the same holds.
+    assert body(notes(text.replace("    ```", "```"))[1]).endswith(
+        "\\(https://fable.test/elsewhere\\)"
+    )
+    # A fence both read on through (a shorter closer) holds the line as displayed: it is code
+    # to the note and to its passage, and on a page.
+    held = notes("Row 4.\n````\ncode\n```\n[the ledger](https://fable.test/elsewhere)")[1]
+    assert body(held).endswith("```\n[the ledger](https://fable.test/elsewhere)")
+    assert markup_of(held) == markup_of(notes.as_prose)
 
 
 # A README pasted into Slack: nine headings, commands indented and fenced, with comments.
@@ -598,7 +750,8 @@ def test_a_readme_keeps_its_commands_and_their_comments(bench, notes):  # noqa: 
     ]
     before, after = notes(README)
     assert after == note and may_be_headings(before) >= 8
-    assert faults_of([(README, README.replace("&gt;", ">"))], before, after) == ([], False)
+    shown = README.replace("&gt;", ">")
+    assert faults_of([(README, shown)], before, after, notes.as_prose) == ([], False)
 
 
 def test_its_limit_a_line_that_closes_a_fence_only_as_displayed_keeps_the_note_as_prose(notes):
@@ -613,9 +766,10 @@ def test_its_limit_a_line_that_closes_a_fence_only_as_displayed_keeps_the_note_a
     after = notes("Settings:\n```\ncode\n``` more\n<x|```>\nitems[0]")[1]
     assert body(after) == "Settings:\n```\ncode\n``` more\n\\`\\`\\`\nitems\\[0\\]"
     assert one_heading(after) and {3, 4, 5, 6, 7} <= code_lines(after)
-    # With the next line indented it is code either way, and the note is as displayed.
+    # With the next line indented it is code either way, but the fence still ends two lines
+    # early, so the two readers do not read the second note as the first: prose again.
     assert body(notes("Settings:\n~~~\n<x|~~~>\n    items[0]")[1]) == (
-        "Settings:\n~~~\n~~~\n    items[0]"
+        "Settings:\n~~~\n\\~\\~\\~\n    items\\[0\\]"
     )
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from ci_shell import run_step
+from ci_shell import first_attempt_gh, run_step
 
 REPO = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location(
@@ -1495,7 +1495,7 @@ def test_release_builds_nothing_installs_nothing_and_checks_out_nothing():
 
 def run_release_step(tmp_path, step: dict, files: list[str], tag: str = "v1.2.3"):
     """A step of job `release` as the runner runs it (bash -e), with FILES in the directory
-    the download step fills, and a gh that prints its arguments, one a line."""
+    the download step fills, and a gh that keeps the arguments of each write, one a line."""
     release, bin_ = tmp_path / "release", tmp_path / "bin"
     release.mkdir()
     bin_.mkdir()
@@ -1509,13 +1509,16 @@ def run_release_step(tmp_path, step: dict, files: list[str], tag: str = "v1.2.3"
         'exec shasum -a 256 "$@"\n'
     )
     (bin_ / "sha256sum").chmod(0o755)
-    # No release for the tag yet: the listing of releases holds none, as on a first attempt.
-    (bin_ / "gh").write_text('#!/bin/sh\nif [ "$1" = api ]; then exit 0; fi\nprintf "%s\\n" "$@"\n')
-    (bin_ / "gh").chmod(0o755)
+    first_attempt_gh(bin_)  # no release for the tag yet, then the draft the step asks for
     return run_step(
         step["run"],
         cwd=tmp_path,
-        env={"PATH": f"{bin_}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path), "GITHUB_REF_NAME": tag},
+        env={
+            "PATH": f"{bin_}:/usr/bin:/bin",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_REF_NAME": tag,
+            "GH_REPO": "owner/repo",
+        },
     )
 
 
@@ -1555,11 +1558,12 @@ def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
         "CANDIDATE": "${{ needs.release_check.outputs.candidate }}",
     }
     done = run_release_step(tmp_path, create, THE_FILES)
-    assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines() == [
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "gh-create").read_text().splitlines() == [
         "release",
         "create",
         "v1.2.3",
+        "--draft",
         "--verify-tag",
         "--title",
         "v1.2.3",

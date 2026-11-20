@@ -148,10 +148,13 @@ def retry(folder, *, tag=TAG, draft=True, assets=None, change_wheel=False, publi
     return done, errors, state, existing
 
 
+# The case "complete" (a marked draft that holds every file stops, unwritten) left with the
+# fourth report's must-fix 1, which has such a draft compared and published: its cases are
+# test_reviewer5_release_publish_unit's "matching retry" and "person at each draft boundary".
 @pytest.mark.parametrize(
     ("tag", "assets"),
-    [(TAG, None), (TAG + "-rc.1", {"SHA256SUMS": b"short"}), (TAG, {})],
-    ids=["complete", "partial-candidate", "empty"],
+    [(TAG + "-rc.1", {"SHA256SUMS": b"short"}), (TAG, {})],
+    ids=["partial-candidate", "empty"],
 )
 def test_marked_draft_stops_without_writes(tmp_path, tag, assets):
     done, errors, state, existing = retry(tmp_path / "draft", tag=tag, assets=assets)
@@ -175,10 +178,12 @@ def test_published_retry_compares_the_files(tmp_path, tag, same):
     assert len(errors) == (0 if same else 1)
 
 
+# The case "all-files" left for the same reason: this file's gh refuses every write, and the
+# step now publishes a draft that holds every file.
 @pytest.mark.parametrize(
     ("tag", "assets"),
-    [(TAG, None), (TAG + "-rc.1", {"SHA256SUMS": b"part"})],
-    ids=["all-files", "partial-candidate"],
+    [(TAG + "-rc.1", {"SHA256SUMS": b"part"})],
+    ids=["partial-candidate"],
 )
 def test_publication_at_each_call_boundary_preserves_release_and_assets(tmp_path, tag, assets):
     # Until the person acts, the draft follows the undisturbed path. Replay each boundary

@@ -58,9 +58,13 @@
 # makes the GitHub release with them and the version's section of CHANGELOG.md. A run that
 # failed after `publish` and before the release was made is finished by re-running only its
 # failed jobs. A tag's run builds nothing, so re-running all of it promotes the same digest
-# again. A re-run of `release` that finds this run's release already made, with
-# the same files, goes on, so that a release tag's `aliases` runs; one that finds a draft an
-# earlier attempt left stops and says what a person does. The job's own text issues no delete.
+# again. `release` makes the release as a draft, compares the draft's files with the ones it
+# holds, publishes it with a request of its own and looks again. A re-run of it starts from
+# what an earlier attempt left: this run's release published, with the same files, and it goes
+# on, so that a release tag's `aliases` runs; this run's draft with the same files, and it
+# publishes it; a draft whose files are not those, and it stops and says what a person does.
+# The job's own text issues no delete, and the GitHub CLI, asked for a draft, deletes no
+# release it made.
 # `package` writes SHA256SUMS over the files it built, and the release publishes it with them.
 # Between the two, job `attest`, which holds an identity token and nothing that writes to the
 # repository, checks every file against SHA256SUMS, as `release` does, and gives the wheel, the
@@ -1666,8 +1670,10 @@ jobs:
   # the release. download-artifact gets no token (its github-token has no default and is needed
   # only for another repository or run); it reaches this run's artifacts with the runner's own
   # runtime token and checks their digest. A release candidate becomes a pre-release, never
-  # marked latest. A release for the tag that already exists goes on only when it is this
-  # run's: the tag, not a draft, the same pre-release flag, the same files byte for byte. It needs the gh CLI on its runner, as GitHub's hosted runners have.
+  # marked latest. A release for the tag that already exists is finished only when it is this
+  # run's: the tag, this run's mark, the same pre-release flag, the same files byte for byte; a
+  # draft with them is published, and a published one is left as it is. It needs the gh CLI on
+  # its runner, as GitHub's hosted runners have.
   release:
     name: GitHub release
     needs: [release_check, publish, verify, package, attest]
@@ -1712,33 +1718,49 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           version="${version%-rc.*}"
           files=("cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS)
+          want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+          want="${want% }"
           prerelease=false
           candidate=()
+          latest=()
           if [ "$CANDIDATE" = "true" ]; then
             prerelease=true
             candidate=(--prerelease --latest=false)
+            latest=(-f make_latest=false)
           fi
           # The release's text is the version's notes and then a mark with this run's id, an
           # HTML comment GitHub does not show and its API returns in the release's body. A re-run
           # of the job keeps the run's id; notes.md itself is attested, so it is left as it is.
           mark="<!-- cairn-ci-cd run $GITHUB_RUN_ID -->"
           { cat notes.md; printf '\n%s\n' "$mark"; } > "$RUNNER_TEMP/body.md"
-          # An earlier attempt may have made the release and been lost before the job was
-          # recorded as done, or left it a draft: the GitHub CLI makes a release as a draft,
-          # uploads the files and then publishes it, in separate requests, so a runner lost in
-          # between leaves the draft. Every release of the repository is listed, drafts
-          # included (GitHub lists drafts to a token that may write, as this job's may), and a
-          # listing that fails stops the job instead of being taken for none. The release for
-          # this tag is this run's only if it is the only one and carries this run's mark and
-          # this tag's pre-release flag. A published one must hold exactly the files this run
-          # attested, byte for byte, and is left as it is: the job succeeds, so that a release
-          # tag's `aliases` runs. A draft stops the job, which says what a person does with it.
-          # Any other release stops the job too. This step's own text issues no delete of a
-          # release or of a release's file and no write to a release that exists: a person can
-          # publish a draft between any look at it and a write, and a published release keeps
-          # its id. The one write is the creation at the end, reached only when the listing
-          # showed no release for the tag; the GitHub CLI deletes the draft it made itself when
-          # an upload or the publication fails, so it is not to be published by hand meanwhile.
+          # The release is made by separate requests, and nothing here takes one back. A look
+          # lists every release of the repository, drafts included (GitHub lists drafts to a
+          # token that may write, as this job's may); a listing that fails stops the job instead
+          # of being taken for none. The release for this tag is this run's only if it is the
+          # only one and carries this run's mark and this tag's pre-release flag; any other
+          # stops the job. (1) No release: the GitHub CLI makes one as a draft, with the files.
+          # Asked for a draft it publishes nothing, and its cleanup of the release it made is
+          # only for a draft it meant to publish itself. It sends a file again, three times at
+          # most, only after a failed connection or a 5xx, and removes a file only when given
+          # the address of one already there, which a creation never gives it. So an upload
+          # that fails leaves this draft, with the files that arrived, and leaves it public if
+          # a person published it meanwhile. (2) This run's draft, just made or left by an
+          # earlier attempt: its files are compared with the ones this run attested, names and
+          # bytes (the CLI finds a draft by its tag, as it finds a release), and a draft that does
+          # not hold exactly those stops the job, which says what a person does. (3) The draft
+          # is published by a request of its own, to the id the look gave. That is the job's
+          # one write to a release that exists, and it is safe: it sets draft to false and
+          # nothing else (for a candidate it says again, as the creation did, that it is not
+          # the latest), so a draft a person published meanwhile is already what it would
+          # make it, one a person removed makes it fail, and the files were compared first.
+          # When GitHub publishes and the reply is lost, the job fails and nothing is undone:
+          # the re-run finds the release published. (4) After each write the job looks again.
+          # It ends well only on a published release that holds exactly the files this run
+          # attested, byte for byte, which it leaves as it is: that is all a re-run does after
+          # an attempt that finished, so that a release tag's `aliases` runs. A look that does
+          # not show the job's own write stops the job, so it never makes a second release.
+          # This step's text issues no removal of a release or of a release's file and
+          # replaces no file.
           listing() {
             gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
               --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), ([.assets[].name] | sort | join(\" \"))] | @tsv"
@@ -1747,34 +1769,53 @@ jobs:
             echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
             exit 1
           }
-          found="$(listing)" || unlisted
-          if [ -n "$found" ]; then
-            refuse() {
-              echo "::error::a GitHub release for $GITHUB_REF_NAME exists and is not one this run can finish: $1; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job"
-              exit 1
-            }
+          refuse() {
+            echo "::error::a GitHub release for $GITHUB_REF_NAME exists and is not one this run can finish: $1; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job"
+            exit 1
+          }
+          unfinished() {
+            echo "::error::the GitHub release for $GITHUB_REF_NAME is a draft that an earlier attempt of run $GITHUB_RUN_ID left unfinished, which this job neither deletes nor publishes; delete it on the repository's releases page and re-run this job, which makes the release again"
+            exit 1
+          }
+          # What GitHub lists for the tag now: nothing (found is empty), or this run's release.
+          look() {
+            found="$(listing)" || unlisted
+            [ -n "$found" ] || return 0
             count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
             [ "$count" = 1 ] || refuse "there are $count releases for it"
-            IFS=$'\t' read -r _ draft pre ours names <<< "$found"
+            IFS=$'\t' read -r id draft pre ours names <<< "$found"
             [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
             [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
-            if [ "$draft" = true ]; then
-              echo "::error::the GitHub release for $GITHUB_REF_NAME is a draft that an earlier attempt of run $GITHUB_RUN_ID left unfinished, which this job neither deletes nor publishes; delete it on the repository's releases page and re-run this job, which makes the release again"
-              exit 1
-            fi
-            want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
-            want="${want% }"
-            [ "$names" = "$want" ] || refuse "its files are [$names], not [$want]"
-            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published" \
+          }
+          # Its files against the ones this run attested: the names listed, then the names and
+          # the bytes downloaded into $2. $1 is what a difference does.
+          same_files() {
+            [ "$names" = "$want" ] || "$1" "its files are [$names], not [$want]"
+            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" \
               || refuse "its files could not be downloaded to compare"
+            names="$(ls -A "$RUNNER_TEMP/$2" | LC_ALL=C sort | tr '\n' ' ')"
+            [ "${names% }" = "$want" ] || "$1" "its files are [${names% }], not [$want]"
             for name in "${files[@]}"; do
-              cmp -s "$name" "$RUNNER_TEMP/published/$name" || refuse "$name is not the file this run attested"
+              cmp -s "$name" "$RUNNER_TEMP/$2/$name" || "$1" "$name is not the file this run attested"
             done
-            echo "The GitHub release $GITHUB_REF_NAME is this run's, made by an earlier attempt with these files: it is not made again."
-            exit 0
+          }
+          look
+          if [ -z "$found" ]; then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
+            look
           fi
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
+          if [ -n "$found" ] && [ "$draft" = true ]; then
+            same_files unfinished draft
+            gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
+            look
+          fi
+          if [ -z "$found" ] || [ "$draft" = true ]; then
+            echo "::error::GitHub does not list the release for $GITHUB_REF_NAME as this job has just left it; re-run this job, which starts from what is listed then"
+            exit 1
+          fi
+          same_files refuse published
+          echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with exactly the files this run attested."
 
   # Points `latest` at the highest released version and each X.Y at the highest released
   # X.Y.z, after a release is made (a release candidate moves neither). It decides from what

@@ -101,7 +101,10 @@
 # have: release_check and image_build, on a tag, on the runner CAIRN_GATE_RUNNER names, and
 # publish, on a push to main, release and aliases, on the runner CAIRN_RELEASE_RUNNER names.
 # image_build refuses a gh before 2.102.0, which fixed how gh attestation verify matches
-# --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8). docs/decisions.md, decision 150, says why there are two.
+# --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8). Job release
+# needs gh 2.102.0 or later too, on the runner CAIRN_RELEASE_RUNNER names: what gh does with a
+# draft (it makes one and takes none back, and finds one by its tag) was read in that version's
+# source and in no earlier one. docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
 # pinned (resolved with git ls-remote on 2026-11-10; actions/attest read with gh api on

@@ -1776,6 +1776,28 @@ def test_the_jobs_that_run_gh_are_named_with_their_runner_in_the_header_and_the_
     assert said in readme
 
 
+def test_release_asks_for_the_gh_whose_source_its_handling_of_a_draft_was_read_in():
+    """The fifth report's remaining suspicion: the version of gh is checked on the gate's
+    runner, and `release` runs on another, with a gh of its own. What `release` does with a
+    draft was read in gh's source at v2.102.0 and in no earlier version, so the header and the
+    README ask for that version on the runner `release` runs on, whatever checks it."""
+    said = (
+        "Job release needs gh 2.102.0 or later too, on the runner CAIRN_RELEASE_RUNNER names:"
+        " what gh does with a draft (it makes one and takes none back, and finds one by its"
+        " tag) was read in that version's source and in no earlier one."
+    )
+    header = " ".join(RAW_WORKFLOW.split("\nname:")[0].replace("# ", "").split())
+    assert header.count(said) == 1
+    readme = " ".join((REPO / "README.md").read_text().replace("`", "").split())
+    assert readme.count(said) == 1
+    assert "CAIRN_RELEASE_RUNNER" in RELEASE["runs-on"]
+    assert "CAIRN_GATE_RUNNER" in JOBS["image_build"]["runs-on"]
+    # The version is the one the step's own sentences about gh quote its source at.
+    create = next(s for s in RELEASE["steps"] if s.get("name") == "Create the release")
+    assert "cli/cli at v2.102.0" in create["run"]
+    assert "v2.102.0" in (REPO / "tests/unit/test_ci_release_retry_unit.py").read_text()
+
+
 # A shell or python expansion in an error line, written `…` in the README's table.
 EXPANSION = re.compile(
     r"\$\{[^}]*\}|\$\((?:[^()]|\([^)]*\))*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9]|\{[a-z_]+\}"

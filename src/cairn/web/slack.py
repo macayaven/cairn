@@ -58,8 +58,10 @@ The three addresses Slack calls (`slack_routes`)
   9. cairn.slack.dispatch answers the rest; this module registers what it owns:
      `app_uninstalled` (Store.remove_slack_install, D10) and `tokens_revoked` naming the
      install's bot (Store.revoke_slack_bot); another user's token revoked changes nothing.
-- Each write checks the sealed signing secret used to verify the request in its own
-  transaction. A callback for an installation that has since changed is acknowledged.
+- Each write checks the set-up stamp and the opened signing secret in its own transaction.
+  A callback for an installation that has since changed is acknowledged.
+- Removal and revocation events need an outer event_time in a later second than set-up.
+  An earlier, equal, missing or invalid time is acknowledged before any write.
 - A refusal writes nothing. Each request is recorded on the access log (cairn.access):
   its action (ACTIONS: slack_event, slack_command, slack_action), the install and the
   status, under the actor kind "slack"; never the body, a secret, the signature or a header.
@@ -472,11 +474,19 @@ def slack_routes(
         except NotSlack:
             _logged(action, install_id, 400)
             return PlainTextResponse(NOT_SLACK, 400, headers=NO_RETRY)
-        if install.state == "off" and (found.type == CHALLENGE or found.name not in OFF_EVENTS):
+        lifecycle = kind == "events" and found.name in OFF_EVENTS
+        if install.state == "off" and not lifecycle:
             _logged(action, install_id, 200)  # off: acknowledged, and nothing is done
             return Response(status_code=200)
+        if lifecycle:
+            # The event envelope gives dispatch time in whole seconds.
+            event_time = found.payload.get("event_time")
+            setup_second = datetime.fromisoformat(install.made_at).replace(microsecond=0)
+            if type(event_time) is not int or event_time <= int(setup_second.timestamp()):
+                _logged(action, install_id, 200)
+                return Response(status_code=200)
         generation = inbound.generation
-        assert generation is not None  # the verified secret was opened from this stored value
+        assert generation is not None  # the verified secret belongs to this set-up
         ledger = desk.for_callback(generation)
         if found.type == CHALLENGE:
             with contextlib.suppress(SlackInstallChanged):

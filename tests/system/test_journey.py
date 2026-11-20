@@ -2894,6 +2894,15 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
     def address(install: str, kind: str) -> str:
         return f"{server.url}/integrations/slack/{install}/{kind}"  # where a proxy sends Slack
 
+    def lifecycle(install: str, event: dict) -> tuple[int, bytes]:
+        # Put dispatch on the next whole second of the store's clock, including after restart.
+        [(made_at,)] = slack_rows(server.db, "SELECT made_at FROM slack_installs WHERE id = ?",
+                                  install)  # fmt: skip
+        event_time = int(datetime.fromisoformat(made_at).timestamp()) + 1
+        return standin.send_event(address(install, "events"), event, event_time=event_time)
+
+    bot_revoked = {"type": "tokens_revoked", "tokens": {"bot": [standin.bot_user_id]}}
+
     async def replied(method: str, count: int) -> dict:
         """The `count`th call the server made to the stand-in by `method`, once it has."""
 
@@ -3008,7 +3017,7 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
             notes = [note_id for note_id, _ in came]
 
             # Slack revokes the bot's token: off, the token deleted, nothing due.
-            assert standin.revoke_bot(address(first, "events")) == (200, b"")
+            assert lifecycle(first, bot_revoked) == (200, b"")
             page = html.unescape((await one.get("/sources")).text)
             assert "Off, because Slack revoked the bot's token." in page
             assert slack_rows(server.db, f"{INSTALLS} WHERE id = ?", first) == [("off", 1, 0)]
@@ -3017,7 +3026,7 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
             assert slack_rows(server.db, due) == [(2, 0)]
 
             # Slack uninstalls the app: removed, both secrets and the links gone, notes due.
-            gone = standin.send_event(address(first, "events"), {"type": "app_uninstalled"})
+            gone = lifecycle(first, {"type": "app_uninstalled"})
             assert gone == (200, b"")
             page = (await one.get("/sources")).text
             assert "2 notes came through Slack: they will be forgotten on" in page
@@ -3055,7 +3064,8 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
                 address(second, "commands"), text=f"note {words[2]}"
             )
             assert status == 200 and slack_said(body).startswith("Filed: ")
-            uninstalled, revoked = standin.uninstall(address(second, "events"), revoked_first=False)
+            uninstalled = lifecycle(second, {"type": "app_uninstalled"})
+            revoked = lifecycle(second, bot_revoked)
             assert uninstalled == (200, b"") and revoked[0] == 404  # removed: no address
             both = slack_rows(server.db, f"{INSTALLS} WHERE id IN (?, ?)", first, second)
             assert both == [("removed", 1, 1), ("removed", 1, 1)]

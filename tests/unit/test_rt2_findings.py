@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 
 import pytest
-from test_rt2_explore import Execution, check, execute, render
+from test_rt2_explore import LAGS, Execution, check, execute, render
 from test_rt2_github import (
     HEAD_SHA,
     KINDS,
@@ -60,7 +60,12 @@ def test_a_re_run_after_the_git_tag_was_deleted_publishes_the_draft_onto_main_s_
     """The same across a re-run, with nothing racing: attempt 1 stops (a read by id gets no
     answer, so it says to re-run and delete nothing); the person deletes the git tag, meaning
     to withdraw the version; a re-run of the failed job later publishes the draft, and the
-    publication makes the tag on the default branch's head."""
+    publication makes the tag on the default branch's head. Nobody edits the release while the
+    job runs, so the README's limit ('do not edit this tag's release by hand while the
+    `release` job runs') does not cover it. That a publication makes a missing tag was seen in
+    round 6 (a draft whose tag did not exist, published by the job's PATCH, got its tag);
+    that the tag lands on the default branch's head is GitHub's documented default for a
+    release with no target, not measured here."""
     ex = replay(
         [
             (r"fate of GET releases/88$", "fails", 2),
@@ -139,10 +144,43 @@ def test_a_re_run_whose_first_look_is_behind_makes_a_second_draft():
     only for a re-run that starts within seconds). Attempt 1's creation is done and its reply
     lost: the job stops on the CLI's own error, with a draft and no files. The re-run's first
     look does not show it, and the step makes a second draft. README: 'It never makes a second
-    release in one attempt': true, and this is two attempts."""
+    release in one attempt': true of the step's own releases, and this is two attempts."""
     ex = replay(
         [(r"fate of POST", "reply lost")],
         persist_lag=True,
         lag=dict.fromkeys(KINDS, 1),
+    )
+    assert not broken(ex, "6"), trace(ex)
+
+
+# --- a person's draft the listing does not show yet: "Any other release for the tag stops the job"
+
+
+def test_a_draft_a_person_makes_during_the_job_is_not_seen_and_the_job_ends_well():
+    """The listing one look behind a person's write (the README: 'a person's as much as the
+    job's'). A person makes a second draft for the tag while the job downloads its draft's
+    files; the look after the publication does not show it, and the job ends well with two
+    releases for the tag. The README: 'Any other release for the tag stops the job.' The re-run
+    then stops on the job's own whole public release with 'there are 2 releases for it'.
+    Invariant 3 (one release for the tag)."""
+    ex = replay(
+        [
+            (
+                r"person, before GET releases/88 \(draft lookup\)",
+                "second release for the tag, a draft",
+            )
+        ],
+        lag=LAGS["person one behind"],
+    )
+    assert not broken(ex, "3"), trace(ex)
+
+
+def test_the_job_makes_its_draft_beside_a_person_s_draft_its_first_look_missed():
+    """The same lag before the first look: the look shows nothing, the job makes its draft
+    beside the person's, and stops at the next look on 'there are 2 releases for it'. Nothing
+    is lost; the step's own count of releases stays one."""
+    ex = replay(
+        [(r"person, before GET releases page 1", "second release for the tag, a draft")],
+        lag=LAGS["person one behind"],
     )
     assert not broken(ex, "6"), trace(ex)

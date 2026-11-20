@@ -709,17 +709,34 @@ class Found:
     execution: Execution
 
 
+def reached(errors: list[str]) -> str:
+    """Which of the step's stops an attempt reached, its numbers and file lists left out."""
+    if not errors:
+        return "a gh command failed by itself"
+    kind, detail = classify(errors[0])
+    text = kind + (
+        f" ({detail['state']}: {' and '.join(detail['what'])})" if "what" in detail else ""
+    )
+    if "reason" in detail:
+        text += ": " + re.sub(r"\d+", "N", re.sub(r"\[[^]]*\]", "[...]", detail["reason"]))
+    return text
+
+
 @dataclass
 class Report:
     executions: int = 0
     found: dict = field(default_factory=dict)
     notes: collections.Counter = field(default_factory=collections.Counter)
     seconds: float = 0.0
+    lines: collections.Counter = field(default_factory=collections.Counter)
 
     def add(self, ex: Execution, deviations: int):
         self.executions += 1
         violations, notes = check(ex)
         self.notes.update(notes)
+        for a in ex.attempts:
+            if a.code != 0:
+                self.lines[reached(a.errors)] += 1
         for v in violations:
             if v not in self.found or self.found[v].deviations > deviations:
                 self.found[v] = Found(v, deviations, ex)
@@ -727,6 +744,7 @@ class Report:
     def merge(self, other: Report):
         self.executions += other.executions
         self.notes.update(other.notes)
+        self.lines.update(other.lines)
         self.seconds += other.seconds
         for v, f in other.found.items():
             if v not in self.found or self.found[v].deviations > f.deviations:
@@ -741,6 +759,7 @@ def guarded(report: Report, what: str, make) -> Execution | None:
             return make()
         except Hung as error:
             last = str(error).splitlines()[-1]
+            report.notes[f"an attempt did not end once: {what}; last event {last}"] += 1
     report.notes[f"6? an attempt did not end, twice: {what}; last event {last}"] += 1
     return None
 
@@ -829,6 +848,8 @@ def summary(report: Report) -> str:
         out.extend("   " + line for line in render(f.execution))
     for note, n in sorted(report.notes.items()):
         out.append(f"-- note x{n}: {note}")
+    for line, n in sorted(report.lines.items()):
+        out.append(f"-- stop reached x{n}: {line}")
     return "\n".join(out)
 
 

@@ -141,6 +141,21 @@ def test_the_payload_copies_the_four_deploy_files_as_bytes(tmp_path, cloud):
 
 
 @pytest.mark.parametrize("cloud", INPUTS)
+def test_neither_first_boot_unit_is_cut_short_by_a_start_timeout(tmp_path, cloud):
+    """The unit that installs Docker and the unit that pulls the images and starts the stack
+    each take as long as the network makes them. systemd gives a `Type=oneshot` unit no start
+    timeout by default (systemd.service(5), `TimeoutStartSec=`: "except when Type=oneshot is
+    used, in which case the timeout is disabled by default"); both units say so themselves,
+    as the full Google Cloud deploy's units do, so that the default is not what it rests on."""
+    files = {item["path"]: item for item in render_cloud_init(tmp_path, cloud)["write_files"]}
+    for name in ("cairn-quick-provision.service", "cairn-quick.service"):
+        unit = files[f"/etc/systemd/system/{name}"]["content"].splitlines()
+        service = [line.strip() for line in unit[unit.index("[Service]") :]]
+        assert "Type=oneshot" in service, name
+        assert "TimeoutStartSec=infinity" in service, name
+
+
+@pytest.mark.parametrize("cloud", INPUTS)
 def test_serve_arguments_cannot_add_environment_assignments(tmp_path, cloud):
     tofu = shutil.which("tofu")
     if tofu is None:

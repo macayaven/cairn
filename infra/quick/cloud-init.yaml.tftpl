@@ -44,6 +44,7 @@ ${yamlencode({
 
         [Service]
         Type=oneshot
+        TimeoutStartSec=infinity
         RemainAfterExit=yes
         Restart=on-failure
         RestartSec=20s
@@ -69,6 +70,7 @@ ${yamlencode({
 
         [Service]
         Type=oneshot
+        TimeoutStartSec=infinity
         RemainAfterExit=yes
         Restart=on-failure
         RestartSec=20s

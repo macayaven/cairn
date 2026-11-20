@@ -729,11 +729,14 @@ def test_connect_the_title_is_the_first_line_the_message_displays():
 
 
 def test_connect_the_reply_names_the_note_as_slack_displayed_it(tmp_path):
-    """connect.md: "The reply in Slack names the note by its title as Slack displayed it.\"
-    (The third tester's finding 7.)"""
+    """connect.md: "The reply in Slack names the note by its title as Slack displayed it, in
+    plain text: ...\" (The third tester's finding 7; and the second attack's finding 3: the
+    title was mrkdwn, so marks Slack displayed as characters, a code block's or a name's,
+    came back styled.)"""
     says(
         *CONNECT,
-        "The reply in Slack names the note by its title as Slack displayed it.",
+        "The reply in Slack names the note by its title as Slack displayed it, in plain text:"
+        " nothing of it is bold, a mention or a link there.",
     )
     bench = Bench(tmp_path)
     try:
@@ -742,6 +745,15 @@ def test_connect_the_reply_names_the_note_as_slack_displayed_it(tmp_path):
         message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100"}
         reply = replied(bench, handle(bench, {**message, "text": "Q&amp;A [notes] *now*"}))
         assert reply.startswith("Filed: Q&amp;A [notes] now\n")  # Slack shows "Q&A [notes] now"
+        asyncio.run(
+            handle(
+                bench, {**message, "text": "```*draft* <!here>```", "ts": "2.000001"}
+            ).background()
+        )
+        *words, named = [body for where, body in bench.calls if where == REPLY][-1]["blocks"]
+        assert named["text"] == {"type": "plain_text", "text": "*draft* &lt;!here&gt;"}
+        # The reply's own words, mrkdwn, name it not (its page's address holds its slug).
+        assert all("*draft*" not in block["text"]["text"] for block in words)
     finally:
         bench.store.close()
 

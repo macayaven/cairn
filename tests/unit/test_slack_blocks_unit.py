@@ -131,8 +131,37 @@ def test_filed_links_page_and_distinguishes_duplicate(already, word):
     )
     rendered = section_text(payload)
     assert word.lower() in payload["text"].lower()
-    assert "<https://example.test/p?a=1&amp;b=2|Note &amp; &lt;x&gt;>" in rendered
+    # The link's label is the reply's own words, and the title plain text after it (the
+    # tester's second attack, finding 3: a label is mrkdwn, and styled the title).
+    assert "<https://example.test/p?a=1&amp;b=2|Open its page>" in rendered
+    assert rendered.endswith("\nNote &amp; &lt;x&gt;")
     assert "lab" in rendered
+    assert_valid(payload)
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        {"page_url": "https://example.test/p"},
+        {"page_url": "https://example.test/p", "already": True},
+        {"page_url": None, "project_url": "https://example.test/b/lab"},
+        {"page_url": None, "waiting": True, "already": True},
+        {"page_url": "https://example.test/p", "waiting": True},
+    ],
+    ids=["filed", "already", "no page", "already, waiting", "waiting"],
+)
+def test_a_filed_reply_names_the_title_in_plain_text(where):
+    """The tester's second attack, finding 3: the title is the message's words, or a name's,
+    and a mrkdwn section styles `*draft*` bold where Slack displayed it as characters. It
+    is a plain_text text object of its own (Slack's means for text it does not format,
+    "Disabling formatting" on its page on message text), escaped as every text object is;
+    the reply's own words stay mrkdwn, and none of them is the title."""
+    title = "*draft* _v2_ ~old~ <!here> & @*Cedar*"
+    payload = blocks.filed(title=title, project="lab", **where)
+    *words, named = payload["blocks"]
+    assert named["text"] == {"type": "plain_text", "text": blocks.escape(title)}
+    for block in words:
+        assert block["text"]["type"] == "mrkdwn" and "draft" not in block["text"]["text"]
     assert_valid(payload)
 
 

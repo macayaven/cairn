@@ -61,14 +61,18 @@ def _link(title: str, url: str) -> str:
     return f"<{target}|{label}>" if target else f"{label} (link unavailable)"
 
 
-def _message(fallback: str, sections: list[str]) -> dict:
-    return {
-        "text": fallback,
-        "blocks": [
-            {"type": "section", "text": {"type": "mrkdwn", "text": text, "verbatim": True}}
-            for text in sections
-        ],
-    }
+def _message(fallback: str, sections: list[str], plain: str | None = None) -> dict:
+    """A message of mrkdwn sections, the reply's own words, and then `plain`, words of a
+    message or of a name, in a section of its own as plain text: Slack's means for text it
+    does not format ("Disabling formatting", on its page on message text), so nothing of it
+    is bold, a mention or a link. It is escaped as every text object is."""
+    made = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text, "verbatim": True}}
+        for text in sections
+    ]
+    if plain is not None:
+        made.append({"type": "section", "text": {"type": "plain_text", "text": plain}})
+    return {"text": fallback, "blocks": made}
 
 
 def _one(raw: str) -> dict:
@@ -129,28 +133,30 @@ def filed(
     project_url: str | None = None,
 ) -> dict:
     """A note filed, or filed already, linking its page. A note without a page links its
-    project (`project_url`) and says whether it is still waiting."""
+    project (`project_url`) and says whether it is still waiting. The note's title, a
+    message's words, is the last section, in plain text (_message)."""
+    named = _title(title, 450)
     if waiting and not already:
         status = f"Note stored in {_text(project, 350)}. Its page will appear shortly."
         shown = (
             f"Note stored in {_link(project, project_url) if project_url else _text(project, 350)}"
         )
-        return _message(
-            f"{status}\n{_title(title, 450)}",
-            [f"{shown}. Its page will appear shortly.\n{_title(title, 450)}"],
-        )
+        return _message(f"{status}\n{named}", [f"{shown}. Its page will appear shortly."], named)
     if page_url is None:
         where = _link(project, project_url) if project_url else _text(project, 350)
         said = "Its page will appear shortly." if waiting else "No page holds it."
         status = "Already filed" if already else "Note stored"
         return _message(
-            f"{status} in {_text(project, 350)}: {_title(title, 450)}. {said}",
-            [f"{status} in {where}: {_title(title, 450)}. {said}"],
+            f"{status} in {_text(project, 350)}: {named}. {said}",
+            [f"{status} in {where}. {said}"],
+            named,
         )
     status = "Already filed" if already else "Filed"
-    fallback = f"{status}: {_title(title, 450)}\nProject: {_text(project, 350)}"
+    fallback = f"{status}: {named}\nProject: {_text(project, 350)}"
     return _message(
-        fallback, [f"{status}: {_link(title, page_url)}\nProject: {_text(project, 350)}"]
+        fallback,
+        [f"{status}. {_link('Open its page', page_url)}\nProject: {_text(project, 350)}"],
+        named,
     )
 
 

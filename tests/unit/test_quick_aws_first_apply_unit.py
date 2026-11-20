@@ -415,3 +415,13 @@ def test_the_upgrade_guide_sends_aws_to_its_cold_copy_and_keeps_the_other_way():
     # How the copies are kept apart from Litestream and from the rule that expires versions.
     assert "Litestream reads and writes only under `cairn/`" in cold
     assert "removes only what was deleted or overwritten" in cold
+
+
+def test_what_was_tried_tells_the_laptop_run_from_an_apply():
+    """The AWS files were run on a laptop against the real Compose. The guide says what that
+    covered and that none of it was AWS, and still says the path was never applied."""
+    tried = " ".join(readme_section("What was tried").split())
+    assert "The AWS path has not been applied to a real account" in tried
+    assert "run on a laptop" in tried
+    assert "a stand-in for the AWS CLI" in tried
+    assert "None of that touched AWS" in tried

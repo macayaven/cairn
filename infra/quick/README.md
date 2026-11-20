@@ -417,3 +417,10 @@ update but needs the pre-upgrade backup after an incompatible one.
   Not covered by it: a brand-new project whose APIs are off, a settings secret with a version,
   and this version's own image. The AWS path has not been applied to a real account: its VM
   boot, cloud access, certificate and bucket-backed restore still need a live check.
+- The AWS files were run on a laptop (2026-11-20): the cloud-init rendered with made-up values,
+  and its boot script run against Docker Compose 5.5.0 with a stand-in for the AWS CLI, an image
+  built from this checkout and a directory in place of the bucket. A denied and an empty
+  settings secret, a malformed settings file, a start, the first key, a note, the database
+  restored after its volume was removed, and the cold copy commands went as this guide says.
+  None of that touched AWS: S3, the VM's role, the metadata firewall, cloud-init and systemd
+  were not part of it.

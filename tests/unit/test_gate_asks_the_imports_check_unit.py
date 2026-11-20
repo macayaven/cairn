@@ -47,13 +47,20 @@ from cairn.compiler import (
     DraftStats,
     compile_note,
     extractive,
+    left_to_run,
     provenance_gate,
     render_body,
 )
 from cairn.gate import importable, lint_gate, strict_lint_gate, verbatim_gate
-from cairn.spans import FenceLeftOpen, Span
+from cairn.spans import CLOSERS_MAX, FenceLeftOpen, Span
 from cairn.store import Store, portable
-from cairn.store.portable import Refusal, _claim_text, _page_version, version_faults
+from cairn.store.portable import (
+    Refusal,
+    _as_rendered,
+    _claim_text,
+    _page_version,
+    version_faults,
+)
 
 GATES = (provenance_gate, lint_gate, strict_lint_gate, verbatim_gate)
 REWORDED = (provenance_gate, lint_gate, strict_lint_gate)  # they take a claim in other words
@@ -61,6 +68,14 @@ SAME = "Ada keeps port 80 open."
 FIVE = "\n\n".join([SAME] * 5)
 UNDER_TWO = f"## Ports\n\n{SAME}\n\n## Firewall\n\n{SAME}"
 OPEN = "```\nNever closed"
+# The third report's three notes, seventeen times: each a list item, an indented fence that
+# only the item before it opens, and an indented line the fence runs into. The body closes
+# CLOSERS_MAX of them; the last note of the seventeenth round is the row's draft.
+ROUNDS = tuple(
+    text.format(n=n)
+    for n in range(CLOSERS_MAX + 1)
+    for text in ("- step {n}", "    ~~~\n    sample {n}", "  After {n}.")
+)
 
 
 def numbered(claims, start=1):
@@ -68,7 +83,8 @@ def numbered(claims, start=1):
 
 
 # Each reason: (the note's text, what a composer makes of the extractive claims of its
-# passages; `foreign` is a passage of another project that says the same).
+# passages; `foreign` is a passage of another project that says the same). A tuple of texts
+# is that many notes on the page: all but the last filed before, the last the composer's.
 CASES = {
     Refusal.NO_CLAIMS: [(SAME, lambda c, foreign: ())],
     Refusal.ID_SHAPE: [
@@ -93,6 +109,7 @@ CASES = {
             ),
         )
     ],
+    Refusal.FENCE_RUNS_ON: [(ROUNDS, lambda c, foreign: c)],
     Refusal.ID_TWICE: [(SAME, lambda c, foreign: (c[0], c[0]))],
     Refusal.CITATIONS: [
         (
@@ -132,9 +149,14 @@ def a_fence_no_closer_closes(monkeypatch):
 def drafted(store: Store, refusal: Refusal, n: int):
     """The case's note in project `alpha`, and the composer that returns its draft."""
     text, shape = CASES[refusal][n]
+    *earlier, text = text if isinstance(text, tuple) else (text,)
     project = store.create_project("alpha")
     other, _ = store.add_note(store.create_project("beta").id, SAME, title="Net")
     foreign = store.note_spans(other.id)[0]
+    for before in earlier:
+        assert compile_note(store, store.add_note(project.id, before, title="Net")[0]).status == (
+            "saved"
+        )
     note, _ = store.add_note(project.id, text, title="Net")
 
     def compose(title, spans) -> Draft:
@@ -146,9 +168,12 @@ def drafted(store: Store, refusal: Refusal, n: int):
 
 def candidate(store: Store, refusal: Refusal, n: int) -> tuple[CandidatePage, dict[str, Span]]:
     """The page compile_note would gate for the case, and the passages it gates with."""
-    _, note, compose = drafted(store, refusal, n)
-    spans = {s.id: s for s in store.note_spans(note.id) if s.kind != "heading"}
-    claims = compose("Net", list(spans.values())).claims
+    project, note, compose = drafted(store, refusal, n)
+    held = store.get_page(project.id, "net")
+    new = {s.id: s for s in store.note_spans(note.id) if s.kind != "heading"}
+    existing = held.claims if held else ()
+    claims = (*existing, *compose("Net", list(new.values())).claims)
+    spans = store.get_spans([i for claim in existing for i in claim.span_ids]) | new
     body = render_body("Net", claims, spans)
     return CandidatePage(slug="net", title="Net", body=body, claims=claims), spans
 
@@ -184,10 +209,12 @@ def test_the_check_can_give_no_reason_that_is_not_a_refusal():
 @pytest.mark.parametrize(("refusal", "n"), ROWS, ids=lambda value: getattr(value, "name", value))
 def test_a_composers_draft_an_import_would_refuse_saves_no_version(store, refusal, n):
     project, note, compose = drafted(store, refusal, n)
+    before = store.get_page(project.id, "net")  # none, but for a row of several notes
     result = compile_note(store, note, compose=compose)
     assert result.status == "rejected"
     assert result.gate is not None and not result.gate.passed and result.gate.violations
-    assert store.list_pages(project.id) == []
+    assert store.get_page(project.id, "net") == before
+    assert len(store.list_pages(project.id)) == (before is not None)
     assert all("port 80" not in violation for violation in result.gate.violations)
 
 
@@ -196,8 +223,10 @@ def test_the_case_meets_that_reason_and_an_import_says_it(store, refusal, n):
     """The row is a row of its reason: the check names it first, for a version to be made
     and for one that exists, and an import of the same claims is refused in its words."""
     page, spans = candidate(store, refusal, n)
+    _, run_on = left_to_run("Net", page.claims, spans)  # the one render, as an import asks
+    assert (run_on is not None) == (refusal is Refusal.FENCE_RUNS_ON)
     for legacy in (False, True):
-        faults = list(version_faults(page.claims, spans, legacy=legacy))
+        faults = list(version_faults(page.claims, spans, legacy=legacy, run_on=run_on))
         assert faults and faults[0][1] is refusal, faults
     assert (faults[0][0] == 0) == (refusal is Refusal.NO_CLAIMS)  # no claim to name
     line = {
@@ -211,8 +240,10 @@ def test_the_case_meets_that_reason_and_an_import_says_it(store, refusal, n):
         "metrics": {},
         "created_at": "2026-11-20T00:00:00+00:00",
     }
-    with pytest.raises(ValueError) as refused:
-        _claim_text(_page_version("projects/alpha/", line, {}, spans), spans, "projects/alpha/")
+    with pytest.raises(ValueError) as refused:  # the import's three steps, in its order
+        imported = _page_version("projects/alpha/", line, {}, spans)
+        _claim_text(imported, spans, "projects/alpha/")
+        _as_rendered(imported, spans, "projects/alpha/")
     place = faults[0][0]
     assert str(refused.value) == refusal.said("net", 1, "projects/alpha/", place, page.claims)
     assert "port 80" not in str(refused.value)
@@ -298,8 +329,11 @@ def old_fold(store: Store) -> tuple[CandidatePage, dict[str, Span]]:
 
 def test_an_old_fold_passes_for_a_version_that_exists_and_never_for_one_to_be_made(store):
     page, spans = old_fold(store)
-    assert list(version_faults(page.claims, spans, legacy=True)) == []  # an import, a forget
-    assert list(version_faults(page.claims, spans, legacy=False)) == [(1, Refusal.NOT_WHOLE)]
+    no_fence = {"run_on": None}
+    assert list(version_faults(page.claims, spans, legacy=True, **no_fence)) == []  # an import
+    assert list(version_faults(page.claims, spans, legacy=False, **no_fence)) == [
+        (1, Refusal.NOT_WHOLE)
+    ]
     line = {
         "slug": "net",
         "version": 1,
@@ -317,5 +351,5 @@ def test_an_old_fold_passes_for_a_version_that_exists_and_never_for_one_to_be_ma
     assert [violation.split(":")[0] for violation in asked.violations] == ["import.not_whole"]
     assert not asked.passed and not verbatim_gate(page, spans).passed
     assert importable(passed, page, spans, reworded=True) is passed  # the three that take words
-    faults = list(version_faults(page.claims, spans, legacy=False, reworded=True))
+    faults = list(version_faults(page.claims, spans, legacy=False, reworded=True, **no_fence))
     assert faults == []  # the comparison is not asked at all, old or new

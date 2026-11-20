@@ -243,8 +243,8 @@ def test_the_claims_no_fault_names_pass_together(store):
     built = Built(store, texts, mixed)
     claims = built.page().claims
     spans = store.get_spans([i for claim in claims for i in claim.span_ids])
-    faults = list(version_faults(claims, spans, legacy=True))
+    faults = list(version_faults(claims, spans, legacy=True, run_on=None))
     assert faults == [(1, Refusal.NOT_WHOLE), (2, Refusal.HEADINGS), (4, Refusal.ID_TWICE)]
     rest = [claim for place, claim in enumerate(claims, 1) if place not in {1, 2, 4}]
     assert [claim.text for claim in rest] == ["Quill keeps the log.", "Brook owns the rollback."]
-    assert list(version_faults(rest, spans, legacy=True)) == []
+    assert list(version_faults(rest, spans, legacy=True, run_on=None)) == []

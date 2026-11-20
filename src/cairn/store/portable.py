@@ -146,7 +146,7 @@ from typing import IO, Any
 from pydantic import ValidationError
 
 from cairn.kinds import KINDS
-from cairn.spans import Span, chunk
+from cairn.spans import CLOSERS_MAX, Span, chunk
 from cairn.store.access import (
     _MODELS_CHOICES,
     MODELS,
@@ -1360,6 +1360,11 @@ class Refusal(Enum):
     NOT_WHOLE = ("claim", "does not say what a passage it cites says")
     FENCE = ("claim", "leaves a code fence open that no closing line closes")
     HEADINGS = ("claim", "folds passages under different headings")
+    FENCE_RUNS_ON = (
+        "claim",
+        "opens a code fence, where the page puts it, that runs into the next claim and that"
+        " the body does not close (a body closes at most {closers} such fences)",
+    )
     ID_TWICE = ("version", "holds two claims with one id")
     CITATIONS = (
         "version",
@@ -1375,6 +1380,7 @@ class Refusal(Enum):
             factor=CITATION_FACTOR,
             claims=len(claims),
             cited=len({span_id for claim in claims for span_id in claim.span_ids}),
+            closers=CLOSERS_MAX,
         )
 
     def said(self, slug: str, version: int, root: str, n: int, claims: Sequence[Claim]) -> str:
@@ -1393,8 +1399,10 @@ def version_faults(
     spans: Mapping[str, Span],
     *,
     legacy: bool,
+    run_on: int | None,
     reworded: bool = False,
     text_bound: bool = True,
+    ask_alone: bool = True,
 ) -> Iterator[tuple[int, Refusal]]:
     """Why an import refuses `claims` as one version of a page, citing `spans` (the spans of
     its project's notes, by id): each fault as (the place of the claim that fails, 1 for the
@@ -1411,17 +1419,31 @@ def version_faults(
     exists, an archive's or the store's (an import, a forget); False for a gate, which
     judges a version to be made and takes today's comparison alone.
 
+    `run_on`: the place of the claim whose code fence, where the body puts it, runs into
+    the next claim and the body does not close, as the caller's one render of the version
+    found it (compiler.left_to_run: more than spans.CLOSERS_MAX such fences, or one no line
+    closes); None for none, and from an import's first two steps. It is the last fault,
+    named only of claims that otherwise pass together: without that claim the body is
+    another, so a forget renders and asks again (store.erasure._plan).
+    `ask_alone`: False when the caller asked each claim alone already whether it leaves a
+    fence open that no line closes, and refused the page for it (a gate:
+    gate.unclaimed_violations, which refuses a fence that runs on too, so it gives `run_on`
+    None); no claim is parsed here then.
+
     `reworded`: True leaves out the one rule that a claim is the whole of every span it
     cites, and asks every other of every claim. For the gates whose contract takes a claim
     in other words than its passage (cairn.gate.importable); never an import or a forget.
 
-    An import asks in two steps, in the order it always did: everything but the bound on
-    text when it reads the version's line (_page_version, `text_bound` False), and that
-    bound after its rule across pages (_claim_text, of the same code: _past_bounds).
+    An import asks in three steps, in the order it always did, so a version it refuses
+    costs no more than before: everything but the bound on text when it reads the version's
+    line (_page_version, `text_bound` False), that bound after its rule across pages
+    (_claim_text, of the same code: _past_bounds), and the fence that runs on where it
+    renders the body it stores (_as_rendered: Refusal.FENCE_RUNS_ON of that one render).
 
     A claim fails alone when its id is not shaped as cairn makes one, it cites a span twice
     or one that is not in `spans`, it is not the whole of every span it cites, it leaves a
     code fence open that no line closes, or it folds spans under different heading paths.
+    (A fence that only the page opens, after the claims before it, is `run_on`'s.)
     Of the claims that pass, one whose id an earlier one holds fails. The rest are a version
     past a bound when their citations are more than CITATION_FACTOR times the claims and the
     distinct spans, or their text more than CLAIM_TEXT_FACTOR times those spans' text (UTF-8
@@ -1448,7 +1470,7 @@ def version_faults(
             reworded or copied(claim, spans, read) or (legacy and whole_before_core5(claim, spans))
         ):
             yield n, Refusal.NOT_WHOLE
-        elif fence_left_open([claim]):
+        elif ask_alone and fence_left_open([claim]):
             yield n, Refusal.FENCE
         elif len({spans[span_id].heading_path for span_id in claim.span_ids}) > 1:
             yield n, Refusal.HEADINGS
@@ -1459,7 +1481,10 @@ def version_faults(
         if first.setdefault(claim.id, n) != n:
             yield n, Refusal.ID_TWICE
     rest = [(n, claim) for n, claim in alone if first[claim.id] == n]
-    yield from _past_bounds(rest, spans, text_bound)
+    past = list(_past_bounds(rest, spans, text_bound))
+    yield from past
+    if run_on is not None and len(rest) == len(claims) and not past:
+        yield run_on, Refusal.FENCE_RUNS_ON
 
 
 def _past_bounds(
@@ -1528,17 +1553,20 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     naming the page and version, never the text: an import never brings a body cairn would
     not have written, and the version is stored with the current rendering. A title longer
     than cairn writes (a note's topic, FIELD_MAX) is cut to it, and the body is rendered
-    with the cut title."""
+    with the cut title. And in the body that is stored no code fence runs from one claim
+    into the next unclosed (Refusal.FENCE_RUNS_ON, of that same render): a version with more
+    than spans.CLOSERS_MAX such fences, which only the build before the body was read whole
+    could write, is refused, by page and version."""
     from cairn.compiler import (  # the compiler builds on the store
+        left_to_run,
         previous_render_body,
-        render_body,
         render_body_before_review_four,
         render_body_before_review_three,
         render_body_before_review_two,
         render_body_with_fences_open,
     )
 
-    body = render_body(page.title, page.claims, spans)
+    body, run_on = left_to_run(page.title, page.claims, spans)
     # An archive written before holds an earlier rendering: accepted, stored as now.
     given = _collapsed(page.body)
     if given != _collapsed(body) and all(
@@ -1557,7 +1585,10 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
         )
     title = page.title[: FIELD_MAX["topic"]]  # a page's title is its note's topic or title
     if title != page.title:
-        body = render_body(title, page.claims, spans)
+        body, run_on = left_to_run(title, page.claims, spans)
+    if run_on is not None:  # asked of the body that is stored, by its one render
+        fault = Refusal.FENCE_RUNS_ON
+        raise ValueError(fault.said(page.slug, page.version, root, run_on, page.claims))
     return page.model_copy(update={"title": title, "body": body})
 
 
@@ -1605,7 +1636,7 @@ def _page_version(
         )
     except (TypeError, KeyError, ValidationError):  # neither message is shown: they quote the input
         raise ValueError(f"a claim of {slug!r} in {root} is not well formed") from None
-    for n, fault in version_faults(claims, spans, legacy=True, text_bound=False):
+    for n, fault in version_faults(claims, spans, legacy=True, run_on=None, text_bound=False):
         raise ValueError(fault.said(slug, expected, root, n, claims))
     return Page(
         project_id="",

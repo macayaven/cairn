@@ -2856,18 +2856,21 @@ INSTALLS = "SELECT state, bot_token IS NULL, signing_secret IS NULL FROM slack_i
 def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
     """K1 on the real server process. `serve --slack` runs through tests/system/slack_serve.py:
     `python -m cairn.server` with Slack's Web API and reply addresses pointed at the stand-in
-    (scripts/slack_standin.py) on loopback and, for the last part, the store's clock moved 10
-    days on at a restart; everything else is the real command. An owner sets the app up and
+    (scripts/slack_standin.py) on loopback. The server and stand-in have their own clocks,
+    advanced 10 days on restart. An owner sets the app up and
     pastes the two secrets; the stand-in's signed challenge turns it on; a person is offered a
     link by the slash command and confirms it signed in; they choose a project; the message
     shortcut files a message whose author is of the team and refuses one whose author is not;
-    `find` answers with the claim and its link; a direct message is answered. Slack revokes
-    the bot's token and the install is off; Slack uninstalls the app and the notes are due,
+    `find` answers with the claim and its link; a direct message is answered. An uninstall
+    from Slack's slow clock is ignored and audited. Slack revokes the bot's token with a
+    later dispatch time and the install is off; Slack uninstalls the app and the notes are due,
     not forgotten; 10 days on they are gone. A second workspace's install takes the two
     removal events in the other order and ends in the same state. No secret, one-time value or
     message is in the server's output, and no secret or one-time value in the database."""
     idp = IdentityProvider()
-    standin = slack_stand_in()().__enter__()
+    server_time = datetime(2031, 3, 4, 9, tzinfo=UTC)
+    slack_time = server_time - timedelta(seconds=30)
+    standin = slack_stand_in()(clock=lambda: slack_time.timestamp()).__enter__()
     env = {
         "CAIRN_OIDC_ISSUER": idp.url,
         "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
@@ -2875,6 +2878,7 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
         "CAIRN_OIDC_LABEL": "Fable Works SSO",
         "CAIRN_SLACK_KEY": SLACK_KEY,
         "JOURNEY_SLACK_API": standin.api_base,
+        "JOURNEY_SERVER_TIME": server_time.isoformat(),
         # Slack is called through the client the sources use, whose addresses are checked; the
         # stand-in is on loopback, which an operator has to allow.
         "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
@@ -2893,6 +2897,11 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
 
     def address(install: str, kind: str) -> str:
         return f"{server.url}/integrations/slack/{install}/{kind}"  # where a proxy sends Slack
+
+    def lifecycle(install: str, event: dict) -> tuple[int, bytes]:
+        return standin.send_event(address(install, "events"), event)
+
+    bot_revoked = {"type": "tokens_revoked", "tokens": {"bot": [standin.bot_user_id]}}
 
     async def replied(method: str, count: int) -> dict:
         """The `count`th call the server made to the stand-in by `method`, once it has."""
@@ -2958,6 +2967,7 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
         assert status == 200 and f"Slack project: {project}" in slack_said(body)
 
     async def journey() -> None:
+        nonlocal server_time, slack_time
         async with (
             httpx2.AsyncClient(base_url=PUBLIC, transport=Loopback(server.port), timeout=30) as one,
             httpx2.AsyncClient(base_url=PUBLIC, transport=Loopback(server.port), timeout=30) as two,
@@ -3007,8 +3017,22 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
             assert [how for _, how in came] == ["filed", "typed"]
             notes = [note_id for note_id, _ in came]
 
+            # Slack dispatches after set-up, while its clock is still behind the server's.
+            slack_time += timedelta(seconds=1)
+            assert lifecycle(first, {"type": "app_uninstalled"}) == (200, b"")
+            assert slack_rows(server.db, f"{INSTALLS} WHERE id = ?", first) == [("on", 0, 0)]
+            assert slack_rows(server.db, "SELECT COUNT(*) FROM slack_people") == [(1,)]
+            [(detail,)] = slack_rows(
+                server.db,
+                "SELECT detail FROM audit_events WHERE action = 'slack.lifecycle_ignored'",
+            )
+            assert json.loads(detail) == {
+                "install": first, "event": "app_uninstalled", "why": "at_or_before_setup",
+            }  # fmt: skip
+            slack_time += timedelta(seconds=30)
+
             # Slack revokes the bot's token: off, the token deleted, nothing due.
-            assert standin.revoke_bot(address(first, "events")) == (200, b"")
+            assert lifecycle(first, bot_revoked) == (200, b"")
             page = html.unescape((await one.get("/sources")).text)
             assert "Off, because Slack revoked the bot's token." in page
             assert slack_rows(server.db, f"{INSTALLS} WHERE id = ?", first) == [("off", 1, 0)]
@@ -3017,7 +3041,7 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
             assert slack_rows(server.db, due) == [(2, 0)]
 
             # Slack uninstalls the app: removed, both secrets and the links gone, notes due.
-            gone = standin.send_event(address(first, "events"), {"type": "app_uninstalled"})
+            gone = lifecycle(first, {"type": "app_uninstalled"})
             assert gone == (200, b"")
             page = (await one.get("/sources")).text
             assert "2 notes came through Slack: they will be forgotten on" in page
@@ -3026,14 +3050,15 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
             assert slack_rows(server.db, "SELECT COUNT(*) FROM slack_people") == [(0,)]
             assert slack_rows(server.db, due) == [(2, 2)]
             (when,) = {at for (at,) in slack_rows(server.db, "SELECT forget_at FROM slack_notes")}
-            left = datetime.fromisoformat(when) - datetime.now(UTC)
-            assert timedelta(days=9, hours=23) < left <= timedelta(days=10)
+            assert datetime.fromisoformat(when) == server_time + timedelta(days=10)
             kept = "SELECT COUNT(*) FROM notes WHERE id IN (?, ?)"
             assert slack_rows(server.db, kept, *notes) == [(2,)]  # due, not forgotten
 
             # Ten days on (the store's clock, from a restart), they are gone.
             server.stop()
-            server.env["JOURNEY_DAYS_AHEAD"] = "10.05"
+            server_time += timedelta(days=10, minutes=1)
+            slack_time += timedelta(days=10, minutes=1)
+            server.env["JOURNEY_SERVER_TIME"] = server_time.isoformat()
             server.start()
 
             async def forgotten():
@@ -3055,7 +3080,8 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
                 address(second, "commands"), text=f"note {words[2]}"
             )
             assert status == 200 and slack_said(body).startswith("Filed: ")
-            uninstalled, revoked = standin.uninstall(address(second, "events"), revoked_first=False)
+            uninstalled = lifecycle(second, {"type": "app_uninstalled"})
+            revoked = lifecycle(second, bot_revoked)
             assert uninstalled == (200, b"") and revoked[0] == 404  # removed: no address
             both = slack_rows(server.db, f"{INSTALLS} WHERE id IN (?, ?)", first, second)
             assert both == [("removed", 1, 1), ("removed", 1, 1)]
@@ -3077,6 +3103,7 @@ def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
     assert "?t=" not in output, "a one-time address reached the server's output"
     for said in [*words, "north pier"]:
         assert said not in output, said
+    assert output.count("200 (ignored)") == 1
     stored = database_text(server.db)
     for secret in [*secrets_seen, *idp.issued]:
         assert secret not in stored, "a secret or a one-time value is in the database"

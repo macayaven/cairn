@@ -32,7 +32,8 @@ The install
   pending or removed one holds no team), so making ready a team another workspace holds is
   TeamHeld, whatever races;
   `slack_team_held` counts the same states. A new bot token clears `bot_gone_at` and the count
-  of ended answers.
+  of ended answers. Saving the same credentials and team keeps the set-up stamp. Saving
+  credentials with an earlier clock than the previous stamp reports how far ahead it is.
 - `switch_slack_install(on=)`: an owner or admin. Off from ready or on; on from ready or off
   while it holds its secrets (ValueError otherwise). `slack_install_verified`: Slack's
   challenge answered, ready becomes on (the server's call, on the root store).
@@ -49,10 +50,11 @@ The install
   (6 hours), at most CHECKS_AT_ONCE (20), each stamped as checked when taken;
   `slack_token_checked` records what Slack said: two ENDED answers in a row (invalid_auth,
   account_inactive, token_revoked) do what revoke_slack_bot does, a good one starts the count
-  again, anything else changes nothing; an answer about a token replaced since changes
-  nothing. `remove_gone_slack_installs`: an install with no bot token for more than GONE_DAYS
-  (3) since `bot_gone_at` is removed as an owner removes it, the audit record naming no person
-  and saying why; one an owner only switched off holds its token and is never removed so.
+  again, anything else changes nothing. A result applies to the set-up it checked while it
+  still holds a bot token. `remove_gone_slack_installs`: an install with no bot token for
+  more than GONE_DAYS (3) since `bot_gone_at` is removed as an owner removes it, the audit
+  record naming no person and saying why; one an owner only switched off holds its token
+  and is never removed so.
 - What is due (a claim with no note never is): `slack_notes_due` (the server's, every
   workspace, the oldest first) gives (workspace, note) pairs whose time came;
   cairn.web.slack.Keeper forgets each with cairn's own forgetting (Store.forget_note, H5b, by
@@ -112,11 +114,12 @@ import copy
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple, cast
@@ -161,6 +164,7 @@ MEMBERS_ONLY = "a Slack user is linked to a person of this workspace"
 LINKED_ELSEWHERE = "this Slack user is linked to another person: unlink it first"
 NOT_OPEN = "this link offer is not open"
 NO_LINK = "this code links nothing"
+log = logging.getLogger("cairn.slack")
 
 
 class TeamHeld(ValueError):
@@ -232,20 +236,29 @@ class SlackInstall:
         return self.state == "off" and not self.holds_bot_token
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SlackGeneration:
-    """The sealed signing secret changes at each set-up or credential replacement."""
+    """The set-up stamp and signing secret used to verify a request."""
 
     install_id: str
     account_id: str
-    sealed: str = field(repr=False)
+    made_at: str
+    signing_secret: str = field(repr=False)
+    sealer: Sealer = field(repr=False)
 
     def require(self, con: sqlite3.Connection) -> None:
         row = con.execute(
-            "SELECT 1 FROM slack_installs WHERE id = ? AND account_id = ? AND signing_secret = ?",
-            (self.install_id, self.account_id, self.sealed),
+            "SELECT signing_secret FROM slack_installs WHERE id = ? AND account_id = ?"
+            " AND made_at = ?",
+            (self.install_id, self.account_id, self.made_at),
         ).fetchone()
         if row is None:
+            raise SlackInstallChanged()
+        associated = _associated("signing_secret", self.install_id, self.account_id)
+        current = self.sealer.open(row[0], associated)
+        if current is None or not hmac.compare_digest(
+            current.encode(), self.signing_secret.encode()
+        ):
             raise SlackInstallChanged()
 
 
@@ -287,14 +300,12 @@ class SlackClaim(NamedTuple):
 
 @dataclass(frozen=True)
 class SlackCheck:
-    """An install whose bot token is to be checked with Slack: the token opened, and the
-    sealed value it was read from, so an answer about a token replaced since changes nothing.
-    Neither is in a repr."""
+    """A bot token to check with Slack and the set-up it belongs to."""
 
     install_id: str
     account_id: str
     token: str = field(repr=False)
-    sealed: str = field(repr=False)
+    made_at: str
 
 
 @dataclass(frozen=True)
@@ -393,6 +404,11 @@ def _when(text: str) -> datetime:
     return datetime.fromisoformat(text)
 
 
+def _next_slack_setup(now: datetime, previous: str) -> str:
+    """Distinguish set-ups even when the wall clock stays put or goes back."""
+    return _iso(max(now, _when(previous) + timedelta(microseconds=1)))
+
+
 class SlackMethods(StoreBase):
     slack_sealer: Sealer | None = None  # set on the root store by create_app; views copy it
     _slack_view_check: Callable[[sqlite3.Connection], None] | None = None
@@ -449,11 +465,10 @@ class SlackMethods(StoreBase):
             ).fetchone()
             if row is not None and row[2] != "removed":
                 return _install(row)
-            stamp = self._stamp()
+            now = self._instant()
             if row is not None:
                 install_id = row[0]
-                # Distinguish set-ups even if the wall clock has stayed put or gone back.
-                stamp = max(stamp, _iso(_when(row[9]) + timedelta(microseconds=1)))
+                stamp = _next_slack_setup(now, row[9])
                 con.execute(
                     "UPDATE slack_installs SET state = 'pending', command = ?, made_by = ?,"
                     " made_at = ?, checked_at = NULL, dead_checks = 0, bot_gone_at = NULL"
@@ -465,7 +480,7 @@ class SlackMethods(StoreBase):
                 con.execute(
                     "INSERT INTO slack_installs (id, account_id, state, command, made_by, made_at)"
                     " VALUES (?, ?, 'pending', ?, ?, ?)",
-                    (install_id, self._account_id, command, self._user_id, stamp),
+                    (install_id, self._account_id, command, self._user_id, _iso(now)),
                 )
             self._slack_audit(con, "slack.install_made", install_id)
             return _install(self._slack_row(con, install_id))
@@ -513,30 +528,39 @@ class SlackMethods(StoreBase):
             if state != "pending" and was_team != team_id:  # it belongs to its team
                 raise NotItsTeam()
             account = self._account_id
-            kept = con.execute(
-                "SELECT signing_secret FROM slack_installs WHERE id = ?", (install_id,)
-            ).fetchone()[0]
-            held = (
-                sealer.open(kept, _associated("signing_secret", install_id, account))
-                if kept is not None
-                else None
+            signing_for = _associated("signing_secret", install_id, account)
+            bot_for = _associated("bot_token", install_id, account)
+            kept_signing, kept_bot = con.execute(
+                "SELECT signing_secret, bot_token FROM slack_installs WHERE id = ?", (install_id,)
+            ).fetchone()
+            held_signing = sealer.open(kept_signing, signing_for)
+            held_bot = sealer.open(kept_bot, bot_for)
+            same_signing = held_signing is not None and hmac.compare_digest(
+                held_signing.encode(), signing_secret.encode()
+            )
+            same_setup = (
+                was_team == team_id
+                and same_signing
+                and held_bot is not None
+                and hmac.compare_digest(held_bot.encode(), bot_token.encode())
             )
             # on stays on only with the signing secret a signed request proved already
-            proven = (
-                state == "on" and held is not None and hmac.compare_digest(held, signing_secret)
-            )
-            sealed = (
-                sealer.seal(signing_secret, _associated("signing_secret", install_id, account)),
-                sealer.seal(bot_token, _associated("bot_token", install_id, account)),
-            )
+            proven = state == "on" and same_signing
+            sealed = sealer.seal(signing_secret, signing_for), sealer.seal(bot_token, bot_for)
+            now = self._instant()
+            made_at = row[9] if same_setup else _next_slack_setup(now, row[9])
+            detail = {}
+            if _when(row[9]) > now:
+                detail["ahead_seconds"] = (_when(made_at) - now).total_seconds()
             try:
                 con.execute(
                     "UPDATE slack_installs SET state = ?, team_id = ?, enterprise_id = ?,"
                     " team_domain = ?, bot_user_id = ?, signing_secret = ?, bot_token = ?,"
-                    " removed_at = NULL, checked_at = ?, dead_checks = 0, bot_gone_at = NULL"
+                    " made_at = ?, removed_at = NULL, checked_at = ?, dead_checks = 0,"
+                    " bot_gone_at = NULL"
                     " WHERE id = ?",
                     ("on" if proven else "ready", team_id, enterprise_id, team_domain,
-                     bot_user_id, *sealed, self._stamp(), install_id),
+                     bot_user_id, *sealed, made_at, _iso(now), install_id),
                 )  # fmt: skip
             except sqlite3.IntegrityError:  # slack_installs_team: another workspace's team
                 raise TeamHeld() from None
@@ -548,8 +572,16 @@ class SlackMethods(StoreBase):
                 )
             if was_team is not None and was_team != team_id:  # the old team's people are not its
                 con.execute("DELETE FROM slack_people WHERE install_id = ?", (install_id,))
-            self._slack_audit(con, "slack.install_ready", install_id, team=team_id)
-            return _install(self._slack_row(con, install_id))
+            self._slack_audit(con, "slack.install_ready", install_id, team=team_id, **detail)
+            install = _install(self._slack_row(con, install_id))
+        if "ahead_seconds" in detail:
+            with suppress(Exception):  # a log handler can fail after the save commits
+                log.warning(
+                    "slack: set-up stamp for %s is %.6f seconds ahead of the server clock",
+                    install_id,
+                    detail["ahead_seconds"],
+                )
+        return install
 
     def switch_slack_install(self, install_id: str, *, on: bool) -> SlackInstall:
         """Switch the install on or off (see the module). KeyError, PermissionError, or
@@ -660,11 +692,16 @@ class SlackMethods(StoreBase):
             return None
         install = _install(row[:14])
         sealed = row[14]
-        secret = None
-        if sealed is not None and self.slack_sealer is not None:
-            associated = _associated("signing_secret", install.id, install.account_id)
-            secret = self.slack_sealer.open(sealed, associated)
-        generation = SlackGeneration(install.id, install.account_id, sealed) if sealed else None
+        sealer = self.slack_sealer
+        if sealed is None or sealer is None:
+            return SlackInbound(install, None)
+        associated = _associated("signing_secret", install.id, install.account_id)
+        secret = sealer.open(sealed, associated)
+        generation = (
+            SlackGeneration(install.id, install.account_id, install.made_at, secret, sealer)
+            if secret is not None
+            else None
+        )
         return SlackInbound(install, secret, generation)
 
     # Notes, and forgetting them (D10)
@@ -940,41 +977,42 @@ class SlackMethods(StoreBase):
         sealer = self._slack_sealer()
         with self._write() as con:
             found = con.execute(
-                "SELECT id, account_id, bot_token FROM slack_installs WHERE bot_token IS NOT NULL"
+                "SELECT id, account_id, bot_token, made_at FROM slack_installs"
+                " WHERE bot_token IS NOT NULL"
                 " AND state != 'removed' AND (checked_at IS NULL OR checked_at <= ?)"
                 " ORDER BY checked_at IS NOT NULL, checked_at, id LIMIT ?",
                 (_iso(self._instant() - CHECK_EVERY), limit),
             ).fetchall()
             con.executemany(
                 "UPDATE slack_installs SET checked_at = ? WHERE id = ?",
-                [(self._stamp(), install_id) for install_id, _, _ in found],
+                [(self._stamp(), install_id) for install_id, _, _, _ in found],
             )
         checks = []
-        for install_id, account_id, sealed in found:
+        for install_id, account_id, sealed, made_at in found:
             token = sealer.open(sealed, _associated("bot_token", install_id, account_id))
             if token is not None:
-                checks.append(SlackCheck(install_id, account_id, token, sealed))
+                checks.append(SlackCheck(install_id, account_id, token, made_at))
         return checks
 
     def slack_token_checked(self, check: SlackCheck, answer: str) -> SlackInstall | None:
         """The server's: what Slack said of the token `check` holds (ANSWERS). "works": the
         count of ended answers starts again; "unclear" changes nothing; "ended": counted, and
-        the second in a row does what revoke_slack_bot does (bot_gone_at set). An install
-        whose token was replaced or deleted since changes nothing. The install as it is now;
-        None when it is gone."""
+        the second in a row does what revoke_slack_bot does (bot_gone_at set). The answer
+        applies while the set-up still holds a token. Resealing keeps the set-up stamp.
+        The install as it is now; None when it is gone."""
         if answer not in ANSWERS:
             raise ValueError(f"a check comes to {', '.join(ANSWERS)}")
         with self._write() as con:
-            same = "id = ? AND bot_token = ?", (check.install_id, check.sealed)
+            same = "id = ? AND account_id = ? AND made_at = ? AND bot_token IS NOT NULL"
+            binding = (check.install_id, check.account_id, check.made_at)
             if answer == "works":
-                con.execute(f"UPDATE slack_installs SET dead_checks = 0 WHERE {same[0]}", same[1])
+                con.execute(f"UPDATE slack_installs SET dead_checks = 0 WHERE {same}", binding)
             elif answer == "ended":
                 con.execute(
-                    f"UPDATE slack_installs SET dead_checks = dead_checks + 1 WHERE {same[0]}",
-                    same[1],
+                    f"UPDATE slack_installs SET dead_checks = dead_checks + 1 WHERE {same}", binding
                 )
                 ended = con.execute(
-                    f"SELECT 1 FROM slack_installs WHERE {same[0]} AND dead_checks >= 2", same[1]
+                    f"SELECT 1 FROM slack_installs WHERE {same} AND dead_checks >= 2", binding
                 ).fetchone()
                 if ended:
                     self._revoke(con, check.install_id)
@@ -1246,6 +1284,16 @@ class SlackMethods(StoreBase):
                     " ON CONFLICT DO NOTHING",
                     (install_id, event_id, self._stamp()),
                 ).rowcount
+            )
+
+    def _audit_ignored_slack_event(self, install: SlackInstall, event: str, why: str) -> None:
+        """Record the time decision through the verified callback's view."""
+        with self._write() as con:
+            self._audit(
+                con,
+                "slack.lifecycle_ignored",
+                account_id=install.account_id,
+                detail={"install": install.id, "event": event, "why": why},
             )
 
     def forget_slack_event(self, install_id: str, event_id: str) -> None:

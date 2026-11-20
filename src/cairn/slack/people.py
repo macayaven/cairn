@@ -83,7 +83,7 @@ from urllib.parse import quote
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from cairn.memory import WAITING, Malformed, Memory, NotFound, RequestError, unavailable
+from cairn.memory import Malformed, Memory, NotFound, RequestError, unavailable
 from cairn.slack import blocks
 from cairn.slack.client import SlackError
 from cairn.slack.dispatch import Context
@@ -353,25 +353,26 @@ def write(
             raise
         log.warning("slack: a note was stored and not filed: %s", type(failed).__name__)
         return blocks.refused(with_product(STORED_NOT_FILED, context.product))
-    project = asker.memory.store.get_project(project_id)
-    note = asker.memory.store.get_note(answer["note_id"])
+    store = asker.memory.store
+    project = store.get_project(project_id)
+    note = store.get_note(answer["note_id"])
     if project is None or note is None:  # gone since: what is said of a project gone
         return blocks.refused(OUT_OF_REACH.format(command=command))
+    waiting, slug = store.note_page(note.project_id, note.id)
     return filed_message(
         title=note.title,
-        page_url=page_url(context, project.name, answer["page"]),
+        page_url=page_url(context, project.name, slug) if slug is not None else None,
         project=project.name,
-        waiting=answer.get("status") == WAITING,
+        waiting=waiting,
         project_url=f"{context.public_url}/b/{quote(project.name, safe='')}",
     )
 
 
 def filed_message(
-    *, title: str, page_url: str, project: str, waiting: bool, project_url: str | None = None
+    *, title: str, page_url: str | None, project: str, waiting: bool, project_url: str | None = None
 ) -> dict:
-    """What a person is told of a note written: the one seam for it. `waiting`: the note is
-    stored and waits for its page (Memory.note's status WAITING, N1), so it links its
-    project (`project_url`), not a page that is not there yet."""
+    """What a person is told of a note written. It links its page when that page cites it.
+    A note waiting for its page or stored without a page links its project."""
     return blocks.filed(
         title=title, page_url=page_url, project=project, waiting=waiting, project_url=project_url
     )

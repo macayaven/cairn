@@ -4,10 +4,12 @@ ended removed, and one Slack team for one workspace whatever races. Every name, 
 here is made up."""
 
 import json
+from contextlib import closing
 from datetime import timedelta
 
 import pytest
 from test_slack_store_unit import (  # noqa: F401
+    KEY,
     NOW,
     OTHER_TEAM,
     SECRET,
@@ -20,8 +22,10 @@ from test_slack_store_unit import (  # noqa: F401
 )
 from test_store_unit import rows
 
-from cairn.store import reach
+from cairn.store import Store, reach
 from cairn.store.base import _iso
+from cairn.store.hosted import Sealer
+from cairn.store.reseal import Resealed, reseal_slack
 from cairn.store.slack import (
     CHECK_EVERY,
     CHECKS_AT_ONCE,
@@ -268,6 +272,30 @@ def test_an_answer_about_a_token_replaced_since_changes_nothing(world):  # noqa:
     found = world.store.slack_token_checked(check, "ended")
     assert found.holds_bot_token and found.state == "ready"
     assert world.view.slack_bot_token(install.id) == TOKEN + "new"
+    assert rows(world.db, "SELECT dead_checks FROM slack_installs WHERE id = ?", install.id) == [
+        (0,)
+    ]
+
+
+@pytest.mark.parametrize(("answer", "dead_checks"), [("ended", 2), ("works", 0)])
+def test_token_check_survives_resealing(world, answer, dead_checks):  # noqa: F811
+    install = ready(world)
+    sealer = Sealer(bytes(range(1, 33)), (KEY,))
+    world.store.slack_sealer = sealer
+    world.clock.now += CHECK_EVERY
+    (first,) = world.store.take_slack_checks()
+    assert world.store.slack_token_checked(first, "ended").holds_bot_token
+    world.clock.now += CHECK_EVERY
+    (second,) = world.store.take_slack_checks()
+    with closing(Store(world.db, clock=world.clock)) as other:
+        assert reseal_slack(other, sealer) == Resealed(resealed=2)
+
+    found = world.store.slack_token_checked(second, answer)
+    assert found.made_at == install.made_at
+    assert rows(world.db, "SELECT dead_checks FROM slack_installs WHERE id = ?", install.id) == [
+        (dead_checks,)
+    ]
+    assert found.holds_bot_token == (answer == "works")
 
 
 def test_revoking_sets_since_when_and_a_new_token_clears_it(world):  # noqa: F811

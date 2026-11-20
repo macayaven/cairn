@@ -87,6 +87,7 @@ import test_k1_slack as k1
 from starlette.testclient import TestClient
 
 import cairn.store.slack as store_slack
+from cairn.candidate import GateResult
 from cairn.compiler import provenance_gate
 from cairn.identity import GitHub
 from cairn.memory import UNWRITABLE, Memory
@@ -174,7 +175,7 @@ class World:
     """A server, switch on, on a database with one workspace, Fable Works, owned by Ada, with
     Brook as a member, an install that is on, and Slack's answers recorded."""
 
-    def __init__(self, tmp_path: Path, plans: Plans | None = None) -> None:
+    def __init__(self, tmp_path: Path, plans: Plans | None = None, *, gate=None) -> None:
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.db = tmp_path / "cairn.db"
         self.clock = k1.Clock()
@@ -185,7 +186,7 @@ class World:
         )
         transport = httpx.MockTransport(self.slack)
         self.app = create_app(
-            self.store, public_url=BASE, sign_in=sign_in, clock=self.clock, plans=plans,
+            self.store, public_url=BASE, sign_in=sign_in, clock=self.clock, plans=plans, gate=gate,
             slack=Slack(key=k1.KEY, http=lambda: httpx.AsyncClient(transport=transport)),
         )  # fmt: skip
         self.client = TestClient(self.app, base_url=BASE)
@@ -920,6 +921,45 @@ def test_a_note_that_is_stored_and_then_not_filed_is_still_recorded_as_from_slac
     assert world.through_slack() == [(note_id, world.install.id, *expected, world.ada.id)]
     assert "stored" in told and "marmalade" not in told
     assert "marmalade" not in caplog.text and "RuntimeError" in caplog.text
+
+
+@pytest.mark.parametrize("existing_topic", [False, True])
+@pytest.mark.parametrize("way", ["typed", "filed"])
+def test_first_reply_says_a_note_the_gate_rejected_was_stored_without_a_page(
+    tmp_path, existing_topic, way
+):
+    candidates = []
+
+    def refuse(page, spans):
+        candidates.append(page.slug)
+        return GateResult(passed=False, violations=["fixture_refusal"])
+
+    world = World(tmp_path, gate=refuse)
+    with closing(world.store):
+        world.link(world.ada, ADA_SLACK, world.inbox)
+        if existing_topic:
+            first = Memory(world.ada.view, provenance_gate).note(
+                "inbox", "Brook checked the relay at dawn.", topic="Relay"
+            )
+            assert first["status"] == "saved"
+        text = "Relay\n\nThe relay moved at noon."
+        if way == "typed":
+            reply = private(world.command(f"note {text}"))
+        else:
+            message = {"type": "message", "user": CEDAR_SLACK, "ts": MESSAGE_TIME, "text": text}
+            assert world.shortcut(message).status_code == 200
+            (reply,) = world.slack.asked(REPLY)
+
+        (candidate,) = candidates
+        if existing_topic:
+            assert candidate == first["page"]
+        ((note_id, _, how, *_),) = world.through_slack()
+        assert how == way
+        assert world.ada.view.note_page(world.inbox.id, note_id) == (False, None)
+        for copy in (reply["text"], reply["blocks"][0]["text"]["text"]):
+            stored = copy.startswith("Note stored in ") and "No page holds it." in copy
+            unlinked = "/p/" not in copy
+            assert stored and unlinked
 
 
 @pytest.mark.parametrize("where", [REPLY, "chat.postMessage"])

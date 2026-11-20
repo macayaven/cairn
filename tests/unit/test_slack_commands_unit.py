@@ -307,10 +307,9 @@ def test_after_unlink_the_answer_is_the_one_seam_for_it(bench, monkeypatch):
 
 def test_a_note_waiting_for_its_page_is_answered_through_the_one_seam_for_it(bench, monkeypatch):
     bench.link(ADA_SLACK, bench.ada, bench.library)
-    real = Memory.note
 
-    def waiting(self, *args, **kwargs):
-        return {**real(self, *args, **kwargs), "status": "waiting"}  # its page kept moving
+    def moving(*args, **kwargs):
+        raise StalePage(expected=0, found=1)
 
     asked = []
 
@@ -318,18 +317,18 @@ def test_a_note_waiting_for_its_page_is_answered_through_the_one_seam_for_it(ben
         asked.append(fields)
         return blocks.refused("seam")
 
-    monkeypatch.setattr(Memory, "note", waiting)
+    monkeypatch.setattr(Store, "save_page", moving)
     monkeypatch.setattr(people, "filed_message", seam)
     assert said(ask(bench, "note Row 4 holds the quince jars.")) == said(blocks.refused("seam"))
-    url = f"{BASE}/b/library/p/row-4-holds-the-quince-jars"
-    assert asked == [{"title": "Row 4 holds the quince jars.", "page_url": url,
+    assert asked == [{"title": "Row 4 holds the quince jars.", "page_url": None,
                       "project": "library", "waiting": True,
                       "project_url": f"{BASE}/b/library"}]  # fmt: skip
     monkeypatch.undo()
+    url = f"{BASE}/b/library/p/row-4-holds-the-quince-jars"
     for flag in (True, False):
-        fields = {**asked[0], "waiting": flag}
+        fields = {**asked[0], "waiting": flag, "page_url": None if flag else url}
         assert people.filed_message(**fields) == blocks.filed(
-            title=fields["title"], page_url=url, project="library", waiting=flag,
+            title=fields["title"], page_url=fields["page_url"], project="library", waiting=flag,
             project_url=f"{BASE}/b/library",
         )  # fmt: skip
 

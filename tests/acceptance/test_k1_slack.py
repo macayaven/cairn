@@ -113,6 +113,7 @@ from cairn.server import SignIn, create_app
 from cairn.slack import dispatch
 from cairn.store import Claim, Store
 from cairn.store.hosted import Sealer
+from cairn.store.reseal import Resealed, reseal_slack
 from cairn.web import slack as web_slack
 from cairn.web.slack import KEY_VARIABLE, Keeper, Slack
 from cookie_names import session_cookie
@@ -183,14 +184,21 @@ def action(team: str = TEAM, user: str = ADA_SLACK) -> bytes:
     return urlencode({"payload": json.dumps(payload)}).encode()
 
 
-def event(kind: str, event_id: str, team: str = TEAM, **fields) -> bytes:
-    return json.dumps(
-        {
-            "type": "event_callback", "team_id": team, "api_app_id": "A0FABLE01",
-            "event": {"type": kind, **fields}, "event_id": event_id,
-            "event_time": 1_900_000_000,
-        }
-    ).encode()  # fmt: skip
+def event(
+    kind: str,
+    event_id: str,
+    team: str = TEAM,
+    *,
+    event_time: object = int(START.timestamp()) + 1,
+    **fields,
+) -> bytes:
+    payload = {
+        "type": "event_callback", "team_id": team, "api_app_id": "A0FABLE01",
+        "event": {"type": kind, **fields}, "event_id": event_id,
+    }  # fmt: skip
+    if event_time is not None:
+        payload["event_time"] = event_time
+    return json.dumps(payload).encode()
 
 
 def challenge(value: str = "fable-challenge-0123456789") -> bytes:
@@ -874,6 +882,241 @@ def test_a_failed_event_whose_id_cannot_be_forgotten_is_still_500_and_logged_by_
     ]
 
 
+@pytest.mark.parametrize(
+    ("callback", "after_dedup"),
+    [
+        ("app_uninstalled", False),
+        ("app_uninstalled", True),
+        ("tokens_revoked", False),
+        ("tokens_revoked", True),
+        ("challenge", False),
+    ],
+)
+def test_verified_lifecycle_callback_survives_resealing(world, monkeypatch, callback, after_dedup):
+    install = world.install()
+    world.ada.view.link_slack_user(install.id, ADA_SLACK, world.ada.id)
+    notes = notes_through(world, install.id)
+    world.store.slack_sealer = Sealer(OTHER_KEY, (KEY,))
+    world.clock.now += timedelta(seconds=5)
+    rotations = []
+
+    def rotate():
+        with closing(Store(world.db, clock=world.clock)) as other:
+            rotations.append(reseal_slack(other, Sealer(OTHER_KEY, (KEY,))))
+
+    if after_dedup:
+        admit = Store.slack_event_seen
+
+        def after_admitting(self, install_id, event_id):
+            first = admit(self, install_id, event_id)
+            if first:
+                assert rows(world.db, "SELECT event_id FROM slack_events") == [(event_id,)]
+                rotate()
+            return first
+
+        monkeypatch.setattr(Store, "slack_event_seen", after_admitting)
+    else:
+        verify = web_slack.verified
+
+        def after_verifying(*args):
+            valid = verify(*args)
+            if valid and not rotations:
+                assert rows(world.db, "SELECT event_id FROM slack_events") == []
+                rotate()
+            return valid
+
+        monkeypatch.setattr(web_slack, "verified", after_verifying)
+
+    if callback == "challenge":
+        body, expected_reply = challenge("fable-check"), b"fable-check"
+    else:
+        fields = revoked() if callback == "tokens_revoked" else {}
+        body, expected_reply = event(callback, "Ev0ROTATE1", **fields), b""
+    response = world.post(install.id, "events", body)
+    assert (response.status_code, response.content) == (200, expected_reply)
+    assert rotations == [Resealed(resealed=2)]
+    assert world.ada.view.get_slack_install().made_at == install.made_at
+    state = the_state(world, install.id)
+    if callback == "challenge":
+        assert state[0] == "on"
+        assert rows(world.db, "SELECT event_id FROM slack_events") == []
+        return
+    assert rows(world.db, "SELECT event_id FROM slack_events") == [("Ev0ROTATE1",)]
+    if callback == "app_uninstalled":
+        assert state[:3] == ("removed", False, [(0,)])
+        assert len(state[3]) == len(notes)
+        assert all(datetime.fromisoformat(due) == world.clock.now + timedelta(days=10)
+                   for _, due in state[3])  # fmt: skip
+        action, repeat_status = "slack.install_removed", 404
+    else:
+        assert state[:3] == ("off", False, [(1,)])
+        assert {due for _, due in state[3]} == {None}
+        action, repeat_status = "slack.bot_revoked", 200
+    world.clock.now += timedelta(seconds=1)
+    assert world.post(install.id, "events", body).status_code == repeat_status
+    assert rows(world.db, "SELECT COUNT(*) FROM audit_events WHERE action = ?", action) == [(1,)]
+    assert the_state(world, install.id) == state
+    if callback == "tokens_revoked":
+        world.clock.now += timedelta(days=3)  # now one second past the removal delay
+        assert world.store.remove_gone_slack_installs() == [install.id]
+        assert world.store.remove_gone_slack_installs() == []
+        assert rows(world.db, "SELECT COUNT(*) FROM audit_events"
+                    " WHERE action = 'slack.install_removed'") == [(1,)]  # fmt: skip
+
+
+@pytest.mark.parametrize("callback", ["app_uninstalled", "tokens_revoked"])
+@pytest.mark.parametrize(
+    "time_kind", ["earlier", "same_second", "missing", "string", "float", "boolean"]
+)
+def test_earlier_or_ambiguous_lifecycle_event_leaves_same_team_replacement_alone(
+    world, callback, time_kind, caplog
+):
+    install = world.install()
+    world.clock.now += timedelta(seconds=1)
+    earlier = world.clock.stamp()
+    world.ada.view.remove_slack_install(install.id)
+    world.clock.now += timedelta(seconds=1)
+    made = world.ada.view.make_slack_install()
+    world.clock.now += timedelta(seconds=1, microseconds=500_000)
+    new = world.install(token=OTHER_TOKEN)
+    assert made.id == new.id == install.id
+    same_second = world.clock.stamp()
+    world.ada.view.link_slack_user(new.id, ADA_SLACK, world.ada.id)
+    notes = notes_through(world, new.id)
+    before = the_state(world, new.id)
+
+    world.clock.now += timedelta(seconds=3)
+    event_time = {
+        "earlier": earlier,
+        "same_second": same_second,
+        "missing": None,
+        "string": str(world.clock.stamp()),
+        "float": float(world.clock.stamp()),
+        "boolean": True,
+    }[time_kind]
+    fields = revoked() if callback == "tokens_revoked" else {}
+    body = event(callback, "Ev0PREVIOUS", event_time=event_time, **fields)
+    caplog.set_level(logging.INFO, logger="cairn.access")
+    counts = []
+
+    def post_ignored(headers=None):
+        statements = []
+        world.store._observe(trace=statements.append)
+        try:
+            return world.post(new.id, "events", body, headers)
+        finally:
+            world.store._observe(trace=None)
+            counts.append(len(statements))
+
+    first = post_ignored()
+    assert (first.status_code, first.content) == (200, b"")
+    assert world.ada.view.get_slack_install() == new
+    why = "at_or_before_setup" if time_kind in ("earlier", "same_second") else "invalid_time"
+    detail = {"install": new.id, "event": callback, "why": why}
+    ignored = world.ada.view.list_audit(action="slack.lifecycle_ignored")
+    assert [(entry.actor_kind, entry.detail) for entry in ignored] == [("system", detail)]
+    world.clock.now += timedelta(seconds=1)
+    headers = {**signed(SECRET, body, world.clock.stamp()), "x-slack-retry-num": "1"}
+    repeated = post_ignored(headers)
+    assert (repeated.status_code, repeated.content) == (200, b"")
+    assert the_state(world, new.id) == before and held(world, notes) == [True] * len(notes)
+    assert rows(world.db, "SELECT event_id FROM slack_events") == []
+    ignored = world.ada.view.list_audit(action="slack.lifecycle_ignored")
+    assert [entry.detail for entry in ignored] == [detail, detail]
+    assert counts == [8, 8]
+
+    current = event(callback, "Ev0CURRENT", event_time=same_second + 1, **fields)
+    assert world.post(new.id, "events", current).status_code == 200
+    assert the_state(world, new.id)[0] == ("removed" if callback == "app_uninstalled" else "off")
+    ignored = world.ada.view.list_audit(action="slack.lifecycle_ignored")
+    assert len(ignored) == 2
+    access = [record.getMessage() for record in caplog.records if record.name == "cairn.access"]
+    assert access == [
+        f"slack_event for {new.id}: 200 (ignored)",
+        f"slack_event for {new.id}: 200 (ignored)",
+        f"slack_event for {new.id}: 200",
+    ]
+
+
+def test_ignored_lifecycle_delivery_is_bound_to_the_verified_installation(world, monkeypatch):
+    install = world.install()
+    verify = web_slack.verified
+    replacements = []
+
+    def after_verifying(*args):
+        valid = verify(*args)
+        if valid:
+            with closing(Store(world.db, clock=world.clock)) as other:
+                other.slack_sealer = Sealer(KEY)
+                view = other.for_account(world.ada.account_id, world.ada.id)
+                replacements.append(world.install(token=OTHER_TOKEN, view=view))
+        return valid
+
+    monkeypatch.setattr(web_slack, "verified", after_verifying)
+    body = event("app_uninstalled", "Ev0STALEOLD", event_time=world.clock.stamp())
+    assert world.post(install.id, "events", body).status_code == 200
+    (replacement,) = replacements
+    assert replacement.made_at > install.made_at
+    assert world.ada.view.get_slack_install() == replacement
+    assert world.ada.view.list_audit(action="slack.lifecycle_ignored") == []
+    assert rows(world.db, "SELECT event_id FROM slack_events") == []
+
+
+def test_pasting_only_a_new_bot_token_at_the_same_instant_invalidates_the_callback(
+    world, monkeypatch
+):
+    install = world.install()
+    old_signature = web_slack.verified
+    replacements = []
+
+    def replace_after_verifying(*args):
+        valid = old_signature(*args)
+        if valid:
+            with closing(Store(world.db, clock=world.clock)) as other:
+                other.slack_sealer = Sealer(KEY)
+                view = other.for_account(world.ada.account_id, world.ada.id)
+                replacements.append(world.install(token=OTHER_TOKEN, view=view))
+        return valid
+
+    monkeypatch.setattr(web_slack, "verified", replace_after_verifying)
+    body = event("tokens_revoked", "Ev0CHANGED", **revoked())
+    assert world.post(install.id, "events", body).status_code == 200
+    (new,) = replacements
+    assert new.id == install.id and new.made_at > install.made_at
+    assert world.ada.view.get_slack_install() == new
+    assert rows(world.db, "SELECT event_id FROM slack_events") == []
+
+
+@pytest.mark.parametrize("callback", ["app_uninstalled", "tokens_revoked"])
+def test_verified_lifecycle_callback_survives_saving_the_same_credentials(
+    world, monkeypatch, callback
+):
+    install = world.install()
+    world.clock.now += timedelta(seconds=5)
+    verify = web_slack.verified
+    saves = []
+
+    def after_verifying(*args):
+        valid = verify(*args)
+        if valid:
+            with closing(Store(world.db, clock=world.clock)) as other:
+                other.slack_sealer = Sealer(KEY)
+                view = other.for_account(world.ada.account_id, world.ada.id)
+                saves.append(world.install(view=view))
+        return valid
+
+    monkeypatch.setattr(web_slack, "verified", after_verifying)
+    fields = revoked() if callback == "tokens_revoked" else {}
+    body = event(callback, "Ev0SAMESAVE", **fields)
+    assert world.post(install.id, "events", body).status_code == 200
+    (saved,) = saves
+    assert saved.made_at == install.made_at
+    assert the_state(world, install.id)[0] == (
+        "removed" if callback == "app_uninstalled" else "off"
+    )
+    assert rows(world.db, "SELECT event_id FROM slack_events") == [("Ev0SAMESAVE",)]
+
+
 @pytest.mark.parametrize("change", ["reinstall", "replace_secrets"])
 @pytest.mark.parametrize("callback", ["app_uninstalled", "tokens_revoked", "challenge"])
 def test_verified_lifecycle_callback_leaves_the_replacement_alone(
@@ -937,8 +1180,7 @@ def test_replaced_signing_secret_cannot_admit_an_event(world, monkeypatch):
             with closing(Store(world.db, clock=world.clock)) as other:
                 other.slack_sealer = Sealer(KEY)
                 view = other.for_account(world.ada.account_id, world.ada.id)
-                # Pasting the same secrets still replaces the sealed values.
-                world.install(view=view)
+                world.install(secret=OTHER_SECRET, view=view)
         return valid
 
     monkeypatch.setattr(web_slack, "verified", after_verifying)

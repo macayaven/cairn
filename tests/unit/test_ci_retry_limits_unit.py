@@ -18,7 +18,9 @@ run them. Job by job, after the five days:
   `aliases`;
 - `release` recorded as failed although it made the release compares it with what `package`
   built again, and stops unless the bytes are the same, so `aliases` cannot run in that run:
-  it decides from every release, so another release's moves this version's aliases too.
+  it decides from every release, so another release's moves this version's aliases too;
+- when nothing can be re-run, a release tag's way on is the next patch version, and a
+  candidate's the next candidate, until its release is tagged: then it is refused for good.
 
 The registry is the stand-in of test_ci_promote_unit."""
 
@@ -154,4 +156,18 @@ def test_when_nothing_can_be_re_run_the_next_patch_version_is_tagged():
     with pytest.raises(release_check.Refused, match=r"v0\.1\.2 is a higher version of 0\.1 "):
         release_check.is_highest("v0.1.1", ["v0.1.0", "v0.1.1", "v0.1.2"])
     assert release_check.is_highest("v0.1.2", ["v0.1.0", "v0.1.1", "v0.1.2"])
+    # A candidate: the next one passes beside the first, with its own pre-release or without;
+    # once the release is tagged, or released, every candidate of it is refused.
+    assert (
+        "For a candidate it is the next candidate, while `vX.Y.Z` is not tagged; once it is,"
+        " `release_check` refuses every candidate of it and there is nothing left to recover." in CI
+    )
+    assert release_check.candidate("v1.2.3-rc.2")
+    release_check.before_its_release("v1.2.3-rc.2", "1.2.3", ["v1.2.2", "v1.2.3-rc.1"])
+    release_check.not_released("v1.2.3-rc.2", listing("v1.2.2", "v1.2.3-rc.1"), "1.2.3")
+    for tag in ("v1.2.3-rc.1", "v1.2.3-rc.2"):
+        with pytest.raises(release_check.Refused, match=r"v1\.2\.3 is tagged already"):
+            release_check.before_its_release(tag, "1.2.3", ["v1.2.3-rc.1", "v1.2.3"])
+        with pytest.raises(release_check.Refused, match=r"v1\.2\.3 already has a GitHub release"):
+            release_check.not_released(tag, listing("v1.2.3"), "1.2.3")
     assert "a tag's run is re-run whole" not in CI

@@ -12,11 +12,12 @@ is. A draft stops the job in one line that says what a person does: delete it on
 page and re-run the job, which makes the release again, or publish it there, if its files are
 whole, and re-run the job, which then compares them. The third report's must-fix 2: the step
 used to delete its draft by id, and a person who published it between the step's last look
-and that delete lost a public release. So no command of the job deletes a release or a file
-of one, or writes to a release that exists; test_generated_release_retry_unit runs every
-ordering. Anything else stops the job in one sentence. gh is a stand-in that keeps the
-releases as a JSON file, runs the step's own --jq expression with jq, performs a delete it is
-asked for (so one would show), and can publish the draft between two listings."""
+and that delete lost a public release. So the job's own text issues no delete of a release
+or of a release's file and no write to a release that exists (what gh release create does to
+the draft it makes itself is gh's); test_generated_release_retry_unit runs the orderings.
+Anything else stops the job in one sentence. gh is a stand-in that keeps the releases as a
+JSON file, runs the step's own --jq expression with jq, performs a delete it is asked for (so
+one would show), and can publish the draft between two listings."""
 
 import hashlib
 import json
@@ -338,7 +339,7 @@ def test_a_draft_published_by_hand_that_is_not_whole_is_refused_by_the_re_run_an
     assert said in error
 
 
-# --- no command of the job can delete ------------------------------------------------------------
+# --- the job's own text issues no delete ---------------------------------------------------------
 
 FORBIDDEN = {
     "the API's delete": r"DELETE",
@@ -380,7 +381,7 @@ def can_delete(job: dict) -> list[str]:
     ]
 
 
-def test_no_command_of_release_deletes_a_release_or_writes_to_one_that_exists():
+def test_the_text_of_release_issues_no_delete_and_no_write_to_a_release_that_exists():
     """On the job's text, so the delete cannot come back unseen: no DELETE, no gh release
     delete, delete-asset, upload or edit, no --clobber, no curl; the lines that name gh are the
     listing, the download and the creation, each exactly as written here; and it runs no file."""

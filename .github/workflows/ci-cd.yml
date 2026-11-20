@@ -32,7 +32,8 @@
 # check, the stack rehearsal and the host rehearsal. A failed infrastructure check stops
 # the publication too. What `publish` pushes on main is image_build's archive, checked against
 # the SHA-256 the scan and the image check checked, by the index digest they pushed (on a tag,
-# that digest is main's, already in the registry, and it is tagged there): it builds
+# that digest is main's, already in the registry, and it is tagged there; the archive is
+# copied on a tag only when the registry does not give the digest when asked): it builds
 # nothing, checks out nothing and runs no image, and no job that may write to the registry
 # or holds an identity token builds or runs the repository's code (deploy runs its one deploy
 # script).
@@ -1728,11 +1729,11 @@ jobs:
           # this tag's pre-release flag. A published one must hold exactly the files this run
           # attested, byte for byte, and is left as it is: the job succeeds, so that a release
           # tag's `aliases` runs. A draft stops the job, which says what a person does with it.
-          # Any other release stops the job too. No command here removes a release or a file
-          # of one, or writes to a release that exists: a person can publish a draft between
-          # any look at it and a write, and a published release keeps its id. The one write is
-          # the creation at the end, reached only when the listing showed no release for the
-          # tag.
+          # Any other release stops the job too. This step's own text issues no delete of a
+          # release or of a release's file and no write to a release that exists: a person can
+          # publish a draft between any look at it and a write, and a published release keeps
+          # its id. The one write is the creation at the end, reached only when the listing
+          # showed no release for the tag.
           listing() {
             gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
               --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), ([.assets[].name] | sort | join(\" \"))] | @tsv"

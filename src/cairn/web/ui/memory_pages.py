@@ -42,9 +42,12 @@ CHECKS = {
     "omission_rate": "Facts marked as left out",
     "arranged_by": "Arranged by",
 }
+RATIO_METRICS = frozenset({"retention", "code_line_retention", "passage_coverage", "omission_rate"})
 
 
-def _metric(value: Any) -> str:
+def _metric(value: Any, *, ratio: bool = False) -> str:
+    if ratio and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{value * 100:,.1f}".rstrip("0").rstrip(".") + "%"
     if isinstance(value, float):
         return f"{value:,.3f}".rstrip("0").rstrip(".")
     return str(value)
@@ -147,7 +150,7 @@ def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
         item["proof"] = [by_id[span_id] for span_id, _ in item["cites"]]
         item["proof_lines"] = sum(source["cited"] for source in item["proof"])
     metrics = [
-        (name, CHECKS.get(name, name), _metric(value))
+        (name, CHECKS.get(name, name), _metric(value, ratio=name in RATIO_METRICS))
         for name, value in shown_metrics(page.metrics).items()
     ]
     return {

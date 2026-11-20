@@ -25,11 +25,23 @@ from itertools import pairwise
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 from markdown_it import MarkdownIt
+from markdown_it.common.utils import isMdAsciiPunct, isPunctChar, isWhiteSpace
 
 from cairn.spans import chunk
+from cairn.store.memory import TITLE_MAX
+from cairn.topics import one_line
 
-_EMAIL = re.compile(r"""(?:"[^"\n]+"|[\w.!#$%&'*+/=?^`{|}~-]+)@(?:\[[^\]\n]+\]|[\w.-]+)""")
-_TOKENS = re.compile(r"```[\s\S]*?```|`[^`\n]*`|<[^>\n]+>")
+# An email address. Every pattern here reads each character of what it is run over a bounded
+# number of times, however long the text (the third tester, finding 9): a run of the
+# characters an address may start with is read once, from its start (`(?<!...)`, possessive),
+# since a match from inside it ends where one from its start does; and a bracketed domain
+# holds no "[", so it is read up to the next one at most. _redact finds a match that starts
+# right where the last one ended, as one search from there would.
+_LOCAL = r"[\w.!#$%&'*+/=?^`{|}~-]"
+_AT = r"""@(?:\[[^\[\]\n]++\]|[\w.-]+)"""
+_EMAIL = re.compile(rf"""(?:"[^"\n]++"|(?<!{_LOCAL}){_LOCAL}++){_AT}""")
+_EMAIL_HERE = re.compile(rf"""(?:"[^"\n]++"|{_LOCAL}++){_AT}""")
+_TOKEN_START = re.compile(r"[`<]")  # where a token may start (_tokens)
 _DOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
 _TIMESTAMP = re.compile(r"[0-9]{1,12}\.[0-9]{6}")
 _PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
@@ -39,14 +51,29 @@ _UNDERLINE = re.compile(r"[ \t>]*(=+|-+)[ \t]*")
 _SECOND_ROW = re.compile(r"[ \t>]*[|:-][|: \t-]*")
 # What stands before a code block on its line when the block is in a quotation, as Slack
 # sends it; and a quotation's mark at the start of a line, as Slack displayed it.
-_QUOTED = re.compile(r"(?:[ \t]*&gt;[ \t]?)+[ \t]*")
+_QUOTED = re.compile(r"(?:[ \t]*&gt;)+[ \t]*")  # each blank one place it can stand
 _QUOTE_MARK = re.compile(r"^[ \t]*>[ \t]?")
+# What may stand before a fence on its line: blanks, a quotation's marks, a list item's.
+_MARKS = " \t>*+-0123456789.)"
+_FENCE_LEAD = re.compile(r"^([ \t>*+\-0-9.)]*+)~(?=~~)", re.MULTILINE)
+# What a title is cut between (_title): an escape, an entity, Slack's bold, a character; and
+# the run of "#" that would end the page's heading of it, and be dropped.
+_ATOM = re.compile(r"\\.|&(?:amp|lt|gt);|\*\*|.", re.DOTALL)
+_CLOSING = re.compile(r"(?:^|(?<=[ \t]))#+$")
 _CODE_NODES = 10_000  # see _displayed_code
 _PASSES = 8  # see _one_heading
 
 
 def _redact(text: str) -> str:
-    return _EMAIL.sub("[email removed]", text)
+    """`text` with each email address removed, as one substitution of the pattern from left
+    to right removes them (_EMAIL)."""
+    if "@" not in text:
+        return text
+    pieces, at = [], 0
+    while found := (at and _EMAIL_HERE.match(text, at)) or _EMAIL.search(text, at):
+        pieces += [text[at : found.start()], "[email removed]"]
+        at = found.end()
+    return "".join([*pieces, text[at:]])
 
 
 def _decode(text: str) -> str:
@@ -75,15 +102,162 @@ def _name(name: str, literal: Callable[[str], str] = _literal) -> str:
     return literal(" ".join(name.splitlines()))
 
 
-def _prose(text: str) -> str:
+def _prose(
+    text: str, clear: bool = True, last: str = " ", then: str = " ", lead: str | None = ""
+) -> str:
     """Text Slack displayed as prose, as Markdown that displays the same. A backtick here is
     one Slack paired with no other and displayed as it is: left bare, Markdown would pair it
-    with the backtick that opens a code span (_render) and read that span's code as prose."""
-    text = _redact(_decode(text))
-    text = text.replace("&", "&amp;").replace("<", "&lt;")
-    text = re.sub(r"([\\\[\]()!`])", r"\\\1", text)
-    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"**\1**", text)
-    return re.sub(r"(?<!~)~([^~\n]+)~(?!~)", r"~~\1~~", text)
+    with the backtick that opens a code span (_render) and read that span's code as prose.
+
+    Struck text (`~done~`) is written as it was typed: a page cannot strike, and shows the
+    tildes, where doubled ones would show two of each. Slack has no fence of tildes, so a run
+    of three tildes or more that only blanks and the marks of a quotation or a list item
+    stand before on its line (_FENCE_LEAD: where a reader could take it for a fence, at any
+    indentation and in any container) gets a backslash before its first tilde. `clear`:
+    whether what was written on the line before `text` is such marks alone, or nothing.
+    Emphasis is written where Slack shows it and nowhere else (_emphasis; `last` and
+    `then`: what the note writes just before and just after `text`, `lead` what of the
+    marks that start its line _CONTAINER has yet to read: _lead)."""
+    text = _emphasis(_redact(_decode(text)), last, then, lead)
+    if clear:
+        return _FENCE_LEAD.sub(r"\1\\~", text)
+    first, feed, rest = text.partition("\n")
+    return first + feed + _FENCE_LEAD.sub(r"\1\\~", rest)
+
+
+def _paired(text: str) -> dict[int, int]:
+    """The places of the `*`, `_` and `~` that Slack shows as emphasis in `text`, prose as
+    Slack displayed it, each with the place of the mark it pairs with. Slack's page on
+    message text gives `*bold*`, `_italic_` and `~strike~` and says nothing of where a mark
+    opens or closes; the rule is the third tester's model of it (its `slack_styles`) with
+    "not inside a word": from left to right, a mark opens where neither a blank nor a mark
+    follows it and neither a letter nor a digit stands before it, and closes at the first
+    same mark on its line, a character on at least, that has no blank before it and
+    neither a letter nor a digit after it; the marks between are characters. Where none
+    closes it, it is a character. Each character is read a bounded number of times: the
+    closers of each mark are found once, and looked for from a place that only moves on."""
+    closers: dict[str, list[int]] = {"*": [], "_": [], "~": []}
+    for at, mark in enumerate(text):
+        after = text[at + 1 : at + 2]
+        if mark in closers and at and not text[at - 1].isspace() and not after.isalnum():
+            closers[mark].append(at)
+    next_one = dict.fromkeys(closers, 0)
+    feed, paired, at = _Next(text, "\n", len(text)), {}, 0
+    while at < len(text) - 1:
+        mark, after, before = text[at], text[at + 1], text[at - 1 : at]
+        opens = not after.isspace() and after not in closers and not before.isalnum()
+        if mark in closers and opens:
+            ends, n = closers[mark], next_one[mark]
+            while n < len(ends) and ends[n] < at + 2:
+                n += 1
+            next_one[mark] = n
+            if n < len(ends) and ends[n] < feed(at):
+                paired.update({at: ends[n], ends[n]: at})
+                at = ends[n] + 1
+                continue
+        at += 1
+    return paired
+
+
+_ESCAPED = {"&": "&amp;", "<": "&lt;", **{mark: "\\" + mark for mark in "\\[]()!`"}}
+BLANKS = {"  ", " \t", "\t ", "\t\t"}  # a blank each side
+# The marks of quotations and list items that may start a line (_emphasis), and a list
+# item's mark as far as it is written while the line's next character is still to come.
+_CONTAINER = re.compile(r"(?:[ \t>]|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]))*")
+_PARTIAL = re.compile(r"[-+*]|[0-9]{1,9}[.)]?")
+
+
+def _lead(lead: str | None, written: str) -> str | None:
+    """What of the marks that start a line _CONTAINER has yet to read once `written` is
+    written on it, `lead` before: "" where they are all read or none is written yet, the
+    start of a list item's mark whose blank is still to come, and None where the line holds
+    something past them. The note's line, not the message's: a reference's words count."""
+    _, feed, last = written.rpartition("\n")
+    if not feed and lead is None:
+        return None
+    line = last if feed else lead + last
+    rest = line[_CONTAINER.match(line).end() :]
+    return rest if not rest or _PARTIAL.fullmatch(rest) else None
+
+
+def _emphasis(text: str, last: str = " ", then: str = " ", lead: str | None = "") -> str:
+    """`text`, prose as Slack displayed it, as Markdown: a `*` and a `_` that Slack shows as
+    emphasis (_paired) written `**` and `_`, so the page shows bold and italic, and a `~` as
+    typed (a page cannot strike). Every other `*` and `_` is the character typed, with a
+    backslash before it unless no reader could take it for a mark: a `_` between two
+    letters or digits, a `*` between two blanks past the marks of a quotation or a list
+    that start its line (_CONTAINER: never a list's mark, nor emphasis, nor a rule). The
+    characters Markdown reads as markup are escaped as everywhere in prose.
+
+    Where a span of bold or italic ends right where another of the same mark starts, the two
+    marks between are left out: the page shows one span of the same words, where it would
+    read `**a****b**` otherwise. And a span is written so only where the page's parser reads
+    its two marks as emphasis (_reads): `last` and `then` are the characters the note writes
+    just before and just after `text` (a blank where it starts or ends a line). Else its
+    marks are typed too, with their backslashes: `*(b)*` before a date's words shows so.
+    `lead`: what of the marks that start the line `text` starts on is written before it and
+    yet to be read (_lead), None where the line holds more."""
+    paired, written = _paired(text), []
+    for at, character in enumerate(text):
+        if at in paired:
+            touches = at + 1 if paired[at] < at else at - 1  # the other side of the mark
+            if (
+                paired.get(touches, at) != at
+                and text[touches] == character != "~"
+                and (paired[touches] > touches) == (paired[at] < at)
+            ):
+                written.append("")  # a span ends where another starts: the two make one
+                continue
+            written.append("**" if character == "*" else character)
+        elif character in "*_":
+            written.append("\\" + character)
+        else:
+            written.append(_ESCAPED.get(character, character))
+    for at, close in paired.items():  # Markdown's reading needs the marks as written
+        if close < at or text[at] == "~" or not written[at]:
+            continue
+        chain = [at, close]  # the marks of the spans that make one, each read once
+        while not written[chain[-1]]:
+            chain += [chain[-1] + 1, paired[chain[-1] + 1]]
+        close = chain[-1]
+        before = written[at - 1][-1:] if at else last
+        after = written[close + 1][:1] if close + 1 < len(text) else then
+        if not _reads(text[at], before, written[at + 1][:1], written[close - 1][-1:], after):
+            for mark in chain:
+                written[mark] = "\\" + text[mark]
+    line = 0 if lead is None else _CONTAINER.match(lead + text).end() - len(lead)
+    for at, character in enumerate(text):  # `line`: where the marks that start its line end
+        if at and text[at - 1] == "\n":
+            line = _CONTAINER.match(text, at).end()
+        before, after = text[at - 1 : at], text[at + 1 : at + 2]
+        if at in paired:
+            continue
+        if character == "_" and before.isalnum() and after.isalnum():
+            written[at] = character  # inside a word: never a mark to Markdown
+        if character == "*" and at >= line and before + after in BLANKS:
+            written[at] = character  # between blanks past a line's marks: never one either
+    return "".join(written)
+
+
+def _reads(mark: str, before: str, first: str, end: str, after: str) -> bool:
+    """Whether the page's parser reads a span of `mark` as emphasis: the characters the note
+    writes before its opening mark and after its closing one, and its first and last, as
+    markdown-it decides whether a run of marks can open or close (CommonMark's flanking)."""
+
+    def kind(character: str) -> str:
+        if not character or isWhiteSpace(ord(character)):
+            return "blank"
+        return "mark" if isMdAsciiPunct(ord(character)) or isPunctChar(character) else "word"
+
+    outside, inside = kind(before), kind(first)
+    opens = inside != "blank" and (inside != "mark" or outside != "word")
+    if mark == "_":  # a `_` touching a letter or a digit outside neither opens nor closes
+        opens = opens and outside != "word"
+    inside, outside = kind(end), kind(after)
+    closes = inside != "blank" and (inside != "mark" or outside != "word")
+    if mark == "_":
+        closes = closes and outside != "word"
+    return opens and closes
 
 
 def _link_target(target: str) -> str | None:
@@ -116,6 +290,20 @@ def _link_target(target: str) -> str | None:
     except ValueError:
         return None
     return quote(target, safe=":/?#%=&+@,;~-._")
+
+
+def _special(target: str, label: str) -> str | None:
+    """What Slack displays for one of its special forms, `<!target|label>`, as its page on
+    message text describes them and nothing else: "@here", "@channel" and "@everyone"; a
+    user group's mention or a date as the fallback text the message gives (`label`), and
+    without one "[user group]" or "[date]", since the page leaves what Slack shows then to
+    Slack. None for any other reference."""
+    if target in ("!here", "!channel", "!everyone"):
+        return "@" + target[1:]
+    for form, word in (("!subteam^", "[user group]"), ("!date^", "[date]")):
+        if target.startswith(form):
+            return label or word
+    return None
 
 
 def _headings(text: str) -> dict[int, str]:
@@ -347,35 +535,124 @@ def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int,
     the one before: its start and end with its backticks, "block" or "code", and what it
     displayed. In the text it stands between backticks with its "&", "<" and ">" as
     entities, a block with or without a line feed after its opening and before its closing
-    fence. One that is not found so is left to the backticks of the text."""
+    fence: at the first place it can start (three backticks, or one), the longest way there.
+    From the first one that is not found so, the rest is left to the backticks of the text:
+    the rich text no longer tells that text's code.
+
+    Each place is looked at once, whatever the code (the tester's second attack, finding 6:
+    each way was searched for to the text's end): the places a block or a span can start
+    are found from where the last one ended on (_Next), and whether a way stands at one is
+    told by the digests of _Hashes, in a step, however long the way."""
     places: list[tuple[int, int, str, object]] = []
-    at = 0
+    if not code:
+        return places
+    digests, at = _Hashes(text), 0
+    starts = {True: _Next(text, "```", len(text)), False: _Next(text, "`", len(text))}
     for block, shown in code:
         sent = shown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         if block:
             ways = [f"```{above}{sent}{below}```" for above in ("\n", "") for below in ("\n", "")]
         else:
             ways = [f"`{sent}`"] if sent and "\n" not in sent else []
-        found = min(
-            ((text.find(way, at), -len(way)) for way in ways if way in text[at:]), default=None
-        )
-        if found is not None:
-            at = found[0] - found[1]
-            lines = _redact(shown).split("\n")
-            places.append(
-                (found[0], at, "block", lines) if block else (found[0], at, "code", lines[0])
-            )
+        ways = sorted(ways, key=len, reverse=True)  # the longest first, in their order
+        known, found = [(way, digests.of(way)) for way in ways], None
+        where = starts[block](at) if known else len(text)
+        while found is None and where < len(text):
+            found = next((way for way, value in known if digests.holds(way, where, value)), None)
+            where = where if found else starts[block](where + 1)
+        if found is None:
+            break
+        at = where + len(found)
+        lines = _redact(shown).split("\n")
+        places.append((where, at, "block", lines) if block else (where, at, "code", lines[0]))
     return places
 
 
-def _block_lines(text: str, start: int, token: str) -> list[str]:
+class _Hashes:
+    """A digest of each start of `text`, so that whether a stretch of it is a given string is
+    told in one step, however long the string (_known_code): a polynomial hash modulo a
+    Mersenne prime, and the characters compared only where the digests are equal."""
+
+    _BASE, _MOD = 1_000_003, (1 << 61) - 1
+
+    def __init__(self, text: str) -> None:
+        self.text, self.sums, self.powers = text, [0], [1]
+        for character in text:
+            self.sums.append((self.sums[-1] * self._BASE + ord(character)) % self._MOD)
+            self.powers.append(self.powers[-1] * self._BASE % self._MOD)
+
+    def of(self, way: str) -> int:
+        """The digest of `way`."""
+        value = 0
+        for character in way:
+            value = (value * self._BASE + ord(character)) % self._MOD
+        return value
+
+    def holds(self, way: str, at: int, value: int) -> bool:
+        """Whether `text` holds `way`, whose digest is `value`, at `at`."""
+        end = at + len(way)
+        if end > len(self.text):
+            return False
+        here = (self.sums[end] - self.sums[at] * self.powers[len(way)]) % self._MOD
+        return here == value and self.text.startswith(way, at)
+
+
+class _Next:
+    """Where `what` next stands in `text` before `end`, at or after a place asked for, each
+    place asked for after the one before: the text is read once, however often it is asked."""
+
+    def __init__(self, text: str, what: str, end: int) -> None:
+        self.text, self.what, self.end = text, what, end
+        self.since, self.found = end + 1, end  # nothing read yet
+
+    def __call__(self, at: int) -> int:
+        """The place, or `end` when there is none."""
+        if not self.since <= at <= self.found:
+            found = self.text.find(self.what, at, self.end)
+            self.since, self.found = at, self.end if found < 0 else found
+        return self.found
+
+
+def _tokens(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    """The start and end of each token of `text` between `start` and `end`, in order: a code
+    block (three backticks, anything, three backticks), code within a line (a backtick, no
+    backtick and no line feed, a backtick), a reference (`<`, no ">" and no line feed, `>`):
+    as the pattern ```[\\s\\S]*?```|`[^`\\n]*`|<[^>\\n]+> finds them from left to right, with
+    each character read a bounded number of times, where that pattern read the rest of a
+    line again from each "<" with no ">" after it."""
+    found: list[tuple[int, int]] = []
+    fence, tick = _Next(text, "```", end), _Next(text, "`", end)
+    feed, close = _Next(text, "\n", end), _Next(text, ">", end)
+    at = start
+    while (candidate := _TOKEN_START.search(text, at, end)) is not None:
+        at = candidate.start()
+        if text[at] == "`":
+            closer = fence(at + 3) if text.startswith("```", at, end) else end
+            if closer < end:
+                found.append((at, closer + 3))
+            elif (after := tick(at + 1)) < min(end, feed(at + 1)):
+                found.append((at, after + 1))
+            else:
+                at += 1
+                continue
+        elif at + 1 < (after := close(at + 1)) < min(end, feed(at + 1)):
+            found.append((at, after + 1))
+        else:
+            at += 1
+            continue
+        at = found[-1][1]
+    return found
+
+
+def _block_lines(token: str, quoted: bool) -> list[str]:
     """The lines a code block of Slack's own displayed, the white space at their ends
     included, as the backticks of the message's text bound it: from the first three to the
     next three. What stands on the opening fence's line after it, or on the closing fence's
-    before it, is a line of the block unless it is blank; and in a quotation the mark that
-    starts each line is the quotation's."""
+    before it, is a line of the block unless it is blank; and in a quotation (`quoted`:
+    only a quotation's marks stand before the block on its line) the mark that starts each
+    line is the quotation's."""
     lines = _shown(token[3:-3]).split("\n")
-    if _QUOTED.fullmatch(text, text.rfind("\n", 0, start) + 1, start):
+    if quoted:
         lines = [_QUOTE_MARK.sub("", line, count=1) for line in lines]
     for edge in (0, -1):
         if lines and not lines[edge].strip(" \t") and (len(lines) > 1 or not lines[edge]):
@@ -410,7 +687,11 @@ def _not_one_fence(note: str, wrote: list[tuple[int, str]]) -> set[int]:
     missing, at = set(), 0
     for place, fence in wrote:
         rows = fence.split("\n")
-        ends = (n + len(rows) for n in range(at, len(lines)) if lines[n : n + len(rows)] == rows)
+        ends = (
+            n + len(rows)
+            for n in range(at, len(lines))
+            if lines[n] == rows[0] and lines[n : n + len(rows)] == rows
+        )
         end = next(ends, None)
         if end is None or (end - len(rows), end) not in read:
             missing.add(place)
@@ -426,6 +707,7 @@ def _render(
     code: list[tuple[bool, str]] | None = None,
     plain: Collection[int] = (),
     wrote: list[tuple[int, str]] | None = None,
+    title: bool = False,
 ) -> str:
     """`text` as the note holds it: its prose by _prose and a name or a link's label by
     _literal; a code block of Slack's own as a fence (_fence); and code within a line between
@@ -437,32 +719,63 @@ def _render(
     is read. `displayed`: the whole of it as Slack displayed it (_shown, and code within a
     line between the backticks it was sent with), with the same lines. The code blocks whose
     place among the message's is in `plain` are written as plain characters, backticks and
-    all, on the same lines; the fences of the others are given in `wrote`."""
-    prose, literal = (_shown, _shown) if displayed else (_prose, _literal)
+    all, on the same lines; the fences of the others are given in `wrote`. `title`: as the
+    note's title is taken from it (_title), where nothing is code and nothing a link: a code
+    block's lines as plain characters, on lines of their own and with no fence, code within a
+    line as plain characters, backticks and all, and a link as its words."""
+    literal = _shown if displayed else _literal
+
+    def prose(text: str, then: str = " ") -> str:  # `then`: what the note writes after it
+        last = next((piece[-1] for piece in reversed(pieces) if piece), " ")  # and before
+        if displayed:
+            return _shown(text)
+        return _prose(text, clear, last.strip("\n") or " ", then, lead)
+
     tokens: list[tuple[int, int, str, object]] = []
-    offset = 0
+    # A block's line: where it starts, read once (`read`: up to where), and where the marks
+    # of a quotation that start it end (`quotes`), read once a line.
+    offset, line, read, quotes = 0, 0, 0, None
     for known in [*_known_code(text, code or []), (len(text), len(text), "", None)]:
-        for match in _TOKENS.finditer(text, offset, known[0]):
-            token = match.group()
+        for start, end in _tokens(text, offset, known[0]):
+            token = text[start:end]
             if token.startswith("```"):
-                found: tuple[str, object] = ("block", _block_lines(text, match.start(), token))
+                began, read = text.rfind("\n", read, start) + 1, start
+                if began or quotes is None:
+                    line = max(line, began)
+                    marks = _QUOTED.match(text, line)
+                    quotes = marks.end() if marks else -1
+                found: tuple[str, object] = ("block", _block_lines(token, quotes == start))
             elif token.startswith("`") and token != "``":
                 found = ("code", _shown(token[1:-1]))
             else:  # a reference, or two backticks with no code between them
                 found = ("", token)
-            tokens.append((match.start(), match.end(), *found))
+            tokens.append((start, end, *found))
         tokens.append(known)
         offset = known[1]
     held = [what for _, _, kind, what in tokens if kind == "code" and isinstance(what, str)]
     ticks = "`" * (1 + max(map(len, re.findall("`+", "\n".join(held))), default=0))
     pieces: list[str] = []
-    offset, below, fresh, place = 0, False, True, -1  # fresh: nothing is written on the line
+    # fresh: nothing is written on the line; clear: only what may stand before a fence (_prose)
+    # gap: the text before a reference that shows nothing, which is as if it were not there
+    # lead: what of the marks that start the line is yet to be read (_lead)
+    offset, below, fresh, clear, place, gap, lead = 0, False, True, True, -1, "", ""
     for start, end, kind, what in tokens[:-1]:
-        pieces.append(prose(_apart(text[offset:start], below, kind == "block", True, fresh)))
-        fresh = pieces[-1].endswith("\n") if pieces[-1] else fresh
+        reference = None
+        if not kind and text[start] != "`":
+            reference = _reference(text[start + 1 : end - 1], names, literal, title)
+            if not reference:
+                gap, offset = gap + text[offset:start], end
+                continue
+        before = gap + text[offset:start]
+        then = "\n" if isinstance(what, list) else reference[:1] if reference else "`"
+        pieces.append(prose(_apart(before, below, kind == "block", True, fresh), then))
+        gap, fresh = "", pieces[-1].endswith("\n") if pieces[-1] else fresh
+        clear, lead = _clear(clear, pieces[-1]), _lead(lead, pieces[-1])
         if isinstance(what, list):
             place += 1
-            if place in plain:
+            if title:
+                fence = "\n".join(map(_plain, what))
+            elif place in plain:
                 fence = "\n".join(["```", *what, "```"])
                 fence = fence if displayed else "\n".join(map(_plain, fence.split("\n")))
             else:
@@ -473,31 +786,105 @@ def _render(
         elif kind == "code" and isinstance(what, str):
             if displayed:
                 pieces.append(_shown(text[start:end]))
+            elif title:  # its code alone is what an address is removed from, as below
+                pieces.append(_plain(f"`{what}`"))
             elif "|" in what and not bars:
                 pieces.append(literal(text[start:end]))
             else:  # a space each side where Markdown would take one, or read a longer run
                 pad = " " if what.strip(" ") and (what[0] in "` " or what[-1] in "` ") else ""
                 pieces.append(f"{ticks}{pad}{what}{pad}{ticks}")
-        elif text[start] == "`":
+        elif reference is not None:
+            pieces.append(reference)
+        else:  # two backticks with no code between them
             pieces.append(prose(text[start:end]))
-        else:
-            target, separator, label = text[start + 1 : end - 1].partition("|")
-            if target.startswith("@"):
-                pieces.append("@" + _name(names.get(target[1:], target[1:]), literal))
-            elif target.startswith("#"):
-                pieces.append("#" + _name(names.get(target[1:], label or target[1:]), literal))
-            else:
-                url = _link_target(target)
-                shown = literal(label if separator else target)
-                if url:
-                    pieces.append(f"[{shown}]({url})")
-                elif separator:
-                    pieces.append(shown)
-                else:
-                    pieces.append("[link omitted]")
         offset, below, fresh = end, kind == "block", fresh and not pieces[-1]
-    pieces.append(prose(_apart(text[offset:], below, False, False, fresh)))
+        clear, lead = _clear(clear, pieces[-1]), _lead(lead, pieces[-1])
+    pieces.append(prose(_apart(gap + text[offset:], below, False, False, fresh)))
     return "".join(pieces)
+
+
+def _reference(
+    inner: str, names: Mapping[str, str], literal: Callable[[str], str], title: bool
+) -> str:
+    """What the note writes for a reference, `<inner>` (_render): a mention as "@" and a
+    name, a conversation as "#" and its name, one of Slack's special forms as Slack displays
+    it (_special), a link as `[its words](its address)` (its words alone in a title), a
+    reference to no address as its words, and else "[link omitted]"."""
+    target, separator, label = inner.partition("|")
+    if target.startswith("@"):
+        return "@" + _name(names.get(target[1:], target[1:]), literal)
+    if target.startswith("#"):
+        return "#" + _name(names.get(target[1:], label or target[1:]), literal)
+    if (special := _special(target, label)) is not None:
+        return _name(special, literal)
+    url = _link_target(target)
+    shown = literal(label if separator else target)
+    if url and title:
+        return shown
+    if url:
+        return f"[{shown}]({url})"
+    if separator:
+        return shown
+    return _plain("[link omitted]") if title else "[link omitted]"
+
+
+def _clear(clear: bool, written: str) -> bool:
+    """Whether a line holds only what may stand before a fence (_MARKS), or nothing, once
+    `written` is written on it; `clear`: whether it did before."""
+    _, feed, last = written.rpartition("\n")
+    return (clear or bool(feed)) and not last.strip(_MARKS)
+
+
+def _shows(title: str) -> str:
+    """What a page's heading of `title` displays: its characters, emphasis aside."""
+    heading = _PARSER.parse(f"# {title}")[1]
+    return "".join(child.content for child in heading.children or [])
+
+
+def displayed_title(title: str) -> str:
+    """A note's title as a reply in Slack names it: what the page's heading of it displays,
+    which for a filed message is what Slack displayed (the third tester, finding 7), never
+    the escapes and entities the title is stored with."""
+    return " ".join(_shows(one_line(title)).split("\n")).strip()
+
+
+def _unclosed(title: str) -> str:
+    """`title` with a backslash before a run of "#" that would close the page's heading of it,
+    where the run would be dropped (the run is all of it, or a blank stands before it)."""
+    return _CLOSING.sub(lambda run: "\\" + run.group(), title, count=1)
+
+
+def _within(atoms: list[str]) -> int:
+    """How many of `atoms`, from the first, fit in TITLE_MAX characters."""
+    size, end = 0, 0
+    while end < len(atoms) and size + len(atoms[end]) <= TITLE_MAX:
+        size, end = size + len(atoms[end]), end + 1
+    return end
+
+
+def _title(text: str, names: Mapping[str, str], code: list[tuple[bool, str]]) -> str:
+    """The note's title: the first line the message displays, its first line of text or the
+    first line of a code block it opens with, never a line the note writes for itself (a
+    fence), nor one of a quotation's marks alone. Written as prose is (_render, `title`), so
+    the page's heading of it reads as the characters Slack displayed and holds no code and
+    no link; cut to TITLE_MAX characters where the heading then displays the start of what
+    the whole line displays, so no escape is cut in two. A line no cut keeps so (all of it
+    bold, say) is written as the plain characters it displays, and a message that displays
+    no line as the plain characters of its first."""
+    lines = _render(text, names, code=code, title=True).split("\n")
+    line = next((line.strip() for line in lines if line.strip(" \t>")), "")
+    if not line:
+        whole = _shown(text.split("\n", 1)[0].strip())
+    else:
+        whole, atoms = _shows(_unclosed(line)), _ATOM.findall(line)
+        end = _within(atoms)
+        while end:  # at most TITLE_MAX tries, each a parse of a title's length
+            cut = _unclosed("".join(atoms[:end]).rstrip())
+            if len(cut) <= TITLE_MAX and cut and whole.startswith(_shows(cut)):
+                return cut
+            end -= 1
+    plain = _ATOM.findall(_plain(whole.strip()))
+    return "".join(plain[: _within(plain)]).rstrip()
 
 
 def _timestamp(value: object) -> datetime:
@@ -514,6 +901,7 @@ class Draft:
     title: str
     text: str
     source_ref: str
+    shown: str = ""  # the title as Slack displayed it (displayed_title), for the reply
 
 
 class NotText(ValueError):
@@ -584,5 +972,5 @@ def note_from_message(
             if not _not_one_fence(text, wrote):
                 break
         plain = range(len(raw)) if plain or every or not missing else {min(missing)}
-    title = next(line.strip() for line in text.split("\n")[1:] if line.strip())
-    return Draft(title, text, source)
+    title = _title(raw.strip(), names, code)
+    return Draft(title, text, source, displayed_title(title))

@@ -115,8 +115,9 @@ async def _write(
     except people.NotFiled as refused:
         return blocks.refused(str(refused))
     install = context.install
-    try:
-        draft = note_from_message(
+    try:  # on a worker thread: a long message is converted while the server goes on
+        draft = await run_in_threadpool(
+            note_from_message,
             message,
             team_id=install.team_id or "",
             team_domain=install.team_domain or "",
@@ -135,6 +136,7 @@ async def _write(
         title=draft.title,
         source_ref=draft.source_ref,
         message=(conversation_id, time),
+        shown=draft.shown,
     )
 
 

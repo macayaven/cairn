@@ -46,7 +46,8 @@ A search and a note, as the person's
   turn is held or waited for, and the person is told so (BUSY) and to try again. No note is
   kept to be written later: what is answered is what is stored (D8).
 - `already(context, asker, note_id)`: the answer for a message filed already, linking its
-  note, or, when that note is out of the person's reach, ELSEWHERE, naming nothing of it.
+  note by its title as its page's heading displays it (cairn.slack.text.displayed_title),
+  or, when that note is out of the person's reach, ELSEWHERE, naming nothing of it.
   BEING_FILED: the answer for a message someone else is filing right now.
 - Two seams, each the one place its message is built: `filed_message` distinguishes a
   note filed from one stored and waiting for its page. `unlinked` confirms the link is undone
@@ -87,6 +88,7 @@ from cairn.memory import Malformed, Memory, NotFound, RequestError, unavailable
 from cairn.slack import blocks
 from cairn.slack.client import SlackError
 from cairn.slack.dispatch import Context
+from cairn.slack.text import displayed_title
 from cairn.store import CannotWrite, Project, StoreUnusable
 from cairn.store.slack import SlackInstallChanged, SlackPerson, TeamChanged
 
@@ -287,9 +289,11 @@ def write(
     title: str | None = None,
     source_ref: str | None = None,
     message: tuple[str, str] | None = None,
+    shown: str | None = None,
 ) -> dict:
     """A note of the person's, written and recorded (the module); `message`: the filed
-    message's (conversation, time). Blocking: run it on a worker thread."""
+    message's (conversation, time), and `shown` its title as Slack displayed it, which the
+    reply names it by. Blocking: run it on a worker thread."""
     command = context.install.command
     project_id = asker.person.project_id
     if project_id is None:
@@ -360,7 +364,7 @@ def write(
         return blocks.refused(OUT_OF_REACH.format(command=command))
     waiting, slug = store.note_page(note.project_id, note.id)
     return filed_message(
-        title=note.title,
+        title=note.title if shown is None else shown,
         page_url=page_url(context, project.name, slug) if slug is not None else None,
         project=project.name,
         waiting=waiting,
@@ -404,7 +408,7 @@ def already(context: Context, asker: Asker, note_id: str) -> dict:
     waiting, slug = store.note_page(note.project_id, note.id)
     url = page_url(context, project.name, slug) if slug is not None else None
     return blocks.filed(
-        title=note.title,
+        title=displayed_title(note.title),
         page_url=url,
         project=project.name,
         already=True,

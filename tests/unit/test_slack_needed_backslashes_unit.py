@@ -60,8 +60,17 @@ NAMES = {
 }
 # The notes of the generated messages that hold no backtick (and of every fourth of the
 # others, without its lines that hold one), as the prose rules wrote them on 22f498b6, before
-# a heading became text: sha256 of them all, each followed by a NUL.
-PROSE_ON_22F498B6 = "ad3d2c518b9d1929204ce131048c065c5201df7fe8e4057253c8bf8550ef96c0"
+# a heading became text: sha256 of them all, each followed by a NUL. Changed on purpose by
+# the third tester's finding 3: a run of three tildes that could open a fence gets a
+# backslash before its first tilde; with those backslashes taken out the digest is
+# ad3d2c518b9d1929204ce131048c065c5201df7fe8e4057253c8bf8550ef96c0, as on 22f498b6. And by
+# finding 6: struck text is written as typed, so af92e9a5627fc9c37e3e68294cd35d0dbf39c7e18d17
+# 93534299acf7ee51ee33 became c51e4820300f3fd9e332b6fb7193ca305acc7c7459c6b166366785de771cb9b2,
+# every changed line of it a line of then with fewer tildes. And by the tester's second attack,
+# finding 2: a `*` or `_` is emphasis only where Slack shows it, else the character typed, so
+# that digest became this, every changed line of it (221 of 112 notes) a line of then with
+# only its asterisks and the backslashes before `*` and `_` different.
+PROSE_ON_22F498B6 = "3455dfd5af5f6fda1d263000ffc145e5bc2de1508cc8d4954c4ca82fa3636cc0"
 
 
 @pytest.fixture
@@ -588,9 +597,11 @@ FOUND = {
         "# Settings\n\n- Row 4.\n\n      ---\n\nRow 5.",
         "\\# Settings\n\n- Row 4.\n\n      ---\n\nRow 5.",
     ),
+    # Since the third tester's finding 3 no line of prose opens a fence: the tildes are text,
+    # and the line between them is a heading that gets its backslash.
     "indented code under a fence": (
         "# Settings\n~~~\n# Ada Park\n~~~\n    ===\nRow 4.",
-        "\\# Settings\n~~~\n# Ada Park\n~~~\n    ===\nRow 4.",
+        "\\# Settings\n\\~~~\n\\# Ada Park\n\\~~~\n    ===\nRow 4.",
     ),
     "a rule under a blank line": ("# Settings\n\n---\n\nRow 4.", "\\# Settings\n\n---\n\nRow 4."),
     "equals signs under a blank line": (
@@ -656,12 +667,14 @@ def test_a_line_that_would_underline_still_gets_its_backslash(bench, notes, text
 
 
 def test_a_line_one_reader_takes_for_code_and_the_other_for_a_heading_gets_it(bench, notes):  # noqa: F811
-    """The parser reads the third line inside a list item's fence; the splitter reads no item
-    in "1." and no fence behind a tab, so to it the line is a heading."""
+    """The parser read the third line inside a list item's fence of tildes; the splitter reads
+    no item in "1." and no fence behind a tab, so to it the line was a heading. Since the
+    third tester's finding 3 no line of prose opens a fence: the tildes are text, the line is
+    a heading to both, and it gets its backslash all the same."""
     text = "1.\n\t~~~\n   # Ada Park\nRow 4."
     note, spans = filed(bench, text)
-    assert body(note) == "1.\n\t~~~\n   \\# Ada Park\nRow 4."
-    assert not faults(note, spans) and 4 in code_lines(note)
+    assert body(note) == "1.\n\t\\~~~\n   \\# Ada Park\nRow 4."
+    assert not faults(note, spans) and not code_lines(note)
     before, after = notes(text)
     assert added(before, after) == [(4, 3)] and not not_needed(before, after)
     assert [span.kind for span in chunk("", after.replace("\\#", "#"))].count("heading") == 2
@@ -686,19 +699,22 @@ DISPLAYED = {
         "Settings:\n\n\titems[0] = (a) * 2 * 3",
         "Settings:\n\n\titems[0] = (a) * 2 * 3",
     ),
+    # Slack has no fence of tildes (the third tester's finding 3): its lines are text. A `*`
+    # Slack shows as a character is the character typed (the second attack, finding 2): one
+    # between blanks bare, one before a word with a backslash; neither doubled.
     "in a fence of tildes": (
         "Settings:\n~~~\nitems[0] = (a) * 2 * 3\n~~~",
-        "Settings:\n~~~\nitems[0] = (a) * 2 * 3\n~~~",
+        "Settings:\n\\~~~\nitems\\[0\\] = \\(a\\) * 2 * 3\n\\~~~",
     ),
     "in a fence of tildes left open": (
         "Settings:\n~~~\nitems[0] = *p * 2",
-        "Settings:\n~~~\nitems[0] = *p * 2",
+        "Settings:\n\\~~~\nitems\\[0\\] = \\*p * 2",
     ),
     # Three backticks that Slack paired with no others it displayed as they are: text, and no
     # fence over what follows.
     "under three backticks nothing pairs with: text": (
         "Settings:\n```\nitems[0] = *p * 2",
-        "Settings:\n\\`\\`\\`\nitems\\[0\\] = **p ** 2",
+        "Settings:\n\\`\\`\\`\nitems\\[0\\] = \\*p * 2",
     ),
     "its entities read": (
         "Settings:\n\n    a &lt; b &amp;&amp; c &gt; d",
@@ -716,14 +732,15 @@ DISPLAYED = {
         "Settings:\n\n    mail quill@fable.test [now]",
         "Settings:\n\n    mail [email removed] [now]",
     ),
+    # It was code to the parser alone, in a list item's fence of tildes: text now (finding 3).
     "a heading to the splitter alone: displayed, and the backslash it needs": (
         "1.\n\t~~~\n   # run [once]\nRow 4.",
-        "1.\n\t~~~\n   \\# run [once]\nRow 4.",
+        "1.\n\t\\~~~\n   \\# run \\[once\\]\nRow 4.",
     ),
-    # Not code to the parser, so prose as before.
+    # Not code to the parser, so prose as before, its asterisks as Slack showed them.
     "no blank line above: text": (
         "Settings:\n    items[0] = (a) * 2 * 3",
-        "Settings:\n    items\\[0\\] = \\(a\\) ** 2 ** 3",
+        "Settings:\n    items\\[0\\] = \\(a\\) * 2 * 3",
     ),
     "three spaces: text": (
         "Settings:\n\n   items[0] = *p*",
@@ -796,47 +813,56 @@ def test_what_slack_displayed_as_plain_characters_is_markup_in_no_passage(notes,
 RULED = "Row 4.\n ~~~\ncode\n    ~~~\n[the ledger](https://fable.test/elsewhere)"
 READ_ON = "Row 4.\n~~~~\ncode\n~~~\n[the ledger](https://fable.test/elsewhere)"
 SLACKS_OWN = "Row 4.\n ```\ncode\n    ```\n[the ledger](https://fable.test/elsewhere)"
+QUOTED_TAB = "&gt; Row 4.\n\t[the ledger](https://fable.test/elsewhere)"
 SOURCE = "https://fable-works.slack.com/archives/C0LIBRARY1/p1900000000000100"
+LEDGER = "\\[the ledger\\]\\(https://fable.test/elsewhere\\)"
 
 
 def test_a_line_one_reading_alone_takes_for_code_keeps_the_marks_of_prose(notes):
-    """The fence of tildes has a closing line indented four: the parser reads on through it, so
-    the last line is code to the note; the splitter ends the block there, so the line is a
-    passage of its own, a paragraph when a page shows it. Put as displayed it was a link on
-    that page. (The sixth round found it with backticks: Slack's own block, which is now a
-    fence that ends where Slack ended it, so the line under it is prose to both.)"""
-    after = notes(RULED)[1]
-    assert (
-        body(after)
-        == "Row 4.\n ~~~\ncode\n    ~~~\n\\[the ledger\\]\\(https://fable.test/elsewhere\\)"
-    )
-    assert one_heading(after) and 6 in code_lines(after) and 6 not in code_to_both(after)
+    """A quoted line, then one behind a tab: the note reads the second as the quotation's
+    text going on, its passage alone (what a page shows of a claim) as code. Put as displayed
+    it would be a link in the note. (The sixth round found the shape with a fence of tildes
+    whose closing line is indented four, which the parser reads on through and the splitter
+    ends; since the third tester's finding 3 a line of tildes is text, and so is all of it.)"""
+    after = notes(QUOTED_TAB)[1]
+    assert body(after) == "> Row 4.\n\t" + LEDGER
+    passages = chunk("", after)
+    assert one_heading(after) and 3 not in code_lines(after) and code_lines(passages[2].text)
     assert after == notes.as_prose
+    for fenced in (RULED, READ_ON):
+        after = notes(fenced)[1]
+        assert body(after) == fenced.replace("~~~", "\\~~~").replace(
+            "[the ledger](https://fable.test/elsewhere)", LEDGER
+        )
+        assert one_heading(after) and not code_lines(after) and after == notes.as_prose
     slacks_own = notes(SLACKS_OWN)[1]
     assert body(slacks_own) == (
         "Row 4.\n```\ncode\n```\n\\[the ledger\\]\\(https://fable.test/elsewhere\\)"
     )
     assert code_lines(slacks_own) == code_to_both(slacks_own) == {3, 4, 5}
-    # A fence both read on through (a shorter closer) holds the line as displayed: it is code
-    # to the note and to its passage.
-    read_on = notes(READ_ON)[1]
-    assert body(read_on).endswith("~~~\n[the ledger](https://fable.test/elsewhere)")
-    assert 6 in code_to_both(read_on) and markup_of(read_on) == markup_of(notes.as_prose)
 
 
 @pytest.mark.parametrize(
     ("text", "linked", "code"),
     [
-        (RULED, [[], [], [], [SOURCE]], [False, True, False, False]),
+        # Since the third tester's finding 3 the tildes are text: one paragraph, no code.
+        (RULED, [[], [SOURCE]], [False, False]),
         (SLACKS_OWN, [[], [], [], [SOURCE]], [False, True, False, False]),
-        (READ_ON, [[], []], [False, True]),  # the link to Slack is in the fence too
+        (READ_ON, [[], [SOURCE]], [False, False]),
         (
             "Settings:\n\n    [the ledger](https://fable.test/elsewhere)",
             [[], [], [SOURCE]],
             [False, True, False],
         ),
+        (QUOTED_TAB, [[], [], [SOURCE]], [False, True, False]),
     ],
-    ids=["code to the note alone", "Slack's own block", "code to both, fenced", "indented"],
+    ids=[
+        "tildes once code to the note alone",
+        "Slack's own block",
+        "tildes once code to both",
+        "indented",
+        "code to the passage alone",
+    ],
 )
 def test_a_page_links_nothing_that_slack_displayed_as_brackets(bench, text, linked, code):  # noqa: F811
     """Asked of the product: the page the store made of the filed message, its body and each
@@ -937,41 +963,58 @@ def test_a_code_block_of_slacks_own_is_one_fence_to_both_readers(bench, kind):  
     assert all(token.type == "fence" for passage in passages for token in READER.parse(passage))
 
 
-# Where a code block of Slack's own cannot be one fence to both readers, it is written as
-# prose is. Each row: the message, and the note's lines between the heading and the link.
+# A code block of Slack's own in what was a fence of tildes, a line of tildes in it: that
+# fence closed at the block's line of tildes and left the rest of the block outside any, so
+# the block was written as plain characters. Since the third tester's finding 3 the tildes
+# about it are text, and the block is one fence. Each row: the message, and the note's lines
+# between the heading and the link.
 NOT_ONE_FENCE = {
-    # A fence of tildes is open about it, and a line of tildes in it would close that fence
-    # and leave the rest of the block outside any.
     "in a fence of tildes, a line of tildes in it": (
         f"~~~\n```\n~~~\n{MANUAL}\n```\n{MANUAL}",
-        "~~~\n\\`\\`\\`\n\\~\\~\\~\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`\n"
-        "\\[manual\\]\\(https://fable.test/docs\\)",
+        f"\\~~~\n```\n~~~\n{MANUAL}\n```\n\\[manual\\]\\(https://fable.test/docs\\)",
     ),
-    "the same, and under the fence of tildes a second block, which is one fence": (
+    "the same, and under the fence of tildes a second block": (
         f"~~~\n```\n~~~\n{MANUAL}\n```\n~~~\nRow 4.\n```{MANUAL}```",
-        "~~~\n\\`\\`\\`\n\\~\\~\\~\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`\n"
-        f"~~~\nRow 4.\n```\n{MANUAL}\n```",
+        f"\\~~~\n```\n~~~\n{MANUAL}\n```\n\\~~~\nRow 4.\n```\n{MANUAL}\n```",
     ),
-    "two such blocks: both as prose": (
+    "two such blocks": (
         f"~~~\n```\n~~~\n{MANUAL}\n```\n```\n~~~\n{MANUAL}\n```",
-        "~~~\n\\`\\`\\`\n\\~\\~\\~\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`\n"
-        "\\`\\`\\`\n\\~\\~\\~\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`",
+        f"\\~~~\n```\n~~~\n{MANUAL}\n```\n```\n~~~\n{MANUAL}\n```",
     ),
 }
 
 
 @pytest.mark.parametrize("kind", NOT_ONE_FENCE)
-def test_a_code_block_that_cannot_be_one_fence_is_written_as_prose_is(bench, monkeypatch, kind):  # noqa: F811
-    """Each block must be a fence to the parser and one passage of code to the splitter, line
-    for line: asked of the message as written, before the note is made of it, and of the
-    finished note. One that is not is written as plain characters, backticks and all, and
-    nothing it holds is markup. Asking costs no reading: the note is made once."""
+def test_a_code_block_in_what_was_a_fence_of_tildes_is_one_fence(bench, kind):  # noqa: F811
     text, lines = NOT_ONE_FENCE[kind]
-    asked = passes(monkeypatch)
     note, spans, links = shown_by_the_product(bench, text)
     assert body(note) == lines
     assert set(links) <= {SOURCE} and one_heading(note) and not faults(note, spans)
-    assert len(asked) == 2  # the note as prose, and with its code as displayed: no heading
+    fences = [token.content for token in READER.parse(note) if token.type == "fence"]
+    assert fences == [f"~~~\n{MANUAL}\n"] * lines.count("```\n~~~") + [f"{MANUAL}\n"] * (
+        "Row 4." in lines
+    )
+
+
+def test_a_code_block_that_cannot_be_one_fence_is_written_as_prose_is(monkeypatch):
+    """Each block must be a fence to the parser and one passage of code to the splitter, line
+    for line: asked of the message as written, before the note is made of it, and of the
+    finished note. One that is not is written as plain characters, backticks and all, and
+    nothing it holds is markup. No message is known to need it since the third tester's
+    finding 3 (no line of prose opens a fence), so the answer is made up here: the first
+    block is not one fence the first time it is asked."""
+    asked, real = [], slack_text._not_one_fence
+
+    def first_is_not(note, wrote):
+        asked.append(len(wrote))
+        return {0} if len(asked) == 1 and wrote else real(note, wrote)
+
+    monkeypatch.setattr(slack_text, "_not_one_fence", first_is_not)
+    text = f"```\n{MANUAL}\n```\nRow 4.\n```{MANUAL}```"
+    assert note_of(text, None, False) == (
+        "\\`\\`\\`\n\\[manual\\]\\(https://fable.test/docs\\)\n\\`\\`\\`\nRow 4.\n"
+        f"```\n{MANUAL}\n```"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1005,9 +1048,10 @@ HEADINGS_OF_A_PASSAGE = {
         "| Row |\n|---|\nSettings\n---\nRow 4.",
         "| Row |\n|---|\nSettings\n\\---\nRow 4.",
     ),
+    # The fences of tildes of the next three rows are text since the third tester's finding 3.
     "dashes in a fence the note reads on and its passages end": (
         "Row 3.\n ~~~\ncode\n    ~~~\nRow 4.\n===\nRow 5.",
-        "Row 3.\n ~~~\ncode\n    ~~~\nRow 4.\n\\===\nRow 5.",
+        "Row 3.\n \\~~~\ncode\n    \\~~~\nRow 4.\n\\===\nRow 5.",
     ),
     "dashes under a heading under a table": (
         "| Row |\n|---|\n# Settings\n---\nRow 4.",
@@ -1021,11 +1065,11 @@ HEADINGS_OF_A_PASSAGE = {
     ),
     "a heading under a list item's fence, which the note whole reads on": (
         "# Settings\n1. \n   ~~~\n\n# Ada Park",
-        "\\# Settings\n1. \n   ~~~\n\n\\# Ada Park",
+        "\\# Settings\n1. \n   \\~~~\n\n\\# Ada Park",
     ),
     "a heading in a quotation's one line, in a fence the note reads on": (
         "Row 3.\n ~~~\ncode\n    ~~~\n&gt; # Ada Park\nRow 5.",
-        "Row 3.\n ~~~\ncode\n    ~~~\n> \\# Ada Park\nRow 5.",
+        "Row 3.\n \\~~~\ncode\n    \\~~~\n> \\# Ada Park\nRow 5.",
     ),
     # Under a blank line, or under the passage's first line alone, they underline nothing.
     "dashes that start their passage": (
@@ -1159,10 +1203,10 @@ def test_white_space_at_the_end_of_a_line_both_read_as_code_is_kept(bench, notes
     assert body(notes("Rows:\n\n    5\tplum\t ```Row 4.```")[1]) == (
         "Rows:\n\n    5\tplum\t \n```\nRow 4.\n```"
     )
-    # Where the note keeps the marks of prose in its code (a label that would end the fence
-    # of tildes as displayed), the row still ends as it was displayed.
-    assert body(notes("Rows:\n~~~\n<x|~~~>\nitems[0]\n~~~\n\n    5\tplum\t")[1]) == (
-        "Rows:\n~~~\n\\~\\~\\~\nitems\\[0\\]\n~~~\n\n    5\tplum\t"
+    # Where the note keeps the marks of prose in its code (a label of tildes that would open a
+    # fence to the splitter as displayed, in a list item), the row still ends as displayed.
+    assert body(notes("- Row 4.\n\n      <x|~~~>\n      5\tplum\t")[1]) == (
+        "- Row 4.\n\n      \\~\\~\\~\n      5\tplum\t"
     )
     # Elsewhere the end of the message is cut as before: a last line of prose, and blank lines.
     assert body(notes("Row 4.\t \n \n")[1]) == "Row 4."
@@ -1200,10 +1244,14 @@ rows[4] = *row
 
 def test_a_readme_keeps_its_commands_and_their_comments(bench, notes):  # noqa: F811
     """More than eight lines read as headings, so the note is written as the fifth round wrote
-    it; its code is as displayed all the same, and the rule keeps the backslash of the limit."""
+    it; its code is as displayed all the same, and the rule keeps the backslash of the limit.
+    Its lines of tildes are text, as Slack displays them, and so is what they held (changed by
+    the third tester's finding 3: they were a fence)."""
     lines = (
         README.replace("&gt;", ">").replace("\n---\n", "\n\\---\n").replace("# Shelf", "\\# Shelf")
     )
+    lines = lines.replace("~~~\n# rows", "\\~~~\n\\# rows").replace("[4]", "\\[4\\]")
+    lines = lines.replace("*row\n~~~", "\\*row\n\\~~~")  # not emphasis: typed (finding 2)
     for heading in ("## Install", "## Use", "## Rows", "## Notes", "## Limits", "## Thanks"):
         lines = lines.replace("\n" + heading, "\n\\" + heading)
     lines = lines.replace("\n### Row", "\n\\### Row")
@@ -1218,10 +1266,6 @@ def test_a_readme_keeps_its_commands_and_their_comments(bench, notes):  # noqa: 
         "# list the shelves",
         "shelf --all | sort > rows[0]",
         "```",
-        "~~~",
-        "# rows are counted from 0",
-        "rows[4] = *row",
-        "~~~",
     ]
     before, after = notes(README)
     assert after == note and may_be_headings(before) >= 8
@@ -1229,29 +1273,21 @@ def test_a_readme_keeps_its_commands_and_their_comments(bench, notes):  # noqa: 
     assert faults_of([(README, shown)], before, after, notes.as_prose) == ([], False)
 
 
-def test_its_limit_a_line_that_closes_a_fence_only_as_displayed_keeps_the_note_as_prose(notes):
-    """A link's label of tildes is escaped as prose and bare as displayed, where it would end
-    the fence above the next line, which is then no code. The parser is asked of the note
-    made with its code as displayed, says so, and the note made as prose is kept."""
-    after = notes("Settings:\n~~~\n<x|~~~>\nitems[0]\n~~~")[1]
-    assert body(after) == "Settings:\n~~~\n\\~\\~\\~\nitems\\[0\\]\n~~~"
-    assert one_heading(after) and {3, 4, 5, 6} <= code_lines(after)
+def test_its_limit_a_line_that_is_a_fence_only_as_displayed_keeps_the_note_as_prose(notes):
+    """A link's label of tildes in a list item's indented code is escaped as prose and bare as
+    displayed, where the splitter reads it as a fence the item keeps whole, open to the end of
+    the note. The readers are asked of the note made with its code as displayed, disagree, and
+    the note made as prose is kept. (Until the third tester's finding 3 the example was a label
+    that closed a fence of tildes the message opened; no line of prose opens one since.)"""
+    after = notes("- Row 4.\n\n      <x|~~~>\n      items[0]\n\nRow 5.")[1]
+    assert body(after) == "- Row 4.\n\n      \\~\\~\\~\n      items\\[0\\]\n\nRow 5."
+    assert one_heading(after) and code_lines(after) == {4, 5}
     # A label of backticks ends no block of Slack's own: the block is a fence that is closed
     # where Slack closed it, and the label under it is prose.
     after = notes("Settings:\n```\ncode\n``` more\n<x|```>\nitems[0]")[1]
     assert body(after) == "Settings:\n```\ncode\n```\nmore\n\\`\\`\\`\nitems\\[0\\]"
     assert one_heading(after) and code_lines(after) == {3, 4, 5}
-    # Three backticks that Slack paired with no others, under a list item's fence of tildes
-    # that the note reads on: as displayed they would open a fence where the passages are
-    # cut, in the item they are text of. The note is kept as prose there too.
-    after = notes("- ~~~\n  rows\n~~~\n```\nitems[0]")[1]
-    assert body(after) == "- ~~~\n  rows\n~~~\n\\`\\`\\`\nitems\\[0\\]"
-    assert one_heading(after) and {5, 6} <= code_to_both(after)
-    # With the next line indented it is code either way, but the fence still ends two lines
-    # early, so the two readers do not read the second note as the first: prose again.
-    assert body(notes("Settings:\n~~~\n<x|~~~>\n    items[0]")[1]) == (
-        "Settings:\n~~~\n\\~\\~\\~\n    items\\[0\\]"
-    )
+    # Two cases of this limit were under a fence of tildes, and are prose since finding 3.
 
 
 def test_a_note_its_code_as_displayed_cannot_be_made_of_is_the_note_made_as_prose(monkeypatch):
@@ -1334,6 +1370,14 @@ EIGHT = "".join(f"# Shelf {n}\n" for n in range(1, 9))  # eight lines that read 
 EIGHT_AS_TEXT = EIGHT.replace("#", "\\#")
 
 
+def with_bare_tildes(notes, text: str) -> str:
+    """The note of `text` as the prose rules wrote it before the third tester's finding 3, its
+    lines of tildes bare. No message makes a fence of tildes since, and none is known to make
+    another fence the parser reads and the splitter does not; the readings of such a note are
+    asked of _one_heading alone (filed, the note holds no fence: test_slack_tildes_unit)."""
+    return notes(text)[0].replace("\\~~~", "~~~")
+
+
 def test_a_heading_and_eight_rules_under_blank_lines_are_read_a_line_at_a_reading(
     bench,  # noqa: F811
     monkeypatch,
@@ -1379,51 +1423,47 @@ def test_with_eight_such_lines_code_is_still_as_written(bench, notes, code):  # 
     assert after != as_before(before) and not not_needed(before, after)
 
 
-def test_with_eight_such_lines_the_splitters_heading_in_code_keeps_its_backslash(bench, notes):  # noqa: F811
+def test_with_eight_such_lines_the_splitters_heading_in_code_keeps_its_backslash(notes):
     """The indented dashes are put back as written; the line the splitter reads as a heading
     inside what the parser reads as a fence is not, and the rule is the limit above."""
     text = f"{EIGHT}\n    ---\n1.\n\t~~~\n   # Ada Park\n\t~~~\n\n---\n\nRow 4."
-    note, spans = filed(bench, text)
-    assert body(note) == (
+    before = with_bare_tildes(notes, text)
+    after = slack_text._one_heading(before)
+    assert body(after) == (
         f"{EIGHT_AS_TEXT}\n    ---\n1.\n\t~~~\n   \\# Ada Park\n\t~~~\n\n\\---\n\nRow 4."
     )
-    assert not faults(note, spans) and {11, 14} <= code_lines(note)
-    before, after = notes(text)
+    assert one_heading(after) and {11, 14} <= code_lines(after)
     assert not_needed(before, after) == [(17, 0)]
 
 
-def test_with_eight_such_lines_the_splitters_second_heading_in_code_is_left(bench, notes):  # noqa: F811
+def test_with_eight_such_lines_the_splitters_second_heading_in_code_is_left(notes):
     """To the parser everything below the eighth line is one fence. To the splitter the fence
     ends there, the next line is a heading, and the last one is a heading only while that one
     is. Once the code is put back each of the two has a reading of its own, so the last is
     left as written. (It kept a backslash no reader needed: all the splitter's headings got
     one at once.)"""
     six = EIGHT.replace("# Shelf 7\n# Shelf 8\n", "")
-    code = "- ~~~\n ~~~\n### Ada Park\n\n   # Brook"
-    note, spans = filed(bench, six + code)
-    assert body(note) == six.replace("#", "\\#") + "- ~~~\n ~~~\n\\### Ada Park\n\n   # Brook"
-    assert not faults(note, spans) and {10, 12} <= code_lines(note)
-    assert not not_needed(*notes(six + code))
+    before = with_bare_tildes(notes, six + "- ~~~\n ~~~\n### Ada Park\n\n   # Brook")
+    after = slack_text._one_heading(before)
+    assert body(after) == six.replace("#", "\\#") + "- ~~~\n ~~~\n\\### Ada Park\n\n   # Brook"
+    assert one_heading(after) and {10, 12} <= code_lines(after)
+    assert not not_needed(before, after)
 
 
 NINE = "   # Ada Park\n" * 9  # each a heading to the splitter, inside a fence to the parser
 
 
-def test_with_more_of_the_splitters_headings_than_readings_they_get_it_at_once(
-    bench,  # noqa: F811
-    notes,
-    monkeypatch,
-):
+def test_with_more_of_the_splitters_headings_than_readings_they_get_it_at_once(notes, monkeypatch):
     """Nine lines the splitter reads as headings in what the parser reads as a fence: a line
     at a reading does not finish, so each line of code the splitter then reads as a heading
     gets its backslash back at once, as before, and the indented dashes stay as written."""
     text = f"# Settings\n\n    ---\n\n1.\n\t~~~\n{NINE}Row 4."
     as_text = NINE.replace("#", "\\#")
-    before, after = notes(text)
+    before = with_bare_tildes(notes, text)
+    asked = passes(monkeypatch)
+    after = slack_text._one_heading(before)
     assert body(after) == f"\\# Settings\n\n    ---\n\n1.\n\t~~~\n{as_text}Row 4."
     assert one_heading(after) and not not_needed(before, after)
-    asked = passes(monkeypatch)
-    assert filed(bench, text)[0] == after
     assert len(asked) == 2 + slack_text._PASSES + 1  # as before, a line at a reading, at once
 
 

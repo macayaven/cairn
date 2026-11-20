@@ -23,8 +23,8 @@ import uvicorn
 from guide_source import guide_source
 from markdown_it import MarkdownIt
 from starlette.testclient import TestClient
-from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, ask, said
-from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle
+from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, REPLY, TEAM, Bench, ask, said
+from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle, replied
 from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
 
 import cairn.store.slack as store_slack
@@ -52,6 +52,7 @@ from cairn.slack.verify import BODY_MAX, SKEW, OtherTeam, envelope, signature, v
 from cairn.spans import chunk
 from cairn.store import Store
 from cairn.store.hosted import Sealer
+from cairn.store.memory import TITLE_MAX
 from cairn.store.slack import (
     ACCEPTING,
     CHECK_EVERY,
@@ -63,6 +64,8 @@ from cairn.store.slack import (
 from cairn.web import cli_arrange
 from cairn.web import slack as web_slack
 from cairn.web.brand import product_of
+from cairn.web.markdown import render
+from cookie_names import session_cookie
 
 PRODUCT = product_of(None)
 RULE = "github_token"  # the note guard's rule, as cairn names it
@@ -698,6 +701,182 @@ def test_connect_the_message_shortcut_files_a_message_once():
     )
 
 
+def test_connect_the_title_is_the_first_line_the_message_displays():
+    """connect.md: "The note's title is the first line the message displays, or the first line
+    of a code block it opens with, as text: nothing in it is code or a link, and it is cut to
+    80 characters.\" (The third tester's findings 1, 2 and 4; every cut is
+    test_slack_title_unit's.)"""
+    says(
+        *CONNECT,
+        "The note's title is the first line the message displays, or the first line of a code"
+        " block it opens with, as text: nothing in it is code or a link, and it is cut to 80"
+        " characters.",
+    )
+
+    def title(text: str) -> str:
+        return note_from_message(
+            {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text},
+            team_id=TEAM, team_domain="fable-works", conversation_id="C0LIBRARY1",
+            author="Cedar Quill", names={},
+        ).title  # fmt: skip
+
+    assert title("```\nSELECT 1;\n```\nLedger.") == "SELECT 1;"
+    shown = title("See `[manual](https://fable.test/m)` and <https://fable.test/l|the ledger>")
+    heading = MarkdownIt("commonmark", {"html": False}).parse(f"# {shown}")[1].children
+    assert [token.type for token in heading] == ["text"]
+    assert heading[0].content == "See `[manual](https://fable.test/m)` and the ledger"
+    assert len(title("Row " * 30)) <= 80 == TITLE_MAX
+    # The tester's second attack found it untrue of a special mention, shown "[link omitted]",
+    # and of asterisks Slack did not pair, shown doubled (findings 1 and 2).
+    for sent, displayed in (
+        ("<!here> standup at *ten*", "@here standup at ten"),
+        ("2 * 3 * 4 is 24", "2 * 3 * 4 is 24"),
+    ):
+        heading = MarkdownIt("commonmark", {"html": False}).parse(f"# {title(sent)}")[1]
+        assert "".join(token.content for token in heading.children) == displayed
+
+
+def test_connect_the_reply_names_the_note_as_slack_displayed_it(tmp_path):
+    """connect.md: "The reply in Slack names the note by its title as Slack displayed it, in
+    plain text: ...\" (The third tester's finding 7; and the second attack's finding 3: the
+    title was mrkdwn, so marks Slack displayed as characters, a code block's or a name's,
+    came back styled.)"""
+    says(
+        *CONNECT,
+        "The reply in Slack names the note by its title as Slack displayed it, in plain text:"
+        " nothing of it is bold, a mention or a link there.",
+    )
+    bench = Bench(tmp_path)
+    try:
+        bench.users[CEDAR] = cedar()
+        bench.link(ADA_SLACK, bench.ada, bench.library)
+        message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100"}
+        reply = replied(bench, handle(bench, {**message, "text": "Q&amp;A [notes] *now*"}))
+        assert reply.startswith("Filed: Q&amp;A [notes] now\n")  # Slack shows "Q&A [notes] now"
+        asyncio.run(
+            handle(
+                bench, {**message, "text": "```*draft* <!here>```", "ts": "2.000001"}
+            ).background()
+        )
+        *words, named = [body for where, body in bench.calls if where == REPLY][-1]["blocks"]
+        assert named["text"] == {"type": "plain_text", "text": "*draft* &lt;!here&gt;"}
+        # The reply's own words, mrkdwn, name it not (its page's address holds its slug).
+        assert all("*draft*" not in block["text"]["text"] for block in words)
+    finally:
+        bench.store.close()
+
+
+def test_connect_the_page_shows_the_title_and_the_author_as_the_note_writes_them(tmp_path):
+    """connect.md: "Its page shows that title, and the heading with the author's name, as the
+    note writes them for Markdown: ...\" A limit (the third tester, finding 7): showing what Slack
+    displayed there would take the web view reading every page's title and section headings
+    as Markdown, whatever wrote them, which it does not."""
+    says(
+        *CONNECT,
+        "Its page shows that title, and the heading with the author's name, as the note writes "
+        "them for Markdown: where they hold a character Markdown reads, such as `[` or `&`, the"
+        " backslash or entity that keeps it text shows there, and bold text shows its"
+        " asterisks.",
+    )
+    bench = Bench(tmp_path)
+    try:
+        bench.users[CEDAR] = cedar(
+            real_name="Ana & Bo [x]", profile={"real_name": "Ana & Bo [x]", "display_name": "A"}
+        )
+        bench.link(ADA_SLACK, bench.ada, bench.library)
+        message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100"}
+        asyncio.run(handle(bench, {**message, "text": "Q&amp;A [notes] *now*"}).background())
+        (listed,) = bench.owner.list_pages(bench.library.id)
+        assert listed.title == "Q&amp;A \\[notes\\] **now**"
+        session = bench.store.sign_in(
+            "sso", "sub-ada", "ada@example.test", "Ada", issuer="https://sso.example.test",
+            join="personal",
+        )  # fmt: skip
+        app = create_app(bench.store, public_url=BASE, clock=bench.clock)
+        with TestClient(app, base_url=BASE) as client:
+            client.cookies.set(session_cookie("https"), session.token)
+            html = client.get(f"/b/library/p/{listed.slug}").text
+        assert "Q&amp;amp;A \\[notes\\] **now**" in html and "Ana &amp;amp; Bo \\[x\\]" in html
+    finally:
+        bench.store.close()
+
+
+def test_connect_a_mention_of_anyone_but_the_author_is_their_member_id(tmp_path):
+    """connect.md: "In the note a mention of the message's author is their name, and a mention
+    of anyone else is their member ID: ...\" (The third tester's finding 8: the guide said
+    every mention was the person's name.)"""
+    says(
+        *CONNECT,
+        "In the note a mention of the message's author is their name, and a mention of anyone "
+        "else is their member ID: the shortcut asks Slack for the author's name alone.",
+    )
+    bench = Bench(tmp_path)
+    try:
+        bench.users[CEDAR] = cedar()
+        bench.link(ADA_SLACK, bench.ada, bench.library)
+        text = f"<@{CEDAR}> asks <@U0BIRCH01> on Monday"
+        message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100", "text": text}
+        asyncio.run(handle(bench, message).background())
+        ((_, _, note, _),) = bench.notes()
+        assert "\n\n@Cedar Quill asks @U0BIRCH01 on Monday\n\n" in note
+        assert [where for where, _ in bench.calls if where != "users.info"] == [REPLY]
+        assert [where for where, _ in bench.calls].count("users.info") == 1
+    finally:
+        bench.store.close()
+
+
+def test_connect_a_special_mention_is_written_as_slack_displays_it():
+    """connect.md: "Slack's special mentions are written as Slack displays them, ...\" (The
+    tester's second attack, finding 1: they were written "[link omitted]"; every form is
+    test_slack_special_mentions_unit's.)"""
+    says(
+        *CONNECT,
+        "Slack's special mentions are written as Slack displays them, `@here`, `@channel` and "
+        "`@everyone`, and a mention of a user group or a date as the fallback text the message "
+        "gives for it, else as `[user group]` or `[date]`: none of them is a link.",
+    )
+    lines, _, _ = as_read(
+        a_filed_note(
+            "<!here> <!channel> <!everyone> <!subteam^S0DESIGN1|@designers>"
+            " <!date^1900000000^{date}^https://fable.test/cal|Mar 17>"
+            " <!subteam^S0DESIGN1> <!date^1900000000^{date}>"
+        )
+    )
+    assert lines == "@here @channel @everyone @designers Mar 17 \\[user group\\] \\[date\\]"
+
+
+def test_connect_a_line_read_as_code_in_its_passage_alone_shows_what_writes_it_as_text():
+    """connect.md: "A page shows each passage of the note alone, and a line the note reads as
+    text can read as code in its passage alone: ...\" A limit (the third tester, finding 5):
+    the note cannot write such a line both ways, and the note whole is what the readers agree
+    on."""
+    says(
+        *CONNECT,
+        "A page shows each passage of the note alone, and a line the note reads as text can read "
+        "as code in its passage alone, a line indented with a tab under a quotation for instance: "
+        "there it shows the backslashes and entities that write it as text, and not the blanks "
+        "that end it; and it shows the rest of the Markdown that writes it too, the doubled"
+        " asterisks of bold, the backticks about code within a line, a link as"
+        " `[its words](its address)`.",
+    )
+    for sent, code in (  # the last three: the tester's second attack, finding 5
+        ("&gt; Readings\n\t[x] &amp; y", "\\[x\\] &amp; y\n"),
+        ("&gt; Readings\n\tnorth\tblue\t", "north\tblue\n"),
+        ("&gt; Readings\n\t*north* blue", "**north** blue\n"),
+        ("&gt; Readings\n\t`port` blue", "`port` blue\n"),
+        (
+            "&gt; Readings\n\t<https://fable.test/r|rows> blue",
+            "[rows](https://fable.test/r) blue\n",
+        ),
+    ):
+        note = a_filed_note(sent)
+        assert as_read(note)[2] == []  # text to the note whole
+        alone = [span.text for span in chunk("", note)][2]
+        assert [(t.type, t.content) for t in MarkdownIt("commonmark").parse(alone)] == [
+            ("code_block", code)
+        ]
+
+
 def a_filed_note(text: str) -> str:
     return note_from_message(
         {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text},
@@ -760,23 +939,32 @@ def test_connect_a_rule_gets_no_backslash():
 
 def test_connect_a_line_read_as_code_holds_what_slack_displayed():
     """connect.md: "A line holds what Slack displayed where both the note and its passage read
-    it as code, fenced or indented: none of the backslashes and doubled asterisks that keep
-    the other lines from reading as Markdown are written in it, while a mention is still the
-    person's name, a link is still `[its words](its address)`, and an email address is still
+    it as indented code: none of the backslashes and doubled asterisks that keep the other
+    lines from reading as Markdown are written in it, while a mention is written as in the rest
+    of the note, a link is still `[its words](its address)`, and an email address is still
     removed.\" The passage is the line's own, as the note is split into them: what a page
-    shows of a claim."""
+    shows of a claim. (It said "fenced or indented" until the third tester's finding 3: a
+    fence is now a code block of Slack's own, the sentence on those.)"""
     says(
         *CONNECT,
-        "A line holds what Slack displayed where both the note and its passage read it as code,"
-        " fenced or indented: none of the backslashes and doubled asterisks that keep the other"
-        " lines from reading as Markdown are written in it, while a mention is still the"
-        " person's name, a link is still `[its words](its address)`, and an email address is"
-        " still removed.",
+        "A line holds what Slack displayed where both the note and its passage read it as"
+        " indented code: none of the backslashes and doubled asterisks that keep the other"
+        " lines from reading as Markdown are written in it, while a mention is written as in"
+        " the rest of the note, a link is still `[its words](its address)`, and an email"
+        " address is still removed.",
     )
-    sent = "items[0] = (a) * 2 * 3 <@U0QUILL01> <https://fable.test/a_b|Issue #4> quill@fable.test"
-    shown = "items[0] = (a) * 2 * 3 @Brook Quill [Issue #4](https://fable.test/a_b) [email removed]"
+    # Slack's bold, `*now*`, gives the prose its doubled asterisks; the asterisks of `* 2 *`
+    # Slack shows as characters, and the prose writes them so (the second attack, finding 2).
+    sent = (
+        "items[0] = (a) * 2 * 3 *now* <@U0QUILL01> <https://fable.test/a_b|Issue #4>"
+        " quill@fable.test"
+    )
+    shown = (
+        "items[0] = (a) * 2 * 3 *now* @Brook Quill [Issue #4](https://fable.test/a_b)"
+        " [email removed]"
+    )
     prose = (
-        "items\\[0\\] = \\(a\\) ** 2 ** 3 @Brook Quill [Issue \\#4](https://fable.test/a_b)"
+        "items\\[0\\] = \\(a\\) * 2 * 3 **now** @Brook Quill [Issue \\#4](https://fable.test/a_b)"
         " \\[email removed\\]"
     )
     assert as_read(a_filed_note(f"Settings:\n\n    {sent}")) == (
@@ -784,19 +972,13 @@ def test_connect_a_line_read_as_code_holds_what_slack_displayed():
         [0],
         [("code_block", shown + "\n")],
     )
-    assert as_read(a_filed_note(f"Settings:\n~~~\n{sent}\n~~~")) == (
-        f"Settings:\n~~~\n{shown}\n~~~",
-        [0],
-        [("fence", shown + "\n")],
-    )
     assert as_read(a_filed_note(f"Settings:\n    {sent}")) == (f"Settings:\n    {prose}", [0], [])
-    # Code to the note alone: the closing line of its fence of tildes is indented four, which
-    # ends the block for the passages and not for the note. Its passage is a paragraph: prose.
-    note = a_filed_note(f"Settings:\n ~~~\nrows\n    ~~~\n{sent}")
-    held, headings, ((kind, code),) = as_read(note)
-    assert (held, headings, kind) == (f"Settings:\n ~~~\nrows\n    ~~~\n{prose}", [0], "fence")
-    assert prose in code
-    assert [span.kind for span in chunk("", note)][1:4] == ["paragraph", "code", "paragraph"]
+    # Code to its passage alone: behind a tab the note reads the line into the quotation; the
+    # line is a passage of its own, and alone the parser reads it as indented code. Prose.
+    note = a_filed_note(f"&gt; Row 4.\n\t{sent}")
+    assert as_read(note) == (f"> Row 4.\n\t{prose}", [0], [])
+    passage = [span.text for span in chunk("", note)][2]
+    assert MarkdownIt("commonmark").parse(passage)[0].type == "code_block"
 
 
 def test_connect_the_two_limits_of_what_a_filed_message_holds():
@@ -821,35 +1003,41 @@ def test_connect_the_two_limits_of_what_a_filed_message_holds():
     assert as_read(note) == (as_text + "\\# Shelf 8\n\n\\---\n\n    items[0]\n\nRow 4.", [0], code)
     assert as_read(note.replace("\\---", "---"))[1:] == ([0], [("hr", ""), *code])
 
-    ends = "<nowhere|~~~>"  # a link's words: "~~~" as displayed, with backslashes as prose
-    assert as_read(a_filed_note(f"Settings:\n~~~\n{ends}\nitems[0]\n~~~")) == (
-        "Settings:\n~~~\n\\~\\~\\~\nitems\\[0\\]\n~~~",
+    # A link's words: "~~~" as displayed, with backslashes as prose. In a list item's indented
+    # code the passages read it as a fence the item keeps whole, so as displayed they would
+    # read the rest of the note as code. (The example was a fence of tildes the message opened
+    # until the third tester's finding 3.)
+    opens = "- Row 4.\n\n      <nowhere|~~~>\n      items[0]\n\nRow 5."
+    assert as_read(a_filed_note(opens)) == (
+        "- Row 4.\n\n      \\~\\~\\~\n      items\\[0\\]\n\nRow 5.",
         [0],
-        [("fence", "\\~\\~\\~\nitems\\[0\\]\n")],
+        [("code_block", "\\~\\~\\~\nitems\\[0\\]\n")],
     )
-    assert as_read(a_filed_note("Settings:\n~~~\nitems[0]\n~~~")) == (
-        "Settings:\n~~~\nitems[0]\n~~~",
+    assert as_read(a_filed_note(opens.replace("<nowhere|~~~>", "rows"))) == (
+        "- Row 4.\n\n      rows\n      items[0]\n\nRow 5.",
         [0],
-        [("fence", "items[0]\n")],
+        [("code_block", "rows\nitems[0]\n")],
     )
-    # Three backticks that Slack paired with no others, in a list item's fence of tildes that
-    # the note reads on: as displayed they would open a fence where the passages are cut.
-    opens = "- ~~~\n  rows\n~~~\n```\nitems[0]"
-    assert as_read(a_filed_note(opens))[0] == "- ~~~\n  rows\n~~~\n\\`\\`\\`\nitems\\[0\\]"
 
 
 def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
     """connect.md: "A code block of Slack's own is a fence on lines of its own in the note,
     whatever stood beside it on its lines in the message, and holds what Slack displayed, the
-    white space that ends a line included; that white space is kept at the end of the message
-    too, where the last line is code.\""""
+    white space that ends a line included, but that a code block in a quotation is written
+    without the quotation's mark that starts each of its lines; ...\" The exception is the
+    tester's second attack, finding 4, a limit: its model says Slack shows `> x` in the block
+    of `&gt; ```&gt; x````, and Slack's page does not say."""
     says(
         *CONNECT,
         "A code block of Slack's own is a fence on lines of its own in the note, whatever stood"
         " beside it on its lines in the message, and holds what Slack displayed, the white space"
-        " that ends a line included; that white space is kept at the end of the message too,"
-        " where the last line is code.",
+        " that ends a line included, but that a code block in a quotation is written without"
+        " the quotation's mark that starts each of its lines; that white space is kept at the"
+        " end of the message too, where the last line is code.",
     )
+    for sent in ("&gt; ```&gt; x```", "&gt; ```\n&gt; x\n&gt; y```"):
+        lines = as_read(a_filed_note(sent))[0].split("\n")
+        assert lines[1:] == ["```", "x", *(["y"] if "y" in sent else []), "```"], sent
     row = "[manual](https://fable.test/docs) a &lt; b\t"
     shown = "[manual](https://fable.test/docs) a < b\t"
     for sent, before in (
@@ -870,25 +1058,81 @@ def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
     assert as_read(a_filed_note("Rows:\n5\tplum\t \n"))[0] == "Rows:\n5\tplum"
 
 
-def test_connect_a_block_that_cannot_be_one_fence_is_plain_characters():
-    """connect.md: "A block the note could not hold as one fence, because a fence of tildes
-    stands about it and a line of tildes in it, is written as plain characters, backticks and
-    all.\""""
+def test_connect_a_line_of_tildes_is_text():
+    """connect.md: "Slack has no fence of tildes: where a line of the message would open one, a
+    backslash before its first tilde keeps it text, as Slack displayed it.\" It replaced the
+    sentence on a block that could not be one fence because a fence of tildes stood about it
+    (the third tester's finding 3); every place a line of tildes can stand is
+    test_slack_tildes_unit's."""
     says(
         *CONNECT,
-        "A block the note could not hold as one fence, because a fence of tildes stands about it"
-        " and a line of tildes in it, is written as plain characters, backticks and all.",
+        "Slack has no fence of tildes: where a line of the message would open one, a backslash"
+        " before its first tilde keeps it text, as Slack displayed it.",
     )
+    for sent, held in (
+        ("Steps\n~~~\nsee the ledger", "Steps\n\\~~~\nsee the ledger"),
+        ("1. ~~~ python\n   rows", "1. \\~~~ python\n   rows"),
+        ("&gt; ~~~~\nsee the ledger", "> \\~~~~\nsee the ledger"),
+    ):
+        note = a_filed_note(sent)
+        assert as_read(note) == (held, [0], [])
+        assert "~~~" in str(render(note)) and "\\~" not in str(render(note))
+    # In a code block of Slack's own, a line of tildes is the code's and stays as it is.
     manual = "[manual](https://fable.test/docs)"
-    plain = "\\[manual\\]\\(https://fable.test/docs\\)"
-    held, headings, _ = as_read(a_filed_note(f"~~~\n```\n~~~\n{manual}\n```\n~~~\nRow 4."))
-    assert (held, headings) == (f"~~~\n\\`\\`\\`\n\\~\\~\\~\n{plain}\n\\`\\`\\`\n~~~\nRow 4.", [0])
-    # Without the fence of tildes about it, it is one fence, its line of tildes in it.
-    assert as_read(a_filed_note(f"```\n~~~\n{manual}\n```\nRow 4.")) == (
-        f"```\n~~~\n{manual}\n```\nRow 4.",
+    assert as_read(a_filed_note(f"~~~\n```\n~~~\n{manual}\n```\nRow 4.")) == (
+        f"\\~~~\n```\n~~~\n{manual}\n```\nRow 4.",
         [0],
         [("fence", f"~~~\n{manual}\n")],
     )
+
+
+def test_connect_emphasis_is_written_only_where_slack_shows_it():
+    """connect.md: "Bold, italic and struck text are Slack's only where its marks make them:
+    ...\" (The tester's second attack, finding 2: every `*x*` was doubled, so `2 * 3 * 4` was
+    `2 ** 3 ** 4`; each case is test_slack_emphasis_unit's. Trying the fix found the last
+    three: a span a page read otherwise showed its asterisks doubled, a `*` after a list's
+    mark began a list, and a line's start was taken to be where the message's text resumed
+    after a mention or a link's words.)"""
+    says(
+        *CONNECT,
+        "Bold, italic and struck text are Slack's only where its marks make them: a `*`, `_` or"
+        " `~` with neither a blank nor a mark after it and neither a letter nor a digit before"
+        " it, up to the next same mark on its line with no blank before it and neither a letter"
+        " nor a digit after it, and no link, mention or code between them; Slack's page does not"
+        f" say where they open and close, and this is {PRODUCT.name}'s reading of it."
+        " There bold is written `**bold**` and italic `_italic_`, but where a page would not"
+        " read them so, as where a mark has punctuation on its inner side and a letter or a"
+        " digit on its outer one, `*(b)*` right before a date's words for instance, its marks"
+        " are typed. Every other `*` and `_` is the character typed, with a backslash before"
+        " it unless it is a `*` between two blanks past the blanks and the marks of a"
+        " quotation or a list that start its line in the note, or a `_` between two letters or"
+        " digits, so `2 * 3 * 4` and `snake_case` are written as typed.",
+    )
+    for sent, written in (
+        ("*bold* _italic_ ~struck~", "**bold** _italic_ ~struck~"),
+        ("2 * 3 * 4 and snake_case", "2 * 3 * 4 and snake_case"),
+        ("* item a*b*c *open _x", "\\* item a\\*b\\*c \\*open \\_x"),
+        ("*a\nb* *c *d*", "\\*a\nb\\* **c \\*d**"),
+        ("*see <https://fable.test/x|docs>*", "\\*see [docs](https://fable.test/x)\\*"),
+        ("*(b)*<!date^1900000000^{date}|17 Mar>", "\\*\\(b\\)\\*17 Mar"),
+        ("&gt; * a and 2 * 3\n- * b", "> \\* a and 2 * 3\n- \\* b"),
+        ("<@U0BIRCH01> * 3\n<x|12>. * 4", "@U0BIRCH01 * 3\n12. \\* 4"),
+    ):
+        assert as_read(a_filed_note(sent))[0] == written, sent
+
+
+def test_connect_struck_text_is_written_as_typed():
+    """connect.md: "Struck text is written as it was typed, `~done~`: a page cannot strike, so
+    it shows the tildes, one on each side.\" (The third tester's finding 6: it was doubled.)"""
+    says(
+        *CONNECT,
+        "Struck text is written as it was typed, `~done~`: a page cannot strike, so it shows the"
+        " tildes, one on each side.",
+    )
+    note = a_filed_note("Ledger ~done~ and ~kept~")
+    assert as_read(note) == ("Ledger ~done~ and ~kept~", [0], [])
+    page = str(render(note))
+    assert "Ledger ~done~ and ~kept~" in page and "<s>" not in page and "<del>" not in page
 
 
 def test_connect_code_within_a_line_stays_between_its_backticks():

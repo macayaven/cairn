@@ -108,7 +108,7 @@ class Display:
         return "".join(p.shown for p in self.pieces)
 
 
-_SPECIALS = {"here": "@here", "everyone": "@everyone"}
+_SPECIALS = {"here": "@here", "everyone": "@everyone"}  # as Slack's page shows them
 
 
 def _angle(inner: str, names: dict[str, str]) -> Piece:
@@ -117,14 +117,15 @@ def _angle(inner: str, names: dict[str, str]) -> Piece:
         user, _, label = inner[1:].partition("|")
         if user in names:
             return Piece("mention", "@" + names[user])
-        return Piece("mention", "@" + (label or user), sure=False)  # Slack shows their name
+        # Slack shows their name, which the model does not know; `target`: the member ID
+        return Piece("mention", "@" + (label or user), target=user, sure=False)
     if inner.startswith("#"):
         conversation, _, label = inner[1:].partition("|")
         return Piece("mention", "#" + decode(label or conversation), sure=label != "")
     if inner.startswith("!"):
         word, _, label = inner[1:].partition("|")
-        if word in _SPECIALS:
-            return Piece("special", _SPECIALS[word], sure=False)
+        if word in _SPECIALS and not label:
+            return Piece("special", _SPECIALS[word])
         return Piece("special", decode(label) or word, sure=False)  # a group, a date
     target, bar, label = inner.partition("|")
     return Piece(
@@ -156,13 +157,22 @@ def display(raw: str, names: dict[str, str] | None = None) -> Display:
         backticks: next to one, the page does not say how Slack pairs them."""
         return (at == 0 or text[at - 1] != "`") and (end >= len(text) or text[end] != "`")
 
+    # Once a backtick the page leaves open touches a run of three, which later backticks
+    # pair is open too: that run may open a block that any later three close.
+    poisoned = False
+
+    def touches_three(at: int, end: int) -> bool:
+        return "```" in text[max(0, at - 2) : end + 2]
+
     while i < len(text):
         char = text[i]
         if text.startswith("```", i):
             end = text.find("```", i + 3)
             flush()
             if end >= 0:
-                pieces.append(Piece("block", decode(text[i + 3 : end]), sure=lone(i, end + 3)))
+                sure = lone(i, end + 3) and not poisoned
+                pieces.append(Piece("block", decode(text[i + 3 : end]), sure=sure))
+                poisoned = poisoned or not sure
                 i = end + 3
             else:  # no closer: the page does not say; read as literal backticks
                 pieces.append(Piece("text", "```", sure=False))
@@ -172,10 +182,13 @@ def display(raw: str, names: dict[str, str] | None = None) -> Display:
             end, line_end = text.find("`", i + 1), text.find("\n", i + 1)
             flush()
             if end > i + 1 and (line_end < 0 or end < line_end):
-                pieces.append(Piece("code", decode(text[i + 1 : end]), sure=lone(i, end + 1)))
+                sure = lone(i, end + 1) and not poisoned
+                pieces.append(Piece("code", decode(text[i + 1 : end]), sure=sure))
+                poisoned = poisoned or (not sure and touches_three(i, end + 1))
                 i = end + 1
             else:  # a lone backtick, or "``": the page does not say
                 pieces.append(Piece("text", "`", sure=False))
+                poisoned = poisoned or touches_three(i, i + 1)
                 i += 1
             continue
         if char == "<":
@@ -201,6 +214,8 @@ def display(raw: str, names: dict[str, str] | None = None) -> Display:
     for at, piece in enumerate(pieces):
         if piece.kind in ("code", "block") and piece.sure and lines_of[at] in open_lines:
             pieces[at] = Piece(piece.kind, piece.shown, sure=False)
+        elif piece.kind == "text" and lines_of[at] in open_lines and set(piece.shown) & set("<>`"):
+            pieces[at] = Piece("text", piece.shown, sure=False)  # a "<" there may pair otherwise
     return shown
 
 
@@ -214,6 +229,12 @@ HOSTS = [
     "http://ledger.test/x?y=1&z=2",
 ]
 ACTIVE = [  # Markdown that Slack shows as plain characters
+    "~~~",  # a fence of tildes Slack does not have, after any lead
+    "~~~ x",
+    "~*x*~",  # struck text beside emphasis
+    "*~x~*",
+    "2 * 3 * 4",  # asterisks Slack may not take as bold: never shown doubled
+    "<https://evil.test/x|https://good.test/y>",  # a link whose words are another address
     "[manual](https://evil.test/m)",
     "![pic](https://evil.test/p.png)",
     "[ref]: https://evil.test/r",
@@ -262,7 +283,8 @@ def _link(rng: random.Random) -> str:
 
 def _code_text(rng: random.Random, multiline: bool) -> str:
     choices = [*WORDS, *ACTIVE, _link(rng), "&lt;x&gt;", "~~~", "````", "~~", "  lead", "trail \t",
-               "\t", " ", "a\tb\t", "<@U0CEDAR01>", "*raw*", "# not heading", "---"]  # fmt: skip
+               "\t", " ", "a\tb\t", "<@U0CEDAR01>", "*raw*", "# not heading", "---",
+               "_x_ ~y~ `z`", ("Read the setup notes before the Monday review " * 4)]  # fmt: skip
     parts = [rng.choice(choices) for _ in range(rng.randint(1, 3))]
     if not multiline:
         return " ".join(parts).replace("`", "'") or "x"
@@ -366,7 +388,7 @@ def test_links_show_their_label_or_their_address():
 def test_mentions_show_names_and_unknown_ones_are_unsure():
     shown = display("<@U0CEDAR01> <@U0BIRCH01> <#C0SHELF1|shelf> <!here>", NAMES)
     assert shown.text() == "@Cedar Quill @U0BIRCH01 #shelf @here"
-    assert [p.sure for p in shown.pieces if p.kind != "text"] == [True, False, True, False]
+    assert [p.sure for p in shown.pieces if p.kind != "text"] == [True, False, True, True]
 
 
 def test_what_the_page_leaves_open_is_unsure():

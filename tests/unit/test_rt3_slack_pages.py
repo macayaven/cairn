@@ -26,13 +26,14 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from itertools import pairwise
 from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
 import test_slack_shortcuts_unit as shortcuts
 from markdown_it import MarkdownIt
-from test_rt3_slack_model import NAMES, Piece, a_message, an_author, display
+from test_rt3_slack_model import NAMES, Piece, a_message, an_author, decode, display
 from test_slack_commands_unit import ADA_SLACK, REPLY, Bench
 
 from cairn.slack import text as slack_text
@@ -43,7 +44,9 @@ READER = MarkdownIt("commonmark", {"html": False}).enable("table")  # headings a
 WHEN = "2030-03-17 17:46:40 UTC"
 SOURCE = "https://fable-works.slack.com/archives/C0LIBRARY1/p1900000000000100"
 SOURCE_LINE = f"[Source in Slack]({SOURCE})"
-SEVERITY = ["link", "image", "heading", "code", "source", "refused", "text", "author", "title"]
+SEVERITY = [
+    "link", "image", "heading", "code", "source", "refused", "reply", "title", "text", "author"
+]  # fmt: skip
 
 
 # Filing, as a person does: the shortcut on a message, the note, its page
@@ -254,6 +257,30 @@ def _contains(lines: list[str], part: list[str]) -> bool:
 _LEAD = r"[ \t>*+\-0-9.)]*"  # indentation, a quote or a list marker a code line may lose
 _DELETABLE = set("*_~-+.)0123456789>|:=#")  # structure and emphasis Markdown may take
 
+# The limits the connect guide states (src/cairn/guides/connect.md), which the generated run
+# does not count; each is pinned in test_rt3_slack_found as the guide says it.
+LIMIT_PASSAGE = (  # finding 5
+    "there it shows the backslashes and entities that write it as text, and not the blanks"
+    " that end it"
+)
+LIMIT_HEADINGS = (  # finding 7, the page's own title and author heading
+    "the backslash or entity that keeps it text shows there, and bold text shows its asterisks"
+)
+LIMIT_MENTION = "a mention of anyone else is their member ID"  # finding 8
+
+
+def as_text(markdown_line: str) -> str:
+    """What a line written as text shows when it is read as code instead (LIMIT_PASSAGE,
+    LIMIT_HEADINGS): its backslash escapes and its three entities as the characters they
+    write. Nothing else is undone: doubled asterisks, say, are not in the guide's limit."""
+    line = re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", markdown_line)
+    return re.sub(r"&(amp|lt|gt);", lambda m: {"amp": "&", "lt": "<", "gt": ">"}[m[1]], line)
+
+
+def _note_code(note_html: str) -> set[str]:
+    """Every line the note read whole shows as code."""
+    return {line for block in _code_lines(note_html) for line in block}
+
 
 def _patterns(raw: str, squash: bool, relax: bool = False) -> list[str]:
     """For each line Slack displays, a pattern of what a page may show of it: a link as its
@@ -264,6 +291,7 @@ def _patterns(raw: str, squash: bool, relax: bool = False) -> list[str]:
     quote and list marks at its start) optional. `relax`: white space optional too."""
     lines: list[list[str]] = [[]]
     leading = [True]  # whether the line so far is lead alone
+    wild: set[tuple[int, int]] = set()  # where a part is what Slack's page leaves open
 
     def literal(text: str, optional: set[str] = frozenset()) -> None:
         for char in text:
@@ -285,13 +313,20 @@ def _patterns(raw: str, squash: bool, relax: bool = False) -> list[str]:
             piece = Piece(piece.kind, piece.shown, sure=False)  # an email address is removed
         if piece.kind == "text" and piece.sure:
             literal(piece.shown, _DELETABLE if squash else set())
-        elif piece.kind == "code":
+        elif piece.kind == "code" and piece.sure:
             leading[-1] = False
             lines[-1].append("(?:`)?")
             literal(piece.shown)
             lines[-1].append("(?:`)?")
-        elif piece.kind == "block":
+        elif piece.kind == "block" and piece.sure and not squash:  # on lines of its own
+            if lines[-1]:
+                lines.append([])
+                leading.append(True)
             leading[-1] = False
+            literal(piece.shown)
+            lines.append([])
+            leading.append(True)
+        elif piece.kind == "block" and piece.sure:
             lines[-1].append("(?:```)?")
             literal(piece.shown)
             lines[-1].append("(?:```)?")
@@ -300,17 +335,23 @@ def _patterns(raw: str, squash: bool, relax: bool = False) -> list[str]:
             words = re.escape(re.sub(r"\s", "", piece.shown) if squash else piece.shown)
             omitted = r"\[linkomitted\]" if squash else r"\[link omitted\]"
             lines[-1].append(rf"(?:\[{words}\]\([^\n]*?\)|{words}|{omitted})")
-        elif piece.kind == "mention" and piece.sure:
+        elif piece.kind in ("mention", "special") and piece.sure:
             literal(piece.shown)
-        else:  # what Slack's page leaves open
-            leading[-1] = False
+        elif piece.kind == "mention" and piece.target:  # a stated limit (LIMIT_MENTION)
+            literal("@" + piece.target)
+        else:  # what Slack's page leaves open (it may show nothing: the lead goes on)
             for _ in range(piece.shown.count("\n") + 1):
+                wild.add((len(lines) - 1, len(lines[-1])))
                 lines[-1].append("[^\n]*?" if not squash else ".*?")
                 lines.append([])
                 leading.append(True)
             lines.pop()
             leading.pop()
-    return ["".join(parts) for parts in lines]
+    found = ["".join(parts) for parts in lines]
+    if not squash:  # a block in what is left open may put the line's ends on lines of their own
+        for row, at in sorted(wild):
+            found += ["".join(lines[row][at:]), "".join(lines[row][: at + 1])]
+    return found
 
 
 def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
@@ -326,11 +367,24 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
         for line in p.shown.split("\n")
     }
     out: list[Fault] = []
+    in_note = _note_code(views["note"])
+    rows = shown.text().split("\n")
+    # Stated in the connect guide, and not counted: an email address is removed (any text
+    # with an "@" may be read as one); in a message that could hold a table, code within a
+    # line that holds a "|" is plain characters; and a message in which a line would open
+    # or end a fence as displayed keeps the marks of prose where both read code.
+    table = any(
+        "|" in above and "-" in row and re.fullmatch(r"[ \t>]*[|:-][|: \t-]*", row)
+        for above, row in pairwise(rows)
+    )
+    fenced = any(re.match(r"[ \t>*+\-0-9.)]*(```|~~~)", row) for row in rows)
     for view, html in views.items():
         blocks, inline = _code_lines(html), _inline_code(html)
         for block in shown.code_blocks:
             if not block or any(_contains(lines, block) for lines in blocks):
                 continue
+            if any("@" in line for line in block):
+                continue  # the guide's redaction
             if len(block) == 1 and block[0] in inline:
                 continue
             if all(any(line in shown_line for c in blocks for shown_line in c) for line in block):
@@ -347,6 +401,8 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
             trimmed = span[1:-1] if span.startswith(" ") and span.endswith(" ") else span
             if span.strip() == "" or span in inline or trimmed in inline:
                 continue
+            if "@" in span or ("|" in span and table):
+                continue  # the guide's redaction; its rule for a table's bars
             if any(span in line for lines in blocks for line in lines):
                 continue
             out.append(("code", "span not code", view, f"Slack code span {span!r}"))
@@ -356,6 +412,15 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
                     continue  # the source link is its own check; an email is removed (guide)
                 if any(p.fullmatch(line) for p in patterns):
                     continue
+                if (
+                    view != "note"
+                    and line not in in_note
+                    and any(p.fullmatch(as_text(line).rstrip(" \t")) for p in relaxed)
+                ):
+                    continue  # read as code in its passage alone: LIMIT_PASSAGE
+                prose = re.sub(r"\\(.)", r"\1", line).replace("**", "*")
+                if fenced and any(p.fullmatch(as_text(prose)) for p in relaxed):
+                    continue  # the guide's fence exception
                 if any(p.fullmatch(line) for p in relaxed):
                     kind = "trailing white space lost (Slack text read as code)"
                 elif any(p.fullmatch(re.sub(r"\\(.)", r"\1", line)) for p in patterns):
@@ -368,12 +433,28 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
     return out
 
 
-def _text_faults(raw: str, claims: list[str]) -> list[Fault]:
+def _text_faults(raw: str, claims: list[str], in_note: set[str] = frozenset()) -> list[Fault]:
+    """The characters the claims show against those Slack displayed; code a claim alone
+    shows that the note read as text is taken as the guide's limit says it shows."""
     seen = []
+    slack_code = {line for block in display(raw, names).code_blocks for line in block}
+    fenced = any(
+        re.match(r"[ \t>*+\-0-9.)]*(```|~~~)", row) for row in display(raw).text().split("\n")
+    )
     for claim in claims:
         if claim.strip() == SOURCE_LINE:
             continue
-        seen.append("".join(Shown(str(render(claim))).text))
+        found = Shown(str(render(claim)))
+        text = "".join(found.text)
+        for in_pre, code in found.code:
+            lines = code.rstrip("\n").split("\n")
+            if in_pre and all(line in slack_code for line in lines if line.strip()):
+                continue  # Slack's own code: shown as it is
+            if in_pre and fenced:  # the guide's fence exception: the marks of prose stay
+                text = text.replace(code, as_text(code).replace("**", "*"), 1)
+            elif in_pre and not any(line in in_note for line in lines if line.strip()):
+                text = text.replace(code, as_text(code), 1)  # LIMIT_PASSAGE
+        seen.append(text)
     page = re.sub(r"\s", "", "".join(seen))
     for written in (SOURCE_LINE, "Source in Slack"):  # the source swallowed: its own class
         if written.replace(" ", "") in page:
@@ -391,6 +472,8 @@ def _text_faults(raw: str, claims: list[str]) -> list[Fault]:
         kind = "strike as tildes"
     elif re.fullmatch(pattern, page.replace("&amp;", "&").replace("&lt;", "<"), re.DOTALL):
         kind = "entity shown"
+    elif re.fullmatch(pattern, page.replace("**", "*"), re.DOTALL):
+        kind = "asterisks doubled"
     return [("text", kind, "claim", f"page reads {page[:160]!r}")]
 
 
@@ -446,15 +529,106 @@ def faults(filed: Filed) -> list[Fault]:
         code_views["body"] = views["body"]
     out += _code_faults(raw, code_views)
     # text
-    out += _text_faults(raw, filed.claims)
-    # author and title
-    first = chunk("", note)[0]
-    if first.heading_path[0] != f"{author} · {WHEN}":
-        out.append(("author", "escaped", "page-heading", repr(first.heading_path[0])))
-    escape = r"\\[^\w\s]|&(amp|lt|gt);"
-    title = filed.title
-    if title is not None and re.search(escape, title) and not re.search(escape, shown.text()):
-        out.append(("title", "escaped", "page-h1", repr(filed.title)))
+    out += _text_faults(raw, filed.claims, _note_code(views["note"]))
+    # author: as the note writes it, escapes and entities showing (LIMIT_HEADINGS)
+    heading = chunk("", note)[0].heading_path[0]
+    entities = re.search(r"&(amp|lt|gt);", author)  # whether Slack sends a name so: open
+    if not entities and as_text(heading) != f"{author} · {WHEN}":
+        out.append(("author", "not the name", "page-heading", repr(heading)))
+    # title, in the body's heading and in the reply in Slack
+    out += _title_faults(filed, shown)
+    return out
+
+
+def _title_line(shown) -> tuple[str, bool, str] | None:
+    """The first line the message displays, as the guide says the title holds it: code
+    within a line as plain characters between its backticks, a code block's lines on lines
+    of their own and without fences, a link as its words, a mention of anyone but the author
+    as their member ID. With whether the model is sure of it, and the marks a code block
+    displayed on it as characters (which Slack's own formatting would read). None when no
+    line displays anything."""
+    lines: list[list] = [["", True, ""]]
+
+    def add(text: str, sure: bool = True, marks: str = "") -> None:
+        for at, part in enumerate(text.split("\n")):
+            if at:
+                lines.append(["", True, ""])
+            lines[-1][0] += part
+            lines[-1][1] = lines[-1][1] and sure
+            lines[-1][2] += marks
+
+    for piece in shown.pieces:
+        if piece.kind == "block":
+            rows = piece.shown.split("\n")
+            if rows and not rows[0].strip(" \t") and len(rows) > 1:
+                rows = rows[1:]
+            if rows and not rows[-1].strip(" \t") and len(rows) > 1:
+                rows = rows[:-1]
+            lines.append(["", True, ""])
+            for row in rows:  # a code line is displayed, a quotation's mark and all
+                sure = piece.sure and "@" not in row
+                lines[-1] = [row, sure, "".join(c for c in "*_~`" if c in row), True]
+                lines.append(["", True, ""])
+        elif piece.kind == "code":
+            add(f"`{piece.shown}`", piece.sure)
+        elif piece.kind == "mention" and not piece.sure and piece.target:
+            add("@" + piece.target)  # LIMIT_MENTION
+        elif piece.kind == "link":  # a link the note will not write is "[link omitted]"
+            add(piece.shown, piece.sure and re.match(r"https?://", piece.target or "") is not None)
+        elif piece.kind in ("mention", "special"):
+            add(piece.shown, piece.sure)
+        else:
+            add(piece.shown, piece.sure and "@" not in piece.shown)  # an address is removed
+    for text, sure, marks, *code in lines:
+        if text.strip(" \t" if code else " \t>"):
+            return text, sure, marks
+    return None
+
+
+def _squash(text: str) -> str:
+    """For comparing what two readings display: no white space, no quotation mark at the
+    start, no mark of emphasis (a heading shows bold as bold)."""
+    return re.sub(r"[\s*_]", "", text.lstrip(" \t>"))
+
+
+def _title_faults(filed: Filed, shown) -> list[Fault]:
+    """The title is the first line Slack displayed, as text, cut to 80 characters: the
+    body's heading of it holds no code, link or image and displays the start of that line,
+    with no mark Slack did not display; the reply in Slack names it as Slack displayed it."""
+    out: list[Fault] = []
+    found = None if shown.breaks_unsure else _title_line(shown)
+    if filed.body is None or found is None or not found[1]:
+        return out
+    line, _, marks = found
+    want = _squash(line)
+    h1 = Shown(READER.render(filed.body.split("\n", 1)[0]))
+    if h1.links or h1.images or h1.code:
+        out.append(("title", "markup in its heading", "body-h1", repr(filed.title)))
+    displayed = "".join(h1.text).strip()
+    got = _squash(displayed)
+    if want and (not got or not want.startswith(got) or len(got) < min(len(want), 16)):
+        out.append(("title", "not the first line displayed", "body-h1", repr(displayed)))
+    if displayed.count("*") > line.count("*") or displayed.count("~") > line.count("~"):
+        out.append(("title", "marks doubled", "body-h1", repr(displayed)))
+    said = re.match(r"(?:Already filed|Filed): (.*)\nProject: ", filed.reply, re.DOTALL)
+    if said is None:
+        return out
+    named = said.group(1)
+    if "<" in named:
+        out.append(("reply", "Slack markup", "reply", repr(named)))
+    reads = decode(named)
+    got = _squash(reads)
+    if want and (not got or not want.startswith(got) or len(got) < min(len(want), 16)):
+        out.append(("reply", "not the first line displayed", "reply", repr(reads)))
+    if reads.count("*") > line.count("*"):
+        out.append(("reply", "marks doubled", "reply", repr(reads)))
+    styled = [
+        m
+        for m in marks
+        if re.search(rf"{re.escape(m)}[^\s{re.escape(m)}][^\n]*?(?<!\s){re.escape(m)}", reads)
+    ]
+    if styled:  # Slack's mrkdwn styles these, and has no escape for them
+        out.append(("reply", "code read as Slack formatting", "reply", repr(reads)))
     return out
 
 

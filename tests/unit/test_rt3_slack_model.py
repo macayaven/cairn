@@ -171,8 +171,14 @@ def display(raw: str, names: dict[str, str] | None = None) -> Display:
             flush()
             if end >= 0:
                 sure = lone(i, end + 3) and not poisoned
-                pieces.append(Piece("block", decode(text[i + 3 : end]), sure=sure))
                 poisoned = poisoned or not sure
+                # A block opened in a quotation whose later lines are quoted too: the page
+                # does not say whether Slack shows those lines' marks in the block.
+                opened = text[text.rfind("\n", 0, i) + 1 : i].lstrip(" \t").startswith("&gt;")
+                later = text[i + 3 : end].split("\n")[1:]
+                if opened and any(row.lstrip(" \t").startswith("&gt;") for row in later):
+                    sure = False
+                pieces.append(Piece("block", decode(text[i + 3 : end]), sure=sure))
                 i = end + 3
             else:  # no closer: the page does not say; read as literal backticks
                 pieces.append(Piece("text", "```", sure=False))

@@ -331,6 +331,14 @@ def test_limit_5_as_stated_names_every_mark_its_passage_shows(filer, message, ma
     assert claim_code(filed) and all(mark not in code for code in claim_code(filed)), filed.claims
 
 
+def test_a_code_block_in_a_quotation_holds_what_slack_displayed(filer):
+    """A code block that opens on a quoted line holds what Slack displayed (guide): Slack
+    shows `> x` in the block, its quotation mark being the line's first `&gt;`; the note's
+    block holds `x`, in the claim and the body."""
+    filed = filer("&gt; ```&gt; x```")
+    assert any(code.strip() == "> x" for code in claim_code(filed)), filed.claims
+
+
 # Held since the seventh report's fix (each failed on 0d4e71a8)
 
 

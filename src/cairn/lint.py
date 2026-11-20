@@ -492,6 +492,9 @@ class _Source:
         self.spans = list(self.by_id.values())
         self.content = [s for s in self.spans if s.kind in CONTENT_KINDS]
         self.facts = {s.id: extract_facts(s) for s in self.spans}
+        self._by_text: dict[str, str] = {}  # span text -> first span id with it
+        for span in self.spans:
+            self._by_text.setdefault(span.text, span.id)
         self.norm = {s.id: normalize(s.text) for s in self.spans}
         self.entities = [_Entity.of(i, e) for i, e in enumerate(entities)]
         # Caches, each giving what the call it saves gives: spans share heading segments, and a
@@ -504,6 +507,20 @@ class _Source:
             for key in entity.keys:
                 self._by_key.setdefault(key, entity.index)
         self.owners = {s.id: self._span_entities(s) for s in self.spans}
+
+    def facts_of(self, span: Span) -> list[Fact]:
+        """extract_facts(span), from a source span with the same text when there is one.
+
+        A fact depends on its span's text and id only, so a span whose text a source span
+        holds (a claim is a passage's text, a page body repeats them) has that span's facts
+        under its own id."""
+        same = self._by_text.get(span.text)
+        if same is None:
+            return extract_facts(span)
+        facts = self.facts[same]
+        if same == span.id:
+            return list(facts)
+        return [f.model_copy(update={"span_id": span.id}) for f in facts]
 
     def _span_entities(self, span: Span) -> frozenset[int]:
         """Entities named in the deepest heading-path segment that names at least one."""
@@ -707,7 +724,7 @@ def _claim_facts(slug: str, claim: ClaimInput, source: _Source) -> list[Fact]:
         end_line=1 + claim.text.count("\n"),
         text=claim.text,
     )
-    return extract_facts(claim_span)
+    return source.facts_of(claim_span)
 
 
 def _grounded(
@@ -846,7 +863,7 @@ def _placement(page: _Page, entity: int | None, source: _Source) -> list[Finding
         return []
     page_entity = source.entities[entity]
     facts, seen = [], set()
-    for fact in (f for s in page.body_spans for f in extract_facts(s)):
+    for fact in (f for s in page.body_spans for f in source.facts_of(s)):
         if fact.kind not in PLACEMENT_KINDS or len(fact.value) < PLACEMENT_MIN_CHARS:
             continue
         if not fact.norm or fact.norm in seen:

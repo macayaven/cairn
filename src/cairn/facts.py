@@ -177,10 +177,18 @@ def _code(text: str) -> list[tuple[int, int]]:
     body that holds it, as written, so a passage and a body read each block alike, whatever
     a fence left open, opened in a quote or on a list marker's line, or indented four spaces
     does (the closer the renderer adds is a fence line, set aside too). Code lines are read
-    the same way (`_code_lines`)."""
+    the same way (`_code_lines`).
+
+    Only the spans that hold white space are given: a span without any reads the same kept
+    or collapsed, so a text whose code holds no white space reads as `_plain` reads it, at
+    its cost."""
     if "`" not in text:
         return []
-    return code_spans(_FENCE.sub(_set_aside, text))
+    return [
+        (left, right)
+        for left, right in code_spans(_FENCE.sub(_set_aside, text))
+        if _SPACE_RUN.search(text, left, right)
+    ]
 
 
 def _set_aside(line: re.Match[str]) -> str:
@@ -192,11 +200,12 @@ def _read(text: str, code: list[tuple[int, int]], start: int, end: int) -> str:
     """text[start:end] as normalize reads it, `code` being where inline code is in `text`:
     white space inside code as it is, each other run of it one space, the ends outside code
     dropped, then case folded and the thousands separators taken out."""
-    if not code:
+    first = bisect.bisect_right(code, start, key=lambda c: c[1]) if code else 0
+    if first == len(code) or code[first][0] >= end:  # no code with white space in the range
         return _plain(text[start:end])
     pieces: list[tuple[bool, str]] = []  # (inside code, text)
     pos = start
-    for n in range(bisect.bisect_right(code, start, key=lambda c: c[1]), len(code)):
+    for n in range(first, len(code)):
         left, right = code[n]  # by index: a slice would copy the rest of `code` for each fact
         if left >= end:
             break
@@ -206,12 +215,24 @@ def _read(text: str, code: list[tuple[int, int]], start: int, end: int) -> str:
         pos = min(right, end)
     if pos < end:
         pieces.append((False, text[pos:end]))
-    read = [(kept, piece if kept else _SPACE_RUN.sub(" ", piece)) for kept, piece in pieces]
+    read = [(kept, piece if kept else _collapsed(piece)) for kept, piece in pieces]
     if read and not read[0][0]:
         read[0] = (False, read[0][1].lstrip(" "))
     if read and not read[-1][0]:
         read[-1] = (False, read[-1][1].rstrip(" "))
     return _THOUSANDS_SEPARATOR.sub("", "".join(piece for _, piece in read).casefold())
+
+
+def _collapsed(piece: str) -> str:
+    """`piece` with each run of white space one space, its ends kept as one space: what
+    _SPACE_RUN.sub(" ", piece) gives, by str.split, which reads the same white space."""
+    words = piece.split()
+    if not words:
+        return " " if piece else ""
+    joined = " ".join(words)
+    if piece[0].isspace():
+        joined = " " + joined
+    return joined + " " if piece[-1].isspace() else joined
 
 
 def _plain(value: str) -> str:
@@ -423,7 +444,7 @@ def _fact(
     return Fact(
         kind=kind,
         value=value,
-        norm=_read(read, code or [], start, end),
+        norm=_read(read, code, start, end) if code else _plain(read[start:end]),
         span_id=span.id,
         start=start,
         end=end,
@@ -434,7 +455,14 @@ def _fact(
 def _code_lines(read: str, code: list[tuple[int, int]], start: int, end: int) -> tuple[str, ...]:
     """Normalised lines of the code block read[start:end], without blank and comment-only
     lines: each as normalize reads it in the span (`_read`), so inline code on a line (a
-    shell's `date  +%s`) keeps its white space on both sides of the match."""
+    shell's `date  +%s`) keeps its white space on both sides of the match. With no such code,
+    each line is `_plain`'s reading of it, as `_read` would give."""
+    if not code:
+        return tuple(
+            _plain(line)
+            for line in read[start:end].splitlines()
+            if line.strip() and not line.strip().startswith(("#", "//"))
+        )
     lines, at = [], start
     for line in read[start:end].splitlines(keepends=True):
         bare = line.rstrip("\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")

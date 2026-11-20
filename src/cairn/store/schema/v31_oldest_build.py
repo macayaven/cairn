@@ -65,8 +65,9 @@ def _drop_retired(con: sqlite3.Connection) -> None:
       so that a migrated schema reads exactly like a fresh one; every event keeps its
       sequence and every field. The events are read from the renamed table through a
       cursor, one at a time, as they are written into the new one: the step holds one event
-      in memory, whatever the table holds (it read them all into a list first until the
-      second review; no database outside the tests had run that).
+      in memory, whatever the table holds, and one workspace's last value, whatever the
+      number of workspaces (it read them all into a list, then kept every workspace's last
+      value, until the second review; no database outside the tests had run either).
     - oldest_build is added, and _upgrade records this step's number in it.
 
     The step changes what an older build relies on (a build of _LAST_USE checks at open for
@@ -78,19 +79,19 @@ def _drop_retired(con: sqlite3.Connection) -> None:
     columns = "seq, account_id, n, at, actor_kind, actor, actor_id, action, project, detail"
     con.execute("ALTER TABLE audit_events RENAME TO audit_events_v30")
     con.execute(_V31_AUDIT_EVENTS)
-    previous: dict[str, str] = {}
 
     def chained() -> Iterator[tuple]:
+        # Ordered by workspace: the value before an event is the last one of its own
+        # workspace, or the start at its first; one workspace's value is all that is held.
+        workspace, previous = None, "0" * 64
         for row in con.execute(  # one row at a time: executemany takes them as they come
             f"SELECT {columns} FROM audit_events_v30 ORDER BY account_id, n"
         ):
             seq, account_id, n, at, kind, actor, actor_id, action = row[:8]
-            value = _v31_link(
-                previous.get(account_id, "0" * 64),
-                account_id, n, seq, at, kind, actor, actor_id, action,
-            )  # fmt: skip
-            previous[account_id] = value
-            yield (*row, value)
+            if account_id != workspace:
+                workspace, previous = account_id, "0" * 64
+            previous = _v31_link(previous, account_id, n, seq, at, kind, actor, actor_id, action)
+            yield (*row, previous)
 
     con.executemany(
         f"INSERT INTO audit_events ({columns}, chain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

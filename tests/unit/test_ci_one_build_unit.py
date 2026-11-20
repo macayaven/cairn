@@ -325,6 +325,9 @@ def test_no_attestation_that_matches_is_said_apart_from_a_failure_of_the_tool(tm
     [
         "HTTP 502: Bad Gateway (https://api.github.com/repos/Owner/Repo/attestations/sha256:1)",
         "error connecting to api.github.com",
+        # GitHub's REST reference lists only 200 for List attestations, and gh turns an empty
+        # list into "no attestations found"; a 404 is the API failing, and re-running is right.
+        "HTTP 404: Not Found (https://api.github.com/repos/Owner/Repo/attestations/sha256:1)",
         "HTTP 401: Bad credentials",
         "",
     ],

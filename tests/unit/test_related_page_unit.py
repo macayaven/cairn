@@ -843,10 +843,21 @@ def test_the_page_view_links_it_from_its_head_for_the_latest_version_only(w, wor
 # What GET /b/<project>/p/<slug> ran for this world before it had the link, counted at
 # b1f04444: for the owner, and for a member who only reads the project.
 PAGE_VIEW_STATEMENTS = {"Ada": 19, "Dee": 27}
-# What the related page runs for it: 5 to admit the session, 2 to find the project (4 for a
-# member, whose reach is read from the project's rule) and the 13 of the read of a page of one
-# term (cairn.store.relating; tests/unit/test_relating_cost_unit.py).
-RELATED_PAGE_STATEMENTS = {"Ada": 20, "Dee": 22}
+# The statements that admit a person's session, before any page is read: the session, the
+# workspace, the membership and the person.
+ADMISSION = 4
+
+
+def read_alone(w, who, slug: str, limit: int) -> int:
+    """The statements `Memory.related` runs for the person, asked directly: the project (2
+    for an owner, 3 for a member, whose reach is read from the projects' rules) and the read
+    of the page's related pages (cairn.store.relating: 13 for a page of one term, after the
+    person's reach, 1 statement for an owner and 2 for a member)."""
+    memory = Memory(who.view, lint_gate)
+    memory.related("ops", slug, limit)  # once before: what a first call does once
+    with Watch(w.store) as seen:
+        memory.related("ops", slug, limit)
+    return len(seen.statements)
 
 
 def test_the_page_view_runs_the_statements_it_ran_and_the_related_page_a_fixed_number(w, world):
@@ -859,14 +870,17 @@ def test_the_page_view_runs_the_statements_it_ran_and_the_related_page_a_fixed_n
             counts[path, who.name] = len(seen.statements)
     for who, ran in PAGE_VIEW_STATEMENTS.items():
         assert counts["/b/ops/p/deploy", who] == ran, who
-    for who, ran in RELATED_PAGE_STATEMENTS.items():
-        assert counts["/b/ops/p/deploy/related", who] == ran, who
+    # the related page runs its admission and the read of `related`, and nothing else: 20
+    # statements here for the owner and 22 for the reader, about what the page view runs
+    for who in (w.ada, w.dee):
+        alone = read_alone(w, who, "deploy", RELATED_SHOWN)
+        assert counts["/b/ops/p/deploy/related", who.name] == ADMISSION + alone, who.name
 
 
 def test_the_related_page_costs_the_same_in_a_larger_project(tmp_path):
     """Statements, never time: the page of a project of 4 pages and of one of 40 runs as many,
-    and no more than the page's admission (5), its project (2) and the most a read of
-    `related` runs (16: cairn.store.relating)."""
+    and no more than the page's admission (4), its project (2), the owner's reach (1) and the
+    most a read of `related` runs (16: cairn.store.relating)."""
     counts = []
     for size in (4, 40):
         made = build(tmp_path / str(size))
@@ -883,7 +897,7 @@ def test_the_related_page_costs_the_same_in_a_larger_project(tmp_path):
                 counts.append(len(seen.statements))
         finally:
             made.store.close()
-    assert counts[0] == counts[1] and counts[1] <= 5 + 2 + 16, counts
+    assert counts[0] == counts[1] and counts[1] <= ADMISSION + 2 + 1 + 16, counts
 
 
 # With and without the explorer

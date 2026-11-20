@@ -40,7 +40,14 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 
-from cairn.spans import _PARSER_LINES, CLOSERS_MAX, Span, _covering_fence, claim_id
+from cairn.spans import (
+    _PARSER_LINES,
+    CLOSERS_MAX,
+    Span,
+    _covering_fence,
+    claim_id,
+    fences_reaching,
+)
 from cairn.store import ranking
 from cairn.store.access import MODELS_PREFIX
 from cairn.store.audit import DELETED_PROJECT
@@ -101,7 +108,9 @@ def kept_claims(
     holds that one, an id made from its place and the spans it keeps, drawn again until no
     kept claim holds it (fourth report, must-fix 5; as compiler.rebuilt_folds draws one): a
     page may hold any id of cairn's shape, so no claim loses its id, or its place on the
-    page, to this one."""
+    page, to this one. A claim that cites no span at all (a page saved past the gates may
+    hold one) is kept like any that cites no forgotten span, for the import's check to
+    judge (_plan), and has no first span: its new id is drawn from its place at once."""
     from cairn.gate import whole  # the gate builds on the store
 
     kept = []
@@ -121,8 +130,8 @@ def kept_claims(
     taken = {claim.id for claim in kept if claim.id not in made_from_gone}
     for place, claim in enumerate(kept):
         if claim.id in made_from_gone:
-            new, tries = claim_id(claim.span_ids[0]), 0
-            while new in taken:
+            new, tries = claim_id(claim.span_ids[0]) if claim.span_ids else None, 0
+            while new is None or new in taken:
                 key = json.dumps([place, claim.span_ids, tries]).encode()
                 new, tries = "cl_" + hashlib.sha256(key).hexdigest()[:16], tries + 1
             taken.add(new)
@@ -394,28 +403,40 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     one of its spans in any version, by slug, with what its latest version keeps: the claims
     kept_claims keeps, less every claim the import's check of a version names
     (portable.version_faults: the claims it does not name pass together, so it is run once,
-    on one render of the body, which is the body the forget writes). But for a code fence
-    that only the claims before it open and the body does not close (more than
-    spans.CLOSERS_MAX of them, Refusal.FENCE_RUNS_ON): the claim that opens it leaves, the
-    first in the body's order, and the rest are rendered and asked again, since without it
-    the body is another. A render for each such claim, CLOSERS_MAX times, so that a note's
-    author cannot make a forget cost a render for each claim. Past that, the claim then
-    named leaves with the claims that the body writes after it and that can open a fence
-    there (`_with_it`; fourth report, must-fix 2): what the body writes before it the
-    parser has read and found whole, and it stays, wherever the stored list holds it; so
-    does a claim after it that can open none, such as one with inline code; and so does one
-    that starts at the margin, a fenced block as it is commonly written, since it reads
-    there as it does alone. What that still takes: a claim after it that starts with
-    indentation and has a line that opens a fence, though the fence would close in the
-    claim. Then no fence runs on after that claim, so the next render finds none: eighteen
-    renders, in whatever order the lists were stored. One more for each fence that had
-    ended with its list item and now covers the block that follows, the claim before the
-    one that left: one for each item nested in another, and the parser reads a fence in
-    eight of those, so twenty-six. And whatever a page holds, past twice CLOSERS_MAX
-    renders every claim that holds a backtick or a tilde leaves with the one named, so no
-    fence is left (no page is known to come to that): 2 * CLOSERS_MAX + 2 renders when
-    fences are all that is at fault. It reads the project's page versions, never the rest
-    of the database."""
+    on one render of the body, which is the body the forget writes).
+
+    But for a code fence that only the claims before it open and the body does not close
+    (more than spans.CLOSERS_MAX of them, Refusal.FENCE_RUNS_ON). The claim that opens it
+    leaves, the first in the body's order, and the rest are rendered and asked again, since
+    without it the body is another. That alone is the plain rule, and it costs a render for
+    each claim that leaves. So that a note's author cannot make a forget cost that, two
+    kinds of claim leave in the same render as the claim named (`_with_it`):
+
+    - In every render, the claims the body writes directly before it that the plain rule
+      would name next, one a render: those whose fence, ended until now by the end of its
+      list item, would cover the block that follows once the claim named has left. The
+      parser is asked of each, on the body's own text (`_before_it`), so this takes no
+      claim the plain rule keeps: not one whose fence is closed where it stands, nor one
+      whose item would not hold that block, nor any claim before such a one (fifth report,
+      must-fix 1).
+    - From the render after CLOSERS_MAX renders that each named a claim, the claims the
+      body writes after it that can open a fence there (`_may_open_a_fence`; fourth
+      report, must-fix 2). This is wider than the plain rule: it takes a claim that starts
+      with indentation and has a line that opens a fence, though the fence would close in
+      the claim. What stays: a claim after it that can open none, such as one with inline
+      code, and one that starts at the margin, a fenced block as it is commonly written,
+      since it reads there as it does alone. And it changes what follows the claims before:
+      one of them whose fence covers the block that then follows leaves as the first kind
+      does, though the plain rule kept it behind a claim that left here; and one the plain
+      rule dropped for covering such a claim stays.
+
+    After that render no claim that can open a fence is written after the claim named, and
+    those before it that would have been named are gone: a forget rendered CLOSERS_MAX + 2
+    times at most on every page tried, fences being all that was at fault
+    (tests/unit/test_generated_forget_fences_unit.py). That number is seen, not proven.
+    What holds by construction: a render that names a claim takes that claim, so the loop
+    ends; and no render takes more than the two kinds above, however many came before it.
+    It reads the project's page versions, never the rest of the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
 
     gone = frozenset(
@@ -455,8 +476,8 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
             if not named:
                 break
             renders += 1
-            if renders > CLOSERS_MAX and faults == [(run_on, Refusal.FENCE_RUNS_ON)]:
-                named |= _with_it(title, kept, spans, run_on, renders > 2 * CLOSERS_MAX)
+            if faults == [(run_on, Refusal.FENCE_RUNS_ON)]:
+                named |= _with_it(title, kept, spans, run_on, body, renders > CLOSERS_MAX)
             kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in named)
             refused += len(named)
         planned.append((slug, version, title, kept, spans, refused, body))
@@ -464,26 +485,114 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
 
 
 def _with_it(
-    title: str, kept: Sequence[Claim], spans: Mapping[str, Span], run_on: int, anywhere: bool
+    title: str,
+    kept: Sequence[Claim],
+    spans: Mapping[str, Span],
+    run_on: int,
+    body: str,
+    past: bool,
 ) -> set[int]:
     """The places (1 for the first) of the claims of `kept` that leave with the claim at
-    `run_on`, whose fence the body titled `title` leaves to run on, once a forget is past
-    its ceiling of renders (_plan): the claims the body writes after that one (the order is
-    compiler._blocks', which writes the body: the claims with no section first) that can
-    open a fence (`_may_open_a_fence`). `anywhere`, past the second ceiling: every claim
-    that holds a backtick or a tilde, wherever the body writes it; a body of the rest has no
-    fence."""
-    from cairn.compiler import _blocks, section_headings  # the compiler builds on the store
+    `run_on`, whose fence `body`, the body titled `title` as just rendered, leaves to run on
+    (_plan). The order is the body's (compiler._blocks: the claims with no section first),
+    never the stored list's.
 
-    if anywhere:
-        return {n for n, claim in enumerate(kept, 1) if "`" in claim.text or "~" in claim.text}
-    blocks = _blocks(title, kept, spans, str, section_headings, str)
-    written = [claim for _, claim in blocks if claim is not None]
-    at = next(n for n, claim in enumerate(written) if claim is kept[run_on - 1])
-    after = {id(claim) for claim in written[at + 1 :]}
-    return {
-        n for n, claim in enumerate(kept, 1) if id(claim) in after and _may_open_a_fence(claim.text)
-    }
+    `past`, once a forget is past its ceiling of renders: the claims the body writes after
+    that one that can open a fence (`_may_open_a_fence`).
+
+    In every render: the claims the body writes directly before that one that hold in a
+    fence the block which follows them once it and those have left (`_before_it`)."""
+    from cairn.compiler import _blocks, heading_text, section_headings  # it builds on the store
+
+    blocks = _blocks(title, kept, spans, str, section_headings, heading_text)
+    at = next(n for n, (_, claim) in enumerate(blocks) if claim is kept[run_on - 1])
+    after = range(at + 1, len(blocks))
+    leave = {n for n in after if past and blocks[n][1] and _may_open_a_fence(blocks[n][0])}
+    follows = next((n for n in after if n not in leave), None)
+    if follows is not None:
+        leave |= _before_it(body, blocks, at, _PARSER_LINES.split(blocks[follows][0])[0])
+    place = {id(claim): n for n, claim in enumerate(kept, 1)}
+    return {place[id(blocks[n][1])] for n in leave}
+
+
+def _before_it(
+    body: str, blocks: Sequence[tuple[str, Claim | None]], at: int, line: str
+) -> set[int]:
+    """Which blocks directly before the block at `at`, the one `body` leaves to run on, leave
+    with it: those the plain loop would name one after another, a render each. `blocks` are
+    the body's (compiler._blocks, each claim's text as given), `line` the first line of the
+    block that will follow them.
+
+    Why any would: a fence with no closing line ends where its list item ends. The claim
+    before the one named may hold such a fence, ended only because the claim named began
+    another item; with that claim gone the item holds the next block, the fence covers it,
+    and no closer is left for it. Then the same of the claim before that.
+
+    Asked of the parser, on the body's own text (spans.fences_reaching): the claims are
+    written as the body has them, each followed by `line`, and a claim leaves when a fence
+    that starts in it takes that line in, and so does every claim between it and the one
+    named. That is the question the next render would ask of the nearest of them, and the
+    render after of the next: a claim whose fence is closed where it stands, or whose item
+    would not hold the line, is not taken, and nothing before it is. An answer is the
+    parser's own only when every claim before it in the same question holds the line too.
+    So the question is asked of all of them first; when one does not hold the line, of the
+    last ones that all said they did (a guess, asked again without the others); then of
+    half of those still open, until the answers leave none: about log2 of their number of
+    parses at most, four on the pages tried, one or two on nearly all.
+
+    Only claims are asked that hold a backtick or a tilde and after which the body wrote
+    nothing: a claim with a closer is closed. And only when the body wrote all its
+    CLOSERS_MAX closers: with one to spare the next render would close the fence, not name
+    its claim (the claim named was then one that no line closes). Nothing is asked when
+    `body` is not these blocks in order."""
+    from cairn.compiler import _closed  # the compiler builds on the store
+
+    texts = [text for text, _ in blocks[: at + 1]]
+    starts = _placed(body, texts)
+    if starts is None:
+        return set()
+    wrote = [body[starts[n] + len(texts[n]) : starts[n + 1] - 2] for n in range(at)]
+    run = at  # the first of the claims asked
+    while run and blocks[run - 1][1] and not wrote[run - 1] and _fenced(texts[run - 1]):
+        run -= 1
+    if run == at:
+        return set()
+    closers = sum(  # each line the body wrote, less the one a claim alone is closed by
+        lines.count("\n") - (_closed(text) != text)
+        for text, lines in zip(texts, wrote, strict=False)
+        if lines
+    )
+    if closers != CLOSERS_MAX:
+        return set()
+    low, high = 0, at - run  # the last `low` leave; the last `high + 1` do not all leave
+    ask = high
+    while low < high:
+        taken = fences_reaching(body[: starts[at - ask]], texts[at - ask : at], line)
+        if all(taken):
+            low = ask
+        else:
+            high = ask - taken.index(False) - 1
+        guess = next((n for n, yes in enumerate(reversed(taken)) if not yes), ask)
+        ask = min(max(guess, low + 1), high) if ask == at - run else (low + high + 1) // 2
+    return set(range(at - low, at))
+
+
+def _fenced(text: str) -> bool:
+    return "`" in text or "~" in text  # no other text holds a fence (spans.fences_kept_in)
+
+
+def _placed(body: str, texts: Sequence[str]) -> list[int] | None:
+    """Where each of `texts`, the first blocks of `body` in order, starts in it; None when
+    `body` is not those blocks, each followed by a blank line. Between a block's text and
+    that blank line stand the lines the body wrote to close its fences, none of them empty."""
+    starts, at = [], 0
+    for text in texts:
+        if not text or not body.startswith(text, at):
+            return None
+        starts.append(at)
+        end = body.find("\n\n", at + len(text))
+        at = len(body) if end < 0 else end + 2
+    return starts
 
 
 def _may_open_a_fence(text: str) -> bool:

@@ -660,7 +660,7 @@ def test_the_related_view_costs_the_same_in_a_larger_project(tmp_path):
                 counts.append(counted(made, RELATED + "asked", made.ada))
         finally:
             made.store.close()
-    most = ADMISSION + REACH_CHECK["Ada"] + 2 + 1 + 16  # as the related page, and the check
+    most = ADMISSION + REACH_CHECK["Ada"] + 2 + 1 + 17  # as the related page, and the check
     assert counts[0] == counts[1] and counts[1] <= most, counts
 
 

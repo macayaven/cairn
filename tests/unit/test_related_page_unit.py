@@ -1060,7 +1060,7 @@ def test_the_page_view_runs_the_statements_it_ran_and_the_related_page_a_fixed_n
 def test_the_related_page_costs_the_same_in_a_larger_project(tmp_path):
     """Statements, never time: the page of a project of 4 pages and of one of 40 runs as many,
     and no more than the page's admission (4), its project (2), the owner's reach (1) and the
-    most a read of `related` runs (16: cairn.store.relating)."""
+    most a read of `related` runs (17 with its caller's: cairn.store.relating)."""
     counts = []
     for size in (4, 40):
         made = build(tmp_path / str(size))
@@ -1077,7 +1077,7 @@ def test_the_related_page_costs_the_same_in_a_larger_project(tmp_path):
                 counts.append(len(seen.statements))
         finally:
             made.store.close()
-    assert counts[0] == counts[1] and counts[1] <= ADMISSION + 2 + 1 + 16, counts
+    assert counts[0] == counts[1] and counts[1] <= ADMISSION + 2 + 1 + 17, counts
 
 
 # With and without the explorer

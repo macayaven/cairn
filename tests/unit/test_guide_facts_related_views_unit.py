@@ -169,8 +169,9 @@ def test_the_web_view_shows_a_person_the_answer_of_related(world):
     says(
         "connect",
         "In the web view a page's **Related pages** link shows a person what `related` answers"
-        " for the page, each claim quoted as plain text.",
+        " for the page, 8 pages unless asked for up to 20, each claim quoted as plain text.",
     )
+    assert (RELATED_SHOWN, relations.RELATED_MAX) == (8, 20)
     answer = Memory(w.ada.view, lint_gate).related("ops", "deploy", RELATED_SHOWN)
     pages = shown(get(w, "/b/ops/p/deploy/related").text)
     assert [(p["page"], p["title"], p["more"]) for p in pages] == [

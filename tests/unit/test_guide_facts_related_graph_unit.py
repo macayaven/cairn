@@ -124,15 +124,26 @@ def test_without_the_explorer_there_is_no_such_view_and_the_related_pages_link_s
 # security.md, "The web pages"
 
 
-def test_the_related_view_is_the_answer_the_related_pages_link_shows_and_is_recorded_as_it(
+def test_the_related_view_draws_up_to_twenty_where_the_link_shows_eight_and_is_recorded_as_it(
     w, caplog
 ):
     says(
         "security",
-        "With the explorer, a page also has a view of its related pages: the answer its"
-        " **Related pages** link shows, drawn as the page and the pages related to it, without"
-        " the claims' text, and recorded as that link's page is, as a read of the page.",
+        "With the explorer, a page also has a view of its related pages: up to 20 of the pages"
+        " `related` gives for it, where its **Related pages** link shows 8 unless asked for"
+        " more, drawn as the page and the pages related to it, without the claims' text, and"
+        " recorded as that link's page is, as a read of the page.",
     )
+    assert "the answer its **Related pages** link shows" not in guide_source("security")
+    terms = [f"`s{n:02d}.cfg`" for n in range(10)]
+    note(w, "Asked", "Ada sets " + " ".join(terms) + ".\n")
+    for n, term in enumerate(terms):
+        note(w, f"Other {n}", f"Brook {n} sets {term}.\n")
+    linked = [entry["page"] for entry in shown(get(w, "/b/ops/p/asked/related").text)]
+    most = [entry["page"] for entry in shown(get(w, "/b/ops/p/asked/related?limit=20").text)]
+    nodes = [n.removeprefix("page:") for n in list(drawn(get(w, RELATED + "asked").text).nodes)]
+    assert (len(linked), len(most), len(nodes) - 1) == (8, 10, 10)  # what each shows
+    assert nodes[1:] == most and most[:8] == linked  # one answer, to two lengths
     w.store.reads_audited = True
     with caplog.at_level(logging.INFO, logger="cairn.access"):
         view = get(w, RELATED + "deploy", w.dee)
@@ -185,9 +196,10 @@ def test_no_view_relates_all_of_a_projects_pages_or_crosses_projects_and_the_gra
 def test_with_the_explorer_the_graph_page_draws_the_answer_of_related(w):
     says(
         "connect",
-        "With the graph explorer on, the project's **Graph** page draws that answer too, as a"
+        "With the graph explorer on, the project's **Graph** page draws up to 20 of them, as a"
         " view of the page and its related pages.",
     )
+    assert graphs.PAGE_LIMIT == relations.RELATED_MAX == 20
     answer = Memory(w.ada.view, lint_gate).related("ops", "deploy", 20)
     view = drawn(get(w, RELATED + "deploy").text)
     assert [(e["to"], e["reason"], e["term"]) for e in view.edges] == [
@@ -220,7 +232,13 @@ def test_the_contract_says_what_the_related_view_reads_and_how_it_is_recorded(w,
         graphs.__doc__,
         "The explorer's view of a page and its related pages (KG2) is not read here, and no"
         " function of this module reads a relation",
+        "(cairn.store.relating: 13 statements at most, 17 with its caller's, over the claims of"
+        " other pages that hold the page's terms)",
     )
+    from cairn.store import relating
+
+    doc_says(relating.__doc__, "= 13, and 17 with the caller's.")
+    assert "16 statements" not in graphs.__doc__
     with caplog.at_level(logging.INFO, logger="cairn.access"):
         for path in ("/b/ops/graph", "/b/ops/graph?focus=page%3Adeploy", RELATED + "deploy"):
             assert get(w, path).status_code == 200

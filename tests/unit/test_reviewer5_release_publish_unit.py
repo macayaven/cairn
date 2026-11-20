@@ -44,12 +44,13 @@ def package_files(package):
     return {p.name: p.read_bytes() for p in package.iterdir() if p.name != "notes.md"}
 
 
-def create_draft(state, tag, prerelease, body):
+def create_draft(state, tag, prerelease, body, title):
     rid = state["next_id"]
     state["next_id"] += 1
     state["release"] = {
         "id": rid,
         "tag_name": tag,
+        "name": title,
         "draft": True,
         "prerelease": prerelease,
         "body": body,
@@ -116,7 +117,7 @@ def public_fields(release):
     return release | {"assets": listed}
 
 
-def api(state, args):
+def api(state, args, *, listing=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("endpoint")
     parser.add_argument("-X", "--method")
@@ -149,14 +150,19 @@ def api(state, args):
     suffix = path[len(prefix) :]
     release = state["release"]
     if method == "GET" and not suffix:
-        return api_reply([public_fields(release)] if release else [], opt.jq)
+        shown = listing(state) if listing else [release] if release else []
+        return api_reply([public_fields(entry) for entry in shown], opt.jq)
     if method not in ("GET", "HEAD"):
         state["writes"].append(method)
     if method == "POST" and not suffix:
         if release or fields.get("tag_name") != state["tag"]:
             return 1
         create_draft(
-            state, fields["tag_name"], fields.get("prerelease", False), fields.get("body", "")
+            state,
+            fields["tag_name"],
+            fields.get("prerelease", False),
+            fields.get("body", ""),
+            fields.get("name"),
         )
         rc = 0 if fields.get("draft") is True else publish(state, by_job=True)
         return rc or api_reply(public_fields(state["release"]), opt.jq)
@@ -197,6 +203,7 @@ def release_command(state, command, args):
             return 1
         fields = {
             "tagName": opt.tag,
+            "name": release["name"],
             "isDraft": release["draft"],
             "isPrerelease": release["prerelease"],
             "databaseId": release["id"],
@@ -239,7 +246,7 @@ def release_command(state, command, args):
         if release:
             return 1
         notes = opt.notes_file.read_text() if opt.notes_file else opt.notes
-        create_draft(state, opt.tag, opt.prerelease == "true", notes)
+        create_draft(state, opt.tag, opt.prerelease == "true", notes, opt.title)
         rc = upload(state, opt.files)
         if opt.draft != "true":
             rc = rc or publish(state, by_job=True)
@@ -297,6 +304,7 @@ def initial(tag, package, *, existing=None, fault=None):
         release = {
             "id": 77,
             "tag_name": tag,
+            "name": tag,
             "draft": existing != "published",
             "body": (package / "notes.md").read_text() + "\n" + MARK + "\n",
             "prerelease": tag == CANDIDATE,

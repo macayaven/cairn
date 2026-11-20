@@ -242,6 +242,55 @@ def test_a_run_that_is_all_of_the_oldest_note_leaves_but_for_its_last_claim(desk
     assert (after.title, after.claims) == (title, claims)
 
 
+def test_a_run_of_notes_each_older_than_the_one_before_it_takes_a_render_for_each(desk):
+    """What comparing the note, and not the spelling, costs. Eighteen siblings, each a note
+    of its own, the nearest the tail the oldest and so on back; every note spells the topic
+    alike, so the title never changes and neither does the body but for the claims that
+    leave. Each claim named is the last of the note that gives the title then, so it leaves
+    alone: nineteen renders, where the release before took two. The claims left are the
+    plain loop's. And one note that holds a whole run, spelled like the rest, takes three
+    renders where it took two."""
+    siblings = [f"    - ~~~\n      Brook keeps almanac {n}." for n in range(CLOSERS_MAX + 2)]
+
+    def others():
+        nonlocal separator
+        separator = a_list_that_spends_the_closers(desk)
+        filed(desk, "- parent")
+
+    def before(place: int) -> None:  # the sibling there, older than those written before it
+        if place < 0:
+            others()
+        else:
+            filed(desk, siblings[place], first=lambda: before(place - 1))
+
+    separator = None
+    before(len(siblings) - 1)
+    filed(desk, TAIL)
+    named, title, claims = plain_loop(desk.store, separator)
+    assert [text for _, text in named] == siblings[::-1] and title == "OPS"
+    assert forgotten(desk, separator) == ["OPS"] * (len(siblings) + 1) == ["OPS"] * 19
+    after = page(desk.store)
+    assert (after.title, after.claims) == (title, claims)
+
+
+def test_a_run_in_the_oldest_note_spelled_like_the_rest_takes_three_renders(desk):
+    siblings = [f"    - ~~~\n      Brook keeps almanac {n}." for n in range(40)]
+
+    def others():
+        nonlocal separator
+        separator = a_list_that_spends_the_closers(desk)
+        filed(desk, "- parent")
+
+    separator = None
+    filed(desk, "\n\n".join(siblings), first=others)
+    filed(desk, TAIL)
+    named, title, claims = plain_loop(desk.store, separator)
+    assert len(named) == 40 and title == "OPS"
+    assert forgotten(desk, separator) == ["OPS"] * 3
+    after = page(desk.store)
+    assert (after.title, after.claims) == (title, claims)
+
+
 def test_past_the_ceiling_a_later_claim_stays_when_taking_the_one_named_changes_the_title(desk):
     """The same condition for the class a forget takes past its ceiling. Sixteen fences
     are named one by one; the seventeenth is the oldest note's claim, whose fence covers

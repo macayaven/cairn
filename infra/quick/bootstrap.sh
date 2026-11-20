@@ -13,7 +13,7 @@ install_host() (
   local cloud=$1 codename architecture staging
   export DEBIAN_FRONTEND=noninteractive
   apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
-  apt-get -y install ca-certificates curl iptables
+  apt-get -o DPkg::Lock::Timeout=120 -y install ca-certificates curl iptables
 
   if [[ "$cloud" == aws ]]; then
     snap list amazon-ssm-agent >/dev/null 2>&1 || snap install amazon-ssm-agent --classic
@@ -40,7 +40,8 @@ EOF
   mv -f -- "$staging/docker.asc" /etc/apt/keyrings/docker.asc
   mv -f -- "$staging/docker.sources" /etc/apt/sources.list.d/docker.sources
   apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
-  apt-get -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  apt-get -o DPkg::Lock::Timeout=120 -y install \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 )
 
 # Docker sends forwarded container traffic through DOCKER-USER before its own rules.
@@ -59,19 +60,32 @@ block_metadata() {
 }
 
 aws_settings() {
-  local versions
-  local args=(--no-cli-pager --output json)
-  versions=$(aws "${args[@]}" secretsmanager list-secret-version-ids \
-    --secret-id "$CAIRN_SETTINGS_SECRET" --include-deprecated --max-items 1 |
-    python3 -c 'import json, sys; print(len(json.load(sys.stdin).get("Versions", [])))') ||
-    return 1
-  [ "$versions" != 0 ] || return 0
-  aws "${args[@]}" secretsmanager get-secret-value --secret-id "$CAIRN_SETTINGS_SECRET" |
-    python3 -c 'import json, sys; sys.stdout.buffer.write(json.load(sys.stdin)["SecretString"].encode("utf-8"))'
+  python3 - <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+aws = ["aws", "--no-cli-pager", "--output", "json", "secretsmanager"]
+secret = ["--secret-id", os.environ["CAIRN_SETTINGS_SECRET"]]
+page = []
+while True:
+    result = json.loads(subprocess.check_output([*aws, "list-secret-version-ids", *secret, *page]))
+    if any("AWSCURRENT" in v.get("VersionStages", []) for v in result.get("Versions", [])):
+        value = json.loads(subprocess.check_output([
+            *aws, "get-secret-value", *secret, "--version-stage", "AWSCURRENT",
+        ]))
+        sys.stdout.buffer.write(value["SecretString"].encode("utf-8"))
+        break
+    next_token = result.get("NextToken")
+    if not next_token:
+        break
+    page = ["--next-token", next_token]
+PY
 }
 
 gcp_settings() {
-  local token versions
+  local token version
   local -a options=(-fsS --connect-timeout 5 --max-time 30)
   local url="https://secretmanager.googleapis.com/v1/$CAIRN_SETTINGS_SECRET"
   token=$(curl "${options[@]}" -H 'Metadata-Flavor: Google' \
@@ -80,14 +94,33 @@ gcp_settings() {
     return 1
   [ -n "$token" ] || return 1
   # curl reads the authorization header from stdin, so the token is absent from argv.
-  versions=$(printf 'Authorization: Bearer %s\n' "$token" |
-    curl "${options[@]}" -H @- "$url/versions?pageSize=1" |
-    python3 -c 'import json, sys; print(len(json.load(sys.stdin).get("versions", [])))') ||
+  version=$(printf 'Authorization: Bearer %s\n' "$token" |
+    curl "${options[@]}" -H @- "$url/versions?pageSize=1&filter=state:ENABLED" |
+    python3 -c '
+import json, sys
+versions = json.load(sys.stdin).get("versions", [])
+if versions:
+    print(versions[0]["name"])
+') ||
     return 1
-  [ "$versions" != 0 ] || return 0
+  [ -n "$version" ] || return 0
   printf 'Authorization: Bearer %s\n' "$token" |
-    curl "${options[@]}" -H @- "$url/versions/latest:access" |
-    python3 -c 'import base64, json, sys; sys.stdout.buffer.write(base64.b64decode(json.load(sys.stdin)["payload"]["data"], validate=True))'
+    curl "${options[@]}" -H @- "https://secretmanager.googleapis.com/v1/$version:access" |
+    python3 -c '
+import base64, json, sys
+
+payload = json.load(sys.stdin)["payload"]
+data = base64.b64decode(payload.get("data", ""), validate=True)
+# Secret Manager uses CRC-32C (Castagnoli).
+crc = 0xFFFFFFFF
+for byte in data:
+    crc ^= byte
+    for _ in range(8):
+        crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
+if int(payload["dataCrc32c"]) != (crc ^ 0xFFFFFFFF):
+    sys.exit(1)
+sys.stdout.buffer.write(data)
+'
 }
 
 publish_env() {
@@ -103,7 +136,7 @@ start_stack() (
   cd "$install_dir/deploy"
   umask 077
   block_metadata || die 'could not install the Docker metadata firewall'
-  local engine read_settings file
+  local engine read_settings file status
   engine=$(docker version --format '{{.Server.Version}}')
   dpkg --compare-versions "$engine" ge 28.3.3 || die 'Docker Engine 28.3.3 or later is required'
   case "${CAIRN_CLOUD:?}" in
@@ -114,10 +147,9 @@ start_stack() (
 
   staging=$(mktemp -d "$PWD/.bootstrap.XXXXXX")
   trap 'rm -rf -- "$staging"' EXIT
-  # A successful empty version listing is the only case in which an empty store is accepted
-  # without reading a version. Suppress CLI errors that could include part of a response.
+  # Suppress CLI errors that could include part of a response.
   if ! "$read_settings" >"$staging/cairn.env" 2>/dev/null; then
-    die "could not read the cairn settings secret on $CAIRN_CLOUD. Check the VM identity and the latest version."
+    die "could not read the cairn settings secret on $CAIRN_CLOUD. Check the VM identity and the selected version."
   fi
   cat >"$staging/.env" <<EOF
 CAIRN_DOMAIN=${CAIRN_DOMAIN:?}
@@ -138,10 +170,12 @@ EOF
   done
 
   # Compose can include a malformed env file's contents in an error.
-  docker compose pull >/dev/null 2>&1 ||
-    die 'Docker Compose pull failed. Check registry access, the image and the settings file syntax.'
-  docker compose up -d >/dev/null 2>&1 ||
-    die 'Docker Compose up failed. Check the container status and logs with Docker.'
+  if ! docker compose up -d --pull missing >/dev/null 2>&1; then
+    if status=$(docker compose ps --all --format '{{.Service}} {{.State}} (exit={{.ExitCode}})' 2>/dev/null); then
+      [ -z "$status" ] || printf '%s\n' "$status" >&2
+    fi
+    die 'Docker Compose up failed. Check registry access, the image, the settings file syntax and container status.'
+  fi
 )
 
 first_key() (

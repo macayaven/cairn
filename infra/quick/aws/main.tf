@@ -137,7 +137,7 @@ resource "aws_iam_role_policy" "app" {
       {
         Sid      = "ReplicaObjects"
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
         Resource = "${aws_s3_bucket.replica.arn}/cairn/*"
       },
       {
@@ -191,6 +191,8 @@ resource "aws_instance" "app" {
   }
 
   lifecycle {
+    ignore_changes = [ami]
+
     precondition {
       condition     = length(local.user_data) * 3 / 4 - length(regex("=*$", local.user_data)) <= 16384
       error_message = "The compressed EC2 cloud-init payload exceeds EC2's 16 KiB user-data limit."

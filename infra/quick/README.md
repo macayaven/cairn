@@ -62,6 +62,9 @@ and billable transfer.
    tofu output -raw public_ipv4
    ```
 
+   EC2 starts with a temporary public IPv4 address. Attaching the Elastic IP releases that
+   address and can interrupt connections during first boot. Use the printed Elastic IP for DNS.
+
 6. Wait for DNS and for this check to answer over HTTPS. If it stays down after DNS resolves,
    use the Session Manager command in step 7 to check [first-boot recovery](#first-boot-recovery).
 
@@ -79,7 +82,10 @@ and billable transfer.
 
 The key command writes a root-owned file with mode 0600 and prints its path. Read it in a private
 session without transcript logging. Use the API key to sign in at your HTTPS URL and keep the key
-in your credential store.
+in your credential store. Then follow [first key cleanup](#first-key-cleanup).
+
+To move to the current Ubuntu AMI, follow the backup steps in [Upgrade](#upgrade), then run
+`tofu apply -replace=aws_instance.app` from the AWS stack directory.
 
 ### AWS settings
 
@@ -222,6 +228,11 @@ gcloud storage rm --all-versions "gs://$bucket/**"
 tofu destroy
 ```
 
+## First key cleanup
+
+After copying the first key to your credential store, delete the file from the VM with
+`sudo rm -- /opt/cairn/cairn-first-key.abc123`, substituting the exact path the key command printed.
+
 ## First-boot recovery
 
 On either VM, `cairn-quick-provision.service` installs the packages and retries failures every
@@ -266,7 +277,7 @@ This example uses Google sign-in at `cairn.example.net` and admits accounts from
    ```
 
    Run `tofu apply`. Changing these arguments replaces the VM and keeps the address, bucket
-   and settings secret. If you have data on the VM, follow the backup steps in [Upgrade](#upgrade)
+   and settings secret. Read [Upgrade](#upgrade) for the backup steps and certificate implications
    before applying.
 4. Check `/healthz` again. In a signed-out browser, open `https://cairn.example.net/login` and
    choose **Continue with Google**. After signing in with an account from the allowed Workspace
@@ -274,12 +285,14 @@ This example uses Google sign-in at `cairn.example.net` and admits accounts from
 
 ## Upgrade
 
-Save a [cold copy of the database](../../src/cairn/guides/run.md#back-it-up) from the Compose
+Save a [cold copy of the database](../../docs/guides/run.md#back-it-up) from the Compose
 `cairn` service's `/data` volume off the VM and note the running image, then set `image` in
 `terraform.tfvars` to the next release or check out its tag in this clone and run `tofu apply`
 (run `tofu init` first if the lock changed).
 OpenTofu replaces the VM when the rendered boot configuration changes, keeping the address and
 bucket, and the new cairn may migrate the restored database.
+Replacement also removes Caddy's local `caddy-data` certificate volume. Repeated replacements
+can hit [Let's Encrypt's limit on certificates for the same hostnames](https://letsencrypt.org/docs/rate-limits/#new-certificates-per-exact-set-of-identifiers).
 Check the release notes before going back, because an older image can use an additive schema
 update but needs the pre-upgrade backup after an incompatible one.
 

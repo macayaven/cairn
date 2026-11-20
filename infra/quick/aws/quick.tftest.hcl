@@ -19,6 +19,9 @@ mock_provider "aws" {
   mock_resource "aws_instance" {
     defaults = { id = "i-00000000000000000" }
   }
+  mock_resource "aws_eip" {
+    defaults = { id = "eipalloc-00000000000000000", public_ip = "192.0.2.10" }
+  }
 }
 
 variables {
@@ -99,7 +102,7 @@ run "identity_is_scoped_to_the_replica_and_settings" {
   assert {
     condition = (
       toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ReplicaBucket"])) == toset(["s3:GetBucketLocation", "s3:ListBucket"]) &&
-      toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ReplicaObjects"])) == toset(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]) &&
+      toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "ReplicaObjects"])) == toset(["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]) &&
       toset(one([for statement in jsondecode(aws_iam_role_policy.app.policy).Statement : statement.Action if statement.Sid == "Settings"])) == toset(["secretsmanager:ListSecretVersionIds", "secretsmanager:GetSecretValue"]) &&
       aws_iam_role_policy_attachment.ssm.policy_arn == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
     )
@@ -115,5 +118,50 @@ run "identity_is_scoped_to_the_replica_and_settings" {
       output.first_key_command == "sudo /opt/cairn/bootstrap.sh first-key"
     )
     error_message = "User-data replacement, VM identity and the documented operator commands must stay wired."
+  }
+
+  assert {
+    condition = (
+      aws_instance.app.associate_public_ip_address &&
+      aws_eip_association.app.allocation_id == aws_eip.app.id &&
+      aws_eip_association.app.instance_id == aws_instance.app.id &&
+      output.public_ipv4 == aws_eip.app.public_ip
+    )
+    error_message = "The VM boots with a public address, and the DNS output is its reserved address."
+  }
+}
+
+run "rolling_ami_keeps_the_existing_vm" {
+  command = plan
+
+  override_data {
+    target = data.aws_ami.ubuntu
+    values = { id = "ami-00000000000000001" }
+  }
+
+  assert {
+    condition = (
+      data.aws_ami.ubuntu.id == "ami-00000000000000001" &&
+      aws_instance.app.ami == "ami-00000000000000000"
+    )
+    error_message = "A newer Canonical AMI does not replace an existing VM on a routine apply."
+  }
+}
+
+run "explicit_replacement_uses_the_new_ami" {
+  command = plan
+
+  plan_options {
+    replace = [aws_instance.app]
+  }
+
+  override_data {
+    target = data.aws_ami.ubuntu
+    values = { id = "ami-00000000000000001" }
+  }
+
+  assert {
+    condition     = aws_instance.app.ami == "ami-00000000000000001"
+    error_message = "An explicitly replaced VM uses the current Canonical AMI."
   }
 }

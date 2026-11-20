@@ -89,7 +89,7 @@ def test_documented_escapes_and_ordinary_formatting_become_markdown():
     html = MarkdownIt().render(draft.text)
     assert "<strong>Bold</strong>" in html
     assert "<em>italic</em>" in html
-    assert "~~gone~~" in draft.text
+    assert "~gone~" in draft.text and "~~gone~~" not in draft.text  # as typed: finding 6
     assert "<blockquote>" in html
     assert "quoted &amp; useful &lt;tag&gt;" in html
     assert "<code>literal *code*</code>" in html

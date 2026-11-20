@@ -100,16 +100,16 @@ def _prose(text: str, clear: bool = True) -> str:
     one Slack paired with no other and displayed as it is: left bare, Markdown would pair it
     with the backtick that opens a code span (_render) and read that span's code as prose.
 
-    Slack has no fence of tildes, so a run of three tildes or more that only blanks and the
-    marks of a quotation or a list item stand before on its line (_FENCE_LEAD: where a
-    reader could take it for a fence, at any indentation and in any container) gets a
-    backslash before its first tilde. `clear`: whether what was written on the line before
-    `text` is such marks alone, or nothing."""
+    Struck text (`~done~`) is written as it was typed: a page cannot strike, and shows the
+    tildes, where doubled ones would show two of each. Slack has no fence of tildes, so a run
+    of three tildes or more that only blanks and the marks of a quotation or a list item
+    stand before on its line (_FENCE_LEAD: where a reader could take it for a fence, at any
+    indentation and in any container) gets a backslash before its first tilde. `clear`:
+    whether what was written on the line before `text` is such marks alone, or nothing."""
     text = _redact(_decode(text))
     text = text.replace("&", "&amp;").replace("<", "&lt;")
     text = re.sub(r"([\\\[\]()!`])", r"\\\1", text)
     text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"**\1**", text)
-    text = re.sub(r"(?<!~)~([^~\n]+)~(?!~)", r"~~\1~~", text)
     if clear:
         return _FENCE_LEAD.sub(r"\1\\~", text)
     first, feed, rest = text.partition("\n")

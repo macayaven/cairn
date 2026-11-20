@@ -63,8 +63,10 @@ NAMES = {
 # a heading became text: sha256 of them all, each followed by a NUL. Changed on purpose by
 # the third tester's finding 3: a run of three tildes that could open a fence gets a
 # backslash before its first tilde; with those backslashes taken out the digest is
-# ad3d2c518b9d1929204ce131048c065c5201df7fe8e4057253c8bf8550ef96c0, as on 22f498b6.
-PROSE_ON_22F498B6 = "af92e9a5627fc9c37e3e68294cd35d0dbf39c7e18d1793534299acf7ee51ee33"
+# ad3d2c518b9d1929204ce131048c065c5201df7fe8e4057253c8bf8550ef96c0, as on 22f498b6. And by
+# finding 6: struck text is written as typed, so af92e9a5627fc9c37e3e68294cd35d0dbf39c7e18d17
+# 93534299acf7ee51ee33 became this, every changed line of it a line of then with fewer tildes.
+PROSE_ON_22F498B6 = "c51e4820300f3fd9e332b6fb7193ca305acc7c7459c6b166366785de771cb9b2"
 
 
 @pytest.fixture

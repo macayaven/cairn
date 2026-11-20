@@ -94,3 +94,18 @@ def test_a_code_block_of_slacks_own_is_still_the_one_fence(bench):
     for markdown in (note, body):
         assert code_read(markdown) == ["fence"], markdown
     assert [t.content for t in READER.parse(note) if t.type == "fence"] == ["~~~\nrun\n"]
+
+
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        ("Ledger ~done~", "Ledger ~done~"),
+        ("~gone~ and ~kept~ now", "~gone~ and ~kept~ now"),
+        ("a ~~doubled~~ one", "a ~~doubled~~ one"),
+    ],
+)
+def test_struck_text_is_written_as_typed(bench, text, shown):
+    note, claims, _ = filed(bench, text)
+    assert shown in note
+    page = "".join(str(render(claim)) for claim in claims)
+    assert shown in page and "<del>" not in page and "<s>" not in page

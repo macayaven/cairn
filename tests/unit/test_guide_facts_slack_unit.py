@@ -894,6 +894,20 @@ def test_connect_a_line_of_tildes_is_text():
     )
 
 
+def test_connect_struck_text_is_written_as_typed():
+    """connect.md: "Struck text is written as it was typed, `~done~`: a page cannot strike, so
+    it shows the tildes, one on each side.\" (The third tester's finding 6: it was doubled.)"""
+    says(
+        *CONNECT,
+        "Struck text is written as it was typed, `~done~`: a page cannot strike, so it shows the"
+        " tildes, one on each side.",
+    )
+    note = a_filed_note("Ledger ~done~ and ~kept~")
+    assert as_read(note) == ("Ledger ~done~ and ~kept~", [0], [])
+    page = str(render(note))
+    assert "Ledger ~done~ and ~kept~" in page and "<s>" not in page and "<del>" not in page
+
+
 def test_connect_code_within_a_line_stays_between_its_backticks():
     """connect.md: "Code within a line stays between its backticks, and a backtick that Slack
     paired with no other gets a backslash; in a message that could hold a table, code within a

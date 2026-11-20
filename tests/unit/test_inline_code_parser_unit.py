@@ -176,3 +176,19 @@ def test_an_archive_written_before_the_parser_closed_fences_imports(tmp_path, mo
         assert "After the fence." in body_paragraphs(body)
     finally:
         target.close()
+
+
+def test_a_lazy_line_after_a_quote_is_read_alone_a_known_limit():
+    """What is done for a passage whose container its own text does not show. The splitter
+    makes a line after a quote, with no blank line between, a passage of its own; Markdown
+    reads it as the quote's lazy continuation. The passage is handed to the parser alone. A
+    backtick the passage leaves as text makes the passage read exactly (above), but when the
+    passage's own runs all pair, a run left open in the quote can still move what Markdown
+    calls code: here Markdown reads ` x  y` and ` x y` as two codes, and cairn, reading
+    each passage alone, reads the two passages as one text. Pinned so the limit is seen."""
+    spaced = "> Stray `\nx  y` z` q``w``"
+    single = spaced.replace("x  y", "x y")
+    assert code_contents(spaced) == [" x  y", "w"] and code_contents(single) == [" x y", "w"]
+    alone = [next(s.text for s in chunk("n", t) if s.kind == "paragraph") for t in (spaced, single)]
+    assert alone == ["x  y` z` q``w``", "x y` z` q``w``"]
+    assert text_reading(alone[0]) == text_reading(alone[1])  # the limit

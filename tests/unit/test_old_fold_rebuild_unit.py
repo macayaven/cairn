@@ -9,8 +9,9 @@ saved it. What happens to it, found first: a tidy and an arrangement answered "u
 sending either note again answered "unchanged", a new note to its page was refused
 (retention.fact_dropped), and an import refused the archive. Now a tidy, an arrangement and
 a new note rebuild the fold (one claim per passage, its text the passage's) and an import
-rebuilds each version that holds one; sending a note again still changes nothing. Made-up
-notes; every model is a FakeModel."""
+rebuilds each version that holds one; sending a note again still changes nothing, and
+forgetting the note whose words the fold holds takes the page until the other note is sent
+again. Made-up notes; every model is a FakeModel."""
 
 import asyncio
 import io
@@ -184,3 +185,102 @@ def test_a_page_with_no_fold_is_never_read_for_one(store, monkeypatch):
     memory.note("alpha", "Quill too.", title="Files", topic="Files")
     project = store.get_project("alpha")
     assert tidy_page(store, project.id, "files").status == "unchanged"
+
+
+def test_the_operator_command_rebuilds_every_such_page(tmp_path, capsys):
+    """`cairn arrange --db ... --account ... --tidy`, the step an operator runs for every page
+    of a workspace at once, rather than wait for the next note or tidy."""
+    from cairn.web import cli
+
+    first, second = OLD["before decision 189"]
+    db = tmp_path / "old.db"
+    store = Store(db)
+    try:
+        project, _, cited = old_fold(store, first, second)
+        before, account = store.get_page(project.id, "files").version, store.account_id
+    finally:
+        store.close()
+    argv = ["arrange", "--db", str(db), "--account", account, "--tidy"]
+    assert cli.main(argv) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out == [f"alpha/files: arranged, version {before} -> {before + 1}"]
+    store = Store(db)
+    try:
+        rebuilt(store, project.id, first, second, cited)
+    finally:
+        store.close()
+
+
+def note_of(store: Store, project_id: str, span_id: str) -> str:
+    return next(
+        note.id
+        for note in store.list_notes(project_id)
+        if span_id in {span.id for span in store.note_spans(note.id)}
+    )
+
+
+def test_forgetting_the_note_whose_words_the_fold_holds_takes_the_page_until_the_other_is_sent(
+    store,
+):
+    """Forgetting is a touch that does not rebuild (store.erasure.kept_claims): forgetting the
+    second note leaves the fold citing the first, whole; forgetting the first leaves a claim
+    in the first note's words citing the second's passage, which is not whole, so it goes and
+    the page with it. Sending the second note again files it."""
+    first, second = OLD["before decision 189"]
+    project, memory, cited = old_fold(store, first, second)
+    store.forget_note(note_of(store, project.id, cited[0]))
+    assert store.get_page(project.id, "files") is None
+    answer = memory.note("alpha", second, title="Files", topic="Files")
+    assert (answer["created"], answer["status"], answer["page"]) == (False, "saved", "files")
+    page = store.get_page(project.id, "files")
+    assert [(c.text, c.span_ids) for c in page.claims] == [(second, (cited[1],))]
+
+
+def test_forgetting_the_other_note_leaves_the_fold_whole(store):
+    first, second = OLD["before decision 189"]
+    project, _, cited = old_fold(store, first, second)
+    store.forget_note(note_of(store, project.id, cited[1]))
+    page = store.get_page(project.id, "files")
+    assert [(c.text, c.span_ids) for c in page.claims] == [(first, (cited[0],))]
+
+
+CROSS = "## Ports\n\nAda keeps port 80 open.\n\n## Firewall\n\nAda keeps port 80 open."
+
+
+def cross_heading_fold(store: Store):
+    """A fold a model composer could save before finding 5a: one text under two headings."""
+    project = store.create_project("alpha")
+    Memory(store, lint_gate).note("alpha", CROSS, title="Net")
+    page = store.get_page(project.id, "net")
+    cited = tuple(i for claim in page.claims for i in claim.span_ids)
+    spans = store.get_spans(cited)
+    fold = Claim(id=page.claims[0].id, text=page.claims[0].text, span_ids=cited)
+    assert whole(fold, spans) and len({spans[i].heading_path for i in cited}) == 2
+    body = render_body("Net", [fold], spans)
+    store.save_page(project.id, "net", "Net", body, [fold], expected_version=page.version)
+    return project, cited
+
+
+def test_a_tidy_rebuilds_a_fold_under_two_headings(store):
+    project, cited = cross_heading_fold(store)
+    assert tidy_page(store, project.id, "net").status == "arranged"
+    page = store.get_page(project.id, "net")
+    assert [c.span_ids for c in page.claims] == [(cited[0],), (cited[1],)]
+
+
+def test_an_archive_that_holds_a_fold_under_two_headings_is_still_refused(store, tmp_path):
+    """The import's heading rule stays (the first report's B2): only a fold that differs by
+    white space is rebuilt on import. Such a fold came only from a model composer (the
+    evaluations) before finding 5a. A tidy rebuilds the latest version (above), but the
+    version that holds the fold is kept in the page's history, so the archive is refused
+    still: a known limit."""
+    project, _ = cross_heading_fold(store)
+    assert tidy_page(store, project.id, "net").status == "arranged"
+    archive = io.BytesIO()
+    store.export(archive)
+    target = Store(tmp_path / "imported.db")
+    try:
+        with pytest.raises(ValueError, match="folds passages under different headings"):
+            target.import_export(io.BytesIO(archive.getvalue()))
+    finally:
+        target.close()

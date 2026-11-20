@@ -219,7 +219,11 @@ Tidying a page, with no model
   and each run of repeats (what the gate reads as the same passage, `repeat_groups`) is one
   claim citing every source. On a page
   with repeats it saves the page `arrange_page` saves for a model that keeps the order it was
-  given.
+  given. First, a fold the gate no longer calls whole (one an earlier tidy made under an
+  older inline-code rule, or a model's under two headings) is rebuilt from its passages
+  (compiler.rebuilt_folds, the second report's finding 5b), and the page is saved even when
+  nothing else changes; `arrange_page` hands such a page to the tidy before any model is
+  asked.
 - From the plan on it is arrange_page's own code (_save_plan): the folded citations, `moved`
   and `merged`, the body, `verbatim_gate` ("rejected"), the save with `expected_version`
   ("stale"), the audit event "page.arranged" and `arranged_by`, both naming TIDY ("cairn").

@@ -3,7 +3,8 @@ that page in its first answer (second report, finding 8, the second row, outside
 
 The answer names a page by the Notes page's rule (Store.note_page): only one whose latest
 version cites the note, as the answer to a note sent again does (FiledOnce). Over MCP and
-REST alike. The app runs in process over a real store in a temporary file. Made-up notes."""
+REST alike; Memory.note's own answer, which the web composer and Slack read, is as it was.
+The app runs in process over a real store in a temporary file. Made-up notes."""
 
 import json
 from datetime import UTC, datetime
@@ -13,7 +14,7 @@ from starlette.testclient import TestClient
 
 from cairn.candidate import GateResult
 from cairn.compiler import provenance_gate
-from cairn.memory import NO_PAGE, Memory
+from cairn.memory import CITED_ON, NO_PAGE, Memory, without_missing_page
 from cairn.server import create_app
 from cairn.store import Store
 
@@ -78,10 +79,20 @@ def test_a_refused_note_to_a_topic_with_a_page_names_no_page(store, send):
     assert refused["version"] is None
 
 
-def test_memory_names_the_page_only_when_its_latest_version_cites_the_note(store):
+def test_the_agents_answer_names_the_page_only_when_its_latest_version_cites_the_note(store):
+    """Memory.note's own answer, which the web composer and Slack read, is as it was; what an
+    agent is answered (without_missing_page) names no page the note is not on."""
     memory = Memory(store, refusing_after(1))
     assert memory.note("ops", FIRST, topic="Retry policy")["page"] == "retry-policy"
     refused = memory.note("ops", SECOND, topic="Retry policy")
-    assert (refused["status"], refused["page"], refused["version"]) == ("rejected", None, None)
+    assert (refused["status"], refused["page"], refused[CITED_ON]) == (
+        "rejected",
+        "retry-policy",
+        None,
+    )
+    shown = without_missing_page(refused)
+    assert (shown["page"], shown["version"], shown["message"]) == (None, None, NO_PAGE)
+    assert CITED_ON not in shown
     again = memory.note("ops", FIRST, topic="Retry policy")  # a note its page cites
+    assert CITED_ON not in again and without_missing_page(again) == again
     assert (again["status"], again["page"]) == ("unchanged", "retry-policy")

@@ -101,7 +101,9 @@ def kept_claims(
     holds that one, an id made from its place and the spans it keeps, drawn again until no
     kept claim holds it (fourth report, must-fix 5; as compiler.rebuilt_folds draws one): a
     page may hold any id of cairn's shape, so no claim loses its id, or its place on the
-    page, to this one."""
+    page, to this one. A claim that cites no span at all (a page saved past the gates may
+    hold one) is kept like any that cites no forgotten span, for the import's check to
+    judge (_plan), and has no first span: its new id is drawn from its place at once."""
     from cairn.gate import whole  # the gate builds on the store
 
     kept = []
@@ -121,8 +123,8 @@ def kept_claims(
     taken = {claim.id for claim in kept if claim.id not in made_from_gone}
     for place, claim in enumerate(kept):
         if claim.id in made_from_gone:
-            new, tries = claim_id(claim.span_ids[0]), 0
-            while new in taken:
+            new, tries = claim_id(claim.span_ids[0]) if claim.span_ids else None, 0
+            while new is None or new in taken:
                 key = json.dumps([place, claim.span_ids, tries]).encode()
                 new, tries = "cl_" + hashlib.sha256(key).hexdigest()[:16], tries + 1
             taken.add(new)

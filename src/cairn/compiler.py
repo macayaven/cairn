@@ -15,9 +15,18 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
   as Markdown reads it (it copies a note that never closes one, or closes it deeper than
   Markdown's limit) is followed by a line that closes it, the opener's own indentation and
   run, so the claim after it is never read as code (review 7.2, should-fix 8); the claim's
-  text is never changed. A claim no such line closes is refused, by compile_note and by
-  every gate (gate.FENCE_LEFT_OPEN), never rendered. Each gate checks that the body is what
-  this function writes of the claims (gate.unclaimed_line: equality with a re-render).
+  text is never changed. The body so made is then read whole, once: what a claim's lines are
+  depends on what is written before it (after a list item, a passage that alone is indented
+  text may open a fence), so a fence that runs from one claim into the next claim or heading
+  gets a closer after the claim it starts in, kept only when the parser then reads no fence
+  leaving that claim (third report, must-fix 4; spans.fences_kept_in), and at most
+  spans.CLOSERS_MAX such closers in one body, so a render parses the body at most that often
+  and once more. A claim no such line closes, or one past that number, is refused
+  (gate.FENCE_LEFT_OPEN): alone, by compile_note and by every gate; where the body puts it,
+  by every gate, so no compile, tidy or arrangement saves it. render_body
+  itself never refuses: a forgotten note's page is written with it. Each gate checks that
+  the body is what this function writes of the claims (gate.unclaimed_line: equality with a
+  re-render).
 - Before saving, the candidate page and the spans its claims cite go through a gate. A
   failing gate saves nothing and returns status "rejected" with the gate's result. The gate's
   metrics are saved with the page version.
@@ -107,6 +116,7 @@ from cairn.spans import (
     claim_id,
     fence_closes,
     fence_opener,
+    fences_kept_in,
     open_fence_closer,
 )
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
@@ -302,7 +312,35 @@ def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) 
     found in `spans` (section_headings); a claim with no known span counts as having no
     heading path. The claims with no section come first, in their order; then the others in
     their order, each under its section's headings. The title is written as heading_text.
-    One pass over `claims`."""
+    One pass over `claims`, then one reading of the body (`assembled`). Never raises."""
+    return assembled(title, claims, spans)[0]
+
+
+def assembled(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> tuple[str, str | None]:
+    """The body render_body writes, and the id of the claim whose code fence runs into the
+    next claim or heading and is not closed after the claim ("-" if it is no claim's), else
+    None. Each claim is written closed as it is alone (`_closed`); then the body is read
+    whole by the Markdown parser, and a fence that starts in one block and covers the next
+    gets a closer after its block, kept only when the parser then reads no fence leaving
+    that block, and at most spans.CLOSERS_MAX of them in one body
+    (cairn.spans.fences_kept_in). A claim is named here when its closer did not close it (no
+    such page is known) or when the body holds more such fences than that; every gate
+    refuses the page (gate.unclaimed_violations)."""
+    blocks = _blocks(title, claims, spans, _closed, section_headings, heading_text)
+    kept, left = fences_kept_in([text for text, _ in blocks])
+    owner = None if left is None else blocks[left][1]
+    return "\n\n".join(kept) + "\n", None if left is None else owner.id if owner else "-"
+
+
+def render_body_before_review_four(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before the third report: each claim closed as it is
+    alone, and the body never read whole, so a fence that opens only after an earlier claim's
+    list item ran into the next claim. For the import's check alone
+    (store.portable._as_rendered), so an archive written then still imports; never shown."""
     return _rendered(title, claims, spans, _closed, section_headings, heading_text)
 
 
@@ -351,18 +389,35 @@ def _rendered(
     ],
     written: Callable[[str], str],
 ) -> str:
-    top, rest = [f"# {written(title)}"], []
+    blocks = _blocks(title, claims, spans, closed, headings_of, written)
+    return "\n\n".join(text for text, _ in blocks) + "\n"
+
+
+def _blocks(
+    title: str,
+    claims: Sequence[Claim],
+    spans: Mapping[str, Span],
+    closed: Callable[[str], str],
+    headings_of: Callable[
+        [str, Sequence[str], Sequence[str]], tuple[tuple[str, ...], list[tuple[int, str]]]
+    ],
+    written: Callable[[str], str],
+) -> list[tuple[str, Claim | None]]:
+    """The blocks a body is, in its order, each with the claim it is the text of (None for
+    the title and a heading): a body is these joined by a blank line."""
+    top: list[tuple[str, Claim | None]] = [(f"# {written(title)}", None)]
+    rest: list[tuple[str, Claim | None]] = []
     previous: tuple[str, ...] = ()
     for claim in claims:
         path = next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
         section, headings = headings_of(title, path, previous)
         if not section:
-            top.append(closed(claim.text))
+            top.append((closed(claim.text), claim))
             continue
-        rest.extend(f"{'#' * level} {text}" for level, text in headings)
-        rest.append(closed(claim.text))
+        rest.extend((f"{'#' * level} {text}", None) for level, text in headings)
+        rest.append((closed(claim.text), claim))
         previous = section
-    return "\n\n".join([*top, *rest]) + "\n"
+    return [*top, *rest]
 
 
 def _closed(text: str) -> str:
@@ -373,7 +428,8 @@ def _closed(text: str) -> str:
     fence is open when it covers a line written after the claim. The claim's text is never
     changed; a text that holds no backtick or tilde is not parsed. A text no closer closes
     (FenceLeftOpen) is written as it is: compile_note refuses a note that would add one
-    (gate.FENCE_LEFT_OPEN), and every gate and the import refuse a page that holds one."""
+    (gate.FENCE_LEFT_OPEN), and every gate and the import refuse a page that holds one.
+    What the claim's lines are once other claims stand before it is `assembled`'s question."""
     try:
         closer = open_fence_closer(text)
     except FenceLeftOpen:

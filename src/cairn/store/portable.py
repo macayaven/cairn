@@ -1369,7 +1369,9 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     a claim's open code fence left open (render_body_with_fences_open), or before the second
     review (render_body_before_review_two: a title as given, deep headings at level 6, a
     fence closed at any indentation), or before the third (render_body_before_review_three:
-    a fence closed where cairn's line rules, not the Markdown parser, left it open).
+    a fence closed where cairn's line rules, not the Markdown parser, left it open), or
+    before the third report (render_body_before_review_four: each claim closed as it is
+    alone, the body never read whole).
     ValueError otherwise,
     naming the page and version, never the text: an import never brings a body cairn would
     not have written, and the version is stored with the current rendering. A title longer
@@ -1378,6 +1380,7 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     from cairn.compiler import (  # the compiler builds on the store
         previous_render_body,
         render_body,
+        render_body_before_review_four,
         render_body_before_review_three,
         render_body_before_review_two,
         render_body_with_fences_open,
@@ -1393,6 +1396,7 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
             render_body_with_fences_open,
             render_body_before_review_two,
             render_body_before_review_three,
+            render_body_before_review_four,
         )
     ):
         raise ValueError(

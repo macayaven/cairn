@@ -128,18 +128,8 @@ def filed(
     waiting: bool = False,
     project_url: str | None = None,
 ) -> dict:
-    """A note filed, or filed already, linking its page. A note stored and still `waiting`
-    for its page links its project (`project_url`), since the page is not there yet. A note
-    filed already that no page holds (`page_url` None: it waits, or its page refused it)
-    links its project and says which."""
-    if page_url is None:
-        where = _link(project, project_url) if project_url else _text(project, 350)
-        said = "Its page will appear shortly." if waiting else "No page holds it."
-        status = "Already filed" if already else "Filed"
-        return _message(
-            f"{status} in {_text(project, 350)}: {_title(title, 450)}. {said}",
-            [f"{status} in {where}: {_title(title, 450)}. {said}"],
-        )
+    """A note filed, or filed already, linking its page. A note without a page links its
+    project (`project_url`) and says whether it is still waiting."""
     if waiting and not already:
         status = f"Note stored in {_text(project, 350)}. Its page will appear shortly."
         shown = (
@@ -148,6 +138,14 @@ def filed(
         return _message(
             f"{status}\n{_title(title, 450)}",
             [f"{shown}. Its page will appear shortly.\n{_title(title, 450)}"],
+        )
+    if page_url is None:
+        where = _link(project, project_url) if project_url else _text(project, 350)
+        said = "Its page will appear shortly." if waiting else "No page holds it."
+        status = "Already filed" if already else "Note stored"
+        return _message(
+            f"{status} in {_text(project, 350)}: {_title(title, 450)}. {said}",
+            [f"{status} in {where}: {_title(title, 450)}. {said}"],
         )
     status = "Already filed" if already else "Filed"
     fallback = f"{status}: {_title(title, 450)}\nProject: {_text(project, 350)}"

@@ -1091,8 +1091,10 @@ def test_what_a_regulated_customer_adds_names_what_these_definitions_do_not_do()
         "VPC Service Controls",
         "a locked log sink",
         "not ready as they stand for health or education records",
+        "`--audit-reads`",
     ):
         assert words in said, words
+    assert "cairn's own audit page does not keep" not in said
 
 
 def test_the_status_paragraph_and_the_dated_record_agree_that_it_was_applied():

@@ -502,7 +502,7 @@ These definitions are not ready as they stand for health or education records, o
 - **organisation policies** that hold the project to what this file sets by hand: resource locations, uniform bucket access, no public access, no serial port, allowed members;
 - **VPC Service Controls** around Cloud Storage, Secret Manager and Artifact Registry, so that a stolen credential cannot copy the data out of the perimeter;
 - **a locked log sink**: the audit logs routed to a bucket with a retention lock, for the years a law asks, where nobody with project access can delete them;
-- customer-managed keys ([above](#customer-managed-keys)) on what they do not cover here, and a record of reads inside cairn itself, which cairn's own audit page does not keep.
+- customer-managed keys ([above](#customer-managed-keys)) on what they do not cover here, and a record of reads inside cairn itself, which cairn records only when started with `--audit-reads` (off by default).
 
 ## Teardown
 

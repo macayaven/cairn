@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from cairn.store import Store
+from cairn.store.hosted import Sealer
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "src" / "cairn" / "templates"
@@ -69,5 +70,58 @@ def test_the_text_of_a_forgotten_note_stays_in_the_log_while_a_reader_holds_it(t
             assert b"CANARY-heron-restarts-the-queue" in Path(f"{db}-wal").read_bytes()
         finally:
             reader.close()
+    finally:
+        store.close()
+
+
+def test_removed_slack_secrets_and_links_stay_in_the_log_while_a_reader_holds_it(tmp_path):
+    guide = flat(PRIVACY)
+    assert (
+        "Where this install keeps a continuous backup, the deleted secrets, still sealed, and"
+        " links can stay in the database's log file until the operator compacts it, and in backup"
+        " copies until they expire."
+    ) in guide
+    db = tmp_path / "cairn.db"
+    store = Store(db)
+    try:
+        store.slack_sealer = Sealer(bytes(range(32)))
+        ada = store.sign_in(
+            "sso", "sub-ada", "ada@example.test", "Ada", issuer="https://sso.example.test",
+            join="personal",
+        )  # fmt: skip
+        owner = store.for_account(ada.account_id, ada.user.id)
+        install = owner.make_slack_install()
+        owner.ready_slack_install(
+            install.id,
+            signing_secret="8f" + "e1c0ffee" * 3,
+            bot_token="xoxb-" + "1111-2222-" + "FableBotToken0123",
+            team_id="T0FABLE01",
+            team_domain="fable-works",
+            bot_user_id="U0FABLEBOT",
+        )
+        owner.link_slack_user(install.id, "U0CANARYWAL01", ada.user.id)
+        sealed = store._con.execute(
+            "SELECT signing_secret FROM slack_installs WHERE id = ?", (install.id,)
+        ).fetchone()[0]
+        assert isinstance(sealed, str) and len(sealed) >= 28
+        sealed_bytes = sealed.encode("ascii")
+        store._con.execute("PRAGMA busy_timeout = 0")
+        reader = sqlite3.connect(db)
+        try:
+            reader.execute("BEGIN")
+            reader.execute("SELECT count(*) FROM slack_installs").fetchone()
+            owner.remove_slack_install(install.id)
+            assert owner.own_slack_links() == []
+            wal = Path(f"{db}-wal").read_bytes()
+            assert b"U0CANARYWAL01" in wal and sealed_bytes in wal
+        finally:
+            reader.close()
+        store.compact()
+        assert b"U0CANARYWAL01" not in db.read_bytes()
+        assert sealed_bytes not in db.read_bytes()
+        wal_after = Path(f"{db}-wal")
+        if wal_after.exists():
+            after = wal_after.read_bytes()
+            assert b"U0CANARYWAL01" not in after and sealed_bytes not in after
     finally:
         store.close()

@@ -1141,3 +1141,13 @@ def test_the_compaction_alerts_documentation_names_its_runbook_section():
     assert f'\\"{heading}\\" in infra/gcp/README.md' in documentation
     readme = (INFRA / "README.md").read_text(encoding="utf-8")
     assert f"\n### {heading}\n" in readme
+
+
+def test_tfvars_example_matches_shipped_disk_and_soft_delete_defaults():
+    example = (INFRA / "terraform.tfvars.example").read_text(encoding="utf-8")
+    for name in ("boot_disk_size_gb", "replica_soft_delete_days"):
+        variable_block = block(VARIABLES, f'variable "{name}"')
+        default = re.search(r"^\s*default\s*=\s*(\d+)\s*$", variable_block, re.M)
+        assert default is not None, name
+        shown = re.search(rf"^#\s*{name}\s*=\s*(\d+)\s*$", example, re.M)
+        assert shown is not None and shown.group(1) == default.group(1), (name, default, shown)

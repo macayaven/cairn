@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ci_shell import run_step
 from test_ci_workflow_unit import (
     JOBS,
     THE_GATE,
@@ -240,13 +241,10 @@ def shim(bin_) -> None:
 
 
 def bash(run: str, cwd, env: dict) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
+    return run_step(
+        run,
         cwd=cwd,
         env=env,
-        capture_output=True,
-        text=True,
-        check=False,
     )
 
 

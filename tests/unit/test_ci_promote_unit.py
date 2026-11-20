@@ -1,6 +1,6 @@
 """From the one build to the registry: .github/workflows/ci-cd.yml's image_build, the step that
 receives its archive (image_scan and image), `publish` and `aliases`, run as the runner runs
-them (bash, -e and pipefail), with stand-ins for oras and gh and a registry kept as files.
+them (bash -e, as ci_shell says), with stand-ins for oras and gh and a registry kept as files.
 
 - image_build builds once, both platforms, with nothing but a read token, and hands on one
   archive with its SHA-256 and its index's digest.
@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ci_shell import run_step
 from test_ci_workflow_unit import JOBS, RAW_WORKFLOW, job_comment, needs, reaches_the_token
 
 REPO = Path(__file__).resolve().parents[2]
@@ -171,13 +172,10 @@ class Runner:
             "GITHUB_OUTPUT": str(output),
             "GITHUB_REPOSITORY": "Owner/Repo",
         }
-        return subprocess.run(
-            ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
+        return run_step(
+            run,
             cwd=self.tmp,
             env={**base, **env},
-            capture_output=True,
-            text=True,
-            check=False,
         )
 
 

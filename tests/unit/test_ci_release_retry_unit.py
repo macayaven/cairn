@@ -10,10 +10,10 @@ for none, and anything else stops the job in one sentence. gh is a stand-in that
 releases as a JSON file and runs the step's own --jq expression with jq."""
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
+from ci_shell import run_step
 from test_ci_workflow_unit import JOBS
 
 (CREATE,) = [s for s in JOBS["release"]["steps"] if s.get("name") == "Create the release"]
@@ -83,8 +83,8 @@ def setup(tmp_path: Path, tag: str, existing: dict | None, assets: dict | None =
 def run(tmp_path: Path, tag: str, candidate: str, existing=None, assets=None, **env: str):
     bin_, there = setup(tmp_path, tag, existing, assets)
     calls = tmp_path / "calls"
-    done = subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-e", "-c", CREATE["run"]],
+    done = run_step(
+        CREATE["run"],
         env={
             "PATH": f"{bin_}:/usr/bin:/bin",
             "RUNNER_TEMP": str(tmp_path),
@@ -95,9 +95,6 @@ def run(tmp_path: Path, tag: str, candidate: str, existing=None, assets=None, **
             "GH_REPO": "owner/repo",
             **env,
         },
-        capture_output=True,
-        text=True,
-        check=False,
     )
     made = [line for line in calls.read_text().splitlines() if line.startswith("gh release create")]
     return done, made

@@ -1432,11 +1432,19 @@ jobs:
           fi
           image="ghcr.io/$repository:$tag"
           docker logout ghcr.io
-          # The digest this pull printed (`Digest: sha256:...`, as docker pull prints it), not
-          # the digests the engine knows the name by: it may hold another index from before.
-          pulled="$(docker pull "$image" | tee /dev/stderr | sed -n 's/^Digest: //p')"
+          # The pull's status on its own: the step runs as bash -e, without pipefail, and docker
+          # pull can print its digest and then fail. Then the digest this pull printed
+          # (`Digest: sha256:...`, as docker pull prints it), not the digests the engine knows
+          # the name by: it may hold another index from before.
+          if docker pull "$image" > "$RUNNER_TEMP/pull.log" 2>&1; then status=0; else status=$?; fi
+          cat "$RUNNER_TEMP/pull.log"
+          if [ "$status" != 0 ]; then
+            echo "::error::docker pull $image with no login failed (exit $status), so nobody can pull it as the run guide says now; check that the package is public on GitHub, then re-run this job"
+            exit 1
+          fi
+          pulled="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/pull.log")"
           if [ "$pulled" != "$DIGEST" ]; then
-            echo "::error::$image, pulled with no login, is ${pulled:-no digest} by the digest the pull printed, not $DIGEST, the digest publish pushed"
+            echo "::error::$image, pulled with no login, is ${pulled:-no digest} by the digest the pull printed, not $DIGEST, the digest publish pushed, so the tag was moved after publish: release nothing from this run, and re-run this job once the package's page shows the tag at the digest publish pushed"
             exit 1
           fi
       - name: Log in to GHCR

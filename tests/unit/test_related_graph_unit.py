@@ -271,6 +271,23 @@ def test_every_text_of_a_note_in_the_explorers_list_is_set_apart_for_direction(w
     assert RLO in main_of(claims.text) and unisolated(claims.text) == []
 
 
+def test_a_long_term_wraps_in_the_explorers_list(w):
+    from test_design_system_unit import rule
+
+    from cairn.web.templating import HERE
+
+    term = "https://docs.example.invalid/" + "a" * 150
+    note(w, "Asked", f"Read {term} first.\n")
+    note(w, "Other", f"Then read {term} again.\n")
+    r = get(w, RELATED + "asked")
+    (edge,) = drawn(r.text).edges
+    assert edge["code"] == [term]
+    (item,) = [n for n in tree(r.text).walk() if n.tag == "li" and "data-graph-edge" in n.attrs]
+    assert item.within("graph-explorer")
+    sheet = (HERE / "static" / "graph-view.css").read_text("utf-8")
+    assert "overflow-wrap: anywhere" in rule(sheet, ".graph-explorer li")
+
+
 # Walking from page to page
 
 

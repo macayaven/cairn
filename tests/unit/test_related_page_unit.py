@@ -639,6 +639,25 @@ def test_a_related_page_with_no_page_found_sets_the_title_apart_too(w, monkeypat
     assert unisolated(left.text) == []
 
 
+def test_a_long_term_wraps_in_its_reason_as_a_claims_long_code_does_on_the_page_view(w):
+    """Counted in rules, as the pages' other narrow-screen tests are: the reason's sentence
+    stands in a .hit, which lets a word break anywhere, as a claim's text does on the page
+    view; and what is quoted under it wraps as a source's line does."""
+    from test_design_system_unit import CSS, rule
+
+    term = "https://docs.example.invalid/" + "a" * 150
+    note(w, "Asked", f"Read {term} first.\n")
+    note(w, "Other", f"Then read {term} again.\n")
+    body = tree(main_of(get(w, "/b/ops/p/asked/related").text))
+    (code,) = [found for found in body.all("code") if found.text() == term]
+    assert code.within("hit") and code.parent.tag == "bdi" and code.parent.parent.tag == "p"
+    css = CSS.read_text(encoding="utf-8")
+    assert "overflow-wrap: anywhere" in rule(css, ".claim-text")  # the page view's claim
+    assert "overflow-wrap: anywhere" in rule(css, ".hit")  # a reason, and all it holds
+    assert "overflow-wrap: anywhere" in rule(css, ".source-line")  # what is quoted under it
+    assert "white-space" not in rule(css, "code, kbd")  # nothing keeps code on one line
+
+
 # What the read left out, and no related page
 
 

@@ -148,6 +148,11 @@ VALID: dict[tuple[str, str], dict] = {
         "body": None,
         "status": 200,
     },
+    ("GET", "/api/projects/{project}/pages/{slug}/related"): {  # KG1
+        "query": {"limit": "5"},
+        "body": None,
+        "status": 200,
+    },
     ("GET", "/api/search"): {
         "query": {"q": "quill", "project": "alpha", "limit": "3"},
         "body": None,
@@ -233,6 +238,7 @@ CALLS: dict[str, dict] = {
     "evidence": {"project": "alpha", "slug": "{slug}", "claim_id": "{claim_id}", "version": 1},
     "overview": {"project": "alpha", "limit": 10, "after": "a"},
     "graph": {"project": "alpha", "limit": 20},  # 8.3
+    "related": {"project": "alpha", "slug": "{slug}", "limit": 5},  # KG1
 }
 
 

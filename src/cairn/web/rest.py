@@ -73,6 +73,7 @@ from starlette.routing import Route
 from cairn.kinds import GENERAL
 from cairn.memory import (
     HITS_RANGE,
+    RELATED_RANGE,
     WAITING,
     BadRequest,
     Conflict,
@@ -81,6 +82,7 @@ from cairn.memory import (
     not_taken,
     without_missing_page,
 )
+from cairn.relations import RELATED_DEFAULT
 from cairn.sources import CHOOSING, KINDS
 from cairn.sources.runner import PreviewBusy, preview_days, preview_new_source, preview_source
 from cairn.store import CredentialInfo, SourceInfo
@@ -88,7 +90,7 @@ from cairn.store.audit import AUDIT_LIMIT_MAX
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.store.usage import OverLimit
 from cairn.web.auth import _memory, may_manage_credentials
-from cairn.web.turns import compile_turn
+from cairn.web.turns import RELATED_READS, RelatedReads, caller_of, compile_turn
 
 Handler = Callable[[Request], Response | Awaitable[Response]]
 AUDIT_AT_ONCE = 100  # the events GET /api/audit answers when no `limit` is given
@@ -96,12 +98,16 @@ NOT_AUDITOR = "only a key that manages the workspace reads its audit log"
 AUDIT_LIMIT = f"'limit' is a whole number, 1 to {AUDIT_LIMIT_MAX}"
 
 
-def _logged(action: str, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
+def _logged(
+    action: str, handler: Handler, turn: RelatedReads | None = None
+) -> Callable[[Request], Awaitable[Response]]:
     """`handler` as one access-log record named `action`, whatever it answers. A sync
     handler still runs on a worker thread, as Starlette runs one: it reads the database. The
     access runs on that thread with it, so a read's audit event (`serve --audit-reads`),
     written behind the store's lock, never holds up the event loop. `__wrapped__` is the
-    handler, so a test can read what it reads (inspect.unwrap)."""
+    handler, so a test can read what it reads (inspect.unwrap). With a `turn`, a sync
+    handler waits for its caller's turn of it and then the process's on the event loop,
+    holding no thread, before its thread is taken."""
 
     async def endpoint(request: Request) -> Response:
         memory = _memory(request)
@@ -113,7 +119,10 @@ def _logged(action: str, handler: Handler) -> Callable[[Request], Awaitable[Resp
             with memory.access(action):
                 return handler(request)  # type: ignore[return-value]
 
-        return await run_in_threadpool(accessed)
+        if turn is None:
+            return await run_in_threadpool(accessed)
+        async with turn.turn(caller_of(memory)):
+            return await run_in_threadpool(accessed)
 
     endpoint.__wrapped__ = handler  # type: ignore[attr-defined]
     return endpoint
@@ -223,6 +232,16 @@ def rest_routes() -> list[Route]:
         limit, before = _whole_number(query, "limit"), _whole_number(query, "before")
         memory = _memory(request)
         found = memory.page(params["project"], params["slug"], version, limit=limit, before=before)
+        return JSONResponse(found)
+
+    def related(request: Request) -> Response:
+        """GET /api/projects/<project>/pages/<slug>/related: the pages related to the page,
+        each with why (Memory.related); `limit`, 1 to 20, 5 when left out."""
+        limit = _whole_number(_query(request, "limit"), "limit", RELATED_RANGE)
+        params = request.path_params
+        found = _memory(request).related(
+            params["project"], params["slug"], RELATED_DEFAULT if limit is None else limit
+        )
         return JSONResponse(found)
 
     def evidence(request: Request) -> Response:
@@ -420,6 +439,7 @@ def rest_routes() -> list[Route]:
         ),
         Route(pages_path, _logged("pages", pages)),
         Route(pages_path + "/{slug}", _logged("page", page)),
+        Route(pages_path + "/{slug}/related", _logged("related", related, RELATED_READS)),
         Route(pages_path + "/{slug}/claims/{claim_id}/evidence", _logged("evidence", evidence)),
         Route("/api/search", _logged("recall", search)),
         Route("/api/usage", _logged("usage", usage), methods=["GET"]),

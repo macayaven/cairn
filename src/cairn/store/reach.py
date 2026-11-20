@@ -274,6 +274,7 @@ LIMITED_READS = frozenset(
         "taken_slugs",  # the addresses a new page may not take: none, out of reach
         "search",
         "find",  # Q2: search, with what it left out
+        "related_pages",  # the pages related to one page, each with its claims: one project's
         "list_keys",
         "list_grants",
         "list_sets",

@@ -109,12 +109,58 @@ What a search left out (Q2; tests/acceptance/test_q2_search_says_what_it_left_ou
 `recall` answers, beside `hits`, `searched` (`searched`), always, so that no one infers
 that a search was complete from a field that is not there. The store works out the facts
 once (cairn.store.ranking.found); `searched` words them, and nothing else does: GET
-/api/search and the `recall` tool answer this dict, and the search page shows its `said`."""
+/api/search and the `recall` tool answer this dict, and the search page shows its `said`.
+
+Related pages (KG1; the rules are cairn.relations, the read cairn.store.relating).
+`related(project, slug, limit=5)` answers {"project", "page", "title", "version", "related",
+"searched"}: the pages of the project most related to the page, best first, at most `limit` (a
+whole number of 1 to relations.RELATED_MAX, any other refused, never cut), each as {"page",
+"title", "version", "why", "more"}. `why` holds at most relations.WHY_MAX reasons, the
+weightiest first, and `more` counts the rest. A reason is {"kind": "shares", "term",
+"term_kind", "pages", "here", "there"}: a term both pages state, as it is written (two facts
+are one term when their kind and their text are the same, capitals included: cairn.relations),
+its kind, how many pages of the project hold it (exactly: a term whose pages are not all known
+gives no reason), and the claim of this page and of the other that state it; or {"kind":
+"mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that holds
+this page's title. This version does not list the pages a page mentions. Each claim is
+{"claim_id", "text", "passage_ids", "outside", "written_by", "written_at"} (and
+`written_by_more`), as a hit of `recall` carries them, but for a claim longer than
+relations.TEXT_MAX characters, which is given in place of its text (`_claim_text`; `page`
+gives the claim whole): "text_cut": true and "line", the line that shows what the reason says.
+For a claim that states a shared term that is the line of the passage it cites that holds the
+term, taken where the term's fact stands and never by a search of the text; for a claim that
+mentions the page, the line that names the title in its prose, at the first place the index
+matched it outside code, a path, a flag, a version or an address as the passage's facts read
+them (cairn.store.relating._mentioning; two lines, with their line break, when the title's
+words stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX characters of
+it that hold the term or the title, with "line_cut": true. Only a long claim of which no line
+can be told (one that mentions the page as the index has it: its text is not its passage's)
+gives its first TEXT_MAX characters as "text", with "text_cut": true and no line. So a claim
+has its text whole, or "text_cut" with a line, or "text_cut" with a head: never a head beside
+a line. `passage_ids` names the first
+relations.PASSAGES_MAX passages a claim cites, and "passage_ids_more" counts the others, only
+when there are more (a claim a tidy folded from many; who wrote it is still said of every note
+it cites). So an answer's size is bounded by constants: `limit` pages of relations.WHY_MAX
+reasons, each a term of relations.TERM_MAX characters at most and two claims of TEXT_MAX
+characters of text or LINE_MAX of a line, PASSAGES_MAX passages and WRITTEN_BY_MAX writers.
+The largest answer they allow at `limit` 20 is 302,804 bytes over REST and 413,185 over MCP
+for text of one byte a character, and 1,175,804 and 1,460,785 whatever the text holds; at the
+default `limit` of 5, 76,169 and 103,915, and 295,169 and 366,715
+(tests/unit/test_related_size_unit.py builds that answer from the constants, and checks
+answers made from claims of 322,320 characters against it field by field). No answer shows a
+weight. `searched` (`related_searched`), always: `complete`, and the three things a read can
+leave out, each counted (cairn.store.relating.Left): `terms_looked_up` and
+`terms_not_looked_up`, the page's terms past the bound on terms or on the rows of the index a
+read is handed, the title then counting as one; `claims_read` and
+`claims_not_read`, the claims of other pages past the bounds on what is read;
+`pages_left_out`, the related pages past `limit`. Nothing of a relation is stored: the answer
+is worked out from the pages as they are, in one read of the store, with who wrote the notes
+its claims cite. A page that is not there is refused as `page` refuses it."""
 
 import contextlib
 import logging
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import IO, Any
 
 from cairn.compiler import (
@@ -129,6 +175,7 @@ from cairn.compiler import (
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
 from cairn.plans import Plan, Plans, limit_sentence
+from cairn.relations import PASSAGES_MAX, RELATED_DEFAULT, RELATED_MAX, SHARES, Reason
 from cairn.sources import KINDS as SOURCE_KINDS
 from cairn.spans import Span, chunk
 from cairn.store import (
@@ -157,6 +204,7 @@ from cairn.store import (
     User,
     note_key,
     ranking,
+    relating,
 )
 from cairn.store.access import NOT_THE_MAKER
 from cairn.store.audit import UNKNOWN_WRITER
@@ -175,6 +223,7 @@ from cairn.store.usage import (
 
 MAX_HITS = 50  # the most hits `recall` gives: a `limit` of 1 to this, any other refused (Q3)
 HITS_RANGE = f"'limit' is a whole number, 1 to {MAX_HITS}"  # what a search says of any other
+RELATED_RANGE = f"'limit' is a whole number, 1 to {RELATED_MAX}"  # and `related`, of its own
 PAGES_AT_ONCE = 100  # Q1: the most pages one answer of `pages` or `overview` lists
 VERSIONS_AT_ONCE = 50  # Q1: the most version numbers one answer of `page` lists
 WRITTEN_BY_MAX = 3  # the notes a recall hit names; `written_by_more` counts the rest (A1)
@@ -198,6 +247,7 @@ COMPILE_ERROR = "compile.error"  # the code note.rejected records when the compi
 # export is not among them: it is always an event of its own (EXPORTED_EVENT).
 READ_EVENTS = {
     "page": "read.page",
+    "related": "read.page",  # the pages related to a page: a read of that page, by its slug
     "evidence": "read.evidence",
     "recall": "read.search",
     "graph": "read.graph",
@@ -904,6 +954,61 @@ def _newest(times: Iterable[str]) -> str | None:
     return max(times, default=None)
 
 
+def written_entries(
+    cited: Iterable[Iterable[str]], notes_of: Mapping[str, str], origins: Mapping[str, NoteOrigin]
+) -> list[list[dict[str, Any]]]:
+    """For each claim's passage ids, one `written_by` entry per note it cites, in the order it
+    first cites each (A1), from what a read gave: `notes_of`, the note of each passage it
+    holds, and `origins`, who wrote each note. A passage that is not in `notes_of`, or whose
+    note is not in `origins`, names nothing. Every entry, none cut."""
+    answers = []
+    for span_ids in cited:
+        notes = dict.fromkeys(notes_of[i] for i in span_ids if i in notes_of)
+        answers.append([_written(note, origins[note]) for note in notes if note in origins])
+    return answers
+
+
+def _held_by(reason: Reason, stated: Mapping[Any, dict[str, Any]]) -> dict[str, Any]:
+    """What a `shares` reason says beside its term: how many pages hold it, and this page's
+    claim. Nothing for a mention."""
+    if reason.kind != SHARES:
+        return {}
+    return {"pages": reason.pages, "here": stated[reason.here]}
+
+
+def _claim_text(claim: relating.Stated) -> dict[str, Any]:
+    """What `related` gives of a claim's text, one of three and never a head beside a line.
+    A claim within relations.TEXT_MAX characters: `text`, whole. A longer one: `text_cut`
+    and, in place of its text, `line`, the line that holds the term it states or names the
+    title it mentions, with `line_cut` when that line is given in part. A longer one of
+    which no line can be told (cairn.store.relating._mentioning): `text_cut` and its first
+    TEXT_MAX characters as `text`."""
+    if not claim.cut:
+        return {"text": claim.text}
+    if claim.line is None:
+        return {"text": claim.text, "text_cut": True}
+    said: dict[str, Any] = {"text_cut": True, "line": claim.line}
+    if claim.line_cut:
+        said["line_cut"] = True
+    return said
+
+
+def _passages_named(span_ids: Sequence[str]) -> dict[str, Any]:
+    """The passages a claim given by `related` cites: `passage_ids`, the first
+    relations.PASSAGES_MAX, and `passage_ids_more`, the count of the rest, only when there
+    are more (a claim a tidy folded from many; `page` names them all)."""
+    shown: dict[str, Any] = {"passage_ids": list(span_ids[:PASSAGES_MAX])}
+    if len(span_ids) > PASSAGES_MAX:
+        shown["passage_ids_more"] = len(span_ids) - PASSAGES_MAX
+    return shown
+
+
+def related_searched(left: relating.Left) -> dict[str, Any]:
+    """What a read of related pages left out, as `related` answers it under `searched`:
+    `complete`, then the counts of cairn.store.relating.Left under their own names."""
+    return {"complete": left.complete, **left._asdict()}
+
+
 def _source(span: Span, note: Note) -> dict[str, Any]:
     return {
         "id": span.id,
@@ -1398,11 +1503,8 @@ class Memory:
         cited = [list(span_ids) for span_ids in claims]
         spans = self.store.get_spans(i for span_ids in cited for i in span_ids)
         origins = self.store.note_origins(span.source_id for span in spans.values())
-        answers = []
-        for span_ids in cited:
-            notes = dict.fromkeys(spans[i].source_id for i in span_ids if i in spans)
-            answers.append([_written(note, origins[note]) for note in notes if note in origins])
-        return answers, spans, origins
+        notes_of = {span_id: span.source_id for span_id, span in spans.items()}
+        return written_entries(cited, notes_of, origins), spans, origins
 
     def recall(self, query: str, project: str | None = None, limit: int = 8) -> dict[str, Any]:
         """The best hits for `query`, each with who wrote what its claim cites (A1), and what
@@ -1432,6 +1534,69 @@ class Memory:
             }
             answers.append(answer)
         return {"hits": answers, "searched": searched(found.searched)}
+
+    def related(self, project: str, slug: str, limit: int = RELATED_DEFAULT) -> dict[str, Any]:
+        """The pages of the project most related to its page `slug`, each with why and the
+        claims it rests on, and what the read left out (the module's docstring, Related
+        pages). Every claim says who wrote what it cites (A1), from the store's one read
+        (Store.related_pages), which `written_entries` words as `_written_by` does.
+        BadRequest: a `limit` that is not a whole number of 1 to RELATED_MAX, refused rather
+        than cut. NotFound: a project unknown or out of reach, or a page that is not there,
+        with the nearest page names, as `page` says it."""
+        if type(limit) is not int or not 1 <= limit <= RELATED_MAX:
+            raise BadRequest(RELATED_RANGE)
+        target = self.project(project)
+        found = self.store.related_pages(target.id, slug, limit)
+        if found is None:  # as find_page and named_page say it of a latest page
+            raise NotFound(
+                f"no page {slug!r} in project {target.name!r}. {self.nearest_pages(target, slug)}"
+            )
+        self._read = {"page": found.slug}  # the audit event's detail (READ_EVENTS): no term
+        claims = dict.fromkeys(  # each claim given, once, whatever reasons it stands in
+            claim
+            for page in found.pages
+            for reason in page.why
+            for claim in (reason.here, reason.there)
+            if claim is not None
+        )
+        writers = written_entries((c.span_ids for c in claims), found.notes_of, found.origins)
+        stated = {
+            claim: {
+                "claim_id": claim.claim_id,
+                **_claim_text(claim),
+                **_passages_named(claim.span_ids),
+                "outside": any(entry["outside"] for entry in entries),
+                **_writers(entries),
+                "written_at": _newest(found.origins[e["note"]].created_at for e in entries),
+            }
+            for claim, entries in zip(claims, writers, strict=True)
+        }
+        return {
+            "project": target.name,
+            "page": found.slug,
+            "title": found.title,
+            "version": found.version,
+            "related": [
+                {
+                    "page": page.slug,
+                    "title": page.title,
+                    "version": page.version,
+                    "why": [
+                        {
+                            "kind": reason.kind,
+                            "term": reason.term,
+                            "term_kind": reason.term_kind,
+                            **_held_by(reason, stated),
+                            "there": stated[reason.there],
+                        }
+                        for reason in page.why
+                    ],
+                    "more": page.more,
+                }
+                for page in found.pages
+            ],
+            "searched": related_searched(found.left),
+        }
 
     def page(
         self,

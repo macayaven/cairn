@@ -365,6 +365,7 @@ PROJECT_CALLS = {
     "taken_slugs": lambda d: (d["api"], ["retries", "later"]),
     "search": lambda d: ("quill",),
     "find": lambda d: ("quill",),
+    "related_pages": lambda d: (d["api"], "retries"),  # the pages related to "retries"
     "add_note": lambda d: (d["api"], "# Later\n\nQuill again.\n"),
     "save_page": lambda d: (d["api"], "later", "Later", "", ()),
     "record_note": lambda d: (d["api"], "refused", {"rules": ["jwt"]}),

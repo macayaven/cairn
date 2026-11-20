@@ -608,6 +608,13 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   `save_page` keeps each project's claim and token counts (`search_projects`) and each claim's
   project and length (`search_claims`) in its own transaction, so no search counts a corpus,
   and a match in a project out of reach is dropped without its claim being read.
+- `related_pages(project_id, slug, limit=5)` is the pages of the project related to its page
+  `slug`, the best `limit` first, each with the claims the relation rests on, and what the
+  read left out (cairn.store.relating; the rules are cairn.relations), or None when there is
+  no such page in reach. Nothing of a relation is stored: it is one read of the page's
+  claims in the account's index, the passages they cite and the claims of the project's
+  other pages the index proposes, each put in the project by `search_claims` before it is
+  read, within stated bounds. A claim of another project is never read.
 - Project sets. A set is a named group of a workspace's projects: `create_set(name,
   project_ids=()) -> ProjectSet` (id "set_" + 12 hex chars, name, project_ids in the order given,
   each once, created_at). Names follow the project-name rules, may not start with "set_" either

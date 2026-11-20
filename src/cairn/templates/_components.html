@@ -4,6 +4,12 @@
    landmark named "Breadcrumb". `trail`: (href, label) pairs, outermost first. #}
 {% macro crumbs(trail) %}<nav class="crumbs" aria-label="Breadcrumb">{% for href, label in trail %}<a href="{{ href }}">{{ label }}</a> /{% if not loop.last %} {% endif %}{% endfor %}</nav>{% endmacro %}
 
+{# Noted: words that come from a note (a title, a term, a name), set apart from the page's
+   own words around them for direction: an override that nothing in them closes ends with
+   them, and turns nothing of the page's. A claim's text needs none where it stands alone in
+   an element that begins a line of its own, as on the page view. #}
+{% macro noted(text) %}<bdi>{{ text }}</bdi>{% endmacro %}
+
 {# Actor: who did something, its kind as a word (person, key, agent or cairn). #}
 {% macro actor(kind, name) %}<span class="actor"><span class="actor-kind">{{ kind }}</span><span class="actor-name">{{ name }}</span></span>{% endmacro %}
 

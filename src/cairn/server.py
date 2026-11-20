@@ -388,6 +388,68 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       version of the page holds it, with the passages that version cites; None: the latest)
   overview(project) -> {"project", "kind", "guidance", "notes", "pages": [{"slug", "title",
       "version", "claims", "updated_at"}]}
+  graph(project, limit=20) -> the project's graph, as GET /api/graph answers it (below) and
+      the resource graph://project/<project>/<limit> gives it (cairn.web.graph_resource): its
+      pages, their claims, the passages those cite and their notes; `limit` is 1 to 20 pages
+  related(project, slug, limit=5) -> {"project", "page", "title", "version", "related":
+      [{"page", "title", "version", "why": [{"kind": "shares", "term", "term_kind", "pages",
+      "here", "there"} or {"kind": "mentioned_by", "term", "term_kind": "title", "there"}],
+      "more"}], "searched": {"complete", "terms_looked_up", "terms_not_looked_up",
+      "claims_read", "claims_not_read", "pages_left_out"}}
+      (KG1; cairn.memory, Related pages; the rules are cairn.relations and the read
+      cairn.store.relating.) The pages of the project most related to the page, best first:
+      one that states a term the page states (a url, a path, a flag, a version, or inline code
+      that is not a plain word, the same when written the same, capitals included, and given
+      as written; none that more than 5 pages hold, or whose words more than 64 claims of the
+      project hold, or that is longer than 200 characters), or whose claim names the page's
+      title in its prose: not by words inside code (in backticks, or in a fenced block, its
+      opening line included), nor inside a URL, a path, a flag or a version as the page's
+      facts read them, so a bare `ledger/notes.md` still names a page Ledger (the index says
+      where the claim's text holds the title's words, and the facts of the passage the claim
+      is the text of say which of those places are prose; a claim that is not its passage's
+      text mentions as the index has it; a claim that holds a mark of the index or a null
+      character names none; none when more than 5 other pages name it, or more than 64 of
+      their claims). A claim that cites several passages is read by its
+      first, and a term a search does not find as it is written (`1,250x`, compared without
+      its separator) relates none, from either page. `pages` is how many pages hold the term,
+      exactly: a term whose pages are not all known gives no reason. `here` and `there` are
+      claims as a hit of `recall` carries one: "claim_id", "text", "passage_ids", "outside",
+      "written_by", "written_at"; but a claim longer than 600 characters gives "text_cut":
+      true and, in place of its "text", "line": for a claim that states the term, the line of
+      the passage it cites that holds the term; for a claim that mentions the page, the line
+      that names the title in its prose (two lines, with their line break, when the title's
+      words stand on two); 400 characters of a longer line, with "line_cut": true. Only a long
+      claim of which no line can be told (it mentions the page as the index has it: its text
+      is not its passage's) gives its first 600 characters as "text", with "text_cut": true
+      and no line: never a head beside a line.
+      `page` gives the claim whole; a claim within 600 characters gives its "text" whole and
+      none of the other three fields. "passage_ids" names the first 8 passages a claim cites,
+      and "passage_ids_more" counts the rest, only when there are more (a claim a tidy folded
+      from many). `why` holds 3 reasons at most and `more` counts the rest; `limit` is 1 to
+      20, and any other is a tool error that says so. Worked out by rule when asked, from the
+      pages as they are, in one read: nothing of a relation is stored, no model is asked, and
+      a forgotten note is out of it with the write that forgets it. Not in this version: a
+      relation across projects, the pages a page mentions, paths of several steps, groups over
+      a whole project, anything inferred from meaning. `searched` says what the read's bounds
+      left out, always, and counts each: the page's terms past the first 256, and those not
+      looked up once the read has been handed 150,000 rows of the index for the terms and
+      the title (the title then counting as one), the claims of other pages, listed for a
+      term or for the title, past the 512 claims and the 750,000 bytes of passages read, the
+      related pages past `limit`. The rows of the index a read is handed are bounded whatever
+      the workspace holds: where other projects hold a page's terms in very many claims, the
+      answer can be incomplete, and says so; each reason it gives is true and counts the pages
+      it would count with nothing left out, though an incomplete answer can hold other true
+      reasons than a complete one would show first. The page's own passages are read whole,
+      as `page` reads them. The store's read runs
+      at most 17 statements, whatever the page and the project hold (cairn.store.relating
+      says which, and tests/unit/test_relating_cost_unit.py counts them). One read of
+      related pages at a time in a server process, for every workspace it serves, over MCP,
+      REST and the web view alike: another waits for it holding no thread and no connection
+      and is answered in its turn, however long that takes; none is refused for waiting. A
+      caller (a key, an agent, or a person whichever session they use) has one read in that
+      line at a time, its others waiting behind it, so a read waits behind at most one read
+      of each other caller. A read of the page for the audit log (read.page), which never
+      holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments
@@ -441,9 +503,12 @@ The note guard and the logs (frozen by tests/acceptance/test_g1_guard.py; cairn/
   the web view's too, and with `serve --audit-reads` also in the audit log (read.page,
   read.evidence, read.search, read.graph, read.note, read.notes; Memory.access): each GET of
   a page that shows memory is one record, named as the MCP tool that reads the same (/
-  "projects", /b/<project> "overview", /b/<project>/p/<slug> "page", /search "recall") or
+  "projects", /b/<project> "overview", /b/<project>/p/<slug> "page",
+  /b/<project>/p/<slug>/related "related", /search "recall") or
   after what it asks (/b/<project>/notes "notes", /b/<project>/access "project_access",
-  /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The pages of the
+  /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The graph page is
+  one record named "graph" (cairn.web.graph_routes), but for its view of a page's related
+  pages, which reads what `related` reads and is recorded as it. The pages of the
   workspace's settings, people and credentials, and the composer's empty form, are not on
   it; what the web view writes is in the audit log. A request to /api or /mcp refused
   before its route (no valid credential) is one record ("none", None, None, "denied",
@@ -500,6 +565,9 @@ REST (JSON; project = id or name; unknown project or page, or another account's 
   and the composer's form again (400) also say; a source's draft like that is skipped
 - GET /api/projects/{project}/pages; GET /api/projects/{project}/pages/{slug}[?version=N]
 - GET /api/projects/{project}/pages/{slug}/claims/{claim_id}/evidence[?version=N] (E1)
+- GET /api/projects/{project}/pages/{slug}/related[?limit=N] (KG1): what `related` answers;
+  N is 1 to 20 (5 when left out), and any other is a 400 that says so; a page that is not
+  there is the 404 `page` gives, with the nearest page names
 - GET /api/search?q=...[&project=...][&limit=N]: what `recall` answers, `searched` included;
   N is 1 to 50 (8 when left out), and any other is a 400 that says so (Q3)
 - GET /api/usage: the workspace's plan and what it has used of each cap (Plans, below)
@@ -595,7 +663,8 @@ Plans (frozen by tests/acceptance/test_h6_quotas.py; cairn/plans.py, cairn.store
   storage cap's passages (null: none). /usage also lists what the plan allows in its words
   (cairn.plans.limit_sentences) and says each amount as people do ("768 bytes of 500 MB",
   "$0.00, no cap": cairn.plans.quantity). Reading either writes nothing. There is no usage tool:
-  the MCP tool set is frozen at seven.
+  the MCP tools are nine (`projects`, `new_project`, `note`, `recall`, `page`, `evidence`,
+  `overview`, `graph` and `related`).
 - A plan's `versions_per_page`: each save keeps the page's last N versions and drops the
   older ones; asking for a dropped version (?version=N, on /api or /b) is 404 with a
   sentence that says it is no longer kept and what the plan keeps. A plan's storage cap
@@ -635,6 +704,31 @@ Web UI (server-rendered HTML)
   page's gate metrics are shown under "Checks" in words (web/ui.CHECKS; a name without
   words as it is), each row carrying its name (data-metric), and each source says which
   claims cite it by their number on the page. Earlier versions are linked.
+- GET /b/{project}/p/{slug}/related[?limit=N] (KG2), linked from the page's head as "Related
+  pages" for its latest version: what `related` answers for the page (Memory.related, one
+  read, recorded as `related` records it) and nothing else, shown by
+  cairn.web.ui.memory_pages.related_view: the related pages best first, each with its title
+  linking to it and an element with id="related-<slug>"; each reason in words (a shared term
+  as code, with how many pages of the project hold it; or that a claim of the other page
+  names this page's title); each claim a reason rests on quoted as plain text, white space
+  kept, never drawn as Markdown, linked to its claim on its page ("#<claim id>"), and under
+  it who wrote the notes it cites (web/ui.writer_words), when, and whether any is outside
+  text. A claim that is cut (`text_cut`) is never taken to hold a text: the page says it is
+  longer than what is shown and shows the line its answer gives (the line of its passage
+  that states the term, or the line that names the title) wherever it holds one, else the
+  head it holds as its text, else nothing, and its link reads the whole claim on its page.
+  Then "and N more
+  reasons" for `more`; one sentence for what the read left out (related_left_out), with a
+  link to show up to 20 when pages were left out. With no related page it says so in one
+  sentence, with what makes two pages related; of an answer that is not complete it says
+  only that none was found in what was looked at, never that there is none. N is 1 to 20 (8
+  when left out), and any
+  other is a 400 page that says so in REST's sentence; a project out of reach or a page
+  that is not there is the 404 the page view gives. A parameter it does not take is
+  ignored. Words that come from a note or name its writer (a title, a term, a writer's
+  name) stand in a <bdi>, and what is quoted of a claim alone in an element of its own, so
+  an override that nothing in them closes turns none of the page's own words. The page
+  view runs no statement more for the link. No script.
 - GET /setup: how agents connect: with only the URL when OAuth is on (the MCP URL, and the
   `claude mcp add --transport http cairn <url>` and `codex mcp add cairn --url <url>`
   commands; else how to turn it on), and with an API key: the MCP URL (public_url + "/mcp",
@@ -839,7 +933,8 @@ Deleting a project and forgetting a note (H5b; cairn/web/erasure.py)
   this project again; POST forgets it and answers 303 to the project. Both are web sessions,
   same-origin, 404 out of reach and 403 to whoever may not (Memory.erasable); a GET removes
   nothing. The project page links the first and each cited source on a page the second, only
-  for whoever may. MCP has no tool for either: the tool set stays at seven.
+  for whoever may. MCP has no tool for either: none of its nine tools deletes a project or
+  forgets a note.
 
 `create_app(store, gate=None, allowed_hosts=(), public_url=None, sign_in=None, guard=None,
 sync_every=None, source_http=cairn.sources.runner.source_client, plans=None, clock=None)`:

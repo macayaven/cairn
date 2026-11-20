@@ -214,6 +214,7 @@ class ConnectionState:
         "observers",
         "readers",
         "reads_audited",
+        "related_turn",
         "unusable",
     )
 
@@ -238,6 +239,9 @@ class ConnectionState:
         # holds it, which may take it again inside (compact within its caller's decision).
         self.compaction_guard = threading.Lock()
         self.compaction_holder: int | None = None
+        # One read of related pages at a time (Store.related_pages): taken before the read
+        # takes a connection, so the others wait for it holding none.
+        self.related_turn = threading.Lock()
 
 
 class WriterLock:

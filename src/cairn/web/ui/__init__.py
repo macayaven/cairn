@@ -17,9 +17,12 @@ from cairn import oauth
 from cairn.web.compose import compose_routes
 from cairn.web.rest import _logged
 from cairn.web.start import start_routes
+from cairn.web.turns import RELATED_READS
 from cairn.web.ui.common import _ended, _ui
 from cairn.web.ui.memory_pages import (
     CHECKS,
+    RELATED_SHOWN,
+    TERM_WORDS,
     UI_HITS,
     WEB_NOTES_AT_ONCE,
     WEB_PAGES_AT_ONCE,
@@ -28,6 +31,10 @@ from cairn.web.ui.memory_pages import (
     _sees_rule,
     memory_handlers,
     page_view,
+    related_entry,
+    related_href,
+    related_left_out,
+    related_view,
     search_hits,
     writer_words,
 )
@@ -118,7 +125,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
     app_url = public_url.rstrip("/") if public_url else "https://<your-host>"
     mcp_url = f"{app_url}/mcp"
     by_url = oauth.issuer(public_url) is not None
-    home, project, notes, page, search = memory_handlers()
+    home, project, notes, page, related, search = memory_handlers()
     setup, welcome = signing_in_handlers(app_url, by_url, mcp_url, public_url, sign_in)
     (
         agents,
@@ -151,6 +158,7 @@ def ui_routes(public_url: str | None, *, sign_in: bool = False) -> list[Route]:
         Route("/b/{project}", _logged("overview", project)),
         Route("/b/{project}/notes", _logged("notes", notes), methods=["GET"]),
         Route("/b/{project}/p/{slug}", _logged("page", page)),
+        Route("/b/{project}/p/{slug}/related", _logged("related", related, RELATED_READS)),
         Route("/search", _logged("recall", search)),
         Route("/setup", setup),
         Route("/welcome", welcome),

@@ -555,10 +555,12 @@ details.body pre { margin-top: var(--space-2); white-space: pre-wrap; overflow-w
   border-top: 1px solid var(--rule);
 }
 
-/* Search hit: the claim itself, whole, its matched words on mark */
+/* Search hit: the claim itself, whole, its matched words on mark. A reason on a page's
+   related pages is a hit too: a long word in one breaks where it must, as in a claim's text
+   (a term can be 200 characters of code). */
 
 .hits { list-style: none; margin: 0; padding: 0; max-width: calc(var(--measure) + var(--margin)); }
-.hit { padding-block: var(--space-3); }
+.hit { padding-block: var(--space-3); overflow-wrap: anywhere; }
 .hit + .hit { border-top: 1px solid var(--rule); }
 .hit-where { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-soft); }
 .hit-where a { color: var(--ink-soft); }

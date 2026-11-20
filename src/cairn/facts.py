@@ -189,6 +189,15 @@ def compared(as_read: str) -> str:
     return _THOUSANDS_SEPARATOR.sub("", compared_text(as_read).casefold())
 
 
+def cased(as_read: str) -> str:
+    """`compared` with the text's case kept: what two terms of related pages are compared by
+    (cairn.relations), where `-L` is not `-l` and `/srv/Quill` is not `/srv/quill`. What
+    `compared` leaves out that is not case is left out here too: white space at the end of a
+    line and blank lines around the text (cairn.spans.compared_text), and the thousands
+    separators of a number (`1,250x` is `1250x`). So compared(x) is cased(x).casefold()."""
+    return _THOUSANDS_SEPARATOR.sub("", compared_text(as_read))
+
+
 def _plain(value: str) -> str:
     return _THOUSANDS_SEPARATOR.sub("", " ".join(value.split()).casefold())
 

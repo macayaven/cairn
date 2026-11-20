@@ -7,7 +7,9 @@ test_rt1_harness.py). Here, what it costs beside that loop:
   and takes at least the claim the plain loop names there, so it renders no more often;
   past that the declared class can change the body (the security guide), and on every page
   tried it rendered at most RENDERS_OVER more often than the plain loop. It renders more
-  than sixteen times only where the plain loop does too.
+  than sixteen times only where the plain loop does too, and past erasure.RENDERS_MAX
+  (sixty-four) renders that each named a claim a second stated class ends the loop
+  (test_forget_render_cap_unit.py): on the worst case, two renders later.
 - Parser input. Every character handed to the Markdown parser in the whole forget, against
   its renders times its body (the largest it rendered): at most PER_RENDER. A count from the
   pages tried, not a bound: a render parses the body whole at most CLOSERS_MAX + 1 times,
@@ -31,6 +33,7 @@ from test_rt1_harness import Note, Plan, Run, Watch, expected, generated, signat
 from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.spans import CLOSERS_MAX
+from cairn.store import erasure
 
 RENDERS_OVER = 1  # renders past the plain loop's, at most, and only past sixteen named
 PER_RENDER = 25  # parser characters, at most, per render and character of the body
@@ -160,20 +163,24 @@ def test_the_testers_pages_cost_two_renders(name):
 SEEDS = [199, *range(200, 300)]
 
 WORST = (100, 300)  # notes asserted here; a thousand was measured only (the docstring below)
+OVER_THE_CAP = 2  # renders past erasure.RENDERS_MAX, at most, on the worst case
 
 
 @pytest.mark.parametrize("count", WORST)
-def test_the_worst_case_renders_once_a_claim_as_the_plain_loop_does(count):
+def test_the_worst_case_renders_at_most_the_cap_and_two(count):
     """The stated worst case: the title alternates at every step and a heading says one of
     its spellings, so that the body really differs at each step (the aside's heading is
     written, then left out) and the plain loop renders once for each sibling. The forget
-    renders as often, and no more. The plain loop is run beside it on a hundred.
+    renders as the plain loop does up to its cap (erasure.RENDERS_MAX, sixty-four renders
+    that each named a claim); at the next, every sibling left before the one named is left
+    open by the body and leaves with it, and one more render finds nothing: RENDERS_MAX +
+    OVER_THE_CAP, and the claims the plain loop keeps (run beside it on a hundred).
 
     Measured on one machine shared with other work (the forget call, the middle of three
-    runs on the page as filed; counts are asserted, never time): a hundred notes, 101
-    renders, 1,079 bodies of parser input, 0.9 s; three hundred, 301, 2,948 bodies, 6.3 s;
-    a thousand, 1,001, 9,519 bodies, 74 s (69 to 85 s), and nine minutes to file the page.
-    The release before this rule did the same renders and parsing on this page."""
+    runs on the page as filed; counts are asserted, never time). Before the cap: a hundred
+    notes, 101 renders, 1,079 bodies of parser input, 0.9 s; three hundred, 301, 2,948
+    bodies, 6.3 s; a thousand, 1,001, 9,519 bodies, 74 s (69 to 85 s). With it: CAP_TIMES.
+    Filing the thousand takes nine minutes."""
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20_000))
     run = Run(alternating(count, ["Ops"]), check_restore=False)
     try:
@@ -181,16 +188,15 @@ def test_the_worst_case_renders_once_a_claim_as_the_plain_loop_does(count):
         store, pid = run.store, run.pid
         before = [claim.text for claim in store.get_page(pid, "ops").claims]
         want = [text for text in before if "sample" not in text and text != "Between."]
-        plain = count + 1  # one sibling a render, and one that finds nothing
         if count == 100:
             loop = expected(store, pid, run.ids["sep"])["ops"]
-            assert (len(loop.titles), [claim.text for claim in loop.kept]) == (plain, want)
+            assert (len(loop.titles), [claim.text for claim in loop.kept]) == (count + 1, want)
         watch = Watch()
         with watch.on():
             Memory(store, lint_gate).forget("alpha", run.ids["sep"])
         assert [claim.text for claim in store.get_page(pid, "ops").claims] == want
         body = max(len(rendered[3]) for rendered in watch.renders)
-        assert len(watch.renders) == plain  # within RENDERS_OVER of it: exactly it
+        assert len(watch.renders) == erasure.RENDERS_MAX + OVER_THE_CAP
         assert sum(watch.inputs) <= PER_RENDER * len(watch.renders) * body
         assert max(watch.inputs) <= 2 * body
     finally:

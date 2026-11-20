@@ -44,11 +44,12 @@ CHECKS = "## What the checks on pages catch"  # the section of the security guid
 TITLED = (  # the guide's sentence that the tests of both its halves run
     "A forget titles the page by the oldest note still on it, and a heading that says the title"
     " is not written, so taking claims can change where the page writes the others: of the"
-    " claims above, only as many leave at once as would each be at fault in turn with the"
-    " page written the same below its title line, and the forget reads the page again from"
-    " the first claim whose going would change it. A new title changes more than that line"
-    " only where the first heading over a claim still on the page says the old title or the"
-    " new one."
+    " claims above, those written after the claim at fault leave only while the title reads"
+    " the same, and those written before it only as many at once as would each be at fault in"
+    " turn with the page written the same below its title line; the forget reads the page"
+    " again from the first claim held back. A new title changes more than that line only"
+    " where the first heading over a claim still on the page says the old title or the new"
+    " one."
 )
 
 
@@ -361,17 +362,16 @@ def test_past_the_ceiling_a_later_claim_stays_when_taking_the_one_named_changes_
 
 
 @pytest.mark.parametrize("aside", [True, False], ids=["a heading says Ops", "no heading"])
-def test_past_the_ceiling_only_as_many_later_claims_leave_as_keep_the_page_below_its_title(
-    desk, aside
-):
+def test_past_the_ceiling_only_as_many_later_claims_leave_as_keep_the_title(desk, aside):
     """And with the claim named another note's: the oldest note holds three indented
     examples after the list, each closed where it stands. Past the ceiling they are later
     claims that can open a fence; all three gone, another note would give the title, OPS.
-    With an aside under `## Ops` that changes more than the title line (the aside is written
-    under its heading, not with none), so the two nearest leave and the third stays, with
-    the title; the next render finds nothing. With no such heading the new title changes
-    that line alone, and all three leave (two while the rule held to the title's text). The
-    plain loop keeps all three: those that leave are the declared class."""
+    The class a forget takes past its ceiling holds to the title's text, whatever the new
+    title moves (the eighth round, decision 1 after the rule for the claims before was
+    loosened: taking the third saved no render and lost a claim the plain loop keeps). So
+    the two nearest leave and the third stays, with the title, with an aside under `## Ops`
+    and without one; the next render finds nothing. The plain loop keeps all three: the two
+    are the declared class."""
     examples = [f"    ```text\n    Ada keeps gate {n}.\n    ```" for n in range(3)]
 
     def others():
@@ -385,12 +385,10 @@ def test_past_the_ceiling_only_as_many_later_claims_leave_as_keep_the_page_below
     named, title, claims = plain_loop(desk.store, separator)
     assert len(named) == CLOSERS_MAX + 1 and title == "Ops"
     assert set(examples) <= {claim.text for claim in claims}
-    left = examples[2:] if aside else []
-    titles = ["Ops"] * (CLOSERS_MAX + 1) + (["Ops"] if left else ["OPS"])
-    assert forgotten(desk, separator) == titles
+    assert forgotten(desk, separator) == ["Ops"] * (CLOSERS_MAX + 2)
     after = page(desk.store)
-    assert after.title == titles[-1]
-    assert [c.text for c in claims if c not in after.claims] == examples[: 3 - len(left)]
+    assert after.title == "Ops"
+    assert [c.text for c in claims if c not in after.claims] == examples[:2]
     says("security", CHECKS, TITLED)
 
 

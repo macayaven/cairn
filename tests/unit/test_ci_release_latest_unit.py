@@ -16,10 +16,9 @@ gh is test_ci_release_retry_unit's stand-in: its listing runs the step's own --j
 over every release it holds, other tags' too."""
 
 import re
-import subprocess
 
 import pytest
-from ci_shell import SYSTEM
+from ci_shell import SYSTEM, run_step
 from test_ci_release_retry_unit import (
     CREATE,
     README,
@@ -117,18 +116,13 @@ def latest_of(released: list[str], tag: str) -> str:
         [
             function(run, "stable_versions"),
             function(run, "is_latest"),
-            'released="$(cat)"',
+            'released="$RELEASED"',
             "is_latest",
         ]
     )
-    done = subprocess.run(
-        ["/bin/bash", "-e", "-c", script],
-        input="".join(f"{name}\n" for name in released),
-        env={"PATH": SYSTEM, "GITHUB_REF_NAME": tag},
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    env = {"PATH": SYSTEM, "GITHUB_REF_NAME": tag, "RELEASED": "\n".join(released)}
+    done = run_step(script, env)
+    assert done.returncode == 0, done.stderr
     return done.stdout
 
 
@@ -159,15 +153,11 @@ def test_the_step_s_comparison_takes_the_highest_of_the_listed_and_itself(releas
 
 def test_the_aliases_job_orders_with_it_as_before(tmp_path):
     """The function, run alone as `aliases` runs it: the stable versions, lowest first."""
-    script = function(ALIAS["run"], "stable_versions") + "\nstable_versions"
-    done = subprocess.run(
-        ["/bin/bash", "-e", "-c", script],
-        input="v0.10.0\nv0.9.12\nnightly\nv0.9.2\nv0.2\nv1.0.0-rc.1\n",
-        env={"PATH": SYSTEM},
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    tags = "v0.10.0 v0.9.12 nightly v0.9.2 v0.2 v1.0.0-rc.1"
+    ordered = f"printf '%s\\n' {tags} | stable_versions"
+    script = function(ALIAS["run"], "stable_versions") + "\n" + ordered
+    done = run_step(script, {"PATH": SYSTEM})
+    assert done.returncode == 0, done.stderr
     assert done.stdout == "0.9.2\n0.9.12\n0.10.0\n"
 
 

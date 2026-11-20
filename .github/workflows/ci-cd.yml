@@ -1792,8 +1792,12 @@ jobs:
           # lists every release of the repository, drafts included (GitHub lists drafts to a
           # token that may write, as this job's may); a listing that fails stops the job instead
           # of being taken for none. The release for this tag is this run's only if it is the
-          # only one and carries this run's mark and this tag's pre-release flag; any other
-          # stops the job. (1) No release: the GitHub CLI makes one as a draft, with the files.
+          # only one and carries this run's mark and this tag's pre-release flag; any other a
+          # look lists stops the job. A release the listing does not show yet, one a person
+          # makes while the job runs or the draft of an earlier attempt just before a re-run,
+          # is not seen, and the job can make or publish its own beside it: that is a stated
+          # limit, and the release it publishes and succeeds on is still its own, judged by
+          # its id. (1) No release: the GitHub CLI makes one as a draft, with the files.
           # Asked for a draft it publishes nothing, and its cleanup of the release it made is
           # only for a draft it meant to publish itself. It sends a file again, three times at
           # most, only after a failed connection or a 5xx, and removes a file only when given
@@ -1821,7 +1825,8 @@ jobs:
           # attested, byte for byte, which it leaves as it is: that is all a re-run does after
           # an attempt that finished, so that a release tag's `aliases` runs. A look that does
           # not show the job's own write is made again, as the top of this step says; when the
-          # last one still does not, the job stops, so it never makes a second release.
+          # last one still does not, the job stops, so it never makes a second release of
+          # its own in one attempt.
           # This step's text issues no removal of a release or of a release's file and
           # replaces no file.
           # The mark alone does not make a release this run's: a person can change the title,

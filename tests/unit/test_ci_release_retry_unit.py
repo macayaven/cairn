@@ -1147,9 +1147,29 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
         " has the line)."
     ) in readme
     # (The sentences on the notes and the title that follow: test_ci_release_notes_title_unit.)
-    assert " (the table has the line for both). Any other release for the tag stops the job." in (
+    # A release for the tag the listing does not show yet is not seen (the independent
+    # tester's finding, decision 6): a stated limit, said with what the job still guarantees.
+    assert "the table has the line for both). Any other release for the tag stops the job." not in (
         readme
     )
+    assert (
+        " (the table has the line for both). Any other release for the tag that a look lists"
+        " stops the job, but one a person makes while the job runs, or the draft of an earlier"
+        " attempt just before a re-run, can be missing from the listing, which can be seconds"
+        " behind a write, so the job does not see it and can make or publish its own release"
+        " beside it: that is a stated limit, and what the job still"
+        " guarantees is that the release it publishes and succeeds on is its own, judged by its"
+        " id, with this run's mark, title, notes and files."
+    ) in readme
+    comment = " ".join(CREATE["run"].replace("#", "").split())
+    assert (
+        "any other a look lists stops the job. A release the listing does not show yet, one a"
+        " person makes while the job runs or the draft of an earlier attempt just before a"
+        " re-run, is not seen, and the job can make or publish its own beside it: that is a"
+        " stated limit, and the release it publishes and succeeds on is still its own, judged"
+        " by its id."
+    ) in comment
+    assert "so it never makes a second release of its own in one attempt." in comment
     (limits,) = [" ".join(p.split()) for p in README.split("\n") if p.startswith("Three limits.")]
     assert limits.endswith(
         " The third limit is job `release`'s: no request compares and publishes at once, so a"

@@ -74,7 +74,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from cairn.facts import Fact, extract_facts, normalize
-from cairn.spans import Span, chunk
+from cairn.spans import Span, chunk, code_read_once
 
 CONTENT_KINDS = frozenset({"paragraph", "bullet", "code", "table", "quote"})
 PLACEMENT_KINDS = frozenset({"flag", "path", "inline_code"})
@@ -147,7 +147,18 @@ def lint_pages(
 
     `lint` loads its files and calls this. Contract: tests/acceptance/test_t3_lint.py and
     tests/acceptance/test_t3_multisource.py. Raises LintInputError for unreadable front
-    matter or two pages with one slug."""
+    matter or two pages with one slug. Each text's inline code is parsed once a call
+    (spans.code_read_once)."""
+    with code_read_once():
+        return _lint_pages(pages, spans, entities, unassigned_spans)
+
+
+def _lint_pages(
+    pages: Sequence[PageInput],
+    spans: Sequence[Span],
+    entities: Sequence[Entity],
+    unassigned_spans: Collection[str],
+) -> LintReport:
     source = _Source(spans, entities)
     parsed = _parse_pages(pages)
     violations: list[Finding] = []

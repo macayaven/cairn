@@ -77,8 +77,11 @@ def test_a_stray_backtick_in_one_paragraph_does_not_move_the_next_paragraphs_cod
 
 
 def test_code_spans_pair_backticks_within_a_block_only():
-    text = "a `b\n\nc d `e  f`"
+    text = "Intro.\n\na `b\n\nc d `e  f`"
     assert spans.code_spans(text) == [(text.index("`e"), len(text))]
+    # A backtick left as text in the first paragraph, which a quote before the passage may
+    # continue: the passage is read exactly (spans.code_spans gives None).
+    assert spans.code_spans("a `b\n\nc d `e  f`") is None
 
 
 def test_a_fenced_block_with_aligned_spaces_still_keeps_its_code_lines():

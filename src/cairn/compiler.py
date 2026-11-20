@@ -92,7 +92,7 @@ from pydantic import BaseModel, ConfigDict
 
 from cairn.candidate import CandidatePage, GateResult
 from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate
-from cairn.spans import Span, claim_id, fence_closes, fence_opener
+from cairn.spans import Span, claim_id, fence_closes, fence_opener, open_fence_closer
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
 from cairn.topics import one_line, topic_tag
 
@@ -313,6 +313,18 @@ def render_body_before_review_two(
     )
 
 
+def render_body_before_review_three(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before the second report: a fence closed where
+    cairn.spans' line rules, not the Markdown parser, left it open. For the import's check
+    alone (store.portable._as_rendered), so an archive written then still imports; never
+    shown."""
+    return _rendered(
+        title, claims, spans, _closed_before_review_three, section_headings, heading_text
+    )
+
+
 def _rendered(
     title: str,
     claims: Sequence[Claim],
@@ -338,18 +350,24 @@ def _rendered(
 
 
 def _closed(text: str) -> str:
-    """`text`, and when it leaves a code fence open as Markdown reads it, a line that closes
-    it: the opener's own indentation (past a list marker it opens after) and run, so it closes
-    inside a list item too. Openers and closers are cairn.spans' rules (fence_opener,
-    fence_closes: one rule for splitting and for the body, should-fix 8), held to Markdown's
-    limit: a fence opens, and a closer closes it, indented at most 3 columns past the text of
-    the list item it sits in, or past the margin. A closer indented deeper is the code's text
-    ("    ~~~" under "~~~"), so the fence is still open and the body closes it; a line
-    indented 4 past its item opens no fence (it is indented code), so nothing is added.
-    Columns are Markdown's: a tab moves to the next stop of four, so a tab before a closer is
-    four columns and closes nothing. cairn.spans counts a tab as one column (its known limit,
-    kept so that the passages of stored notes keep their lines and ids); where the two part,
-    the fence is open to Markdown and the body closes it."""
+    """`text`, and when the Markdown parser leaves a code fence of it open, a line that closes
+    it (cairn.spans.open_fence_closer: the opener's own column and run, so it closes inside a
+    list item too), so the claim after it is never read as code (review 7.2, should-fix 8,
+    the second report's finding 8). The parser decides, not a reading of lines: a closer a
+    no-break space or a tab precedes, one indented past Markdown's limit and an opener
+    Markdown does not take are all as Markdown reads them. The claim's text is never
+    changed; a text that holds no backtick or tilde is not parsed."""
+    closer = open_fence_closer(text)
+    if closer is None:
+        return text
+    closed = f"{text}\n{closer}"
+    return closed if open_fence_closer(closed) is None else text
+
+
+def _closed_before_review_three(text: str) -> str:
+    """`_closed` as it was before the second report: openers and closers read by cairn.spans'
+    rules (fence_opener, fence_closes), held to Markdown's limit by columns. For the import's
+    check alone (render_body_before_review_three)."""
     opened: tuple[str, str, int] | None = None  # (indentation to write, run, deepest closer)
     items: list[int] = []  # the text column of each list item a line may sit in
     for written_line in text.split("\n"):

@@ -61,8 +61,12 @@ import json
 import re
 from collections import Counter
 from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
 
+from markdown_it import MarkdownIt
+from markdown_it.rules_inline.backticks import backtick
 from pydantic import BaseModel, ConfigDict
 
 SpanKind = Literal["frontmatter", "heading", "paragraph", "bullet", "code", "table", "quote"]
@@ -299,49 +303,226 @@ def claim_id(span_id: str) -> str:
     return "cl_" + span_id.removeprefix("sp_")
 
 
-_TICKS = re.compile(r"`+")  # a run of backticks, which opens or closes inline code
-_BLANK_LINE = re.compile(r"\n[ \t\r]*(?=\n)")  # a blank line, which ends a block
+# Inline code, as the Markdown parser reads it (second report, finding 2). A passage is
+# handed to the parser as the note has it: a quote's ">" and a list item's marker and
+# indentation are in its text, so its container is the parser's to read. Two readings are
+# asked, raw HTML off (as the web view renders) and on (as a reader of the raw Markdown may),
+# and code is where either finds it: reading too much as code keeps two texts apart, the safe
+# side.
 
 
-def code_spans(text: str) -> list[tuple[int, int]]:
-    """Where inline code is in Markdown text, as CommonMark reads it: (start, end) of each code
-    span, its backtick runs included, in order. The one finder of inline code: the gate's
-    reading of prose (cairn.gate) and the fact check's normalize (cairn.facts) both call it.
+_LINE_BREAK = re.compile("\n")
+_PARSER_LINES = re.compile(r"\r\n?|\n")
+_TAG_START = re.compile(r"<[A-Za-z/!?]")  # where raw HTML or an autolink may start
 
-    A run of n backticks opens one, unless a backslash escapes its first backtick, and the next
-    run of exactly n backticks in the same block closes it, across a line break too; a run
-    with no such run after it is text. A blank line ends a block, so a stray backtick in one
-    paragraph never pairs with the code of the next. Inside a span a backslash is text. Each
-    run is looked at once, and its closer found by bisection: linear in the text, whatever its
-    backticks."""
+
+def _placed_rule(rule):
+    """The parser's backtick rule, noting where each code span it makes starts and ends in
+    the text it parses (`meta["at"]`), and in `env` when it leaves a run as text."""
+
+    def placed(state, silent: bool) -> bool:
+        start, made = state.pos, len(state.tokens)
+        if not rule(state, silent):
+            return False
+        if not silent:
+            if len(state.tokens) > made and state.tokens[-1].type == "code_inline":
+                state.tokens[-1].meta["at"] = (start, state.pos, state.src)
+            else:
+                state.env.setdefault("text_ticks", set()).add(state.src)
+        return True
+
+    return placed
+
+
+def _parser(html: bool) -> MarkdownIt:
+    """CommonMark with tables, raw HTML off or on, reading only what decides where inline code
+    is: every block rule, and of the inline rules escapes, code spans, autolinks and raw HTML
+    (which bind as tightly as code spans or more), never emphasis, links, images or entities
+    (which code spans bind more tightly than: they move no code span)."""
+    md = MarkdownIt("commonmark", {"html": html}).enable("table")
+    md.disable(["emphasis", "link", "image", "entity", "balance_pairs", "fragments_join"])
+    md.disable("text_join")
+    md.inline.ruler.at("backticks", _placed_rule(backtick))
+    return md
+
+
+_PARSERS = (_parser(html=False), _parser(html=True))
+
+
+def code_spans(text: str) -> list[tuple[int, int]] | None:
+    """Where inline code is in Markdown text, as the parser (markdown-it-py, CommonMark with
+    tables) reads the text as a document of its own: (start, end) of each code span, its
+    backtick runs included, in order and apart. The one finder of inline code: the gate's
+    reading of prose (cairn.gate), the repeat key that shares it (cairn.arrange) and the fact
+    check's normalize (cairn.facts) call it.
+
+    None when the parser's answer cannot be trusted to be the reader's, and the caller then
+    reads the whole text exactly, white space included: a backtick run the parser pairs with
+    nothing in the text's first paragraph when that paragraph is in no quote or list (the
+    one container a passage's text may not show: cairn.spans ends a quote at a line without
+    ">", which Markdown reads on as the quote's, so a backtick the quote leaves open may pair
+    with one of the passage's), or code whose place in the text the
+    parser's own text does not show (a tab partly read as indentation).
+
+    A text with no backtick is not parsed. CR LF is read as a line break and a lone CR as
+    one, as the parser reads them; the places are the text's own."""
     if "`" not in text:
         return []
-    ends = [m.start() for m in _BLANK_LINE.finditer(text)]  # where each block but the last ends
-    blocks: dict[int, list[tuple[int, int]]] = {}
-    for m in _TICKS.finditer(text):
-        blocks.setdefault(bisect.bisect_left(ends, m.start()), []).append(m.span())
-    return [span for runs in blocks.values() for span in _paired(text, runs)]
+    memo = _READ_ONCE.get()
+    if memo is not None and text in memo:
+        return memo[text]
+    found = _code_spans(text)
+    if memo is not None:
+        memo[text] = found
+    return found
 
 
-def _paired(text: str, runs: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """The code spans that the backtick runs of one block make, in order (see code_spans)."""
-    by_size: dict[int, list[int]] = {}  # each run's size, and the runs of that size in order
-    for n, (left, right) in enumerate(runs):
-        by_size.setdefault(right - left, []).append(n)
-    spans: list[tuple[int, int]] = []
-    n = 0
-    while n < len(runs):
-        left, right = runs[n]
-        slashes = 0  # the backslashes right before the run: each run of them read once
-        while left - slashes > 0 and text[left - slashes - 1] == "\\":
-            slashes += 1
-        if slashes % 2:  # an escaped backtick is text; the rest of the run may open
-            left += 1
-        same = by_size.get(right - left, [])
-        closer = bisect.bisect_right(same, n)
-        if left == right or closer == len(same):
-            n += 1
+_READ_ONCE: ContextVar[dict[str, list[tuple[int, int]] | None] | None] = ContextVar(
+    "cairn_code_read_once", default=None
+)
+
+
+@contextmanager
+def code_read_once() -> Iterator[None]:
+    """Within the block, code_spans parses each text once and gives the same answer each time
+    it is asked again (a passage's facts and its norm, a claim and the passage it copies).
+    The answers are dropped when the outermost block ends: nothing is kept between calls."""
+    if _READ_ONCE.get() is not None:
+        yield
+        return
+    token = _READ_ONCE.set({})
+    try:
+        yield
+    finally:
+        _READ_ONCE.reset(token)
+
+
+def _code_spans(text: str) -> list[tuple[int, int]] | None:
+    """code_spans, parsed."""
+    src = text.replace("\r\n", " \n").replace("\r", "\n").replace("\0", "\ufffd")
+    found: list[tuple[int, int]] = []
+    for md in _PARSERS if _TAG_START.search(text) else _PARSERS[:1]:
+        read = _code_read(md, src)
+        if read is None:
+            return None
+        found.extend(read)
+    return _apart(found)
+
+
+def _code_read(md: MarkdownIt, src: str) -> list[tuple[int, int]] | None:
+    """The code spans one parser reads in `src`, placed in it; None as code_spans says."""
+    env: dict = {}
+    tokens = md.parse(src, env)
+    ticks = env.get("text_ticks", set())
+    lines = src.split("\n")
+    starts = [0]
+    for line in lines[:-1]:
+        starts.append(starts[-1] + len(line) + 1)
+    cursors: dict[int, int] = {}  # each line's place past the last cell found on it
+    found: list[tuple[int, int]] = []
+    for n, token in enumerate(tokens):
+        if token.type != "inline" or not token.children:
             continue
-        spans.append((left, runs[same[closer]][1]))
-        n = same[closer] + 1
-    return spans
+        opener = tokens[n - 1]
+        if token.content in ticks and _may_go_on(opener):
+            return None
+        codes = [c.meta["at"] for c in token.children if c.type == "code_inline"]
+        if not codes:
+            continue
+        content = token.content
+        if any(read_in is not content and read_in != content for _, _, read_in in codes[:1]):
+            return None  # read in a text of its own, at places of its own
+        rows = _rows_placed(token, opener.type, lines, cursors)
+        if rows is None:
+            return None
+        breaks = [0, *(m.end() for m in _LINE_BREAK.finditer(content))]
+        for left, right, _ in codes:
+            at = (
+                _place(breaks, rows, starts, token.map[0], left),
+                _place(breaks, rows, starts, token.map[0], right),
+            )
+            if src[at[0] : at[1]] != content[left:right]:
+                return None
+            found.append(at)
+    return found
+
+
+def _may_go_on(opener) -> bool:
+    """Whether a paragraph may be the lazy end of one the note writes before the passage: the
+    first block of the text, a paragraph outside any quote or list (cairn.spans ends a quote
+    at a line without ">", where Markdown reads that line on as the quote's)."""
+    return opener.type == "paragraph_open" and opener.level == 0 and opener.map[0] == 0
+
+
+def _rows_placed(token, opener: str, lines: list[str], cursors: dict[int, int]) -> list[int] | None:
+    """Where each line of an inline token's text starts in its line of the source: a
+    paragraph's lines are the ends of theirs, its last up to its trailing white space; a
+    heading's text is the last of its line holding it, and a table's cells are found left to
+    right. None when a line of the token's text is not so found in its line."""
+    rows = token.content.split("\n")
+    first, end = token.map
+    if len(rows) != end - first:
+        return None
+    placed = []
+    for i, row in enumerate(rows):
+        line = lines[first + i]
+        if opener == "paragraph_open":
+            whole = line if i < len(rows) - 1 else line.rstrip()
+            if not whole.endswith(row):
+                return None
+            placed.append(len(whole) - len(row))
+        elif opener == "heading_open":
+            at = line.rfind(row)
+            if at < 0:
+                return None
+            placed.append(at)
+        else:  # a table cell
+            at = line.find(row, cursors.get(first + i, 0))
+            if at < 0:
+                return None
+            cursors[first + i] = at + len(row)
+            placed.append(at)
+    return placed
+
+
+def _place(breaks: list[int], rows: list[int], starts: list[int], first: int, at: int) -> int:
+    """The place in the source of place `at` of an inline token's text, whose lines start at
+    `breaks` and are found at `rows` in the source's lines from line `first`."""
+    row = bisect.bisect_right(breaks, at) - 1
+    return starts[first + row] + rows[row] + at - breaks[row]
+
+
+def _apart(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The spans in order, those that overlap or touch made one."""
+    out: list[tuple[int, int]] = []
+    for left, right in sorted(spans):
+        if out and left <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], right))
+        else:
+            out.append((left, right))
+    return out
+
+
+_PROBE = ""  # a character of the private use area: no note's Markdown means it
+
+
+def open_fence_closer(text: str) -> str | None:
+    """The line that closes the code fence the Markdown parser (as the web view reads it)
+    leaves open at the end of `text`, or None when none is: the opener's run, written at the
+    opener's column (tabs read as Markdown reads them, to the next stop of four).
+
+    A fence is open when a line written after `text` and a blank line, indented past every
+    list item `text` may open, is read as the fence's code: so a fence in a list item counts
+    when the next block could still be the item's, and one in a quote never does, as the blank
+    line ends the quote. A text with no backtick and no tilde holds no fence and is not
+    parsed."""
+    if "`" not in text and "~" not in text:
+        return None
+    lines = _PARSER_LINES.split(text)  # as the parser breaks lines: CR LF, a lone CR, LF
+    depth = max(len(line.expandtabs(4)) for line in lines) + 1
+    tokens = _PARSERS[0].parse(f"{text}\n\n{' ' * depth}{_PROBE}")
+    for token in tokens:
+        if token.type == "fence" and _PROBE in token.content and token.map:
+            opener = lines[token.map[0]].expandtabs(4)
+            return " " * opener.find(token.markup) + token.markup
+    return None

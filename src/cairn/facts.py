@@ -166,34 +166,26 @@ def normalize(value: str) -> str:
     dropped, except that white space inside inline code is the code's own and kept as it is,
     as the gate reads prose (review blocker 3): `a  b.txt` and `a b.txt` are two facts."""
     text = _emphasis(value)
-    return _read(text, _code(text), 0, len(text))
+    return _read(text, _code(value), 0, len(text))
 
 
 def _code(text: str) -> list[tuple[int, int]]:
-    """Where inline code is in `text`: cairn.spans.code_spans, the gate's finder, with the
-    backticks of each fence line (`_FENCE`: an opener or a closer, alone on its line) set
-    aside, so a fence's own runs never pair. No fence is followed from its opener to its
-    closer: code_spans pairs within a block, and every block of a passage is a block of the
-    body that holds it, as written, so a passage and a body read each block alike, whatever
-    a fence left open, opened in a quote or on a list marker's line, or indented four spaces
-    does (the closer the renderer adds is a fence line, set aside too). Code lines are read
-    the same way (`_code_lines`).
+    """Where inline code is in `text`, as the gate reads it: cairn.spans.code_spans, the
+    Markdown parser's reading of the text as a document of its own (a fence's runs open no
+    inline code, and a quote's or a list item's blocks end where Markdown ends them). Where
+    the parser's answer cannot be placed (code_spans gives None) the whole text is read as
+    code, its white space kept as it is, as the gate then compares the passage exactly. The
+    text parsed is the span's own, not the emphasised one: `_emphasis` turns underscores
+    into "*" one for one, so the places are the same, and Markdown is read as written. Code
+    lines are read the same way (`_code_lines`).
 
     Only the spans that hold white space are given: a span without any reads the same kept
     or collapsed, so a text whose code holds no white space reads as `_plain` reads it, at
     its cost."""
-    if "`" not in text:
-        return []
-    return [
-        (left, right)
-        for left, right in code_spans(_FENCE.sub(_set_aside, text))
-        if _SPACE_RUN.search(text, left, right)
-    ]
-
-
-def _set_aside(line: re.Match[str]) -> str:
-    """A fence line with its backticks as tildes: its length and line breaks kept."""
-    return line[0].replace("`", "~")
+    found = code_spans(text)
+    if found is None:
+        return [(0, len(text))] if _SPACE_RUN.search(text) else []
+    return [(left, right) for left, right in found if _SPACE_RUN.search(text, left, right)]
 
 
 def _read(text: str, code: list[tuple[int, int]], start: int, end: int) -> str:
@@ -245,7 +237,7 @@ def extract_facts(span: Span) -> list[Fact]:
     # The span's text with each underscore of emphasis by a fact as "*", one for one: facts are
     # found and normalized in it, as normalize() reads the whole span, and valued in the span.
     text = _emphasis(span.text)
-    code = _code(text)  # inline code, whose white space a fact's norm keeps
+    code = _code(span.text)  # inline code, whose white space a fact's norm keeps
     for start, end, body_start, body_end in _fenced(span.text):  # a code span is one such block
         claimed.add(start, end)
         facts.append(_fact(span, text, "code_block", body_start, body_end, code))

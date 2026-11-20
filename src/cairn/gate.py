@@ -44,12 +44,13 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   read.
 - Any other prose passage is compared as text: the same characters, with each run of white
   space read as one space and the white space at the two ends dropped, so a hard-wrapped
-  passage may be wrapped elsewhere. White space inside inline code (a backtick run and the
-  next run of as many in the same block, as CommonMark pairs them) is the code's and is
-  compared as it is, so `a  b.txt` and `a b.txt` are two texts (review blocker 3); lint's
-  fact check reads code the same way, with the same finder. White space is space, tab, CR
-  and LF only. Nothing else is
-  normalised: no case folding, no Unicode normalisation, and zero-width, no-break and
+  passage may be wrapped elsewhere. White space inside inline code (as the Markdown parser
+  reads the passage: cairn.spans.code_spans) is the code's and is compared as it is, so
+  `a  b.txt` and `a b.txt` are two texts (review blocker 3, the second report's finding 2);
+  lint's fact check reads code the same way, with the same finder. A passage whose code the
+  parser cannot place (a backtick left as text in its first paragraph) is compared exactly.
+  White space is space, tab, CR and LF only. Nothing else is normalised: no case folding,
+  no Unicode normalisation, and zero-width, no-break and
   bidirectional characters are text, so a homoglyph or an override never matches. A list or
   quote marker ("- ", "* ", "+ ", ">") is text too, never dropped or added, and it keeps its
   place: a line of the claim starts with one where a line of the passage does and nowhere
@@ -214,9 +215,9 @@ def _not_verbatim(
     whole. `readings` keeps each passage's reading between calls of one gate."""
     readings = {} if readings is None else readings
     lines = claim.text.split("\n")
-    read: dict[str, str | tuple[str, ...]] = {}  # the claim, read each way a passage asks
+    read: dict[str, str | tuple[str, ...] | None] = {}  # the claim, read each way a passage asks
 
-    def claim_as(how: str) -> str | tuple[str, ...]:
+    def claim_as(how: str) -> str | tuple[str, ...] | None:
         if how not in read:
             read[how] = _text(lines) if how == _TEXT else _rows(lines, how == _EXACT)
         return read[how]
@@ -277,9 +278,9 @@ def _reading(span: Span) -> _Reading:
         return _LINES, _rows(lines, exact=False)
     if span.kind not in PROSE_KINDS:
         return None
-    if _structure(lines) is not None:
-        return _EXACT, _rows(lines, exact=True)
-    return _TEXT, _text(lines)
+    if _structure(lines) is None and (text := _text(lines)) is not None:
+        return _TEXT, text
+    return _EXACT, _rows(lines, exact=True)  # structure, or code the parser cannot place
 
 
 def _rows(lines: list[str], exact: bool) -> tuple[str, ...]:
@@ -291,16 +292,20 @@ def _rows(lines: list[str], exact: bool) -> tuple[str, ...]:
     return tuple(rows[first:last])
 
 
-def _text(lines: Iterable[str]) -> str:
+def _text(lines: Iterable[str]) -> str | None:
     """Prose read as text: each run of white space one space and the ends dropped, except that
     a line break stays before a line that opens with a list or quote marker and after a line
     that is markers alone, so every marker stays at the start of its line. White space inside
-    inline code (cairn.spans.code_spans, which the fact check's normalize shares) is the code's
-    own and is kept as it is, line breaks included (a CR before one aside), so `a  b.txt` and
-    `a b.txt` are two texts (review blocker 3)."""
+    inline code is the code's own and is kept as it is, line breaks included (a CR before one
+    aside), so `a  b.txt` and `a b.txt` are two texts (review blocker 3). Inline code is what
+    the Markdown parser reads (cairn.spans.code_spans, which the repeat key and the fact
+    check's normalize share); None when the parser's answer cannot be placed, and the text is
+    then compared exactly."""
     rows = [raw.removesuffix("\r") for raw in lines]
     text = "\n".join(rows)
     code = code_spans(text)
+    if code is None:
+        return None
     out: list[str] = []
     alone = False
     at = 0

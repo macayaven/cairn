@@ -146,7 +146,8 @@ def test_inline_code_the_same_still_repeats_when_the_prose_is_wrapped():
 
 def test_an_escaped_backtick_opens_no_code():
     assert text_reading("A \\` tick, `a  b` here.") != text_reading("A \\` tick, `a b` here.")
-    assert text_reading("No `code  here.") == text_reading("No `code here.")
+    # A backtick Markdown leaves as text reads the passage exactly (spans.code_spans).
+    assert text_reading("No `code  here.") != text_reading("No `code here.")
 
 
 def test_two_notes_that_differ_only_inside_inline_code_both_survive_a_tidy(store):

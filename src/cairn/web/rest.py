@@ -82,6 +82,7 @@ from cairn.memory import (
     not_taken,
     without_missing_page,
 )
+from cairn.relations import RELATED_DEFAULT
 from cairn.sources import CHOOSING, KINDS
 from cairn.sources.runner import PreviewBusy, preview_days, preview_new_source, preview_source
 from cairn.store import CredentialInfo, SourceInfo
@@ -228,11 +229,11 @@ def rest_routes() -> list[Route]:
 
     def related(request: Request) -> Response:
         """GET /api/projects/<project>/pages/<slug>/related: the pages related to the page,
-        each with why (Memory.related); `limit`, 1 to 20, 8 when left out."""
+        each with why (Memory.related); `limit`, 1 to 20, 5 when left out."""
         limit = _whole_number(_query(request, "limit"), "limit", RELATED_RANGE)
         params = request.path_params
         found = _memory(request).related(
-            params["project"], params["slug"], 8 if limit is None else limit
+            params["project"], params["slug"], RELATED_DEFAULT if limit is None else limit
         )
         return JSONResponse(found)
 

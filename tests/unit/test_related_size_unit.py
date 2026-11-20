@@ -3,15 +3,23 @@
 The bound is the size of `largest(limit, character)`: the answer the constants allow at most,
 built here field by field. `limit` pages (relations.RELATED_MAX at most), each of
 relations.WHY_MAX reasons, each a term of relations.TERM_MAX characters and a claim on each
-side: relations.TEXT_MAX characters of text, relations.LINE_MAX of the line that holds the
-term, relations.PASSAGES_MAX passages named, memory.WRITTEN_BY_MAX writers of
-audit.ACTOR_NAME_MAX characters each, every field that is there only sometimes, and every
-text made of the character that costs most to send. That is a control character: \\u0001 in
-JSON, 6 bytes over REST, and 7 over MCP, which sends the answer as JSON inside a JSON string.
+side: relations.TEXT_MAX characters of its text, relations.PASSAGES_MAX passages named,
+memory.WRITTEN_BY_MAX writers of audit.ACTOR_NAME_MAX characters each, every field that is
+there only sometimes, and every text made of the character that costs most to send. That is
+a control character: \\u0001 in JSON, 6 bytes over REST, and 7 over MCP, which sends the
+answer as JSON inside a JSON string.
+A claim is given in one of three shapes, never a head beside a line: its text whole, at most
+TEXT_MAX characters; or, of a longer claim, `text_cut` with the line that holds the term or
+names the title, at most relations.LINE_MAX characters; or `text_cut` with its first
+TEXT_MAX characters, where no line can be told. The last is the largest and the bound is
+made of it; a test says the shape with a line is smaller.
+Who wrote a claim weighs more in the largest answer than the claim's text does: three
+writers' names of 200 characters, where a name is mostly a few letters.
 STATED holds the numbers, and one test says they are what the constants give.
 
 What makes it a bound and not a hope: `within` checks an answer field by field against the
-largest (no text longer, no list longer, no field the largest has not), and it is asked of
+largest (no text longer, no list longer, no field the largest has not; and no claim with
+both a `text` cut and a `line`), and it is asked of
 answers made through the product from claims far larger than any bound: a table of 322,320
 characters as one claim on both sides of every reason at limit 20, and pages of control
 characters. The sizes compared are the bytes each surface sends, pinned to the responses of
@@ -48,14 +56,14 @@ TABLE = 322_320  # characters of the largest claim measured: this repository's t
 # The numbers stated: the most bytes an answer takes, by surface and limit, for any text and
 # for text of one byte a character (plain English). Each is a size of `largest`.
 STATED = {
-    ("rest", 8, "any text"): 990_944,
-    ("rest", 20, "any text"): 2_474_924,
-    ("mcp", 8, "any text"): 1_193_305,
-    ("mcp", 20, "any text"): 2_980_225,
-    ("rest", 8, "plain text"): 209_144,
-    ("rest", 20, "plain text"): 521_924,
-    ("mcp", 8, "plain text"): 255_145,
-    ("mcp", 20, "plain text"): 636_625,
+    ("rest", 5, "any text"): 295_169,
+    ("rest", 20, "any text"): 1_175_804,
+    ("mcp", 5, "any text"): 366_715,
+    ("mcp", 20, "any text"): 1_460_785,
+    ("rest", 5, "plain text"): 76_169,
+    ("rest", 20, "plain text"): 302_804,
+    ("mcp", 5, "plain text"): 103_915,
+    ("mcp", 20, "plain text"): 413_185,
 }
 
 
@@ -76,11 +84,16 @@ def as_mcp(answer: dict) -> int:
 SENT = {"rest": as_rest, "mcp": as_mcp}
 
 
-def largest(limit: int, character: str) -> dict:
+def largest(limit: int, character: str, shape: str = "a head") -> dict:
     """The answer the constants allow at most, every text someone wrote made of `character`
-    (a title, a term, a claim's text and its line, a writer's name and a note's `via`). What
+    (a title, a term, a claim's text or its line, a writer's name and a note's `via`). What
     the product makes is of plain letters and as long as it makes it: an id, a slug, a
-    project's name, a kind, a time."""
+    project's name, a kind, a time.
+
+    Every claim in one `shape`: "a head", `text_cut` with TEXT_MAX characters of text, the
+    largest a claim is given in and the one the bound is made of; "a line", `text_cut` with a
+    line of LINE_MAX characters, cut; or "every field", a head and a line together, which no
+    answer gives: only for `within`, which checks each field of an answer against it."""
 
     def text(length: int) -> str:
         return character * length
@@ -100,12 +113,14 @@ def largest(limit: int, character: str) -> dict:
         "outside": False,
         "filed_message": SLACK_FILED,
     }
+    given = {
+        "a head": {"text": text(relations.TEXT_MAX), "text_cut": True},
+        "a line": {"text_cut": True, "line": text(relations.LINE_MAX), "line_cut": True},
+    }
+    given["every field"] = given["a head"] | given["a line"]
     claim = {
         "claim_id": made(claim_id),
-        "text": text(relations.TEXT_MAX),
-        "text_cut": True,
-        "line": text(relations.LINE_MAX),
-        "line_cut": True,
+        **given[shape],
         "passage_ids": [made(passage_id)] * relations.PASSAGES_MAX,
         "passage_ids_more": most,
         "outside": False,
@@ -143,6 +158,17 @@ def largest(limit: int, character: str) -> dict:
             "pages_left_out": most,
         },
     }
+
+
+def faults(answer: dict, limit: int) -> list[str]:
+    """Where the answer is not within the largest of `limit` pages: a field longer than the
+    largest's, or a claim in none of the three shapes (`sides` yields the claims)."""
+    found = within(answer, largest(limit, "a", "every field"))
+    for reason, claim in sides(answer):
+        cut, text, line = "text_cut" in claim, "text" in claim, "line" in claim
+        if not (text != line and (cut or not line) and ("line_cut" not in claim or line)):
+            found.append(f"a claim of {reason['kind']}: a head beside a line, or neither")
+    return found
 
 
 def within(answer, most, where: str = "answer") -> list[str]:
@@ -236,39 +262,52 @@ def sides(answer: dict):
 
 def test_the_stated_numbers_are_the_size_of_the_largest_answer_the_constants_allow():
     """Each number of STATED, worked out again: change a constant and this says which
-    numbers to state anew."""
+    numbers to state anew. The largest answer is of claims given by their head; one of
+    claims given by a line, the other shape of a long claim, is smaller."""
+    cases = [
+        (surface, limit, text, character)
+        for surface in ("rest", "mcp")
+        for limit in (relations.RELATED_DEFAULT, relations.RELATED_MAX)
+        for text, character in (("any text", COSTLIEST), ("plain text", "a"))
+    ]
     worked = {
         (surface, limit, text): SENT[surface](largest(limit, character))
-        for surface in ("rest", "mcp")
-        for limit in (8, relations.RELATED_MAX)
-        for text, character in (("any text", COSTLIEST), ("plain text", "a"))
+        for surface, limit, text, character in cases
     }
     assert worked == STATED
+    for surface, limit, text, character in cases:
+        assert SENT[surface](largest(limit, character, "a line")) < STATED[surface, limit, text]
     said = " ".join(cairn.memory.__doc__.split())  # where the contract states them
     assert (
-        "The largest answer they allow at `limit` 20 is 521,924 bytes over REST and 636,625"
-        " over MCP for text of one byte a character, and 2,474,924 and 2,980,225 whatever the"
-        " text holds; at the default `limit` of 8, 209,144 and 255,145, and 990,944 and"
-        " 1,193,305 ("
+        "The largest answer they allow at `limit` 20 is 302,804 bytes over REST and 413,185"
+        " over MCP for text of one byte a character, and 1,175,804 and 1,460,785 whatever the"
+        " text holds; at the default `limit` of 5, 76,169 and 103,915, and 295,169 and"
+        " 366,715 ("
     ) in said
     for number in STATED.values():
         assert f"{number:,}" in said
-    assert (relations.RELATED_MAX, relations.WHY_MAX) == (20, 3)
-    assert (relations.TEXT_MAX, relations.LINE_MAX, relations.TERM_MAX) == (2_000, 400, 200)
+    assert (relations.RELATED_DEFAULT, relations.RELATED_MAX, relations.WHY_MAX) == (5, 20, 3)
+    assert (relations.TEXT_MAX, relations.LINE_MAX, relations.TERM_MAX) == (600, 400, 200)
     assert (relations.PASSAGES_MAX, WRITTEN_BY_MAX, ACTOR_NAME_MAX) == (8, 3, 200)
 
 
-def test_most_of_the_largest_answer_is_the_text_and_the_lines_of_its_claims():
-    """How the bound follows, in one sum: `limit` pages of WHY_MAX reasons of two claims, each
-    TEXT_MAX + LINE_MAX characters of claim, are 288,000 characters at limit 20; with 6 bytes
-    a character that is 1,728,000 bytes of the number stated, and the rest is who wrote each
-    claim, the passages it names, the terms and the titles."""
+def test_what_the_largest_answer_is_made_of():
+    """How the bound follows, as sums. `limit` pages of WHY_MAX reasons of two claims are 120
+    claims at limit 20. Each holds at most TEXT_MAX characters of its text, 600 (or a line
+    of LINE_MAX, 400, in its place); and WRITTEN_BY_MAX writers, each a name of 200
+    characters and a `via` of 40, 720 in all. At 6 bytes a character over REST those are
+    432,000 and 518,400 bytes of the number stated, and the 60 terms and 21 titles of 200
+    characters are 97,200 more; what is left is the ids, the fixed words and JSON's own
+    marks."""
     claims = relations.RELATED_MAX * relations.WHY_MAX * 2
-    characters = claims * (relations.TEXT_MAX + relations.LINE_MAX)
-    assert (claims, characters) == (120, 288_000)
+    text = claims * max(relations.TEXT_MAX, relations.LINE_MAX)
+    writers = claims * WRITTEN_BY_MAX * (ACTOR_NAME_MAX + FIELD_MAX["via"])
+    named = (relations.RELATED_MAX * relations.WHY_MAX + relations.RELATED_MAX + 1) * 200
+    assert (claims, text, writers, named) == (120, 72_000, 86_400, 16_200)
     stated = STATED["rest", 20, "any text"]
-    assert 6 * characters == 1_728_000 and 1_728_000 < stated < 2 * 1_728_000
-    assert STATED["rest", 20, "plain text"] < 2 * characters
+    most = 6 * (text + writers + named)
+    assert most == 1_047_600 and most < stated < most + most // 8
+    assert STATED["rest", 20, "plain text"] < 2 * (text + writers + named)
 
 
 @pytest.mark.parametrize(
@@ -333,7 +372,7 @@ def test_claims_of_322_320_characters_on_both_sides_at_limit_20_are_under_the_bo
 ):
     """With the bytes of passages read raised out of the way, so that all twenty pages are
     related: sixty reasons, a claim of 322,320 characters on each side of each, every one
-    given as its first 2,000 characters and 400 of the row that holds the term."""
+    given as 400 characters of the row that holds the term, and nothing of its head."""
     monkeypatch.setattr(relating, "BYTES_MAX", 21 * 4 * TABLE)
     answer = both(tables, "asked", 20)
     assert len(answer["related"]) == 20 and answer["searched"]["complete"] is True
@@ -341,10 +380,10 @@ def test_claims_of_322_320_characters_on_both_sides_at_limit_20_are_under_the_bo
     given = list(sides(answer))
     assert len(given) == 120
     for reason, claim in given:
-        assert (len(claim["text"]), claim["text_cut"]) == (relations.TEXT_MAX, True)
+        assert "text" not in claim and claim["text_cut"] is True
         assert (len(claim["line"]), claim["line_cut"]) == (relations.LINE_MAX, True)
         assert f"`{reason['term']}`" in claim["line"] and "\n" not in claim["line"]
-    assert within(answer, largest(20, "a")) == []
+    assert faults(answer, 20) == []
     for surface, sent in SENT.items():
         assert sent(answer) <= STATED[surface, 20, "plain text"] < STATED[surface, 20, "any text"]
     assert as_rest(answer) < 120 * TABLE // 100  # and no hundredth of the claims it rests on
@@ -364,50 +403,61 @@ def test_as_shipped_the_bytes_read_stop_at_three_such_claims_and_the_answer_says
         "claims_not_read": 17,
         "pages_left_out": 0,
     }
-    assert within(answer, largest(20, "a")) == []
+    assert faults(answer, 20) == []
     # asked of one of the others, whose one candidate is the first page's claim: complete
-    back = both(tables, "page-00", 8)
+    back = both(tables, "page-00", 5)
     assert back["searched"]["complete"] is True and len(back["related"]) == 1
-    assert within(back, largest(8, "a")) == []
+    assert faults(back, 5) == []
 
 
 # The largest answer the shipped bounds reach
 
 
-def long_claim(lead: str, filler: str) -> str:
-    """One line a little longer than relations.TEXT_MAX, the term past the cut."""
-    return filler * (relations.TEXT_MAX // len(filler)) + f" {lead} " + filler * 20
+def claim_of(lead: str, filler: str, length: int) -> str:
+    """One line of exactly `length` characters that starts with `lead`, the rest `filler`."""
+    body = lead + " " + (filler * length)[: length - len(lead) - 2] + "."
+    assert len(body) == length
+    return body
 
 
 @pytest.mark.parametrize(
-    ("kind", "filler"),
+    ("kind", "filler", "limit", "shape"),
     [
-        ("plain text", "Brook waits. "),
-        ("any text", COSTLIEST),
-        ("any text", '"\\'),
-        ("any text", "\u20ac"),  # three bytes as stored, and as each surface sends it
-        ("any text", "\U0001f600"),  # four
+        ("plain text", "Brook waits, ", 5, "whole"),
+        ("plain text", "Brook waits, ", 20, "whole"),
+        ("any text", COSTLIEST, 5, "whole"),
+        ("any text", COSTLIEST, 20, "whole"),
+        ("any text", '"\\', 20, "whole"),
+        ("any text", "\u20ac", 20, "whole"),  # three bytes as stored, and as each surface sends it
+        ("any text", "\U0001f600", 20, "whole"),  # four
+        ("plain text", "Brook waits, ", 20, "a line"),
+        ("any text", COSTLIEST, 20, "a line"),
     ],
 )
-@pytest.mark.parametrize("limit", [8, 20])
 def test_the_largest_answer_made_through_the_product_is_within_the_largest_allowed(
-    served, kind, filler, limit
+    served, kind, filler, limit, shape
 ):
-    """Twenty pages, each related to the page asked about by three terms, every claim on
-    either side a line longer than TEXT_MAX, within the bytes read as shipped: `limit` pages
-    of three reasons, every side cut, with a line cut. Its every field is within the
-    largest answer's, and its bytes are under the number stated; with text of control
-    characters, the costliest there are, it comes to more than half of that number. `both`
-    pins the sizes compared to the bytes the server sends, for each of these texts."""
+    """Twenty pages, each related to the page asked about by three terms, within the bytes
+    read as shipped: `limit` pages of three reasons, a claim of its own on every side. As
+    "whole", every claim is exactly TEXT_MAX characters, the most a claim is given of, and
+    is given whole; as "a line", one character more, and is given by its line, cut, with no
+    text. Every field is within the largest answer's, and the bytes are under the number
+    stated. `both` pins the sizes compared to the bytes the server sends, for each text.
+
+    With text of control characters, the costliest there are, the whole claims come to more
+    than a third of the number stated and not to half: the rest of that number is three
+    writers' names of 200 costly characters and eight passages a claim, where these claims
+    have one writer of a short name and one passage."""
+    length = relations.TEXT_MAX + (shape == "a line")
     asked = "\n\n".join(
-        long_claim(f"Ada pins `{term(page, n)}` at noon.", filler)
+        claim_of(f"Ada pins `{term(page, n)}` at noon;", filler, length)
         for page in range(20)
         for n in range(3)
     )
     slug = note(served, "Asked " + "a" * 194, asked + "\n")
     for page in range(20):
         theirs = "\n\n".join(
-            long_claim(f"Quill reads `{term(page, n)}` at dusk.", filler) for n in range(3)
+            claim_of(f"Quill reads `{term(page, n)}` at dusk;", filler, length) for n in range(3)
         )
         note(served, f"Page {page:02d} " + "b" * 192, theirs + "\n")
     answer = both(served, slug, limit)
@@ -418,11 +468,34 @@ def test_the_largest_answer_made_through_the_product_is_within_the_largest_allow
     assert len(given) == limit * relations.WHY_MAX * 2
     assert len({claim["claim_id"] for _, claim in given}) == len(given)  # no claim twice
     for _, claim in given:
-        assert (len(claim["text"]), claim["text_cut"]) == (relations.TEXT_MAX, True)
-        assert (len(claim["line"]), claim["line_cut"]) == (relations.LINE_MAX, True)
-    character = "a" if kind == "plain text" else COSTLIEST
-    assert within(answer, largest(limit, character)) == []
+        if shape == "whole":
+            assert len(claim["text"]) == relations.TEXT_MAX
+            assert not {"text_cut", "line", "line_cut"} & set(claim)
+        else:
+            assert "text" not in claim and claim["text_cut"] is True
+            assert (len(claim["line"]), claim["line_cut"]) == (relations.LINE_MAX, True)
+    assert faults(answer, limit) == []
     for surface, sent in SENT.items():
         assert sent(answer) <= STATED[surface, limit, kind]
-    if filler == COSTLIEST:
-        assert as_rest(answer) > STATED["rest", limit, kind] // 2
+    if filler == COSTLIEST and shape == "whole":
+        stated = STATED["rest", limit, kind]
+        assert stated // 3 < as_rest(answer) < stated // 2
+
+
+def test_claims_that_mention_the_page_with_its_title_spread_wide_are_within_the_largest(served):
+    """Five pages name the page (one more and its title would be common), each in a claim
+    longer than TEXT_MAX whose words of the title stand 600 characters apart. Each gives a
+    line of LINE_MAX characters and no more, and the answer is within the largest allowed."""
+    note(served, "Quill ledger", "Brook balances it at dusk.\n")
+    apart = "Quill" + " \u2014" * 300 + " ledger"
+    for page in range(relations.COMMON):
+        note(served, f"Page {page}", "Ada waits. " * 60 + f"On day {page} she opens the {apart}.\n")
+    answer = both(served, "quill-ledger", 5)
+    assert len(answer["related"]) == relations.COMMON
+    for reason, claim in sides(answer):
+        assert reason["kind"] == "mentioned_by" and claim["text_cut"] is True
+        assert (claim["line"], claim["line_cut"]) == (apart[: relations.LINE_MAX], True)
+        assert "text" not in claim
+    assert faults(answer, 5) == []
+    for surface, sent in SENT.items():
+        assert sent(answer) <= STATED[surface, 5, "any text"]

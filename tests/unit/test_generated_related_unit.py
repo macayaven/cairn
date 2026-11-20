@@ -35,10 +35,16 @@ What is checked of every answer of `Memory.related`, for every page:
   counts claims it did not read;
 - and with the bounds on what is given of a claim made small enough to be met (TEXT_GIVEN
   and LINE_GIVEN characters for relations.TEXT_MAX and LINE_MAX): the answer is the whole
-  answer but for its long claims; a text cut is the first TEXT_GIVEN characters of the
-  claim's text; a line is the line of the claim's first passage on which the term's first
+  answer but for its long claims; a claim has its text whole, or `text_cut` with a line and
+  no text, or `text_cut` with its first TEXT_GIVEN characters and no line (only a claim
+  that mentions the page and holds a mark of the index or a null: a project made by hand
+  has some), never a head and a line; a line is the line of the claim's first passage on
+  which the term's first
   fact stands, by a fresh extract_facts and the passage split at its line ends here, whole
-  or LINE_GIVEN characters of it that hold the fact as it is written there.
+  or LINE_GIVEN characters of it that hold the fact as it is written there; and the line of
+  a claim that mentions the page is a piece of the claim's text, the first of its lines
+  that holds the title's words side by side as the index reads them (its tokens of the
+  line alone, as for a mention above), whole or LINE_GIVEN characters of it.
 CLAIMS_COMMON is 7 for these projects, which hold at most 36 claims, so that the rule decides
 some relations; the first test counts how many.
 A failure names project and page numbers and term kinds, never a note's text.
@@ -421,69 +427,173 @@ def first_line_of(span, kind: str, term: str) -> tuple[str, str] | None:
     return None
 
 
-def test_a_claim_given_cut_is_a_prefix_of_its_text_and_its_line_holds_the_term_as_read(world):
-    """With little given of a claim, nothing else of an answer changes; a text cut is the
-    claim's first characters; and the line beside it is the passage's own line that holds
-    the term's first fact, whole or a window of it around the fact as written."""
+def mention_fault(reading: Reading, given: dict, text: str, title: str, seen: Counter) -> str:
+    """What is wrong with the line of a claim cut that mentions the page titled `title`, the
+    claim's whole text being `text`; nothing when it is right. The line is a piece of the
+    text; the index's own reading of the line holds the title's words side by side; no line
+    of the text before it does, so it is the first place the title is named; and it is whole
+    lines of the text, or LINE_GIVEN characters of longer ones."""
+    words = re.findall(r"\w+", title)
+    line = given.get("line")
+    if line is None or line not in text:
+        return "no line, or not a piece of the claim's text"
+    if not reading.holds(line, words):
+        return "the line does not hold the title as the index reads it"
+    before = text[: text.rfind("\n", 0, text.index(line)) + 1]  # the whole lines before it
+    seen["a mention after a line that holds none"] += bool(before.strip())
+    if reading.holds(before, words):
+        return "a line before it names the title"
+    if "line_cut" in given:
+        seen["a mention's line cut"] += 1
+        return "" if len(line) == LINE_GIVEN else "cut, and not to the bound"
+    seen["a mention's line whole"] += 1
+    seen["a mention's line of two lines"] += "\n" in line
+    whole_lines = ("\n" + line + "\n") in ("\n" + text + "\n")
+    return "" if whole_lines and len(line) <= LINE_GIVEN else "not whole lines of the text"
+
+
+def shape_of(given: dict, text: str, mention: bool) -> tuple[str, str]:
+    """The shape a claim is given in, its whole text being `text`, and what is wrong with it
+    (nothing when it is right). One of three: its text whole, when that is within TEXT_GIVEN
+    characters; of a longer text, `text_cut` with a line and no text; or `text_cut` with its
+    first TEXT_GIVEN characters and no line, which only a claim that mentions the page and
+    holds a mark of the index or a null character is given as. Never a head and a line."""
+    if "text_cut" not in given:
+        alone = "line" not in given and "line_cut" not in given
+        right = alone and given.get("text") == text and len(text) <= TEXT_GIVEN
+        return "whole", "" if right else "not its text whole, alone, within the bound"
+    if given["text_cut"] is not True or len(text) <= TEXT_GIVEN:
+        return "none", "marked cut, and its text is within the bound"
+    if "line" in given:
+        return "a line", "" if "text" not in given else "a head beside a line"
+    told = not any(mark in text for mark in (*relating.MARKS, "\x00"))
+    right = given.get("text") == text[:TEXT_GIVEN] and "line_cut" not in given
+    if not right:
+        return "a head", "not its first characters, alone"
+    return "a head", "a head where a line can be told" if told or not mention else ""
+
+
+def claims_checked(whole: dict, cut: dict, spans: dict, reading: Reading, seen: Counter) -> list:
+    """What is wrong with the answer `cut`, the answer `whole` with little given of a claim:
+    as (the related page, the term's kind, the side, the fault). Nothing but its long claims
+    differs; each claim is in one of the three shapes (`shape_of`); the line of a claim
+    that states a term is the passage's own line that holds the term's first fact, whole or
+    a window of it around the fact as written; and the line of a claim that mentions the
+    page is the first of the claim's text that names the title, as the index reads it
+    (`mention_fault`)."""
+    wrong = []
+    assert {**cut, "related": None} == {**whole, "related": None}
+    for page, full in zip(cut["related"], whole["related"], strict=True):
+        assert {**page, "why": None} == {**full, "why": None}
+        for reason, entire in zip(page["why"], full["why"], strict=True):
+            assert {**reason, "here": None, "there": None} == {
+                **entire,
+                "here": None,
+                "there": None,
+            }
+            for side in ("here", "there") if reason["kind"] == "shares" else ("there",):
+                given, claim = reason[side], entire[side]
+                where = (page["page"], reason["term_kind"], side)
+                added = {k: given[k] for k in ("text_cut", "line", "line_cut") if k in given}
+                if {**given, "text": claim["text"]} != {**claim, **added}:
+                    wrong.append((*where, "another field differs"))
+                shape, fault = shape_of(given, claim["text"], reason["kind"] != "shares")
+                seen[shape] += 1
+                if fault:
+                    wrong.append((*where, fault))
+                if fault or shape != "a line":
+                    continue
+                if reason["kind"] != "shares":
+                    seen["a line, of a mention"] += 1
+                    fault = mention_fault(reading, given, claim["text"], whole["title"], seen)
+                    if fault:
+                        wrong.append((*where, fault))
+                    continue
+                span = spans[claim["passage_ids"][0]]
+                line, written = first_line_of(span, reason["term_kind"], reason["term"])
+                seen["of a passage of several lines"] += "\n" in span.text
+                if len(line) <= LINE_GIVEN:
+                    seen["line whole"] += 1
+                    if given["line"] != line or "line_cut" in given:
+                        wrong.append((*where, "not the line, whole"))
+                    continue
+                seen["line cut"] += 1
+                seen["line cut to the term's start"] += len(written) > LINE_GIVEN
+                # LINE_GIVEN characters of the line that hold the term as written; of a term
+                # written longer (none is, at the shipped bounds, where TERM_MAX is under
+                # LINE_MAX), its first LINE_GIVEN
+                if not (
+                    given.get("line_cut") is True
+                    and len(given["line"]) == LINE_GIVEN
+                    and given["line"] in line
+                    and (written in given["line"] or given["line"] == written[:LINE_GIVEN])
+                ):
+                    wrong.append((*where, "not a window of the line that holds the term"))
+    return wrong
+
+
+def test_a_claim_is_given_whole_or_by_its_line_or_by_its_head_and_never_by_both(world):
+    """Over every answer of the generated projects, with little given of a claim
+    (`claims_checked`): a claim has its text whole, or `text_cut` with a line that holds the
+    term or names the title, or `text_cut` with a head and no line; never a head and a line."""
     wrong, seen = [], Counter()
     for project in world["projects"]:
         for slug, whole in project["answers"].items():
-            cut = project["cut"][slug]
-            assert {**cut, "related": None} == {**whole, "related": None}
-            for page, full in zip(cut["related"], whole["related"], strict=True):
-                assert {**page, "why": None} == {**full, "why": None}
-                for reason, entire in zip(page["why"], full["why"], strict=True):
-                    assert {**reason, "here": None, "there": None} == {
-                        **entire,
-                        "here": None,
-                        "there": None,
-                    }
-                    for side in ("here", "there") if reason["kind"] == "shares" else ("there",):
-                        given, claim = reason[side], entire[side]
-                        where = (project["name"], slug, page["page"], reason["term_kind"], side)
-                        added = {
-                            k: given[k] for k in ("text_cut", "line", "line_cut") if k in given
-                        }
-                        if {**given, "text": claim["text"]} != {**claim, **added}:
-                            wrong.append((*where, "another field differs"))
-                        if len(claim["text"]) <= TEXT_GIVEN:
-                            seen["whole"] += 1
-                            if given != claim:
-                                wrong.append((*where, "a short claim is not given as it is"))
-                            continue
-                        seen["cut"] += 1
-                        if (
-                            given["text"] != claim["text"][:TEXT_GIVEN]
-                            or given["text_cut"] is not True
-                        ):
-                            wrong.append((*where, "not the first characters, marked"))
-                        if reason["kind"] != "shares":
-                            seen["cut, a mention"] += 1
-                            if "line" in given or "line_cut" in given:
-                                wrong.append((*where, "a mention with a line"))
-                            continue
-                        span = project["spans"][claim["passage_ids"][0]]
-                        line, written = first_line_of(span, reason["term_kind"], reason["term"])
-                        seen["of a passage of several lines"] += "\n" in span.text
-                        if len(line) <= LINE_GIVEN:
-                            seen["line whole"] += 1
-                            if given["line"] != line or "line_cut" in given:
-                                wrong.append((*where, "not the line, whole"))
-                            continue
-                        seen["line cut"] += 1
-                        seen["line cut to the term alone"] += len(written) >= LINE_GIVEN
-                        if not (
-                            given.get("line_cut") is True
-                            and len(given["line"]) == max(LINE_GIVEN, len(written))
-                            and given["line"] in line
-                            and written in given["line"]
-                        ):
-                            wrong.append((*where, "not a window of the line that holds the term"))
+            found = claims_checked(
+                whole, project["cut"][slug], project["spans"], world["reading"], seen
+            )
+            wrong += [(project["name"], slug, *fault) for fault in found]
     assert wrong == [], (len(wrong), wrong[:5])
-    each = ("whole", "cut", "cut, a mention", "line whole", "line cut")
+    each = ("whole", "a line", "a line, of a mention", "line whole", "line cut")
     assert min(seen[k] for k in each) >= 100, seen
+    assert seen["a head"] == seen["none"] == 0, seen  # no generated claim holds a mark
+    assert seen["a mention's line whole"] >= 200 and seen["a mention's line cut"] >= 500, seen
+    assert seen["a mention after a line that holds none"] >= 300, seen
+    assert seen["a mention's line of two lines"] >= 5, seen
     assert seen["of a passage of several lines"] >= 300, seen
-    assert seen["line cut to the term alone"] >= 30, seen
+    assert seen["line cut to the term's start"] >= 30, seen
+
+
+def test_the_same_holds_of_claims_that_hold_a_mark_of_the_index_or_a_null(monkeypatch):
+    """The third shape, which no generated claim is given in: a project made here, of a page
+    that five claims mention. Three of them hold a mark of the index or a null character,
+    and are given by their head; the others by the line that names the title. The same
+    check as above says so (`claims_checked`), and nothing else of the answers is wrong."""
+    marked = [relating.MARKS[0], relating.MARKS[1], "\x00"]
+    seen, reading = Counter(), Reading()
+    with closing(Store(":memory:")) as store:
+        memory = Memory(store, lint_gate)
+        project = store.create_project("marks")
+        memory.note("marks", "Brook balances it; see `quill.lock`.\n", title="Quill ledger")
+        for n, mark in enumerate(marked):
+            text = f"Page {n}: Ada waits. She opens {mark} the Quill ledger at noon.\n"
+            memory.note("marks", text, title=f"Marked {n}")
+        memory.note("marks", "Ada waits.\nThen she opens the Quill ledger.\n", title="Plain")
+        memory.note("marks", "Quill pins `quill.lock`, far from the ledger.\n", title="Keeper")
+        slugs = [head.slug for head in store.list_pages(project.id)]
+        whole = {slug: memory.related("marks", slug, relations.RELATED_MAX) for slug in slugs}
+        monkeypatch.setattr(relations, "TEXT_MAX", TEXT_GIVEN)
+        monkeypatch.setattr(relations, "LINE_MAX", LINE_GIVEN)
+        cut = {slug: memory.related("marks", slug, relations.RELATED_MAX) for slug in slugs}
+        latest = [store.get_page(project.id, slug) for slug in slugs]
+        spans = store.get_spans({i for page in latest for c in page.claims for i in c.span_ids})
+    wrong = [
+        (slug, *fault)
+        for slug in slugs
+        for fault in claims_checked(whole[slug], cut[slug], spans, reading, seen)
+    ]
+    assert wrong == [], wrong
+    assert len(whole["quill-ledger"]["related"]) == 5
+    assert (seen["a head"], seen["a line, of a mention"], seen["none"]) == (3, 1, 0), seen
+    assert seen["a line"] >= 3 and seen["line whole"] + seen["line cut"] >= 2, seen
+    heads = [
+        page["why"][0]["there"]
+        for page in cut["quill-ledger"]["related"]
+        if page["page"].startswith("marked")
+    ]
+    assert [sorted(set(claim) & {"text", "text_cut", "line", "line_cut"}) for claim in heads] == [
+        ["text", "text_cut"]
+    ] * 3
 
 
 def test_a_relation_holds_from_both_sides(world):

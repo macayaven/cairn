@@ -391,7 +391,7 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
   graph(project, limit=20) -> the project's graph, as GET /api/graph answers it (below) and
       the resource graph://project/<project>/<limit> gives it (cairn.web.graph_resource): its
       pages, their claims, the passages those cite and their notes; `limit` is 1 to 20 pages
-  related(project, slug, limit=8) -> {"project", "page", "title", "version", "related":
+  related(project, slug, limit=5) -> {"project", "page", "title", "version", "related":
       [{"page", "title", "version", "why": [{"kind": "shares", "term", "term_kind", "pages",
       "here", "there"} or {"kind": "mentioned_by", "term", "term_kind": "title", "there"}],
       "more"}], "searched": {"complete", "terms_looked_up", "terms_not_looked_up",
@@ -407,10 +407,15 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       from either page. `pages` is how many pages hold the term, exactly: a term whose pages
       are not all known gives no reason. `here` and `there` are claims as a hit of `recall`
       carries one: "claim_id", "text", "passage_ids", "outside", "written_by", "written_at";
-      but a text longer than 2,000 characters is its first 2,000 with "text_cut": true, and
-      beside it, for a claim that states the term, "line": the line of the passage it cites
-      that holds the term (400 characters of a longer line, with "line_cut": true). `page`
-      gives the claim whole; a claim that is not cut has none of the three fields.
+      but a claim longer than 600 characters gives "text_cut": true and, in place of its
+      "text", "line": for a claim that states the term, the line of the passage it cites that
+      holds the term; for a claim that mentions the page, the line of its own text that names
+      the title, where the index matched it (two lines, with their line break, when the
+      title's words stand on two); 400 characters of a longer line, with "line_cut": true.
+      Only a long claim of which no line can be told (it mentions the page and holds a mark of
+      the index or a null character) gives its first 600 characters as "text", with
+      "text_cut": true and no line: never a head beside a line. `page` gives the claim whole;
+      a claim within 600 characters gives its "text" whole and none of the other three fields.
       "passage_ids" names the first 8 passages a claim cites, and "passage_ids_more" counts
       the rest, only when there are more (a claim a tidy folded from many). `why` holds 3
       reasons at most and `more` counts the rest; `limit` is 1 to 20, and any other is a tool
@@ -421,7 +426,7 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       inferred from meaning. `searched` says what the read's bounds left out, always, and
       counts each: the page's terms past the first 256, the claims of other pages past the 512
       claims and the million bytes of passages read, the related pages past `limit`. The
-      store's read runs at most 16 statements, whatever the page and the project hold
+      store's read runs at most 17 statements, whatever the page and the project hold
       (cairn.store.relating says which, and tests/unit/test_relating_cost_unit.py counts
       them). A read of the page for the audit log (read.page), which never holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
@@ -540,7 +545,7 @@ REST (JSON; project = id or name; unknown project or page, or another account's 
 - GET /api/projects/{project}/pages; GET /api/projects/{project}/pages/{slug}[?version=N]
 - GET /api/projects/{project}/pages/{slug}/claims/{claim_id}/evidence[?version=N] (E1)
 - GET /api/projects/{project}/pages/{slug}/related[?limit=N] (KG1): what `related` answers;
-  N is 1 to 20 (8 when left out), and any other is a 400 that says so; a page that is not
+  N is 1 to 20 (5 when left out), and any other is a 400 that says so; a page that is not
   there is the 404 `page` gives, with the nearest page names
 - GET /api/search?q=...[&project=...][&limit=N]: what `recall` answers, `searched` included;
   N is 1 to 50 (8 when left out), and any other is a 400 that says so (Q3)

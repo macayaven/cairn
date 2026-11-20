@@ -608,7 +608,7 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   `save_page` keeps each project's claim and token counts (`search_projects`) and each claim's
   project and length (`search_claims`) in its own transaction, so no search counts a corpus,
   and a match in a project out of reach is dropped without its claim being read.
-- `related_pages(project_id, slug, limit=8)` is the pages of the project related to its page
+- `related_pages(project_id, slug, limit=5)` is the pages of the project related to its page
   `slug`, the best `limit` first, each with the claims the relation rests on, and what the
   read left out (cairn.store.relating; the rules are cairn.relations), or None when there is
   no such page in reach. Nothing of a relation is stored: it is one read of the page's

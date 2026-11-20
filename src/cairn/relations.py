@@ -41,15 +41,19 @@ heaviest first, equal weights by slug, and each with its WHY_MAX weightiest reas
 weights: a mention, then the terms by kind and text) and how many more there are. No answer
 shows a weight: the order is the answer, and each reason says how many pages hold its term.
 
-What a reason gives of a claim: its text whole up to TEXT_MAX characters, and past that
-its first TEXT_MAX, marked cut. A reader of a claim cut must still see the term stated, so
-a claim cut that states a shared term is given with the line of its passage that holds the
-term (`line_of`): the line the term's fact stands on (`placed`: the fact's own start and
-end, never a second search of the text), whole up to LINE_MAX characters, else LINE_MAX
-characters of it around the term. And the passages it cites: the first PASSAGES_MAX, and
-a count of the others. A claim cites one passage as it is compiled; a tidy folds claims of
-the same text into one that cites every passage of theirs, without a bound, and the claim
-is read by its first.
+What a reason gives of a claim: its text whole up to TEXT_MAX characters. A longer claim
+is marked cut, and what its reader must see is the term stated, not the claim's first
+words: so a claim cut that states a shared term is given by the line of its passage that
+holds the term (`line_of`), in place of its text: the line the term's fact stands on
+(`placed`: the fact's own start and end, never a second search of the text), whole up to
+LINE_MAX characters, else LINE_MAX characters of it around the term. A claim cut that
+mentions the page is given the same way by the line of its own text that names the title,
+where the index matched it (cairn.store.relating). Only where the index cannot say which
+line that is does a claim cut give its first TEXT_MAX characters instead; an answer never
+holds a head beside a line (cairn.memory words it). And the passages it cites: the first
+PASSAGES_MAX, and a count of the others. A claim cites one passage as it is compiled; a
+tidy folds claims of the same text into one that cites every passage of theirs, without a
+bound, and the claim is read by its first.
 
 When a page holds more terms than are looked up (cairn.store.relating.TERMS_MAX), the
 shortest are looked up first (`looked_up_before`): the terms a few pages share are short (a
@@ -75,7 +79,8 @@ COMMON = 5  # a term more pages of the project hold than this relates none
 CLAIMS_COMMON = 64  # nor does one whose words more claims of the project hold than this
 WHY_MAX = 3  # the reasons an answer gives for one related page; it counts the rest
 RELATED_MAX = 20  # the most related pages one answer gives
-TEXT_MAX = 2_000  # the characters of a claim's text an answer gives; a longer one is cut
+RELATED_DEFAULT = 5  # the related pages an answer gives when no number is asked for
+TEXT_MAX = 600  # the characters of a claim's text an answer gives; a longer one is cut
 LINE_MAX = 400  # the characters of the line that holds a term, given beside a claim cut
 PASSAGES_MAX = 8  # the passages a claim given names, the first it cites; it counts the rest
 SHARES, MENTIONED_BY = "shares", "mentioned_by"  # the kinds of relation
@@ -119,12 +124,19 @@ def terms_of(span: Span) -> list[Term]:
 
 
 def line_of(text: str, start: int, end: int) -> tuple[str, bool]:
-    """The line of a passage's `text` that holds text[start:end], a term where `placed` found
-    it (a fact is read within one line), and whether it is cut. A line of at most LINE_MAX
-    characters is given whole. A longer one is given as LINE_MAX characters of it that hold
-    the term, as near their middle as the line's ends let it be; a term as long as that or
-    longer would be given alone, and none is (TERM_MAX), so what is given is LINE_MAX
-    characters at most. Nothing is searched for: the place is the fact's own."""
+    """The line of `text` that holds text[start:end], and whether it is cut: a term where
+    `placed` found it in its passage (a fact is read within one line), or a page's title
+    where the index matched it in a claim's text (the lines from the one it starts on to
+    the one it ends on, when its words stand on two). At most LINE_MAX characters whole.
+    Of more, LINE_MAX characters that hold the match, as near their middle as the line's
+    ends let it be; and of a match itself longer than that, its first LINE_MAX. So what is
+    given is LINE_MAX characters at most, whatever is asked. Nothing is searched for: the
+    place is the caller's.
+
+    It reads no further than LINE_MAX characters before `start` and after `end` (after
+    `start + LINE_MAX + 1`, of a longer match), so the same answer comes from that part of
+    a text alone: text[lo:hi] with the places counted from `lo`
+    (cairn.store.relating._named asks the index for no more of a long claim)."""
     first = text.rfind("\n", 0, start) + 1
     last = text.find("\n", end)
     last = len(text) if last < 0 else last
@@ -132,7 +144,7 @@ def line_of(text: str, start: int, end: int) -> tuple[str, bool]:
         return text[first:last], False
     room = max(0, LINE_MAX - (end - start))
     left = min(max(first, start - room // 2), last - LINE_MAX)
-    return text[left : max(left + LINE_MAX, end)], True
+    return text[left : left + LINE_MAX], True
 
 
 def looked_up_before(term: Term) -> tuple[int, str, str]:

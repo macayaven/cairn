@@ -1,6 +1,6 @@
 """Every line of a body the compiler writes is a claim's, a heading's or a fence's it wrote, or
 blank (review blocker 1): the reverse of provenance.claim_not_in_body, run by every gate as
-provenance.unclaimed_line (gate.unclaimed_line, which reads the body and never renders one).
+provenance.unclaimed_line (gate.unclaimed_line, by equality with compiler.render_body).
 
 Over the repository's fixtures and seeded made-up notes: titles with and without line
 breaks, notes filed in turn onto one page, deep headings, fences left open or closed too

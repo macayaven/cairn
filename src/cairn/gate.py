@@ -5,8 +5,9 @@ Contract (frozen by tests/acceptance/test_w3_gate.py):
   body = page.body) against exactly the spans its claims cite, via `lint.lint_pages` with no
   entities and no unassigned spans. It passes when the report has no violations.
 - violations: one string per lint violation, "<code>: <claim_id or ->: <message>", and
-  provenance.unclaimed_line when a line of the body is no claim's, nor a heading or fence the
-  body writes (`unclaimed_line`, review blocker 1: the reverse of the claim-in-body check;
+  provenance.unclaimed_line when the body is not what compiler.render_body writes of the
+  page's claims and the passages given (`unclaimed_line`, review blocker 1 and the second
+  report's finding 1: the reverse of the claim-in-body check, by equality with a re-render;
   no statement, as the gate reads nothing from the store).
 - metrics: {"claims": claim count, "spans_cited": distinct cited span count,
   "retention": plain retention overall, "code_line_retention": plain code-line retention,
@@ -43,12 +44,13 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   read.
 - Any other prose passage is compared as text: the same characters, with each run of white
   space read as one space and the white space at the two ends dropped, so a hard-wrapped
-  passage may be wrapped elsewhere. White space inside inline code (a backtick run and the
-  next run of as many in the same block, as CommonMark pairs them) is the code's and is
-  compared as it is, so `a  b.txt` and `a b.txt` are two texts (review blocker 3); lint's
-  fact check reads code the same way, with the same finder. White space is space, tab, CR
-  and LF only. Nothing else is
-  normalised: no case folding, no Unicode normalisation, and zero-width, no-break and
+  passage may be wrapped elsewhere. White space inside inline code (as the Markdown parser
+  reads the passage: cairn.spans.code_spans) is the code's and is compared as it is, so
+  `a  b.txt` and `a b.txt` are two texts (review blocker 3, the second report's finding 2);
+  lint's fact check reads code the same way, with the same finder. A passage whose code the
+  parser cannot place (a backtick left as text in its first paragraph) is compared exactly.
+  White space is space, tab, CR and LF only. Nothing else is normalised: no case folding,
+  no Unicode normalisation, and zero-width, no-break and
   bidirectional characters are text, so a homoglyph or an override never matches. A list or
   quote marker ("- ", "* ", "+ ", ">") is text too, never dropped or added, and it keeps its
   place: a line of the claim starts with one where a line of the passage does and nowhere
@@ -61,10 +63,12 @@ test_t5_grounding.py, test_t5b_blocks.py and test_t5c_structure.py):
   passage the claim is not (and the line, where the claim adds structure), never text, and
   says what to do. A cited id the gate was not given is passed over here (the strict gate
   reports it as provenance.unknown_passage) and never repeated; a claim left with no passage
-  is refused. A claim that is its passages whole and leaves a code fence open (it copies
-  a passage of a note that never closes one) passes, as lint_gate passes it when the note is
-  saved: the body closes the fence where the claim ends (compiler.render_body), so a page
-  that holds one is tidied and arranged again (review 7.2). Violations follow
+  is refused. A fold of passages under different headings is refused too, as an import
+  refuses it (the second report's finding 5a); the message names no heading. A claim that
+  is its passages whole and leaves a code fence open (it copies a passage of a note that
+  never closes one) passes, as lint_gate passes it when the note is saved: the body closes
+  the fence where the claim ends (compiler.render_body), so a page that holds one is tidied
+  and arranged again (review 7.2). Violations follow
   strict_lint_gate's; the metrics are strict_lint_gate's. The extractive draft passes by
   construction, and for it the result equals strict_lint_gate's.
 - Cost: a passage is read once per gate call however many claims cite it, and a claim once
@@ -176,7 +180,8 @@ def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     compared line for line for code, tables and prose that holds structure, and otherwise as
     text whose runs of white space read as one space, with every list or quote marker kept at
     the start of its line. Nothing is left out, nothing is added, and no two passages are
-    joined; a claim that cites several passages is a fold of passages that say the same.
+    joined; a claim that cites several passages is a fold of passages that say the same,
+    under one heading path, as the import asks.
 
     What it guarantees, and what it does not: it keeps a passage whole; it does not keep two
     passages together. "The operation is safe." cannot be cut from "The operation is safe.
@@ -201,9 +206,25 @@ def whole(claim: Claim, spans: Mapping[str, Span]) -> bool:
 
 
 def _refusals(claims: Iterable[Claim], spans: Mapping[str, Span]) -> list[str]:
-    """The grounding.not_verbatim violations of `claims`, in order, reading each passage once."""
+    """The grounding.not_verbatim violations of `claims`, in order, reading each passage once:
+    a claim that is not every passage it cites, whole, or a fold of passages under different
+    headings (the import's rule, store.portable._page_version: the body shows a claim under
+    one section, so what is saved can always be exported and imported; second report,
+    finding 5a). Never the headings: the note's text."""
     readings: dict[str, _Reading] = {}
-    return [v for claim in claims if (v := _not_verbatim(claim, spans, readings))]
+    return [
+        v
+        for claim in claims
+        if (v := _not_verbatim(claim, spans, readings) or _folds_sections(claim, spans))
+    ]
+
+
+def _folds_sections(claim: Claim, spans: Mapping[str, Span]) -> str | None:
+    if len({spans[i].heading_path for i in claim.span_ids if i in spans}) < 2:
+        return None
+    return _refusal(
+        claim, "it folds passages under different headings: cite the passages of one heading"
+    )
 
 
 def _not_verbatim(
@@ -213,9 +234,9 @@ def _not_verbatim(
     whole. `readings` keeps each passage's reading between calls of one gate."""
     readings = {} if readings is None else readings
     lines = claim.text.split("\n")
-    read: dict[str, str | tuple[str, ...]] = {}  # the claim, read each way a passage asks
+    read: dict[str, str | tuple[str, ...] | None] = {}  # the claim, read each way a passage asks
 
-    def claim_as(how: str) -> str | tuple[str, ...]:
+    def claim_as(how: str) -> str | tuple[str, ...] | None:
         if how not in read:
             read[how] = _text(lines) if how == _TEXT else _rows(lines, how == _EXACT)
         return read[how]
@@ -276,9 +297,9 @@ def _reading(span: Span) -> _Reading:
         return _LINES, _rows(lines, exact=False)
     if span.kind not in PROSE_KINDS:
         return None
-    if _structure(lines) is not None:
-        return _EXACT, _rows(lines, exact=True)
-    return _TEXT, _text(lines)
+    if _structure(lines) is None and (text := _text(lines)) is not None:
+        return _TEXT, text
+    return _EXACT, _rows(lines, exact=True)  # structure, or code the parser cannot place
 
 
 def _rows(lines: list[str], exact: bool) -> tuple[str, ...]:
@@ -290,16 +311,20 @@ def _rows(lines: list[str], exact: bool) -> tuple[str, ...]:
     return tuple(rows[first:last])
 
 
-def _text(lines: Iterable[str]) -> str:
+def _text(lines: Iterable[str]) -> str | None:
     """Prose read as text: each run of white space one space and the ends dropped, except that
     a line break stays before a line that opens with a list or quote marker and after a line
     that is markers alone, so every marker stays at the start of its line. White space inside
-    inline code (cairn.spans.code_spans, which the fact check's normalize shares) is the code's
-    own and is kept as it is, line breaks included (a CR before one aside), so `a  b.txt` and
-    `a b.txt` are two texts (review blocker 3)."""
+    inline code is the code's own and is kept as it is, line breaks included (a CR before one
+    aside), so `a  b.txt` and `a b.txt` are two texts (review blocker 3). Inline code is what
+    the Markdown parser reads (cairn.spans.code_spans, which the repeat key and the fact
+    check's normalize share); None when the parser's answer cannot be placed, and the text is
+    then compared exactly."""
     rows = [raw.removesuffix("\r") for raw in lines]
     text = "\n".join(rows)
     code = code_spans(text)
+    if code is None:
+        return None
     out: list[str] = []
     alone = False
     at = 0
@@ -398,17 +423,17 @@ def _refusal(claim: Claim, message: str) -> str:
     return f"grounding.not_verbatim: {claim.id}: {message}"
 
 
-# The reverse of provenance.claim_not_in_body (review blocker 1): every line of a body the
-# compiler wrote is a line of a claim, a heading it wrote, a fence it wrote or blank.
+# The reverse of provenance.claim_not_in_body (review blocker 1; second report, finding 1):
+# every body a gate sees is written by compiler.render_body from the page's claims, so the
+# check is equality with a re-render, never a reading of the body's lines.
 
-_HEADING_LINE = re.compile(r"(#{1,6}) (.*)")
-_FENCE_LINE = re.compile(r"[ \t]*(?:`{3,}|~{3,})")
 BREADCRUMB = " > "  # between the headings past the sixth level, in its one heading
 
 
 def unclaimed_violations(page: CandidatePage, spans: Mapping[str, Span]) -> list[str]:
-    """provenance.unclaimed_line, once, for the first line of the body no claim holds
-    (`unclaimed_line`), naming its number, never its text; [] when there is none."""
+    """provenance.unclaimed_line, once, for the first line of the body that is not what
+    render_body writes there (`unclaimed_line`), naming its number, never its text; [] when
+    there is none."""
     at = unclaimed_line(page, spans)
     if at is None:
         return []
@@ -419,92 +444,25 @@ def unclaimed_violations(page: CandidatePage, spans: Mapping[str, Span]) -> list
 
 
 def unclaimed_line(page: CandidatePage, spans: Mapping[str, Span]) -> int | None:
-    """The number of the first line of `page.body` that is none of: blank; the title, as the
-    first line ("# " and the title's words); a heading of level 2 to 6 whose words are those
-    of a heading on the path of a passage the claims cite, or of the headings past the
-    sixth level joined by BREADCRUMB; the lines of a claim, whole and in order, each claim
-    once; a line of a fence's run alone, right after a claim (the closer the body writes).
-    None when every line is one of those. It reads the body, never renders one: a rule kept
-    apart from compiler.render_body, so a fault in the rendering is found by it. Pure, no
-    statement; linear in the body, the claims and the cited heading paths."""
-    lines = page.body.split("\n")
-    if not lines or not _same_words(lines[0], "# " + page.title):
-        return 1
-    headings: set[str] = set()
-    for claim in page.claims:
-        for span_id in claim.span_ids:
-            if span_id in spans:
-                path = spans[span_id].heading_path
-                headings.update(_words(text) for text in path)
-                headings.update(_words(BREADCRUMB.join(path[n:])) for n in range(len(path)))
-    texts = [_words(claim.text) for claim in page.claims]  # each claim's words
-    by_line: dict[str, list[int]] = {}  # the words of a claim's first line: those claims
-    by_word: dict[str, list[int]] = {}  # a claim's first word: those claims
-    for place, claim in enumerate(page.claims):
-        if texts[place]:
-            first = next(row for row in claim.text.split("\n") if row.strip())
-            by_line.setdefault(_words(first), []).append(place)
-            by_word.setdefault(texts[place].split(" ", 1)[0], []).append(place)
-    left = set(range(len(texts)))  # the claims not yet found, each found once
-    n, after_claim = 1, False
-    while n < len(lines):
-        line = lines[n]
-        if not line.strip():
-            n, after_claim = n + 1, False
-            continue
-        said = _words(line)
-        taken = _claim_at(lines, n, texts, by_line.get(said, ()), left) or _claim_at(
-            lines, n, texts, by_word.get(said.split(" ", 1)[0], ()), left
-        )  # a claim as written, else one whose words are wrapped otherwise
-        if taken is not None:
-            n, after_claim = taken, True
-            continue
-        if after_claim and _FENCE_LINE.fullmatch(line.rstrip(" \t")):
-            n, after_claim = n + 1, False
-            continue
-        heading = _HEADING_LINE.fullmatch(line)
-        if heading and len(heading[1]) > 1 and _words(heading[2]) in headings:
-            n, after_claim = n + 1, False
-            continue
-        return n + 1
-    return None
+    """The number of the first line of `page.body` that differs from the body
+    compiler.render_body writes of the page's title, its claims in their order and the
+    passages in `spans` (the line past the shorter one's end when one body holds the other);
+    None when the two are equal, byte for byte.
 
+    Every body a gate is given is written so: an extractive compile, a model's compile (the
+    model drafts claims; compile_note renders the body), a tidy and the arranger
+    (cairn.arrange) all call render_body with the spans they gate with. A body equal to its
+    re-render holds each claim once, whole and in order, under the headings of its path at
+    their depth, a closer only where Markdown leaves a claim's fence open, and nothing
+    else. Pure, no statement; one rendering and one comparison."""
+    from cairn.compiler import render_body  # the compiler builds on the gate
 
-def _claim_at(
-    lines: list[str], n: int, texts: list[str], places: Iterable[int], left: set[int]
-) -> int | None:
-    """The line after the longest claim among `places` still `left` (its words, white space
-    collapsed, as provenance.claim_not_in_body compares them, in `texts`) that the lines from
-    `n` hold whole, from its first word to its last; that claim leaves `left`. None when none
-    of them is there."""
-    best: tuple[int, int] | None = None  # (the line after it, the claim's place)
-    for place in places:
-        if place not in left:
-            continue
-        words, at, end = texts[place], 0, n
-        while end < len(lines) and at < len(words):
-            more = _words(lines[end])
-            end += 1
-            if not more:
-                continue
-            if at:
-                if words[at] != " ":
-                    break
-                at += 1
-            if not words.startswith(more, at):
-                break
-            at += len(more)
-        if at == len(words) and (best is None or len(words) > len(texts[best[1]])):
-            best = (end, place)
-    if best is None:
+    body = page.body
+    expected = render_body(page.title, page.claims, spans)
+    if body == expected:
         return None
-    left.discard(best[1])
-    return best[0]
-
-
-def _words(text: str) -> str:
-    return " ".join(text.split())
-
-
-def _same_words(line: str, title_line: str) -> bool:
-    return _words(line) == _words(title_line)
+    given, written = body.split("\n"), expected.split("\n")
+    return next(
+        (n for n, (a, b) in enumerate(zip(given, written, strict=False), 1) if a != b),
+        min(len(given), len(written)) + 1,
+    )

@@ -372,14 +372,26 @@ NO_PAGE = (
 )
 
 
+# The key of Memory.note's answer, for a note the gate refused, that holds the page whose
+# latest version cites the note (Store.note_page), or None: read by without_missing_page.
+CITED_ON = "cited_on"
+
+
 def without_missing_page(answer: dict[str, Any]) -> dict[str, Any]:
     """8.6: what `note` answers an agent (MCP and REST): a note that made no page (it is on
     none: `version` None, and not WAITING for its page) has `page` None and `message`
-    NO_PAGE, so it names no page that does not open. Any other answer as it is. The web
-    composer and Slack read Memory.note's own answer."""
-    if answer["version"] is not None or answer["status"] == WAITING:
-        return answer
-    return {**answer, "page": None, "message": NO_PAGE}
+    NO_PAGE, so it names no page that does not open. A note the gate refused names its page
+    by the Notes page's rule (CITED_ON, Store.note_page): only a page whose latest version
+    cites it, so one refused on a topic that has a page is on none too (the second report's
+    finding 8). Any other answer as it is, CITED_ON left out. The web composer and Slack
+    read Memory.note's own answer."""
+    shown = {key: value for key, value in answer.items() if key != CITED_ON}
+    if CITED_ON in answer:
+        slug = answer[CITED_ON]
+        shown |= {"page": slug, "version": shown["version"] if slug else None}
+    if shown["version"] is not None or shown["status"] == WAITING:
+        return shown
+    return {**shown, "page": None, "message": NO_PAGE}
 
 
 class FiledOnce(Conflict):
@@ -1270,6 +1282,8 @@ class Memory:
         }
         if lost_race(result):  # N1: stored, and waiting for serve to file it
             answer |= {"status": WAITING, "message": WAITS}
+        elif result.status == "rejected":  # its topic's page, if any, was refused it
+            answer[CITED_ON] = self._page_of(note)[0]  # the Notes page's rule, as FiledOnce
         return answer
 
     def file_waiting(self, note_id: str) -> str | None:

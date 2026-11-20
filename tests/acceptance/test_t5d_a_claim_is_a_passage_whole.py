@@ -607,14 +607,25 @@ def test_a_model_that_copies_every_passage_of_every_fixture_whole_is_saved(store
 
 
 def test_a_note_that_says_one_thing_twice_may_fold_it_into_one_claim(store):
-    text = (
-        "# Release\n\nKeep the old image for a day.\n\n## Again\n\nKeep the old image for a day.\n"
-    )
+    text = "# Release\n\nKeep the old image for a day.\n\nKeep the old image for a day.\n"
     project, note, (first, second) = note_of(store, text)
     result = compiled(store, note, (first.text, [first, second]))
     assert result.status == "saved", result.gate.violations
     (claim,) = store.get_page(project.id, "release").claims
     assert claim.span_ids == (first.id, second.id)
+
+
+def test_a_fold_under_two_headings_is_refused_as_an_import_refuses_it(store):
+    """Second report, finding 5a: the body shows a claim under one section, so a fold cites
+    passages of one heading path, before it is saved as on import."""
+    text = (
+        "# Release\n\nKeep the old image for a day.\n\n## Again\n\nKeep the old image for a day.\n"
+    )
+    project, note, (first, second) = note_of(store, text)
+    result = compiled(store, note, (first.text, [first, second]))
+    assert result.status == "rejected"
+    assert any("different headings" in v for v in result.gate.violations)
+    assert store.get_page(project.id, "release") is None
 
 
 # What served pages need

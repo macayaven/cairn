@@ -15,8 +15,8 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
   as Markdown reads it (it copies a note that never closes one, or closes it deeper than
   Markdown's limit) is followed by a line that closes it, the opener's own indentation and
   run, so the claim after it is never read as code (review 7.2, should-fix 8); the claim's
-  text is never changed. Every line of the body is a claim's, a heading or fence it wrote, or
-  blank: each gate checks that (gate.unclaimed_line).
+  text is never changed. Each gate checks that the body is what this function writes of the
+  claims (gate.unclaimed_line: equality with a re-render).
 - Before saving, the candidate page and the spans its claims cite go through a gate. A
   failing gate saves nothing and returns status "rejected" with the gate's result. The gate's
   metrics are saved with the page version.
@@ -91,8 +91,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from cairn.candidate import CandidatePage, GateResult
-from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate
-from cairn.spans import Span, claim_id, fence_closes, fence_opener
+from cairn.gate import BREADCRUMB, unclaimed_violations, verbatim_gate, whole
+from cairn.spans import Span, claim_id, fence_closes, fence_opener, open_fence_closer
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
 from cairn.topics import one_line, topic_tag
 
@@ -313,6 +313,18 @@ def render_body_before_review_two(
     )
 
 
+def render_body_before_review_three(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before the second report: a fence closed where
+    cairn.spans' line rules, not the Markdown parser, left it open. For the import's check
+    alone (store.portable._as_rendered), so an archive written then still imports; never
+    shown."""
+    return _rendered(
+        title, claims, spans, _closed_before_review_three, section_headings, heading_text
+    )
+
+
 def _rendered(
     title: str,
     claims: Sequence[Claim],
@@ -338,18 +350,24 @@ def _rendered(
 
 
 def _closed(text: str) -> str:
-    """`text`, and when it leaves a code fence open as Markdown reads it, a line that closes
-    it: the opener's own indentation (past a list marker it opens after) and run, so it closes
-    inside a list item too. Openers and closers are cairn.spans' rules (fence_opener,
-    fence_closes: one rule for splitting and for the body, should-fix 8), held to Markdown's
-    limit: a fence opens, and a closer closes it, indented at most 3 columns past the text of
-    the list item it sits in, or past the margin. A closer indented deeper is the code's text
-    ("    ~~~" under "~~~"), so the fence is still open and the body closes it; a line
-    indented 4 past its item opens no fence (it is indented code), so nothing is added.
-    Columns are Markdown's: a tab moves to the next stop of four, so a tab before a closer is
-    four columns and closes nothing. cairn.spans counts a tab as one column (its known limit,
-    kept so that the passages of stored notes keep their lines and ids); where the two part,
-    the fence is open to Markdown and the body closes it."""
+    """`text`, and when the Markdown parser leaves a code fence of it open, a line that closes
+    it (cairn.spans.open_fence_closer: the opener's own column and run, so it closes inside a
+    list item too), so the claim after it is never read as code (review 7.2, should-fix 8,
+    the second report's finding 8). The parser decides, not a reading of lines: a closer a
+    no-break space or a tab precedes, one indented past Markdown's limit and an opener
+    Markdown does not take are all as Markdown reads them. The claim's text is never
+    changed; a text that holds no backtick or tilde is not parsed."""
+    closer = open_fence_closer(text)
+    if closer is None:
+        return text
+    closed = f"{text}\n{closer}"
+    return closed if open_fence_closer(closed) is None else text
+
+
+def _closed_before_review_three(text: str) -> str:
+    """`_closed` as it was before the second report: openers and closers read by cairn.spans'
+    rules (fence_opener, fence_closes), held to Markdown's limit by columns. For the import's
+    check alone (render_body_before_review_three)."""
     opened: tuple[str, str, int] | None = None  # (indentation to write, run, deepest closer)
     items: list[int] = []  # the text column of each list item a line may sit in
     for written_line in text.split("\n"):
@@ -454,9 +472,10 @@ def extractive(title: str, spans: Sequence[Span]) -> Draft:
 
 def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     """The default gate. Violations: a claim with no span ids, a span id missing from `spans`,
-    a claim text (whitespace-collapsed) missing from the body, and the reverse: a line of the
-    body that is no claim's, nor a heading or fence the body writes (gate.unclaimed_line,
-    review blocker 1). Metrics: {"claims": n, "spans_cited": distinct cited span count}.
+    a claim text (whitespace-collapsed) missing from the body, and the reverse: a body that is
+    not what render_body writes of the claims and `spans` (gate.unclaimed_line, review blocker
+    1 and the second report's finding 1). Metrics: {"claims": n, "spans_cited": distinct cited
+    span count}.
 
     Each violation reads "<code>: <claim id>: <message>", like cairn.gate.lint_gate's."""
     violations = []
@@ -531,6 +550,8 @@ def compile_note(
         if not new_spans:
             return CompileResult(**outcome, status="unchanged", version=version, draft=stats)
         spans = store.get_spans([*cited, *(s.id for s in new_spans)])
+        if existing is not None and (again := rebuilt_folds(existing.claims, spans)) is not claims:
+            existing = existing.model_copy(update={"claims": again})  # finding 5b
         if draft is None or drafted != [s.id for s in new_spans]:
             try:
                 draft = compose(title, new_spans)
@@ -575,6 +596,31 @@ def compile_note(
         draft=stats,
         candidate=candidate,
     )
+
+
+def rebuilt_folds(claims: tuple[Claim, ...], spans: Mapping[str, Span]) -> tuple[Claim, ...]:
+    """`claims`, each fold that is not the whole of every passage it cites by today's rule, or
+    folds passages under different headings, rebuilt from its passages in its place: one claim
+    for each passage `spans` holds, its text the passage's and its id claim_id(passage), as
+    the extractive compile writes it (second report, finding 5b: a fold a tidy made under an
+    older inline-code rule). The same tuple when none is; only a claim that cites more than
+    one passage is read. A tidy and an arrangement save the rebuilt claims as the page's next
+    version, a note compiles onto them, and an import rebuilds each version that holds such
+    a fold (store.portable)."""
+    if all(len(claim.span_ids) < 2 for claim in claims):
+        return claims
+    out: dict[str, Claim] = {}
+    for claim in claims:
+        cited = [span_id for span_id in claim.span_ids if span_id in spans]
+        paths = {spans[span_id].heading_path for span_id in cited}
+        if len(claim.span_ids) < 2 or (len(paths) < 2 and whole(claim, spans)):
+            out.setdefault(claim.id, claim)
+            continue
+        for span_id in cited:
+            again = Claim(id=claim_id(span_id), text=spans[span_id].text, span_ids=(span_id,))
+            out.setdefault(again.id, again)
+    rebuilt = tuple(out.values())
+    return claims if rebuilt == claims else rebuilt
 
 
 def _verbatim_gate() -> Gate:

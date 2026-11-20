@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from markdown_oracle import code_places as parser_code_places
 
 from cairn import facts as new_facts
 from cairn import lint as new_lint
@@ -209,7 +210,7 @@ def starred_facts(span: Span) -> list:
 
 
 def starred_normalize(value: str) -> str:
-    return code_normalize(as_starred(value))
+    return code_normalize(as_starred(value), value)
 
 
 # G2: the second exception, by shape. normalize() takes out a comma that has a digit before it
@@ -383,54 +384,16 @@ def piece_shape(text: str, fact: dict, ends_at: dict[int, dict]) -> str:
 # Review blocker 3: the third rule, added to the oracle. White space inside inline code is the
 # code's own, as the gate reads prose: normalize() keeps it, and an inline_code fact or a code
 # line keeps it in its norm, so `a  b.txt` and `a b.txt` are two facts. Everything else is
-# collapsed as the reference collapses it. Inline code is found here the slow way, apart from
-# cairn.spans.code_spans, with the backticks of every fence line (the reference's `_FENCE`)
-# set aside: a run of backticks not escaped by a backslash opens, and the first later run of
-# exactly as many before a blank line closes it.
+# collapsed as the reference collapses it. Where inline code is, is the Markdown parser's
+# answer (tests/unit/markdown_oracle.py, which places it by the parser's own source map, apart
+# from cairn.spans); where cairn reads a text exactly, every character is the code's.
 DIFFERED_CODE = collections.Counter()  # inputs whose reading the rule changed, by what
 
 
 def code_places(text: str) -> set[int]:
     """The places of every character of inline code in `text`, its backticks included."""
-    return _paired_slowly(old_facts._FENCE.sub(lambda m: m[0].replace("`", "~"), text))
-
-
-def _paired_slowly(text: str) -> set[int]:
-    inside: set[int] = set()
-    n = 0
-    while n < len(text):
-        if text[n] != "`":
-            n += 1
-            continue
-        end = n
-        while end < len(text) and text[end] == "`":
-            end += 1
-        slashes = 0
-        while n - slashes - 1 >= 0 and text[n - slashes - 1] == "\\":
-            slashes += 1
-        opener = n + 1 if slashes % 2 else n
-        size, close, found = end - opener, end, None
-        while size and close < len(text):
-            if text[close] == "\n":
-                after = text.find("\n", close + 1)
-                if after != -1 and not text[close + 1 : after].strip(" \t\r"):
-                    break  # a blank line ends the block
-            if text[close] != "`":
-                close += 1
-                continue
-            stop = close
-            while stop < len(text) and text[stop] == "`":
-                stop += 1
-            if stop - close == size:
-                found = stop
-                break
-            close = stop
-        if found is None:
-            n = end
-            continue
-        inside.update(range(opener, found))
-        n = found
-    return inside
+    places = parser_code_places(text)
+    return set(range(len(text))) if places is None else places
 
 
 def code_read(text: str, start: int, end: int, places: set[int]) -> str:
@@ -454,12 +417,13 @@ def code_read(text: str, start: int, end: int, places: set[int]) -> str:
     return old_facts._THOUSANDS_SEPARATOR.sub("", read)
 
 
-def code_normalize(read: str) -> str:
-    """The oracle's normalize() of a text read with G1's runs as "*"."""
+def code_normalize(read: str, written: str | None = None) -> str:
+    """The oracle's normalize() of a text read with G1's runs as "*"; its code is where the
+    parser finds it in the text as written (`written`, else `read`)."""
     old = old_facts.normalize(read)
     if "`" not in read:
         return old
-    kept = code_read(read, 0, len(read), code_places(read))
+    kept = code_read(read, 0, len(read), code_places(written or read))
     if kept != old:
         DIFFERED_CODE["normalize"] += 1
     return kept
@@ -469,7 +433,7 @@ def oracle_facts(span: Span, read: str, code: bool = True) -> list[dict]:
     """The oracle's facts of the span read as `read` (G1's runs as "*"), valued as written;
     with `code`, inline code's norms read by the third rule."""
     facts = [f.model_dump() for f in ORACLE.extract_facts(span.model_copy(update={"text": read}))]
-    places = code_places(read) if code and "`" in read else set()
+    places = code_places(span.text) if code and "`" in read else set()
     for fact in facts:
         fact["value"] = span.text[fact["start"] : fact["end"]]
         if not places:
@@ -539,7 +503,7 @@ def same_facts(span: Span) -> None:
     reference = [f.model_dump() for f in starred_facts(span)]
     expected = oracle_facts(span, read)
     assert new == expected, span.text[:300]
-    assert new_facts.normalize(span.text) == code_normalize(read)
+    assert new_facts.normalize(span.text) == code_normalize(read, span.text)
     every_fact_occurs(span)
     if (pieces := oracle_facts(span, read, code=False)) != reference:
         shapes = g2_shapes(read, reference, pieces)

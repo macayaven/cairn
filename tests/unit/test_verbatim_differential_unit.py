@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from markdown_oracle import code_places as parser_code_places
 
 from cairn import arrange
 from cairn import gate as new
@@ -68,7 +69,10 @@ MARKER = "a claim that drops, adds or moves a marker the passage has"
 PART = "a claim that cites a passage for one sentence of it"
 ORDER = "a claim that reorders or repeats the sentences of a passage"
 NOTHING = "a blank claim that cites no passage the gate was given"
-SPACED = "a claim that changes the white space inside inline code of the passage"
+SPACED = (
+    "a claim that changes the white space inside inline code of the passage, or any white"
+    " space of a passage read exactly"
+)
 TABLE = {
     CUT: (
         "whole sentences of the passage, which a claim could select (a list item, a quote's"
@@ -100,7 +104,9 @@ TABLE = {
     SPACED: (
         "every run of white space as one space, inside inline code too",
         "inside backticks white space is the code's: `a  b.txt` and `a b.txt` name two files,"
-        " and a claim that respaces one names the other (review blocker 3)",
+        " and a claim that respaces one names the other (review blocker 3); a passage whose"
+        " code the parser cannot place (a backtick left as text where a quote before it may"
+        " pair it) is copied exactly, white space and all (second report, finding 2)",
     ),
     NOTHING: (
         "the claim's lines against the passages it was given; with no line and no passage"
@@ -167,10 +173,12 @@ def _whole(lines: list[str], span: Span) -> bool:
         return _rows(lines, keep) == _rows(theirs, keep)
     if span.kind not in old.PROSE_KINDS:
         return False
+    if (passage := _tokens(theirs)) is None:  # the parser cannot place its code: exactly
+        return _rows(lines, "\r") == _rows(theirs, "\r")
     first = next((n for n, line in enumerate(lines) if line.strip(" \t\r")), len(lines))
     if old._structure(lines[first:]) is not None:  # no structure added, as before
         return False
-    return _tokens(lines) == _tokens(theirs)
+    return _tokens(lines) == passage
 
 
 def _rows(lines: list[str], keep: str) -> list[str]:
@@ -183,7 +191,7 @@ def _rows(lines: list[str], keep: str) -> list[str]:
     return rows
 
 
-def _tokens(lines: list[str]) -> list[tuple[str, str]]:
+def _tokens(lines: list[str]) -> list[tuple[str, str]] | None:
     """The words of prose in order, each with what stands before it: a space, or a line break
     where the word starts a line with a list or quote marker or follows a line that is only a
     marker. A word is a run of characters other than space, tab, CR and LF, except that the
@@ -192,6 +200,8 @@ def _tokens(lines: list[str]) -> list[tuple[str, str]]:
     (review blocker 3)."""
     text = "\n".join(line.removesuffix("\r") for line in lines)
     inside = _in_code(text)
+    if inside is None:
+        return None  # read exactly, never as text
     words: list[tuple[int, str]] = []  # (where it starts, the word)
     word, start = "", 0
     for n, char in enumerate(text):
@@ -226,6 +236,8 @@ def _respaced_code(text: str, cited: list[Span]) -> bool:
     mine = _tokens(text.split("\n"))
     for span in cited:
         theirs = _tokens(span.text.split("\n"))
+        if mine is None or theirs is None:
+            return True  # read exactly: any white space the claim changes is refused
         if mine != theirs and _flat(mine) == _flat(theirs):
             return True
     return False
@@ -235,48 +247,11 @@ def _flat(tokens: list[tuple[str, str]]) -> list[str]:
     return " ".join(word for _, word in tokens).split()
 
 
-def _in_code(text: str) -> set[int]:
-    """The places of every character of inline code, its backticks included, found the slow
-    way: each run of backticks not escaped by a backslash (outside code) is tried, and the
-    first later run of exactly as many before a blank line closes it; a run with none is
-    text."""
-    inside: set[int] = set()
-    n = 0
-    while n < len(text):
-        if text[n] != "`":
-            n += 1
-            continue
-        end = n
-        while end < len(text) and text[end] == "`":
-            end += 1
-        slashes = 0
-        while n - slashes - 1 >= 0 and text[n - slashes - 1] == "\\":
-            slashes += 1
-        opener = n + 1 if slashes % 2 else n
-        size = end - opener
-        close = end
-        found = None
-        while size and close < len(text):
-            if text[close] == "\n":
-                after = text.find("\n", close + 1)
-                if after != -1 and not text[close + 1 : after].strip(" \t\r"):
-                    break  # a blank line ends the block, and the code with it
-            if text[close] != "`":
-                close += 1
-                continue
-            stop = close
-            while stop < len(text) and text[stop] == "`":
-                stop += 1
-            if stop - close == size:
-                found = stop
-                break
-            close = stop
-        if found is None:
-            n = end
-            continue
-        inside.update(range(opener, found))
-        n = found
-    return inside
+def _in_code(text: str) -> set[int] | None:
+    """The places of every character of inline code, its backticks included: the Markdown
+    parser's answer (tests/unit/markdown_oracle.py, placed by the parser's own source map,
+    apart from cairn.spans); None where cairn reads the text exactly."""
+    return parser_code_places(text)
 
 
 # Drafts

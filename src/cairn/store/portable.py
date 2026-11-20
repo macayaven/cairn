@@ -1366,14 +1366,18 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
     before, whitespace aside: before fix H (previous_render_body), before review 7.2, with
     a claim's open code fence left open (render_body_with_fences_open), or before the second
     review (render_body_before_review_two: a title as given, deep headings at level 6, a
-    fence closed at any indentation). ValueError otherwise,
+    fence closed at any indentation), or before the third (render_body_before_review_three:
+    a fence closed where cairn's line rules, not the Markdown parser, left it open).
+    ValueError otherwise,
     naming the page and version, never the text: an import never brings a body cairn would
     not have written, and the version is stored with the current rendering. A title longer
     than cairn writes (a note's topic, FIELD_MAX) is cut to it, and the body is rendered
     with the cut title."""
     from cairn.compiler import (  # the compiler builds on the store
         previous_render_body,
+        rebuilt_folds,
         render_body,
+        render_body_before_review_three,
         render_body_before_review_two,
         render_body_with_fences_open,
     )
@@ -1387,6 +1391,7 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
             previous_render_body,
             render_body_with_fences_open,
             render_body_before_review_two,
+            render_body_before_review_three,
         )
     ):
         raise ValueError(
@@ -1394,9 +1399,36 @@ def _as_rendered(page: Page, spans: Mapping[str, Span], root: str) -> Page:
             " writes of its claims"
         )
     title = page.title[: FIELD_MAX["topic"]]  # a page's title is its note's topic or title
-    if title != page.title:  # longer than cairn writes one: cut, as a note's fields are
-        body = render_body(title, page.claims, spans)
-    return page.model_copy(update={"title": title, "body": body})
+    claims = rebuilt_folds(page.claims, spans)  # finding 5b: an old fold, from its passages
+    if len(claims) > PAGE_CLAIMS_MAX:
+        raise ValueError(
+            f"version {page.version} of {page.slug!r} in {root} holds a fold made under an older"
+            f" rule, and rebuilt from its passages it would hold more than {PAGE_CLAIMS_MAX:,}"
+            " claims"
+        )
+    if title != page.title or claims is not page.claims:  # a title cut, or a fold rebuilt
+        body = render_body(title, claims, spans)
+    return page.model_copy(update={"title": title, "body": body, "claims": claims})
+
+
+def _fold_before_review_three(
+    claim: Claim, spans: Mapping[str, Span], copied: Callable[[Claim, Mapping[str, Span]], bool]
+) -> bool:
+    """Whether `claim` is a fold a tidy made under an older inline-code rule (second report,
+    finding 5b): it cites more than one passage, it is the whole of one of them by today's
+    rule, and every passage it cites says the same but for white space, inside inline code
+    included. Before decision 189 white space inside inline code read as prose's, and at
+    fe47cfd6 a backtick left as text in a quote could still pair across its lines; either
+    way only white space told such passages apart. Imported, the version is rebuilt from
+    its passages (_as_rendered, compiler.rebuilt_folds); any other claim that is not the
+    whole of every passage it cites is refused, as before."""
+    known = [span_id for span_id in claim.span_ids if span_id in spans]
+    if len(claim.span_ids) < 2 or len(known) != len(claim.span_ids):
+        return False
+    said = {_collapsed(spans[span_id].text) for span_id in known}
+    if said != {_collapsed(claim.text)}:
+        return False
+    return any(copied(claim.model_copy(update={"span_ids": (i,)}), spans) for i in known)
 
 
 def _page_version(
@@ -1456,7 +1488,7 @@ def _page_version(
             raise ValueError(
                 f"a claim of {slug!r} in {root} cites a passage that is not of its project's notes"
             )
-        if not copied(claim, spans):  # every span it cites, not one of them
+        if not copied(claim, spans) and not _fold_before_review_three(claim, spans, copied):
             raise ValueError(  # its place, never its text or id (the archive's, not cairn's)
                 f"claim {n} of {slug!r} version {expected} in {root} does not say what a"
                 " passage it cites says"

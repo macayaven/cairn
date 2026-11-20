@@ -117,6 +117,7 @@ def test_gate_names_each_violation_by_code_and_claim():
         ["provenance.missing_passages", "cl_none"],
         ["provenance.unknown_passage", "cl_unknown"],
         ["provenance.claim_not_in_body", "cl_absent"],
+        ["provenance.unclaimed_line", "-"],  # the body is not what render_body writes of them
     ]
     assert "sp_missing" in result.violations[1]
     assert result.metrics == {"claims": 3, "spans_cited": 2}
@@ -125,8 +126,12 @@ def test_gate_names_each_violation_by_code_and_claim():
 def test_gate_compares_claim_and_body_with_whitespace_collapsed():
     wrapped = span("sp_1", ("T",), "a\n  b")
     spans = {wrapped.id: wrapped}
-    assert provenance_gate(page_of([claim(wrapped)], body="# T\n\na b\n"), spans).passed
-    assert not provenance_gate(page_of([claim(wrapped)], body="# T\n\nab\n"), spans).passed
+    collapsed = provenance_gate(page_of([claim(wrapped)], body="# T\n\na b\n"), spans)
+    joined = provenance_gate(page_of([claim(wrapped)], body="# T\n\nab\n"), spans)
+    assert not any("claim_not_in_body" in v for v in collapsed.violations)
+    assert any("claim_not_in_body" in v for v in joined.violations)
+    # Neither is the body render_body writes, so the reverse check refuses both.
+    assert not collapsed.passed and not joined.passed
 
 
 def test_candidate_for_a_new_page_cites_each_new_span_once():

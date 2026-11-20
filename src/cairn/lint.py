@@ -6,7 +6,9 @@ in-memory core; `lint` loads one source document and a directory of pages, then 
 
 Matching
 - normalize() keeps white space inside inline code as written, as the gate reads prose, and
-  so does an inline_code fact's norm: `a  b.txt` and `a b.txt` are two facts.
+  so does an inline_code fact's norm: `a  b.txt` and `a b.txt` are two facts. Inline code is
+  where the Markdown parser finds it (cairn.spans.code_spans, read once per text in one
+  lint_pages call); a text whose code the parser cannot place keeps all its white space.
 - A fact occurs in a text when its norm is a whole token of normalize(text): the characters
   around it are not [0-9a-z_], so "--json" is not in "--jsonl" and "5" is not in "15". An
   empty norm always occurs.
@@ -74,7 +76,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from cairn.facts import Fact, extract_facts, normalize
-from cairn.spans import Span, chunk
+from cairn.spans import Span, chunk, code_read_once
 
 CONTENT_KINDS = frozenset({"paragraph", "bullet", "code", "table", "quote"})
 PLACEMENT_KINDS = frozenset({"flag", "path", "inline_code"})
@@ -147,7 +149,18 @@ def lint_pages(
 
     `lint` loads its files and calls this. Contract: tests/acceptance/test_t3_lint.py and
     tests/acceptance/test_t3_multisource.py. Raises LintInputError for unreadable front
-    matter or two pages with one slug."""
+    matter or two pages with one slug. Each text's inline code is parsed once a call
+    (spans.code_read_once)."""
+    with code_read_once():
+        return _lint_pages(pages, spans, entities, unassigned_spans)
+
+
+def _lint_pages(
+    pages: Sequence[PageInput],
+    spans: Sequence[Span],
+    entities: Sequence[Entity],
+    unassigned_spans: Collection[str],
+) -> LintReport:
     source = _Source(spans, entities)
     parsed = _parse_pages(pages)
     violations: list[Finding] = []

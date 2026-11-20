@@ -1007,15 +1007,21 @@ def test_connect_the_two_limits_of_what_a_filed_message_holds():
 def test_connect_a_code_block_of_slacks_own_is_a_fence_on_lines_of_its_own():
     """connect.md: "A code block of Slack's own is a fence on lines of its own in the note,
     whatever stood beside it on its lines in the message, and holds what Slack displayed, the
-    white space that ends a line included; that white space is kept at the end of the message
-    too, where the last line is code.\""""
+    white space that ends a line included, but that a code block in a quotation is written
+    without the quotation's mark that starts each of its lines; ...\" The exception is the
+    tester's second attack, finding 4, a limit: its model says Slack shows `> x` in the block
+    of `&gt; ```&gt; x````, and Slack's page does not say."""
     says(
         *CONNECT,
         "A code block of Slack's own is a fence on lines of its own in the note, whatever stood"
         " beside it on its lines in the message, and holds what Slack displayed, the white space"
-        " that ends a line included; that white space is kept at the end of the message too,"
-        " where the last line is code.",
+        " that ends a line included, but that a code block in a quotation is written without"
+        " the quotation's mark that starts each of its lines; that white space is kept at the"
+        " end of the message too, where the last line is code.",
     )
+    for sent in ("&gt; ```&gt; x```", "&gt; ```\n&gt; x\n&gt; y```"):
+        lines = as_read(a_filed_note(sent))[0].split("\n")
+        assert lines[1:] == ["```", "x", *(["y"] if "y" in sent else []), "```"], sent
     row = "[manual](https://fable.test/docs) a &lt; b\t"
     shown = "[manual](https://fable.test/docs) a < b\t"
     for sent, before in (

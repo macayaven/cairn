@@ -163,6 +163,7 @@ from cairn.store.base import (
     _require_account,
     _transaction,
     is_rewritten,
+    store_log,
 )
 from cairn.store.memory import (
     _NOTE_COLUMNS,
@@ -559,8 +560,8 @@ class PortableMethods(StoreBase):
         read as it stands, its `updated_at`: a generation each deletion writes of its own
         (base.deletion_generation), what the rewrite covers. Once VACUUM has returned, under
         the same hold of the lock and in one transaction, compacted_at is set to when the
-        rewrite began and the record is marked as covered by it (REWRITTEN with that
-        generation) only if it still holds what was read: a deletion another process (the
+        rewrite began and the record is marked as covered by it (REWRITTEN with a mark
+        of its own) only if it still holds what was read: a deletion another process (the
         server, beside the command line) records in between keeps it due, for a rewrite of
         its own. A process that dies after VACUUM and before that transaction leaves the
         record as it was, so the rewrite is done again: it costs the time of one rewrite and
@@ -584,7 +585,7 @@ class PortableMethods(StoreBase):
                 con.execute("VACUUM")
             except sqlite3.OperationalError as error:
                 raise _incomplete(f"the database could not be compacted: {error}", False) from None
-            mark = None if generation is None else _covered(generation[0])
+            mark = None if generation is None else _rewrite_mark()
             with _transaction(con):  # the deletions recorded before the rewrite are its own
                 _set_row(con, COMPACTED_AT, began)
                 if mark is not None:  # unchanged, or a later deletion keeps it due
@@ -626,10 +627,11 @@ class PortableMethods(StoreBase):
         deletion) has moved the record on: that one stays due.
 
         The log is then truncated once more, for the clearing's own change. When another
-        connection holds it by then (busy), nothing is raised and the record stays as it is:
-        cleared, or moved on. The log then holds only changes made after its truncation,
-        and a deletion among them recorded itself again, so nothing it removed is left
-        without a record; the next truncation takes the rest."""
+        connection holds it by then (busy), one line on the "cairn.store" logger says so,
+        nothing is raised, and the record stays as it is: cleared, or moved on. The log then
+        holds only changes made after its truncation: the clearing, and anything written
+        since, where a deletion recorded itself again and a rewrite marked itself, so what
+        either left is still due."""
         with self._holding() as con:
             if mark is None:
                 found = con.execute(
@@ -656,7 +658,11 @@ class PortableMethods(StoreBase):
                     (DEFAULT_ACCOUNT_ID, COMPACT_DUE, mark),
                 )
         with self._locked() as con, contextlib.suppress(sqlite3.OperationalError):
-            con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()  # busy: as above
+            if con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
+                store_log.info(
+                    "compact: the write-ahead log keeps the changes made after it was emptied:"
+                    " another connection held it"
+                )
 
     def _room_for_rewrite(self) -> None:
         """NoRoom unless the database's disk has twice the database free (its file and its
@@ -698,10 +704,12 @@ class PortableMethods(StoreBase):
         )
 
 
-def _covered(generation: str) -> str:
-    """The record's `updated_at` once a rewrite covered `generation` (base.REWRITTEN): the
-    same generation, marked; one already marked stays as it is."""
-    return generation if is_rewritten(generation) else f"{REWRITTEN}:{generation}"
+def _rewrite_mark() -> str:
+    """The record's `updated_at` once a rewrite covered the generation it read
+    (base.REWRITTEN): a mark of this rewrite's own, new even when the record was already
+    rewritten (the command line rewrites then too), so emptying the log after one rewrite
+    never clears what a later rewrite left due."""
+    return f"{REWRITTEN}:{secrets.token_hex(16)}"
 
 
 def _refuse(findings: list[tuple[str, Any]]) -> None:

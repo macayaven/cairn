@@ -161,12 +161,14 @@ def test_the_records_value_is_still_the_first_deletions_time(db):
         store.close()
 
 
-def test_when_the_last_truncation_is_busy_the_record_is_gone_and_a_later_deletion_is_due(
-    two, db, monkeypatch
-):
+@pytest.mark.parametrize("deleting", [False, True])
+def test_when_the_last_truncation_is_busy(two, db, monkeypatch, caplog, deleting):
     """After the record is cleared the log is truncated once more, for the clearing's own
-    change. When a reader holds the log then, the record stays cleared: the log holds only
-    changes made after its truncation, and a deletion among them is recorded again."""
+    change. With a reader holding the log then, one line says so, nothing is raised, and the
+    record stays as it is: cleared when nothing came since (the log keeps the clearing only),
+    due again when a deletion came after the clearing."""
+    import logging
+
     server, command = two
     deleted(server)
     held: list[sqlite3.Connection] = []
@@ -177,21 +179,36 @@ def test_when_the_last_truncation_is_busy_the_record_is_gone_and_a_later_deletio
         with real(*args, **kwargs) as con:
             yield con
         if not held:
-            deleted(command)  # after the clearing's generation was read: a new one
             reader = sqlite3.connect(db)
             reader.execute("BEGIN")
             reader.execute("SELECT COUNT(*) FROM settings").fetchone()
             held.append(reader)
+            if deleting:  # after the clearing, with the log held: a generation of its own
+                deleted(command)
 
     monkeypatch.setattr(server, "_write", then_hold)
     try:
-        server.compact()  # no error: the rewrite and its log are done
+        with caplog.at_level(logging.INFO, logger="cairn.store"):
+            server.compact()  # no error: the rewrite and its log are done
+        assert wal_size(db) > 0  # the last truncation was refused
     finally:
         for reader in held:
             reader.rollback()
             reader.close()
+    said = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "cairn.store" and r.getMessage().startswith("compact")
+    ]
+    assert said == [
+        "compact: the write-ahead log keeps the changes made after it was emptied: another"
+        " connection held it"
+    ]
     state = server.compaction_state()
-    assert state.deleted_at is not None and state.rewritten is False  # the later one is due
+    if deleting:
+        assert state.deleted_at is not None and state.rewritten is False
+    else:
+        assert state.deleted_at is None
 
 
 def test_a_record_an_earlier_build_left_rewritten_is_still_cleared(db):
@@ -258,3 +275,75 @@ def test_the_run_guide_says_a_rewrite_is_not_repeated_once_recorded_and_runs_it(
     assert Compactor(server, hours=24, clock=lambda: T0).run_once() is True
     assert len(vacuums) == 3  # it ran again
     assert server.compaction_state().deleted_at is None
+
+
+def wal_size(db) -> int:
+    import os
+
+    path = f"{db}-wal"
+    return os.path.getsize(path) if os.path.exists(path) else 0
+
+
+@pytest.mark.parametrize("through", ["compact", "empty_log"])
+def test_a_rewrite_with_no_new_deletion_between_truncation_and_clearing_stays_due(
+    two, db, monkeypatch, through
+):
+    """One step past: the command line's `compact` rewrites even when the record is already
+    rewritten. When it does so between the server's truncation and its clearing, with a
+    reader holding the log from then on, its rewrite is in the log and must stay due."""
+    server, command = two
+    deleted(server)
+    with replica(db), pytest.raises(CompactIncomplete):
+        server.compact()  # rewritten; only the log is due
+    readers: list[sqlite3.Connection] = []
+
+    def the_other_process():
+        reader = sqlite3.connect(db)
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM settings").fetchone()
+        readers.append(reader)  # held through the server's clearing and last truncation
+        with pytest.raises(CompactIncomplete):
+            command.compact()  # no new deletion: a rewrite of its own, its log held
+
+    before_the_first_write(server, monkeypatch, the_other_process)
+    try:
+        server.compact() if through == "compact" else server.empty_log()
+        state = server.compaction_state()
+        assert wal_size(db) > 0  # the other rewrite is still in the log
+        assert state.deleted_at is not None and state.rewritten is True
+    finally:
+        for reader in readers:
+            reader.rollback()
+            reader.close()
+
+
+def test_stats_and_compact_if_due_read_a_record_a_real_rewrite_made(db, capsys):
+    """What the record now holds, read by the two commands that read it: `stats --json`
+    says only the log is left, and `compact --if-due` empties the log alone; the host's
+    nightly job reads the row's value, still the first deletion's time."""
+    import json
+
+    from cairn.web import cli
+
+    store = Store(db)
+    store._con.execute("PRAGMA busy_timeout = 0")
+    try:
+        deleted(store)
+        with replica(db), pytest.raises(CompactIncomplete):
+            store.compact()
+        assert generation(db).startswith(f"{base.REWRITTEN}:")
+    finally:
+        store.close()
+    con = sqlite3.connect(db)
+    (value,) = con.execute(
+        "SELECT value FROM settings WHERE name = ?", (base.COMPACT_DUE,)
+    ).fetchone()
+    con.close()
+    assert value == T0.isoformat(timespec="microseconds")  # what host.sh reads
+    capsys.readouterr()
+    assert cli.main(["stats", "--db", str(db), "--json"]) == 0
+    compaction = json.loads(capsys.readouterr().out)["compaction"]
+    assert compaction["rewritten"] is True and compaction["deleted_at"] == value
+    assert cli.main(["compact", "--if-due", "--db", str(db)]) == 0
+    assert "emptied the write-ahead log" in capsys.readouterr().out
+    assert generation(db) is None  # done: the record goes

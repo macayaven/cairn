@@ -107,10 +107,10 @@ COMPACTED_AT = "store.compacted_at"
 # The COMPACT_DUE row's `value` is the time of the first deletion since the last compaction
 # (what `stats`, `compact --if-due` and the host's nightly job read). Its `updated_at` is the
 # record's generation: each deletion writes one of its own (deletion_generation, a random
-# value, so two deletions at one instant differ); a rewrite that covered it writes
-# REWRITTEN + ":" + that generation (only emptying the write-ahead log is left,
+# value, so two deletions at one instant differ); a rewrite that covered what it read writes
+# REWRITTEN + ":" + a value of that rewrite's own (only emptying the write-ahead log is left,
 # cairn.store.portable), and emptying the log clears the row only while it still holds the
-# generation the emptying read. A deletion after either is never taken for one they covered.
+# mark the emptying covers. A deletion after either is never taken for one they covered.
 REWRITTEN = "rewritten"
 # How a deletion records itself: its time when none is recorded; its own generation as
 # `updated_at` in every case (cairn.store.accounts, cairn.store.erasure).

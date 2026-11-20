@@ -240,12 +240,12 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   nothing audits: delete_account, delete_project and forget_note write the first in their
   own transaction (only for what existed; its time only when not already set, and in every
   case a generation of their own as the row's `updated_at`, base.deletion_generation);
-  compact sets the second and marks the first as rewritten (base.REWRITTEN with the
-  generation) only once the rewrite has returned, under the same hold of the lock, and only
+  compact sets the second and marks the first as rewritten (base.REWRITTEN with a value of
+  that rewrite's own) only once the rewrite has returned, under the same hold of the lock, and only
   if the row's `updated_at` is still what it read before the rewrite (a deletion another
   process records in between stays due), so a rewrite that failed or was killed records
   nothing and is done again; the first goes once the log is emptied, only while it still
-  holds the generation that emptying covered. They survive a restart. `serve --compact-every`
+  holds the mark that emptying covered. They survive a restart. `serve --compact-every`
   decides by them (cairn.web.compactor).
 - `export`, `import_export`, `compact` and `compaction_state` are management calls (see
   Reach): a view limited to named projects, or read-only, is refused (PermissionError) and

@@ -1673,27 +1673,66 @@ jobs:
             candidate=(--prerelease --latest=false)
           fi
           # An earlier attempt may have made the release and been lost before the job was
-          # recorded as done. Its release is this run's only if it is for this tag, not a
-          # draft, with this tag's pre-release flag and byte for byte the files this run
-          # attested: then it is not made again, and `aliases` runs. Any other stops the job.
-          if found="$(gh release view "$GITHUB_REF_NAME" --json tagName,isDraft,isPrerelease,assets \
-            --jq '.tagName, .isDraft, .isPrerelease, ([.assets[].name] | sort | join(" "))')"; then
-            { read -r tag; read -r draft; read -r pre; read -r names; } <<< "$found"
-            want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
-            want="${want% }"
+          # recorded as done, or left it a draft: gh release create makes a draft, uploads the
+          # files and then publishes it, in separate requests, so a runner lost in between
+          # leaves the draft. Every release of the repository is listed, drafts included (GitHub
+          # lists drafts to a token that may write, as this job's may), and a listing that fails
+          # stops the job instead of being taken for none. The release for this tag is this
+          # run's only if it is the only one, has this tag's pre-release flag and every file it
+          # holds is byte for byte one this run attested: a published one must hold them all
+          # and is left as it is; a draft gets the files it lacks and is published. Either way
+          # `aliases` runs. Any other stops the job.
+          if ! found="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.draft, .prerelease, ([.assets[].name] | sort | join(\" \"))] | @tsv")"; then
+            echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
+            exit 1
+          fi
+          if [ -n "$found" ]; then
             refuse() {
               echo "::error::a GitHub release for $GITHUB_REF_NAME exists and is not this run's: $1; a person decides what becomes of it"
               exit 1
             }
-            [ "$tag" = "$GITHUB_REF_NAME" ] || refuse "its tag is $tag"
-            [ "$draft" = false ] || refuse "it is a draft"
+            count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
+            [ "$count" = 1 ] || refuse "there are $count releases for it"
+            IFS=$'\t' read -r draft pre names <<< "$found"
             [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
-            [ "$names" = "$want" ] || refuse "its files are [$names], not [$want]"
-            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published"
-            for name in "${files[@]}"; do
-              cmp -s "$name" "$RUNNER_TEMP/published/$name" || refuse "$name is not the file this run attested"
+            want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+            want="${want% }"
+            for name in $names; do
+              case " ${files[*]} " in
+                *" $name "*) ;;
+                *) refuse "it holds $name, which this run did not attest" ;;
+              esac
             done
-            echo "The GitHub release $GITHUB_REF_NAME is this run's, made by an earlier attempt with these files: it is not made again."
+            missing=()
+            for name in "${files[@]}"; do
+              case " $names " in
+                *" $name "*) ;;
+                *) missing+=("$name") ;;
+              esac
+            done
+            if [ "$draft" = false ] && [ "${#missing[@]}" -gt 0 ]; then
+              refuse "its files are [$names], not [$want]"
+            fi
+            if [ -n "$names" ]; then
+              gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published"
+              for name in $names; do
+                cmp -s "$name" "$RUNNER_TEMP/published/$name" || refuse "$name is not the file this run attested"
+              done
+            fi
+            if [ "$draft" = true ]; then
+              if [ "${#missing[@]}" -gt 0 ]; then
+                gh release upload "$GITHUB_REF_NAME" "${missing[@]}"
+              fi
+              latest=()
+              if [ "$CANDIDATE" = "true" ]; then
+                latest=(--latest=false)
+              fi
+              gh release edit "$GITHUB_REF_NAME" --draft=false "${latest[@]}"
+              echo "The draft GitHub release $GITHUB_REF_NAME is this run's, left by an earlier attempt: the files it lacked are uploaded and it is published."
+            else
+              echo "The GitHub release $GITHUB_REF_NAME is this run's, made by an earlier attempt with these files: it is not made again."
+            fi
             exit 0
           fi
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \

@@ -1492,9 +1492,9 @@ def run_release_step(tmp_path, step: dict, files: list[str], tag: str = "v1.2.3"
         'exec shasum -a 256 "$@"\n'
     )
     (bin_ / "sha256sum").chmod(0o755)
-    # No release for the tag yet: `gh release view` finds none, as on a first attempt.
+    # No release for the tag yet: the listing of releases holds none, as on a first attempt.
     (bin_ / "gh").write_text(
-        '#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit 1; fi\nprintf "%s\\n" "$@"\n'
+        '#!/bin/sh\nif [ "$1" = api ]; then exit 0; fi\nprintf "%s\\n" "$@"\n'
     )
     (bin_ / "gh").chmod(0o755)
     return subprocess.run(

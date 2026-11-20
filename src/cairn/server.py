@@ -689,8 +689,9 @@ Web UI (server-rendered HTML)
   it who wrote the notes it cites (web/ui.writer_words), when, and whether any is outside
   text. A claim that is cut (`text_cut`) is never taken to hold a text: the page says it is
   longer than what is shown and shows the line its answer gives (the line of its passage
-  that states the term, or names the title) wherever it holds one, else the head it holds
-  as its text, else nothing, and its link reads the whole claim on its page. Then "and N more
+  that states the term, or the line that names the title) wherever it holds one, else the
+  head it holds as its text, else nothing, and its link reads the whole claim on its page.
+  Then "and N more
   reasons" for `more`; one sentence for what the read left out (related_left_out), with a
   link to show up to 20 when pages were left out; and, with no related page, one sentence
   that says so and what makes two pages related. N is 1 to 20 (8 when left out), and any

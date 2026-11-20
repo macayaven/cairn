@@ -232,8 +232,9 @@ def _quoted(claim: Mapping[str, Any], mention: bool) -> dict[str, Any]:
     """A claim a relation rests on, as the related page quotes it, never drawn as Markdown.
     `part` says what `text` is of it: "whole", its text as it is; or, of a claim that is cut
     (`text_cut`), "line", the line its answer gives (the line of its passage that states the
-    term, or names the title, itself in part when `line_cut`), wherever the answer holds
-    one; else "head", the head it holds as its text; else "none", and nothing to quote. A
+    term, or the line that names the title, itself in part when `line_cut`), wherever the
+    answer holds one; else "head", the head it holds as its text; else "none", and nothing
+    to quote. A
     claim that is cut is never taken to hold a text. `says`: the sentence that a claim is
     longer than what is shown, None for a whole one. And who wrote the notes it cites, each
     said once in the page view's words (writer_words; a Slack message someone filed as
@@ -252,9 +253,9 @@ def _quoted(claim: Mapping[str, Any], mention: bool) -> dict[str, Any]:
         part = "whole"
     elif line is not None:
         of_it = "part of the line" if claim.get("line_cut") else "the line"
-        holds = "names the title" if mention else "states the term"
+        holds = "that names the title" if mention else "of its passage that states the term"
         part, text = "line", line
-        says = f"{LONGER}: this is {of_it} of its passage that {holds}."
+        says = f"{LONGER}: this is {of_it} {holds}."
     elif text is not None:
         part, says = "head", f"{LONGER}: these are its first {len(text):,} characters."
     else:
@@ -450,8 +451,10 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
         try:
             found = memory.related(ref, slug, limit)
         except NotFound:
-            memory.find_page(memory.project(ref), slug)  # refuses in the page view's words
-            raise  # a page filed since: the first answer stands
+            target = memory.project(ref)  # no such project: said as the page view says it
+            memory.find_page(target, slug)  # nor such a page
+            # a page filed since the read: it was not there when its related pages were read
+            raise NotFound(f"no page {slug!r} in project {target.name!r}") from None
         return _ui(request, "related.html", **related_view(found, limit))
 
     def search(request: Request) -> Response:

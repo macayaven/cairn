@@ -386,7 +386,7 @@ def test_the_view_shows_a_claim_by_what_its_answer_holds_and_never_assumes_its_t
     assert said(mention["there"]) == (
         "line",
         "see Deploy",
-        LONGER + "this is part of the line of its passage that names the title.",
+        LONGER + "this is part of the line that names the title.",
     )
     assert said(lined["here"]) == (
         "line",
@@ -429,9 +429,7 @@ def test_the_page_draws_each_shape_of_a_claim_and_links_the_whole_one(w, world, 
     (entry,) = shown(r.text)
     named, shared = entry["why"]
     assert (named["there"]["part"], named["there"]["text"]) == ("line", "see  Deploy\t<b>now</b>")
-    assert (
-        named["there"]["says"] == LONGER + "this is the line of its passage that names the title."
-    )
+    assert named["there"]["says"] == LONGER + "this is the line that names the title."
     assert (shared["here"]["part"], shared["here"]["text"]) == ("head", shares["here"]["text"])
     assert shared["here"]["says"] == (
         LONGER + f"these are its first {len(shares['here']['text'])} characters."
@@ -644,6 +642,48 @@ def test_the_sentence_of_what_was_left_out(counts, said):
     assert related_left_out(searched) == said
 
 
+def test_an_answer_that_only_says_it_is_not_complete_is_still_said_not_to_be(w):
+    """No count says why: the page does not then pass the answer off as whole. And a kind of
+    term this page has no word for is a term."""
+    searched = {
+        "complete": False,
+        "terms_looked_up": 3,
+        "terms_not_looked_up": 0,
+        "claims_read": 2,
+        "claims_not_read": 0,
+        "pages_left_out": 0,
+    }
+    assert related_left_out(searched) == "This is not all of it."
+    claim = {
+        "claim_id": "cl_1",
+        "text": "Quill listens on 8443.",
+        "passage_ids": [],
+        "outside": False,
+        "written_by": [],
+        "written_at": None,
+    }
+    reason = {"kind": "shares", "term": "8443", "term_kind": "port", "pages": 2}
+    answer = {
+        "project": "ops",
+        "page": "deploy",
+        "title": "Deploy",
+        "version": 1,
+        "related": [
+            {
+                "page": "other",
+                "title": "Other",
+                "version": 1,
+                "why": [reason | {"here": claim, "there": claim}],
+                "more": 0,
+            }
+        ],
+        "searched": searched,
+    }
+    view = related_view(answer, RELATED_SHOWN)
+    assert view["left_out"] == "This is not all of it." and view["more_href"] is None
+    assert view["related"][0]["reasons"][0]["term_word"] == "term"
+
+
 def test_with_no_related_page_one_sentence_says_so_and_what_relates_two_pages(w):
     note(w, "Queue", "Brook drains the queue at noon with `true` set.\n")
     r = get(w, "/b/ops/p/queue/related")
@@ -702,6 +742,22 @@ def test_a_page_that_is_not_there_and_a_project_out_of_reach_answer_as_the_page_
         "nowhere", "X"
     )
     assert get(w, "/b/vault/p/deploy/related", w.ada).status_code == 200  # hers
+
+
+def test_a_page_the_read_does_not_find_is_refused_in_the_page_views_words_whatever_follows(
+    w, world, monkeypatch
+):
+    """The read of related pages says the page is not there, and the page view's own check
+    then finds it (a page filed between the two): the answer is still the page view's
+    sentence for a page that is not there, never the agents' sentence with the nearest names."""
+    monkeypatch.setattr(Store, "related_pages", lambda self, project_id, slug, limit: None)
+    refused = get(w, "/b/ops/p/deploy/related")
+    assert refused.status_code == 404 and get(w, "/b/ops/p/deploy").status_code == 200
+    (heading,) = tree(main_of(refused.text)).all("h1")
+    assert heading.text() == "There is no page 'deploy' in the project 'ops'."
+    assert "nearest" not in refused.text and "named by its slug" not in refused.text
+    missing = get(w, "/b/ops/p/nowhere/related")
+    assert main_of(missing.text) == main_of(get(w, "/b/ops/p/nowhere").text)
 
 
 def test_signed_out_it_leads_to_sign_in_as_the_page_view_does(w, world):

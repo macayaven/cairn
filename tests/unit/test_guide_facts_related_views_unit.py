@@ -168,8 +168,8 @@ def test_the_web_view_shows_a_person_the_answer_of_related(world):
     w = world
     says(
         "connect",
-        "In the web view a page's **Related pages** link shows a person the same answer, each"
-        " claim quoted as plain text.",
+        "In the web view a page's **Related pages** link shows a person what `related` answers"
+        " for the page, each claim quoted as plain text.",
     )
     answer = Memory(w.ada.view, lint_gate).related("ops", "deploy", RELATED_SHOWN)
     pages = shown(get(w, "/b/ops/p/deploy/related").text)
@@ -200,8 +200,9 @@ def test_the_contract_has_the_related_pages_address_and_what_it_is_recorded_as(w
         '/b/<project>/p/<slug> "page", /b/<project>/p/<slug>/related "related", /search "recall")',
         "A claim that is cut (`text_cut`) is never taken to hold a text: the page says it is"
         " longer than what is shown and shows the line its answer gives (the line of its passage"
-        " that states the term, or names the title) wherever it holds one, else the head it"
-        " holds as its text, else nothing, and its link reads the whole claim on its page.",
+        " that states the term, or the line that names the title) wherever it holds one, else"
+        " the head it holds as its text, else nothing, and its link reads the whole claim on its"
+        " page.",
     )
     assert get(w, "/b/ops/p/deploy/related?limit=21").status_code == 400
     missing, viewed = get(w, "/b/ops/p/none/related"), get(w, "/b/ops/p/none")

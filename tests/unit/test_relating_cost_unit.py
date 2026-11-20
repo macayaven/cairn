@@ -13,7 +13,9 @@ A read (Store.related_pages) runs, T being the terms looked up (at most relating
 - 2 for what is given (the claims, the pages' heads) and 2 for the notes of the passages
   those claims cite and who wrote them (the caller's), none when nothing is related.
 So 13 statements for a page of 10 terms, and 16 for one of 200 and for one of 3,000: past
-TERMS_MAX terms the count is the same, whatever the page holds. One statement more, once
+TERMS_MAX terms the count is the same, whatever the page holds. One more, the 17th at most,
+asks the index where a claim that mentions the page names its title, when such a claim is
+given cut (the last test). One statement more, once
 (SETTINGS): the first time a connection uses a workspace's index FTS5 loads its settings, as
 tests/unit/test_search_cost_unit.py says.
 The rows, C being the page's claims: 2 + 2C + the claims listed (each term's own claim among
@@ -25,6 +27,8 @@ of the page's words.
 """
 
 import contextlib
+import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -48,8 +52,9 @@ def settings_loaded(statements: list[str]) -> int:
 @contextlib.contextmanager
 def watched(store: Store):
     """The statements the store runs (FTS5's own, which SQLite reports as comments, apart), the
-    rows it is handed, the claims FTS5 reads by row, and SQLite's steps."""
-    seen = SimpleNamespace(statements=[], rows=0, claims=0, steps=0)
+    rows it is handed and the longest text in them, the claims FTS5 reads by row, and
+    SQLite's steps."""
+    seen = SimpleNamespace(statements=[], rows=0, claims=0, steps=0, longest=0)
     before = store._state.observers.rows
 
     def traced(statement: str) -> None:
@@ -61,6 +66,8 @@ def watched(store: Store):
 
     def rows(cursor, row):
         seen.rows += 1
+        texts = [len(value) for value in row if isinstance(value, str)]
+        seen.longest = max(seen.longest, *texts, 0)  # the longest text a statement hands back
         return row if before is None else before(cursor, row)
 
     def stepped() -> int:
@@ -285,8 +292,9 @@ def test_a_claim_of_any_length_is_read_to_the_bound_and_a_passage_is_measured_un
 ):
     """A claim of 60,000 characters on each side of a reason: of each claim's text the read
     takes the bytes that TEXT_MAX + 1 characters can fill and no more, through a handle;
-    no statement selects a claim's text; and a passage is measured by a handle that reads
-    nothing of it (its text is then read by the statement that reads the passages)."""
+    no statement of this read names a claim's text (the one that does, for a mention, is
+    the next test's); and a passage is measured by a handle that reads nothing of it (its
+    text is then read by the statement that reads the passages)."""
     store = Store(tmp_path / "cairn.db")
     project = store.create_project("ops")
     memory = Memory(store, lint_gate)
@@ -316,5 +324,51 @@ def test_a_claim_of_any_length_is_read_to_the_bound_and_a_passage_is_measured_un
     assert len(passages) == 1 and passages[0].size > 58_000 and passages[0].read_bytes == 0
     (index,) = {table.removesuffix("_content") for table, _, _ in read.opened} - {"spans"}
     ours = [s for s in seen.statements if index in s]
-    assert ours and not [s for s in ours if f"{index}.text" in s]
+    assert ours and not [s for s in ours if ".text" in s]  # under the index's name or another
     store.close()
+
+
+@pytest.mark.parametrize(
+    "named",
+    ["the Quill ledger.", "the Quill" + " \u2014" * 900 + " ledger."],
+    ids=["side by side", "1,800 characters apart"],
+)
+def test_a_cut_mention_costs_one_statement_more_and_hands_back_a_part_of_the_claim(tmp_path, named):
+    """A page mentioned by a claim of 60,000 characters, which names it at its end. Beside a
+    claim that mentions it in a sentence, the read runs one statement more: the one that
+    asks the index where it matched the title. The index reads the long claim whole itself,
+    once, to mark the match; no statement hands back more of it than the line needs, 3 *
+    LINE_MAX + 1 characters, however far apart the title's words stand; and the claim's text
+    is read by a handle to the bound, as any claim's."""
+    counts = {}
+    for size, filler in (("short", ""), ("long", "Brook keeps the ledger at dawn; " * 1_900)):
+        store = Store(tmp_path / f"{size}.db")
+        project = store.create_project("ops")
+        memory = Memory(store, lint_gate)
+        memory.note("ops", "Ada balances it at dusk.\n", title="Quill ledger", topic="Quill ledger")
+        memory.note("ops", filler + "Then she opens " + named + "\n", title="Other", topic="Other")
+        merge(store)
+        with watched(store) as seen:
+            found = store.related_pages(project.id, "quill-ledger", RELATED_MAX)
+        (reason,) = found.pages[0].why
+        assert reason.kind == "mentioned_by" and reason.there.cut == (
+            size == "long" or len(named) > 500
+        )
+        counts[size] = (len(seen.statements) - settings_loaded(seen.statements), seen.longest)
+        if size == "long":
+            assert len(reason.there.line) == relations.LINE_MAX and reason.there.line_cut
+            assert reason.there.line.startswith("Quill") or reason.there.line.endswith(named)
+            asked = [s for s in seen.statements if "highlight(" in s]
+            assert len(asked) == 1 and seen.longest <= 3 * relations.LINE_MAX + 1
+            # the index marks the claim once a row: the SELECT that asks it is run apart
+            # from the one that reads the marks twice, not folded into it
+            with closing(sqlite3.connect(tmp_path / "long.db")) as con:
+                plan = [step[-1] for step in con.execute("EXPLAIN QUERY PLAN " + asked[0])]
+            assert [step for step in plan if step.startswith(("CO-ROUTINE", "MATERIALIZE"))]
+        store.close()
+    if len(named) < 500:
+        # the caller's 2; the page's claims and passages, 2; no term to list; the title, 1;
+        # what is given, 2; the notes of the passages given and who wrote them, 2
+        assert counts["short"][0] == 9 and counts["long"][0] == 10
+    else:  # both claims are cut: both ask the index
+        assert counts["short"][0] == counts["long"][0] == 10

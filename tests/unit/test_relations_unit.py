@@ -270,13 +270,65 @@ def test_a_longer_line_is_given_as_a_window_of_it_that_holds_the_term(before):
     assert lead == min(max(room // 2, room - (1_590 - before) - 1), before + 1)
 
 
-def test_a_term_as_long_as_the_window_or_longer_is_its_own_line():
-    """No window is ever less than the term. No term is that long: relations.TERM_MAX keeps
-    every term, as written, to half a window, so every line given is LINE_MAX at most."""
+def test_what_is_given_of_a_line_is_never_longer_than_the_bound():
+    """Whatever is held: of a match as long as the bound or longer, in a longer line, the
+    first LINE_MAX characters are given, cut. (No term is that long, relations.TERM_MAX; a
+    title's words can stand any distance apart in a claim that names it.)"""
     written = "https://fable.example/" + "a" * relations.LINE_MAX
     text = "see " * 200 + written + " and more" * 100
-    assert line(text, written) == (written, True)
+    assert line(text, written) == (written[: relations.LINE_MAX], True)
     assert line("x" + "a" * relations.LINE_MAX, "a" * relations.LINE_MAX) == (
         "a" * relations.LINE_MAX,
         True,
     )
+    apart = "Quill" + " \u2014" * 300 + " ledger"
+    assert line("Ada opens the " + apart + " at noon.", apart) == (
+        apart[: relations.LINE_MAX],
+        True,
+    )
+    assert line(apart[: relations.LINE_MAX], apart[: relations.LINE_MAX]) == (
+        apart[: relations.LINE_MAX],
+        False,  # the whole of a line of exactly LINE_MAX characters
+    )
+
+
+def test_a_match_on_two_lines_is_given_with_both():
+    text = "Brook rests.\nAda opens the Quill\nledger at noon.\nQuill files it."
+    assert line(text, "Quill\nledger") == ("Ada opens the Quill\nledger at noon.", False)
+
+
+def test_the_line_is_the_same_read_from_the_part_of_a_text_around_the_match():
+    """What the store asks the index for, of a claim too long to read whole: LINE_MAX
+    characters before the match, and LINE_MAX after it (after its first LINE_MAX + 1, of a
+    longer match). `line_of` on that part gives what it gives on the whole text, wherever
+    the line ends fall: on the part's edges, one character inside them, one outside."""
+    import random
+
+    rng = random.Random(20261120)
+    most, checked, cut = relations.LINE_MAX, 0, 0
+    lengths = [0, 1, 2, most - 12, most - 11, most - 10, most - 1, most, most + 1, 3 * most]
+    for before in lengths:
+        for after in lengths:
+            for held in (1, 10, most, most + 1, most + 2, 2 * most):
+                for lead, tail in (("", ""), ("x\n", "\ny"), ("x" * 900 + "\n", "\n" + "y" * 900)):
+                    text = lead + "b" * before + "M" * held + "a" * after + tail
+                    start = len(lead) + before
+                    end = start + held
+                    until = min(end, start + most + 1)
+                    lo, hi = max(0, start - most), until + most
+                    whole = relations.line_of(text, start, end)
+                    assert relations.line_of(text[lo:hi], start - lo, until - lo) == whole
+                    assert len(whole[0]) <= most
+                    checked += 1
+                    cut += whole[1]
+    for _ in range(2_000):  # and texts of lines of any length, a match anywhere
+        text = "".join(rng.choice("ab \n") if rng.random() < 0.02 else "c" for _ in range(1_500))
+        start = rng.randrange(len(text))
+        end = min(len(text), start + rng.choice([1, 5, 40, most, most + 5]))
+        until = min(end, start + most + 1)
+        lo, hi = max(0, start - most), until + most
+        whole = relations.line_of(text, start, end)
+        assert relations.line_of(text[lo:hi], start - lo, until - lo) == whole
+        assert len(whole[0]) <= most
+        cut += whole[1]
+    assert checked == 1_800 and cut > 1_000

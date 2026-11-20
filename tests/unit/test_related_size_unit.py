@@ -433,3 +433,21 @@ def test_the_largest_answer_made_through_the_product_is_within_the_largest_allow
         assert sent(answer) <= STATED[surface, limit, kind]
     if filler == COSTLIEST:
         assert as_rest(answer) > STATED["rest", limit, kind] // 2
+
+
+def test_claims_that_mention_the_page_with_its_title_spread_wide_are_within_the_largest(served):
+    """Five pages name the page (one more and its title would be common), each in a claim
+    longer than TEXT_MAX whose words of the title stand 600 characters apart. Each gives a
+    line of LINE_MAX characters and no more, and the answer is within the largest allowed."""
+    note(served, "Quill ledger", "Brook balances it at dusk.\n")
+    apart = "Quill" + " \u2014" * 300 + " ledger"
+    for page in range(relations.COMMON):
+        note(served, f"Page {page}", "Ada waits. " * 60 + f"On day {page} she opens the {apart}.\n")
+    answer = both(served, "quill-ledger", 8)
+    assert len(answer["related"]) == relations.COMMON
+    for reason, claim in sides(answer):
+        assert reason["kind"] == "mentioned_by" and claim["text_cut"] is True
+        assert (claim["line"], claim["line_cut"]) == (apart[: relations.LINE_MAX], True)
+    assert within(answer, largest(8, "a")) == []
+    for surface, sent in SENT.items():
+        assert sent(answer) <= STATED[surface, 8, "any text"]

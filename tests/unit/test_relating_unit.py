@@ -8,6 +8,7 @@ from contextlib import closing
 
 import pytest
 
+from cairn import relations
 from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.relations import CLAIMS_COMMON, COMMON, LINE_MAX, MENTIONED_BY, SHARES, TEXT_MAX
@@ -648,17 +649,84 @@ def test_a_long_line_is_given_as_a_window_that_holds_the_term_as_written(store, 
     assert "`Quill.Lock`" in there.line and "Quill.Lock" not in there.text
 
 
-def test_a_long_claim_that_mentions_the_page_is_cut_and_gives_no_line(store, ops):
-    """A mention is the index's match, which has no place in a passage that this read holds:
-    the claim says it is cut and `page` gives it whole."""
-    ledger = file(store, "ops", "Quill ledger", "Brook balances it at dusk.\n")
-    whole = "Ada waits for the nightly log, " * 80 + "then opens the Quill ledger."
+def mention(store: Store, ops, whole: str, title: str = "Quill ledger"):
+    """The claim of `whole`, as the page `title` is answered that it is mentioned by it."""
+    named = file(store, "ops", title, "Brook balances it at dusk.\n")
     file(store, "ops", "Long", whole + "\n")
-    (page,) = related(store, ops.id, ledger).pages
+    (page,) = related(store, ops.id, named).pages
     (reason,) = page.why
     assert (reason.kind, reason.here) == (MENTIONED_BY, None)
-    assert (reason.there.text, reason.there.cut) == (whole[:TEXT_MAX], True)
-    assert (reason.there.line, reason.there.line_cut) == (None, False)
+    assert (reason.there.text, reason.there.cut) == (whole[:TEXT_MAX], len(whole) > TEXT_MAX)
+    return reason.there
+
+
+def test_a_long_claim_that_mentions_the_page_gives_the_line_that_names_it(store, ops):
+    """The line is where the index itself matched the title's words in the claim's text: the
+    first such place, here words in capitals with a dash and emphasis between them. A search
+    for the title's letters would take the last line."""
+    lines = (
+        [f"Ada waits for nightly log {n}." for n in range(60)]
+        + ["Then she opens the QUILL\u2014*ledger* first."]
+        + [f"Brook rests {n}." for n in range(30)]
+        + ["Last of all, the Quill ledger again."]
+    )
+    whole = "\n".join(lines)
+    assert whole.index("QUILL") > TEXT_MAX and whole.count("Quill ledger") == 1
+    there = mention(store, ops, whole)
+    assert (there.line, there.line_cut) == ("Then she opens the QUILL\u2014*ledger* first.", False)
+
+
+def test_a_claim_that_mentions_the_page_and_is_not_cut_has_no_line(store, ops):
+    there = mention(store, ops, "See the Quill ledger first.")
+    assert (there.cut, there.line, there.line_cut) == (False, None, False)
+
+
+PLACES = [0, 1, LINE_MAX - 15, LINE_MAX - 14, LINE_MAX - 13, LINE_MAX, LINE_MAX + 1, 3 * LINE_MAX]
+
+
+@pytest.mark.parametrize("before", PLACES)
+@pytest.mark.parametrize("after", [0, 1, LINE_MAX - 15, LINE_MAX - 14, LINE_MAX, 3 * LINE_MAX])
+def test_the_line_of_a_mention_is_the_rules_line_wherever_the_title_stands(
+    store, ops, before, after
+):
+    """Against relations.line_of on the whole text, at the place the title is written: at the
+    line's start and its end, and with the title as far from either as a line given whole
+    lets it be (the 12 characters of the title and LINE_MAX - 12 more, with the "; "), one
+    character nearer and one farther: what is asked of the index is just enough."""
+    lead = "Ada waits for the nightly log. " * 30 + "\n"
+    line = "b" * before + ("; " if before else "") + "Quill ledger" + ("; " if after else "")
+    whole = lead + line + "a" * after + "\nBrook rests."
+    start = whole.index("Quill ledger")
+    there = mention(store, ops, whole)
+    assert (there.line, there.line_cut) == relations.line_of(whole, start, start + 12)
+    assert "Quill ledger" in there.line and len(there.line) <= LINE_MAX
+
+
+def test_a_title_whose_words_stand_on_two_lines_is_given_with_both(store, ops):
+    whole = "Ada waits for the nightly log. " * 30 + "\nShe opens the Quill\nledger at noon."
+    there = mention(store, ops, whole)
+    assert (there.line, there.line_cut) == ("She opens the Quill\nledger at noon.", False)
+
+
+def test_a_title_whose_words_stand_far_apart_is_given_by_the_first_of_the_match(store, ops):
+    """The index matches the title's words side by side whatever stands between them that is
+    no word. What is given of such a match is LINE_MAX characters from its start, never
+    more: a line given has one bound, whoever writes the claim."""
+    apart = "Quill" + " \u2014" * 300 + " ledger"
+    whole = "Ada waits for the nightly log. " * 30 + "She opens the " + apart + " at noon."
+    there = mention(store, ops, whole)
+    assert (there.line, there.line_cut) == (apart[:LINE_MAX], True)
+
+
+@pytest.mark.parametrize("mark", relating.MARKS)
+def test_a_claim_whose_text_holds_a_mark_of_the_index_gives_no_line(store, ops, mark):
+    """The index says where it matched by putting two marks around the match (relating.MARKS,
+    two characters Unicode keeps out of every text exchanged). In a claim that holds one of
+    them the place cannot be told from the marks, and no line is given: the claim is cut,
+    says so, and `page` gives it whole."""
+    whole = "Ada waits for the nightly log. " * 30 + f"She opens {mark} the Quill ledger."
+    there = mention(store, ops, whole)
+    assert (there.cut, there.line, there.line_cut) == (True, None, False)
 
 
 def test_one_claim_cut_gives_each_term_its_own_line(store, ops):

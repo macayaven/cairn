@@ -59,20 +59,27 @@ Bounded work, whoever asks, and nothing left out silently. What can be left out 
 
 What is given is bounded too, and a claim says when it is not whole (`Stated`). A claim's
 text is read to relations.TEXT_MAX characters and no further, by a handle on the value the
-index stores (`_text`), so a claim of any length costs what a short one does; a longer one
-is given cut. Beside a claim cut that states a shared term goes the line of its first
-passage that holds the term (relations.line_of), from the passage as this read already
-holds it and from where the term's fact stands in it: nothing is read for it, and the text
-is not searched a second time. A claim cut that mentions the page has no such line: the
-index's match has no place in a passage that this read holds.
+index stores (`_text`), so of a claim of any length no more is handed back than of a short
+one; a longer one is given cut. Beside a claim cut that states a shared term goes the line
+of its first passage that holds the term (relations.line_of), from the passage as this
+read already holds it and from where the term's fact stands in it: nothing is read for it,
+and the text is not searched a second time. Beside a claim cut that mentions the page
+goes the line of its own text that names the title (`_named`): the index is asked where it
+matched, answers by its own marks around the match, and hands back that place with the
+part of the text a line can come from, 3 * LINE_MAX + 1 characters at most. Nothing here
+looks for the title. To mark the match the index reads the claim whole itself, inside its
+statement: one claim for each page that mentions the page and is given, so relations.COMMON
+claims at most, each as long as a page's claims may be (cairn.store.PAGE_CHARS_MAX
+characters).
 
 Statements, T being the terms looked up, beside the four of the caller (the page's head, the
 index's table, the notes of the passages the claims given cite, and who wrote them): 2 for
 the page's claims and their passages; ceil(T / AT_ONCE) to list the claims that hold each
 term's words; 3 for the candidates (their rows, the rows of their passages, the passages); 1
 for the title; 2 for what is given (the claims, the pages' titles and versions; each claim's
-text is then read by a handle, which is no statement). A statement with nothing to ask is
-not run. At most 2 + 4 + 3 + 1 + 2 = 12, and 16 with the caller's.
+text is then read by a handle, which is no statement), and 1 more to ask the index where a
+claim given cut names the title. A statement with nothing to ask is not run. At most 2 + 4
++ 3 + 1 + 3 = 13, and 17 with the caller's.
 Rows: two for each claim of the page; for each term at most CLAIMS_COMMON + 1, and as many
 for the title; 3 for each candidate claim read, at most CLAIMS_MAX; and what is given, at
 most relations.RELATED_MAX pages of WHY_MAX reasons of two claims. (The caller's read of who
@@ -102,14 +109,20 @@ TERMS_MAX = 256  # terms of a page that are looked up; it counts the rest
 CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
 BYTES_MAX = 1_000_000  # bytes of those claims' passages, as stored, read in all
 AT_ONCE = 64  # terms one statement asks the index for
+# The two marks the index is asked to put around what it matched of a title in a claim's
+# text (`_named`): characters Unicode keeps for a program's own use and out of every text
+# that is exchanged, so a claim holds neither unless someone put it there.
+MARKS = ("\ufdd0", "\ufdd1")
 
 
 class Stated(NamedTuple):
     """A claim of a page's latest version, as the index holds it and as a reason gives it:
     its text whole up to relations.TEXT_MAX characters, else its first TEXT_MAX and `cut`.
     For a claim cut that states a shared term, `line` is the line of its first passage that
-    holds the term, where the term's fact stands (relations.line_of), and `line_cut` says
-    that line is given in part. A claim that is not cut, and one that mentions, has no line."""
+    holds the term, where the term's fact stands (relations.line_of); for one that mentions
+    the page, the line of its own text that names the title, where the index matched it
+    (`_named`). `line_cut` says that line is given in part. A claim that is not cut has no
+    line."""
 
     claim_id: str
     text: str
@@ -242,11 +255,12 @@ def related(
         for at, row in states.items():
             reasons.setdefault(at, []).append(shared._replace(there=row))
 
-    for at, row in _mentioning(con, *scope, slug, title).items():
+    named = _title(title)
+    for at, row in _mentioning(con, *scope, slug, named).items():
         reasons.setdefault(at, []).append(Reason(MENTIONED_BY, title, TITLE, 2, None, row))
 
     given, pages_left_out = relations.best(reasons, limit)
-    pages = _given(con, *scope, given, held, texts) if given else ()
+    pages = _given(con, *scope, given, held, texts, named) if given else ()
     wanted = {row for _, others in asked.values() for row, _ in others}
     left = Left(
         terms_looked_up=len(looked),
@@ -258,18 +272,28 @@ def related(
     return Related(slug, title, version, pages, left, {}, {})
 
 
-def _mentioning(
-    con: sqlite3.Connection, account_id: str, index: str, project_id: str, slug: str, title: str
-) -> dict[str, int]:
-    """Each other page a claim of which holds the title as a phrase: its first such claim, by
-    row. None for a title of no word, or of more words than a search takes; and none for a
-    title that is common: more than relations.CLAIMS_COMMON claims of other pages hold it, or
-    more than relations.COMMON other pages. One statement at most."""
+def _title(title: str) -> str | None:
+    """What the index is asked for a page's title: its words side by side in a claim's text.
+    None for a title of no word, or of more words than a search takes (ranking.split)."""
     counted, more_words = ranking.split(title)
-    match = None if more_words else ranking.phrase(counted)
-    if match is None:
+    return None if more_words else ranking.phrase(counted)
+
+
+def _mentioning(
+    con: sqlite3.Connection,
+    account_id: str,
+    index: str,
+    project_id: str,
+    slug: str,
+    named: str | None,
+) -> dict[str, int]:
+    """Each other page a claim of which holds the title as a phrase (`named`: `_title`): its
+    first such claim, by row. None for a title that is not looked up; and none for a title
+    that is common: more than relations.CLAIMS_COMMON claims of other pages hold it, or more
+    than relations.COMMON other pages. One statement at most."""
+    if named is None:
         return {}
-    (rows,) = _listed(con, account_id, index, project_id, [match], but=slug)
+    (rows,) = _listed(con, account_id, index, project_id, [named], but=slug)
     naming: dict[str, int] = {}
     for row, at in rows:
         naming.setdefault(at, row)
@@ -286,11 +310,14 @@ def _given(
     given: Sequence[tuple[str, Sequence[Reason], int]],
     held: Mapping[str, Mapping[Term, tuple[int, int]]],
     texts: Mapping[str, str],
+    named: str | None,
 ) -> tuple[RelatedPage, ...]:
     """The pages given, each with its title, its version and the claims of its reasons, read
-    by row: two statements. A claim's text is read to relations.TEXT_MAX characters and no
-    further (`_text`), and a claim cut that states a term is given the line of its passage
-    that holds it, from `held`, where each term stands in each passage read, and `texts`."""
+    by row: two statements, and one more when a claim that mentions the page is cut. A
+    claim's text is read to relations.TEXT_MAX characters and no further (`_text`). A claim
+    cut that states a term is given the line of its passage that holds it, from `held`,
+    where each term stands in each passage read, and `texts`; one that mentions the page,
+    the line of its own text that names the title (`_named`, asked what `named` matched)."""
     rows = {r for _, why, _ in given for reason in why for r in (reason.here, reason.there)}
     shown = {}
     for row, claim_id, span_ids in con.execute(
@@ -308,13 +335,26 @@ def _given(
         )
     }
 
+    mentions = {
+        reason.there
+        for _, why, _ in given
+        for reason in why
+        if reason.kind == MENTIONED_BY and shown[reason.there].cut
+    }
+    naming = _named(con, index, named, sorted(mentions)) if named and mentions else {}
+
     def side(reason: Reason, row: int | None) -> Stated | None:
         stated = None if row is None else shown[row]
-        if stated is None or not stated.cut or reason.kind != SHARES:
+        if stated is None or not stated.cut:
             return stated
-        passage = stated.span_ids[0]  # the passage the claim states the term by: its first
-        place = held[passage][Term(reason.term_kind, reason.term)]
-        line, line_cut = relations.line_of(texts[passage], *place)
+        if reason.kind == SHARES:
+            passage = stated.span_ids[0]  # the passage the claim states the term by: its first
+            place = held[passage][Term(reason.term_kind, reason.term)]
+            line, line_cut = relations.line_of(texts[passage], *place)
+        elif row in naming:
+            line, line_cut = naming[row]
+        else:  # the index could not say where: `_named`
+            return stated
         return stated._replace(line=line, line_cut=line_cut)
 
     return tuple(
@@ -329,6 +369,47 @@ def _given(
         )
         for at, why, more in given
     )
+
+
+def _named(
+    con: sqlite3.Connection, index: str, named: str, rows: Sequence[int]
+) -> dict[int, tuple[str, bool]]:
+    """For each of these claims, which mention the page and are given cut: the line of the
+    claim's text that names the title, and whether that line is cut (relations.line_of).
+
+    Where the title is named is the index's own answer, and nothing here looks for it: the
+    index is asked again for `named`, the match that listed the claim, restricted to the
+    text column as it was, on these rows alone, and its highlight() gives each claim's text
+    with MARKS around what the match held. The place of the first pair of marks is the place
+    of the first match, in characters; it is found in the statement, which hands back that
+    place and no more of the claim than line_of reads: LINE_MAX characters before the match
+    and after it, of the text as the index stores it. So a claim of any length is answered
+    with 3 * LINE_MAX + 1 characters at most. The index itself reads the claim whole, and
+    marks it once a row: the inner SELECT is kept apart by its LIMIT, so highlight() is not
+    run again for each use of its marks (tests/unit/test_relating_cost_unit.py reads the
+    statement's plan).
+
+    A claim whose own text holds one of the MARKS has no line here: the first mark would not
+    say where the match is. It stays as it was read, cut and saying so. One statement."""
+    before = relations.LINE_MAX
+    found = {}
+    for row, start, until, part, own in con.execute(
+        "SELECT placed.row, placed.start - max(1, placed.start - ?3),"
+        " placed.until - max(1, placed.start - ?3),"
+        " substr(held.text, max(1, placed.start - ?3),"
+        " placed.until + ?3 - max(1, placed.start - ?3)),"
+        " instr(held.text, ?4) + instr(held.text, ?5)"
+        " FROM (SELECT row, instr(marked, ?4) AS start,"
+        " min(instr(marked, ?5) - 1, instr(marked, ?4) + ?3 + 1) AS until"
+        f" FROM (SELECT {index}.rowid AS row, highlight({index}, 5, ?4, ?5) AS marked"
+        f" FROM json_each(?1) AS wanted CROSS JOIN {index} ON {index}.rowid = wanted.value"
+        f" WHERE {index} MATCH ?2 LIMIT -1)) AS placed"
+        f" CROSS JOIN {index} AS held ON held.rowid = placed.row",
+        (json.dumps(list(rows)), named, before, *MARKS),
+    ):
+        if not own:
+            found[row] = relations.line_of(part, start, until)
+    return found
 
 
 def _text(con: sqlite3.Connection, index: str, row: int) -> tuple[str, bool]:

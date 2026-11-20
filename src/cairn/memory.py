@@ -128,8 +128,11 @@ relations.TEXT_MAX characters, and past that its first TEXT_MAX and "text_cut": 
 gives the claim whole). A claim cut that states a shared term has "line" too, the line of
 the passage it cites that holds the term, taken where the term's fact stands and never by
 a search of the text; a line longer than relations.LINE_MAX is given as LINE_MAX characters
-of it that hold the term, with "line_cut": true. A claim that is not cut has none of the
-three fields, and a claim cut that mentions has no line. `passage_ids` names the first
+of it that hold the term, with "line_cut": true. A claim cut that mentions the page has
+"line" the same way: the line of its own text that names the title, where the index
+matched it (cairn.store.relating._named; two lines, with their line break, when the
+title's words stand on two). A claim that is not cut has none of the three fields.
+`passage_ids` names the first
 relations.PASSAGES_MAX passages a claim cites, and "passage_ids_more" counts the others,
 only when there are more (a claim a tidy folded from many; who wrote it is still said of
 every note it cites). So an answer's size is bounded by constants: `limit` pages of

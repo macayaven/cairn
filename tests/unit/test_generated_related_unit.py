@@ -38,7 +38,10 @@ What is checked of every answer of `Memory.related`, for every page:
   answer but for its long claims; a text cut is the first TEXT_GIVEN characters of the
   claim's text; a line is the line of the claim's first passage on which the term's first
   fact stands, by a fresh extract_facts and the passage split at its line ends here, whole
-  or LINE_GIVEN characters of it that hold the fact as it is written there.
+  or LINE_GIVEN characters of it that hold the fact as it is written there; and the line of
+  a claim that mentions the page is a piece of the claim's text, the first of its lines
+  that holds the title's words side by side as the index reads them (its tokens of the
+  line alone, as for a mention above), whole or LINE_GIVEN characters of it.
 CLAIMS_COMMON is 7 for these projects, which hold at most 36 claims, so that the rule decides
 some relations; the first test counts how many.
 A failure names project and page numbers and term kinds, never a note's text.
@@ -421,10 +424,37 @@ def first_line_of(span, kind: str, term: str) -> tuple[str, str] | None:
     return None
 
 
+def mention_fault(reading: Reading, given: dict, text: str, title: str, seen: Counter) -> str:
+    """What is wrong with the line of a claim cut that mentions the page titled `title`, the
+    claim's whole text being `text`; nothing when it is right. The line is a piece of the
+    text; the index's own reading of the line holds the title's words side by side; no line
+    of the text before it does, so it is the first place the title is named; and it is whole
+    lines of the text, or LINE_GIVEN characters of longer ones."""
+    words = re.findall(r"\w+", title)
+    line = given.get("line")
+    if line is None or line not in text:
+        return "no line, or not a piece of the claim's text"
+    if not reading.holds(line, words):
+        return "the line does not hold the title as the index reads it"
+    before = text[: text.rfind("\n", 0, text.index(line)) + 1]  # the whole lines before it
+    seen["a mention after a line that holds none"] += bool(before.strip())
+    if reading.holds(before, words):
+        return "a line before it names the title"
+    if "line_cut" in given:
+        seen["a mention's line cut"] += 1
+        return "" if len(line) == LINE_GIVEN else "cut, and not to the bound"
+    seen["a mention's line whole"] += 1
+    seen["a mention's line of two lines"] += "\n" in line
+    whole_lines = ("\n" + line + "\n") in ("\n" + text + "\n")
+    return "" if whole_lines and len(line) <= LINE_GIVEN else "not whole lines of the text"
+
+
 def test_a_claim_given_cut_is_a_prefix_of_its_text_and_its_line_holds_the_term_as_read(world):
     """With little given of a claim, nothing else of an answer changes; a text cut is the
-    claim's first characters; and the line beside it is the passage's own line that holds
-    the term's first fact, whole or a window of it around the fact as written."""
+    claim's first characters; the line beside a term is the passage's own line that holds
+    the term's first fact, whole or a window of it around the fact as written; and the line
+    beside a mention is the first of the claim's text that names the title, as the index
+    reads it (`mention_fault`)."""
     wrong, seen = [], Counter()
     for project in world["projects"]:
         for slug, whole in project["answers"].items():
@@ -459,8 +489,11 @@ def test_a_claim_given_cut_is_a_prefix_of_its_text_and_its_line_holds_the_term_a
                             wrong.append((*where, "not the first characters, marked"))
                         if reason["kind"] != "shares":
                             seen["cut, a mention"] += 1
-                            if "line" in given or "line_cut" in given:
-                                wrong.append((*where, "a mention with a line"))
+                            fault = mention_fault(
+                                world["reading"], given, claim["text"], whole["title"], seen
+                            )
+                            if fault:
+                                wrong.append((*where, fault))
                             continue
                         span = project["spans"][claim["passage_ids"][0]]
                         line, written = first_line_of(span, reason["term_kind"], reason["term"])
@@ -471,19 +504,25 @@ def test_a_claim_given_cut_is_a_prefix_of_its_text_and_its_line_holds_the_term_a
                                 wrong.append((*where, "not the line, whole"))
                             continue
                         seen["line cut"] += 1
-                        seen["line cut to the term alone"] += len(written) >= LINE_GIVEN
+                        seen["line cut to the term's start"] += len(written) > LINE_GIVEN
+                        # LINE_GIVEN characters of the line that hold the term as written;
+                        # of a term written longer (none is, at the shipped bounds, where
+                        # TERM_MAX is under LINE_MAX), its first LINE_GIVEN
                         if not (
                             given.get("line_cut") is True
-                            and len(given["line"]) == max(LINE_GIVEN, len(written))
+                            and len(given["line"]) == LINE_GIVEN
                             and given["line"] in line
-                            and written in given["line"]
+                            and (written in given["line"] or given["line"] == written[:LINE_GIVEN])
                         ):
                             wrong.append((*where, "not a window of the line that holds the term"))
     assert wrong == [], (len(wrong), wrong[:5])
     each = ("whole", "cut", "cut, a mention", "line whole", "line cut")
     assert min(seen[k] for k in each) >= 100, seen
+    assert seen["a mention's line whole"] >= 200 and seen["a mention's line cut"] >= 500, seen
+    assert seen["a mention after a line that holds none"] >= 300, seen
+    assert seen["a mention's line of two lines"] >= 5, seen
     assert seen["of a passage of several lines"] >= 300, seen
-    assert seen["line cut to the term alone"] >= 30, seen
+    assert seen["line cut to the term's start"] >= 30, seen
 
 
 def test_a_relation_holds_from_both_sides(world):

@@ -304,14 +304,29 @@ def test_a_claim_cut_whose_line_is_short_gives_the_line_whole_and_no_mark_on_it(
     assert "line_cut" not in there and "quill.lock" not in there["text"]
 
 
-def test_a_long_claim_that_mentions_the_page_says_it_is_cut_and_gives_no_line(env):
+def test_a_long_claim_that_mentions_the_page_says_it_is_cut_and_gives_the_line_that_names_it(env):
     note(env, "Quill ledger", "Brook balances it at dusk.\n")
-    note(env, "Long", "Ada waits for the nightly log, " * 80 + "then opens the Quill ledger.\n")
-    (page,) = answer(env.client, env.key, "related", project="ops", slug="quill-ledger")["related"]
-    (reason,) = page["why"]
-    assert reason["kind"] == "mentioned_by" and reason["there"]["text_cut"] is True
-    assert len(reason["there"]["text"]) == relations.TEXT_MAX
-    assert "line" not in reason["there"] and "line_cut" not in reason["there"]
+    lines = [f"Ada waits for nightly log {n}." for n in range(60)]
+    note(env, "Long", "\n".join([*lines, "Then she opens the Quill ledger."]) + "\n")
+    found = answer(env.client, env.key, "related", project="ops", slug="quill-ledger")
+    assert rest(env, "quill-ledger").json() == found
+    (reason,) = found["related"][0]["why"]
+    there = reason["there"]
+    assert reason["kind"] == "mentioned_by" and "here" not in reason
+    assert (len(there["text"]), there["text_cut"]) == (relations.TEXT_MAX, True)
+    assert there["line"] == "Then she opens the Quill ledger." and "line_cut" not in there
+    assert list(there)[:4] == ["claim_id", "text", "text_cut", "line"]
+    # a line longer than LINE_MAX: a window of it around the title, marked
+    note(env, "Wide", "Ada waits for the nightly log, " * 40 + "then opens the Quill ledger.\n")
+    wide = [
+        page["why"][0]["there"]
+        for page in answer(env.client, env.key, "related", project="ops", slug="quill-ledger")[
+            "related"
+        ]
+        if page["page"] == "wide"
+    ]
+    assert wide[0]["line_cut"] is True and len(wide[0]["line"]) == relations.LINE_MAX
+    assert wide[0]["line"].endswith("then opens the Quill ledger.")
 
 
 def test_a_claim_folded_from_many_passages_names_the_first_eight_and_counts_the_rest(env):
@@ -577,8 +592,8 @@ def test_the_tools_description_says_a_long_claim_is_cut_and_that_page_gives_it_w
     said = " ".join(tools()["related"].description.split())
     assert (
         "A claim longer than 600 characters is given cut (`text_cut`), with the line that"
-        " holds the term (`line`; `line_cut` when that is cut to 400), and `page` gives it"
-        " whole."
+        " holds the term or names the title (`line`; `line_cut` when that is cut to 400), and"
+        " `page` gives it whole."
     ) in said
     assert (relations.TEXT_MAX, relations.LINE_MAX) == (600, 400)
     assert "A smaller `limit` gives a smaller answer." in said

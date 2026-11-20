@@ -440,15 +440,15 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         quoted text: each says who wrote the notes it cites (written_by, as recall's), whether
         any is outside (a connected source's, or a filed Slack message), and when the newest was
         written (written_at). A claim longer than 600 characters is given cut (`text_cut`), with
-        the line that holds the term (`line`; `line_cut` when that is cut to 400), and `page`
-        gives it whole. `passage_ids` names the first 8 passages a claim cites, and
-        `passage_ids_more` counts the rest. A smaller `limit` gives a smaller answer. `searched`
-        says what was left out, in counts. `terms_looked_up`: the page's terms looked up, 256 at
-        most, the shortest first. `terms_not_looked_up`: its terms past those. `claims_read`:
-        claims of other pages read for those terms. `claims_not_read`: such claims not read,
-        past 512 claims or a million bytes of their passages; a term with a claim not read gives
-        no reason. `pages_left_out`: related pages past `limit`. `complete` is true when those
-        three counts of what was left out are 0."""
+        the line that holds the term or names the title (`line`; `line_cut` when that is cut to
+        400), and `page` gives it whole. `passage_ids` names the first 8 passages a claim cites,
+        and `passage_ids_more` counts the rest. A smaller `limit` gives a smaller answer.
+        `searched` says what was left out, in counts. `terms_looked_up`: the page's terms looked
+        up, 256 at most, the shortest first. `terms_not_looked_up`: its terms past those.
+        `claims_read`: claims of other pages read for those terms. `claims_not_read`: such
+        claims not read, past 512 claims or a million bytes of their passages; a term with a
+        claim not read gives no reason. `pages_left_out`: related pages past `limit`. `complete`
+        is true when those three counts of what was left out are 0."""
         with _call(ctx, "related") as memory:
             return memory.related(project, slug, limit)
 

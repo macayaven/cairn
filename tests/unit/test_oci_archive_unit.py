@@ -44,11 +44,13 @@ class Layout:
         data = json.dumps(document).encode()
         return {"mediaType": media_type, "digest": self.blob(data), "size": len(data), **extra}
 
-    def tar(self, path: Path, tamper: str | None = None) -> Path:
+    def tar(self, path: Path, tamper: str | None = None, drop: str | None = None) -> Path:
         with tarfile.open(path, "w") as out:
             files = {"oci-layout": b'{"imageLayoutVersion":"1.0.0"}'}
             files["index.json"] = json.dumps(self.index_json).encode()
             for digest, data in self.blobs.items():
+                if digest == drop:
+                    continue
                 files[f"blobs/sha256/{digest.split(':')[1]}"] = (
                     b"other bytes" if digest == tamper else data
                 )
@@ -100,17 +102,34 @@ def attestation(layout: Layout, of: dict, predicates=(PROVENANCE, SBOM)) -> dict
 
 
 def build(tmp_path, arches=("amd64", "arm64"), predicates=(PROVENANCE, SBOM), attest=True,
-          entries=None, tamper=None, built_for=None) -> tuple[Path, str]:  # fmt: skip
+          entries=None, tamper=None, built_for=None, drop=None, twice=False,
+          stray=None) -> tuple[Path, str]:  # fmt: skip
     layout = Layout()
     images = [image(layout, arch, (built_for or {}).get(arch)) for arch in arches]
     manifests = list(images)
-    if attest:
-        manifests += [attestation(layout, one, predicates) for one in images]
+    attestations = [attestation(layout, one, predicates) for one in images] if attest else []
+    manifests += attestations
+    if twice:  # a second attestation entry for the first image
+        manifests.append(attestation(layout, images[0], (PROVENANCE, SBOM, "https://made.up/x")))
+    if stray is not None:
+        manifests.append(stray(layout, images))
     index = layout.doc({"schemaVersion": 2, "mediaType": INDEX, "manifests": manifests}, INDEX)
     index["annotations"] = {"org.opencontainers.image.ref.name": "latest"}
     layout.index_json = {"schemaVersion": 2, "manifests": [index] if entries is None else entries}
     which = {"index": index["digest"], "layer": images[0]["digest"]}.get(tamper, tamper)
-    return layout.tar(tmp_path / "cairn.oci.tar", tamper=which), index["digest"]
+    gone = None
+    if drop is not None:
+        first = json.loads(layout.blobs[images[-1]["digest"]])
+        proof = json.loads(layout.blobs[attestations[-1]["digest"]]) if attestations else {}
+        gone = {
+            "image": images[-1]["digest"],
+            "config": first["config"]["digest"],
+            "layer": first["layers"][0]["digest"],
+            "attestation": attestations[-1]["digest"] if attestations else None,
+            "attestation config": proof.get("config", {}).get("digest"),
+            "attestation layer": proof.get("layers", [{}])[-1].get("digest"),
+        }[drop]
+    return layout.tar(tmp_path / "cairn.oci.tar", tamper=which, drop=gone), index["digest"]
 
 
 def run(path: Path, tmp_path) -> tuple[int, str, str, str]:
@@ -162,6 +181,76 @@ def test_anything_else_is_refused_in_one_line(tmp_path, case, said):
     assert code == 1 and output == ""
     assert err.count("\n") == 1 and err.startswith("::error::the build's archive is refused: ")
     assert said in err
+
+
+def unlisted(layout: Layout, images: list[dict]) -> dict:
+    """An entry that is neither an image of the two platforms nor an attestation of one."""
+    return layout.doc({"schemaVersion": 2, "mediaType": MANIFEST, "config": images[0]["digest"]},
+                      MANIFEST, platform={"architecture": "unknown", "os": "unknown"})  # fmt: skip
+
+
+def foreign_attestation(layout: Layout, images: list[dict]) -> dict:
+    """An attestation entry for an image the index does not hold."""
+    return attestation(layout, {"digest": "sha256:" + "f" * 64})
+
+
+@pytest.mark.parametrize(
+    ("case", "said"),
+    [
+        ({"arches": ("amd64", "arm64", "386")}, "the index holds an image for linux/386"),
+        ({"arches": ("amd64", "arm64", "s390x")}, "the index holds an image for linux/s390x"),
+        ({"twice": True}, "the index holds 2 attestation manifests for linux/amd64"),
+        ({"stray": unlisted}, "the index holds an entry that is neither"),
+        ({"stray": foreign_attestation}, "an attestation of sha256:ffff"),
+        ({"drop": "image"}, "the layout has no blob for the image for linux/arm64"),
+        ({"drop": "config"}, "the layout has no blob for the config of the image for linux/arm64"),
+        ({"drop": "layer"}, "the layout has no blob for a layer of the image for linux/arm64"),
+        ({"drop": "attestation"}, "the layout has no blob for the attestation of linux/arm64"),
+        (
+            {"drop": "attestation config"},
+            # Both attestations' configs are the same empty document, one blob.
+            "the layout has no blob for the config of the attestation of linux/amd64",
+        ),
+        (
+            {"drop": "attestation layer"},
+            "the layout has no blob for a layer of the attestation of linux/arm64",
+        ),
+    ],
+)
+def test_exactly_the_build_s_descriptors_and_every_blob_they_name(tmp_path, case, said):
+    """Two images, one attestation each, nothing else, and every blob the index, the images and
+    the attestations name is in the archive: an extra platform would otherwise be promoted with
+    the index without its own scan."""
+    path, _ = build(tmp_path, **case)
+    code, _, err, output = run(path, tmp_path)
+    assert code == 1 and output == ""
+    assert err.count("\n") == 1 and err.startswith("::error::the build's archive is refused: ")
+    assert said in err
+
+
+def test_an_arm64_image_with_its_variant_is_the_arm64_image(tmp_path):
+    """buildx may write `variant: v8` beside linux/arm64; that is still the arm64 image."""
+    path, digest = build(tmp_path)
+    with tarfile.open(path) as archive:
+        members = {m.name: archive.extractfile(m).read() for m in archive if m.isfile()}
+    index = json.loads(members[f"blobs/sha256/{digest.split(':')[1]}"])
+    for entry in index["manifests"]:
+        if entry["platform"]["architecture"] == "arm64":
+            entry["platform"]["variant"] = "v8"
+    data = json.dumps(index).encode()
+    changed = "sha256:" + hashlib.sha256(data).hexdigest()
+    members[f"blobs/sha256/{changed.split(':')[1]}"] = data
+    members["index.json"] = json.dumps(
+        {"schemaVersion": 2, "manifests": [{"mediaType": INDEX, "digest": changed, "size": 1}]}
+    ).encode()
+    with tarfile.open(path, "w") as archive:
+        for name, body in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            archive.addfile(info, io.BytesIO(body))
+    code, out, err, _ = run(path, tmp_path)
+    assert (code, err) == (0, ""), err
+    assert out.splitlines()[0] == f"image index {changed}"
 
 
 def test_a_missing_archive_is_refused(tmp_path):

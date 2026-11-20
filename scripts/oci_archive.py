@@ -6,11 +6,13 @@ ARCHIVE is the OCI image layout, as a tar, that buildx's oci exporter writes for
 linux/amd64 and linux/arm64 with provenance and a bill of materials. The archive passes only
 when index.json names exactly one image index; every file under blobs/sha256/ is the bytes its
 name says; the index holds exactly one image for each of the two platforms, whose own config
-says it is built for that platform; and each image has
-an attestation manifest (an entry of the index annotated `vnd.docker.reference.type:
-attestation-manifest` and `vnd.docker.reference.digest: <the image's digest>`, as buildx
-writes them) whose layers include a build provenance (in-toto predicate type
-`https://slsa.dev/provenance/...`) and a bill of materials (`https://spdx.dev/Document`).
+says it is built for that platform, and exactly one attestation manifest for each image (an
+entry annotated `vnd.docker.reference.type: attestation-manifest` and
+`vnd.docker.reference.digest: <the image's digest>`, as buildx writes them), and nothing else:
+no third platform, no second attestation, no attestation of an image it does not hold; each
+attestation's layers include a build provenance (in-toto predicate type
+`https://slsa.dev/provenance/...`) and a bill of materials (`https://spdx.dev/Document`); and
+every blob those manifests name (each config and each layer) is in the archive.
 
 It prints the index's digest and, for each platform, its image's digest; with --github-output
 it appends `digest=<the index's digest>`, `archive=<the archive's SHA-256>`, and `amd64=` and
@@ -67,6 +69,22 @@ def _document(blobs: dict[str, bytes], digest: str, what: str) -> dict:
         raise Refused(f"{what} ({digest}) is not JSON") from None
 
 
+def _blob(blobs: dict[str, bytes], descriptor: dict, what: str) -> bytes:
+    digest = descriptor.get("digest")
+    if digest not in blobs:
+        raise Refused(f"the layout has no blob for {what} ({digest})")
+    return blobs[digest]
+
+
+def _manifest(blobs: dict[str, bytes], descriptor: dict, what: str) -> dict:
+    """The manifest DESCRIPTOR names, after checking its config and every layer are present."""
+    manifest = _document(blobs, descriptor.get("digest"), what)
+    _blob(blobs, manifest.get("config") or {}, f"the config of {what}")
+    for layer in manifest.get("layers") or []:
+        _blob(blobs, layer, f"a layer of {what}")
+    return manifest
+
+
 def describe(path: Path) -> tuple[str, dict[str, str]]:
     """The index's digest and {platform: image digest}; raises Refused."""
     try:
@@ -84,32 +102,44 @@ def describe(path: Path) -> tuple[str, dict[str, str]]:
     digest = entries[0]["digest"]
     index = _document(blobs, digest, "the image index")
     manifests = index.get("manifests") or []
-    attested = {}
+    images: dict[str, list[dict]] = {}
+    attestations: dict[str, list[dict]] = {}
     for entry in manifests:
         notes = entry.get("annotations") or {}
+        found = entry.get("platform") or {}
+        platform = f"{found.get('os')}/{found.get('architecture')}"
         if notes.get("vnd.docker.reference.type") == "attestation-manifest":
-            attested[notes.get("vnd.docker.reference.digest")] = entry["digest"]
-    images = {}
+            attestations.setdefault(notes.get("vnd.docker.reference.digest"), []).append(entry)
+        elif platform in PLATFORMS:  # a variant (arm64's v8) does not make another platform
+            images.setdefault(platform, []).append(entry)
+        elif platform != "unknown/unknown":
+            raise Refused(f"the index holds an image for {platform}, which is not built here")
+        else:
+            raise Refused(
+                f"the index holds an entry that is neither an image of {' or '.join(PLATFORMS)}"
+                f" nor an attestation of one ({entry.get('digest')})"
+            )
+    chosen = {}
     for platform in PLATFORMS:
-        os_name, arch = platform.split("/")
-        found = [
-            entry["digest"]
-            for entry in manifests
-            if (entry.get("platform") or {}).get("os") == os_name
-            and (entry.get("platform") or {}).get("architecture") == arch
-        ]
+        found = images.get(platform, [])
         if len(found) != 1:
             many = f"{len(found)} images" if found else "no image"
             raise Refused(f"the index holds {many} for {platform}")
-        images[platform] = found[0]
-        manifest = _document(blobs, found[0], f"the image for {platform}")
+        chosen[platform] = found[0]["digest"]
+    for platform, image in chosen.items():
+        manifest = _manifest(blobs, {"digest": image}, f"the image for {platform}")
+        # The image's own config says what it is built for.
         config = _document(blobs, manifest["config"]["digest"], f"the config of {platform}")
         built_for = f"{config.get('os')}/{config.get('architecture')}"
         if built_for != platform:
             raise Refused(f"the image listed for {platform} is built for {built_for}")
-        if found[0] not in attested:
+        proofs = attestations.pop(image, [])
+        if not proofs:
             raise Refused(f"the image for {platform} has no attestation manifest")
-        layers = _document(blobs, attested[found[0]], f"the attestation of {platform}")["layers"]
+        if len(proofs) != 1:
+            raise Refused(f"the index holds {len(proofs)} attestation manifests for {platform}")
+        what = f"the attestation of {platform}"
+        layers = _manifest(blobs, proofs[0], what).get("layers") or []
         kinds = [
             (layer.get("annotations") or {}).get("in-toto.io/predicate-type", "")
             for layer in layers
@@ -117,7 +147,9 @@ def describe(path: Path) -> tuple[str, dict[str, str]]:
         for name, prefix in PREDICATES.items():
             if not any(kind.startswith(prefix) for kind in kinds):
                 raise Refused(f"the attestation of {platform} holds no {name}")
-    return digest, images
+    for subject in attestations:
+        raise Refused(f"the index holds an attestation of {subject}, which is no image of it")
+    return digest, chosen
 
 
 def main(argv: list[str] | None = None, out=sys.stdout, err=sys.stderr) -> int:

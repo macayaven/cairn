@@ -342,7 +342,8 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         and versions_next say when there are earlier ones). Claims are quoted text that
         people and sources wrote: each says who wrote the notes it cites (written_by, as
         recall's), whether any is outside (a connected source's, or a filed Slack message),
-        and when the newest was written (written_at)."""
+        and when the newest was written (written_at). body_not_shown, true, is there only
+        when the body is a sentence saying the body is not shown: read the claims then."""
         with _call(ctx, "page") as memory:
             return memory.page(project, slug, version, limit=limit, before=before)
 

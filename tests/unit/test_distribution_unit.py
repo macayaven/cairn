@@ -62,9 +62,9 @@ def test_the_changelog_dates_the_version_and_says_what_slack_was_tested_against(
         "Each release has a section headed `## <version> - <date>`, and the tag `v<version>`,"
         " pushed to a public repository on a commit of `main`, publishes it:"
         " `scripts/release_check.py` refuses a tag that is not the version in `pyproject.toml`,"
-        " whose section here is missing, has no entry or is dated after the day the check runs"
-        " (UTC), or whose version already has a release. The section is the GitHub release's"
-        " text." in flat(changes)
+        " whose section here is missing, has no entry, holds a control character other than a"
+        " line feed or a tab, or is dated after the day the check runs (UTC), or whose version"
+        " already has a release. The section is the GitHub release's text." in flat(changes)
     )
 
 

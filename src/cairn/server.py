@@ -430,10 +430,10 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       a whole project, anything inferred from meaning. `searched` says what the read's bounds
       left out, always, and counts each: the page's terms past the first 256, the claims of
       other pages, listed for a term or for the title, past the 512 claims and the million
-      bytes of passages read, the related pages past `limit`. The store's read runs at most 17
-      statements, whatever the page and the project hold (cairn.store.relating says which, and
-      tests/unit/test_relating_cost_unit.py counts them). A read of the page for the audit log
-      (read.page), which never holds a term.
+      bytes of passages read, the related pages past `limit`. The store's read runs
+      at most 17 statements, whatever the page and the project hold (cairn.store.relating says
+      which, and tests/unit/test_relating_cost_unit.py counts them). A read of the page for
+      the audit log (read.page), which never holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments

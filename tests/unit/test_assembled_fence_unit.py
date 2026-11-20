@@ -10,6 +10,7 @@ that commit, through Memory.note, and copied here. Made-up notes."""
 
 import io
 import json
+import logging
 import zipfile
 
 import pytest
@@ -465,15 +466,18 @@ def test_a_note_that_would_be_read_as_code_is_refused_and_nothing_is_saved(
 def test_forgetting_a_note_is_not_refused_where_no_closer_holds_the_fence_in(
     memory, store, monkeypatch, tmp_path
 ):
-    """The erasure writes the page no gate would save, and the workspace is still exported
-    and restored: nothing that deletes is refused, and nothing it wrote is refused later."""
+    """Nothing that deletes is refused, and nothing it wrote is refused later: the claim
+    whose fence no closer holds in leaves the page with the forgotten note's (CORE7: the
+    erasure asks the import's check, which asks this), its note stays stored, and the
+    workspace is exported and restored."""
     texts = ["- item", "Between.", "    ~~~\n    sample", "  After."]
     answers = [memory.note("alpha", text, title="Ops", topic="Ops") for text in texts]
     no_closer(monkeypatch)
     store.forget_note(answers[1]["note_id"])
     page = store.get_page(store.get_project("alpha").id, answers[0]["page"])
-    assert [claim.text for claim in page.claims] == REVIEWER
-    assert page.body == AS_23C24229_WROTE_IT  # the note is gone; the page is as it can be
+    assert [claim.text for claim in page.claims] == ["- item", "  After."]
+    assert page.body == "# Ops\n\n- item\n\n  After.\n" and prose(page.body, "After.")
+    assert store.get_note(answers[2]["note_id"]) is not None
     target = imported(store, tmp_path)
     try:
         there = target.get_page(target.get_project("alpha").id, page.slug)
@@ -515,16 +519,140 @@ def test_sixteen_such_fences_are_closed_and_the_note_that_makes_a_seventeenth_is
     assert "sample" not in answer["violations"][0]
 
 
-def test_forgetting_a_note_is_not_refused_where_it_makes_a_seventeenth_such_fence(memory, store):
+def test_forgetting_a_note_where_it_makes_a_seventeenth_such_fence_drops_the_claim_that_opens_it(
+    memory, store, tmp_path, caplog
+):
+    """A forget is never refused, and it writes no page a gate or an import would refuse
+    (muse's third reading, finding 1; CORE7): the claim whose fence the body would leave
+    open leaves the page with the forgotten note's claims. Its note stays stored."""
     last = ["- item 16", "Between.", "    ~~~\n    sample 16", "  After 16."]
     texts = [*triples(CLOSERS_MAX), *last]
     answers = [memory.note("alpha", text, title="Ops", topic="Ops") for text in texts]
     assert {answer["status"] for answer in answers} == {"saved"}
-    store.forget_note(answers[-3]["note_id"])
-    page = store.get_page(store.get_project("alpha").id, answers[0]["page"])
-    assert [claim.text for claim in page.claims] == [t for t in texts if t != "Between."]
-    assert page.body.count("\n    ~~~\n\n  After") == CLOSERS_MAX  # the seventeenth is left open
-    assert page.body.endswith("- item 16\n\n    ~~~\n    sample 16\n\n  After 16.\n")
+    project, slug = store.get_project("alpha"), answers[0]["page"]
+    before = store.get_page(project.id, slug)
+    with caplog.at_level(logging.WARNING, logger="cairn.store"):
+        done = store.forget_note(answers[-3]["note_id"])
+    assert (done.rebuilt, done.removed) == ((slug,), ())
+    page = store.get_page(project.id, slug)
+    assert [claim.text for claim in page.claims] == [t for t in texts if t not in last[1:3]]
+    assert page.body.count("\n    ~~~\n\n  After") == CLOSERS_MAX  # and no seventeenth is open
+    assert page.body.endswith("- item 16\n\n  After 16.\n")
+    assert all(prose(page.body, f"After {n}.") for n in range(CLOSERS_MAX + 1))
+    (line,) = [r.getMessage() for r in caplog.records if r.name == "cairn.store"]
+    assert line == (
+        f"forget: 1 claim(s) that an import would refuse left page {slug!r} at its version"
+        f" {before.version + 1}"
+    )
+    # the note of the claim that left is still stored, and a note of the project
+    kept = store.get_note(answers[-2]["note_id"])
+    assert kept is not None and kept.text == last[2]
+    assert kept.id in {note.id for note in store.list_notes(project.id)}
+    target = imported(store, tmp_path)  # what the forget wrote, an import takes
+    try:
+        there = target.get_page(target.get_project("alpha").id, slug)
+        assert (there.body, there.claims) == (page.body, page.claims)
+    finally:
+        target.close()
+    assert tidy_page(store, project.id, slug).status == "unchanged"
+    answer = memory.note("alpha", "More.", title="Ops", topic="Ops")  # and the page takes a note
+    assert answer["status"] == "saved"
+    again = memory.note("alpha", last[2], title="Ops", topic="Ops")  # sent again: at the end
+    assert (again["note_id"], again["status"]) == (kept.id, "saved")
+    assert store.get_page(project.id, slug).body.endswith("More.\n\n    ~~~\n    sample 16\n")
+
+
+def saved_by_23c24229(store: Store, texts: list[str]):
+    """The page `ops` of project `alpha` as 23c24229 saved these notes: its gate took a body
+    with any number of fences that run from one claim into the next, today's refuses the
+    seventeenth, so the version is built at the store's level with that build's renderer."""
+    project = store.get_project("alpha")
+    notes = [store.add_note(project.id, text, title="Ops", topic="Ops")[0] for text in texts]
+    spans = {s.id: s for note in notes for s in store.note_spans(note.id)}
+    claims = [Claim(id=claim_id(i), text=s.text, span_ids=(i,)) for i, s in spans.items()]
+    body = render_body_before_review_four("Ops", claims, spans)
+    return store.save_page(project.id, "ops", "Ops", body, claims), notes
+
+
+def test_on_a_page_23c24229_left_with_eighteen_a_forget_drops_the_two_past_the_sixteen(
+    memory, store, tmp_path, caplog
+):
+    """When several claims would each leave a fence open: the first sixteen in the body's
+    order are closed, and each later one leaves, the first of them each time the body is
+    rendered again. Here the seventeenth and the eighteenth."""
+    texts = [*triples(CLOSERS_MAX + 2), "Quill keeps the log."]
+    page, notes = saved_by_23c24229(store, texts)
+    assert not prose(page.body, "After 16.") and not prose(page.body, "After 17.")
+    with caplog.at_level(logging.WARNING, logger="cairn.store"):
+        store.forget_note(notes[-1].id)
+    left = store.get_page(page.project_id, page.slug)
+    gone = {f"    ~~~\n    sample {n}" for n in (CLOSERS_MAX, CLOSERS_MAX + 1)}
+    assert [claim.text for claim in left.claims] == [t for t in texts[:-1] if t not in gone]
+    assert all(prose(left.body, f"After {n}.") for n in range(CLOSERS_MAX + 2))
+    (line,) = [r.getMessage() for r in caplog.records if r.name == "cairn.store"]
+    assert line.startswith("forget: 2 claim(s) that an import would refuse left page 'ops'")
+    imported(store, tmp_path).close()
+    assert memory.note("alpha", "More.", title="Ops", topic="Ops")["status"] == "saved"
+
+
+# An archive of the build before: at most sixteen such fences are imported, as that build
+# rendered them; more are refused, by page and version
+
+
+def test_an_archive_23c24229_exported_with_seventeen_such_fences_is_refused(
+    memory, store, tmp_path
+):
+    """A stated limit: only the build before the body was read whole could write such a
+    page, and that build still opens the archive. An import that took it stored a body in
+    which the last note is code, a tidy answered "unchanged" and the topic took no note."""
+    page, _ = saved_by_23c24229(store, triples(CLOSERS_MAX + 1))
+    assert not prose(page.body, f"After {CLOSERS_MAX}.")
+    target = Store(tmp_path / "imported.db")
+    try:
+        with pytest.raises(ValueError) as refused:
+            target.import_export(io.BytesIO(exported(store)))
+        assert target.list_projects() == []  # all or nothing
+    finally:
+        target.close()
+    assert str(refused.value) == (
+        "claim 50 of 'ops' version 1 in projects/alpha/ opens a code fence, where the page"
+        " puts it, that runs into the next claim and that the body does not close (a body"
+        " closes at most 16 such fences)"
+    )
+    assert "sample" not in str(refused.value)
+
+
+def test_an_archive_23c24229_exported_with_sixteen_imports_and_its_page_goes_on(
+    memory, store, tmp_path
+):
+    page, _ = saved_by_23c24229(store, triples(CLOSERS_MAX))
+    assert not any(prose(page.body, f"After {n}.") for n in range(CLOSERS_MAX))
+    target = imported(store, tmp_path)
+    try:
+        project = target.get_project("alpha")
+        there = target.get_page(project.id, "ops")
+        assert there.claims == page.claims and there.body != page.body  # stored as now
+        assert there.body.count("\n    ~~~\n\n  After") == CLOSERS_MAX
+        assert all(prose(there.body, f"After {n}.") for n in range(CLOSERS_MAX))
+        notes = Memory(target, lint_gate)
+        last = f"  After {CLOSERS_MAX - 1}."
+        assert notes.note("alpha", last, title="Ops", topic="Ops", source_ref="s-2")["status"] == (
+            "saved"
+        )
+        tidied = tidy_page(target, project.id, "ops")  # folds the repeat
+        assert (tidied.status, tidied.merged, tidied.problem) == ("arranged", 1, None)
+        for ref in ("s-3", "s-4"):
+            answer = notes.note("alpha", "More.", title="Ops", topic="Ops", source_ref=ref)
+            assert answer["status"] == "saved"
+        count = len(target.get_page(project.id, "ops").claims)
+        reply = {"order": list(range(1, count)), "same": [[count - 1, count]]}
+        answer = Reply(text=json.dumps(reply), prompt_tokens=9)
+        arranged = arrange_page(target, project.id, "ops", FakeModel([answer, answer]))
+        assert (arranged.status, arranged.merged, arranged.problem) == ("arranged", 1, None)
+        body = target.get_page(project.id, "ops").body
+        assert all(prose(body, f"After {n}.") for n in range(CLOSERS_MAX)) and prose(body, "More.")
+    finally:
+        target.close()
 
 
 def test_2000_claims_that_close_or_open_one_another_cost_seventeen_parses_of_the_body(
@@ -596,3 +724,34 @@ def test_a_gate_renders_once_when_the_body_is_as_written(monkeypatch):
     # not as written: one more rendering, to find the line
     assert parses(monkeypatch, lambda: unclaimed_violations(other, spans)) == 2 * 201 + 200
     assert parses(monkeypatch, lambda: render_body("Ops", *made(REVIEWER))) == 3
+
+
+def test_a_gate_call_a_forget_and_an_import_of_200_fenced_claims_each_render_once(
+    memory, store, tmp_path, monkeypatch
+):
+    """The fence that runs on is asked of the import's check by every writer (CORE7), and it
+    costs no render of its own: a gate has rendered already, a forget writes the body it
+    asked of, and an import compares the archive's body with it. 200 claims that each hold a
+    fence: one render is each claim alone and the body once, 201 parses; each writer also
+    asks each claim alone whether a line closes its fence, 200 more, as before."""
+    texts = [f"```\nlog {n}\n```" for n in range(200)]
+    project = store.get_project("alpha")
+    notes = [store.add_note(project.id, text, title="Ops", topic="Ops")[0] for text in texts]
+    other, _ = store.add_note(project.id, "Quill keeps the log.", title="Ops", topic="Ops")
+    spans = {s.id: s for note in (*notes, other) for s in store.note_spans(note.id)}
+    claims = [Claim(id=claim_id(i), text=s.text, span_ids=(i,)) for i, s in spans.items()]
+    body = render_body("Ops", claims, spans)
+    page = CandidatePage(slug="ops", title="Ops", body=body, claims=claims)
+    for gate in (provenance_gate, lint_gate, strict_lint_gate, verbatim_gate):
+        assert gate(page, spans).passed
+        assert parses(monkeypatch, lambda gate=gate: gate(page, spans)) == 201 + 200, gate.__name__
+    store.save_page(project.id, "ops", "Ops", body, claims)
+    assert parses(monkeypatch, lambda: store.forget_note(other.id)) == 201 + 200
+    archive = exported(store)
+    target = Store(tmp_path / "imported.db")
+    try:
+        count = parses(monkeypatch, lambda: target.import_export(io.BytesIO(archive)))
+        assert count == 201 + 200
+        assert len(target.get_page(target.get_project("alpha").id, "ops").claims) == 200
+    finally:
+        target.close()

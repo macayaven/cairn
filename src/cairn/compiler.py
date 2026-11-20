@@ -329,10 +329,25 @@ def assembled(
     (cairn.spans.fences_kept_in). A claim is named here when its closer did not close it (no
     such page is known) or when the body holds more such fences than that; every gate
     refuses the page (gate.unclaimed_violations)."""
+    body, place = left_to_run(title, claims, spans)
+    return body, None if place is None else claims[place - 1].id if place else "-"
+
+
+def left_to_run(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> tuple[str, int | None]:
+    """`assembled`, naming the claim by its place among `claims` (1 for the first; 0 when the
+    fence is no claim's), since two claims of a page saved past the gates may hold one id.
+    For a writer of a version that asks the import's check of it
+    (store.portable.version_faults: Refusal.FENCE_RUNS_ON): an import, and a forget, which
+    writes the body this returns. One render."""
     blocks = _blocks(title, claims, spans, _closed, section_headings, heading_text)
     kept, left = fences_kept_in([text for text, _ in blocks])
-    owner = None if left is None else blocks[left][1]
-    return "\n\n".join(kept) + "\n", None if left is None else owner.id if owner else "-"
+    place = None
+    if left is not None:
+        owner = blocks[left][1]
+        place = next((n for n, claim in enumerate(claims, 1) if claim is owner), 0)
+    return "\n\n".join(kept) + "\n", place
 
 
 def render_body_before_review_four(

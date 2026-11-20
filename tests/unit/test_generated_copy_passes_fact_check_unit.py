@@ -450,7 +450,7 @@ def test_white_space_that_ends_inline_code_is_not_compared_by_the_fact_check(pas
     fact's own text, whose end it takes for a line's end. The fact check passes the changed
     claim; the verbatim gate, which compares whole texts, refuses it."""
     spans = {span.id: span for span in chunk("note", passage)}
-    claims = (Claim(id="cl_a", text=claim, span_ids=tuple(spans)),)
+    claims = (Claim(id="cl_000000000000000a", text=claim, span_ids=tuple(spans)),)
     page = CandidatePage(
         slug="q", title=TITLE, body=render_body(TITLE, claims, spans), claims=claims
     )

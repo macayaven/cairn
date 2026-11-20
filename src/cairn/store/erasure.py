@@ -221,8 +221,6 @@ class ErasureMethods(StoreBase):
         id, its project's id, how many pages changed); nothing of its text, title or
         source_ref. KeyError for a note unknown or out of reach; PermissionError for anyone
         else who may not (see the module). Needs no room under any cap of a plan."""
-        from cairn.compiler import render_body  # the compiler builds on the store
-
         index = self._index
         with self._write() as con:
             project_id, text_sha256, size = self._note_in_reach(con, note_id)
@@ -234,7 +232,7 @@ class ErasureMethods(StoreBase):
             con.execute("DELETE FROM waiting WHERE note_id = ?", (note_id,))  # N1
             con.execute("DELETE FROM note_writers WHERE note_id = ?", (note_id,))  # A1
             con.execute("DELETE FROM slack_notes WHERE note_id = ?", (note_id,))  # K1
-            for slug, version, title, kept, spans, _ in plan:
+            for slug, version, title, kept, _, _, body in plan:
                 if kept:
                     cited = {i for claim in kept for i in claim.span_ids}
                     metrics = {"claims": len(kept), "spans_cited": len(cited)}
@@ -243,7 +241,7 @@ class ErasureMethods(StoreBase):
                         slug,
                         version + 1,
                         title,
-                        render_body(title, kept, spans),
+                        body,
                         json.dumps([claim.model_dump(mode="json") for claim in kept]),
                         json.dumps(metrics),
                         self._stamp(),
@@ -270,14 +268,14 @@ class ErasureMethods(StoreBase):
                 (project_id, text_sha256),
             )
             self._unstore(con, size)
-            removed = [slug for slug, _, _, kept, _, _ in plan if not kept]
+            removed = [slug for slug, _, _, kept, *_ in plan if not kept]
             if removed:
                 _unname(con, self._account_id, name, name, removed)
             detail = {"note": note_id, "project": project_id, "pages": len(plan)}
             self._audit(con, "note.forgotten", project=name, detail=detail)
             _compaction_due(con, self._stamp())
         self._truncate_log(f"note {note_id}")
-        for slug, version, _, kept, _, refused in plan:  # once the forget is committed
+        for slug, version, _, kept, _, refused, _ in plan:  # once the forget is committed
             if refused and kept:
                 store_log.warning(
                     "forget: %d claim(s) that an import would refuse left page %r at its"
@@ -369,16 +367,23 @@ class ErasureMethods(StoreBase):
 # A page of a forgotten note's project that cites it in any version: (slug, its latest version,
 # its title, the claims it keeps (kept_claims, less those an import would refuse), the spans
 # of the project still held that its latest version cites, how many claims an import would
-# refuse).
-_Planned = tuple[str, int, str, tuple[Claim, ...], dict[str, Span], int]
+# refuse, the body of the claims it keeps as compiler.render_body writes it).
+_Planned = tuple[str, int, str, tuple[Claim, ...], dict[str, Span], int, str]
 
 
 def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Planned]:
     """What forgetting the note does to its project's pages, read on `con`: each page that cites
     one of its spans in any version, by slug, with what its latest version keeps: the claims
     kept_claims keeps, less every claim the import's check of a version names
-    (portable.version_faults, run once: the claims it does not name pass together). It reads
-    the project's page versions, never the rest of the database."""
+    (portable.version_faults: the claims it does not name pass together, so it is run once,
+    on one render of the body, which is the body the forget writes). But for a code fence
+    that only the claims before it open and the body does not close (more than
+    spans.CLOSERS_MAX of them, Refusal.FENCE_RUNS_ON): the claim that opens it leaves, the
+    first in the body's order, and the rest are rendered and asked again, since without it
+    the body is another; a render for each such claim. It reads the project's page versions,
+    never the rest of the database."""
+    from cairn.compiler import left_to_run  # the compiler builds on the store
+
     gone = frozenset(
         span_id for (span_id,) in con.execute("SELECT id FROM spans WHERE note_id = ?", (note_id,))
     )
@@ -403,12 +408,19 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
         claims = [Claim(**claim) for claim in json.loads(claims_json)]
         cited = [i for claim in claims for i in claim.span_ids if i not in gone]
         spans = _held_spans(con, project_id, cited)
-        kept = kept_claims(claims, gone, spans)
-        refused = {place for place, _ in version_faults(kept, spans, legacy=True) if place}
-        kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in refused)
-        if kept:  # the title it had may be the forgotten note's own
+        kept, refused, body = kept_claims(claims, gone, spans), 0, ""
+        while kept:  # until the claims left are a version an import takes: once, but for a
+            # fence that the claims before it open, where each time the first such claim leaves
+            # the title the page had may be the forgotten note's own
             title = _first_title(con, [i for claim in kept for i in claim.span_ids]) or slug
-        planned.append((slug, version, title, kept, spans, len(refused)))
+            body, run_on = left_to_run(title, kept, spans)
+            faults = version_faults(kept, spans, legacy=True, run_on=run_on)
+            named = {place for place, _ in faults if place}
+            if not named:
+                break
+            kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in named)
+            refused += len(named)
+        planned.append((slug, version, title, kept, spans, refused, body))
     return planned
 
 
@@ -427,8 +439,8 @@ def _first_title(con: sqlite3.Connection, span_ids: Sequence[str]) -> str | None
 
 
 def _outcome(note_id: str, plan: list[_Planned]) -> Forgotten:
-    rebuilt = tuple(slug for slug, _, _, kept, _, _ in plan if kept)
-    removed = tuple(slug for slug, _, _, kept, _, _ in plan if not kept)
+    rebuilt = tuple(slug for slug, _, _, kept, *_ in plan if kept)
+    removed = tuple(slug for slug, _, _, kept, *_ in plan if not kept)
     return Forgotten(note_id=note_id, rebuilt=rebuilt, removed=removed)
 
 

@@ -178,7 +178,11 @@ def importable(
     the page, the claim's place and the rule in the import's words, never a claim's text or
     id. A verdict that already
     failed is returned as it is (T4's frozen tests pin a rejection's exact violations), as
-    compiler._offered_only does. It reads nothing: the gate holds the passages.
+    compiler._offered_only does. It reads nothing: the gate holds the passages. And it
+    parses nothing: the check's two questions of code fences (a claim no line closes, a
+    fence that runs from one claim into the next) the gate has asked of its one render
+    already and refused the page for (unclaimed_violations: compile.fence_left_open, the
+    one violation such a page gets), so they are not asked again here.
 
     `reworded`: the one rule left out, for the gates whose contract takes a claim in other
     words than its passage (lint_gate, strict_lint_gate, compiler.provenance_gate; T4, T5d):
@@ -194,7 +198,9 @@ def importable(
     violations = [
         f"{IMPORT}.{fault.name.lower()}: -: an import would refuse the page {page.slug!r}"
         f"{f' for claim {n}' if n else ''}: {whom[fault.value[0]]} {fault.rule(page.claims)}"
-        for n, fault in version_faults(page.claims, spans, legacy=False, reworded=reworded)
+        for n, fault in version_faults(
+            page.claims, spans, legacy=False, reworded=reworded, run_on=None, ask_alone=False
+        )
     ]
     if not violations:
         return result

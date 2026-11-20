@@ -8,11 +8,11 @@ for a replica; each step is placed by a patched call, never by timing. The clock
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from cairn.store import CompactIncomplete, Store, base, portable
+from cairn.store import CompactIncomplete, CompactionRunning, Store, base, portable
 
 T0 = datetime(2026, 11, 20, 9, 0, tzinfo=UTC)
 
@@ -80,41 +80,43 @@ def before_the_first_write(store, monkeypatch, step) -> list[int]:
     return ran
 
 
-def test_emptying_the_log_does_not_clear_what_a_later_rewrite_left_due(two, db, monkeypatch):
+@pytest.mark.parametrize("through", ["compact", "empty_log"])
+def test_emptying_the_log_does_not_clear_what_a_later_deletion_left_due(
+    two, db, monkeypatch, through
+):
+    """Between the server's truncation of the log and its clearing, another process deletes
+    a workspace (a generation of its own) and tries to compact, which is refused while the
+    server's compaction runs; a reader holds the log from before that deletion through the
+    server's clearing and its last truncation. The deletion stays due, and its change is
+    still in the log."""
     server, command = two
     deleted(server)
-
-    def the_other_process():
-        deleted(command)  # another workspace goes
-        with replica(db), pytest.raises(CompactIncomplete) as raised:
-            command.compact()  # rewritten; the log is held
-        assert raised.value.rewrote is True
-
-    ran = before_the_first_write(server, monkeypatch, the_other_process)
-    server.compact()  # its log truncated, then the other process, then its clearing
-    assert ran == [1]
-    state = server.compaction_state()
-    assert state.deleted_at is not None  # the other rewrite's log is still due
-    assert state.rewritten is True  # and only its log: no third rewrite
-
-
-def test_the_same_through_empty_log_alone(two, db, monkeypatch):
-    """The neighbour: the compactor's call when only the log is due."""
-    server, command = two
-    deleted(server)
-    with replica(db), pytest.raises(CompactIncomplete):
-        server.compact()
-    assert server.compaction_state().rewritten is True
-
-    def the_other_process():
-        deleted(command)
+    if through == "empty_log":  # rewritten; only the log is due
         with replica(db), pytest.raises(CompactIncomplete):
+            server.compact()
+        assert server.compaction_state().rewritten is True
+    readers: list[sqlite3.Connection] = []
+
+    def the_other_process():
+        reader = sqlite3.connect(db)
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM settings").fetchone()
+        readers.append(reader)  # held through the server's clearing and last truncation
+        deleted(command)  # another workspace goes
+        with pytest.raises(CompactionRunning):
             command.compact()
 
-    before_the_first_write(server, monkeypatch, the_other_process)
-    server.empty_log()
-    state = server.compaction_state()
-    assert state.deleted_at is not None and state.rewritten is True
+    ran = before_the_first_write(server, monkeypatch, the_other_process)
+    try:
+        server.compact() if through == "compact" else server.empty_log()
+        assert ran == [1]
+        state = server.compaction_state()
+        assert state.deleted_at is not None and state.rewritten is False  # still due
+        assert wal_size(db) > 0  # and its change is still in the log
+    finally:
+        for reader in readers:
+            reader.rollback()
+            reader.close()
 
 
 def test_two_deletions_at_one_instant_are_two_generations(db):
@@ -150,12 +152,16 @@ def test_a_deletion_at_the_same_instant_between_rewrite_and_record_stays_due(two
     assert state.deleted_at is not None and state.rewritten is False
 
 
-def test_the_records_value_is_still_the_first_deletions_time(db):
-    """What `stats`, `compact --if-due` and the host's nightly job read: the row's value."""
+def test_the_records_value_is_still_the_first_deletions_time(db, monkeypatch):
+    """What `stats`, `compact --if-due` and the host's nightly job read: the row's value.
+    The two deletions have different times, so a second that overwrote the first would show."""
     store = Store(db)
     try:
         deleted(store)
+        first = generation(db)
+        monkeypatch.setattr(base, "_clock", lambda: T0 + timedelta(hours=1))
         deleted(store)
+        assert generation(db) != first
         assert store.compaction_state().deleted_at == T0.isoformat(timespec="microseconds")
     finally:
         store.close()
@@ -240,8 +246,9 @@ RUN_SAYS = (
 def test_the_run_guide_says_a_rewrite_is_not_repeated_once_recorded_and_runs_it(
     two, db, monkeypatch
 ):
-    """The sentence, run as it says: a recorded rewrite whose log was held is not done again
-    by the next try; one killed before its record is."""
+    """The sentence, run as it says, through the decision the server's loop takes (due) and
+    then its run: a recorded rewrite whose log was held is not done again by the next try;
+    one killed before its record is, once the loop finds it due."""
     from guide_source import guide_source
 
     from cairn.web.compactor import Compactor
@@ -253,7 +260,10 @@ def test_the_run_guide_says_a_rewrite_is_not_repeated_once_recorded_and_runs_it(
     deleted(server)
     with replica(db), pytest.raises(CompactIncomplete):
         server.compact()  # recorded: rewritten, only the log is due
-    assert Compactor(server, hours=24, clock=lambda: T0).run_once() is True
+    ticks = [0.0]
+    compactor = Compactor(server, hours=24, clock=lambda: T0, ticks=lambda: ticks[0])
+    assert compactor.due() is True  # only the log is left: due at once
+    assert compactor.run_once() is True
     assert len(vacuums) == 1  # the log alone: no second rewrite
 
     deleted(server)
@@ -272,7 +282,13 @@ def test_the_run_guide_says_a_rewrite_is_not_repeated_once_recorded_and_runs_it(
         server.compact()  # rewritten, and killed before its record
     monkeypatch.setattr(portable, "_transaction", real)
     assert server.compaction_state().rewritten is False  # a rewrite is still due
-    assert Compactor(server, hours=24, clock=lambda: T0).run_once() is True
+    day = 24 * 3600.0
+    assert compactor.due() is False  # the interval since the last run has not passed
+    ticks[0] += day
+    assert compactor.due() is False  # nor since the last rewrite began, placed by its age
+    ticks[0] += day
+    assert compactor.due() is True
+    assert compactor.run_once() is True
     assert len(vacuums) == 3  # it ran again
     assert server.compaction_state().deleted_at is None
 
@@ -282,39 +298,6 @@ def wal_size(db) -> int:
 
     path = f"{db}-wal"
     return os.path.getsize(path) if os.path.exists(path) else 0
-
-
-@pytest.mark.parametrize("through", ["compact", "empty_log"])
-def test_a_rewrite_with_no_new_deletion_between_truncation_and_clearing_stays_due(
-    two, db, monkeypatch, through
-):
-    """One step past: the command line's `compact` rewrites even when the record is already
-    rewritten. When it does so between the server's truncation and its clearing, with a
-    reader holding the log from then on, its rewrite is in the log and must stay due."""
-    server, command = two
-    deleted(server)
-    with replica(db), pytest.raises(CompactIncomplete):
-        server.compact()  # rewritten; only the log is due
-    readers: list[sqlite3.Connection] = []
-
-    def the_other_process():
-        reader = sqlite3.connect(db)
-        reader.execute("BEGIN")
-        reader.execute("SELECT COUNT(*) FROM settings").fetchone()
-        readers.append(reader)  # held through the server's clearing and last truncation
-        with pytest.raises(CompactIncomplete):
-            command.compact()  # no new deletion: a rewrite of its own, its log held
-
-    before_the_first_write(server, monkeypatch, the_other_process)
-    try:
-        server.compact() if through == "compact" else server.empty_log()
-        state = server.compaction_state()
-        assert wal_size(db) > 0  # the other rewrite is still in the log
-        assert state.deleted_at is not None and state.rewritten is True
-    finally:
-        for reader in readers:
-            reader.rollback()
-            reader.close()
 
 
 def test_stats_and_compact_if_due_read_a_record_a_real_rewrite_made(db, capsys):

@@ -1211,7 +1211,7 @@ from cairn.store.people import (
     ProviderChanged,
     Removed,
 )
-from cairn.store.portable import CompactIncomplete, NoRoom, PortableMethods
+from cairn.store.portable import CompactIncomplete, CompactionRunning, NoRoom, PortableMethods
 from cairn.store.reach import ACCESS, LIMITED, READ_ONLY, ReachMethods
 from cairn.store.reservations import Reservation, ReservationMethods
 from cairn.store.schema import (
@@ -1324,6 +1324,7 @@ __all__ = [
     "Claim",
     "CodeInfo",
     "CompactIncomplete",
+    "CompactionRunning",
     "CompactionState",
     "CredentialInfo",
     "DescriptionTooLong",

@@ -208,6 +208,8 @@ class ConnectionState:
         "audit_keep",
         "audit_out",
         "compacting",
+        "compaction_guard",
+        "compaction_holder",
         "keep_versions",
         "observers",
         "readers",
@@ -231,6 +233,11 @@ class ConnectionState:
         # Whether Store.compact (or the emptying of the log it left due) is running: the
         # health check then gives the writer's holder the longer bound (COMPACT_STUCK_AFTER).
         self.compacting = False
+        # One compaction at a time in this process (the file lock beside the database,
+        # PortableMethods.compacting, keeps it to one across processes): the thread that
+        # holds it, which may take it again inside (compact within its caller's decision).
+        self.compaction_guard = threading.Lock()
+        self.compaction_holder: int | None = None
 
 
 class WriterLock:

@@ -16,8 +16,13 @@ at most about 5 seconds (SQLite's busy wait) plus the copy of the log; during an
 empty the log alone, that last part only. Reads do not wait (they run on the store's
 read-only connections).
 
-It runs on a worker thread, off the event loop, never two at once, and each run is one line
-on the access log with how long it took. A run or a decision that fails is logged (the
+It runs on a worker thread, off the event loop, never two at once, nor beside the command
+line's `compact`: one compaction at a time on a database (Store.compacting, a lock on
+`<db>.compact.lock`), and what is due is read once it is held. A run that finds another
+compaction running skips its round, says so (RUNNING), and the next poll decides again.
+Each run is one line on the access log with how long it took; a line also says when the
+record, read as the run ends, asks for a rewrite again (STILL_DUE: a deletion recorded
+while it ran). A run or a decision that fails is logged (the
 error's type, never its text) and the next poll tries again: no failure stops the loop. A
 run that did not finish because another connection held the file is tried again once the
 interval has passed since it began, as after one that finished, never at the next poll;
@@ -39,10 +44,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from cairn.memory import access_log
-from cairn.store import CompactIncomplete, NoRoom, Store
+from cairn.store import CompactIncomplete, CompactionRunning, NoRoom, Store
 
 POLL_SECONDS = 600.0  # how often the decision is taken, at most
 ONLY_LOG = "no rewrite: only the write-ahead log was due"
+# Said in a run's line when the record, read as the run ends, asks for a rewrite again.
+STILL_DUE = "a deletion recorded during the run still asks for a rewrite"
+RUNNING = "skipped: another compaction is running on this database"
 # Who each line of the access log names: the server itself, compacting.
 SYSTEM = {"actor_kind": "system", "actor": None, "actor_id": None, "action": "compact",
           "project": None}  # fmt: skip
@@ -108,15 +116,20 @@ class Compactor:
             began = self._ticks()
             only_log = False
             try:
-                only_log = self._store.compaction_state().rewritten
-                if only_log:
-                    self._store.empty_log()
-                    outcome = f"done ({ONLY_LOG})"
-                else:
-                    self._store.compact()
-                    self._place(began)
-                    outcome = "done"
+                with self._store.compacting():  # what is due is read once it is held
+                    only_log = self._store.compaction_state().rewritten
+                    if only_log:
+                        self._store.empty_log()
+                    else:
+                        self._store.compact()
+                        self._place(began)
+                    said = [ONLY_LOG] if only_log else []
+                    if self._still_due():
+                        said.append(STILL_DUE)
+                outcome = f"done ({'; '.join(said)})" if said else "done"
                 self._began = began
+            except CompactionRunning:  # nothing changed; the next poll decides again
+                outcome, status = RUNNING, 409
             except NoRoom as room:  # nothing was changed; the next poll checks again
                 with contextlib.suppress(Exception):
                     access_log.info(
@@ -134,6 +147,14 @@ class Compactor:
                 elif error.rewrote:
                     outcome += " (rewritten; the write-ahead log was not emptied)"
                     self._place(began)
+                # Only when this run rewrote, or found the record rewritten: then a
+                # record that asks for a rewrite again names a deletion that came meanwhile.
+                if (only_log or error.rewrote) and self._still_due():
+                    outcome = (
+                        outcome[:-1] + f"; {STILL_DUE})"
+                        if outcome.endswith(")")
+                        else (outcome + f" ({STILL_DUE})")
+                    )
                 self._began = began  # the next try waits the interval, not the next poll
             except Exception as error:  # its type only: a message can quote the database
                 outcome, status = f"failed: {type(error).__name__}", 500
@@ -148,6 +169,14 @@ class Compactor:
             return status == 200
         finally:
             self._running.release()
+
+    def _still_due(self) -> bool:
+        """Whether the record, read now, asks for a rewrite: a deletion recorded while the
+        run was under way, which its rewrite did not cover. False when it cannot be read."""
+        with contextlib.suppress(Exception):
+            state = self._store.compaction_state()
+            return state.deleted_at is not None and not state.rewritten
+        return False
 
     def _place(self, began: float) -> None:
         """The time the rewrite just made stored (compacted_at), placed where its run began

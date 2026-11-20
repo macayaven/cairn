@@ -765,11 +765,10 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   Not under it: source.synced (counts one source's run into the projects its config names,
   and is shown only with its source) and member.removed (counts keys and agents, not
   content). The log is deleted with the workspace. It is
-  bounded: a workspace keeps at most its newest AUDIT_KEEP (100,000) events, since anyone
-  who may write can make events (a refused note is one). An insert past that deletes the
-  oldest in its own transaction, AUDIT_PRUNE_BATCH at a time, so most inserts delete
-  nothing and right after one that does, the newest AUDIT_KEEP - AUDIT_PRUNE_BATCH + 1
-  remain.
+  bounded: a workspace keeps its newest AUDIT_KEEP (100,000) events, since anyone who may
+  write can make events (a refused note is one). Once AUDIT_PRUNE_BATCH more have built up,
+  an insert deletes that batch of oldest events in its own transaction, so most inserts
+  delete nothing and right after one that does, the newest AUDIT_KEEP remain.
 - Sources (C2; cairn.sources has the runner). `add_source(name, kind, config) ->
   SourceInfo` (name, kind, config, cursor, created_at, last_run_at, last_report,
   last_error, enabled, enabled_at): names follow the project-name rules and are unique per

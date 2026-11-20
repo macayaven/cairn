@@ -97,3 +97,31 @@ def test_serve_writes_each_stored_event_as_one_line_on_its_own_logger(
         "ops",
     )
     assert (list(audit.handlers), audit.propagate, audit.level) == before
+
+
+def test_cli_export_records_workspace_exported_event_and_skips_when_it_fails(tmp_path):
+    db = tmp_path / "cairn.db"
+    out = tmp_path / "out.zip"
+    store = Store(db)
+    try:
+        ops = store.create_project("ops")
+        store.record_note(ops.id, "unchanged", {"page": "p1"})
+        before = len(store.list_audit(100))
+    finally:
+        store.close()
+    argv = ["export", "--db", str(db), "--account", "acct_default", "--out", str(out)]
+    assert cli.main(argv) == 0
+    store = Store(db)
+    try:
+        events = store.list_audit(100)
+        assert len(events) == before + 1
+        assert events[0].action == "workspace.exported"
+        assert (events[0].actor_kind, events[0].actor) == ("system", None)
+    finally:
+        store.close()
+    assert cli.main(argv) == 1
+    store = Store(db)
+    try:
+        assert len(store.list_audit(100)) == before + 1
+    finally:
+        store.close()

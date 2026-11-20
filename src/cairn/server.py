@@ -407,23 +407,23 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       from either page. `pages` is how many pages hold the term, exactly: a term whose pages
       are not all known gives no reason. `here` and `there` are claims as a hit of `recall`
       carries one: "claim_id", "text", "passage_ids", "outside", "written_by", "written_at";
-      but a text longer than 2,000 characters is its first 2,000 with "text_cut": true, and
-      beside it, for a claim that states the term, "line": the line of the passage it cites
-      that holds the term (400 characters of a longer line, with "line_cut": true). `page`
-      gives the claim whole; a claim that is not cut has none of the three fields.
-      "passage_ids" names the first 8 passages a claim cites, and "passage_ids_more" counts
-      the rest, only when there are more (a claim a tidy folded from many). `why` holds 3
-      reasons at most and `more` counts the rest; `limit` is 1 to 20, and any other is a tool
-      error that says so. Worked out by rule when asked, from the pages as they are, in one
-      read: nothing of a relation is stored, no model is asked, and a forgotten note is out of
-      it with the write that forgets it. Not in this version: a relation across projects, the
-      pages a page mentions, paths of several steps, groups over a whole project, anything
-      inferred from meaning. `searched` says what the read's bounds left out, always, and
-      counts each: the page's terms past the first 256, the claims of other pages past the 512
-      claims and the million bytes of passages read, the related pages past `limit`. The
-      store's read runs at most 16 statements, whatever the page and the project hold
-      (cairn.store.relating says which, and tests/unit/test_relating_cost_unit.py counts
-      them). A read of the page for the audit log (read.page), which never holds a term.
+      but a text longer than 600 characters is its first 600 with "text_cut": true, and beside
+      it, for a claim that states the term, "line": the line of the passage it cites that
+      holds the term (400 characters of a longer line, with "line_cut": true). `page` gives
+      the claim whole; a claim that is not cut has none of the three fields. "passage_ids"
+      names the first 8 passages a claim cites, and "passage_ids_more" counts the rest, only
+      when there are more (a claim a tidy folded from many). `why` holds 3 reasons at most and
+      `more` counts the rest; `limit` is 1 to 20, and any other is a tool error that says so.
+      Worked out by rule when asked, from the pages as they are, in one read: nothing of a
+      relation is stored, no model is asked, and a forgotten note is out of it with the write
+      that forgets it. Not in this version: a relation across projects, the pages a page
+      mentions, paths of several steps, groups over a whole project, anything inferred from
+      meaning. `searched` says what the read's bounds left out, always, and counts each: the
+      page's terms past the first 256, the claims of other pages past the 512 claims and the
+      million bytes of passages read, the related pages past `limit`. The store's read runs at
+      most 16 statements, whatever the page and the project hold (cairn.store.relating says
+      which, and tests/unit/test_relating_cost_unit.py counts them). A read of the page for
+      the audit log (read.page), which never holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments

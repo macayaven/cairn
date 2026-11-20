@@ -8,6 +8,8 @@ term, relations.PASSAGES_MAX passages named, memory.WRITTEN_BY_MAX writers of
 audit.ACTOR_NAME_MAX characters each, every field that is there only sometimes, and every
 text made of the character that costs most to send. That is a control character: \\u0001 in
 JSON, 6 bytes over REST, and 7 over MCP, which sends the answer as JSON inside a JSON string.
+Who wrote a claim weighs as much in the largest answer as the claim's text and line do: three
+writers' names of 200 characters, where a name is mostly a few letters.
 STATED holds the numbers, and one test says they are what the constants give.
 
 What makes it a bound and not a hope: `within` checks an answer field by field against the
@@ -48,14 +50,14 @@ TABLE = 322_320  # characters of the largest claim measured: this repository's t
 # The numbers stated: the most bytes an answer takes, by surface and limit, for any text and
 # for text of one byte a character (plain English). Each is a size of `largest`.
 STATED = {
-    ("rest", 8, "any text"): 990_944,
-    ("rest", 20, "any text"): 2_474_924,
-    ("mcp", 8, "any text"): 1_193_305,
-    ("mcp", 20, "any text"): 2_980_225,
-    ("rest", 8, "plain text"): 209_144,
-    ("rest", 20, "plain text"): 521_924,
-    ("mcp", 8, "plain text"): 255_145,
-    ("mcp", 20, "plain text"): 636_625,
+    ("rest", 8, "any text"): 587_744,
+    ("rest", 20, "any text"): 1_466_924,
+    ("mcp", 8, "any text"): 722_905,
+    ("mcp", 20, "any text"): 1_804_225,
+    ("rest", 8, "plain text"): 141_944,
+    ("rest", 20, "plain text"): 353_924,
+    ("mcp", 8, "plain text"): 187_945,
+    ("mcp", 20, "plain text"): 468_625,
 }
 
 
@@ -246,29 +248,34 @@ def test_the_stated_numbers_are_the_size_of_the_largest_answer_the_constants_all
     assert worked == STATED
     said = " ".join(cairn.memory.__doc__.split())  # where the contract states them
     assert (
-        "The largest answer they allow at `limit` 20 is 521,924 bytes over REST and 636,625"
-        " over MCP for text of one byte a character, and 2,474,924 and 2,980,225 whatever the"
-        " text holds; at the default `limit` of 8, 209,144 and 255,145, and 990,944 and"
-        " 1,193,305 ("
+        "The largest answer they allow at `limit` 20 is 353,924 bytes over REST and 468,625"
+        " over MCP for text of one byte a character, and 1,466,924 and 1,804,225 whatever the"
+        " text holds; at the default `limit` of 8, 141,944 and 187,945, and 587,744 and"
+        " 722,905 ("
     ) in said
     for number in STATED.values():
         assert f"{number:,}" in said
     assert (relations.RELATED_MAX, relations.WHY_MAX) == (20, 3)
-    assert (relations.TEXT_MAX, relations.LINE_MAX, relations.TERM_MAX) == (2_000, 400, 200)
+    assert (relations.TEXT_MAX, relations.LINE_MAX, relations.TERM_MAX) == (600, 400, 200)
     assert (relations.PASSAGES_MAX, WRITTEN_BY_MAX, ACTOR_NAME_MAX) == (8, 3, 200)
 
 
-def test_most_of_the_largest_answer_is_the_text_and_the_lines_of_its_claims():
-    """How the bound follows, in one sum: `limit` pages of WHY_MAX reasons of two claims, each
-    TEXT_MAX + LINE_MAX characters of claim, are 288,000 characters at limit 20; with 6 bytes
-    a character that is 1,728,000 bytes of the number stated, and the rest is who wrote each
-    claim, the passages it names, the terms and the titles."""
+def test_what_the_largest_answer_is_made_of():
+    """How the bound follows, as sums. `limit` pages of WHY_MAX reasons of two claims are 120
+    claims at limit 20. Each holds at most TEXT_MAX + LINE_MAX characters of its text and
+    its line, 1,000; and WRITTEN_BY_MAX writers, each a name of 200 characters and a `via`
+    of 40, 720 in all. At 6 bytes a character over REST those are 720,000 and 518,400 bytes
+    of the 1,466,924 stated, and the 60 terms and 21 titles of 200 characters are 97,200
+    more; what is left is the ids, the fixed words and JSON's own marks."""
     claims = relations.RELATED_MAX * relations.WHY_MAX * 2
-    characters = claims * (relations.TEXT_MAX + relations.LINE_MAX)
-    assert (claims, characters) == (120, 288_000)
+    text = claims * (relations.TEXT_MAX + relations.LINE_MAX)
+    writers = claims * WRITTEN_BY_MAX * (ACTOR_NAME_MAX + FIELD_MAX["via"])
+    named = (relations.RELATED_MAX * relations.WHY_MAX + relations.RELATED_MAX + 1) * 200
+    assert (claims, text, writers, named) == (120, 120_000, 86_400, 16_200)
     stated = STATED["rest", 20, "any text"]
-    assert 6 * characters == 1_728_000 and 1_728_000 < stated < 2 * 1_728_000
-    assert STATED["rest", 20, "plain text"] < 2 * characters
+    most = 6 * (text + writers + named)
+    assert most == 1_335_600 and most < stated < most + most // 10
+    assert STATED["rest", 20, "plain text"] < 2 * (text + writers + named)
 
 
 @pytest.mark.parametrize(
@@ -333,7 +340,7 @@ def test_claims_of_322_320_characters_on_both_sides_at_limit_20_are_under_the_bo
 ):
     """With the bytes of passages read raised out of the way, so that all twenty pages are
     related: sixty reasons, a claim of 322,320 characters on each side of each, every one
-    given as its first 2,000 characters and 400 of the row that holds the term."""
+    given as its first 600 characters and 400 of the row that holds the term."""
     monkeypatch.setattr(relating, "BYTES_MAX", 21 * 4 * TABLE)
     answer = both(tables, "asked", 20)
     assert len(answer["related"]) == 20 and answer["searched"]["complete"] is True

@@ -602,15 +602,32 @@ def test_a_claim_is_whole_to_the_bound_and_cut_one_character_past_it(store, ops,
     assert (there.line is not None) == (more > 0) and there.line_cut == (more > 0)
 
 
+READ = 4 * (TEXT_MAX + 1)  # the bytes of a claim's text one read takes
+LEADS = ("Brook pins `quill.lock` ", "Brook pins `quill.lock` x", "Brook pins `quill.lock` xy")
+
+
+def test_of_three_leads_a_byte_apart_two_end_the_read_inside_a_character():
+    """Before characters of three bytes each: so the test below meets a character read in
+    part, whatever the bound on a claim's text is."""
+    inside = 0
+    for lead in LEADS:
+        try:
+            (lead + "\u20ac" * 3_000).encode()[:READ].decode()
+        except UnicodeDecodeError:
+            inside += 1
+    assert inside == 2
+
+
 @pytest.mark.parametrize(
     "whole",
     [
         "\U0001f600" * TEXT_MAX + " Brook pins `quill.lock`.",  # 4 bytes each, to the bound
-        "Brook pins `quill.lock` x" + "\u20ac" * 3_000,  # the bytes read end inside a character
-        "Brook pins `quill.lock` " + "\U0001f600" * 3_000,  # and here between two
+        *(lead + "\u20ac" * 3_000 for lead in LEADS),  # the bytes read end inside a character
+        LEADS[0] + "\U0001f600" * 3_000,  # and here between two
     ],
 )
 def test_a_claim_is_cut_by_characters_wherever_the_bytes_read_end(store, ops, whole):
+    assert len(whole.encode()) > READ
     file(store, "ops", "Long", whole + "\n")
     short = file(store, "ops", "Short", "Ada reads `quill.lock` daily.\n")
     there = related(store, ops.id, short).pages[0].why[0].there

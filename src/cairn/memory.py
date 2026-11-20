@@ -135,9 +135,9 @@ only when there are more (a claim a tidy folded from many; who wrote it is still
 every note it cites). So an answer's size is bounded by constants: `limit` pages of
 relations.WHY_MAX reasons, each a term of relations.TERM_MAX characters at most and two
 claims of TEXT_MAX and LINE_MAX characters, PASSAGES_MAX passages and WRITTEN_BY_MAX
-writers. The largest answer they allow at `limit` 20 is 521,924 bytes over REST and 636,625
-over MCP for text of one byte a character, and 2,474,924 and 2,980,225 whatever the text
-holds; at the default `limit` of 8, 209,144 and 255,145, and 990,944 and 1,193,305
+writers. The largest answer they allow at `limit` 20 is 353,924 bytes over REST and 468,625
+over MCP for text of one byte a character, and 1,466,924 and 1,804,225 whatever the text
+holds; at the default `limit` of 8, 141,944 and 187,945, and 587,744 and 722,905
 (tests/unit/test_related_size_unit.py builds that answer from the constants, and checks
 answers made from claims of 322,320 characters against it field by field). No answer shows
 a weight.

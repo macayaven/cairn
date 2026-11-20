@@ -576,11 +576,12 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
 def test_the_tools_description_says_a_long_claim_is_cut_and_that_page_gives_it_whole():
     said = " ".join(tools()["related"].description.split())
     assert (
-        "A claim longer than 2,000 characters is given cut (`text_cut`), with the line that"
+        "A claim longer than 600 characters is given cut (`text_cut`), with the line that"
         " holds the term (`line`; `line_cut` when that is cut to 400), and `page` gives it"
         " whole."
     ) in said
-    assert (relations.TEXT_MAX, relations.LINE_MAX) == (2_000, 400)
+    assert (relations.TEXT_MAX, relations.LINE_MAX) == (600, 400)
+    assert "A smaller `limit` gives a smaller answer." in said
     assert (
         "`passage_ids` names the first 8 passages a claim cites, and `passage_ids_more` counts"
         " the rest."

@@ -223,7 +223,7 @@ def test_a_term_longer_than_the_bound_as_written_or_as_compared_is_no_term():
 
 
 def test_the_bounds_of_a_claim_given_are_stated():
-    assert (relations.TEXT_MAX, relations.LINE_MAX) == (2_000, 400)
+    assert (relations.TEXT_MAX, relations.LINE_MAX) == (600, 400)
 
 
 def test_a_term_is_placed_where_its_first_fact_stands_in_the_passage():

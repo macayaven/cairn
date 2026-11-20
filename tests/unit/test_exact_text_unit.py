@@ -223,3 +223,50 @@ def test_a_draft_that_copies_one_passage_twice_with_a_space_is_refused(store):
         v.startswith("grounding.not_verbatim: cl_00000000000000a2") for v in result.gate.violations
     )
     assert store.get_page(project.id, "files") is None
+
+
+def again_with(suffix: str, copies: int = 1):
+    """A composer, as LLMComposer may answer (its ids are a hash of text and citations, so
+    claims that differ only by spaces at a line's end are kept): the passage, then `copies`
+    more claims of it, each with `suffix` added once more."""
+
+    def compose(title: str, spans) -> Draft:
+        (span,) = spans
+        claims = tuple(
+            Claim(id=f"cl_00000000000000b{n}", text=span.text + suffix * n, span_ids=(span.id,))
+            for n in range(copies + 1)
+        )
+        return Draft(claims=claims, stats=DraftStats(composer="again"))
+
+    return compose
+
+
+@pytest.mark.parametrize(("suffix", "copies"), [(" ", 1), ("\t", 1), (" ", 2), ("", 2)], ids=repr)
+def test_a_draft_the_import_would_refuse_is_refused_by_the_gate(store, suffix, copies):
+    """Each claim is the whole passage, under the rule; together they hold more than twice
+    its text, the import's bound (store.portable.CLAIM_TEXT_FACTOR): the gate refuses the
+    draft, so no export holds a version its own import refuses."""
+    project = store.create_project("alpha")
+    note, _ = store.add_note(project.id, "X.", title="Files")
+    result = compile_note(store, note, compose=again_with(suffix, copies))
+    assert result.status == "rejected"
+    assert [v.split(":")[0] for v in result.gate.violations] == ["grounding.passage_repeated"]
+    assert "X." not in result.gate.violations[0]
+    assert store.get_page(project.id, "files") is None
+
+
+def test_a_passage_copied_twice_exactly_is_what_the_import_takes_and_the_gate_takes(
+    store, tmp_path
+):
+    project = store.create_project("alpha")
+    note, _ = store.add_note(project.id, "X.", title="Files")
+    assert compile_note(store, note, compose=again_with("", 1)).status == "saved"
+    archive = io.BytesIO()
+    store.export(archive)
+    target = Store(tmp_path / "imported.db")
+    try:
+        target.import_export(io.BytesIO(archive.getvalue()))
+        page = target.get_page(target.get_project("alpha").id, "files")
+        assert [c.text for c in page.claims] == ["X.", "X."]
+    finally:
+        target.close()

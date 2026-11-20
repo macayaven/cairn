@@ -155,7 +155,7 @@ def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     that is a claim of its own: the strict gate's coverage rule puts it on the page, and the
     arrangement decides where."""
     strict = strict_lint_gate(page, spans)
-    refused = _refusals(page.claims, spans)
+    refused = _refusals(page.claims, spans) or _past_the_import(page.claims, spans)
     return GateResult(
         passed=strict.passed and not refused,
         violations=[*strict.violations, *refused],
@@ -181,6 +181,28 @@ def _refusals(claims: Iterable[Claim], spans: Mapping[str, Span]) -> list[str]:
         v
         for claim in claims
         if (v := _not_verbatim(claim, spans, readings) or _folds_sections(claim, spans))
+    ]
+
+
+def _past_the_import(claims: Iterable[Claim], spans: Mapping[str, Span]) -> list[str]:
+    """grounding.passage_repeated when the claims, each a passage whole, hold more than the
+    import takes of one version (store.portable: CLAIM_TEXT_FACTOR times the text of the
+    passages they cite, CITATION_FACTOR times the claims and passages in citations), as a
+    composer that copies a passage more than once, with or without spaces at a line's end,
+    may answer. What the gate saves, an export carries and its import takes. Counts only."""
+    from cairn.store.portable import CITATION_FACTOR, CLAIM_TEXT_FACTOR
+
+    claims = list(claims)
+    cited = {span_id for claim in claims for span_id in claim.span_ids if span_id in spans}
+    held = sum(len(claim.text.encode()) for claim in claims)
+    citations = sum(len(claim.span_ids) for claim in claims)
+    if held <= CLAIM_TEXT_FACTOR * sum(len(spans[i].text.encode()) for i in cited) and (
+        citations <= CITATION_FACTOR * (len(claims) + len(cited))
+    ):
+        return []
+    return [
+        "grounding.passage_repeated: -: the claims copy their passages more often than a page"
+        " holds them: give each passage one claim"
     ]
 
 

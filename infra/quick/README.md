@@ -424,3 +424,5 @@ update but needs the pre-upgrade backup after an incompatible one.
   restored after its volume was removed, and the cold copy commands went as this guide says.
   None of that touched AWS: S3, the VM's role, the metadata firewall, cloud-init and systemd
   were not part of it.
+  The boot script has changed since that apply on Google Cloud (it now passes on its tools'
+  errors, and runs Compose without progress lines): the changed script has run only on the laptop.

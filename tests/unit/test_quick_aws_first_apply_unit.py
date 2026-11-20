@@ -432,3 +432,6 @@ def test_what_was_tried_tells_the_laptop_run_from_an_apply():
     assert "run on a laptop" in tried
     assert "a stand-in for the AWS CLI" in tried
     assert "None of that touched AWS" in tried
+    # The one real apply ran the shared boot script as it was that day.
+    assert "The boot script has changed since that apply" in tried
+    assert "has run only on the laptop" in tried

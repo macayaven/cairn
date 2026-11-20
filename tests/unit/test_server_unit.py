@@ -171,6 +171,11 @@ class FakeStore:
         """M4: nobody here has chosen for a project (not decided)."""
         return {}
 
+    def note_page(self, project_id: str, note_id: str) -> tuple[bool, str | None]:
+        """Where a note stands: here no page cites one and none waits, so a note whose page
+        the gate refused is on no page (the rule itself is tested over the real store)."""
+        return (False, None)
+
     def record_note(self, project_id: str, outcome: str, detail: dict, filed=None) -> None:
         if project_id not in self.projects:
             raise KeyError(project_id)

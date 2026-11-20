@@ -88,8 +88,8 @@
 # Where the jobs run: two repository variables, each a JSON value for runs-on, each
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
 # jobs and of `package`, which runs the build backend; CAIRN_RELEASE_RUNNER names the runner
-# of publish, verify, attest, release, aliases and deploy, which no job of a pull request uses
-# and which runs no build. docs/decisions.md, decision 150, says why there are two.
+# of publish, verify, attest_main, attest, release, aliases and deploy, which no job of a pull
+# request uses and which runs no build. docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
 # pinned (resolved with git ls-remote on 2026-11-10; actions/attest read with gh api on
@@ -485,6 +485,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MAIN: ${{ steps.main.outputs.digest }}
         run: |
+          if ! command -v gh > /dev/null; then
+            echo "::error::gh is not on this runner, so main's attestation of $MAIN cannot be checked; install GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
           if ! gh attestation verify "$RUNNER_TEMP/main.json" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci-cd.yml" \
               --source-ref refs/heads/main --source-digest "$GITHUB_SHA"; then

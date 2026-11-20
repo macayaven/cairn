@@ -226,6 +226,18 @@ def test_a_tag_promotes_only_a_digest_main_s_run_attested_for_its_commit(tmp_pat
         )
 
 
+def test_a_gate_runner_without_gh_is_told_so_and_not_that_main_s_run_attested_nothing(tmp_path):
+    """CAIRN_GATE_RUNNER may name a runner of the operator's own, which need not have gh."""
+    runner = Runner(tmp_path)
+    (runner.bin / "gh").unlink()
+    done = runner.run(step("image_build", ATTESTED)["run"], GITHUB_SHA=COMMIT, MAIN=digest(MAIN))
+    assert done.returncode == 1
+    (error,) = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+    assert error.count(". ") == 0
+    assert "has no attestation" not in error
+    assert "gh is not on this runner" in error and "CAIRN_GATE_RUNNER" in error
+
+
 def test_main_s_run_attests_its_published_image_with_nothing_but_the_signing_rights():
     """attest_main: after publish and verify on a push to main, the same two steps as attest's
     image attestation, holding an identity token and the right to store attestations; it checks

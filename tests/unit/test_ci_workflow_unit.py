@@ -111,7 +111,7 @@ def test_gate_runner_uses_json_override_and_defaults_to_hosted():
 
 
 def test_release_runner_uses_separate_json_override_and_defaults_to_hosted():
-    for name in ("publish", "verify", "deploy", "attest", "release", "aliases"):
+    for name in ("publish", "verify", "deploy", "attest", "attest_main", "release", "aliases"):
         expression = JOBS[name]["runs-on"]
         match = re.fullmatch(
             r"\$\{\{ fromJSON\(vars\.CAIRN_RELEASE_RUNNER \|\| '([^']+)'\) \}\}", expression
@@ -321,7 +321,7 @@ def test_the_pull_with_no_login_is_the_one_the_run_guide_gives():
 
 
 def test_release_jobs_do_not_run_the_application_environment_or_rehearsals_on_the_host():
-    for name in ("publish", "verify", "deploy", "attest", "release", "aliases"):
+    for name in ("publish", "verify", "deploy", "attest", "attest_main", "release", "aliases"):
         for step in JOBS[name]["steps"]:
             assert not step.get("uses", "").startswith("astral-sh/setup-uv"), name
             command = step.get("run", "")
@@ -1678,9 +1678,9 @@ def test_the_comments_say_where_the_files_are_built_and_why():
         " tag's version, and makes the GitHub release with them and the version's section of"
         " CHANGELOG.md.",
         "CAIRN_GATE_RUNNER names the runner of the gate's jobs and of `package`, which runs the"
-        " build backend; CAIRN_RELEASE_RUNNER names the runner of publish, verify, attest,"
-        " release, aliases and deploy, which no job of a pull request uses and which runs no"
-        " build.",
+        " build backend; CAIRN_RELEASE_RUNNER names the runner of publish, verify, attest_main,"
+        " attest, release, aliases and deploy, which no job of a pull request uses and which"
+        " runs no build.",
     ):
         assert sentence in header, sentence
 

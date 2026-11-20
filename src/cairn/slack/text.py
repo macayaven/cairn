@@ -27,6 +27,7 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 from markdown_it import MarkdownIt
 
 from cairn.spans import chunk
+from cairn.store.memory import TITLE_MAX
 
 # An email address. Every pattern here reads each character of what it is run over a bounded
 # number of times, however long the text (the third tester, finding 9): a run of the
@@ -53,6 +54,10 @@ _QUOTE_MARK = re.compile(r"^[ \t]*>[ \t]?")
 # What may stand before a fence on its line: blanks, a quotation's marks, a list item's.
 _MARKS = " \t>*+-0123456789.)"
 _FENCE_LEAD = re.compile(r"^([ \t>*+\-0-9.)]*+)~(?=~~)", re.MULTILINE)
+# What a title is cut between (_title): an escape, an entity, Slack's bold, a character; and
+# the run of "#" that would end the page's heading of it, and be dropped.
+_ATOM = re.compile(r"\\.|&(?:amp|lt|gt);|\*\*|.", re.DOTALL)
+_CLOSING = re.compile(r"(?:^|(?<=[ \t]))#+$")
 _CODE_NODES = 10_000  # see _displayed_code
 _PASSES = 8  # see _one_heading
 
@@ -511,6 +516,7 @@ def _render(
     code: list[tuple[bool, str]] | None = None,
     plain: Collection[int] = (),
     wrote: list[tuple[int, str]] | None = None,
+    title: bool = False,
 ) -> str:
     """`text` as the note holds it: its prose by _prose and a name or a link's label by
     _literal; a code block of Slack's own as a fence (_fence); and code within a line between
@@ -522,7 +528,10 @@ def _render(
     is read. `displayed`: the whole of it as Slack displayed it (_shown, and code within a
     line between the backticks it was sent with), with the same lines. The code blocks whose
     place among the message's is in `plain` are written as plain characters, backticks and
-    all, on the same lines; the fences of the others are given in `wrote`."""
+    all, on the same lines; the fences of the others are given in `wrote`. `title`: as the
+    note's title is taken from it (_title), where nothing is code and nothing a link: a code
+    block's lines as plain characters, on lines of their own and with no fence, code within a
+    line as plain characters, backticks and all, and a link as its words."""
     literal = _shown if displayed else _literal
 
     def prose(text: str) -> str:
@@ -560,7 +569,9 @@ def _render(
         clear = _clear(clear, pieces[-1])
         if isinstance(what, list):
             place += 1
-            if place in plain:
+            if title:
+                fence = "\n".join(map(_plain, what))
+            elif place in plain:
                 fence = "\n".join(["```", *what, "```"])
                 fence = fence if displayed else "\n".join(map(_plain, fence.split("\n")))
             else:
@@ -571,7 +582,7 @@ def _render(
         elif kind == "code" and isinstance(what, str):
             if displayed:
                 pieces.append(_shown(text[start:end]))
-            elif "|" in what and not bars:
+            elif ("|" in what and not bars) or title:
                 pieces.append(literal(text[start:end]))
             else:  # a space each side where Markdown would take one, or read a longer run
                 pad = " " if what.strip(" ") and (what[0] in "` " or what[-1] in "` ") else ""
@@ -587,12 +598,14 @@ def _render(
             else:
                 url = _link_target(target)
                 shown = literal(label if separator else target)
-                if url:
+                if url and title:
+                    pieces.append(shown)
+                elif url:
                     pieces.append(f"[{shown}]({url})")
                 elif separator:
                     pieces.append(shown)
                 else:
-                    pieces.append("[link omitted]")
+                    pieces.append(_plain("[link omitted]") if title else "[link omitted]")
         offset, below, fresh = end, kind == "block", fresh and not pieces[-1]
         clear = _clear(clear, pieces[-1])
     pieces.append(prose(_apart(text[offset:], below, False, False, fresh)))
@@ -604,6 +617,51 @@ def _clear(clear: bool, written: str) -> bool:
     `written` is written on it; `clear`: whether it did before."""
     _, feed, last = written.rpartition("\n")
     return (clear or bool(feed)) and not last.strip(_MARKS)
+
+
+def _shows(title: str) -> str:
+    """What a page's heading of `title` displays: its characters, emphasis aside."""
+    heading = _PARSER.parse(f"# {title}")[1]
+    return "".join(child.content for child in heading.children or [])
+
+
+def _unclosed(title: str) -> str:
+    """`title` with a backslash before a run of "#" that would close the page's heading of it,
+    where the run would be dropped (the run is all of it, or a blank stands before it)."""
+    return _CLOSING.sub(lambda run: "\\" + run.group(), title, count=1)
+
+
+def _within(atoms: list[str]) -> int:
+    """How many of `atoms`, from the first, fit in TITLE_MAX characters."""
+    size, end = 0, 0
+    while end < len(atoms) and size + len(atoms[end]) <= TITLE_MAX:
+        size, end = size + len(atoms[end]), end + 1
+    return end
+
+
+def _title(text: str, names: Mapping[str, str], code: list[tuple[bool, str]]) -> str:
+    """The note's title: the first line the message displays, its first line of text or the
+    first line of a code block it opens with, never a line the note writes for itself (a
+    fence), nor one of a quotation's marks alone. Written as prose is (_render, `title`), so
+    the page's heading of it reads as the characters Slack displayed and holds no code and
+    no link; cut to TITLE_MAX characters where the heading then displays the start of what
+    the whole line displays, so no escape is cut in two. A line no cut keeps so (all of it
+    bold, say) is written as the plain characters it displays, and a message that displays
+    no line as the plain characters of its first."""
+    lines = _render(text, names, code=code, title=True).split("\n")
+    line = next((line.strip() for line in lines if line.strip(" \t>")), "")
+    if not line:
+        whole = _shown(text.split("\n", 1)[0].strip())
+    else:
+        whole, atoms = _shows(_unclosed(line)), _ATOM.findall(line)
+        end = _within(atoms)
+        while end:  # at most TITLE_MAX tries, each a parse of a title's length
+            cut = _unclosed("".join(atoms[:end]).rstrip())
+            if len(cut) <= TITLE_MAX and cut and whole.startswith(_shows(cut)):
+                return cut
+            end -= 1
+    plain = _ATOM.findall(_plain(whole.strip()))
+    return "".join(plain[: _within(plain)]).rstrip()
 
 
 def _timestamp(value: object) -> datetime:
@@ -690,5 +748,4 @@ def note_from_message(
             if not _not_one_fence(text, wrote):
                 break
         plain = range(len(raw)) if plain or every or not missing else {min(missing)}
-    title = next(line.strip() for line in text.split("\n")[1:] if line.strip())
-    return Draft(title, text, source)
+    return Draft(_title(raw.strip(), names, code), text, source)

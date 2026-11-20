@@ -52,6 +52,7 @@ from cairn.slack.verify import BODY_MAX, SKEW, OtherTeam, envelope, signature, v
 from cairn.spans import chunk
 from cairn.store import Store
 from cairn.store.hosted import Sealer
+from cairn.store.memory import TITLE_MAX
 from cairn.store.slack import (
     ACCEPTING,
     CHECK_EVERY,
@@ -697,6 +698,33 @@ def test_connect_the_message_shortcut_files_a_message_once():
     assert said(blocks.filed(title="T", page_url=BASE, project="p", already=True)).startswith(
         "Already filed"
     )
+
+
+def test_connect_the_title_is_the_first_line_the_message_displays():
+    """connect.md: "The note's title is the first line the message displays, or the first line
+    of a code block it opens with, as text: nothing in it is code or a link, and it is cut to
+    80 characters.\" (The third tester's findings 1, 2 and 4; every cut is
+    test_slack_title_unit's.)"""
+    says(
+        *CONNECT,
+        "The note's title is the first line the message displays, or the first line of a code"
+        " block it opens with, as text: nothing in it is code or a link, and it is cut to 80"
+        " characters.",
+    )
+
+    def title(text: str) -> str:
+        return note_from_message(
+            {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text},
+            team_id=TEAM, team_domain="fable-works", conversation_id="C0LIBRARY1",
+            author="Cedar Quill", names={},
+        ).title  # fmt: skip
+
+    assert title("```\nSELECT 1;\n```\nLedger.") == "SELECT 1;"
+    shown = title("See `[manual](https://fable.test/m)` and <https://fable.test/l|the ledger>")
+    heading = MarkdownIt("commonmark", {"html": False}).parse(f"# {shown}")[1].children
+    assert [token.type for token in heading] == ["text"]
+    assert heading[0].content == "See `[manual](https://fable.test/m)` and the ledger"
+    assert len(title("Row " * 30)) <= 80 == TITLE_MAX
 
 
 def a_filed_note(text: str) -> str:

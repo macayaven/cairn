@@ -249,6 +249,7 @@ LIMITED_READS = frozenset(
         "holds_note",  # whether the project holds a note of this text (H6c)
         "list_notes",
         "notes_part",  # a part of a project's notes, newest first, without their text
+        "note_page",  # whether a note waits, and the page that cites it (notes_part's rule)
         "note_spans",
         "get_spans",
         "spans_within",  # get_spans without the long ones (Help)

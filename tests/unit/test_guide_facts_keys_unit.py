@@ -155,15 +155,17 @@ def test_run_a_backup_taken_before_reseal():
 def test_run_slack_a_key_lost_or_changed_without_the_old_one():
     """run.md: "When the key is lost, or changed without the old one kept in
     `CAIRN_SLACK_KEY_PREVIOUS` ([below](#change-a-sealing-key)), no secret sealed with the old
-    one opens, and Slack's requests to the server are refused: each workspace's owner removes
-    Slack on the **Sources** page, sets it up again and pastes both secrets.\""""
+    one opens, and Slack's requests to the server are refused." What the owner then does
+    (pasting both secrets again keeps the links and the notes; removing Slack is the last
+    resort) is pinned with its behaviour in test_guide_facts_slack_unit.py."""
     says(
         "run",
         "## Slack",
         "When the key is lost, or changed without the old one kept in"
         " `CAIRN_SLACK_KEY_PREVIOUS` ([below](#change-a-sealing-key)), no secret sealed with the"
-        " old one opens, and Slack's requests to the server are refused: each workspace's owner"
-        " removes Slack on the **Sources** page, sets it up again and pastes both secrets.",
+        " old one opens, and Slack's requests to the server are refused.",
+        "To keep the same Slack workspace and its links and notes, paste both secrets again on"
+        " the **Sources** page.",
     )
     sealed = Sealer(EARLIER).seal(SIGNING, b"t")
     holds(web_slack.read_switch(slack_env()).sealer().open(sealed, b"t") is None)

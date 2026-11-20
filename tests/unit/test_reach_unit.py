@@ -341,6 +341,7 @@ PROJECT_CALLS = {
     "holds_note": lambda d: (d["api"], "# Retries\n\nQuill retries.\n"),
     "list_notes": lambda d: (d["api"],),
     "notes_part": lambda d: (d["api"], 10),  # UI and UX 8: a part of the notes
+    "note_page": lambda d: (d["api"], d["note"]),  # whether a note waits, and the page citing it
     "note_spans": lambda d: (d["note"],),
     "get_spans": lambda d: ([d["span"]],),
     "spans_within": lambda d: ([d["span"]], 10_000),  # Help's narrow reads
@@ -405,7 +406,10 @@ def section_hook(monkeypatch):
 
 
 def answered(result):
-    """What a call gave of a project's data: a search's hits, without what it left out."""
+    """What a call gave of a project's data: a search's hits, without what it left out; and
+    nothing for note_page's answer about a note out of reach, (False, None)."""
+    if result == (False, None):
+        return None
     return result.hits if isinstance(result, Found) else result
 
 

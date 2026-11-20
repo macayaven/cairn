@@ -446,6 +446,17 @@ def _phrases(query_words: Sequence[str]) -> str:
     return " OR ".join(f'"{word}"' for word in query_words)
 
 
+def phrase(counted: Sequence[str]) -> str | None:
+    """The match of words side by side and in this order in a claim's text, never in its
+    page's title, which the index holds beside it: one quoted FTS5 phrase behind a column
+    filter (cairn.store.relating). `counted` is words as `split` gives them, so nothing in it
+    is read as query syntax, and FTS5 splits each at "_" as it does a search's. None when
+    they hold no part: a phrase of no token matches nothing."""
+    if not _parts(counted):
+        return None
+    return f'text : "{" ".join(counted)}"'
+
+
 def _frequencies(
     con: sqlite3.Connection,
     index: str,

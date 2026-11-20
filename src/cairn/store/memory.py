@@ -14,7 +14,7 @@ import yaml
 from cairn import facts as _facts
 from cairn.kinds import GENERAL, KINDS
 from cairn.spans import Span, chunk
-from cairn.store import ranking
+from cairn.store import ranking, relating
 from cairn.store.access import LEVELS, MODELS_PREFIX, KeptFromModels, _keep_from_models
 from cairn.store.audit import UNKNOWN_WRITER
 from cairn.store.base import (
@@ -714,21 +714,9 @@ class MemoryMethods(StoreBase):
         (its `created_at`, as stored) and whether it is a Slack message someone filed (a
         `slack_notes` row of how "filed" that created the note; a tie to a note the project
         held already is not). A read."""
-        wanted = json.dumps(list(dict.fromkeys(note_ids)))
+        wanted = list(dict.fromkeys(note_ids))  # read before the section, as it always was
         with self._read() as con:
-            rows = con.execute(
-                "SELECT notes.id, note_writers.kind, note_writers.name, notes.via,"
-                " notes.created_at,"
-                " COALESCE(slack_notes.how = 'filed' AND slack_notes.owns = 1, 0)"
-                " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
-                " LEFT JOIN slack_notes ON slack_notes.note_id = notes.id"
-                f" WHERE notes.id IN (SELECT value FROM json_each(?)) AND {_OWN_PROJECT}",
-                (wanted, *self._scope(con)),
-            ).fetchall()
-        return {
-            note_id: NoteOrigin(kind or UNKNOWN_WRITER, name, via, created_at, bool(filed))
-            for note_id, kind, name, via, created_at, filed in rows
-        }
+            return _origins(con, wanted, self._scope(con))
 
     def list_notes(self, project_id: str) -> list[Note]:
         """Oldest first."""
@@ -1195,6 +1183,35 @@ class MemoryMethods(StoreBase):
         if not owned.fetchone() or (reach is not None and project_id not in reach):
             raise KeyError(project_id)
 
+    # Related pages
+    def related_pages(self, project_id: str, slug: str, limit: int = 8) -> relating.Related | None:
+        """The pages of the project related to its page `slug`, the best `limit` first, each
+        with the claims the relation rests on, and what the read left out (cairn.store.relating;
+        the rules are cairn.relations). None when the project has no such page, or is unknown
+        or out of reach: the same answer for all three. Nothing of a relation is stored. One
+        read: the page, the claims of the other pages, their passages and who wrote the notes
+        the claims given cite are of one moment, so a write that lands meanwhile changes
+        nothing of the answer. A page read before the workspace saved any page has no index
+        to ask, and no relation."""
+        with self._read() as con:
+            scope = self._scope(con)
+            head = con.execute(
+                "SELECT title, version FROM page_heads WHERE project_id = ? AND slug = ?"
+                f" AND {_OWN_PROJECT}",
+                (project_id, slug, *scope),
+            ).fetchone()
+            if head is None:
+                return None
+            if not _has_table(con, self._index):  # the account has not saved a page yet
+                nothing = relating.Left(0, 0, 0, False, 0, 0)
+                return relating.Related(slug, *head, (), nothing, {}, {})
+            found = relating.related(
+                con, self._account_id, self._index, project_id, slug, *head, max(0, limit)
+            )
+            if not found.notes_of:  # nothing given, or nothing it cites is held: no one to name
+                return found
+            return found._replace(origins=_origins(con, found.notes_of.values(), scope))
+
     # Search
     def search(
         self, query: str, project_ids: Sequence[str] | None = None, limit: int = 10
@@ -1226,6 +1243,27 @@ class MemoryMethods(StoreBase):
                 con, self._account_id, self._index, reach, counted, project_ids, limit
             )
             return ranking.found(counted, left_out, ranked)
+
+
+def _origins(
+    con: sqlite3.Connection, note_ids: Iterable[str], scope: tuple[str, str | None, str | None]
+) -> dict[str, NoteOrigin]:
+    """note_origins' answer, read on `con` in its caller's section: one statement. `scope` is
+    the caller's `_scope(con)`."""
+    wanted = json.dumps(list(dict.fromkeys(note_ids)))
+    rows = con.execute(
+        "SELECT notes.id, note_writers.kind, note_writers.name, notes.via,"
+        " notes.created_at,"
+        " COALESCE(slack_notes.how = 'filed' AND slack_notes.owns = 1, 0)"
+        " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
+        " LEFT JOIN slack_notes ON slack_notes.note_id = notes.id"
+        f" WHERE notes.id IN (SELECT value FROM json_each(?)) AND {_OWN_PROJECT}",
+        (wanted, *scope),
+    ).fetchall()
+    return {
+        note_id: NoteOrigin(kind or UNKNOWN_WRITER, name, via, created_at, bool(filed))
+        for note_id, kind, name, via, created_at, filed in rows
+    }
 
 
 _NOTE_FIELDS = tuple(Note.model_fields)

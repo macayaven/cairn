@@ -38,6 +38,7 @@ from test_ci_release_retry_unit import (
     REFUSED,
     attached,
     cells,
+    fetches,
     held,
     looks,
     made_earlier,
@@ -149,7 +150,8 @@ def test_an_edited_public_release_the_listing_still_shows_as_it_was_is_not_finis
 @pytest.mark.parametrize("what", EDITS)
 def test_a_draft_edited_between_the_first_read_and_the_publication_is_not_published(tmp_path, what):
     """One step past: the edit comes after the read that follows the listing, while the files
-    are downloaded. The read that is the last request before the publication sees it."""
+    are fetched. The read after the fetches, the last of the release before the publication,
+    sees it."""
     existing = made_earlier("v1.2.3", False, draft=True)
     change = {
         "notes": '.body |= sub("the notes"; "other notes")',
@@ -163,7 +165,7 @@ def test_a_draft_edited_between_the_first_read_and_the_publication_is_not_publis
     assert done.returncode == 1
     assert the_error(done).startswith(said("v1.2.3", "a draft", what))
     assert writes(calls) == [] and held(tmp_path)[0]["draft"] is True
-    assert reads(calls) == [1, 3] and calls[2].startswith("gh release download")
+    assert reads(calls) == [1, 5] and calls[2:5] == fetches(77)
 
 
 def test_a_file_removed_from_a_draft_the_listing_still_shows_whole_is_not_downloaded(tmp_path):
@@ -218,19 +220,21 @@ def test_the_read_by_id_is_the_last_read_of_the_release_before_the_publication_a
     assert seen[2:] == [
         LISTING,
         read,
-        f"gh release download {tag} --dir {tmp_path}/draft",
+        *fetches(88),
         read,
         writes(calls)[-1],
         LISTING,
-        f"gh release download {tag} --dir {tmp_path}/published",
+        read,
+        *fetches(88),
         read,
     ]
     assert writes(calls)[-1].startswith("gh api --method PATCH repos/owner/repo/releases/88 ")
-    # The read asks for one release by the id the listing gave, with the listing's own fields.
+    # The read asks for one release by the id the listing gave, with the listing's own fields
+    # first, and then what the fetches and the comparison of two reads take.
     (listing,) = {line for line in calls if line.startswith(LISTING)}
     (asked,) = {line for line in calls if line.startswith(read)}
     fields = listing.split(" | ", 2)[2]
-    assert asked == read + f'select(.tag_name == "{tag}") | {fields}'
+    assert asked.startswith(read + f'select(.tag_name == "{tag}") | ({fields}), ')
 
 
 @pytest.mark.parametrize(("tag", "candidate"), BOTH)
@@ -240,8 +244,8 @@ def test_a_release_found_public_is_read_by_id_before_the_step_says_it_is_finishe
     existing = made_earlier(tag, candidate == "true")
     done, calls = run(tmp_path, tag, candidate, existing, attached(tag))
     assert done.returncode == 0, done.stdout + done.stderr
-    assert writes(calls) == [] and reads(calls) == [1, 3] and len(calls) == 4
-    assert calls[2].startswith("gh release download")
+    assert writes(calls) == [] and reads(calls) == [1, 5] and len(calls) == 6
+    assert calls[2:5] == fetches(77)
 
 
 # --- three states of one release the two sources can disagree on ----------------------------------
@@ -425,16 +429,22 @@ def test_the_two_lines_have_their_rows_and_neither_tells_anyone_to_delete():
 def test_the_step_s_comment_and_the_readme_say_what_is_read_where():
     comment = " ".join(CREATE["run"].replace("#", "").split())
     assert (
-        "The listing finds the release and shows whether the tag has more than one; it can be"
-        " behind a write, a person's as much as this job's, so nothing is compared on it. What"
-        " is compared is read by the release's id, which was measured to show each write at"
-        " once: after the look that gave the id, as the last read of the release before the"
-        " publication, and as the last read of it before this step says the release is finished"
-        " (only the tag's read comes after each)."
+        "(b) The listing, which finds the release and shows whether the tag has more than one;"
+        " it can be behind a write, a person's as much as this job's, so nothing is compared on"
+        " it. (c) The release, read by its id, which was measured to show each write at once:"
+        " it judges the tag, the mark, the two flags, the title, the notes and the file names,"
+        " and gives each file's asset id, state and size."
     ) in comment
     assert (
-        "A file replaced between the download and the publication is published as replaced:"
-        " that is the stated race, and the comparison after the publication stops on it."
+        "(e) The release by its id again, which must be as (c) showed it: the same assets (ids,"
+        " names, sizes, update times), title, notes and flags, so no file was replaced and"
+        " nothing edited while the files were fetched. (f) The tag again. Then the publication;"
+        " then (b) until the listing shows it, and (c) to (f) once more before this step says"
+        " the release is finished."
+    ) in comment
+    assert (
+        "What a person changes after the last read of the release, before the publication or"
+        " before this step ends, is not seen: that moment is the stated race."
     ) in comment
     readme = " ".join(README.split())
     assert (

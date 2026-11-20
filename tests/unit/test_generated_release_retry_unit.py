@@ -35,11 +35,10 @@ GitHub and gh are a stand-in `gh` that keeps the releases as data. The listing a
 of one release by its id each go through the step's own --jq expression, run by jq; the read
 answers from what is there, which a fault can refuse. The tag, read as
 the commit it names, is the run's: nobody here deletes or moves it (test_ci_release_tag_unit
-does). `gh release download` gives a
-release's files, a draft's too (shared/fetch.go, 182 to 270: `FetchRelease` "finds a
-published repository release by its tagName, or a draft release by its pending tag name"),
-and refuses to write over a
-file that is there (download/download.go, 304 and 439 to 447). `gh release create` is modelled
+does). A read by id gives each asset its id, state, size and update time; a file is fetched
+by its asset id (GitHub's "Get a release asset"), and gives the bytes that asset holds then, or
+fails as GitHub's 404 does for an asset that is gone: a file put again is a new asset, with a
+new id (test_ci_release_assets_unit). `gh release create` is modelled
 on gh's source, v2.102.0, pkg/cmd/release/create/create.go: `if hasAssets && !opts.Draft {`
 ... `draftWhileUploading = true`, `params["draft"] = true` (lines 500 to 512);
 `cleanupDraftRelease := func(err error) error { if !draftWhileUploading { return err }` and
@@ -59,8 +58,9 @@ What must hold, whatever the state, the person, the fault and the moment:
   tag and once an attempt, and the publication, only when the request before it was a read
   of the tag that gave the run's commit and the one before that a read
   of that release by its id which showed it as this run's, with the tag's flag, the tag as
-  its title, the notes this run wrote, byte for byte, and its files' names, and after a
-  download later than the last listing gave exactly the files this run attested: nothing
+  its title, the notes this run wrote, byte for byte, and its files' names, and after the
+  fetches of that release's files by asset id, later than the last listing, gave exactly the
+  files this run attested: nothing
   else, so no delete, no upload onto a release that exists and no other edit;
 - a release that is published at any moment is there at the end with the same id, text, flag
   and files, unless the person deleted or changed it (or published the draft `gh release
@@ -68,7 +68,8 @@ What must hold, whatever the state, the person, the fault and the moment:
 - an attempt that succeeds made, as its last request, a read of the tag that gave the run's
   commit, and before it a read by id that showed the release
   published, with the tag's flag, this run's mark, the tag as its title, the notes this run
-  wrote and the files' names, and got from the download after its last listing exactly the
+  wrote and the files' names, and got from the fetches by asset id after its last listing,
+  of that release, exactly the
   files this run attested; that is what GitHub holds at the end, unless the person acted
   after that listing, and then the step wrote nothing after the person;
 - the releases the step made never leave two for the tag;
@@ -142,9 +143,14 @@ def named(tag):
 
 
 def attach(release, name, data):
-    # A file put on a release: by a person, or by the upload of the command that made it.
+    # A file put on a release: by a person, or by the upload of the command that made it. It is
+    # a new asset, with an id and an update time of its own.
     release["files"][name] = data
-    release["assets"] = [{"name": n, "size": len(d) // 2} for n, d in release["files"].items()]
+    state["asset"] = state.get("asset", 5000) + 1
+    release["assets"] = [a for a in release["assets"] if a["name"] != name] + [{
+        "id": state["asset"], "name": name, "size": len(data) // 2, "state": "uploaded",
+        "updated_at": f"2026-11-20T13:{state['asset'] % 60:02d}:00Z",
+    }]
     if not release["draft"]:
         state["public"][str(release["id"])] = copy.deepcopy(release)
 
@@ -213,7 +219,7 @@ def wrote(kind, target=None, fields=()):
         "at": now["requests"],
         "target": copy.deepcopy(target),
         "listed": now["listed"][-1] if now["listed"] else None,
-        "given": now["given"][-1] if now["given"] else None,
+        "given": [g for g in now["given"] if now["listed"] and g["at"] > now["listed"][-1]["at"]],
         "read": now["read"][-1] if now["read"] else None,
         "tagged": now["tagged"][-1] if now["tagged"] else None,
     })
@@ -228,6 +234,22 @@ if args[:2] == ["api", "-H"]:
         answer(2)
     now["tagged"].append(now["requests"])
     answer(0, state["commit"])
+if args[:2] == ["api", "--allow-escape-sequences"]:
+    # One file, by its asset id: the bytes that asset holds now, or a 404 for one that is gone.
+    request("asset")
+    if args[2:4] != ["-H", "Accept: application/octet-stream"] or len(args) != 5:
+        answer(2)
+    aid = int(args[4].rsplit("/", 1)[1])
+    holder = next((r for r in state["releases"] if any(a["id"] == aid for a in r["assets"])), None)
+    if holder is None:
+        sys.stderr.write("gh: Not Found (HTTP 404)\n")
+        answer(1)
+    name = next(a["name"] for a in holder["assets"] if a["id"] == aid)
+    data = holder["files"][name]
+    now["given"].append({"at": now["requests"], "id": holder["id"], "name": name, "data": data})
+    sys.stdout.flush()
+    sys.stdout.buffer.write(bytes.fromhex(data))
+    answer()
 if args[0] == "api" and "--jq" in args and "--paginate" not in args:
     # One release read by its id: what is there now, whatever a listing shows.
     how = request("read")
@@ -273,17 +295,6 @@ if args[0] == "api":
         target["draft"] = False
     if how == "lost":
         answer(1)  # done, and the reply never came
-    answer()
-if args[:2] == ["release", "download"]:
-    request("download")
-    target = named(args[2])
-    out = Path(args[args.index("--dir") + 1])
-    if target is None or any((out / name).exists() for name in target["files"]):
-        answer(1)  # no such release, or a file of that name is there and gh keeps it
-    out.mkdir(parents=True, exist_ok=True)
-    for name, data in target["files"].items():
-        (out / name).write_bytes(bytes.fromhex(data))
-    now["given"].append({"at": now["requests"], "id": target["id"], "files": target["files"]})
     answer()
 if args[:2] == ["release", "create"]:
     notes = args.index("--notes-file") + 1
@@ -369,7 +380,16 @@ def release(rid, tag, files, draft, flag, mark, held) -> dict:
         "draft": draft,
         "prerelease": ("-rc." in tag) == flag,
         "body": f"the notes\n\n{MARKS[mark]}\n",
-        "assets": [{"name": name, "size": len(data)} for name, data in has.items()],
+        "assets": [
+            {
+                "id": rid * 10 + n,
+                "name": name,
+                "size": len(data),
+                "state": "uploaded",
+                "updated_at": "2026-11-20T12:00:00Z",
+            }
+            for n, (name, data) in enumerate(has.items())
+        ],
         "files": {name: data.hex() for name, data in has.items()},
     }
 
@@ -493,6 +513,16 @@ def errors(done) -> list[str]:
     return [line for line in done.stdout.splitlines() if line.startswith("::error::")]
 
 
+def first(read: dict) -> str:
+    """The line of a read by id that the step judges (the lines after it are for its fetches)."""
+    return read["out"].split("\n", 1)[0] + "\n"
+
+
+def fetched(given: list[dict], rid: int) -> dict[str, str]:
+    """The bytes the fetches in GIVEN got from release RID, by file name, the last of each."""
+    return {g["name"]: g["data"] for g in given if g["id"] == rid}
+
+
 def faults(runs: list) -> list[str]:
     state = runs[-1][1]
     tag = state["tag"]
@@ -521,14 +551,14 @@ def faults(runs: list) -> list[str]:
                 found.append("published without a read by id as the request before the tag's")
             elif target is None:
                 pass  # deleted by the person after that read: GitHub answers 404, nothing is public
-            elif read["out"] not in (
+            elif first(read) not in (
                 listed_as("true", target["id"]),
                 listed_as("false", target["id"]),  # a person published it meanwhile
             ):
                 found.append("published what the read before it did not show as this run's")
-            elif given is None or given["at"] < listed["at"] or given["id"] != target["id"]:
-                found.append("published a draft it had not downloaded since it listed it")
-            elif given["files"] != WHOLE:
+            elif set(fetched(given, target["id"])) != set(WHOLE):
+                found.append("published a draft whose files it had not fetched since it listed it")
+            elif fetched(given, target["id"]) != WHOLE:
                 found.append("HARM: published a draft whose files were not the ones attested")
         else:
             public = target is not None and not target["draft"]
@@ -553,15 +583,15 @@ def faults(runs: list) -> list[str]:
         listed = now["listed"][-1]
         read = now["read"][-1] if now["read"] else None
         rid = read["out"].split("\t")[0] if read else ""
-        given = now["given"][-1] if now["given"] else None
+        given = [g for g in now["given"] if g["at"] > listed["at"]]
         if not now["tagged"] or now["tagged"][-1] != now["requests"]:
             found.append("succeeded without a read of the tag as its last request")
         elif read is None or now["log"][-2] != "read" or read["at"] != now["requests"] - 1:
             found.append("succeeded without a read by id as the request before the tag's")
-        elif read["out"] != listed_as("false", rid):
+        elif first(read) != listed_as("false", rid):
             found.append("succeeded though its last read did not show this run's release")
-        elif given is None or given["at"] < listed["at"] or given["files"] != WHOLE:
-            found.append("succeeded without the attested files from a download after its listing")
+        elif fetched(given, int(rid)) != WHOLE:
+            found.append("succeeded without the attested files fetched after its listing")
         elif now["acted"] is not None and now["acted"] > listed["at"]:
             if any(w["attempt"] == n + 1 and w["at"] >= now["acted"] - 1 for w in state["writes"]):
                 found.append("wrote after the person had changed what it last listed")

@@ -39,6 +39,7 @@ from test_ci_release_retry_unit import (
     REFUSED,
     attached,
     cells,
+    fetches,
     held,
     looks,
     made_earlier,
@@ -126,7 +127,7 @@ def test_a_draft_listed_from_the_k_th_look_after_its_creation_is_published_in_th
     assert after(calls, "gh release create")[: len(waited) + 2] == [
         *waited,
         READ.format(id=88),
-        f"gh release download {tag} --dir {tmp_path}/draft",
+        fetches(88)[0],
     ]
     assert [line.split()[1:3] for line in writes(calls)] == [
         ["release", "create"],
@@ -204,7 +205,7 @@ def test_a_draft_listed_with_some_of_its_file_names_is_waited_for_and_published_
     assert after(calls, "gh release create")[: len(waited) + 2] == [
         *waited,
         READ.format(id=88),
-        f"gh release download {tag} --dir {tmp_path}/draft",
+        fetches(88)[0],
     ]
     assert [(r["id"], r["draft"]) for r in held(tmp_path)] == [(88, False)]
 
@@ -365,7 +366,8 @@ def test_a_publication_listed_from_the_k_th_look_after_it_is_compared_and_the_jo
     assert after(calls, "gh api --method PATCH") == [
         LISTING,
         *[f"sleep {APART}", LISTING] * (shown_from - 1),
-        f"gh release download {tag} --dir {tmp_path}/published",
+        READ.format(id=88 if not existing else 77),
+        *fetches(88 if not existing else 77),
         READ.format(id=88 if not existing else 77),
     ]
     (public,) = held(tmp_path)

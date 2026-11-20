@@ -389,18 +389,18 @@ def test_claims_of_322_320_characters_on_both_sides_at_limit_20_are_under_the_bo
     assert as_rest(answer) < 120 * TABLE // 100  # and no hundredth of the claims it rests on
 
 
-def test_as_shipped_the_bytes_read_stop_at_two_such_claims_and_the_answer_says_so(tables):
-    """750,000 bytes of passages read hold two claims of 322,320 characters: two pages are
-    related, the eighteen claims not read are counted, and their terms give no reason."""
-    assert 2 * TABLE <= relating.BYTES_MAX < 3 * TABLE
+def test_as_shipped_the_bytes_read_stop_at_one_such_claim_and_the_answer_says_so(tables):
+    """500,000 bytes of passages read hold one claim of 322,320 characters: one page is
+    related, the nineteen claims not read are counted, and their terms give no reason."""
+    assert TABLE <= relating.BYTES_MAX < 2 * TABLE
     answer = both(tables, "asked", 20)
-    assert [len(page["why"]) for page in answer["related"]] == [3, 3]
+    assert [len(page["why"]) for page in answer["related"]] == [3]
     assert answer["searched"] == {
         "complete": False,
         "terms_looked_up": 60,
         "terms_not_looked_up": 0,
-        "claims_read": 2,
-        "claims_not_read": 18,
+        "claims_read": 1,
+        "claims_not_read": 19,
         "pages_left_out": 0,
     }
     assert faults(answer, 20) == []

@@ -136,22 +136,26 @@ from cairn.store import ranking
 
 TERMS_MAX = 256  # terms of a page that are looked up; it counts the rest
 CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
-# BYTES_MAX, measured on one laptop (an Apple M5) on 2026-11-20, under a load of 5 to 9: this
+# BYTES_MAX, measured on one laptop (an Apple M5) on 2026-11-20, under a load of 7 to 8: this
 # repository's documents filed as 32 pages, each asked at limit 20, and the worst read built
 # (256 terms; 512 candidate claims of 2,000 bytes of flags, paths and versions each). Time is
-# the middle of three runs; the worst page, of three such rounds (0.56 to 0.88 s at 750,000
-# under a load of 9).
-#   bytes       complete  pairs  reasons lost  worst of the 32  worst page built
-#   250,000     3 of 32   124    1,177 of 1,889    0.19 s          0.13 s
-#   400,000     3 of 32   138      852             0.37 s          0.21 s
-#   500,000    20 of 32   159      388             0.37 s          0.26 s
-#   750,000    27 of 32   164      255             0.31 s          0.37 s
-#   1,000,000  27 of 32   164      255             0.34 s          0.51 s
+# the middle of three runs; the worst page's, of three such rounds. On a quieter machine
+# (load 5.7) the worst page took 0.13, 0.21, 0.26, 0.37 and 0.51 s: times vary two- to
+# threefold with the machine's load, the counts not at all.
+#   bytes       complete  pairs  reasons lost      worst of the 32  worst page built
+#   250,000     3 of 32   106    1,201 of 1,874    0.34 s           0.34 s
+#   400,000     3 of 32   124      987             0.38 s           0.55 s
+#   500,000    12 of 32   130      728             0.33 s           0.66 s
+#   750,000    21 of 32   154      535             0.55 s           1.00 s
+#   1,000,000  27 of 32   157      257             0.62 s           1.45 s
 # The rule: the smallest value whose worst read is at most half a second and which keeps 24
-# of the 32 answers complete. Below 750,000 the table of decisions, one passage of 322,326
-# bytes, is not read; with that page left out, 250,000 already gives 24 of 31 and 400,000
-# and more 26 of 31 (of 30 with no bound), pairs 141 then 142 of 142.
-BYTES_MAX = 750_000  # bytes of those claims' passages, as stored, read in all
+# of the 32 answers complete, else 500,000. No value does both, so 500,000. The title's
+# claims are read within the bound, their passages counted twice, and a term or a title with
+# a claim not read gives no reason, so the answers are complete less often than the bytes
+# alone would say. Below a million bytes the table of decisions, one passage of 322,326
+# bytes, holds most of what is lost: with that page left out, 250,000 gives 24 of 31 complete
+# and 400,000 and more 26 of 31 (30 with no bound), pairs 135 then 136 of 136.
+BYTES_MAX = 500_000  # bytes of those claims' passages, as stored, read in all
 AT_ONCE = 64  # terms one statement asks the index for
 # The two marks the index is asked to put around what it matched of a title in a claim's
 # text (`_marked`): characters Unicode keeps for a program's own use and out of every text

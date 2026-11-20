@@ -429,7 +429,7 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       relation across projects, the pages a page mentions, paths of several steps, groups over
       a whole project, anything inferred from meaning. `searched` says what the read's bounds
       left out, always, and counts each: the page's terms past the first 256, the claims of
-      other pages, listed for a term or for the title, past the 512 claims and the 750,000
+      other pages, listed for a term or for the title, past the 512 claims and the 500,000
       bytes of passages read, the related pages past `limit`. The page's own passages are read
       whole, as `page` reads them. The store's read runs at most 17 statements, whatever the
       page and the project hold (cairn.store.relating says which, and

@@ -377,36 +377,33 @@ def fences_kept_in(blocks: Sequence[str]) -> tuple[list[str], int | None]:
     """`blocks`, the title, headings and claims of a body in its order, which render_body
     joins with a blank line: each as given, or with a line after it that closes a code fence
     the Markdown parser, reading the whole body, opens in that block and runs into a later
-    one; and the index of the first block whose fence no line closes, else None. Blocks after
-    such a block are as given.
+    one; and the index of the first block whose fence that line does not close, else None.
+    That block and the blocks after it are then as given.
 
     The parser's line map decides, as in open_fence_closer: a fence leaves its block when its
     token starts in the block and covers the first line of the next. The first such fence
-    gets a closer after its block (`_closers`: tried in order) and the body is parsed again; a
-    closer is kept only when no fence that starts in that block, the closer's own line
-    included, leaves it any more. Then the next such fence, which starts in a later block.
-    One parse when no fence leaves its block, one more for each closer tried; blocks that
-    hold no backtick and no tilde are not parsed."""
+    gets a closer after its block (`_closer`) and the body is parsed again; the closer is
+    kept only when no fence that starts in that block, the closer's own line included,
+    leaves it any more. Then the next such fence, which starts in a later block. One parse
+    when no fence leaves its block and one more for each closer, each of the whole body;
+    blocks that hold no backtick and no tilde are not parsed."""
     blocks = list(blocks)
     if not any("`" in block or "~" in block for block in blocks):
         return blocks, None
     found = _leaving_fence(blocks)
     while found is not None:
-        at, closers = found
-        for closer in closers:
-            closed = [*blocks[:at], f"{blocks[at]}\n{closer}", *blocks[at + 1 :]]
-            found = _leaving_fence(closed)
-            if found is None or found[0] > at:
-                blocks = closed
-                break
-        else:
+        at, closer = found
+        closed = [*blocks[:at], f"{blocks[at]}\n{closer}", *blocks[at + 1 :]]
+        found = _leaving_fence(closed)
+        if found is not None and found[0] <= at:
             return blocks, at
+        blocks = closed
     return blocks, None
 
 
-def _leaving_fence(blocks: list[str]) -> tuple[int, list[str]] | None:
+def _leaving_fence(blocks: list[str]) -> tuple[int, str] | None:
     """The first code fence of the body `blocks` make that starts in one block and covers the
-    first line of the next, as (the index of the block it starts in, the closers to try
+    first line of the next, as (the index of the block it starts in, the closer to write
     after that block); None when there is none."""
     body = "\n\n".join(blocks) + "\n"
     first, line = [], 0  # the line of the body each block starts on
@@ -418,16 +415,14 @@ def _leaving_fence(blocks: list[str]) -> tuple[int, list[str]] | None:
             continue
         at = bisect_right(first, token.map[0]) - 1
         if at + 1 < len(blocks) and token.map[1] > first[at + 1]:
-            return at, _closers(_PARSER_LINES.split(body)[token.map[0]], token.markup)
+            return at, _closer(_PARSER_LINES.split(body)[token.map[0]], token.markup)
     return None
 
 
-def _closers(opener: str, run: str) -> list[str]:
-    """The lines to try, in order, as the closer of a fence the parser opened with `run` on
-    the line `opener`: the run after what the line holds before it, its white space as
-    written and every other character there a space, so a list item's marker does not start
-    another item, but for ">", which a line of a quote keeps; then the run at the margin.
-    Neither is assumed to close: fences_kept_in asks the parser."""
+def _closer(opener: str, run: str) -> str:
+    """The line to write as the closer of a fence the parser opened with `run` on the line
+    `opener`: the run after what the line holds before it, its white space as written and
+    every other character there a space, so a list item's marker does not start another
+    item. Not assumed to close: fences_kept_in asks the parser."""
     before = opener[: max(opener.find(run), 0)]
-    inside = "".join(char if char in " \t>" else " " for char in before)
-    return list(dict.fromkeys([inside + run, run]))
+    return "".join(char if char in " \t" else " " for char in before) + run

@@ -411,25 +411,19 @@ def test_forgetting_the_note_between_closes_the_fence_it_brings_together(memory,
 # A closer is proven by the parser, never assumed; a fence no closer holds in is refused
 
 
-def test_a_closer_that_does_not_keep_the_fence_in_is_not_kept(monkeypatch):
-    """The run at the margin ends the list and opens a fence at the top: tried first here, it
-    is not kept, and the next one is."""
-    assert not prose(AT_THE_MARGIN, "After.")
-    monkeypatch.setattr(cairn.spans, "_closers", lambda opener, run: [run, "    " + run])
-    claims, spans = made(REVIEWER)
-    assert assembled("Ops", claims, spans) == (CLOSED, None)
-
-
 def no_closer(monkeypatch) -> None:
-    """The parser's answer stood in for: no page is known whose fence no closer holds in."""
-    monkeypatch.setattr(cairn.spans, "_closers", lambda opener, run: [run])
+    """The parser's answer stood in for (no page is known whose fence the closer does not
+    hold in): the closer is written at the margin, where it ends the list and opens a fence
+    at the top, so the claim after it is code still."""
+    assert not prose(AT_THE_MARGIN, "After.")
+    monkeypatch.setattr(cairn.spans, "_closer", lambda opener, run: run)
 
 
 def test_a_fence_no_closer_holds_in_is_written_as_it_is_and_every_gate_refuses_it(monkeypatch):
     no_closer(monkeypatch)
     claims, spans = made(REVIEWER)
     body = render_body("Ops", claims, spans)  # never raises: a reader is given the page
-    assert body == AS_23C24229_WROTE_IT
+    assert body == AS_23C24229_WROTE_IT  # a closer the parser does not prove is not kept
     assert assembled("Ops", claims, spans) == (body, claims[1].id)
     page = CandidatePage(slug="ops", title="Ops", body=body, claims=claims)
     refusal = (
@@ -469,8 +463,10 @@ def test_a_note_that_would_be_read_as_code_is_refused_and_nothing_is_saved(
 
 
 def test_forgetting_a_note_is_not_refused_where_no_closer_holds_the_fence_in(
-    memory, store, monkeypatch
+    memory, store, monkeypatch, tmp_path
 ):
+    """The erasure writes the page no gate would save, and the workspace is still exported
+    and restored: nothing that deletes is refused, and nothing it wrote is refused later."""
     texts = ["- item", "Between.", "    ~~~\n    sample", "  After."]
     answers = [memory.note("alpha", text, title="Ops", topic="Ops") for text in texts]
     no_closer(monkeypatch)
@@ -478,6 +474,12 @@ def test_forgetting_a_note_is_not_refused_where_no_closer_holds_the_fence_in(
     page = store.get_page(store.get_project("alpha").id, answers[0]["page"])
     assert [claim.text for claim in page.claims] == REVIEWER
     assert page.body == AS_23C24229_WROTE_IT  # the note is gone; the page is as it can be
+    target = imported(store, tmp_path)
+    try:
+        there = target.get_page(target.get_project("alpha").id, page.slug)
+        assert (there.body, there.claims) == (page.body, page.claims)
+    finally:
+        target.close()
 
 
 # Cost: how often the parser is asked

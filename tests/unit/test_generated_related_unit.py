@@ -24,9 +24,17 @@ What is checked of every answer of `Memory.related`, for every page:
 - where the answer says it is complete, its reasons are exactly those a search of every
   claim of the project finds, made here from the rule's words: a page holds a term when a
   claim's first passage has the fact and the claim's text holds the term's words side by
-  side; two to COMMON pages that hold a term are related by it, each saying how many do;
+  side; two to COMMON pages that hold a term are related by it, each saying how many do,
+  unless more than CLAIMS_COMMON claims of the project hold its words; a page is mentioned
+  by the other pages whose claims hold its title, unless more than COMMON of them do, or
+  more than CLAIMS_COMMON of their claims;
 - symmetry: where both answers are complete, B related to A by a term means A related to B
-  by that term, held by as many pages.
+  by that term, held by as many pages;
+- and with the bounds on what is read made small enough to be met: every reason still given
+  is one the whole read gives, with the same count of pages, and an answer that gives fewer
+  counts claims it did not read.
+CLAIMS_COMMON is 7 for these projects, which hold at most 36 claims, so that the rule decides
+some relations; the first test counts how many.
 A failure names project and page numbers and term kinds, never a note's text.
 """
 
@@ -43,7 +51,7 @@ from cairn import relations
 from cairn.facts import compared, extract_facts
 from cairn.gate import lint_gate
 from cairn.memory import Memory, RequestError
-from cairn.store import Store
+from cairn.store import Store, relating
 
 SEED, PROJECTS = 20261120, 300
 TITLES = [
@@ -60,6 +68,11 @@ TITLES = [
 ]
 KINDS = ("url", "path", "flag", "version", "inline_code")
 EVERY_REASON = 1_000  # WHY_MAX for these tests: an answer lists every reason, to compare them
+CLAIMS_COMMON = 7  # for these projects: more claims than this hold a term's words, and it is common
+CLAIMS_READ, BYTES_READ = (
+    3,
+    120,
+)  # the bounds of the second read of each page, small enough to be met
 
 
 def passage(rng: random.Random, held: str) -> str:
@@ -130,9 +143,11 @@ def relates(kind: str, text: str) -> bool:
     return kind != "inline_code" or len(text) >= 12 or any(not c.isalpha() for c in text)
 
 
-def searched_here(store: Store, project_id: str, reading: Reading) -> tuple[dict, dict]:
-    """The whole project, read here: for each page, the terms it holds, and the pages whose
-    claims hold each page's title."""
+def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
+    """The whole project, read here, claim by claim: `holds`, for each page, the terms it
+    holds; `claims`, for each of those terms, how many claims of the project hold its words;
+    `named_by`, for each page, the other pages whose claims hold its title, and
+    `naming`, how many claims of theirs do."""
     pages = {
         head.slug: store.get_page(project_id, head.slug) for head in store.list_pages(project_id)
     }
@@ -147,23 +162,48 @@ def searched_here(store: Store, project_id: str, reading: Reading) -> tuple[dict
                     if relates(*term) and reading.holds(claim.text, re.findall(r"\w+", term[1])):
                         held.add(term)
         holds[slug] = held
-    mentions = {
-        slug: {
-            other
-            for other, theirs in pages.items()
-            if other != slug
-            and any(reading.holds(c.text, re.findall(r"\w+", page.title)) for c in theirs.claims)
-        }
-        for slug, page in pages.items()
+    every = [claim for page in pages.values() for claim in page.claims]
+    claims = {
+        term: sum(reading.holds(claim.text, re.findall(r"\w+", term[1])) for claim in every)
+        for term in set().union(*holds.values())
     }
-    return holds, mentions
+    named_by, naming = {}, {}
+    for slug, page in pages.items():
+        title = re.findall(r"\w+", page.title)
+        theirs = {
+            other: sum(reading.holds(claim.text, title) for claim in found.claims)
+            for other, found in pages.items()
+            if other != slug
+        }
+        named_by[slug] = {other for other, count in theirs.items() if count}
+        naming[slug] = sum(theirs.values())
+    return {"holds": holds, "claims": claims, "named_by": named_by, "naming": naming}
+
+
+def expected(here: dict, slug: str) -> tuple[set, set]:
+    """What a complete answer for the page gives, by the rules in their own words: (the pages
+    related by a term, with the term and how many pages hold it; the pages that mention it)."""
+    holds = here["holds"]
+    pages = Counter(term for held in holds.values() for term in held)
+    shares = {
+        (other, *term, pages[term])
+        for term in holds[slug]
+        if pages[term] <= relations.COMMON and here["claims"][term] <= CLAIMS_COMMON
+        for other, held in holds.items()
+        if other != slug and term in held
+    }
+    named_by = here["named_by"][slug]
+    common = len(named_by) > relations.COMMON or here["naming"][slug] > CLAIMS_COMMON
+    return shares, set() if common else named_by
 
 
 @pytest.fixture(scope="module")
 def world():
-    """Every project filed, with every page's answer and what a search here finds."""
+    """Every project filed, with every page's answer, the same answer read within small
+    bounds, and what a search here finds."""
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(relations, "WHY_MAX", EVERY_REASON)
+    monkeypatch.setattr(relations, "CLAIMS_COMMON", CLAIMS_COMMON)
     reading = Reading()
     found = []
     with closing(Store(":memory:")) as store:
@@ -178,12 +218,19 @@ def world():
                     continue
             slugs = [head.slug for head in store.list_pages(project.id)]
             answers = {slug: memory.related(name, slug, relations.RELATED_MAX) for slug in slugs}
+            with pytest.MonkeyPatch.context() as bounds:
+                bounds.setattr(relating, "CLAIMS_MAX", CLAIMS_READ)
+                bounds.setattr(relating, "BYTES_MAX", BYTES_READ)
+                bounded = {
+                    slug: memory.related(name, slug, relations.RELATED_MAX) for slug in slugs
+                }
             latest = {slug: store.get_page(project.id, slug) for slug in slugs}
             cited = {i for page in latest.values() for c in page.claims for i in c.span_ids}
             found.append(
                 {
                     "name": name,
                     "answers": answers,
+                    "bounded": bounded,
                     "latest": latest,
                     "spans": store.get_spans(cited),
                     "here": searched_here(store, project.id, reading),
@@ -201,12 +248,24 @@ def reasons(answer: dict, kind: str):
 
 
 def test_the_generated_projects_relate_pages_in_every_way(world):
-    """So the properties below are not kept by projects in which nothing could go wrong."""
-    shared, mentions, common, complete, answers = Counter(), 0, 0, 0, 0
+    """So the properties below are not kept by projects in which nothing could go wrong: each
+    kind of term relates pages, and each rule that says a term or a title relates none decides
+    some relation that would otherwise be given."""
+    shared, mentions, complete, answers = Counter(), 0, 0, 0
+    decided = Counter()
     for project in world["projects"]:
-        holds, _ = project["here"]
-        by_term = Counter(term for held in holds.values() for term in held)
-        common += sum(pages > relations.COMMON for pages in by_term.values())
+        here = project["here"]
+        pages = Counter(term for held in here["holds"].values() for term in held)
+        for term, count in pages.items():
+            if count > relations.COMMON:
+                decided["a term more than COMMON pages hold"] += 1
+            elif count >= 2 and here["claims"][term] > CLAIMS_COMMON:
+                decided["a term few pages hold and many claims"] += 1
+        for slug, named_by in here["named_by"].items():
+            if len(named_by) > relations.COMMON:
+                decided["a title more than COMMON pages name"] += 1
+            elif named_by and here["naming"][slug] > CLAIMS_COMMON:
+                decided["a title few pages name in many claims"] += 1
         for answer in project["answers"].values():
             answers += 1
             complete += answer["searched"]["complete"]
@@ -214,7 +273,7 @@ def test_the_generated_projects_relate_pages_in_every_way(world):
             shared.update(reason["term_kind"] for _, reason in reasons(answer, "shares"))
     assert set(shared) == set(KINDS), shared  # each kind of term relates pages somewhere
     assert min(shared.values()) >= 20 and mentions >= 200, (shared, mentions)
-    assert common >= 20, common  # terms more than COMMON pages hold, which relate none
+    assert len(decided) == 4 and min(decided.values()) >= 20, decided
     assert answers >= 1_000 and complete == answers, (answers, complete)
 
 
@@ -287,28 +346,56 @@ def test_a_complete_answer_gives_exactly_what_a_search_of_the_whole_project_find
     since the search here reads claims' text only."""
     differ = []
     for project in world["projects"]:
-        holds, mentions = project["here"]
-        by_term = Counter(term for held in holds.values() for term in held)
         for slug, answer in project["answers"].items():
             if not answer["searched"]["complete"]:
                 continue
-            expected = {
-                (other, *term, by_term[term])
-                for term in holds[slug]
-                if by_term[term] <= relations.COMMON
-                for other, held in holds.items()
-                if other != slug and term in held
-            }
+            shares, mentioned_by = expected(project["here"], slug)
             given = {
                 (page["page"], reason["term_kind"], reason["term"], reason["pages"])
                 for page, reason in reasons(answer, "shares")
             }
             mentioned = {page["page"] for page, _ in reasons(answer, "mentioned_by")}
-            if given != expected or mentioned != mentions[slug]:
-                kinds = sorted({kind for _, kind, _, _ in given ^ expected})
-                differ.append((project["name"], slug, kinds, sorted(mentioned ^ mentions[slug])))
+            if given != shares or mentioned != mentioned_by:
+                kinds = sorted({kind for _, kind, _, _ in given ^ shares})
+                differ.append((project["name"], slug, kinds, sorted(mentioned ^ mentioned_by)))
             assert all(page["more"] == 0 for page in answer["related"])
     assert differ == [], (len(differ), differ[:5])
+
+
+def given_by(answer: dict) -> set:
+    return {
+        (page["page"], reason["kind"], reason["term_kind"], reason["term"], reason.get("pages"))
+        for page in answer["related"]
+        for reason in page["why"]
+    }
+
+
+def test_a_read_within_small_bounds_gives_only_what_the_whole_read_gives_and_counts_the_rest(
+    world,
+):
+    """No reason carries a mark of how far it was read, because none needs one: with the claims
+    and bytes read made small, every reason still given is the whole read's, with the same
+    count of pages; an answer that gives fewer says how many claims it did not read; and a
+    mention, which reads no claim to be known, is never lost."""
+    wrong, fewer, bounded_answers = [], 0, 0
+    for project in world["projects"]:
+        for slug, whole in project["answers"].items():
+            bounded = project["bounded"][slug]
+            searched = bounded["searched"]
+            assert searched["claims_read"] <= CLAIMS_READ
+            got, all_of_it = given_by(bounded), given_by(whole)
+            mentions = {reason for reason in all_of_it if reason[1] == "mentioned_by"}
+            if not (got <= all_of_it and mentions <= got):
+                wrong.append((project["name"], slug, "a reason the whole read does not give"))
+            if got != all_of_it:
+                fewer += 1
+                if not searched["claims_not_read"] or searched["complete"]:
+                    wrong.append((project["name"], slug, "fewer, and nothing counted"))
+            bounded_answers += searched["claims_not_read"] > 0
+            if searched["claims_not_read"] == 0 and bounded != whole:
+                wrong.append((project["name"], slug, "every claim read, another answer"))
+    assert wrong == [], (len(wrong), wrong[:5])
+    assert bounded_answers >= 200 and fewer >= 100, (bounded_answers, fewer)
 
 
 def test_a_relation_holds_from_both_sides(world):
@@ -333,7 +420,7 @@ def test_a_relation_holds_from_both_sides(world):
                 pairs += 1
                 if shares[other].get((slug, kind, term)) != pages:
                     one_sided.append((project["name"], slug, other, kind))
-    assert one_sided == [] and pairs >= 1_000, (one_sided[:5], pairs)
+    assert one_sided == [] and pairs >= 500, (one_sided[:5], pairs)
 
 
 def test_pages_stand_heaviest_first_and_equal_weights_by_slug(world):

@@ -186,11 +186,10 @@ def test_searched_says_whether_the_answer_is_complete_and_counts_what_it_left_ou
     whole = memory.related("ops", "asked")["searched"]
     assert whole == {
         "complete": True,
-        "terms_searched": 2,
-        "terms_left_out": 0,
-        "terms_cut": 0,
-        "title_cut": False,
+        "terms_looked_up": 2,
+        "terms_not_looked_up": 0,
         "claims_read": 2,
+        "claims_not_read": 0,
         "pages_left_out": 0,
     }
     cut = memory.related("ops", "asked", 1)["searched"]

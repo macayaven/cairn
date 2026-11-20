@@ -5,20 +5,19 @@ A read (Store.related_pages) runs, T being the terms looked up (at most relating
 - 2 statements for the page and the index's table (the caller's; a narrowed view resolves
   its reach with statements of its own before them);
 - 2 for the page's claims and their passages;
-- ceil(T / AT_ONCE) to ask the index of the page's own claims, one row a term, and as many to
-  list the claims of other pages that hold each term's words, LISTED_MAX + 1 rows a term at
-  most;
-- 3 for the candidate claims (their rows, the lengths of their passages, the passages), none
+- ceil(T / AT_ONCE) to list the claims of the project that hold each term's words, the
+  page's own among them, relations.CLAIMS_COMMON + 1 rows a term at most;
+- 3 for the candidate claims (their rows, the rows of their passages, the passages), none
   when no claim of another page was listed;
-- 1 for the title, LISTED_MAX + 1 rows at most;
-- 3 for what is given (the claims, the pages' heads, the notes of the passages the claims
-  cite) and 1 for who wrote those notes, none when nothing is related.
-So 14 statements for a page of 10 terms, and 20 for one of 200 and for one of 3,000: past
+- 1 for the title, CLAIMS_COMMON + 1 rows at most;
+- 2 for what is given (the claims, the pages' heads) and 2 for the notes of the passages
+  those claims cite and who wrote them (the caller's), none when nothing is related.
+So 13 statements for a page of 10 terms, and 16 for one of 200 and for one of 3,000: past
 TERMS_MAX terms the count is the same, whatever the page holds. One statement more, once
 (SETTINGS): the first time a connection uses a workspace's index FTS5 loads its settings, as
 tests/unit/test_search_cost_unit.py says.
-The rows, C being the page's claims: 2 + 2C + T + the claims listed + 3 for each candidate
-claim read + what is given.
+The rows, C being the page's claims: 2 + 2C + the claims listed (each term's own claim among
+them) + 3 for each candidate claim read + what is given.
 The counts are those the store's connection reports to its trace callback and hands to its
 row factory. What they cannot see is counted in SQLite's steps: the same read costs the
 same steps when the project holds two thousand claims more, on other pages, that hold none
@@ -31,6 +30,7 @@ from types import SimpleNamespace
 import pytest
 from test_search_steps_unit import PERIOD, merge
 
+from cairn import relations
 from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.relations import RELATED_MAX, SHARES, WHY_MAX
@@ -113,13 +113,14 @@ def counted(store: Store, project_id: str):
 
 
 def test_the_stated_bounds():
-    assert (relating.TERMS_MAX, relating.HERE_MAX, relating.LISTED_MAX) == (256, 16, 64)
-    assert (relating.CLAIMS_MAX, relating.BYTES_MAX, relating.AT_ONCE) == (512, 1_000_000, 64)
+    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 1_000_000)
+    assert (relating.AT_ONCE, relations.CLAIMS_COMMON, relations.COMMON) == (64, 64, 5)
+    assert not hasattr(relating, "HERE_MAX") and not hasattr(relating, "LISTED_MAX")
 
 
 @pytest.mark.parametrize(
     ("terms", "statements", "rows"),
-    [(10, 14, 27), (200, 20, 255), (3_000, 20, 871)],
+    [(10, 13, 27), (200, 16, 255), (3_000, 16, 871)],
     ids=["10 terms", "200 terms", "3,000 terms"],
 )
 def test_a_read_costs_these_statements_and_rows(tmp_path, terms, statements, rows):
@@ -131,21 +132,20 @@ def test_a_read_costs_these_statements_and_rows(tmp_path, terms, statements, row
     looked = min(terms, relating.TERMS_MAX)
     claims = -(-terms // 10)
     assert found.left == relating.Left(
-        terms=looked,
-        terms_left_out=terms - looked,
-        terms_cut=0,
-        title_cut=False,
+        terms_looked_up=looked,
+        terms_not_looked_up=terms - looked,
         claims_read=1,
+        claims_not_read=0,
         pages_left_out=0,
     )
     ((page),) = found.pages
     assert (page.slug, [r.kind for r in page.why], page.more) == ("share", [SHARES] * WHY_MAX, 0)
     listing = -(-looked // relating.AT_ONCE)
-    assert statements == 2 + 2 + 2 * listing + 3 + 1 + 3 + 1
+    assert statements == 2 + 2 + listing + 3 + 1 + 2 + 2
     assert len(seen.statements) - settings_loaded(seen.statements) == statements
-    # the page and the index, the page's claims and passages, one row a term for its own
-    # claims, the SHARED claims listed, the one candidate three times, the two claims given
-    # with one head and two passages, and the two notes
+    # the page and the index, the page's claims and passages, each term's own claim and
+    # the SHARED claims of the other page listed, the one candidate three times, the two
+    # claims given with one head and two passages, and the two notes
     assert rows == 2 + 2 * claims + looked + SHARED + 3 + (2 + 1 + 2) + 2
     assert seen.rows == rows
     # FTS5 read by row: the page's claims, the candidate, and the two given, each once or twice
@@ -162,8 +162,9 @@ def test_past_the_bound_on_terms_a_page_costs_what_one_at_the_bound_does(tmp_pat
     finally:
         at.close()
         past.close()
-    assert found_at.left.terms == found_past.left.terms == relating.TERMS_MAX
-    assert (found_at.left.terms_left_out, found_past.left.terms_left_out) == (2_304, 2_744)
+    assert found_at.left.terms_looked_up == found_past.left.terms_looked_up == relating.TERMS_MAX
+    not_looked_up = (found_at.left.terms_not_looked_up, found_past.left.terms_not_looked_up)
+    assert not_looked_up == (2_304, 2_744)
     assert len(seen_past.statements) == len(seen_at.statements)
     # 44 claims more on the page, each read once with its passage: nothing else grows
     assert seen_past.rows - seen_at.rows == 2 * 44
@@ -190,39 +191,51 @@ def test_claims_that_hold_none_of_the_pages_words_cost_nothing(tmp_path):
     assert seen_large.steps <= 1.1 * seen.steps + 10 * PERIOD, (seen.steps, seen_large.steps)
 
 
-def test_a_term_many_claims_hold_is_read_to_its_bound_and_counted(tmp_path, monkeypatch):
-    """The bounds, met: a term more claims hold than are listed, and more candidate claims than
-    are read. What was not read is counted, and the read stays inside its bounds."""
-    monkeypatch.setattr(relating, "LISTED_MAX", 8)
-    monkeypatch.setattr(relating, "CLAIMS_MAX", 16)
+def test_the_bounds_met_are_counted_and_the_read_stays_inside_them(tmp_path, monkeypatch):
+    """A term more claims hold than make it common costs the rows listed and no claim; past the
+    claims read in all, a term's claims are not read, and are counted."""
+    monkeypatch.setattr(relations, "CLAIMS_COMMON", 8)
+    monkeypatch.setattr(relating, "CLAIMS_MAX", 10)
     store = Store(tmp_path / "cairn.db")
     try:
         project = store.create_project("ops")
         memory = Memory(store, lint_gate)
-        memory.note("ops", "Use `a.cfg`, `b.cfg` and `c.cfg`.\n", title="Asked", topic="Asked")
-        for n in range(3):  # three pages state a.cfg: listed and read whole
-            memory.note("ops", f"Page {n} sets `a.cfg`.\n", title=f"A {n}", topic=f"A {n}")
-        lines = "\n".join(f"- Line {n} names `b.cfg`." for n in range(12))
-        memory.note("ops", lines + "\n", title="B", topic="B")  # twelve claims: four not listed
-        for n in range(4):  # c.cfg in sixteen claims of four pages: past what is read in all
-            lines = "\n".join(f"- Row {n}.{m} names `c.cfg`." for m in range(4))
-            memory.note("ops", lines + "\n", title=f"C {n}", topic=f"C {n}")
+
+        def file(title: str, text: str) -> None:
+            memory.note("ops", text, title=title, topic=title)
+
+        def lines(count: int, term: str, mark: str) -> str:
+            return "\n".join(f"- {mark} {n} names {term}." for n in range(count)) + "\n"
+
+        file("Asked", "Use `a.cfg`, `b.cfg`, `d.cfg` and `e.cfg`.\n")
+        for n in range(3):  # a.cfg: one claim on each of three pages
+            file(f"First {n}", f"Page {n} sets `a.cfg`.\n")
+        file("Second", lines(12, "`b.cfg`", "Line"))  # b.cfg: thirteen claims hold it, with ours
+        file("Third 0", lines(4, "`d.cfg`", "Row"))  # d.cfg: eight claims with ours, on two pages
+        file("Third 1", lines(3, "`d.cfg`", "Mark"))
+        file("Fourth 0", lines(4, "`e.cfg`", "Step"))  # e.cfg: the same, read after d.cfg
+        file("Fourth 1", lines(3, "`e.cfg`", "Turn"))
         with watched(store) as seen:
             found = store.related_pages(project.id, "asked", RELATED_MAX)
     finally:
         store.close()
-    # a.cfg: 3 claims, b.cfg: 8 of 12 listed, c.cfg: 8 of 16 listed; read a and b (11 claims),
-    # then c's 8 would pass 16, so none of c's is read
+    # a.cfg's 3 claims and d.cfg's 7 are read; e.cfg's 7 would pass 10, so none of them is
     assert found.left == relating.Left(
-        terms=3, terms_left_out=0, terms_cut=2, title_cut=False, claims_read=11, pages_left_out=0
+        terms_looked_up=4,
+        terms_not_looked_up=0,
+        claims_read=10,
+        claims_not_read=7,
+        pages_left_out=0,
     )
     assert not found.left.complete
-    related = {page.slug: [(r.term, r.pages, r.exact) for r in page.why] for page in found.pages}
+    related = {page.slug: [(r.term, r.pages) for r in page.why] for page in found.pages}
     assert related == {
-        "a-0": [("a.cfg", 4, True)],
-        "a-1": [("a.cfg", 4, True)],
-        "a-2": [("a.cfg", 4, True)],
-        "b": [("b.cfg", 2, False)],  # as far as the read saw: more claims hold its words
+        "first-0": [("a.cfg", 4)],
+        "first-1": [("a.cfg", 4)],
+        "first-2": [("a.cfg", 4)],
+        "third-0": [("d.cfg", 3)],
+        "third-1": [("d.cfg", 3)],
     }
-    listed = 3 + 9 + 9  # a term's claims are listed one past the bound, to know there are more
-    assert seen.rows == 2 + 2 * 1 + 3 + listed + 3 * 11 + (5 + 4 + 5) + 5
+    listed = 4 + 9 + 8 + 8  # ours and theirs; b.cfg's stop one past what makes it common
+    given = (1 + 5) + 5 + 6  # the claims, the pages' heads, the passages the claims cite
+    assert seen.rows == 2 + 2 * 1 + listed + 3 * 10 + given + 6

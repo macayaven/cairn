@@ -26,6 +26,12 @@ def passage(text: str) -> Span:
 def test_the_stated_constants():
     assert relations.TERM_KINDS == ("url", "path", "flag", "version", "inline_code")
     assert (relations.COMMON, relations.WHY_MAX, relations.CODE_MIN) == (5, 3, 12)
+    assert relations.CLAIMS_COMMON == 64
+
+
+def test_a_reason_says_how_many_pages_hold_its_term_and_nothing_of_how_far_it_was_read():
+    """Every count given is exact: a term whose pages are not all known gives no reason."""
+    assert Reason._fields == ("kind", "term", "term_kind", "pages", "here", "there")
 
 
 # Which terms relate pages: one function, one table.

@@ -1207,7 +1207,7 @@ class MemoryMethods(StoreBase):
             if head is None:
                 return None
             if not _has_table(con, self._index):  # the account has not saved a page yet
-                nothing = relating.Left(0, 0, 0, False, 0, 0)
+                nothing = relating.Left(0, 0, 0, 0, 0)
                 return relating.Related(slug, *head, (), nothing, {}, {})
             most = min(max(0, limit), RELATED_MAX)  # whoever asks: no more than an answer holds
             found = relating.related(

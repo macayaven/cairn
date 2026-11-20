@@ -135,11 +135,10 @@ def test_the_answer_names_each_related_page_and_why_with_the_claims(env, world):
         ],
         "searched": {
             "complete": True,
-            "terms_searched": 1,
-            "terms_left_out": 0,
-            "terms_cut": 0,
-            "title_cut": False,
+            "terms_looked_up": 1,
+            "terms_not_looked_up": 0,
             "claims_read": 1,
+            "claims_not_read": 0,
             "pages_left_out": 0,
         },
     }
@@ -149,11 +148,10 @@ def test_a_page_with_no_specific_term_and_no_mention_and_a_project_of_one_page(e
     note(env, "Queue", "Brook drains the queue at noon with `true` set.\n")
     nothing = {
         "complete": True,
-        "terms_searched": 0,
-        "terms_left_out": 0,
-        "terms_cut": 0,
-        "title_cut": False,
+        "terms_looked_up": 0,
+        "terms_not_looked_up": 0,
         "claims_read": 0,
+        "claims_not_read": 0,
         "pages_left_out": 0,
     }
     alone = answer(env.client, env.key, "related", project="ops", slug="queue")
@@ -161,7 +159,7 @@ def test_a_page_with_no_specific_term_and_no_mention_and_a_project_of_one_page(e
     env.store.create_project("solo")
     note(env, "Only", "Use `only.cfg` with --dry-run.\n", project="solo")
     only = answer(env.client, env.key, "related", project="solo", slug="only")
-    assert only["related"] == [] and only["searched"] == {**nothing, "terms_searched": 2}
+    assert only["related"] == [] and only["searched"] == {**nothing, "terms_looked_up": 2}
 
 
 def test_a_page_gives_three_reasons_at_most_and_counts_the_rest(env):
@@ -186,25 +184,30 @@ def test_limit_takes_the_best_and_the_answer_counts_the_pages_left_out(env):
     assert eight["searched"]["complete"] is True and rest(env, "asked").json() == eight
 
 
-def test_a_reason_whose_term_was_cut_says_its_count_is_not_exact(env, monkeypatch):
-    """`pages` is how many pages hold the term as far as the read saw. When the read did not
-    see every claim that holds its words, the reason says so, and no other reason does."""
-    monkeypatch.setattr(relating, "LISTED_MAX", 2)
+def test_a_term_whose_claims_were_not_all_read_gives_no_reason_and_the_answer_counts_them(
+    env, monkeypatch
+):
+    """Every `pages` an answer gives is exact. A term with a claim the read did not reach
+    relates nothing in that answer; `claims_not_read` counts those claims, and the answer is
+    not complete. No reason carries a mark of its own."""
+    monkeypatch.setattr(relating, "CLAIMS_MAX", 2)
     note(env, "Asked", "Use `a.cfg` and `b.cfg`.\n")
     note(env, "Few", "Set `a.cfg` once.\n")
     note(env, "Many", "\n".join(f"- Line {n} sets `b.cfg`." for n in range(3)) + "\n")
     found = answer(env.client, env.key, "related", project="ops", slug="asked")
-    counts = {
-        reason["term"]: (reason["pages"], reason.get("pages_exact"))
-        for page in found["related"]
-        for reason in page["why"]
+    (few,) = found["related"]
+    (reason,) = few["why"]
+    assert (few["page"], reason["term"], reason["pages"]) == ("few", "a.cfg", 2)
+    assert list(reason) == ["kind", "term", "term_kind", "pages", "here", "there"]
+    assert found["searched"] == {
+        "complete": False,
+        "terms_looked_up": 2,
+        "terms_not_looked_up": 0,
+        "claims_read": 1,
+        "claims_not_read": 3,
+        "pages_left_out": 0,
     }
-    assert counts == {"a.cfg": (2, None), "b.cfg": (2, False)}
-    assert (found["searched"]["terms_cut"], found["searched"]["complete"]) == (1, False)
-    (many,) = [page for page in found["related"] if page["page"] == "many"]
-    assert list(many["why"][0]) == [
-        "kind", "term", "term_kind", "pages", "pages_exact", "here", "there",
-    ]  # fmt: skip
+    assert rest(env, "asked").json() == found
 
 
 def test_the_store_gives_no_more_pages_than_an_answer_may_hold(env):
@@ -445,25 +448,34 @@ def test_the_tool_reads_only_and_takes_a_project_a_page_and_a_limit():
 def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
     said = " ".join(tools()["related"].description.split())
     for line in (
-        "`terms_searched`: the page's terms looked up, 256 at most.",
-        "`terms_left_out`: its other terms.",
-        "`terms_cut`: terms whose claims were not all read (64 for a term, 512 and a million"
-        " bytes of their passages in all), so more pages may hold them than `pages` says.",
-        "`title_cut`: true when more claims hold the title than the 64 read, or the title has"
-        " more words than a search takes.",
-        "`claims_read`: claims of other pages read.",
-        "A reason for such a term has `pages_exact` false.",
+        "`terms_looked_up`: the page's terms looked up, 256 at most, the shortest first.",
+        "`terms_not_looked_up`: its terms past those.",
+        "`claims_read`: claims of other pages read for those terms.",
+        "`claims_not_read`: such claims not read, past 512 claims or a million bytes of their"
+        " passages; a term with a claim not read gives no reason.",
         "`pages_left_out`: related pages past `limit`.",
-        "`complete` is true when nothing was left out.",
-        "A term more than 5 pages hold relates none; a term fewer pages hold weighs more, and a"
-        " page gives its 3 weightiest reasons and counts the others in `more`.",
+        "`complete` is true when those three counts of what was left out are 0.",
     ):
         assert line in said, line
-    assert (relating.TERMS_MAX, relating.LISTED_MAX, relating.CLAIMS_MAX) == (256, 64, 512)
-    assert (relating.BYTES_MAX, relations.COMMON, relations.WHY_MAX) == (1_000_000, 5, 3)
+    assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 1_000_000)
+    for gone in ("pages_exact", "terms_cut", "title_cut", "terms_searched", "terms_left_out"):
+        assert gone not in said, gone
     for word in ("written_by", "written_at", "outside", "quoted text"):
         assert word in said, word
     assert "cairn" not in said.casefold()  # B3: a tool names no product
+
+
+def test_the_tools_description_says_which_terms_and_titles_relate_none():
+    said = " ".join(tools()["related"].description.split())
+    for line in (
+        "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"
+        " the project hold; a title more than 5 other pages name, or more than 64 of their"
+        " claims hold, relates none either.",
+        "A term fewer pages hold weighs more, and a page gives its 3 weightiest reasons and"
+        " counts the others in `more`.",
+    ):
+        assert line in said, line
+    assert (relations.COMMON, relations.CLAIMS_COMMON, relations.WHY_MAX) == (5, 64, 3)
 
 
 RELATED = (

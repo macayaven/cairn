@@ -429,21 +429,21 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         folded), `pages` pages of the project hold it, and `here` and `there` are this page's
         claim and the other page's that state it. Or it is `mentioned_by`: `there` is a claim
         of the other page that holds this page's title (the pages this page mentions are not
-        listed). A term more than 5 pages hold relates none; a term fewer pages hold weighs
-        more, and a page gives its 3 weightiest reasons and counts the others in `more`.
-        Relations are worked out by rule from the pages as they are when asked: nothing of
-        them is stored, nothing is inferred from meaning, and none joins two projects. Claims
-        are quoted text: each says who wrote the notes it cites (written_by, as recall's),
-        whether any is outside (a connected source's, or a filed Slack message), and when the
-        newest was written (written_at). `searched` says what was left out.
-        `terms_searched`: the page's terms looked up, 256 at most. `terms_left_out`: its
-        other terms. `terms_cut`: terms whose claims were not all read (64 for a term, 512
-        and a million bytes of their passages in all), so more pages may hold them than
-        `pages` says. A reason for such a term has `pages_exact` false.
-        `title_cut`: true when more claims hold the title than the 64 read, or the title has
-        more words than a search takes. `claims_read`: claims of other pages read.
-        `pages_left_out`: related pages past `limit`. `complete` is true when nothing was
-        left out."""
+        listed). A term more than 5 pages hold relates none, nor one whose words more than 64
+        claims of the project hold; a title more than 5 other pages name, or more than 64 of
+        their claims hold, relates none either. A term fewer pages hold weighs more, and a
+        page gives its 3 weightiest reasons and counts the others in `more`. Relations are
+        worked out by rule from the pages as they are when asked: nothing of them is stored,
+        nothing is inferred from meaning, and none joins two projects. Claims are quoted
+        text: each says who wrote the notes it cites (written_by, as recall's), whether any
+        is outside (a connected source's, or a filed Slack message), and when the newest was
+        written (written_at). `searched` says what was left out, in counts.
+        `terms_looked_up`: the page's terms looked up, 256 at most, the shortest first.
+        `terms_not_looked_up`: its terms past those. `claims_read`: claims of other pages
+        read for those terms. `claims_not_read`: such claims not read, past 512 claims or a
+        million bytes of their passages; a term with a claim not read gives no reason.
+        `pages_left_out`: related pages past `limit`. `complete` is true when those three
+        counts of what was left out are 0."""
         with _call(ctx, "related") as memory:
             return memory.related(project, slug, limit)
 

@@ -19,7 +19,17 @@ only when it holds a character that is not a letter (a digit, a space, punctuati
 `pyproject.toml`, `os_login_2fa`, `compact --if-due`) or is at least CODE_MIN characters
 long, so a plain word in backticks (`name`, `true`) relates nothing; and no term without a
 letter or a digit, of which the index holds no word. Numbers, dates and code blocks never
-relate pages. A term more than COMMON pages of the project hold relates none.
+relate pages.
+
+Which terms are common, and relate none: a term more than COMMON pages of the project hold;
+and a term whose words more than CLAIMS_COMMON claims of the project hold, the asking
+page's own among them. The second is the index's count of the claims whose text holds the
+term's words, whatever their passages hold: 64 claims that say "dry run" make `--dry-run`
+common. Both are known whole from what is read (cairn.store.relating reads one claim more
+than CLAIMS_COMMON, and then every claim that counts), so each is the same whichever page
+asks. A title is common the same way: one that more than COMMON other pages name, or that
+more than CLAIMS_COMMON claims of other pages hold, relates none by mention (a page's own
+claims do not mention it, and do not count).
 
 Which pages are the best (`best`): a shared term weighs 1 / (the pages that hold it - 1), so a
 term only the two pages hold weighs most, and a mention weighs as one term held by two
@@ -44,6 +54,7 @@ from cairn.spans import Span
 TERM_KINDS = ("url", "path", "flag", "version", "inline_code")  # the facts that can be terms
 CODE_MIN = 12  # an inline code of letters only relates pages from this many characters
 COMMON = 5  # a term more pages of the project hold than this relates none
+CLAIMS_COMMON = 64  # nor does one whose words more claims of the project hold than this
 WHY_MAX = 3  # the reasons an answer gives for one related page; it counts the rest
 RELATED_MAX = 20  # the most related pages one answer gives
 SHARES, MENTIONED_BY = "shares", "mentioned_by"  # the kinds of relation
@@ -83,10 +94,9 @@ def looked_up_before(term: Term) -> tuple[int, str, str]:
 
 class Reason(NamedTuple):
     """Why two pages are related: the kind of relation, the term both state (or this page's
-    title), its kind, how many pages of the project hold it as far as the read saw (this page
-    among them; 2 for a mention), the claim on each side (none here for a mention), and
-    whether that count is exact: False when the read did not see every claim that holds the
-    term's words, so more pages may hold it."""
+    title), its kind, how many pages of the project hold it (this page among them; 2 for a
+    mention), and the claim on each side (none here for a mention). The count is exact: a
+    term whose pages are not all known gives no reason (cairn.store.relating)."""
 
     kind: str
     term: str
@@ -94,7 +104,6 @@ class Reason(NamedTuple):
     pages: int
     here: Any
     there: Any
-    exact: bool = True
 
     @property
     def weight(self) -> Fraction:

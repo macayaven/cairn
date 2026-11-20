@@ -118,18 +118,19 @@ Related pages (KG1; the rules are cairn.relations, the read cairn.store.relating
 {"page", "title", "version", "why", "more"}. `why` holds at most relations.WHY_MAX reasons,
 the weightiest first, and `more` counts the rest. A reason is {"kind": "shares", "term",
 "term_kind", "pages", "here", "there"}: a term both pages state, as it is compared, its
-kind, how many pages of the project hold it as far as the read saw (`pages_exact`, false,
-joins them only when the read did not see every claim that holds the term's words), and
-the claim of this page and of the other that state it; or {"kind": "mentioned_by", "term",
-"term_kind": "title",
-"there"}: a claim of the other page that holds this page's title. This version does not list
-the pages a page mentions. Each claim is {"claim_id", "text", "passage_ids", "outside",
-"written_by", "written_at"} (and `written_by_more`), as a hit of `recall` carries them, its
-text whole as a hit's is. No answer shows a weight. `searched` (`related_searched`), always:
-`complete`, and what the read left out as cairn.store.relating.Left counts it. Nothing of a
-relation is stored: the answer is worked out from the pages as they are, in one read of the
-store, with who wrote the notes its claims cite. A page that is not there is refused as
-`page` refuses it."""
+kind, how many pages of the project hold it (exactly: a term whose pages are not all known
+gives no reason), and the claim of this page and of the other that state it; or {"kind":
+"mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that holds
+this page's title. This version does not list the pages a page mentions. Each claim is
+{"claim_id", "text", "passage_ids", "outside", "written_by", "written_at"} (and
+`written_by_more`), as a hit of `recall` carries them, its text whole as a hit's is. No
+answer shows a weight. `searched` (`related_searched`), always: `complete`, and the three
+things a read can leave out, each counted (cairn.store.relating.Left): `terms_looked_up` and
+`terms_not_looked_up`, the page's terms past the bound on terms; `claims_read` and
+`claims_not_read`, the claims of other pages past the bounds on what is read;
+`pages_left_out`, the related pages past `limit`. Nothing of a relation is stored: the
+answer is worked out from the pages as they are, in one read of the store, with who wrote
+the notes its claims cite. A page that is not there is refused as `page` refuses it."""
 
 import contextlib
 import logging
@@ -943,27 +944,17 @@ def written_entries(
 
 
 def _held_by(reason: Reason, stated: Mapping[Any, dict[str, Any]]) -> dict[str, Any]:
-    """What a `shares` reason says beside its term: how many pages hold it, `pages_exact`,
-    false, only when the read did not see every claim that holds its words (the count is
-    then what it saw), and this page's claim. Nothing for a mention."""
+    """What a `shares` reason says beside its term: how many pages hold it, and this page's
+    claim. Nothing for a mention."""
     if reason.kind != SHARES:
         return {}
-    exact = {} if reason.exact else {"pages_exact": False}
-    return {"pages": reason.pages, **exact, "here": stated[reason.here]}
+    return {"pages": reason.pages, "here": stated[reason.here]}
 
 
 def related_searched(left: relating.Left) -> dict[str, Any]:
     """What a read of related pages left out, as `related` answers it under `searched`:
-    `complete`, then the counts of cairn.store.relating.Left under the names callers meet."""
-    return {
-        "complete": left.complete,
-        "terms_searched": left.terms,
-        "terms_left_out": left.terms_left_out,
-        "terms_cut": left.terms_cut,
-        "title_cut": left.title_cut,
-        "claims_read": left.claims_read,
-        "pages_left_out": left.pages_left_out,
-    }
+    `complete`, then the counts of cairn.store.relating.Left under their own names."""
+    return {"complete": left.complete, **left._asdict()}
 
 
 def _source(span: Span, note: Note) -> dict[str, Any]:

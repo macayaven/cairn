@@ -10,7 +10,7 @@ import pytest
 
 from cairn.gate import lint_gate
 from cairn.memory import Memory
-from cairn.relations import COMMON, MENTIONED_BY, SHARES
+from cairn.relations import CLAIMS_COMMON, COMMON, MENTIONED_BY, SHARES
 from cairn.store import Claim, Store, ranking, relating
 
 
@@ -36,6 +36,11 @@ def related(store: Store, project_id: str, slug: str, limit: int = 20):
     found = store.related_pages(project_id, slug, limit)
     assert found is not None
     return found
+
+
+NOTHING_LEFT_OUT = relating.Left(
+    terms_looked_up=0, terms_not_looked_up=0, claims_read=0, claims_not_read=0, pages_left_out=0
+)
 
 
 def reasons(found) -> dict[str, list[tuple]]:
@@ -108,7 +113,11 @@ def test_two_pages_that_state_one_term_are_related_each_with_its_claim(store, op
     latest = {c.id: c for c in store.get_page(ops.id, audit).claims}
     assert reason.there.span_ids == latest[reason.there.claim_id].span_ids
     assert found.left.complete and found.left == relating.Left(
-        terms=1, terms_left_out=0, terms_cut=0, title_cut=False, claims_read=1, pages_left_out=0
+        terms_looked_up=1,
+        terms_not_looked_up=0,
+        claims_read=1,
+        claims_not_read=0,
+        pages_left_out=0,
     )
     # and the other way round, by the same term
     back = related(store, ops.id, audit)
@@ -137,7 +146,7 @@ def test_a_plain_word_in_backticks_a_number_and_a_date_relate_nothing(store, ops
         store, "ops", "Two", "Set `name` to `true` on 2026-03-14 for 5 min, 2,700 times.\n\nMore.\n"
     )
     found = related(store, ops.id, one)
-    assert found.pages == () and found.left.complete and found.left.terms == 0
+    assert found.pages == () and found.left.complete and found.left.terms_looked_up == 0
 
 
 def test_a_term_more_than_common_pages_hold_relates_none(store, ops):
@@ -284,7 +293,7 @@ def test_the_answer_names_the_note_of_every_passage_its_claims_cite(store, ops):
     notes = {note.id for note in store.list_notes(ops.id)}
     assert set(found.notes_of) == cited and set(found.notes_of.values()) == notes
     assert set(found.origins) == notes and audit
-    assert json.dumps(found.left._asdict())  # counts and flags only
+    assert json.dumps(found.left._asdict())  # counts only
 
 
 # One moment
@@ -312,14 +321,14 @@ def test_a_write_in_the_middle_of_a_read_changes_nothing_of_its_answer(tmp_path,
 
         listed, wrote = relating._listed, []
 
-        def written_meanwhile(*args):
+        def written_meanwhile(*args, **named):
             if not wrote:  # once: after the page was read, before any other page's claim is
                 wrote.append(None)
                 bare = [Claim(id="cl_bare", text="Ada keeps old events.", span_ids=())]
                 other.save_page(ops.id, "retention", "Retention", "", bare)
                 file(other, "ops", "Newcomer", "Brook sets `--audit-keep` too.\n")
                 wrote[0] = reasons(related(other, ops.id, deploy))  # a read that begins now
-            return listed(*args)
+            return listed(*args, **named)
 
         monkeypatch.setattr(relating, "_listed", written_meanwhile)
         during = related(store, ops.id, deploy)
@@ -333,7 +342,7 @@ def test_a_write_in_the_middle_of_a_read_changes_nothing_of_its_answer(tmp_path,
 # The bounds, each met and each said
 
 
-def test_a_title_of_more_words_than_a_search_takes_is_not_looked_up_and_says_so(store, ops):
+def test_a_title_of_more_words_than_a_search_takes_relates_none_by_mention(store, ops):
     long_title = " ".join(f"w{n}" for n in range(ranking.WORDS_MAX + 1))
     store.save_page(ops.id, "long", long_title, "", [Claim(id="cl_a", text="Ada.", span_ids=())])
     first = " ".join(f"w{n}" for n in range(ranking.WORDS_MAX))
@@ -342,29 +351,110 @@ def test_a_title_of_more_words_than_a_search_takes_is_not_looked_up_and_says_so(
     )
     found = related(store, ops.id, "long")
     assert found.pages == ()  # its first 32 words alone would be found: that is no mention
-    assert found.left.title_cut and not found.left.complete
-    # a title of no word matches nothing, and nothing is left out
+    assert found.left == NOTHING_LEFT_OUT  # by rule, as a title of no word: nothing was left out
     store.save_page(ops.id, "dash", "---", "", [Claim(id="cl_c", text="Brook.", span_ids=())])
-    assert related(store, ops.id, "dash").left == relating.Left(0, 0, 0, False, 0, 0)
+    assert related(store, ops.id, "dash").left == NOTHING_LEFT_OUT
 
 
-def test_a_title_more_claims_hold_than_are_listed_says_so(store, ops, monkeypatch):
-    monkeypatch.setattr(relating, "LISTED_MAX", 3)
+def test_a_title_more_than_five_other_pages_name_relates_none_by_mention(store, ops):
+    """As a term more than COMMON pages hold: read whole, so the answer is complete."""
     quill = file(store, "ops", "Quill", "Ada wrote it.\n")
-    for n in range(2):
-        lines = "\n".join(f"- Quill line {n}.{m}." for m in range(2))
-        file(store, "ops", f"Notes {n}", lines + "\n")
+    for n in range(COMMON):
+        file(store, "ops", f"Notes {n}", f"Quill line {n}.\n")
+    found = related(store, ops.id, quill)
+    assert reasons(found) == {
+        f"notes-{n}": [(MENTIONED_BY, "Quill", "title", 2)] for n in range(COMMON)
+    }
+    file(store, "ops", "Notes more", "One more names Quill.\n")  # the sixth other page
+    found = related(store, ops.id, quill)
+    assert found.pages == () and found.left == NOTHING_LEFT_OUT
+
+
+def test_a_title_more_than_sixty_four_claims_of_other_pages_hold_relates_none(store, ops):
+    """Its own claims do not count: a page says its own title in every claim, and that is no
+    mention. 64 claims of two other pages name it; the 65th makes it common."""
+    lines = "\n".join(f"- Quill does thing {n}." for n in range(70))
+    quill = file(store, "ops", "Quill", lines + "\n")
+    for page in range(2):
+        lines = "\n".join(f"- On {page}.{n} Quill is named." for n in range(32))
+        file(store, "ops", f"Notes {page}", lines + "\n")
+    assert CLAIMS_COMMON == 64
     found = related(store, ops.id, quill)
     assert reasons(found) == {
         "notes-0": [(MENTIONED_BY, "Quill", "title", 2)],
         "notes-1": [(MENTIONED_BY, "Quill", "title", 2)],
     }
-    assert found.left.title_cut and not found.left.complete  # four claims hold it, three listed
-    monkeypatch.setattr(relating, "LISTED_MAX", 4)
-    assert related(store, ops.id, quill).left.complete
+    assert found.left == NOTHING_LEFT_OUT
+    file(store, "ops", "Third", "Quill once more.\n")
+    found = related(store, ops.id, quill)
+    assert found.pages == () and found.left == NOTHING_LEFT_OUT
 
 
-def test_a_passage_past_the_bytes_read_is_not_fetched_and_leaves_its_term_cut(
+# A term many claims hold
+
+
+def lines_of(count: int, term: str, mark: str) -> str:
+    return "\n".join(f"- {mark} {n} sets {term}." for n in range(count)) + "\n"
+
+
+def test_a_term_more_than_sixty_four_claims_of_the_project_hold_relates_none_from_any_side(
+    store, ops
+):
+    """The claims of the whole project count, the asking page's too, so the count is the same
+    whichever page asks: 58 claims of one page and 3 of each of two others are 64, and the
+    three pages are related by the term; one claim more and none is, from any side."""
+    many = file(store, "ops", "Many", lines_of(58, "`x.cfg`", "Step"))
+    few = file(store, "ops", "Few", lines_of(3, "`x.cfg`", "Line"))
+    other = file(store, "ops", "Other", lines_of(3, "`x.cfg`", "Row"))
+    for slug, others in ((many, {few, other}), (few, {many, other}), (other, {many, few})):
+        found = related(store, ops.id, slug)
+        assert reasons(found) == {at: [(SHARES, "x.cfg", "inline_code", 3)] for at in others}
+        assert found.left.complete and found.left.claims_not_read == 0
+    file(store, "ops", "Aside", "Brook saw `x.cfg` once.\n")  # the 65th claim, on a fourth page
+    for slug in (many, few, other, "aside"):
+        found = related(store, ops.id, slug)
+        assert found.pages == () and found.left.complete, slug
+        assert found.left.claims_read == 0  # known from the rows listed: no claim was read
+
+
+def test_the_claims_that_count_hold_the_terms_words_whatever_their_passage_holds(store, ops):
+    """What makes a term common by its claims is the index's count of the claims whose text
+    holds its words: 64 claims that say "dry run" in a sentence make `--dry-run` common."""
+    asked = file(store, "ops", "Asked", "Start with --dry-run first.\n")
+    twin = file(store, "ops", "Twin", "Brook passes --dry-run too.\n")
+    assert reasons(related(store, ops.id, asked)) == {twin: [(SHARES, "--dry-run", "flag", 2)]}
+    prose = "\n".join(f"- A dry run of step {n} costs nothing." for n in range(63))
+    file(store, "ops", "Prose", prose + "\n")
+    for slug in (asked, twin):
+        found = related(store, ops.id, slug)
+        assert found.pages == () and found.left.complete
+
+
+def test_a_term_whose_claims_were_not_all_read_relates_none_and_the_claims_are_counted(
+    store, ops, monkeypatch
+):
+    """No count of pages is given that the read did not see whole: past the claims read in
+    all, a term gives no reason, and its claims are counted as not read."""
+    asked = file(store, "ops", "Asked", "Use `a.cfg` and `b.cfg`.\n")
+    file(store, "ops", "One", "Set `a.cfg`.\n")
+    file(store, "ops", "Two", lines_of(3, "`b.cfg`", "Line"))
+    monkeypatch.setattr(relating, "CLAIMS_MAX", 2)
+    found = related(store, ops.id, asked)
+    assert reasons(found) == {"one": [(SHARES, "a.cfg", "inline_code", 2)]}
+    assert found.left == relating.Left(
+        terms_looked_up=2,
+        terms_not_looked_up=0,
+        claims_read=1,
+        claims_not_read=3,
+        pages_left_out=0,
+    )
+    assert not found.left.complete
+    monkeypatch.setattr(relating, "CLAIMS_MAX", 4)
+    found = related(store, ops.id, asked)
+    assert set(reasons(found)) == {"one", "two"} and found.left.complete
+
+
+def test_a_passage_past_the_bytes_read_is_not_fetched_and_its_term_relates_none(
     store, ops, monkeypatch
 ):
     """A passage is measured from its row, without its text (a handle on the stored value, as
@@ -383,7 +473,8 @@ def test_a_passage_past_the_bytes_read_is_not_fetched_and_leaves_its_term_cut(
     finally:
         store._observe(trace=None, rows=None)
     assert reasons(found) == {"short": [(SHARES, "a.cfg", "inline_code", 2)]}
-    assert (found.left.terms_cut, found.left.claims_read, found.left.complete) == (1, 2, False)
+    assert (found.left.claims_read, found.left.claims_not_read) == (1, 1)
+    assert not found.left.complete
     assert not [s for s in statements if "length(" in s.lower()]
     assert not [row for row in rows if any(isinstance(v, str) and "é" in v for v in row)]
     monkeypatch.setattr(relating, "BYTES_MAX", 143 + len("Set `a.cfg`."))
@@ -404,7 +495,7 @@ def test_a_claim_whose_passage_is_another_projects_states_no_term(store, ops):
     twin = file(store, "ops", "Twin", "Set `a.cfg` here.\n")
     quill = file(store, "ops", "Quill", "Ada wrote it.\n")
 
-    assert related(store, ops.id, "mixed").left == relating.Left(0, 0, 0, False, 0, 0)
+    assert related(store, ops.id, "mixed").left == NOTHING_LEFT_OUT
     found = related(store, ops.id, twin)  # the index proposes the claim; its passage is not ours
     assert found.pages == () and found.left.claims_read == 1 and found.left.complete
     mentioned = related(store, ops.id, quill)

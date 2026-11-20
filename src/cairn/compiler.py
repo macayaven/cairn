@@ -15,8 +15,8 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
   as Markdown reads it (it copies a note that never closes one, or closes it deeper than
   Markdown's limit) is followed by a line that closes it, the opener's own indentation and
   run, so the claim after it is never read as code (review 7.2, should-fix 8); the claim's
-  text is never changed. Every line of the body is a claim's, a heading or fence it wrote, or
-  blank: each gate checks that (gate.unclaimed_line).
+  text is never changed. Each gate checks that the body is what this function writes of the
+  claims (gate.unclaimed_line: equality with a re-render).
 - Before saving, the candidate page and the spans its claims cite go through a gate. A
   failing gate saves nothing and returns status "rejected" with the gate's result. The gate's
   metrics are saved with the page version.

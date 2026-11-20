@@ -6,7 +6,7 @@ compiler builds them, so these tests need no store.
 
 from pathlib import Path
 
-from cairn.compiler import CandidatePage
+from cairn.compiler import CandidatePage, render_body
 from cairn.gate import lint_gate
 from cairn.spans import Span, chunk
 from cairn.store import Claim
@@ -38,8 +38,8 @@ def baseline_body(spans: list[Span]) -> str:
 
 
 def candidate(*claims: Claim, body: str | None = None) -> CandidatePage:
-    if body is None:
-        body = f"# {TITLE}\n\n" + "\n\n".join(c.text for c in claims) + "\n"
+    if body is None:  # what the compiler writes of them: the only body a gate is given
+        body = render_body(TITLE, claims, {s.id: s for s in CONTENT})
     return CandidatePage(slug="runbook", title=TITLE, body=body, claims=claims)
 
 

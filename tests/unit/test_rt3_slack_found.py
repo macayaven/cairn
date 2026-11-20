@@ -1,7 +1,7 @@
 """What the generated messages found (test_rt3_slack_pages), each shrunk and pinned: the
 page must show what Slack displayed. Each test states what is right, so it fails while the
-fault stands. Found on 8aa0073d (rt3/0.1.0 with core9c/0.1.0 at 1f84be95 merged) unless it
-says it held."""
+fault stands. Found on 8aa0073d (core9c/0.1.0 at 1f84be95 merged) and still standing on
+65e1a416 (core9c/0.1.0 at af365c3f merged), unless it says it held."""
 
 import asyncio
 import re
@@ -79,14 +79,24 @@ def test_a_line_of_tildes_keeps_the_source_link_a_link(filer, rule):
 # One page per message
 
 
-def test_messages_that_start_with_a_code_block_are_not_put_on_one_page(tmp_path):
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ("```port 8811```\nShelf.", "```SELECT 1;```\nLedger."),
+        ("```\nport 8811\n```\nShelf.", "```\nSELECT 1;\n```\nLedger."),
+    ],
+    ids=["block-on-one-line", "fence-on-its-own-line"],
+)
+def test_messages_that_start_with_a_code_block_are_not_put_on_one_page(tmp_path, texts):
     """The title is the note's first line, which is now the fence of a Slack code block:
-    every such message gets the title "```", and so the same page."""
+    every such message gets the title "```", and so the same page. On 0d4e71a8 a block on
+    one line gave titles of their own ("```port 8811```"): that form is new with the fix;
+    a fence on its own line shared the page already."""
     bench = Bench(tmp_path)
     try:
         bench.users[shortcuts.CEDAR] = shortcuts.cedar()
         bench.link(ADA_SLACK, bench.ada, bench.library)
-        for n, text in enumerate(("```\nport 8811\n```\nShelf.", "```\nSELECT 1;\n```\nLedger.")):
+        for n, text in enumerate(texts):
             message = {"type": "message", "user": shortcuts.CEDAR, "text": text}
             response = shortcuts.handle(bench, {**message, "ts": f"19000000{n:02d}.000100"})
             asyncio.run(response.background())
@@ -130,6 +140,14 @@ def test_a_line_read_as_code_only_in_its_claim_shows_no_escape(filer):
     code = [text for claim in filed.claims for _, text in Shown(str(render(claim))).code]
     assert code, filed.claims
     assert all("\\" not in text and "&amp;" not in text for text in code), code
+
+
+def test_a_line_read_as_code_only_in_its_claim_keeps_its_last_tab(filer):
+    """The same shape, last in the message: Slack displays the tab that ends it, the note
+    (which reads the line as text) drops it, and the claim alone shows the line as code."""
+    filed = filer("&gt; Readings\n\tnorth\tblue\t")
+    code = [text for claim in filed.claims for _, text in Shown(str(render(claim))).code]
+    assert code == ["north\tblue\t\n"], (filed.claims, code)
 
 
 def test_strikethrough_is_not_shown_as_doubled_tildes(filer):
@@ -177,13 +195,14 @@ def test_the_page_title_and_the_author_heading_show_no_escape(tmp_path):
 # Work
 
 
-def test_a_long_message_converts_in_time_linear_in_its_length():
-    """_redact's address pattern and _TOKENS' `<...>` backtrack over a long run: each start
-    reads to the run's end. note_from_message runs on the server's event loop
-    (shortcuts._write calls it directly), so every request waits for it."""
+@pytest.mark.parametrize("run", ["a", "<"], ids=["address-pattern", "angle-token"])
+def test_a_long_message_converts_in_time_linear_in_its_length(run):
+    """A run of word characters backtracks in _EMAIL (text.py:31), a run of "<" in _TOKENS'
+    `<[^>\\n]+>` (text.py:32): each start reads to the run's end. note_from_message runs on
+    the server's event loop (shortcuts._write calls it directly), so every request waits."""
     spent = {}
     for size in (5_000, 20_000):
-        message = {"text": "a" * size, "ts": "1900000000.000100", "user": "U1"}
+        message = {"text": run * size, "ts": "1900000000.000100", "user": "U1"}
         start = time.perf_counter()
         note_from_message(
             message, team_id="T", team_domain="fable-works", conversation_id="C0LIB",

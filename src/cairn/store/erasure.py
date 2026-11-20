@@ -53,6 +53,7 @@ from cairn.store.base import (
     deletion_generation,
     store_log,
 )
+from cairn.store.before_core5 import whole_before_core5
 from cairn.store.memory import _SPAN_COLUMNS, _span, _write_page_version
 from cairn.store.models import Claim, Forgotten
 from cairn.store.portable import Refusal, version_faults
@@ -89,6 +90,8 @@ def kept_claims(
     while one whose text merely occurs inside a remaining passage ("Enable X." inside "Never
     enable X. in prod.") or that joined the forgotten note's words goes. One that cites only
     forgotten spans goes.
+    One folded by an earlier build from passages that differ by white space inside a line
+    (store.before_core5.whole_before_core5) keeps citing the others in the same way.
     A kept claim that is the whole of every span it cites takes the text of the first of them
     the store holds, byte for byte (third report, must-fix 1): a fold's text is one note's
     spelling, and the white space that equality leaves out must not outlive that note, in
@@ -103,7 +106,10 @@ def kept_claims(
         left = tuple(span_id for span_id in claim.span_ids if span_id not in gone)
         cut = len(left) < len(claim.span_ids)
         survivor = claim.model_copy(update={"span_ids": left}) if cut else claim
-        if whole(survivor, spans):
+        # A fold an earlier build made of passages that differ by white space inside a line
+        # is the whole of what it still cites by that build's rule, which an import accepts
+        # and a tidy rebuilds: it outlives the note as the first passage left, like any fold.
+        if whole(survivor, spans) or (cut and whole_before_core5(survivor, spans)):
             first = next(span_id for span_id in left if span_id in spans)
             kept.append(survivor.model_copy(update={"text": spans[first].text}))
         elif not cut:

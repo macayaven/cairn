@@ -282,3 +282,63 @@ def test_the_audit_event_of_a_forget_that_drops_nothing_is_as_it_was(store):
         "project": built.project.id,
         "pages": 1,
     }
+
+
+# A fold an earlier build's tidy made: passages that differ by white space INSIDE a line, which
+# today's comparison keeps apart and that build's did not. The hosted upgrade brings such pages.
+WIDE, PLAIN, THIRD = (
+    "Folded  words   stay whole.",
+    "Folded words stay whole.",
+    "Folded words  stay whole.",
+)
+
+
+def folded(count):
+    def shape(claims):
+        cited = tuple(i for claim in claims[:count] for i in claim.span_ids)
+        return [claims[0].model_copy(update={"span_ids": cited}), *claims[count:]]
+
+    return shape
+
+
+def test_forgetting_one_side_of_an_earlier_builds_fold_keeps_the_claim_the_other_note_holds(
+    store, tmp_path, caplog
+):
+    """The last outside reading's finding: on a database the public build made, forget the
+    first note of such a fold before any tidy. The claim went, although the second note was
+    still held and said the same by the rule its fold was made under; a tidy first would
+    have kept it. It stays, as the second note's own text, and nothing is logged as lost."""
+    built = Built(store, [WIDE, PLAIN, "Unique to the second spelling."], folded(2))
+    kept_span = store.note_spans(built.notes[1])[0].id
+    with caplog.at_level(logging.INFO, logger="cairn.store"):
+        store.forget_note(built.notes[0])
+    page = built.page()
+    assert (page.claims[0].text, page.claims[0].span_ids) == (PLAIN, (kept_span,))
+    assert [c.text for c in page.claims] == [PLAIN, "Unique to the second spelling."]
+    assert lines(caplog) == [] and "claims_left" not in forgotten_event(store)
+    assert [claims for _, claims in built.imported(tmp_path)] == [
+        [(c.text, c.span_ids) for c in page.claims]
+    ]
+    for part in (page.body, *(c.text for c in page.claims)):
+        assert WIDE not in part
+
+
+def test_such_a_fold_of_three_stays_a_fold_of_the_two_left_until_a_tidy_rebuilds_it(
+    store, tmp_path
+):
+    """Two notes of the fold are left and still differ inside the line: the claim takes the
+    first one's bytes and cites both, an import accepts it as that build's fold, and the
+    next tidy rebuilds it into two claims, as it does any such fold."""
+    from cairn.arrange import tidy_page
+
+    built = Built(store, [WIDE, PLAIN, THIRD, "Quill keeps the log."], folded(3))
+    second, third = (store.note_spans(n)[0].id for n in built.notes[1:3])
+    store.forget_note(built.notes[0])
+    page = built.page()
+    assert (page.claims[0].text, page.claims[0].span_ids) == (PLAIN, (second, third))
+    assert len(built.imported(tmp_path)) == 1
+    assert tidy_page(store, built.project.id, "net").status == "arranged"
+    assert [(c.text, c.span_ids) for c in built.page().claims][:2] == [
+        (PLAIN, (second,)),
+        (THIRD, (third,)),
+    ]

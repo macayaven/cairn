@@ -30,10 +30,13 @@ def store(db):
 
 
 def count_events(db: Path, account_id: str) -> int:
-    with sqlite3.connect(db) as con:
+    con = sqlite3.connect(db)  # closed here: `with` on a connection only ends a transaction
+    try:
         (n,) = con.execute(
             "SELECT COUNT(*) FROM audit_events WHERE account_id = ?", (account_id,)
         ).fetchone()
+    finally:
+        con.close()
     return n
 
 

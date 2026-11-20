@@ -262,21 +262,24 @@ def note_of(store: Store, project_id: str, span_id: str) -> str:
     )
 
 
-def test_forgetting_the_note_whose_words_the_fold_holds_takes_the_page_until_the_other_is_sent(
+def test_forgetting_the_note_whose_words_the_fold_holds_leaves_the_claim_as_the_other_notes(
     store,
 ):
     """Forgetting is a touch that does not rebuild (store.erasure.kept_claims): forgetting the
-    second note leaves the fold citing the first, whole; forgetting the first leaves a claim
-    in the first note's words citing the second's passage, which is not whole, so it goes and
-    the page with it. Sending the second note again files it."""
+    second note leaves the fold citing the first, whole. Forgetting the first, whose words the
+    fold holds, left a claim in a forgotten note's words that was not the whole of the
+    passage left, so it went and the page with it until the second note was sent again; the
+    last outside reading showed that on a database the public build made. The claim is the
+    whole of that passage by the rule its fold was made under, so it stays, as the second
+    note's own text."""
     first, second = OLD["before decision 189"]
     project, memory, cited = old_fold(store, first, second)
     store.forget_note(note_of(store, project.id, cited[0]))
-    assert store.get_page(project.id, "files") is None
-    answer = memory.note("alpha", second, title="Files", topic="Files")
-    assert (answer["created"], answer["status"], answer["page"]) == (False, "saved", "files")
     page = store.get_page(project.id, "files")
     assert [(c.text, c.span_ids) for c in page.claims] == [(second, (cited[1],))]
+    assert first not in page.body
+    answer = memory.note("alpha", second, title="Files", topic="Files")
+    assert (answer["created"], answer["page"]) == (False, "files")
 
 
 def test_forgetting_the_other_note_leaves_the_fold_whole(store):

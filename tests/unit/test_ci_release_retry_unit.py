@@ -240,6 +240,12 @@ case "$1 $2" in
     # a person changes it after the job compared it, before the request arrives
     [ -z "$CHANGED_BEFORE_PUBLICATION" ] || by_hand "$CHANGED_BEFORE_PUBLICATION"
     [ -z "$TAG_BEFORE_PUBLICATION" ] || retag "$TAG_BEFORE_PUBLICATION"
+    # ... or publishes a release of another tag (a JSON release), by hand
+    if [ -n "$ADDED_BEFORE_PUBLICATION" ]; then
+      jq --argjson r "$ADDED_BEFORE_PUBLICATION" '. + [$r]' "$EXISTING/releases.json" \
+        > "$EXISTING/next.json"
+      mv "$EXISTING/next.json" "$EXISTING/releases.json"
+    fi
     jq -e "any(.id == $id)" "$EXISTING/releases.json" > /dev/null || exit 1  # HTTP 404
     writing "$PUBLISHED_SHOWN_FROM_LOOK"
     jq "map(if .id == $id then .draft = false else . end)" "$EXISTING/releases.json" \
@@ -533,11 +539,20 @@ def test_this_run_s_published_release_is_recognised_and_left_as_it_is(tmp_path, 
 
 
 DRAFT = (
-    "::error::the GitHub release for {tag} is a draft that an earlier attempt of run "
-    + RUN_ID
-    + " left unfinished, which this job neither deletes nor publishes; delete it on the"
-    " repository's releases page and re-run this job, which makes the release again"
+    "::error::read by its id, the GitHub release for {tag} is this run's draft and does not"
+    " hold exactly the files this run attested: {why}; this job neither deletes nor publishes"
+    " it; delete it on the repository's releases page and re-run this job, which makes the"
+    " release again"
 )
+
+
+def unfinished(error: str, tag: str) -> bool:
+    """ERROR is the line of this run's draft without exactly its files, whichever file or names
+    it gives (test_ci_release_lines_unit has the two kinds)."""
+    head, tail = DRAFT.format(tag=tag, why="\0").split("\0")
+    return error.startswith(head) and error.endswith(tail)
+
+
 CUT_OFF = {"cairn_memory-1.2.3.tar.gz": b"a sou"}
 
 
@@ -584,7 +599,7 @@ def test_this_run_s_draft_with_other_names_stops_the_job_which_reads_and_writes_
     done, calls = run(tmp_path, tag, candidate, existing, CUT_OFF)
     assert done.returncode == 1
     assert looks(calls) == [TAG_READ.format(tag=tag), LISTING, READ.format(id=77)]
-    assert the_error(done) == DRAFT.format(tag=tag)
+    assert unfinished(the_error(done), tag)
     assert held(tmp_path) == [existing]
 
 
@@ -613,7 +628,7 @@ def test_this_run_s_draft_with_the_names_and_other_bytes_is_not_published(
         READ.format(id=77),
         *fetches(77)[:fetched],
     ]
-    assert the_error(done) == DRAFT.format(tag=tag)
+    assert unfinished(the_error(done), tag)
     assert held(tmp_path) == [existing]
 
 
@@ -640,7 +655,7 @@ def left_a_draft(tmp_path, tag: str, candidate: str, assets: dict[str, bytes]) -
     existing = made_earlier(tag, candidate == "true", draft=True, names=list(assets))
     done, calls = run(tmp_path, tag, candidate, existing, assets)
     assert done.returncode == 1 and writes(calls) == []
-    assert the_error(done) == DRAFT.format(tag=tag)
+    assert unfinished(the_error(done), tag)
 
 
 @pytest.mark.parametrize(("tag", "candidate"), [("v1.2.3", ""), ("v1.2.3-rc.1", "true")])
@@ -787,6 +802,7 @@ def test_the_text_of_release_issues_no_delete_and_one_write_to_a_release_that_ex
         "candidate=(--prerelease --latest=false)",
         "latest=(-f make_latest=false)",
         '[ "$prerelease" = true ] || latest=(-f "make_latest=$(is_latest)")',
+        'said="${latest[1]#make_latest=}"',
     ]
     assert (
         re.findall(r"\bid=", run_) == []
@@ -901,7 +917,10 @@ def test_gh_is_asked_for_a_draft_so_the_release_it_makes_is_never_its_own_to_del
     assert "names and bytes, each fetched by its asset id, and a draft that does not" in comment
 
 
-REFUSED = "::error::a GitHub release for {tag} exists and is not one this run can finish: "
+REFUSED = (
+    "::error::read by its id, a GitHub release for {tag} exists and is not one this run can"
+    " finish: "
+)
 NEXT = (
     "; look at it on the repository's releases page, delete it if nobody should publish it,"
     " and re-run this job"
@@ -942,11 +961,6 @@ NEXT = (
             "its pre-release flag is true, not false",
         ),
         (
-            [made_earlier("v1.2.3", False), made_earlier("v1.2.3", False, draft=True)],
-            attached("v1.2.3"),
-            "there are 2 releases for it",
-        ),
-        (
             made_earlier("v1.2.3", False, names=["SHA256SUMS", "cairn_memory-1.2.3.tar.gz"]),
             attached("v1.2.3"),
             "its files are [SHA256SUMS cairn_memory-1.2.3.tar.gz], not [SHA256SUMS"
@@ -976,7 +990,8 @@ def test_a_release_this_run_cannot_finish_stops_the_job_in_one_sentence(
 
 
 UNREAD = (
-    "::error::the files of the GitHub release for {tag}, {state}, could not be downloaded, so"
+    "::error::the files of the GitHub release for {tag}, {state} as read by its id, could not be"
+    " downloaded, so"
     " they were not compared and nothing shows that they differ; re-run this job, and delete"
     " nothing unless the releases page shows a file of the draft missing or unfinished"
 )
@@ -1046,8 +1061,8 @@ def test_the_line_of_a_download_that_fails_tells_nobody_to_delete_and_has_its_ro
             " draft missing or unfinished"
         )
     means, next_step = cells(
-        "the files of the GitHub release for …, …, could not be downloaded, so they were not"
-        " compared and nothing shows that they differ"
+        "the files of the GitHub release for …, … as read by its id, could not be downloaded, so"
+        " they were not compared and nothing shows that they differ"
     )
     assert means == (
         "GitHub did not give the job the release's files to compare, before the publication"
@@ -1129,8 +1144,8 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
         " read of the release by its id and the files that read names show them. Each look"
         " lists the"
         " repository's releases, drafts included (a listing that fails stops the job), and takes"
-        " the one for its tag as its own only when it carries this run's mark and this tag's"
-        " pre-release flag."
+        " the one for its tag as its own only when, read by its id, it carries this run's mark"
+        " and this tag's pre-release flag."
     ) in readme
     # (Between the two, what is read by the release's id: test_ci_release_fresh_read_unit.)
     assert (
@@ -1156,19 +1171,22 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
         " (the table has the line for both). Any other release for the tag that a look lists"
         " stops the job, but one a person makes while the job runs, or the draft of an earlier"
         " attempt just before a re-run, can be missing from the listing, which can be seconds"
-        " behind a write, so the job, a re-run as much as a first run, does not see it and can"
-        " make or publish a second release for the tag beside it: that is a stated limit, and"
-        " what the job still"
-        " guarantees is that the release it publishes and succeeds on is its own, judged by its"
-        " id, with this run's mark, title, notes and files."
+        " behind a write, so the job does not see it and can make or publish its own release"
+        " beside it: that is a stated limit, and a re-run can be the job that makes that second"
+        " release as much as a first run can; what the job still guarantees is that the release"
+        " it publishes and succeeds on is its own, judged by its id, with this run's mark,"
+        " title, notes and files."
     ) in readme
     comment = " ".join(CREATE["run"].replace("#", "").split())
     assert (
-        "any other a look lists stops the job. A release the listing does not show yet, one a"
-        " person makes while the job runs or the draft of an earlier attempt just before a"
-        " re-run, is not seen, and the job can make or publish its own beside it: that is a"
-        " stated limit, and the release it publishes and succeeds on is still its own, judged"
-        " by its id."
+        "any other a look lists stops the job. A look judges its row only to stop early: two"
+        " rows for the tag stop the job on the listing, which its line says, and a row that does"
+        " not show this run's release as it wrote it is read by its id at once, and the job"
+        " stops on what that read shows, or goes on when the listing was behind. A release the"
+        " listing does not show yet, one a person makes while the job runs or the draft of an"
+        " earlier attempt just before a re-run, is not seen, and the job can make or publish its"
+        " own beside it: that is a stated limit, and the release it publishes and succeeds on"
+        " is still its own, judged by its id."
     ) in comment
     assert "so it never makes a second release of its own in one attempt." in comment
     (limits,) = [" ".join(p.split()) for p in README.split("\n") if p.startswith("Three limits.")]
@@ -1195,13 +1213,14 @@ def cells(key: str) -> tuple[str, str]:
 
 def test_the_draft_s_stop_has_its_row_and_the_row_says_what_the_tests_above_run():
     means, next_step = cells(
-        "the GitHub release for … is a draft that an earlier attempt of run … left unfinished,"
-        " which this job neither deletes nor publishes"
+        "read by its id, the GitHub release for … is this run's draft and does not hold exactly"
+        " the files this run attested: …"
     )
     assert means == (
-        "A draft for the tag carries this run's mark and does not hold exactly the files this"
-        " run attested: an earlier attempt's upload was cut, and it may hold none of them, some,"
-        " or one cut off"
+        "Read by its id, a draft for the tag carries this run's mark and does not hold exactly"
+        " the files this run attested (the line names a file, or the names it holds): an upload"
+        " was cut, in this attempt or an earlier one, and it may hold none of them, some, or one"
+        " cut off; or a person changed a file on it"
     )
     assert next_step == (
         "Delete it on the repository's releases page and re-run the job, which makes the release"
@@ -1219,11 +1238,15 @@ def test_the_draft_s_stop_has_its_row_and_the_row_says_what_the_tests_above_run(
 def test_a_look_that_does_not_show_the_job_s_own_write_has_its_row(tmp_path):
     """(The listing that is behind, and that a second release is never made:
     test_generated_release_retry_unit, "a listing that does not show the step's own write".)"""
-    means, next_step = cells("GitHub does not list the release for … as this job has just left it")
+    means, next_step = cells(
+        "GitHub's listing, at this job's last look, does not list the release for … as this job"
+        " has just left it, and it can be seconds behind a write"
+    )
     # (The wait before this stop, and the row's own words: test_ci_release_listing_lag_unit.)
     assert means.endswith("or a person deleted the release or made it a draft in that moment")
     assert next_step == (
-        "Re-run the job, which starts from what is listed then: it makes the draft if there is"
+        "Look at the repository's releases page first, then re-run the job, which starts from"
+        " what is listed then: it makes the draft if there is"
         " no release, publishes this run's draft, or compares the published release. It never"
         " makes a second release in one attempt."
     )
@@ -1233,8 +1256,10 @@ def test_a_look_that_does_not_show_the_job_s_own_write_has_its_row(tmp_path):
     done, calls = run(tmp_path, "v1.2.3", "", existing, attached("v1.2.3"), DELETED_ONCE_PUBLIC="1")
     assert done.returncode == 1 and len(writes(calls)) == 1 and held(tmp_path) == []
     assert the_error(done) == (
-        "::error::GitHub does not list the release for v1.2.3 as this job has just left it;"
-        " re-run this job, which starts from what is listed then"
+        "::error::GitHub's listing, at this job's last look, does not list the release for"
+        " v1.2.3 as this job has just left it, and it can be seconds behind a write; look at the"
+        " repository's releases page first, then re-run this job, which starts from what is"
+        " listed then"
     )
     done, calls = attempt(tmp_path, "v1.2.3", "")
     assert done.returncode == 0, done.stdout + done.stderr

@@ -666,10 +666,10 @@ def test_the_release_step_harms_no_release_whatever_happens_before_any_of_its_re
 # --- the fourth report's regression, and what each fault leaves ----------------------------------
 
 LEFT = (
-    "::error::the GitHub release for {tag} is a draft that an earlier attempt of run "
-    + RUN_ID
-    + " left unfinished, which this job neither deletes nor publishes; delete it on the"
-    " repository's releases page and re-run this job, which makes the release again"
+    "::error::read by its id, the GitHub release for {tag} is this run's draft and does not"
+    " hold exactly the files this run attested: {why}; this job neither deletes nor publishes"
+    " it; delete it on the repository's releases page and re-run this job, which makes the"
+    " release again"
 )
 
 
@@ -711,7 +711,9 @@ def test_a_draft_whose_files_are_not_whole_is_never_published_and_stops_every_re
     tag = TAGS[kind]
     runs = history(gh, tmp_path / "h", tag, [], fault=fault)
     assert [done.returncode for done, _ in runs] == [1, 1]
-    assert errors(runs[1][0]) == [LEFT.format(tag=tag)]
+    (error,) = errors(runs[1][0])
+    head, tail = LEFT.format(tag=tag, why="\0").split("\0")
+    assert error.startswith(head) and error.endswith(tail), error
     state = runs[-1][1]
     (draft,) = ours(state)
     assert draft["draft"] and draft["files"] == holds
@@ -740,8 +742,9 @@ def test_a_write_github_refused_is_made_by_the_re_run(
 
 
 STALE = (
-    "::error::GitHub does not list the release for {tag} as this job has just left it; re-run"
-    " this job, which starts from what is listed then"
+    "::error::GitHub's listing, at this job's last look, does not list the release for {tag} as"
+    " this job has just left it, and it can be seconds behind a write; look at the repository's"
+    " releases page first, then re-run this job, which starts from what is listed then"
 )
 
 

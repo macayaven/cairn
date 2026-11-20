@@ -29,6 +29,7 @@ import re
 
 import pytest
 import test_ci_release_retry_unit as retry
+from test_ci_release_lines_unit import CROWDED
 from test_ci_release_notes_title_unit import DIFFERS
 from test_ci_release_retry_unit import (
     CREATE,
@@ -44,6 +45,7 @@ from test_ci_release_retry_unit import (
     looks,
     made_earlier,
     the_error,
+    unfinished,
     untagged,
     writes,
 )
@@ -71,8 +73,9 @@ def value(name: str) -> int:
 
 LOOKS, APART = value("looks"), value("apart")
 STALE = (
-    "::error::GitHub does not list the release for {tag} as this job has just left it; re-run"
-    " this job, which starts from what is listed then"
+    "::error::GitHub's listing, at this job's last look, does not list the release for {tag} as"
+    " this job has just left it, and it can be seconds behind a write; look at the repository's"
+    " releases page first, then re-run this job, which starts from what is listed then"
 )
 BOTH = [("v1.2.3", ""), ("v1.2.3-rc.1", "true")]
 
@@ -222,7 +225,7 @@ def test_a_draft_that_lacks_a_file_ends_on_the_unfinished_line_after_the_wait(
     names in full is published after the same wait: test_ci_release_fresh_read_unit.)"""
     done, calls = run(tmp_path, tag, candidate, CHANGED_ONCE_MADE=f".assets |= .[:{kept}]")
     assert done.returncode == 1
-    assert the_error(done) == DRAFT.format(tag=tag)
+    assert unfinished(the_error(done), tag)
     assert slept(calls) == [f"sleep {APART}"] * (LOOKS - 1)
     assert after(calls, "gh release create") == [
         LISTING,
@@ -267,7 +270,7 @@ def test_a_file_name_that_is_not_one_of_the_three_is_no_reason_to_wait(tmp_path,
     held_ = json.dumps([{"name": name, "size": 1} for name in listed])
     done, calls = run(tmp_path, "v1.2.3", "", CHANGED_ONCE_MADE=f".assets = {held_}")
     assert done.returncode == 1
-    assert the_error(done) == DRAFT.format(tag="v1.2.3")
+    assert unfinished(the_error(done), "v1.2.3")
     assert slept(calls) == []
     assert after(calls, "gh release create") == [LISTING, READ.format(id=88)]
     assert len(writes(calls)) == 1 and held(tmp_path)[0]["draft"] is True
@@ -292,7 +295,7 @@ def test_a_draft_found_by_the_first_look_with_some_of_the_names_is_compared_at_o
     existing = made_earlier("v1.2.3", False, draft=True, names=names)
     done, calls = run(tmp_path, "v1.2.3", "", existing, {}, NAMES_LISTED_AT_FIRST=json.dumps(names))
     assert done.returncode == 1
-    assert the_error(done) == DRAFT.format(tag="v1.2.3")
+    assert unfinished(the_error(done), "v1.2.3")
     assert slept(calls) == [] and held(tmp_path) == [existing]
     assert looks(calls) == [LISTING, READ.format(id=77)]
 
@@ -315,10 +318,11 @@ def test_the_looks_for_the_draft_and_for_its_names_are_the_same_ten(tmp_path):
 def test_a_draft_edited_as_soon_as_it_is_made_and_short_of_names_stops_at_the_first_look(
     tmp_path, for_looks
 ):
-    """The two together. Every look judges the title and the notes it shows, so the edit stops
-    the job at the first look after the creation, whatever the names would have waited for
-    (sixth report, must-fix 2: such a draft was waited for, and went on when a later listing
-    showed it restored). Nothing is downloaded and nothing published."""
+    """The two together. Every look judges the title and the notes it shows, so the edit sends
+    the job, at the first look after the creation, to a read by id, which shows it too, and the
+    job stops there, whatever the names would have waited for (sixth report, must-fix 2: such a
+    draft was waited for, and went on when a later listing showed it restored). Nothing is
+    downloaded and nothing published."""
     done, calls = run(
         tmp_path,
         "v1.2.3",
@@ -329,7 +333,7 @@ def test_a_draft_edited_as_soon_as_it_is_made_and_short_of_names_stops_at_the_fi
     )
     assert done.returncode == 1
     assert the_error(done) == DIFFERS.format(tag="v1.2.3", state="a draft", what="notes")
-    assert slept(calls) == [] and after(calls, "gh release create") == [LISTING]
+    assert slept(calls) == [] and after(calls, "gh release create") == [LISTING, READ.format(id=88)]
     assert [line.split()[1:3] for line in writes(calls)] == [["release", "create"]]
     assert not any(line.startswith("gh release download") for line in calls)
 
@@ -434,7 +438,7 @@ EDITED = '.body |= sub("the notes"; "other notes")'
             {"CHANGED_ONCE_MADE": ".prerelease = true"},
             REFUSED.format(tag="v1.2.3") + "its pre-release flag is true, not false",
         ),
-        ({"ANOTHER_ONCE_MADE": "1"}, REFUSED.format(tag="v1.2.3") + "there are 2 releases for it"),
+        ({"ANOTHER_ONCE_MADE": "1"}, CROWDED),
         (
             {"LIST_FAILS_AFTER_A_WRITE": "1"},
             "::error::the repository's releases could not be listed, so whether v1.2.3 has one is"
@@ -446,11 +450,14 @@ EDITED = '.body |= sub("the notes"; "other notes")'
 def test_after_the_creation_any_state_but_no_release_stops_at_the_first_look(
     tmp_path, person, said
 ):
+    """A row that is not this run's as it wrote it sends the job to a read by id at once, and
+    the job stops on that read; two rows stop it on the listing."""
     done, calls = run(tmp_path, "v1.2.3", "", MADE_SHOWN_FROM_LOOK="1", **person)
     assert done.returncode == 1
     assert the_error(done).startswith(said)
     assert slept(calls) == [] and len(writes(calls)) == 1
-    assert after(calls, "gh release create") == [LISTING]
+    read = [READ.format(id=88)] if said.startswith("::error::read by its id") else []
+    assert after(calls, "gh release create") == [LISTING, *read]
 
 
 @pytest.mark.parametrize(
@@ -481,13 +488,14 @@ def test_after_the_publication_any_state_but_a_draft_still_stops_at_the_first_lo
     tmp_path, person, said
 ):
     """Among them no release at all: after the publication the wait is for a release still
-    listed as a draft, and for nothing else."""
+    listed as a draft, and for nothing else. An edited row is read by its id at once."""
     existing = made_earlier("v1.2.3", False, draft=True)
     done, calls = run(tmp_path, "v1.2.3", "", existing, attached("v1.2.3"), **person)
     assert done.returncode == 1
     assert the_error(done).startswith(said)
     assert slept(calls) == [] and len(writes(calls)) == 1
-    assert after(calls, "gh api --method PATCH") == [LISTING]
+    read = [READ.format(id=77)] if said.startswith("::error::read by its id") else []
+    assert after(calls, "gh api --method PATCH") == [LISTING, *read]
 
 
 @pytest.mark.parametrize(
@@ -498,7 +506,7 @@ def test_after_the_publication_any_state_but_a_draft_still_stops_at_the_first_lo
             made_earlier("v1.2.3", False, draft=True, names=["SHA256SUMS"]),
             {},
             1,
-            DRAFT.format(tag="v1.2.3"),
+            DRAFT.format(tag="v1.2.3", why="\0").split("\0")[0],
         ),
         (
             made_earlier("v1.2.3", False, draft=True, body="made by hand"),
@@ -551,19 +559,24 @@ def test_the_readme_says_the_wait_with_the_step_s_two_values_and_the_row_says_wh
         " names; this run's release still a draft after the publication): at most ten looks,"
         " three seconds apart, and then the job goes on as it would have at once: it stops, or"
         " reads the draft by its id, and a re-run starts from what is listed then. Nothing else"
-        " is waited for: every look stops at once on a mark, a flag, a title or notes that are"
-        " not this run's, and the first look of a run never waits."
+        " is waited for: a look whose row shows a mark, a flag, a title or notes that are not"
+        " this run's reads the release by its id at once, and the job stops on what that read"
+        " shows, and the first look of a run never waits."
     ) in readme
-    means, next_step = cells("GitHub does not list the release for … as this job has just left it")
+    means, next_step = cells(
+        "GitHub's listing, at this job's last look, does not list the release for … as this job"
+        " has just left it, and it can be seconds behind a write"
+    )
     assert means == (
         "After the job made the draft, the listing showed no release for the tag at each of its"
         " ten looks, three seconds apart; or after it published the draft, the listing showed"
-        " no release, or at each of those looks still a draft; or the release, read by its id"
-        " at the end, was a draft again: GitHub's listing is further behind than the job waits,"
-        " or a person deleted the release or made it a draft in that moment"
+        " no release, or at each of those looks still a draft: GitHub's listing is further"
+        " behind than the job waits, or a person deleted the release or made it a draft in that"
+        " moment"
     )
     assert next_step == (
-        "Re-run the job, which starts from what is listed then: it makes the draft if there is"
+        "Look at the repository's releases page first, then re-run the job, which starts from"
+        " what is listed then: it makes the draft if there is"
         " no release, publishes this run's draft, or compares the published release. It never"
         " makes a second release in one attempt."
     )

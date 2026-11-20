@@ -15,6 +15,7 @@ The two jobs check out nothing and cannot share a file, so each holds the functi
 gh is test_ci_release_retry_unit's stand-in: its listing runs the step's own --jq expression
 over every release it holds, other tags' too."""
 
+import json
 import re
 
 import pytest
@@ -22,13 +23,15 @@ from ci_shell import SYSTEM, run_step
 from test_ci_release_retry_unit import (
     CREATE,
     README,
+    TAG_READ,
     attached,
     held,
     made_earlier,
     run,
+    the_error,
     writes,
 )
-from test_ci_workflow_unit import JOBS
+from test_ci_workflow_unit import JOBS, REPO
 
 (ALIAS,) = [s for s in JOBS["aliases"]["steps"] if s.get("name", "").startswith("Point latest")]
 PUBLICATION = "gh api --method PATCH repos/owner/repo/releases/{id} --silent -F draft=false"
@@ -161,6 +164,91 @@ def test_the_aliases_job_orders_with_it_as_before(tmp_path):
     assert done.stdout == "0.9.2\n0.9.12\n0.10.0\n"
 
 
+# --- one release job at a time, and Latest checked after the publication -----------------------
+#
+# The tester's finding of round rl9: v1.2.2 is Latest; this run (v1.2.3) looks, makes its draft
+# and reads it; another tag's run publishes v1.3.0, which becomes Latest; this run publishes with
+# make_latest=true from its earlier look, and Latest moves down to v1.2.3, the job ending well.
+
+
+def test_one_release_job_runs_at_a_time_in_the_repository_and_none_waiting_is_replaced():
+    """Another tag's `release` waits for this one, so no run of this workflow publishes between
+    this job's last look and its publication; `queue: max` keeps a job that waits from being
+    replaced by a newer one, as a waiting `aliases` is (GitHub's default for a group)."""
+    release, aliases = JOBS["release"]["concurrency"], JOBS["aliases"]["concurrency"]
+    assert release == {"group": "cairn-release", "cancel-in-progress": False, "queue": "max"}
+    assert release["group"] != aliases["group"]
+
+
+HIGHER = other("v1.3.0", 60)
+LATEST_LOST = (
+    "::error::the GitHub release for v1.2.3, read by its id, is this run's and public, with the"
+    " title and the notes this run wrote and exactly the files this run attested, and this"
+    " job's publication asked GitHub to make it the repository's latest release; GitHub's"
+    " listing after the publication shows v1.3.0 published, a higher stable version, so"
+    " GitHub's latest release may now be v1.2.3, below it: on the repository's releases page"
+    " set v1.3.0 as the latest release, then re-run this job, which finds v1.2.3 published and"
+    " changes nothing, so that job aliases runs"
+)
+
+
+@pytest.mark.parametrize("existing", [None, "draft"], ids=["made now", "left by an attempt"])
+def test_a_higher_version_listed_after_a_publication_that_said_latest_stops_the_job(
+    tmp_path, existing
+):
+    """A person publishes v1.3.0 by hand after the job's last look and before its publication:
+    the publication says latest, from that look; the look after it lists v1.3.0, and the job
+    stops with a line of its own, after every other check, and edits no other release."""
+    ours = [made_earlier("v1.2.3", False, draft=True)] if existing else []
+    lower = other("v1.2.2", 61)
+    done, calls = run(
+        tmp_path,
+        "v1.2.3",
+        "",
+        [lower, *ours],
+        attached("v1.2.3"),
+        ADDED_BEFORE_PUBLICATION=json.dumps(HIGHER),
+    )
+    assert done.returncode == 1, done.stdout + done.stderr
+    rid = 77 if existing else 88
+    assert published_with(calls) == PUBLICATION.format(id=rid) + " -f make_latest=true"
+    assert the_error(done) == LATEST_LOST
+    assert len(writes(calls)) == (1 if existing else 2)
+    releases = {r["id"]: r for r in held(tmp_path)}
+    assert releases[60] == HIGHER and releases[61] == lower and not releases[rid]["draft"]
+    assert calls[-1] == TAG_READ.format(tag="v1.2.3")  # its checks all made first
+
+
+@pytest.mark.parametrize(
+    ("tag", "candidate", "others"),
+    [
+        ("v1.2.3", "", [HIGHER]),
+        ("v1.2.3-rc.1", "true", []),
+    ],
+    ids=["a backport, said not latest", "a candidate, never latest"],
+)
+def test_a_publication_that_did_not_say_latest_is_not_checked(tmp_path, tag, candidate, others):
+    done, calls = run(
+        tmp_path,
+        tag,
+        candidate,
+        others,
+        attached(tag),
+        ADDED_BEFORE_PUBLICATION=json.dumps(other("v1.4.0", 62)),
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert published_with(calls).endswith(" -f make_latest=false")
+
+
+def test_a_re_run_that_finds_its_release_published_sends_and_checks_nothing_of_latest(tmp_path):
+    """The attempt that published it is the one that could check; a re-run writes nothing."""
+    done, calls = run(
+        tmp_path, "v1.2.3", "", [HIGHER, made_earlier("v1.2.3", False)], attached("v1.2.3")
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert writes(calls) == []
+
+
 # --- the documents --------------------------------------------------------------------------------
 
 
@@ -178,3 +266,53 @@ def test_the_readme_and_the_comment_say_what_the_publication_sends():
     comment = " ".join(CREATE["run"].replace("#", "").split())
     assert "it sets draft to false and nothing else" not in comment
     assert '"Defaults to `true` for newly published releases"' in comment
+
+
+def header_of(job: str) -> str:
+    """The comment above JOB in the workflow's text, its lines joined."""
+    text = (REPO / ".github" / "workflows" / "ci-cd.yml").read_text()
+    above = text.split(f"\n  {job}:\n")[0].rsplit("\n\n", 1)[1]
+    return " ".join(line.strip().removeprefix("#").strip() for line in above.splitlines())
+
+
+def test_the_readme_and_the_comments_say_one_release_job_at_a_time_and_the_check_after():
+    readme = " ".join(README.split())
+    assert (
+        "One `release` job runs at a time across the repository's runs (its concurrency group,"
+        " in which up to 100 wait and none waiting is replaced by a newer one; that GitHub takes"
+        " this for a job is read in its documentation, not measured), so no other tag's"
+        " `release` publishes between the job's last look and its publication. The look after"
+        " the publication checks what it said: when it lists a higher stable version and the"
+        " publication said the release is GitHub's latest, the job stops with a line of its own"
+        " and edits no other release (the table has the line). A release published by hand, or"
+        " one GitHub's listing shows only after the job's last look, can still leave GitHub's"
+        " latest on a lower version, and the job cannot see it."
+    ) in readme
+    assert (
+        "| `the GitHub release for …, read by its id, is this run's and public, with the title"
+        " and the notes this run wrote and exactly the files this run attested, and this job's"
+        " publication asked GitHub to make it the repository's latest release` |"
+    ) in readme
+    header = header_of("release")
+    for said in (
+        "One such job runs at a time across all runs (its concurrency group, of its own):"
+        " another tag's `release` waits until this one ends,",
+        "`queue: max` lets up to 100 wait: a job waiting is not replaced by a newer one, as"
+        " GitHub does by default and as a waiting `aliases` is, which would leave its tag"
+        " without a release.",
+        "A re-run of this job waits as a first run does.",
+        "a candidate and its release tagged close together run one after the other, either"
+        " first, and a candidate published after its release is a pre-release, never the"
+        " latest.",
+        "A run re-run later keeps the workflow of its own commit, and a commit from before this"
+        " group has none.",
+        "That GitHub takes `queue` in a job's concurrency is read in its workflow syntax"
+        " reference, not measured.",
+    ):
+        assert said in header, said
+    comment = " ".join(CREATE["run"].replace("#", "").split())
+    assert (
+        "The look after the publication checks it: when it lists a higher stable version and"
+        " the publication said latest, the job stops with a line of its own and edits no other"
+        " release"
+    ) in comment

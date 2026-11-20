@@ -27,7 +27,6 @@ an update time, keeps a file's bytes per release where a test gives them, and st
 import pytest
 from test_ci_release_retry_unit import (
     CREATE,
-    DRAFT,
     FETCH,
     LISTING,
     README,
@@ -43,6 +42,7 @@ from test_ci_release_retry_unit import (
     run,
     setup,
     the_error,
+    unfinished,
     untagged,
     writes,
 )
@@ -60,7 +60,8 @@ CHANGED = (
     " ones the release holds; re-run this job, which reads and compares it again"
 )
 UNREAD = (
-    "::error::the files of the GitHub release for {tag}, {state}, could not be downloaded, so"
+    "::error::the files of the GitHub release for {tag}, {state} as read by its id, could not be"
+    " downloaded, so"
     " they were not compared and nothing shows that they differ; re-run this job, and delete"
     " nothing unless the releases page shows a file of the draft missing or unfinished"
 )
@@ -123,7 +124,7 @@ def test_a_cut_draft_beside_a_whole_one_the_listing_does_not_show_yet_is_never_p
     (tmp_path / "existing" / "held" / "77" / WHEEL).write_bytes(attached(tag)[WHEEL][:4])
     done, calls = attempt(tmp_path, tag, candidate, stale=([cut], None))
     assert done.returncode == 1
-    assert the_error(done) == DRAFT.format(tag=tag)
+    assert unfinished(the_error(done), tag)
     assert writes(calls) == [] and [r["draft"] for r in held(tmp_path)] == [True, True]
     assert fetched(calls) == []
 
@@ -150,7 +151,7 @@ def test_an_asset_not_uploaded_or_of_another_size_is_not_fetched(
     assert done.returncode == 1 and writes(calls) == [] and held(tmp_path) == [existing]
     assert fetched(calls) == fetches(77)[:1]  # the wheel, which comes first, and no more
     if left == "draft":
-        assert the_error(done) == DRAFT.format(tag=tag)
+        assert unfinished(the_error(done), tag)
     else:
         assert the_error(done).startswith(
             REFUSED.format(tag=tag) + f"{SOURCE} is not the file this run attested"
@@ -164,7 +165,7 @@ def test_a_file_whose_bytes_differ_at_the_size_attested_is_fetched_and_not_publi
     existing = made_earlier(tag, candidate == "true", draft=True)
     files = {**attached(tag), SOURCE: b"A SOURCE ARCHIVE"}  # sixteen bytes, as the run's
     done, calls = run(tmp_path, tag, candidate, existing, files)
-    assert done.returncode == 1 and the_error(done) == DRAFT.format(tag=tag)
+    assert done.returncode == 1 and unfinished(the_error(done), tag)
     assert writes(calls) == [] and fetched(calls) == fetches(77)[:2]
 
 
@@ -204,7 +205,7 @@ def test_a_file_replaced_before_its_fetch_is_not_found_by_its_old_id(tmp_path, t
     assert the_error(done) == UNREAD.format(tag=tag, state="a draft")
     assert writes(calls) == [] and fetched(calls) == fetches(77)[:2]
     done, calls = attempt(tmp_path, tag, candidate)
-    assert done.returncode == 1 and the_error(done) == DRAFT.format(tag=tag)
+    assert done.returncode == 1 and unfinished(the_error(done), tag)
     assert writes(calls) == [] and fetched(calls)[1] == FETCH.format(aid=999)
 
 

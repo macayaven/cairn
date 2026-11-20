@@ -120,24 +120,24 @@ def _prose(text: str, clear: bool = True) -> str:
     return first + feed + _FENCE_LEAD.sub(r"\1\\~", rest)
 
 
-def _paired(text: str) -> set[int]:
+def _paired(text: str) -> dict[int, bool]:
     """The places of the `*`, `_` and `~` that Slack shows as emphasis in `text`, prose as
-    Slack displayed it. Slack's page on message text gives `*bold*`, `_italic_` and `~strike~`
-    and says nothing of where a mark opens or closes; the rule is the third tester's model
-    of it (its `slack_styles`) with "not inside a word": from left to right, a mark opens
-    where neither a blank nor a mark follows it and neither a letter nor a digit stands
-    before it, and closes at the first same mark on its line, a character on at least, that
-    has no blank before it and neither a letter nor a digit after it; the marks between are
-    characters. Where none closes it, it is a character. Each character is read a bounded
-    number of times: the closers of each mark are found once, and looked for from a place
-    that only moves on."""
+    Slack displayed it, each with whether it opens. Slack's page on message text gives
+    `*bold*`, `_italic_` and `~strike~` and says nothing of where a mark opens or closes;
+    the rule is the third tester's model of it (its `slack_styles`) with "not inside a
+    word": from left to right, a mark opens where neither a blank nor a mark follows it and
+    neither a letter nor a digit stands before it, and closes at the first same mark on its
+    line, a character on at least, that has no blank before it and neither a letter nor a
+    digit after it; the marks between are characters. Where none closes it, it is a
+    character. Each character is read a bounded number of times: the closers of each mark
+    are found once, and looked for from a place that only moves on."""
     closers: dict[str, list[int]] = {"*": [], "_": [], "~": []}
     for at, mark in enumerate(text):
         after = text[at + 1 : at + 2]
         if mark in closers and at and not text[at - 1].isspace() and not after.isalnum():
             closers[mark].append(at)
     next_one = dict.fromkeys(closers, 0)
-    feed, paired, at = _Next(text, "\n", len(text)), set(), 0
+    feed, paired, at = _Next(text, "\n", len(text)), {}, 0
     while at < len(text) - 1:
         mark, after, before = text[at], text[at + 1], text[at - 1 : at]
         opens = not after.isspace() and after not in closers and not before.isalnum()
@@ -147,7 +147,7 @@ def _paired(text: str) -> set[int]:
                 n += 1
             next_one[mark] = n
             if n < len(ends) and ends[n] < feed(at):
-                paired.update((at, ends[n]))
+                paired.update({at: True, ends[n]: False})
                 at = ends[n] + 1
                 continue
         at += 1
@@ -164,11 +164,20 @@ def _emphasis(text: str) -> str:
     backslash before it unless no reader could take it for a mark: a `_` between two
     letters or digits, a `*` between two blanks after the first character of its line that
     is not blank (never a list's mark, nor emphasis, nor a rule). The characters Markdown
-    reads as markup are escaped as everywhere in prose."""
+    reads as markup are escaped as everywhere in prose. Where a span of bold or italic ends
+    right where another of the same mark starts, the two marks between are left out: the
+    page shows one span of the same words, where it would read `**a****b**` otherwise."""
     paired, pieces, worded = _paired(text), [], False  # worded: the line holds a non-blank
     for at, character in enumerate(text):
         before, after = text[at - 1 : at], text[at + 1 : at + 2]
         if at in paired:
+            touches = at + 1 if not paired[at] else at - 1  # the other side of the mark
+            if (
+                character in "*_"
+                and paired.get(touches) is (at < touches)
+                and (text[touches] == character)
+            ):
+                continue  # a span ends where another starts: the two make one
             pieces.append("**" if character == "*" else character)
         elif character == "_":
             bare = before.isalnum() and after.isalnum()

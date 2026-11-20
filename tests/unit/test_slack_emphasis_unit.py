@@ -75,6 +75,9 @@ def test_a_mark_slack_shows_as_a_character_is_the_character_typed(text, body, sh
         ("*a*b c*", "**a\\*b c**", "a*b c", ["strong_open"]),  # not closed inside a word
         ("_a_b_", "_a_b_", "a_b", ["em_open"]),
         ("__init__", "\\__init_\\_", "_init_", ["em_open"]),  # the first mark has one after it
+        # Two spans that touch are written as one: Markdown reads `**a****b**` otherwise.
+        ("*approve**not bold*", "**approvenot bold**", "approvenot bold", ["strong_open"]),
+        ("*a**b**c* and _d__e_", "**abc** and _de_", "abc and de", ["strong_open", "em_open"]),
     ],
 )
 def test_emphasis_slack_shows_is_written_as_emphasis(text, body, shown, styles):

@@ -285,7 +285,7 @@ update but needs the pre-upgrade backup after an incompatible one.
 - The bootstrap tests used stand-ins for Docker, the cloud secret stores and the metadata firewall.
   The template tests compared the contents delivered by cloud-init with the files in the checkout.
 - Both configurations passed the OpenTofu formatting check and initialized from local provider
-  packages. In the implementation sandbox, `tofu validate` and `tofu test` with mocked providers
-  could not finish because the provider processes were denied their local sockets.
+  packages. `tofu validate` and `tofu test` with mocked providers pass for both, and the
+  gate's job `quick` runs them on every change that touches these files.
 - Neither path has been applied to a real account. VM boot, cloud access, certificate issuance
   and bucket-backed restore still need a live check.

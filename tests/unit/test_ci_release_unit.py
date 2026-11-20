@@ -487,8 +487,8 @@ def test_the_readme_says_what_a_change_of_documents_alone_still_runs_and_how_tag
         " move either backwards.",
         "re-running every job builds again, and `publish` then stops, since the registry holds"
         " the version as another digest.",
-        "The job that may write to the registry builds nothing, checks out nothing and runs no"
-        " image.",
+        "The job that publishes it, one of the two that may write to the registry, builds"
+        " nothing, checks out nothing and runs no image.",
     ):
         assert sentence in ci, sentence
     for gone in (

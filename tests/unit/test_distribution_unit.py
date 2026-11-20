@@ -96,7 +96,7 @@ def test_the_readme_says_what_a_tag_publishes_and_releases():
         "7. **Release:** a tag whose published image passed becomes a GitHub release, with the"
         " version's section of `CHANGELOG.md` as its text and the wheel and source archive"
         " attached.",
-        "Job `package` builds them in a job that may only read the repository, with the build"
+        "Job `package` builds them in a job that holds no permission at all, with the build"
         " backend and its dependencies pinned by hash in `build-constraints.txt`; job"
         " `release`, the only one that may write to the repository, builds and installs"
         " nothing, checks that it got one wheel and one source archive of the tag's version,"

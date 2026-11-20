@@ -92,7 +92,7 @@ A copy of the database file, and the replica in the operator's bucket, hold all 
 
 ## Records the law protects
 
-cairn has not been assessed against HIPAA, FERPA, COPPA or any rule like them, and as shipped it is not ready to hold health or education records about people who can be identified, children's least of all. Nothing in the software stops such a record from being written, so keeping them out is a rule for the people who use an install. What an operator would have to add or decide before that could change:
+cairn has not been assessed against HIPAA, FERPA, COPPA or any rule like them, and as shipped it is not ready to hold health or education records about people who can be identified, children's least of all. Nothing in the software reliably stops such a record from being written (the guard's stricter policy refuses a few labelled patterns and no more), so keeping them out is a rule for the people who use an install. What an operator would have to add or decide before that could change:
 
 - **Encryption of the file.** cairn does not encrypt the database file itself. The disk, the storage bucket and the snapshots are encrypted by whoever provides them, with their keys unless the operator supplies one. Whoever holds the file or a backup of it reads every workspace.
 - **Who inside can read.** A workspace's owners can read every project in it, private ones included, and so can a key that manages the workspace. No setting takes that away.

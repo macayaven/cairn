@@ -392,13 +392,14 @@ def test_past_the_ceiling_only_as_many_later_claims_leave_as_keep_the_title(desk
     says("security", CHECKS, TITLED)
 
 
-def test_a_new_title_can_uncover_a_fence_so_no_number_of_renders_is_promised(desk):
+def test_a_new_title_can_uncover_a_fence_within_the_number_of_renders_promised(desk):
     """Nineteen renders, on ordinary notes (the reviewer's second page in other words;
     eighteen was the most seen until then). Sixteen fences are named one by one and the
     seventeenth claim is the oldest note's. Without it the page is titled OPS, and a tail
     whose heading says OPS, written under that heading until then, is written with none,
-    after a claim whose fence covers it: an eighteenth claim to name. What ends the loop
-    is only that a render which names a claim takes it."""
+    after a claim whose fence covers it: an eighteenth claim to name. Within the caps, what
+    ends the loop is that a render which names a claim takes it; the guide's number holds
+    whatever the page (test_forget_render_cap_unit.py)."""
 
     def others():
         nonlocal separator
@@ -420,6 +421,7 @@ def test_a_new_title_can_uncover_a_fence_so_no_number_of_renders_is_promised(des
     says(
         "security",
         CHECKS,
-        "No number of readings is promised: a forget ends because each reading takes at least"
-        " the claim at fault, and a title that changes can uncover another.",
+        "So a forget reads a page at most 35 times, whatever it holds: a 35th reading comes only"
+        " if the 34th still finds a claim at fault, which would mean the parser read one text"
+        " two ways, and then every claim with a backtick or a tilde leaves.",
     )

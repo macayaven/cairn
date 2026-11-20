@@ -46,9 +46,9 @@ For each page (`compared`, `beside`):
    its last render.
 2. Cost. A forget renders no more often than the oracle (calls of compiler.left_to_run);
    in a render the body is parsed whole at most CLOSERS_MAX + 1 times and once for each
-   question, and a question's text is never more than twice the body. No number of renders
-   is promised: the most here is pinned, and test_forget_changed_title_unit.py has a page
-   that takes more.
+   question, and a question's text is never more than twice the body. The number of
+   renders promised is erasure.RENDERS_HARD + 3 (test_forget_render_cap_unit.py); the most
+   here is pinned, and test_forget_changed_title_unit.py has a page that takes more.
 3. The export of the result imports, and the imported page's claims are the same.
 
 What this search does not hold, and pages made for it show (test_forget_siblings_unit.py,
@@ -84,8 +84,8 @@ INLINE = "Ada keeps `port 80` open."
 FENCED = "~~~text\nBrook owns the rollback.\n~~~"
 # In one render the body is parsed CLOSERS_MAX + 1 times at most, and once for each question
 # asked of the claims before the one named (erasure._before_it): ASKS_MAX of them at most
-# on these pages. No number of renders is promised: a forget never renders more often than
-# the plain loop, and RENDERS_SEEN is the most it took here.
+# on these pages. On them a forget never renders more often than the plain loop, and
+# RENDERS_SEEN is the most it took (the bound on every page: erasure.RENDERS_HARD + 3).
 ASKS_MAX = 4
 RENDERS_SEEN = CLOSERS_MAX + 2
 

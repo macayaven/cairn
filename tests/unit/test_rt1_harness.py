@@ -48,7 +48,7 @@ from cairn.arrange import tidy_page
 from cairn.gate import lint_gate
 from cairn.memory import Memory, RequestError
 from cairn.spans import CLOSERS_MAX, compared_text
-from cairn.store import Store
+from cairn.store import Store, erasure
 from cairn.store.portable import Refusal, version_faults
 
 PROJECT = "alpha"
@@ -251,14 +251,44 @@ def opens_a_fence_line(text: str) -> bool:
     return any(_OPENS.match(line) for line in re.split(r"\r\n?|\n", text))
 
 
+def never_closed(text: str) -> bool:
+    """Whether `text` has a line that opens a code fence and no later line that closes it
+    (read leniently, after indentation, quote and list markers: a run of the same character
+    at least as long, and nothing else on the line)."""
+    run = None
+    for line in re.split(r"\r\n?|\n", text):
+        if run is None:
+            found = _OPENS.match(line)
+            run = found.group(1) if found else None
+        else:
+            rest = re.sub(r"^(?:[ \t]*>)*[ \t]*", "", line).rstrip(" \t")
+            if rest and set(rest) == {run[0]} and len(rest) >= len(run):
+                run = None
+    return run is not None
+
+
+def renders_max() -> int:
+    return erasure.RENDERS_MAX  # read at each use: a run may lower it to reach the cap
+
+
 def declared(watch: Watch, held: dict, notes: list, slug: str) -> set:
-    """The claims the guide lets the forget take besides the plain loop's: at each of its
-    renders past the sixteenth that names a claim, those written after the named one that
-    begin with indentation and have a line that opens a fence; and those written before,
-    whose fence covers what follows once those have left (the plain loop on the rest)."""
+    """The claims the guide lets the forget take besides the plain loop's, each class by
+    the guide's own sentences (src/cairn/guides/security.md, on what a forget takes).
+
+    Past sixteen readings that each find a claim at fault: the claims written after the
+    claim at fault that begin with indentation and have a line that opens a fence; and a
+    claim written before those, whose fence covers what follows once they have left (the
+    plain loop on the rest names it before the claim at fault).
+
+    From reading RENDERS_MAX + 1: besides those, every claim directly before the claim at
+    fault whose code fence was never closed (no closing line in it, none written by the
+    body after it), back to the first heading or claim that has none."""
     out: set = set()
     naming = [r for r in watch.renders if r[2] is not None]
-    for title, claims, place, _ in naming[CEILING:]:
+    for reading, (title, claims, place, body) in enumerate(naming, 1):
+        past, capped = reading > CEILING, reading > renders_max()
+        if not (past or capped):
+            continue
         blocks = compiler._blocks(
             title, claims, held, str, compiler.section_headings, compiler.heading_text
         )
@@ -269,10 +299,38 @@ def declared(watch: Watch, held: dict, notes: list, slug: str) -> set:
             c for c in order[at + 1 :] if c.text[:1] in (" ", "\t") and opens_a_fence_line(c.text)
         ]
         out |= {key(c) for c in after}
-        gone = {id(named), *map(id, after)}
-        rest = [c for c in claims if id(c) not in gone]
-        _, dropped, *_ = plain_loop(rest, held, notes, slug)
-        out |= {key(c) for c in dropped if order.index(c) < at}
+        if past:
+            gone = {id(named), *map(id, after)}
+            rest = [c for c in claims if id(c) not in gone]
+            _, dropped, *_ = plain_loop(rest, held, notes, slug)
+            out |= {key(c) for c in dropped if order.index(c) < at}
+        if capped:
+            out |= {key(c) for c in left_open(body, blocks, named)}
+    return out
+
+
+def left_open(body: str, blocks: list, named) -> list:
+    """The claims directly before `named` in `blocks` whose fence was never closed: no
+    closing line in the claim, and the body wrote nothing between it and the next block;
+    back to the first heading, or the first claim that has none."""
+    at, cursor, after = None, 0, []
+    for n, (text, claim) in enumerate(blocks):
+        start = body.find(text, cursor)
+        if start < 0:
+            return []
+        end = start + len(text)
+        following = body.find("\n\n", end)
+        after.append(body[end:following] if following >= 0 else body[end:])
+        cursor = end
+        if claim is named:
+            at = n
+            break
+    out = []
+    for n in range(at - 1, -1, -1) if at is not None else ():
+        text, claim = blocks[n]
+        if claim is None or after[n].strip() or not never_closed(text):
+            break
+        out.append(claim)
     return out
 
 
@@ -353,11 +411,13 @@ class Run:
         if self.check_restore:
             store.export(archive)
         watch = Watch()
+        began = time.monotonic()
         with watch.on():
             answer = Memory(store, lint_gate).forget(PROJECT, note_id)
+        seconds = time.monotonic() - began
         if self.check_restore:
             self.forget_restored(step, archive, note_id)
-        stat: dict[str, Any] = {"step": step, "pages": len(want)}
+        stat: dict[str, Any] = {"step": step, "pages": len(want), "seconds": seconds}
         if set(answer["rebuilt"]) != set(preview.rebuilt) or set(answer["removed"]) != set(
             preview.removed
         ):
@@ -393,8 +453,14 @@ class Run:
             self.fault(
                 step, "work-input", f"a parser input of {stat['largest']} on a body of {body0}"
             )
-        if stat["renders"] > CEILING + 3:
-            self.fault(step, "work-renders", f"{stat['renders']} renders")
+        plain = sum(len(e.titles) for e in want.values())
+        stat["plain"] = plain
+        # the guide: "Until a fence still runs on after sixteen readings, a forget reads the
+        # page no more often than it would by reading it again after each claim that leaves."
+        if stat["naming"] <= CEILING and stat["renders"] > plain:
+            self.fault(step, "renders-over-plain", f"{stat['renders']} renders, plain {plain}")
+        if stat["renders"] > max(renders_max() + 2, plain):
+            self.fault(step, "work-renders", f"{stat['renders']} renders, plain {plain}")
         self.audit(step, note_id, len(want), left_total)
         self.orphans(step, note_id, on_page_before, want)
         if self.check_restore:
@@ -966,6 +1032,9 @@ def main(argv: list[str]) -> None:
         if arg.startswith("--seeds="):
             lo, hi = map(int, arg.split("=", 1)[1].split(":"))
     do_shrink = "--shrink" in argv
+    for arg in argv:
+        if arg.startswith("--cap="):  # a lower cap, so generated pages reach its class
+            erasure.RENDERS_MAX = int(arg.split("=", 1)[1])
     totals: dict[str, int] = {}
     worst: dict[str, tuple] = {}
     found: dict[str, list[int]] = {}
@@ -982,7 +1051,7 @@ def main(argv: list[str]) -> None:
             totals["top_moved"] = totals.get("top_moved", 0) + bool(stat.get("top_moved"))
             totals["retitled"] = totals.get("retitled", 0) + bool(stat.get("retitled"))
             totals["past16"] = totals.get("past16", 0) + (stat.get("dropped", 0) > CEILING)
-            for m in ("renders", "parses", "chars", "largest"):
+            for m in ("renders", "parses", "chars", "largest", "seconds"):
                 ratio = stat[m] / max(stat["body"], 1) if m in ("chars", "largest") else stat[m]
                 if ratio > worst.get(m, (0,))[0]:
                     worst[m] = (ratio, seed, stat["body"])

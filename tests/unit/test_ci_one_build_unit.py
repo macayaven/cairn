@@ -227,10 +227,18 @@ def test_a_tag_promotes_only_a_digest_main_s_run_attested_for_its_commit(tmp_pat
 
 
 def test_a_gate_runner_without_gh_is_told_so_and_not_that_main_s_run_attested_nothing(tmp_path):
-    """CAIRN_GATE_RUNNER may name a runner of the operator's own, which need not have gh."""
+    """CAIRN_GATE_RUNNER may name a runner of the operator's own, which need not have gh. The
+    step's PATH holds nothing at all, since GitHub's Ubuntu image, where this test also runs,
+    has gh in /usr/bin."""
     runner = Runner(tmp_path)
-    (runner.bin / "gh").unlink()
-    done = runner.run(step("image_build", ATTESTED)["run"], GITHUB_SHA=COMMIT, MAIN=digest(MAIN))
+    nothing = tmp_path / "nothing"
+    nothing.mkdir()
+    done = runner.run(
+        step("image_build", ATTESTED)["run"],
+        PATH=str(nothing),
+        GITHUB_SHA=COMMIT,
+        MAIN=digest(MAIN),
+    )
     assert done.returncode == 1
     (error,) = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
     assert error.count(". ") == 0

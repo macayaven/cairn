@@ -118,7 +118,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   removes one note and its spans; each page any version of which cites one of them gets one
   new version (the next number) holding the latest version's claims that still have a span
   (a claim that cites several notes keeps the spans left, and goes when none is: see
-  erasure.kept_claims; a kept claim whose id was made from a forgotten span gets another),
+  erasure.kept_claims; a kept claim whose id was made from a forgotten span gets another,
+  and one that is its spans whole takes the text of the first span left, byte for byte, so
+  no spelling of the forgotten note stays), less every claim the import's check of a version
+  refuses (portable.version_faults: the version is written past the gates, a forget is never
+  refused, and the store's log counts those claims),
   titled with the `topic or title` of the oldest note left that its claims cite (the title
   it had may be the forgotten note's heading), its body rendered as the compiler renders
   it with that title, and every earlier

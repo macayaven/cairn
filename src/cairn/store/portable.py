@@ -137,7 +137,7 @@ import sqlite3
 import threading
 import zipfile
 import zlib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import IO, Any
@@ -1345,17 +1345,130 @@ def _cited_once(page: Page, cited: dict[str, str], root: str) -> None:
                 )
 
 
+def version_faults(
+    slug: str,
+    version: int,
+    claims: Sequence[Claim],
+    spans: Mapping[str, Span],
+    root: str,
+    *,
+    text_bound: bool = True,
+) -> Iterator[tuple[int, str]]:
+    """Why an import refuses `claims` as one version of a page, citing `spans` (the spans of
+    its project's notes, by id): each fault as (the place of the claim that fails, 1 for the
+    first; the reason, naming the page and the version, never a claim's text, its id or a
+    heading), and nothing for a version an import takes. The one check of a version's claims:
+    an import refuses the version with the first reason, and a forget, which is never
+    refused, writes the version without the claims named here (store.erasure, CORE6A), so
+    what either writes an import takes. An import asks it in two steps, in the order it
+    always did: everything but the bound on text when it reads the version's line
+    (_page_version, `text_bound` False), and that bound after its rule across pages
+    (_claim_text, of the same code: _past_bounds).
+
+    A claim fails alone when its id is not shaped as cairn makes one, it cites a span twice
+    or one that is not in `spans`, it is not the whole of every span it cites (by the
+    verbatim gate's comparison, or the one before CORE5), it leaves a code fence open that
+    no line closes, or it folds spans under different heading paths. Of the claims that
+    pass, one whose id an earlier one holds fails. The rest are a version past a bound when
+    their citations are more than CITATION_FACTOR times the claims and the distinct spans,
+    or their text more than CLAIM_TEXT_FACTOR times those spans' text (UTF-8 bytes, a
+    claim's white space counted). Then, from the first claim on, a claim fails when it takes
+    the claims before it that do not fail past either bound: of a passage copied too often
+    the first copies stay and the later ones fail, and a claim of a passage of its own stays.
+    So the claims no fault names pass together."""
+    from cairn.gate import fence_left_open  # the gate builds on the store
+    from cairn.gate import whole as copied
+    from cairn.store.before_core5 import whole_before_core5
+
+    where = f"{slug!r} version {version} in {root}"
+    alone: list[tuple[int, Claim]] = []
+    for n, claim in enumerate(claims, 1):
+        if not CLAIM_ID.fullmatch(claim.id):  # never the id: the archive's, not cairn's
+            fault = f"claim {n} of {where} has an id cairn does not make"
+        elif len(set(claim.span_ids)) != len(claim.span_ids):
+            fault = f"claim {n} of {where} cites a passage twice"
+        elif not set(claim.span_ids) <= spans.keys():
+            fault = f"a claim of {slug!r} in {root} cites a passage that is not of its"
+            fault += " project's notes"
+        elif not copied(claim, spans) and not whole_before_core5(claim, spans):
+            # its place, never its text or id (the archive's, not cairn's)
+            fault = f"claim {n} of {where} does not say what a passage it cites says"
+        elif fence_left_open([claim]):  # never the text
+            fault = f"claim {n} of {where} leaves a code fence open that no closing line closes"
+        elif len({spans[span_id].heading_path for span_id in claim.span_ids}) > 1:
+            # never a heading: the archive's text
+            fault = f"claim {n} of {where} folds passages under different headings"
+        else:
+            alone.append((n, claim))
+            continue
+        yield n, fault
+    first: dict[str, int] = {}  # the place of each id's first claim: `evidence` finds that one
+    for n, claim in alone:
+        if first.setdefault(claim.id, n) != n:  # never the id: the archive's, not cairn's
+            yield n, f"version {version} of {slug!r} in {root} holds two claims with one id"
+    rest = [(n, claim) for n, claim in alone if first[claim.id] == n]
+    yield from _past_bounds(slug, version, rest, spans, root, text_bound)
+
+
+def _past_bounds(
+    slug: str,
+    version: int,
+    placed: Sequence[tuple[int, Claim]],
+    spans: Mapping[str, Span],
+    root: str,
+    text_bound: bool,
+) -> Iterator[tuple[int, str]]:
+    """The faults of version_faults for claims that as a whole are past a bound of a version
+    (`placed`: each claim with its place; each cites spans of `spans` only): nothing when
+    they are within the bound on citations and, with `text_bound`, the bound on text; else
+    one fault for each claim that takes the claims before it that do not fail past either
+    bound, each with the reason the whole version is refused for."""
+    citations = sum(len(claim.span_ids) for _, claim in placed)
+    cited = {span_id for _, claim in placed for span_id in claim.span_ids}
+    text = sum(len(claim.text.encode()) for _, claim in placed)
+    if citations > CITATION_FACTOR * (len(placed) + len(cited)):
+        fault = (  # counts only, never a span or a claim
+            f"version {version} of {slug!r} in {root} cites its passages {citations} times,"
+            f" more than {CITATION_FACTOR} times its {len(placed)} claims and {len(cited)}"
+            " passages"
+        )
+    elif text_bound and text > CLAIM_TEXT_FACTOR * sum(
+        len(spans[span_id].text.encode()) for span_id in cited
+    ):
+        fault = (
+            f"the claims of {slug!r} version {version} in {root} hold more than"
+            " twice the text of the passages they cite"
+        )
+    else:
+        return
+    kept = citations = text = passages = 0  # of the claims so far that do not fail
+    cited = set()
+    for n, claim in placed:
+        new = set(claim.span_ids) - cited
+        more = (
+            citations + len(claim.span_ids),
+            text + len(claim.text.encode()),
+            passages + sum(len(spans[span_id].text.encode()) for span_id in new),
+        )
+        if (
+            more[0] > CITATION_FACTOR * (kept + 1 + len(cited) + len(new))
+            or more[1] > CLAIM_TEXT_FACTOR * more[2]
+        ):
+            yield n, fault
+        else:
+            kept, (citations, text, passages) = kept + 1, more
+            cited.update(new)
+
+
 def _claim_text(page: Page, chunks: Mapping[str, Span], root: str) -> None:
     """ValueError when the claims of `page` hold more than CLAIM_TEXT_FACTOR times the text
     of the distinct spans they cite, in UTF-8 bytes as the archive holds each (a claim's
-    whitespace counts). The message names the page and version, never the text."""
-    held = sum(len(claim.text.encode()) for claim in page.claims)
-    cited = {span_id for claim in page.claims for span_id in claim.span_ids}
-    if held > CLAIM_TEXT_FACTOR * sum(len(chunks[span_id].text.encode()) for span_id in cited):
-        raise ValueError(
-            f"the claims of {page.slug!r} version {page.version} in {root} hold more than"
-            " twice the text of the passages they cite"
-        )
+    whitespace counts): the bound on text of version_faults, asked once the import knows
+    each span is cited from one page. The message names the page and version, never the
+    text."""
+    placed = list(enumerate(page.claims, 1))
+    for _, fault in _past_bounds(page.slug, page.version, placed, chunks, root, True):
+        raise ValueError(fault)
 
 
 def _collapsed(text: str) -> str:
@@ -1420,10 +1533,6 @@ def _page_version(
     could fold passages that differ only by white space, and its version is imported as it
     is, never rewritten; the next tidy or compile rebuilds the latest (compiler.rebuilt_folds).
     """
-    from cairn.gate import fence_left_open  # the gate builds on the store
-    from cairn.gate import whole as copied
-    from cairn.store.before_core5 import whole_before_core5
-
     where = f"a line of {root}pages.jsonl"
     if missing := [key for key in _PAGE_LINE if key not in line]:
         raise ValueError(f"{where} has no {missing[0]!r}")
@@ -1455,46 +1564,8 @@ def _page_version(
         raise ValueError(f"a claim of {slug!r} in {root} is not well formed") from None
     if not claims:  # cairn removes a page that is left with none
         raise ValueError(f"version {expected} of {slug!r} in {root} has no claims")
-    for n, claim in enumerate(claims, 1):
-        if not CLAIM_ID.fullmatch(claim.id):  # never the id: the archive's, not cairn's
-            raise ValueError(
-                f"claim {n} of {slug!r} version {expected} in {root} has an id cairn does not make"
-            )
-        if len(set(claim.span_ids)) != len(claim.span_ids):
-            raise ValueError(
-                f"claim {n} of {slug!r} version {expected} in {root} cites a passage twice"
-            )
-        if not set(claim.span_ids) <= spans.keys():
-            raise ValueError(
-                f"a claim of {slug!r} in {root} cites a passage that is not of its project's notes"
-            )
-        if not copied(claim, spans) and not whole_before_core5(claim, spans):
-            raise ValueError(  # its place, never its text or id (the archive's, not cairn's)
-                f"claim {n} of {slug!r} version {expected} in {root} does not say what a"
-                " passage it cites says"
-            )
-        if fence_left_open([claim]):
-            raise ValueError(  # never the text
-                f"claim {n} of {slug!r} version {expected} in {root} leaves a code fence open"
-                " that no closing line closes"
-            )
-        if len({spans[span_id].heading_path for span_id in claim.span_ids}) > 1:
-            raise ValueError(  # never a heading: the archive's text
-                f"claim {n} of {slug!r} version {expected} in {root} folds passages under"
-                " different headings"
-            )
-    if len({claim.id for claim in claims}) != len(claims):
-        raise ValueError(  # never the id: the archive's, not cairn's
-            f"version {expected} of {slug!r} in {root} holds two claims with one id"
-        )
-    citations = sum(len(claim.span_ids) for claim in claims)
-    cited = {span_id for claim in claims for span_id in claim.span_ids}
-    if citations > CITATION_FACTOR * (len(claims) + len(cited)):
-        raise ValueError(  # counts only, never a span or a claim
-            f"version {expected} of {slug!r} in {root} cites its passages {citations} times,"
-            f" more than {CITATION_FACTOR} times its {len(claims)} claims and {len(cited)}"
-            " passages"
-        )
+    for _, fault in version_faults(slug, expected, claims, spans, root, text_bound=False):
+        raise ValueError(fault)
     return Page(
         project_id="",
         slug=slug,

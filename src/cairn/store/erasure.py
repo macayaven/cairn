@@ -51,9 +51,11 @@ from cairn.store.base import (
     StoreBase,
     _has_table,
     deletion_generation,
+    store_log,
 )
 from cairn.store.memory import _SPAN_COLUMNS, _span, _write_page_version
 from cairn.store.models import Claim, Forgotten
+from cairn.store.portable import version_faults
 
 NOT_AN_ERASER = (
     "only the project's maker and the workspace's owners can delete a project or forget its notes"
@@ -208,7 +210,12 @@ class ErasureMethods(StoreBase):
         past its latest: the latest version's claims without the note (kept_claims), its
         body cairn.compiler.render_body of them, its metrics the provenance counts ("claims",
         "spans_cited"), indexed for search in place of the old; a page left with no claim
-        is removed, with its search rows. The project keeps the note's digest, so the same text
+        is removed, with its search rows. That version is written here, past every gate, so
+        it is held to the import's own check of a version (portable.version_faults): a claim
+        an import would refuse leaves it as the note's own claims do, never the forget, and
+        one line on the store's log counts those claims by page and version (for a page they
+        leave empty, the count alone: a removed page's slug is made from a note's title).
+        The project keeps the note's digest, so the same text
         is not stored there again. The workspace's stored bytes go down by the note's size;
         the month's count of notes written does not. Recorded as note.forgotten (the note's
         id, its project's id, how many pages changed); nothing of its text, title or
@@ -227,7 +234,7 @@ class ErasureMethods(StoreBase):
             con.execute("DELETE FROM waiting WHERE note_id = ?", (note_id,))  # N1
             con.execute("DELETE FROM note_writers WHERE note_id = ?", (note_id,))  # A1
             con.execute("DELETE FROM slack_notes WHERE note_id = ?", (note_id,))  # K1
-            for slug, version, title, kept, spans in plan:
+            for slug, version, title, kept, spans, _ in plan:
                 if kept:
                     cited = {i for claim in kept for i in claim.span_ids}
                     metrics = {"claims": len(kept), "spans_cited": len(cited)}
@@ -263,13 +270,28 @@ class ErasureMethods(StoreBase):
                 (project_id, text_sha256),
             )
             self._unstore(con, size)
-            removed = [slug for slug, _, _, kept, _ in plan if not kept]
+            removed = [slug for slug, _, _, kept, _, _ in plan if not kept]
             if removed:
                 _unname(con, self._account_id, name, name, removed)
             detail = {"note": note_id, "project": project_id, "pages": len(plan)}
             self._audit(con, "note.forgotten", project=name, detail=detail)
             _compaction_due(con, self._stamp())
         self._truncate_log(f"note {note_id}")
+        for slug, version, _, kept, _, refused in plan:  # once the forget is committed
+            if refused and kept:
+                store_log.warning(
+                    "forget: %d claim(s) that an import would refuse left page %r at its"
+                    " version %d",
+                    refused,
+                    slug,
+                    version + 1,
+                )
+            elif refused:
+                store_log.warning(
+                    "forget: %d claim(s) that an import would refuse left a page, which was"
+                    " removed with them",
+                    refused,
+                )
         return _outcome(note_id, plan)
 
     def forget_preview(self, note_id: str) -> Forgotten:
@@ -345,13 +367,17 @@ class ErasureMethods(StoreBase):
 
 
 # A page of a forgotten note's project that cites it in any version: (slug, its latest version,
-# its title, the claims it keeps (kept_claims), the spans still held that those cite).
-_Planned = tuple[str, int, str, tuple[Claim, ...], dict[str, Span]]
+# its title, the claims it keeps (kept_claims, less those an import would refuse), the spans
+# of the project still held that its latest version cites, how many claims an import would
+# refuse).
+_Planned = tuple[str, int, str, tuple[Claim, ...], dict[str, Span], int]
 
 
 def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Planned]:
     """What forgetting the note does to its project's pages, read on `con`: each page that cites
-    one of its spans in any version, by slug, with what its latest version keeps. It reads
+    one of its spans in any version, by slug, with what its latest version keeps: the claims
+    kept_claims keeps, less every claim the import's check of a version names
+    (portable.version_faults, run once: the claims it does not name pass together). It reads
     the project's page versions, never the rest of the database."""
     gone = frozenset(
         span_id for (span_id,) in con.execute("SELECT id FROM spans WHERE note_id = ?", (note_id,))
@@ -376,11 +402,13 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
         ).fetchone()
         claims = [Claim(**claim) for claim in json.loads(claims_json)]
         cited = [i for claim in claims for i in claim.span_ids if i not in gone]
-        spans = _held_spans(con, cited)
+        spans = _held_spans(con, project_id, cited)
         kept = kept_claims(claims, gone, spans)
+        refused = {place for place, _ in version_faults(slug, version + 1, kept, spans, "")}
+        kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in refused)
         if kept:  # the title it had may be the forgotten note's own
             title = _first_title(con, [i for claim in kept for i in claim.span_ids]) or slug
-        planned.append((slug, version, title, kept, spans))
+        planned.append((slug, version, title, kept, spans, len(refused)))
     return planned
 
 
@@ -399,16 +427,20 @@ def _first_title(con: sqlite3.Connection, span_ids: Sequence[str]) -> str | None
 
 
 def _outcome(note_id: str, plan: list[_Planned]) -> Forgotten:
-    rebuilt = tuple(slug for slug, _, _, kept, _ in plan if kept)
-    removed = tuple(slug for slug, _, _, kept, _ in plan if not kept)
+    rebuilt = tuple(slug for slug, _, _, kept, _, _ in plan if kept)
+    removed = tuple(slug for slug, _, _, kept, _, _ in plan if not kept)
     return Forgotten(note_id=note_id, rebuilt=rebuilt, removed=removed)
 
 
-def _held_spans(con: sqlite3.Connection, span_ids: Sequence[str]) -> dict[str, Span]:
-    """The spans among `span_ids` the store still holds, by id."""
+def _held_spans(
+    con: sqlite3.Connection, project_id: str, span_ids: Sequence[str]
+) -> dict[str, Span]:
+    """The spans among `span_ids` the store still holds of the project's own notes, by id:
+    the spans an import of the project reads its pages against."""
     rows = con.execute(
-        f"SELECT {_SPAN_COLUMNS} FROM spans WHERE id IN (SELECT value FROM json_each(?))",
-        (json.dumps(list(dict.fromkeys(span_ids))),),
+        f"SELECT {_SPAN_COLUMNS} FROM spans WHERE id IN (SELECT value FROM json_each(?))"
+        " AND note_id IN (SELECT id FROM notes WHERE project_id = ?)",
+        (json.dumps(list(dict.fromkeys(span_ids))), project_id),
     ).fetchall()
     return {row[0]: _span(row) for row in rows}
 

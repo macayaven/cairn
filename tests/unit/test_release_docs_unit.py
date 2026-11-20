@@ -10,6 +10,7 @@ import re
 import tomllib
 from pathlib import Path
 
+import yaml
 from test_guide_facts_slack_unit import flat, guide_source, says, section
 
 from cairn.web import cli
@@ -51,11 +52,19 @@ def test_the_security_policy_says_which_versions_get_fixes_as_the_workflow_tags_
     tags = workflow_step("Image tags")
     assert "type=semver,pattern={{version}}" in tags
     assert "{{major}}.{{minor}}" not in tags and "latest" not in tags.split("tags: |")[1]
-    push = workflow_step("Push the scanned build")
-    assert 'grep -Fxq "$first"' in push and "a full version is published once" in push
+    decide = workflow_step("Look for this build in the registry")
+    assert 'grep -Fxq "$first"' in decide and "a full version is published once" in decide
     # Job `aliases` moves X.Y to the newest X.Y.z and latest to the highest release.
     aliases = workflow_step("Point latest and each X.Y at the highest release")
     assert "point latest " in aliases and 'point "$line" ' in aliases
+    # They move after the release is made, not with it: the interval is said.
+    assert (
+        "The tag `0.1` moves to each newer `0.1.x`, and `latest` names the highest release,"
+        " each once job `aliases` has run after the release is made: until then they name"
+        " what they named before, nothing before the first release." in fixes
+    )
+    workflow = yaml.safe_load(read(".github/workflows/ci-cd.yml"))
+    assert "release" in workflow["jobs"]["aliases"]["needs"]
 
 
 def test_the_policy_and_the_readme_say_it_is_not_assessed_for_protected_records():

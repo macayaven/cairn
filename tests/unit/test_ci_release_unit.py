@@ -6,9 +6,9 @@
 - `attest` holds only what a build provenance attestation needs (an identity token and the
   right to store attestations), runs nothing from the repository or from the files, and
   attests the wheel, the source archive, SHA256SUMS and the image's digest.
-- A release candidate vX.Y.Z-rc.N runs all of it, and publishes the image as X.Y.Z-rc.N and
-  sha-<commit> only, and a GitHub pre-release that is not marked latest. It never deploys,
-  and `aliases` does not run for it.
+- A release candidate vX.Y.Z-rc.N runs all of it but `aliases`: it publishes main's image for
+  its commit as X.Y.Z-rc.N only, and a GitHub pre-release of its own that is not marked
+  latest. It never deploys.
 - No job that may write, or holds an identity token, builds or runs the repository's code,
   whether in a shell line or through an action that builds (`deploy` runs its one script)."""
 
@@ -22,7 +22,6 @@ import pytest
 import yaml
 from test_ci_workflow_unit import (
     JOBS,
-    SHA,
     THE_GATE,
     ancestors,
     evaluate,
@@ -102,12 +101,106 @@ def builds_or_runs_the_checkout(name: str, job: dict) -> list[str]:
     return found
 
 
+CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+LOGIN = "docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550"
+DOWNLOAD = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
+ATTEST_ACTION_PINNED = "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6"
+GOOGLE_AUTH = "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093"
+# Every step a job holding a write permission or an identity token may have, in order: its
+# name and the pinned action it uses, or "run" for a shell step written in the workflow. A
+# new step, a new action, or an action at another commit fails here and is decided on.
+PRIVILEGED_STEPS = {
+    "publish": [
+        ("Install oras", "run"),
+        ("Log in to GHCR", LOGIN),
+        ("Image tags", "docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302"),
+        ("Look for this build in the registry", "run"),
+        ("Fetch the build", DOWNLOAD),
+        ("Push the scanned build", "run"),
+    ],
+    "aliases": [
+        ("Install oras", "run"),
+        ("Log in to GHCR", LOGIN),
+        ("Point latest and each X.Y at the highest release", "run"),
+    ],
+    "attest": [
+        ("Fetch what package built", DOWNLOAD),
+        ("Check the files", "run"),
+        ("The image's name", "run"),
+        ("Attest the wheel, the source archive and SHA256SUMS", ATTEST_ACTION_PINNED),
+        ("Attest the image", ATTEST_ACTION_PINNED),
+    ],
+    "attest_main": [("The image's name", "run"), ("Attest the image", ATTEST_ACTION_PINNED)],
+    "release": [
+        ("Fetch what package built", DOWNLOAD),
+        ("Check the files", "run"),
+        ("Create the release", "run"),
+    ],
+    "deploy": [
+        ("Check out", CHECKOUT),
+        ("Check the settings", "run"),
+        ("Log in to GHCR", LOGIN),
+        ("Authenticate to Google Cloud", GOOGLE_AUTH),
+        ("Find the registry host", "run"),
+        ("Log in to Artifact Registry", LOGIN),
+        ("Copy the image to Artifact Registry, by digest", "run"),
+        ("Refuse a run that is no longer the head of main", "run"),
+        ("Read the VM's report number", "run"),
+        ("Point production at the digest", "run"),
+        ("Wait for the VM to run it, healthy", "run"),
+        ("Check the public address", "run"),
+    ],
+}  # fmt: skip
+# The only lines of those shell steps that run a file: deploy's script, by its path, with one
+# of its commands.
+DEPLOY_LINE = re.compile(
+    r"\bbash scripts/deploy_production\.sh (copy|check-head|seq|promote|wait|check-url)\b"
+)
+# (`source` and `.` run a file too; a file they run is named with its path or its .sh.)
+RUNS_A_FILE = re.compile(r"(^|[\s;|&(`$])(bash|sh)\s+[^-\s]|\.sh\b|\.py\b|\./|\bscripts/")
+
+
+def privileged_steps(job: dict) -> list[tuple[str, str]]:
+    return [(s.get("name"), s.get("uses", "run")) for s in job["steps"]]
+
+
+def files_run(job: dict) -> list[str]:
+    """The lines of JOB's shell steps that run a file, deploy's own lines taken out."""
+    return [
+        line.strip()
+        for s in job["steps"]
+        for line in s.get("run", "").splitlines()
+        if RUNS_A_FILE.search(DEPLOY_LINE.sub("", line))
+    ]
+
+
+def test_a_privileged_job_runs_exactly_its_listed_steps_and_no_file_but_deploy_s_script():
+    holders = {name for name, job in JOBS.items() if holds_a_token(job)}
+    assert holders == set(PRIVILEGED_STEPS)
+    for name in holders:
+        assert privileged_steps(JOBS[name]) == PRIVILEGED_STEPS[name], name
+        assert files_run(JOBS[name]) == [], name
+    # What the check sees: a new script in deploy, and one under another name or way of
+    # running it; deploy's own script with a command it does not have.
+    for added in (
+        "bash release-helper.sh",
+        "sh ./scripts/other.sh",
+        "./tools/x",
+        "python3 tools/y.py",
+        "source env.sh",
+        "bash scripts/deploy_production.sh status",
+    ):
+        job = {"steps": [*JOBS["deploy"]["steps"], {"name": "Check the settings", "run": added}]}
+        assert files_run(job) == [added], added
+    assert files_run({"steps": [{"run": 'bash scripts/deploy_production.sh wait "$D"'}]}) == []
+
+
 def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_the_checkout():
     holders = [name for name, job in JOBS.items() if holds_a_token(job)]
-    assert set(holders) == {"publish", "aliases", "attest", "release", "deploy"}
+    assert set(holders) == {"publish", "aliases", "attest", "attest_main", "release", "deploy"}
     assert [f for name in holders for f in builds_or_runs_the_checkout(name, JOBS[name])] == []
-    # Neither `publish`, `aliases`, `attest` nor `release` checks out the repository at all.
-    for name in ("publish", "aliases", "attest", "release"):
+    # Neither `publish`, `aliases`, the two attest jobs nor `release` checks out anything.
+    for name in ("publish", "aliases", "attest", "attest_main", "release"):
         assert not any("actions/checkout" in s.get("uses", "") for s in JOBS[name]["steps"])
     # The model sees a build where one is: in a shell line, and in an action.
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("uv build --out-dir dist")
@@ -125,10 +218,10 @@ def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_t
     assert builds_or_runs_the_checkout("deploy", deploy) == []
 
 
-def test_only_attest_and_deploy_hold_an_identity_token_and_attest_runs_where_nothing_is_built():
+def test_only_the_attest_jobs_and_deploy_hold_an_identity_token_and_attest_where_nothing_is_built():
     holders = {name for name, job in JOBS.items() if "id-token" in job.get("permissions", {})}
-    assert holders == {"deploy", "attest"}
-    assert ATTEST["runs-on"] == JOBS["publish"]["runs-on"]
+    assert holders == {"deploy", "attest", "attest_main"}
+    assert ATTEST["runs-on"] == JOBS["attest_main"]["runs-on"] == JOBS["publish"]["runs-on"]
     assert ATTEST["if"] == PACKAGE["if"] == RELEASE["if"]
     assert "environment" not in ATTEST and "secrets." not in yaml.safe_dump(ATTEST)
 
@@ -321,7 +414,8 @@ def run_create(tmp_path, tag: str, candidate: str):
     (tmp_path / "release").mkdir()
     bin_ = tmp_path / "bin"
     bin_.mkdir()
-    (bin_ / "gh").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    # No release for the tag yet: the listing of releases holds none, as on a first attempt.
+    (bin_ / "gh").write_text('#!/bin/sh\nif [ "$1" = api ]; then exit 0; fi\nprintf "%s\\n" "$@"\n')
     (bin_ / "gh").chmod(0o755)
     env = {
         "PATH": f"{bin_}:/usr/bin:/bin",
@@ -384,9 +478,10 @@ def candidate_tags(tag: str) -> set[str]:
     return image_tags({**context, "needs": outputs})
 
 
-def test_a_candidate_is_published_as_its_own_tag_and_its_commit_only():
-    assert candidate_tags("v1.2.3-rc.1") == {"1.2.3-rc.1", f"sha-{SHA[:7]}"}
-    assert candidate_tags("v0.1.0-rc.12") == {"0.1.0-rc.12", f"sha-{SHA[:7]}"}
+def test_a_candidate_is_published_as_its_own_tag_only():
+    # Its image is main's, already sha-<commit>: a tag run writes no sha- tag.
+    assert candidate_tags("v1.2.3-rc.1") == {"1.2.3-rc.1"}
+    assert candidate_tags("v0.1.0-rc.12") == {"0.1.0-rc.12"}
 
 
 def test_a_release_after_its_candidates_publishes_its_full_version():
@@ -427,8 +522,11 @@ def test_the_header_says_what_the_tag_path_does_for_a_release_and_a_candidate():
         " checks every file against SHA256SUMS, as `release` does, and gives the wheel, the"
         " source archive, SHA256SUMS and the image's digest each a build provenance"
         " attestation.",
-        "Its image is published as X.Y.Z-rc.N and sha-<commit> only, never X.Y, X.Y.Z or"
-        " latest, and its GitHub release is a pre-release, not marked latest.",
+        "Its image, main's for its commit, is published as X.Y.Z-rc.N only, never X.Y, X.Y.Z"
+        " or latest, and its GitHub release is a pre-release of its own, with its own files,"
+        " not marked latest;",
+        "A v* tag builds nothing: image_build reads the image main's run published for the"
+        " tag's commit as sha-<commit>, by its digest,",
         "A tag never deploys.",
     ):
         assert sentence in header, sentence
@@ -440,18 +538,30 @@ def test_the_guides_give_the_two_checks_of_an_attestation_and_what_a_pass_proves
     expected = {
         f"gh attestation verify cairn_memory-X.Y.Z-py3-none-any.whl {workflow}",
         f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow}",
+        f"gh attestation verify oci://ghcr.io/{owner}:X.Y.Z {workflow} --source-ref"
+        " refs/heads/main",
     }
     ci = README[README.index("## CI/CD") : README.index("## Planned")]
     update = DEPLOY_GUIDE[DEPLOY_GUIDE.index("## Update") :]
     update = update[: update.index("\n## ")]
     proof = (
-        "A pass proves that these bytes are the ones this repository's `ci-cd.yml` built and"
-        " attested in GitHub Actions, unchanged since; it does not prove that the code or its"
-        " dependencies are free of flaws"
+        "A pass for the wheel proves that these bytes are the ones this repository's"
+        " `ci-cd.yml` built and attested in the tag's run, unchanged since. A pass for the"
+        " image proves less by itself, since the tag's run, which promotes the image and does"
+        " not build it, attests its digest too; with `--source-ref refs/heads/main` a pass"
+        " proves that `main`'s run of `ci-cd.yml` published and attested that digest, the run"
+        " that built it, as the tag's run checked before it promoted it. Neither proves that"
+        " the code or its dependencies are free of flaws"
     )
     for guide in (ci, update):
         assert set(VERIFY.findall(guide)) == expected
         assert proof in flat(guide)
+        assert "A pass proves that these bytes are the ones" not in flat(guide)
+    # The flag the guides give is the one the tag's run checks main's attestation with.
+    tag_check = next(
+        s for s in JOBS["image_build"]["steps"] if s.get("name", "").startswith("Check that main")
+    )
+    assert "--source-ref refs/heads/main" in tag_check["run"]
     # The image the guide names is the one `publish` tags and `attest` attests by digest.
     meta = next(s for s in JOBS["publish"]["steps"] if s.get("id") == "meta")
     assert meta["with"]["images"] == "ghcr.io/${{ github.repository }}"
@@ -479,20 +589,30 @@ def test_the_readme_says_what_a_change_of_documents_alone_still_runs_and_how_tag
         " 2 alone and a push to `main`"
         " publishes and deploys nothing; the server keeps the image it runs. Its image is still"
         " built for both platforms and scanned, as item 1 says.",
-        "A tag is published as `X.Y.Z`, which never moves: if the registry already has that"
-        " version, the same digest is carried on and another digest stops the job.",
+        "`X.Y.Z` never moves: if the registry already has that version, the same digest is"
+        " carried on and another digest stops the job.",
+        "A `v*` tag builds no image: it promotes the digest that `main`'s run published as"
+        " `sha-<commit>` for the tag's commit to `X.Y.Z` (a candidate, to `X.Y.Z-rc.N`), and"
+        " writes no `sha-` tag, so a candidate and the release tagged on one commit carry"
+        " `main`'s image, the same digest.",
+        "When the registry has no `sha-<commit>` for the tag's commit, the tag's run stops"
+        " before publishing anything and says to run it again once `main`'s run for that"
+        " commit has published it;",
         "After a release, job `aliases` points `latest` at the highest released version and each"
         " `X.Y` at its newest `X.Y.z`, one such job at a time across all runs, deciding from the"
         " releases and the registry as they are when it runs, so overlapping releases cannot"
         " move either backwards.",
-        "re-running every job builds again, and `publish` then stops, since the registry holds"
-        " the version as another digest.",
+        "On `main`, re-running every job builds again and `publish` stops, since"
+        " `sha-<commit>` holds another digest: re-run only the failed jobs.",
         "The job that publishes it, one of the two that may write to the registry, builds"
         " nothing, checks out nothing and runs no image.",
     ):
         assert sentence in ci, sentence
     for gone in (
-        "builds no image",
+        "touches only paths no image job reads builds no image",
+        "a `deploy` job that waits for approval",
+        "are replaced by the release's",
+        "`X.Y.Z-rc.N` and `sha-<commit>`",
         "the image built for linux/amd64",
         "re-running every job would publish the version again",
         "as `latest` only when it is the highest version tagged",
@@ -505,12 +625,59 @@ def test_the_readme_says_in_two_sentences_what_a_candidate_is_for_and_what_it_pu
     assert (
         "A release candidate tag `vX.Y.Z-rc.N` (N from 1) rehearses the release of `X.Y.Z`"
         " before it is made: it needs the version `X.Y.Z` in `pyproject.toml` and its section"
-        " in `CHANGELOG.md`, runs every job a release runs, attestation included, and is"
-        " refused once `vX.Y.Z` is tagged or released. It publishes the image as `X.Y.Z-rc.N`"
-        " and `sha-<commit>` only, never `X.Y`, `X.Y.Z` or `latest`, and a GitHub"
-        " pre-release, not marked latest, whose files carry the version `X.Y.Z` and are"
-        " replaced by the release's." in ci
+        " in `CHANGELOG.md`, runs every job a release runs but `aliases`, attestation included,"
+        " and is refused once `vX.Y.Z` is tagged or released. It publishes `main`'s image for"
+        " its commit as `X.Y.Z-rc.N` only, never `X.Y`, `X.Y.Z` or `latest`, and makes a"
+        " GitHub pre-release of its own, not marked latest, with its own files, which carry the"
+        " version `X.Y.Z`. The release tagged later on the same commit publishes the same image"
+        " digest and makes a second GitHub release, with files of its own; the candidate's"
+        " pre-release stays as it was." in ci
     )
+    # What it rests on: a candidate's run skips `aliases` only, and `release` makes a release
+    # for the tag that started the run, a pre-release for a candidate.
+    ran = jobs_that_run(CANDIDATE, {"release_check": {"candidate": "true"}})
+    released = jobs_that_run(CANDIDATE, {"release_check": {"candidate": ""}})
+    assert released - ran == {"aliases"} and ran <= released
+    create = next(s for s in RELEASE["steps"] if s.get("name") == "Create the release")["run"]
+    assert 'gh release create "$GITHUB_REF_NAME"' in create
+    assert "candidate=(--prerelease --latest=false)" in create
+
+
+def test_the_readme_s_two_limits_are_the_numbers_the_workflow_and_the_script_use():
+    ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
+    assert (
+        "`release_check.py` and job `aliases` each ask GitHub for at most 1,000 releases"
+        " (`release_check.py` counts candidates' pre-releases too): a listing that reaches"
+        " 1,000 stops the job and says so, and a person then raises both numbers together,"
+        " before the next tag." in ci
+    )
+    # The two stop at different points: release_check before anything is published, aliases
+    # after the version and its GitHub release are, so a release made at 999 whose aliases
+    # then list 1,000 is published with `latest` and X.Y not moved.
+    assert (
+        "`release_check.py` stops before anything is published; `aliases` stops after the"
+        " version and its GitHub release are, moving neither `latest` nor `X.Y`." in ci
+    )
+    assert "release_check" in needs(JOBS["publish"]) and "release" in needs(JOBS["aliases"])
+    assert release_check.RELEASES_ASKED == 1000
+    aliases = next(s for s in JOBS["aliases"]["steps"] if "gh release list" in s.get("run", ""))
+    assert "--limit 1000 " in aliases["run"] and "-ge 1000 ]" in aliases["run"]
+    # release_check runs before publish, so its refusal publishes nothing.
+    assert "release_check" in needs(JOBS["publish"])
+    assert (
+        "The build's archive and the release's files are kept as artifacts of the run for five"
+        " days: re-running only the failed jobs of a run works within them; after them,"
+        " `publish` still finishes when the registry already holds the digest, and anything"
+        " that needs an artifact fails, so on `main` the next push publishes a new build, and a"
+        " tag's run is re-run whole." in ci
+    )
+    kept = {
+        s["with"]["name"]: s["with"]["retention-days"]
+        for job in JOBS.values()
+        for s in job["steps"]
+        if s.get("uses", "").startswith("actions/upload-artifact")
+    }
+    assert kept == {"image": 5, "release": 5}
 
 
 def test_the_readme_lists_the_scans_and_the_quick_checks_in_items_1_and_2():
@@ -521,3 +688,25 @@ def test_the_readme_lists_the_scans_and_the_quick_checks_in_items_1_and_2():
     assert "`build-constraints.txt`" in item_1 and "redacted" in item_1
     item_2 = ci.split("2. **")[1].split("3. **")[0]
     assert "`infra/quick/aws`, `infra/quick/gcp`" in item_2 and "job `quick`" in item_2
+
+
+def test_aliases_alone_re_run_in_any_release_s_run_does_what_a_superseded_one_would_have():
+    """A waiting `aliases` replaced by a newer one that then fails leaves the aliases as they
+    were. Its step reads nothing of the run that started it (no `needs` output, ref or commit),
+    only the releases and the registry as they are, so re-running that job alone in any
+    release's run moves every alias where it belongs; the README says so."""
+    point = next(s for s in JOBS["aliases"]["steps"] if "gh release list" in s.get("run", ""))
+    said = yaml.safe_dump(point)
+    for run_s_own in ("needs.", "GITHUB_REF", "GITHUB_SHA", "github.ref", "github.sha"):
+        assert run_s_own not in said, run_s_own
+    ci = flat(README[README.index("## CI/CD") : README.index("## Planned")])
+    assert (
+        "When a waiting `aliases` is replaced by a newer one that then fails, `latest` and"
+        " `X.Y` stay where they were: re-run the job `aliases` alone in any release's run, which"
+        " decides from the releases and the registry as they are then and so moves every alias"
+        " where it belongs." in ci
+    )
+    assert (
+        "A run re-run later keeps the workflow of its own commit, and with it the cap that"
+        " commit had." in ci
+    )

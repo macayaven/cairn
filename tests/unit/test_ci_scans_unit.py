@@ -343,11 +343,22 @@ def test_every_job_that_uses_oras_installs_it_with_the_same_step():
         for name, job in JOBS.items()
         if any(re.search(r"\boras\b", s.get("run", "")) for s in job["steps"])
     ]
-    assert set(users) == {"image_scan", "image", "publish", "aliases"}
+    assert set(users) == {
+        "image_build",
+        "image_scan",
+        "image",
+        "stack",
+        "host",
+        "publish",
+        "aliases",
+    }
     steps = [
         next(s for s in JOBS[name]["steps"] if s.get("name") == "Install oras") for name in users
     ]
-    assert all(step == steps[0] for step in steps)
+    # image_build installs it on a tag only, to read main's image: the same step otherwise.
+    unconditional = [{k: v for k, v in s.items() if k != "if"} for s in steps]
+    assert all(step == unconditional[0] for step in unconditional)
+    assert [name for name, s in zip(users, steps, strict=True) if "if" in s] == ["image_build"]
 
 
 def install_step(job: str) -> dict:

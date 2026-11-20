@@ -10,7 +10,7 @@ Say what you found, the version or commit, the steps that show it, and what an a
 
 The newest release gets fixes. A fix is made on `main` and published as the next release, a patch release such as `0.1.1` after `0.1.0` when it changes nothing else, and the changelog says which versions it concerns. Earlier releases get no fixes of their own: update to the newest.
 
-An image tag with a full version, such as `0.1.0`, never moves, so an install pinned to one stays as it is until you change the pin. The tag `0.1` moves to each newer `0.1.x`, and `latest` names the highest release. An install built from `main` gets a fix by updating to `main`.
+An image tag with a full version, such as `0.1.0`, never moves, so an install pinned to one stays as it is until you change the pin. The tag `0.1` moves to each newer `0.1.x`, and `latest` names the highest release, each once job `aliases` has run after the release is made: until then they name what they named before, nothing before the first release. An install built from `main` gets a fix by updating to `main`.
 
 ## Records the law protects
 

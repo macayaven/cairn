@@ -63,7 +63,10 @@ by_digest() {
 }
 args=()
 for a in "$@"; do
-  case "$a" in --plain-http|--to-plain-http|--from-oci-layout) ;; *) args+=("$a") ;; esac
+  case "$a" in
+    --plain-http|--to-plain-http|--from-oci-layout|--to-oci-layout) ;;
+    *) args+=("$a") ;;
+  esac
 done
 case "${args[0]} ${args[1]}" in
   "repo tags")
@@ -80,7 +83,16 @@ case "${args[0]} ${args[1]}" in
     elif [ -n "$FETCH_OTHER" ]; then printf 'other bytes'
     else [ -e "$REG/${ref##*:}" ] || exit 1; cat "$REG/${ref##*:}"; fi ;;
   "cp "*)
-    printf '%s' "$BUILT" > "$REG/${args[2]##*:}" ;;
+    if [[ " $* " == *" --to-oci-layout "* ]]; then
+      # registry -> a layout directory DIR:REF: the layout $ORAS_LAYOUT holds, written as
+      # oras 1.3.6 writes one (test_oci_archive_unit.as_oras_writes)
+      [ -n "$ORAS_LAYOUT" ] || exit 1
+      dir="${args[2]%:*}"
+      mkdir -p "$dir"
+      cp -R "$ORAS_LAYOUT/." "$dir/"
+    else
+      printf '%s' "$BUILT" > "$REG/${args[2]##*:}"
+    fi ;;
   "tag "*)
     f="$(by_digest "${args[1]#*@}")" || exit 1
     cp "$f" "$REG/${args[2]}" ;;
@@ -90,6 +102,12 @@ esac
 
 GH = r"""#!/bin/bash
 printf 'gh %s\n' "$*" >> "$CALLS"
+if [ "$1" = api ]; then
+  # the head of main, as GET repos/OWNER/REPO/branches/main's commit.sha gives it
+  [ -z "$HEAD_FAILS" ] || exit 1
+  printf '%s\n' "${MAIN_HEAD:-$GITHUB_SHA}"
+  exit 0
+fi
 cat "$RELEASED"
 """
 
@@ -168,7 +186,8 @@ class Runner:
 
 def test_image_build_builds_once_reads_only_and_hands_on_one_archive():
     job = JOBS["image_build"]
-    assert job["permissions"] == {"contents": "read"}
+    # attestations: read, for a tag to read main's attestation of the image it promotes.
+    assert job["permissions"] == {"contents": "read", "attestations": "read"}
     assert "if" not in job and "needs" not in job and "environment" not in job
     configuration = yaml.safe_dump(job)
     assert "secrets." not in configuration and "login" not in configuration
@@ -177,11 +196,12 @@ def test_image_build_builds_once_reads_only_and_hands_on_one_archive():
     assert [s["name"] for s in job["steps"] if reaches_the_token(s)] == [
         "Check out",
         "Build linux/amd64 and linux/arm64",
+        "Check that main's run attested this image for this commit",
     ]
     archive = next(s for s in job["steps"] if s.get("id") == "archive")
     assert archive["run"] == (
         'python3 scripts/oci_archive.py "$RUNNER_TEMP/image/cairn.oci.tar"'
-        ' --github-output "$GITHUB_OUTPUT"'
+        ' ${ROOT:+--root "$ROOT"} --github-output "$GITHUB_OUTPUT"'
     )
     assert job["outputs"] == {
         "digest": "${{ steps.archive.outputs.digest }}",
@@ -199,14 +219,14 @@ def test_image_build_builds_once_reads_only_and_hands_on_one_archive():
         "overwrite": True,
         "compression-level": 0,
     }
-    # The only image build in the workflow besides the two rehearsals' local ones.
+    # The only image build in the workflow: the rehearsals take its amd64 image too.
     builders = {
         name
         for name, other in JOBS.items()
         for s in other["steps"]
         if s.get("uses", "").startswith("docker/build-push") or "docker build" in s.get("run", "")
     }
-    assert builders == {"image_build", "stack", "host"}
+    assert builders == {"image_build"}
 
 
 # --- the scan and the image check receive it as publish does -------------------------------------
@@ -315,11 +335,15 @@ def test_the_rehearsal_pushes_with_publish_s_own_lines():
     """The archive's check, its unpacking and the push by digest are publish's, word for word,
     except for the registry: a pull request runs every line of the push a tag runs."""
     receive, push = lines(step("image_scan", RECEIVE)["run"]), lines(step("publish", PUSH)["run"])
-    assert receive[:5] == push[:5]
+    # publish copies from the archive only when the registry lacks the digest; those lines then
+    # are the rehearsal's.
+    unpack = push.index('cd "$RUNNER_TEMP/image"')
+    assert receive[0] == push[0] == "set -o pipefail"
+    assert receive[1:5] == push[unpack : unpack + 4]
     rehearsed = next(line for line in receive if line.startswith("oras cp "))
     published = next(line for line in push if line.startswith("oras cp "))
     assert rehearsed == 'oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"'
-    assert published == 'oras cp --from-oci-layout "layout@$DIGEST" "$image:$first"'
+    assert published == 'oras cp --from-oci-layout "layout@$DIGEST" "$IMAGE:$FIRST"'
     assert (
         "registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
         in (" ".join(receive))
@@ -374,16 +398,16 @@ def test_publish_fetches_checks_and_pushes_and_nothing_more():
     job = JOBS["publish"]
     kinds = [s.get("uses", "run").split("@")[0] for s in job["steps"]]
     assert kinds == [
-        "actions/download-artifact",
         "run",
         "docker/login-action",
         "docker/metadata-action",
         "run",
+        "actions/download-artifact",
+        "run",
     ]
-    assert job["steps"][0]["with"] == {"name": "image", "path": "${{ runner.temp }}/image"}
-    assert step("publish", PUSH)["env"] == {
+    assert job["steps"][4]["with"] == {"name": "image", "path": "${{ runner.temp }}/image"}
+    assert step("publish", DECIDE)["env"] == {
         "DIGEST": "${{ needs.image_build.outputs.digest }}",
-        "ARCHIVE": "${{ needs.image_build.outputs.archive }}",
         "TAGS": "${{ steps.meta.outputs.tags }}",
     }
     assert job["outputs"] == {
@@ -393,10 +417,39 @@ def test_publish_fetches_checks_and_pushes_and_nothing_more():
     assert "image_build" in needs(job)
 
 
+DECIDE = "Look for this build in the registry"
+
+
 def publish(runner: Runner, tags: list[str], **env: str) -> subprocess.CompletedProcess:
+    """Job `publish` as the runner runs it: the decision, then the push with its outputs (the
+    archive is on the runner here whenever it is asked for). The push's result, with the
+    decision's output first; or the decision's, when it stopped the job."""
     lines_ = "\n".join(f"ghcr.io/owner/repo:{tag}" for tag in tags)
-    env = {"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v1.2.3", "TAGS": lines_, **env}
-    return runner.run(step("publish", PUSH)["run"], **env)
+    env = {
+        "GITHUB_REF_TYPE": "tag",
+        "GITHUB_REF_NAME": "v1.2.3",
+        "GITHUB_SHA": "c" * 40,
+        "TAGS": lines_,
+        **env,
+    }
+    decided = runner.run(step("publish", DECIDE)["run"], **env)
+    if decided.returncode != 0:
+        return decided
+    out = dict(
+        line.split("=", 1) for line in (runner.tmp / "github_output").read_text().splitlines()
+    )
+    pushed = runner.run(
+        step("publish", PUSH)["run"],
+        **env,
+        IMAGE=out["image"],
+        NAMES=out["names"],
+        FIRST=out["first"],
+        COPY=out["copy"],
+        FROM_ARCHIVE=out["archive"],
+    )
+    return subprocess.CompletedProcess(
+        pushed.args, pushed.returncode, decided.stdout + pushed.stdout, pushed.stderr
+    )
 
 
 def test_a_new_version_is_pushed_by_digest_and_read_back(tmp_path):
@@ -408,18 +461,20 @@ def test_a_new_version_is_pushed_by_digest_and_read_back(tmp_path):
     assert runner.tags()["1.2.3"] == built
     assert runner.oras_calls() == [
         "repo tags ghcr.io/owner/repo",
+        # The registry lacks the digest, so the archive is copied.
+        f"manifest fetch ghcr.io/owner/repo@{built}",
         f"cp --from-oci-layout layout@{built} ghcr.io/owner/repo:1.2.3",
         "manifest fetch ghcr.io/owner/repo:1.2.3",
     ]
     assert (tmp_path / "github_output").read_text() == f"digest={built}\n"
 
 
-def test_a_candidate_is_pushed_as_its_version_and_its_commit(tmp_path):
+def test_a_candidate_is_pushed_as_its_version_only(tmp_path):
     runner = Runner(tmp_path)
-    done = publish(runner, ["1.2.3-rc.1", "sha-ccccccc"], GITHUB_REF_NAME="v1.2.3-rc.1")
+    done = publish(runner, ["1.2.3-rc.1"], GITHUB_REF_NAME="v1.2.3-rc.1")
     assert done.returncode == 0, done.stdout + done.stderr
     built = digest(runner.built)
-    assert runner.tags() == {"1.2.3-rc.1": built, "sha-ccccccc": built}
+    assert runner.tags() == {"1.2.3-rc.1": built}
 
 
 def test_a_re_run_of_the_same_build_carries_on_and_pushes_nothing(tmp_path):
@@ -478,7 +533,9 @@ def test_tags_that_cannot_be_listed_push_nothing(tmp_path):
     assert "could not be listed" in done.stdout
 
 
-def test_main_is_pushed_and_its_commit_tagged_without_asking_for_the_tags(tmp_path):
+def test_main_is_pushed_as_its_commit_and_main_moves(tmp_path):
+    """sha-<commit> is written once, as a version is, so main asks for the tags too; `main`
+    itself moves with every push."""
     runner = Runner(tmp_path)
     runner.put("main", b"yesterday's main")
     done = publish(
@@ -487,7 +544,9 @@ def test_main_is_pushed_and_its_commit_tagged_without_asking_for_the_tags(tmp_pa
     assert done.returncode == 0, done.stdout + done.stderr
     built = digest(runner.built)
     assert runner.tags() == {"main": built, "sha-ccccccc": built}
-    assert not any(call.startswith("repo tags") for call in runner.oras_calls())
+    calls = runner.oras_calls()
+    assert calls[0] == "repo tags ghcr.io/owner/repo"
+    assert f"cp --from-oci-layout layout@{built} ghcr.io/owner/repo:sha-ccccccc" in calls
 
 
 # --- aliases: decided when they move, from what is released ---------------------------------------
@@ -538,6 +597,29 @@ def run_aliases(runner: Runner, released: list[str]) -> subprocess.CompletedProc
 
 def manifest(version: str) -> bytes:
     return f"the index of {version}".encode()
+
+
+@pytest.mark.parametrize(("listed", "moves"), [(999, True), (1000, False)])
+def test_the_aliases_listing_s_cap_at_its_boundary(tmp_path, listed, moves):
+    """gh is asked for at most 1,000 stable releases: 999 are all of them and the aliases move;
+    at 1,000 a higher release may be missing, so the job stops, says why, and moves nothing."""
+    runner = Runner(tmp_path)
+    released = [f"v0.{n}.0" for n in range(listed)]
+    runner.put("0.0.0", manifest("0.0.0"))
+    runner.put(f"0.{listed - 1}.0", manifest(f"0.{listed - 1}.0"))
+    runner.put("latest", manifest("0.0.0"))
+    before = runner.tags()
+    done = run_aliases(runner, released)
+    if moves:
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert runner.tags()["latest"] == digest(manifest(f"0.{listed - 1}.0"))
+    else:
+        assert done.returncode == 1
+        assert runner.tags() == before
+        assert done.stdout.strip().splitlines()[-1] == (
+            "::error::gh listed 1000 releases, the most it asks for, so a higher one may be missing"
+        )
+    assert "--limit 1000 " in step("aliases", ALIAS)["run"]
 
 
 @pytest.mark.parametrize("case", ALIAS_CASES)

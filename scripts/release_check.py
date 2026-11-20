@@ -259,8 +259,8 @@ def notes(version: str, changelog: str, tag: str | None = None) -> str:
     said = ""
     if tag is not None and candidate(tag):
         said = (
-            f"This is release candidate {tag}: its files carry the version {version} and are"
-            f" replaced by the release v{version}.\n\n"
+            f"This is release candidate {tag}: its files carry the version {version}, and the"
+            f" release v{version} is a GitHub release of its own, with files of its own.\n\n"
         )
     return said + _section(version, changelog) + "\n"
 

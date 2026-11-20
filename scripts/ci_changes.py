@@ -86,7 +86,6 @@ NO_IMAGE_WORK = (
     "CONTRIBUTING.md",
     "SECURITY.md",
     "CODE_OF_CONDUCT.md",
-    "CHANGELOG.md",
     ".gitignore",
 )
 

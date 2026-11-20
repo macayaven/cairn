@@ -1,7 +1,12 @@
-"""Smoke-test a cairn container image: python3 scripts/smoke_container.py IMAGE
+"""Smoke-test a cairn container image:
 
-IMAGE must already be local (build or pull it first): the script never pulls. It runs the
-image the way the README tells people to and checks it over HTTP from the host:
+    python3 scripts/smoke_container.py IMAGE [--platform linux/amd64|linux/arm64]
+
+IMAGE must already be local (build or pull it first): the script never pulls. With --platform,
+every container is started for that platform (docker run's --platform) and the first check
+asks the running container's own Python which machine it is, so a run on the host's image
+instead fails. It runs the image the way the README tells people to and checks it over HTTP
+from the host:
 health, the non-root user, auth on the API, MCP and UI, a key minted into the volume and
 copied out, a note-then-recall round trip (which proves FTS5 in the image's SQLite), MCP over
 HTTP, the Host check on /mcp, a browser-style login, data that outlives the container, an
@@ -174,9 +179,15 @@ def expect(condition: bool, message: str) -> None:
         raise Failed(message)
 
 
+# What Python's platform.machine() says inside a container of each platform.
+MACHINES = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}
+USAGE = "smoke_container.py IMAGE [--platform linux/amd64|linux/arm64]"
+
+
 class Smoke:
-    def __init__(self, image: str) -> None:
+    def __init__(self, image: str, platform: str | None = None) -> None:
         self.image = image
+        self.platform = platform
         self.tag = str(os.getpid())
         self.volume = f"cairn-smoke-{self.tag}"
         self.volumes = [self.volume]
@@ -195,6 +206,8 @@ class Smoke:
         args += ["-p", f"127.0.0.1::{PORT}", "-v", mount]
         if user:
             args += ["--user", user]
+        if self.platform:
+            args += ["--platform", self.platform]
         docker(*args, self.image, *command)
         first = docker("port", name, f"{PORT}/tcp").splitlines()[0]
         self.base = "http://" + first.replace("0.0.0.0", "127.0.0.1")
@@ -280,6 +293,24 @@ class Smoke:
     def starts_healthy(self) -> str:
         self.start(f"{self.volume}:/data")
         return "a named volume on /data; Docker health is healthy and /healthz is 200"
+
+    def runs_on_its_platform(self) -> str:
+        machine = docker(
+            "exec",
+            self.names[-1],
+            "python",
+            "-I",
+            "-c",
+            "import platform; print(platform.machine())",
+        )
+        if not self.platform:
+            return f"the container runs on {machine} (no platform was named)"
+        expect(
+            machine == MACHINES[self.platform],
+            f"the container runs on {machine}, not {self.platform}: the image started is not"
+            " the one named.",
+        )
+        return f"the container runs on {machine}, {self.platform}"
 
     def runs_as_non_root(self) -> str:
         uid = docker("exec", self.names[-1], "id", "-u")
@@ -535,12 +566,18 @@ class Smoke:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2 or argv[1].startswith("-"):
-        print(__doc__.strip().splitlines()[0], file=sys.stderr)
+    args = argv[1:]
+    platform = None
+    if len(args) == 3 and args[1] == "--platform" and args[2] in MACHINES:
+        platform = args[2]
+        args = args[:1]
+    if len(args) != 1 or args[0].startswith("-"):
+        print(f"usage: {USAGE}", file=sys.stderr)
         return 2
-    smoke = Smoke(argv[1])
+    smoke = Smoke(args[0], platform)
     checks: list[Callable[[], str]] = [
         smoke.starts_healthy,
+        smoke.runs_on_its_platform,
         smoke.runs_as_non_root,
         smoke.refuses_without_credentials,
         smoke.mints_a_key_into_the_volume,

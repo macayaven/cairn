@@ -1440,12 +1440,14 @@ def test_the_publishing_job_is_found_by_the_display_name_this_workflow_gives_it(
     ]
     # And it is the job that pushes the image: the only one that copies the build into the
     # registry. `aliases`, after the release, may write packages too: it moves tags only.
+    # A copy to the runner's own registry (--to-plain-http) or from GHCR into a directory
+    # (--to-oci-layout, image_build on a tag) writes nothing to GHCR.
     pushes = [
         name
         for name, job in jobs.items()
         for step in job["steps"]
         if (step.get("with") or {}).get("push") is True
-        or re.search(r"\boras cp\b(?!.*--to-plain-http)", step.get("run", ""))
+        or re.search(r"\boras cp\b(?!.*--to-(plain-http|oci-layout))", step.get("run", ""))
     ]
     assert pushes == ["publish"]
     writers = [
@@ -1461,13 +1463,27 @@ def test_the_files_for_people_who_contribute_need_no_image_work():
         "CONTRIBUTING.md",
         "SECURITY.md",
         "CODE_OF_CONDUCT.md",
-        "CHANGELOG.md",
         ".github/ISSUE_TEMPLATE/bug_report.md",
         ".github/pull_request_template.md",
     ):
         assert ci_changes.needs_no_image_work(path), path
     for path in ("README.md", "LICENSE", ".github/workflows/ci-cd.yml", ".github/dependabot.yml"):
         assert not ci_changes.needs_no_image_work(path), path
+
+
+def test_a_change_to_the_changelog_alone_builds_and_publishes():
+    """CHANGELOG.md is the release's own text, and the last commit before a release is often a
+    change to it alone: main's run must publish that commit's image, or its tag finds no
+    sha-<commit> and no attestation to promote."""
+    assert not ci_changes.needs_no_image_work("CHANGELOG.md")
+    readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+    assert (
+        "A change to `CHANGELOG.md` alone is not one of them: it is the release's own text, so"
+        " a push of it to `main` builds and publishes like any other, and its commit can be"
+        " tagged." in readme
+    )
+    count = {10: "ten", 11: "eleven", 12: "twelve"}[len(ci_changes.NO_IMAGE_WORK)]
+    assert f"the script has all {count})" in readme
 
 
 def test_a_release_tag_runs_every_job_without_asking_git_or_the_api(tmp_path):

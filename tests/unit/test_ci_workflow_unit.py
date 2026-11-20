@@ -61,10 +61,10 @@ def test_every_action_is_pinned_to_a_full_commit_sha():
         assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action), action
 
 
-def test_only_the_deploy_and_attest_jobs_may_ask_for_an_id_token():
+def test_only_the_deploy_and_the_two_attest_jobs_may_ask_for_an_id_token():
     assert "id-token" not in WORKFLOW.get("permissions", {})
     holders = {name for name, job in JOBS.items() if "id-token" in job.get("permissions", {})}
-    assert holders == {"deploy", "attest"}
+    assert holders == {"deploy", "attest", "attest_main"}
     assert DEPLOY["permissions"]["id-token"] == "write"
 
 
@@ -111,7 +111,7 @@ def test_gate_runner_uses_json_override_and_defaults_to_hosted():
 
 
 def test_release_runner_uses_separate_json_override_and_defaults_to_hosted():
-    for name in ("publish", "verify", "deploy", "attest", "release", "aliases"):
+    for name in ("publish", "verify", "deploy", "attest", "attest_main", "release", "aliases"):
         expression = JOBS[name]["runs-on"]
         match = re.fullmatch(
             r"\$\{\{ fromJSON\(vars\.CAIRN_RELEASE_RUNNER \|\| '([^']+)'\) \}\}", expression
@@ -207,7 +207,7 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
     assert calls.read_text().splitlines() == [
         f"docker pull --quiet --platform linux/amd64 ghcr.io/owner/repo@{digest}",
         f"docker image inspect --format {{{{.Architecture}}}} ghcr.io/owner/repo@{digest}",
-        f"python3 scripts/smoke_container.py ghcr.io/owner/repo@{digest}",
+        f"python3 scripts/smoke_container.py ghcr.io/owner/repo@{digest} --platform linux/amd64",
     ]
     assert job["env"]["AMD64"] == "${{ needs.publish.outputs.amd64 }}"
 
@@ -215,15 +215,19 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
 GUIDE_PULL = "Pull the image as the run guide does, with no login"
 
 
-def run_the_guide_pull(tmp_path, repo_digest: str, **ref: str) -> tuple[int, str, list[str]]:
+def run_the_guide_pull(tmp_path, pulled: str, **ref: str) -> tuple[int, str, list[str]]:
     """Job `verify`'s anonymous pull as bash runs it, with a docker that records its calls and
-    answers `inspect` with REPO_DIGEST. The tag pushed is v1.2.3 of the public Owner/Repo,
-    unless `ref` says otherwise."""
+    whose pull prints `Digest: PULLED`, as docker pull does after a pull (Docker's reference
+    for docker image pull). The tag pushed is v1.2.3 of the public Owner/Repo, unless `ref`
+    says otherwise."""
     step = next(s for s in JOBS["verify"]["steps"] if s.get("name") == GUIDE_PULL)
     docker = tmp_path / "docker"
     docker.write_text(
         '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
-        'if [ "$1" = inspect ]; then printf "%s\\n" "$REPO_DIGEST"; fi\n'
+        'if [ "$1" = pull ]; then\n'
+        '  printf "1.2.3: Pulling from owner/repo\\nDigest: %s\\n" "$PULLED"\n'
+        '  printf "Status: Downloaded newer image for %s\\n%s\\n" "$2" "$2"\n'
+        "fi\n"
     )
     docker.chmod(0o755)
     calls = tmp_path / "calls"
@@ -232,7 +236,7 @@ def run_the_guide_pull(tmp_path, repo_digest: str, **ref: str) -> tuple[int, str
         env={
             "PATH": f"{tmp_path}:/usr/bin:/bin",
             "CALLS": str(calls),
-            "REPO_DIGEST": repo_digest,
+            "PULLED": pulled,
             "GITHUB_REPOSITORY": "Owner/Repo",
             "GITHUB_REF_NAME": "v1.2.3",
             "GITHUB_REF_TYPE": "tag",
@@ -250,6 +254,9 @@ def run_the_guide_pull(tmp_path, repo_digest: str, **ref: str) -> tuple[int, str
     return done.returncode, done.stdout, made
 
 
+PUSHED_INDEX = "sha256:" + "a" * 64
+
+
 def test_on_a_tag_verify_pulls_the_version_as_the_guide_says_with_no_login(tmp_path):
     steps = JOBS["verify"]["steps"]
     pull = next(s for s in steps if s.get("name") == GUIDE_PULL)
@@ -259,33 +266,21 @@ def test_on_a_tag_verify_pulls_the_version_as_the_guide_says_with_no_login(tmp_p
     assert steps.index(pull) < steps.index(login)
     assert set(pull) == {"name", "env", "run"}
     assert pull["env"] == {"REPOSITORY_PRIVATE": "${{ github.event.repository.private }}"}
-    published = "ghcr.io/owner/repo@sha256:" + "a" * 64
-    code, _, calls = run_the_guide_pull(tmp_path, published)
-    image = "ghcr.io/owner/repo:1.2.3"
-    # Logged out first; then the run guide's own two commands, by the version tag.
+    code, _, calls = run_the_guide_pull(tmp_path, PUSHED_INDEX)
+    # Logged out first; then the run guide's own command, by the version tag.
     assert code == 0
-    assert calls == [
-        "logout ghcr.io",
-        f"pull {image}",
-        f"inspect --format {{{{index .RepoDigests 0}}}} {image}",
-    ]
+    assert calls == ["logout ghcr.io", "pull ghcr.io/owner/repo:1.2.3"]
 
 
 def test_on_main_verify_pulls_the_commits_own_tag_with_no_login(tmp_path):
     """A push to main is published as `main` and `sha-<7>`: the commit's own tag is the one
-    no later push moves, so that is what is pulled. The first release then repeats a step
-    that main has run already."""
-    published = "ghcr.io/owner/repo@sha256:" + "a" * 64
+    no later push moves, so that is what is pulled, and a tag's run, whose image is main's,
+    pulls a digest main's run has pulled already."""
     code, _, calls = run_the_guide_pull(
-        tmp_path, published, GITHUB_REF_TYPE="branch", GITHUB_REF_NAME="main"
+        tmp_path, PUSHED_INDEX, GITHUB_REF_TYPE="branch", GITHUB_REF_NAME="main"
     )
-    image = "ghcr.io/owner/repo:sha-0123456"
     assert code == 0
-    assert calls == [
-        "logout ghcr.io",
-        f"pull {image}",
-        f"inspect --format {{{{index .RepoDigests 0}}}} {image}",
-    ]
+    assert calls == ["logout ghcr.io", "pull ghcr.io/owner/repo:sha-0123456"]
     assert "type=sha,enable=" in RAW_WORKFLOW  # the tag publish gives a push to main
 
 
@@ -298,13 +293,20 @@ def test_in_a_private_repository_nothing_is_pulled_without_a_login(tmp_path, pri
     assert out == "This repository is not public: nobody pulls its image without a login.\n"
 
 
-def test_the_pull_with_no_login_fails_when_the_digest_is_not_the_one_published(tmp_path):
-    other = "ghcr.io/owner/repo@sha256:" + "b" * 64
-    code, out, _ = run_the_guide_pull(tmp_path, other)
+@pytest.mark.parametrize(
+    "pulled", ["sha256:" + "b" * 64, PUSHED_INDEX + "0", "", "sha256:" + "A" * 64]
+)
+def test_the_pull_with_no_login_fails_unless_this_pull_printed_the_published_digest(
+    tmp_path, pulled
+):
+    """The digest this pull returned is compared, not what the engine knows the image by: an
+    engine that kept another index under the same name could list the published digest beside
+    the one it pulled."""
+    code, out, _ = run_the_guide_pull(tmp_path, pulled)
     assert code == 1
-    assert out == (
-        f"::error::ghcr.io/owner/repo:1.2.3, pulled with no login, is {other},"
-        f" not the digest publish pushed (sha256:{'a' * 64})\n"
+    assert out.splitlines()[-1] == (
+        f"::error::ghcr.io/owner/repo:1.2.3, pulled with no login, is {pulled or 'no digest'}"
+        f" by the digest the pull printed, not {PUSHED_INDEX}, the digest publish pushed"
     )
 
 
@@ -312,14 +314,14 @@ def test_the_pull_with_no_login_is_the_one_the_run_guide_gives():
     guide = (REPO / "src" / "cairn" / "guides" / "run.md").read_text(encoding="utf-8")
     run = next(s for s in JOBS["verify"]["steps"] if s.get("name") == GUIDE_PULL)["run"]
     assert re.search(r"^docker pull ghcr\.io/macayaven/cairn:\d+\.\d+\.\d+ &&$", guide, re.M)
-    assert 'docker pull "$image"' in run.splitlines()
-    check = "docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/macayaven/cairn:"
-    assert check in guide
-    assert "docker inspect --format '{{index .RepoDigests 0}}' \"$image\"" in run
+    assert "the `docker pull` above prints `Digest: sha256:` and a digest" in guide
+    assert "RepoDigests" not in guide
+    pulled = 'pulled="$(docker pull "$image" | tee /dev/stderr | sed -n ' + "'s/^Digest: //p')\""
+    assert pulled in run.splitlines()
 
 
 def test_release_jobs_do_not_run_the_application_environment_or_rehearsals_on_the_host():
-    for name in ("publish", "verify", "deploy", "attest", "release", "aliases"):
+    for name in ("publish", "verify", "deploy", "attest", "attest_main", "release", "aliases"):
         for step in JOBS[name]["steps"]:
             assert not step.get("uses", "").startswith("astral-sh/setup-uv"), name
             command = step.get("run", "")
@@ -367,12 +369,15 @@ def test_rehearsals_select_amd64_and_only_emulate_on_arm(name):
     assert qemu.get("env", {}).get("DOCKER_DEFAULT_PLATFORM") == (
         "${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}"
     )
-    build_index = next(
-        i for i, step in enumerate(job["steps"]) if "docker build" in step.get("run", "")
+    # The rehearsals take the build's amd64 image, by its own digest, and build none.
+    pull_index = next(
+        i
+        for i, step in enumerate(job["steps"])
+        if step.get("name") == "Pull this platform of the build"
     )
-    assert job["steps"].index(qemu) < build_index
-    build = shlex.split(job["steps"][build_index]["run"])
-    assert build[build.index("--platform") + 1] == "linux/amd64"
+    assert job["steps"].index(qemu) < pull_index
+    assert job["env"]["PLATFORM"] == "linux/amd64" and job["env"]["ARCH"] == "amd64"
+    assert not any("docker build" in step.get("run", "") for step in job["steps"])
     if name == "host":
         # Emulated on an ARM64 runner the job took 31 minutes; 40 left no room.
         assert job["timeout-minutes"] == 60
@@ -406,18 +411,23 @@ def test_rehearsals_refuse_a_local_image_for_the_wrong_platform(
     tmp_path, name, architecture, success
 ):
     steps = JOBS[name]["steps"]
-    preflight = next(step for step in steps if step.get("name") == "Check the image platform")
-    assert steps.index(preflight) == len(steps) - 2
+    preflight = next(
+        step for step in steps if step.get("name") == "Pull this platform of the build"
+    )
+    # Then the runner's registry is stopped, and the rehearsal runs.
+    assert steps.index(preflight) == len(steps) - 3
     docker = tmp_path / "docker"
     docker.write_text(
         "#!/bin/sh\n"
+        'case "$1" in pull|tag) exit 0 ;; esac\n'
         'test "$*" = "image inspect --format {{.Architecture}} cairn:ci" || exit 77\n'
         'printf "%s\\n" "$IMAGE_ARCH"\n'
     )
     docker.chmod(0o755)
+    env = {k: v for k, v in JOBS[name]["env"].items() if k in ("LOCAL", "PLATFORM", "ARCH")}
     result = subprocess.run(
         ["/bin/bash", "-e", "-c", preflight["run"]],
-        env={"PATH": str(tmp_path), "IMAGE_ARCH": architecture},
+        env={"PATH": str(tmp_path), "IMAGE_ARCH": architecture, "IMAGE": "x@sha256:1", **env},
         capture_output=True,
         text=True,
         check=False,
@@ -583,8 +593,9 @@ def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
     # The three image jobs also need `changes`, the only way to read its output; the image
     # check needs image_build, whose build it runs.
     assert needs(JOBS["image"]) == {"test", "changes", "image_build"}
-    assert needs(JOBS["host"]) == {"test", "changes"}
-    assert needs(JOBS["stack"]) == {"changes"}
+    # The rehearsals rehearse that build too, its amd64 image, and build none of their own.
+    assert needs(JOBS["host"]) == {"test", "changes", "image_build"}
+    assert needs(JOBS["stack"]) == {"changes", "image_build"}
     assert needs(JOBS["publish"]) == {
         "infra",
         "image",
@@ -760,7 +771,8 @@ def not_a_pull_request(event_name: str, ref: str) -> dict:
 # So does `package_check`, the rehearsal of the build a tag runs.
 CHEAP = {"test", "infra", "changes", "package_check", *ALWAYS_ON}
 THE_GATE = CHEAP | {"image", "stack", "host"}
-EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "deploy"}
+# On main, `attest_main` signs the published image's digest for the commit after `verify`.
+EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "attest_main", "deploy"}
 # A v* tag runs the gate, checks the tag against the version, publishes, smoke-tests what it
 # published, builds the wheel and the source archive and makes the GitHub release; it never
 # deploys.
@@ -1043,7 +1055,7 @@ def test_host_rehearsal_units_receive_the_amd64_platform():
         == 'sudo systemctl set-environment "DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM"'
     )
     assert steps.index(step) < next(
-        i for i, s in enumerate(steps) if "docker build" in s.get("run", "")
+        i for i, s in enumerate(steps) if s.get("name") == "Pull this platform of the build"
     )
     assert JOBS["host"]["env"]["DOCKER_DEFAULT_PLATFORM"] == "linux/amd64"
 
@@ -1249,7 +1261,8 @@ def test_the_header_says_what_a_tag_must_be_and_what_it_publishes():
         " its X.Y, and a version that already has a GitHub release.",
         "A tag is published as X.Y.Z, a full version that never moves: when the registry has"
         " it already, `publish` carries on with the same digest and stops at another one.",
-        "A push to main is published as main and sha-<commit>, never latest.",
+        "A push to main is published as main and sha-<commit>, never latest, and sha-<commit>"
+        " is written once, by the same rule. A tag writes no sha- tag.",
         "After a release, job `aliases`, one at a time across all runs, points latest at the"
         " highest released version and each X.Y at its highest X.Y.z, deciding from the"
         " releases and the registry as they are when it runs.",
@@ -1479,7 +1492,8 @@ def run_release_step(tmp_path, step: dict, files: list[str], tag: str = "v1.2.3"
         'exec shasum -a 256 "$@"\n'
     )
     (bin_ / "sha256sum").chmod(0o755)
-    (bin_ / "gh").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    # No release for the tag yet: the listing of releases holds none, as on a first attempt.
+    (bin_ / "gh").write_text('#!/bin/sh\nif [ "$1" = api ]; then exit 0; fi\nprintf "%s\\n" "$@"\n')
     (bin_ / "gh").chmod(0o755)
     return subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
@@ -1631,9 +1645,8 @@ def test_a_failed_tag_run_is_finished_without_publishing_again():
         " archive and `publish`'s digest." in comment
     )
     assert (
-        "Re-running every job builds again, and `publish` then stops in one line, since the"
-        " registry holds the version as another digest: a full version is never pushed twice."
-        in comment
+        "A tag's run builds nothing, so re-running every job promotes the same digest again,"
+        " until the release exists and this job refuses the tag." in comment
     )
     assert "Re-running every job would publish the version again" not in comment
     assert (
@@ -1665,9 +1678,9 @@ def test_the_comments_say_where_the_files_are_built_and_why():
         " tag's version, and makes the GitHub release with them and the version's section of"
         " CHANGELOG.md.",
         "CAIRN_GATE_RUNNER names the runner of the gate's jobs and of `package`, which runs the"
-        " build backend; CAIRN_RELEASE_RUNNER names the runner of publish, verify, attest,"
-        " release, aliases and deploy, which no job of a pull request uses and which runs no"
-        " build.",
+        " build backend; CAIRN_RELEASE_RUNNER names the runner of publish, verify, attest_main,"
+        " attest, release, aliases and deploy, which no job of a pull request uses and which"
+        " runs no build.",
     ):
         assert sentence in header, sentence
 

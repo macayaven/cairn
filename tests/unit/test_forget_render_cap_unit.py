@@ -5,10 +5,12 @@ cannot also be the reference for what a forget may cost: a page can be built on 
 renders once for each claim (notes stored in reverse that spell the title two ways in turn,
 with a heading that says one spelling: test_forget_title_line_unit.py). So once a forget has
 made erasure.RENDERS_MAX renders that each named a claim, at every render after that the
-claim named leaves with every claim written directly before it that the body left open: back
-to a heading or any other claim, each one whose code fence is still open where the claim
-ends and after which the body wrote no closing line, on a body that has written all its
-closers; and every claim written after it that can open a code fence (the class a forget
+claim named leaves with every claim of its section (the claims under the same headings, up
+to the next heading the body writes) that the body left open: each one whose code fence is
+still open where the claim ends and after which the body wrote no closing line, on a body
+that has written all its closers, wherever in the section it stands (the ninth round: the
+run of them directly before the claim named stopped at a list item at the margin); and
+every claim written after it that can open a code fence (the class a forget
 takes past sixteen renders, test_rt1_harness.declared). All of them at once, without asking
 the parser what follows, whatever the title does at any step: past the cap the forget is no
 longer exact, and a title that changes at every step must not bring a render a claim back.
@@ -52,23 +54,24 @@ CHECKS = "## What the checks on pages catch"
 CAPPED = (
     "After 32 readings that each find a claim at fault, a forget stops asking which claims"
     " before the one at fault would be at fault next: from the 33rd, the claim at fault leaves"
-    " with every claim directly before it whose code fence was never closed (a list item's"
-    " fence with no closing line, which ends where its item ends), back to the first heading"
-    " or claim that has none, though some of them would have stayed; the claims after it that"
-    " can open a code fence leave too, whatever the title does."
+    " with every claim of its section whose code fence was never closed (a list item's fence"
+    " with no closing line, which ends where its item ends), wherever in the section it"
+    " stands, though some of them would have stayed; the claims after it that can open a code"
+    " fence leave too, whatever the title does."
 )
 PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as cairn reads a body
 LINES = re.compile(r"\r\n?|\n")
 WIDE = "    -   ~~~\n        wide sibling"  # its item would not hold a line indented six
 EXAMPLE = "    ~~~\n    an example\n    ~~~"  # closed where it stands, after the tail
+QUOTED = "    > ~~~\n    > a quoted example"  # a fence in a quotation, after the tail
 
 
 def left_open(render, held) -> list:
     """The claims the cap takes at `render` (title, claims, place, body: a render the forget
-    made) besides the claim named, by the class's definition: those written directly before
-    it, back to a heading or any other claim, each one after which the body wrote nothing
-    and whose code fence, in the body's parse, starts in it and covers the line after its
-    last; none when the body has not written all its CLOSERS_MAX closers."""
+    made) before the claim named, by the class's definition: those of its section, from the
+    heading before it (or the title), each one after which the body wrote nothing and whose
+    code fence, in the body's parse, starts in it and covers the line after its last; none
+    when the body has not written all its CLOSERS_MAX closers."""
     title, claims, place, body = render
     if not place:
         return []
@@ -88,12 +91,11 @@ def left_open(render, held) -> list:
     out = []
     for n in range(at - 1, -1, -1):
         claim = closed[n][1]
-        if claim is None or written[n] != claim.text:
+        if claim is None:  # a heading, or the title: the section begins after it
             break
         first, end = starts[n], starts[n] + len(LINES.split(claim.text))
-        if not any(first <= start < end < stop for start, stop in fences):
-            break
-        out.append(claim)
+        if written[n] == claim.text and any(first <= a < end < b for a, b in fences):
+            out.append(claim)
     return out
 
 
@@ -113,9 +115,7 @@ def at_the_cap(render, held) -> list:
     return [*left_open(render, held), *after_it(render, held)]
 
 
-def cascade(
-    count: int, *, wide: bool = False, example: bool = False, spellings=("Ops", "OPS")
-) -> Plan:
+def cascade(count: int, *, wide: bool = False, example: str = "", spellings=("Ops", "OPS")) -> Plan:
     """`count` siblings stored in reverse, spelling the topic Ops and OPS in turn, an aside
     under `## Ops`, and a tail indented six: the plain loop renders once for each sibling
     (test_forget_cost_unit.alternating), and each sibling it names is the oldest note left,
@@ -132,7 +132,7 @@ def cascade(
             Note("sep", "Between.", "Ops"),
             Note("tail", "      End.", "Ops"),
             Note("aside", "## Ops\n\nAn aside.", "Ops"),
-            *([Note("example", EXAMPLE, "Ops")] if example else []),
+            *([Note("example", example, "Ops")] if example else []),
         ],
         [],
     )
@@ -203,7 +203,7 @@ def test_past_the_cap_the_claims_after_the_named_leave_whatever_the_title_does(c
     before the list Ops): the example stays, as in the plain loop. At render CAP + 1 it
     leaves with the claim named, whatever the title does."""
     plain, renders, kept, made, held = forgotten(
-        cascade(count, example=True, spellings=("OPS", "Ops"))
+        cascade(count, example=EXAMPLE, spellings=("OPS", "Ops"))
     )
     assert EXAMPLE in plain and len(made) == renders == count + 1
     naming = [render for render in made if render[2] is not None]
@@ -214,6 +214,25 @@ def test_past_the_cap_the_claims_after_the_named_leave_whatever_the_title_does(c
         assert [[c.text for c in at_the_cap(r, held)] for r in naming[CAP:]] == [[EXAMPLE]]
 
 
+def test_past_the_cap_a_fence_in_a_quotation_after_the_named_stays():
+    """A claim after the one named that begins with indentation and whose only fence is in a
+    quotation: the fence ends with the quotation, so it opens none that runs past the claim
+    (erasure._may_open_a_fence), and it stays past the cap as in the plain loop."""
+    plain, renders, kept, made, _ = forgotten(
+        cascade(CAP + 1, example=QUOTED, spellings=("OPS", "Ops"))
+    )
+    assert QUOTED in plain and (kept, len(made)) == (plain, renders) and renders == CAP + 2
+    says(
+        "security",
+        CHECKS,
+        "A forget does that sixteen times; if a fence still runs on then, the claim that opens"
+        " it leaves with every claim written after it on the page that begins with indentation"
+        " and has a line that opens a fence outside a quotation, even one whose fence would"
+        " have closed inside the claim.",
+    )
+
+
+LONE = "    - ~~~\n      a lone sample"
 WORD = "field notes"
 
 
@@ -226,7 +245,7 @@ def spelling(k: int) -> str:
     )
 
 
-def uncovering(count: int) -> Plan:
+def uncovering(count: int, *, lone: bool = False) -> Plan:
     """`count` pairs, each a list item at the margin, a sibling whose fence has no closing
     line, and a tail indented six under a heading that spells the topic as no other heading
     does (spelling(k)). The siblings are stored in reverse, the last the oldest, each its
@@ -234,8 +253,11 @@ def uncovering(count: int) -> Plan:
     than all titles the page spelling(0) while it stands, so every tail is under its
     heading and nothing runs on. Forgetting the intro titles the page by the last sibling:
     its tail is written with no heading, after it, and its fence covers it. Without it,
-    the next sibling's spelling, and so on."""
+    the next sibling's spelling, and so on. With `lone`, a list item at the margin and a
+    sibling under it before the first pair, with no tail: the plain loop keeps it."""
     inner = [Note("item", "- item", spelling(0)), Note("spent", SPENT, spelling(0))]
+    if lone:
+        inner += [Note("p0", "- parent 0", spelling(0)), Note("lone", LONE, spelling(0))]
     inner.append(Note("p1", "- parent 1", spelling(0)))
     for k in range(1, count + 1):
         sibling = Note(f"y{k}", f"    - ~~~\n      sample {k}", spelling(k), inner=inner)
@@ -248,16 +270,10 @@ def uncovering(count: int) -> Plan:
     return Plan([Note("intro", "Intro.", spelling(0)), *inner], [])
 
 
-def test_past_the_cap_a_title_that_uncovers_a_tail_at_every_step_costs_a_render_a_claim():
-    """What can still cost a render a claim past the cap, stated beside the guide's sentence
-    that no number of readings is promised: each claim named is the oldest note's, and its
-    going gives the page a title that one heading alone says, over a tail that then stands
-    after the next sibling. Nothing is left open before a sibling (a list item at the margin
-    stands between) and nothing after it can open a fence (the tails are indented text):
-    one render a sibling, as in the plain loop, and the same claims."""
+def uncovered(plan: Plan):
+    """The plain loop's claims and renders and the forget's, forgetting the intro."""
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20_000))
-    count = CAP + 2
-    run = Run(uncovering(count), check_restore=False)
+    run = Run(plan, check_restore=False)
     try:
         assert set(run.status.values()) == {"saved"}, run.status
         slug = run.store.list_pages(run.pid)[0].slug
@@ -266,11 +282,59 @@ def test_past_the_cap_a_title_that_uncovers_a_tail_at_every_step_costs_a_render_
         with watch.on():
             Memory(run.store, lint_gate).forget(PROJECT, run.ids["intro"])
         kept = [claim.text for claim in run.store.get_page(run.pid, slug).claims]
-        assert kept == [claim.text for claim in loop.kept]
-        assert len(watch.renders) == len(loop.titles) == count + 1
-        assert [title for title, *_ in watch.renders[:2]] == [spelling(count), spelling(count - 1)]
+        return [c.text for c in loop.kept], len(loop.titles), kept, watch.renders
     finally:
         run.close()
+
+
+@pytest.mark.parametrize("lone", [False, True], ids=["pairs", "and a lone sibling"])
+@pytest.mark.parametrize("count", [CAP, CAP + 2])
+def test_past_the_cap_every_claim_of_the_section_left_open_leaves_across_items_at_the_margin(
+    count, lone
+):
+    """The page that cost a render a claim past the cap while the class was the run directly
+    before the claim named (the ninth round: 900 claims, 301 renders, 58 seconds): each
+    sibling named is the oldest note's, and its going gives the page a title that one
+    heading alone says, over a tail that then stands after the next sibling, with a list
+    item at the margin between each sibling and the one before. Within the cap one render
+    a sibling, as in the plain loop. At render CAP + 1 every sibling left in the section
+    leaves with the one named, across the list items at the margin: CAP + 2 renders, the
+    plain loop's claims. With a lone sibling no tail ever follows, the plain loop keeps
+    it; the cap takes it too."""
+    plain, renders, kept, made = uncovered(uncovering(count, lone=lone))
+    assert (LONE in plain) == lone and renders == count + 1
+    assert [title for title, *_ in made[:2]] == [spelling(count), spelling(count - 1)]
+    if count == CAP:
+        assert (kept, len(made)) == (plain, renders)
+    else:
+        assert kept == [text for text in plain if text != LONE] and len(made) == CAP + 2
+
+
+def sectioned(count: int) -> Plan:
+    """`uncovering`, each pair in a section of its own: the list item and the sibling under
+    `## Group k`, the tail under `## spelling(k)` then `### Group k`, so that it joins the
+    sibling's section when the page is titled spelling(k)."""
+    inner = [Note("item", "- item", spelling(0)), Note("spent", SPENT, spelling(0))]
+    inner.append(Note("p1", "## Group 1\n\n- parent 1", spelling(0)))
+    for k in range(1, count + 1):
+        group = f"## Group {k}"
+        sibling = Note(f"y{k}", f"{group}\n\n    - ~~~\n      sample {k}", spelling(k), inner=inner)
+        tail = Note(f"t{k}", f"## {spelling(k)}\n\n#{group}\n\n      tail {k}", spelling(0))
+        after = [Note(f"p{k + 1}", f"## Group {k + 1}\n\n- parent {k + 1}", spelling(0))]
+        inner = [sibling, tail, *(after * (k < count))]
+    return Plan([Note("intro", "Intro.", spelling(0)), *inner], [])
+
+
+def test_past_the_cap_a_title_that_uncovers_a_tail_in_each_section_costs_a_render_a_claim():
+    """What can still cost a render a claim past the cap, stated beside the guide's sentence
+    that no number of readings is promised: the same chain, each pair in a section of its
+    own. The class past the cap stops at the section's heading, nothing else in the section
+    is left open, and nothing after the sibling can open a fence: one render a sibling, as
+    in the plain loop, and the same claims."""
+    count = CAP + 2
+    plain, renders, kept, made = uncovered(sectioned(count))
+    assert (kept, len(made)) == (plain, renders) and renders == count + 1
+    assert [title for title, *_ in made[:2]] == [spelling(count), spelling(count - 1)]
     says(
         "security",
         CHECKS,
@@ -282,8 +346,8 @@ def test_past_the_cap_a_title_that_uncovers_a_tail_at_every_step_costs_a_render_
 # (cap, seeds, the claims each class took that the plain loop keeps): at 0 the cap acts at
 # every render that names a claim; at 17 the class taken past sixteen renders acts first
 LOW = [
-    (0, range(0, 100), {"past sixteen": 0, "the cap": 111}),
-    (17, range(100, 200), {"past sixteen": 106, "the cap": 0}),
+    (0, range(0, 100), {"past sixteen": 0, "the cap": 124}),
+    (17, range(100, 200), {"past sixteen": 94, "the cap": 12}),
 ]
 
 
@@ -293,10 +357,10 @@ def test_generated_forgets_with_a_low_cap_take_only_the_two_stated_classes(
 ):
     """The tester's generated pages (test_rt1_harness.generated), forgotten with the cap at
     `low` so that it is reached: every claim a forget took that the plain loop keeps is of
-    the class taken past sixteen renders (test_rt1_harness.declared) or of the cap's
-    (`at_the_cap`, at a render past the cap), each by its own definition, and the forget
-    keeps no claim the plain loop drops. Counted by class (a claim of both is counted
-    once, as the first); with the cap at thirty-two no generated page reaches it."""
+    the cap's class (`at_the_cap`, at a render past the cap, read here) or of the classes
+    the tester reads from the guide (test_rt1_harness.declared), and the forget keeps no
+    claim the plain loop drops. Counted by class, a claim of both as the cap's; with the cap
+    at thirty-two no generated page reaches it."""
     monkeypatch.setattr(erasure, "RENDERS_MAX", low)
     counts: Counter[str] = Counter({"past sixteen": 0, "the cap": 0})
     for seed in seeds:
@@ -323,11 +387,11 @@ def test_generated_forgets_with_a_low_cap_take_only_the_two_stated_classes(
                 gone = {k for k in plain if k not in have}
                 if not gone:
                     continue
-                first = declared(watch, e.held, notes, slug)
-                second = {key(c) for render in naming[low:] for c in at_the_cap(render, e.held)}
-                assert gone <= first | second, (seed, step, slug, gone - first - second)
-                counts["past sixteen"] += len(gone & first)
-                counts["the cap"] += len(gone - first)
+                capped = {key(c) for render in naming[low:] for c in at_the_cap(render, e.held)}
+                stated = declared(watch, e.held, notes, slug)
+                assert gone <= capped | stated, (seed, step, slug, gone - capped - stated)
+                counts["the cap"] += len(gone & capped)
+                counts["past sixteen"] += len(gone - capped)
 
         run.forget = forget
         try:

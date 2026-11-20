@@ -246,8 +246,8 @@ def test_sixteen_times_and_then_the_later_claims_that_can_open_a_fence_leave(sto
         CHECKS,
         "A forget does that sixteen times; if a fence still runs on then, the claim that opens"
         " it leaves with every claim written after it on the page that begins with indentation"
-        " and has a line that opens a fence, even one whose fence would have closed inside the"
-        " claim.",
+        " and has a line that opens a fence outside a quotation, even one whose fence would"
+        " have closed inside the claim.",
         "No other claim leaves for a fence: a paragraph with inline code stays, and so does a"
         " fenced block that starts at the margin, wherever the page writes them.",
     )

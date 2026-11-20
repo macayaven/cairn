@@ -50,8 +50,9 @@ def test_claims_leave_together_while_a_new_title_moves_nothing_below_it(name):
         run.forget(0, run.ids["sep"])
         renders = run.stats[-1]["renders"]
         assert renders <= plain + RENDERS_OVER
-        if moves:  # the harness's own ceiling on renders is passed, as by the plain loop
-            assert (renders, [kind for _, kind, _ in run.faults]) == (plain, ["work-renders"])
+        if moves:  # within the harness's ceiling on renders since RT1's ninth round (the
+            # cap and two, or the plain loop's), as by the plain loop
+            assert (renders, run.faults) == (plain, [])
         else:
             assert (renders, run.faults) == (2, [])
     finally:

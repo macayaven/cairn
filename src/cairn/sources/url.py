@@ -20,7 +20,9 @@ address (review, finding 3).
   inside: a self-hoster's own services live there.
 - `CheckedTransport`: resolve every request through the source client and send it only
   to an address that passed the checks. The HTTP Host and TLS name stay the source's name.
-  A non-global address needs the operator's CAIRN_SOURCE_PRIVATE_ADDRESSES=allow.
+  A non-global address needs the operator's CAIRN_SOURCE_PRIVATE_ADDRESSES=allow. Plain http
+  to a loopback host is sent only when every address it is pinned to is loopback itself
+  (_loopback): never one a translator would rewrite into a loopback address.
 - `system_resolve(host, port)`: the system resolver. Tests hand in their own.
 """
 
@@ -89,6 +91,13 @@ def _is_global(address: IPAddress) -> bool:
     ):
         return False
     return _policy_address(address).is_global
+
+
+def _loopback(address: IPAddress) -> bool:
+    """Whether a connection to `address` stays on this machine: a loopback address, or the
+    IPv4-mapped form of one, which the kernel delivers to it. A loopback address as a
+    translator would rewrite it (64:ff9b::7f00:1) is on the network, where the translator is."""
+    return (getattr(address, "ipv4_mapped", None) or address).is_loopback
 
 
 def _address_inside(address: IPAddress) -> bool:
@@ -301,7 +310,7 @@ class CheckedTransport(httpx.AsyncBaseTransport):
         if (
             request.url.scheme == "http"
             and bare in LOOPBACK_HOSTS
-            and any(not _policy_address(address).is_loopback for address in addresses)
+            and any(not _loopback(address) for address in addresses)
         ):
             raise RefusedAddress(
                 "The plain HTTP source did not resolve to loopback.", request=request

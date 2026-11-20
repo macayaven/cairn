@@ -330,3 +330,41 @@ def test_stats_and_compact_if_due_read_a_record_a_real_rewrite_made(db, capsys):
     assert cli.main(["compact", "--if-due", "--db", str(db)]) == 0
     assert "emptied the write-ahead log" in capsys.readouterr().out
     assert generation(db) is None  # done: the record goes
+
+
+@pytest.mark.parametrize("through", ["compact", "empty_log"])
+def test_a_rewrite_with_no_new_deletion_between_truncation_and_clearing_stays_due(
+    two, db, monkeypatch, through
+):
+    """The mark of each rewrite, apart from the lock: the other store's lock is a no-op here,
+    so its rewrite (with no new deletion) can land between the server's truncation and its
+    clearing, as two compactions could before the lock. A reader holds the log from then
+    on, through the server's clearing and last truncation. Its rewrite is in the log and
+    stays due: the server clears only its own mark."""
+    import contextlib as _contextlib
+
+    server, command = two
+    deleted(server)
+    with replica(db), pytest.raises(CompactIncomplete):
+        server.compact()  # rewritten; only the log is due
+    monkeypatch.setattr(command, "compacting", _contextlib.nullcontext)
+    readers: list[sqlite3.Connection] = []
+
+    def the_other_process():
+        reader = sqlite3.connect(db)
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM settings").fetchone()
+        readers.append(reader)
+        with pytest.raises(CompactIncomplete):
+            command.compact()  # no new deletion: a rewrite of its own, its log held
+
+    before_the_first_write(server, monkeypatch, the_other_process)
+    try:
+        server.compact() if through == "compact" else server.empty_log()
+        state = server.compaction_state()
+        assert wal_size(db) > 0  # the other rewrite is still in the log
+        assert state.deleted_at is not None and state.rewritten is True
+    finally:
+        for reader in readers:
+            reader.rollback()
+            reader.close()

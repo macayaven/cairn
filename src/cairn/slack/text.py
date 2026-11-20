@@ -457,28 +457,66 @@ def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int,
     the one before: its start and end with its backticks, "block" or "code", and what it
     displayed. In the text it stands between backticks with its "&", "<" and ">" as
     entities, a block with or without a line feed after its opening and before its closing
-    fence. From the first one that is not found so, the rest is left to the backticks of the
-    text: the rich text no longer tells that text's code, and each search would read the
-    rest of the text again."""
+    fence: at the first place it can start (three backticks, or one), the longest way there.
+    From the first one that is not found so, the rest is left to the backticks of the text:
+    the rich text no longer tells that text's code.
+
+    Each place is looked at once, whatever the code (the tester's second attack, finding 6:
+    each way was searched for to the text's end): the places a block or a span can start
+    are found from where the last one ended on (_Next), and whether a way stands at one is
+    told by the digests of _Hashes, in a step, however long the way."""
     places: list[tuple[int, int, str, object]] = []
-    at = 0
+    if not code:
+        return places
+    digests, at = _Hashes(text), 0
+    starts = {True: _Next(text, "```", len(text)), False: _Next(text, "`", len(text))}
     for block, shown in code:
         sent = shown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         if block:
             ways = [f"```{above}{sent}{below}```" for above in ("\n", "") for below in ("\n", "")]
         else:
             ways = [f"`{sent}`"] if sent and "\n" not in sent else []
-        found = None
-        for way in ways:  # the first place, the longest way there; none read past it
-            where = text.find(way, at, len(text) if found is None else found[0] + len(way))
-            if where >= 0 and (found is None or (where, -len(way)) < found):
-                found = (where, -len(way))
+        ways = sorted(ways, key=len, reverse=True)  # the longest first, in their order
+        known, found = [(way, digests.of(way)) for way in ways], None
+        where = starts[block](at) if known else len(text)
+        while found is None and where < len(text):
+            found = next((way for way, value in known if digests.holds(way, where, value)), None)
+            where = where if found else starts[block](where + 1)
         if found is None:
             break
-        at = found[0] - found[1]
+        at = where + len(found)
         lines = _redact(shown).split("\n")
-        places.append((found[0], at, "block", lines) if block else (found[0], at, "code", lines[0]))
+        places.append((where, at, "block", lines) if block else (where, at, "code", lines[0]))
     return places
+
+
+class _Hashes:
+    """A digest of each start of `text`, so that whether a stretch of it is a given string is
+    told in one step, however long the string (_known_code): a polynomial hash modulo a
+    Mersenne prime, and the characters compared only where the digests are equal."""
+
+    _BASE, _MOD = 1_000_003, (1 << 61) - 1
+
+    def __init__(self, text: str) -> None:
+        self.text, self.sums, self.powers = text, [0], [1]
+        for character in text:
+            self.sums.append((self.sums[-1] * self._BASE + ord(character)) % self._MOD)
+            self.powers.append(self.powers[-1] * self._BASE % self._MOD)
+
+    def of(self, way: str) -> int:
+        """The digest of `way`."""
+        value = 0
+        for character in way:
+            value = (value * self._BASE + ord(character)) % self._MOD
+        return value
+
+    def holds(self, way: str, at: int, value: int) -> bool:
+        """Whether `text` holds `way`, whose digest is `value`, at `at`."""
+        end = at + len(way)
+        if end > len(self.text):
+            return False
+        here = (self.sums[end] - self.sums[at] * self.powers[len(way)]) % self._MOD
+        return here == value and self.text.startswith(way, at)
 
 
 class _Next:

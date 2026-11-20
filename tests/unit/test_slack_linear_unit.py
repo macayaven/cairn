@@ -1,8 +1,9 @@
 """A filed Slack message costs work in proportion to its length (the third tester, finding
 9), and the conversion runs on a worker thread, never on the server's event loop.
 
-What is counted, not timed: every reader (the Markdown parser and the passage splitter) and
-every compiled pattern of cairn.slack.text is wrapped, and the characters each call is run
+What is counted, not timed: every reader (the Markdown parser and the passage splitter),
+every compiled pattern of cairn.slack.text and every search of its own (_Next, and the
+digests of _Hashes where there are any) is wrapped, and the characters each call is run
 over are added up (a search or a match: up to where it ends, or the end it was given when
 it finds nothing); 40,000 characters of a shape may cost at most 10 times what 5,000 do (8
 is linear, 64 quadratic). That cannot see a pattern that reads its input more than once
@@ -130,6 +131,31 @@ def counted(monkeypatch):
         return split(source_id, text)
 
     monkeypatch.setattr(slack_text, "chunk", chunk)
+
+    class Next(slack_text._Next):
+        def __call__(self, at: int) -> int:
+            was, found = (self.since, self.found), super().__call__(at)
+            if (self.since, self.found) != was:  # it searched, from `at` to `found`
+                count[0] += min(found + len(self.what), self.end) - at
+            return found
+
+    monkeypatch.setattr(slack_text, "_Next", Next)
+    if hasattr(slack_text, "_Hashes"):
+
+        class Hashes(slack_text._Hashes):
+            def __init__(self, text: str) -> None:
+                count[0] += len(text)
+                super().__init__(text)
+
+            def of(self, way: str) -> int:
+                count[0] += len(way)
+                return super().of(way)
+
+            def holds(self, way: str, at: int, value: int) -> bool:
+                count[0] += 1
+                return super().holds(way, at, value)
+
+        monkeypatch.setattr(slack_text, "_Hashes", Hashes)
     return count
 
 
@@ -140,6 +166,35 @@ def test_what_the_readers_and_the_patterns_are_run_over_grows_with_the_message(c
         counted[0] = 0
         convert(message_of(shape, size))
         spent[size] = counted[0]
+    assert spent[LARGE] <= 10 * spent[SMALL], spent
+
+
+def rich(shape: str, size: int) -> dict:
+    """A message of code blocks that its rich text names, as Slack sends one: the tester's
+    second attack, finding 6 (each block was looked for in four ways, three of which read to
+    the text's end)."""
+    unit = {"same": "```x```", "distinct": "```{}```", "lines": "```\n{}\n```"}[shape]
+    shown = [str(n) if "{" in unit else "x" for n in range(size // len(unit.format(0)))]
+    text = "".join(unit.format(code) for code in shown)
+    named = [
+        {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": code}]}
+        for code in shown
+    ]
+    blocks = [{"type": "rich_text", "elements": named}]
+    return {"type": "message", "ts": "1900000000.000100", "text": text, "blocks": blocks}
+
+
+@pytest.mark.parametrize("shape", ["same", "distinct", "lines"])
+def test_code_blocks_rich_text_names_cost_what_the_message_is_long(counted, shape):
+    spent = {}
+    for size in (SMALL, LARGE):
+        counted[0] = 0
+        draft = note_from_message(
+            rich(shape, size), team_id="T0FABLE01", team_domain="fable-works",
+            conversation_id="C0LIBRARY1", author="Cedar Quill", names={},
+        )  # fmt: skip
+        spent[size] = counted[0]
+    assert draft.text.count("```") >= 2 * (LARGE // 12), draft.text[:300]  # all of them code
     assert spent[LARGE] <= 10 * spent[SMALL], spent
 
 

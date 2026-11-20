@@ -51,6 +51,7 @@ ONLY_LOG = "no rewrite: only the write-ahead log was due"
 # Said in a run's line when the record, read as the run ends, asks for a rewrite again.
 STILL_DUE = "a deletion recorded during the run still asks for a rewrite"
 RUNNING = "skipped: another compaction is running on this database"
+NOTHING = "skipped: nothing was due once another compaction ended"
 # Who each line of the access log names: the server itself, compacting.
 SYSTEM = {"actor_kind": "system", "actor": None, "actor_id": None, "action": "compact",
           "project": None}  # fmt: skip
@@ -58,6 +59,10 @@ SYSTEM = {"actor_kind": "system", "actor": None, "actor_id": None, "action": "co
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class _NothingDue(Exception):
+    """Read once the lock is held: no deletion is recorded any more."""
 
 
 class Compactor:
@@ -117,7 +122,10 @@ class Compactor:
             only_log = False
             try:
                 with self._store.compacting():  # what is due is read once it is held
-                    only_log = self._store.compaction_state().rewritten
+                    state = self._store.compaction_state()
+                    only_log = state.rewritten
+                    if state.deleted_at is None:
+                        raise _NothingDue  # the command line's compact did it since `due`
                     if only_log:
                         self._store.empty_log()
                     else:
@@ -130,6 +138,8 @@ class Compactor:
                 self._began = began
             except CompactionRunning:  # nothing changed; the next poll decides again
                 outcome, status = RUNNING, 409
+            except _NothingDue:
+                outcome = NOTHING
             except NoRoom as room:  # nothing was changed; the next poll checks again
                 with contextlib.suppress(Exception):
                     access_log.info(

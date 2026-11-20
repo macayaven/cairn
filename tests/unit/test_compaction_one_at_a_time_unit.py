@@ -519,3 +519,92 @@ def test_a_rewrite_that_did_not_happen_does_not_say_a_deletion_came(db, monkeypa
         assert STILL_DUE not in line
     finally:
         store.close()
+
+
+def test_the_compactor_rewrites_nothing_when_another_compaction_did_it_since_its_decision(
+    two, db, caplog
+):
+    """The command line's `compact` finishes between the server's decision (due) and its
+    run: read again once the lock is held, nothing is due, and the file is not rewritten."""
+    from cairn.web.compactor import Compactor
+
+    server, command = two
+    deleted(server)
+    compactor = Compactor(server, hours=24, clock=lambda: T0)
+    assert compactor.due() is True
+    command.compact()  # done, and recorded: nothing is due
+    vacuums: list[str] = []
+    server._observe(trace=lambda s: vacuums.append(s) if s.strip().upper() == "VACUUM" else None)
+    with caplog.at_level(logging.INFO, logger="cairn.access"):
+        assert compactor.run_once() is True
+    assert vacuums == []
+    (line,) = access_lines(caplog)
+    assert line.startswith("compact skipped: nothing was due once another compaction ended in ")
+
+
+RUN_STILL_DUE_SAYS = (
+    "A line whose parentheses end with `a deletion recorded during the run still asks for a"
+    " rewrite`: what it names was done, and a workspace deleted while it ran still needs a"
+    " rewrite of its own, after the interval."
+)
+
+
+def after_the_vacuum_a_deletion(monkeypatch, other) -> list[int]:
+    from cairn.store import portable
+
+    real, ran = portable._transaction, []
+
+    @contextmanager
+    def late(con):
+        if not ran:
+            ran.append(1)
+            deleted(other)
+        with real(con):
+            yield
+
+    monkeypatch.setattr(portable, "_transaction", late)
+    return ran
+
+
+def test_the_run_guide_says_a_deletion_during_a_run_is_rewritten_after_the_interval(
+    two, db, monkeypatch, caplog
+):
+    from guide_source import guide_source
+
+    from cairn.web.compactor import Compactor
+
+    assert _one_line(guide_source("run")).count(RUN_STILL_DUE_SAYS) == 1
+    server, other = two
+    deleted(server)
+    ran = after_the_vacuum_a_deletion(monkeypatch, other)
+    ticks = [0.0]
+    compactor = Compactor(server, hours=24, clock=lambda: T0, ticks=lambda: ticks[0])
+    with caplog.at_level(logging.INFO, logger="cairn.access"):
+        assert compactor.run_once() is True
+    assert ran == [1]
+    (line,) = access_lines(caplog)
+    assert f"({STILL_DUE})" in line  # what it names was done: the rewrite and the log
+    assert compactor.due() is False  # still due, after the interval
+    ticks[0] += 24 * 3600.0
+    assert compactor.due() is True
+
+
+def test_a_full_command_that_meets_a_deletion_says_a_rewrite_is_due(db, monkeypatch, capsys):
+    from cairn.web import cli
+
+    store = Store(db)
+    try:
+        deleted(store)
+    finally:
+        store.close()
+    other = Store(db)
+    try:
+        ran = after_the_vacuum_a_deletion(monkeypatch, other)
+        capsys.readouterr()
+        assert cli.main(["compact", "--if-due", "--db", str(db)]) == 0
+        assert ran == [1]
+    finally:
+        other.close()
+    out = capsys.readouterr().out
+    assert f"compacted {db}" in out
+    assert f"{STILL_DUE}: run compact --if-due again" in out

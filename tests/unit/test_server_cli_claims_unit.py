@@ -192,12 +192,16 @@ def test_each_compaction_logs_the_line_the_docstring_shows(tmp_path, monkeypatch
         held: CompactIncomplete("another connection is reading"),
         failed: sqlite3.OperationalError("disk I/O error at /elsewhere/cairn.db"),
     }
+    real = store.compact  # done: the real one, which clears the record as a run does
     try:
         for shown, error in outcomes.items():
+            if store.compaction_state().deleted_at is None:
+                store.delete_account(store.create_account("Gone").id)
 
             def compact(error=error):
                 if error is not None:
                     raise error
+                real()
 
             monkeypatch.setattr(store, "compact", compact)
             caplog.clear()

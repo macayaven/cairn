@@ -726,6 +726,14 @@ def test_connect_the_title_is_the_first_line_the_message_displays():
     assert [token.type for token in heading] == ["text"]
     assert heading[0].content == "See `[manual](https://fable.test/m)` and the ledger"
     assert len(title("Row " * 30)) <= 80 == TITLE_MAX
+    # The tester's second attack found it untrue of a special mention, shown "[link omitted]",
+    # and of asterisks Slack did not pair, shown doubled (findings 1 and 2).
+    for sent, displayed in (
+        ("<!here> standup at *ten*", "@here standup at ten"),
+        ("2 * 3 * 4 is 24", "2 * 3 * 4 is 24"),
+    ):
+        heading = MarkdownIt("commonmark", {"html": False}).parse(f"# {title(sent)}")[1]
+        assert "".join(token.content for token in heading.children) == displayed
 
 
 def test_connect_the_reply_names_the_note_as_slack_displayed_it(tmp_path):

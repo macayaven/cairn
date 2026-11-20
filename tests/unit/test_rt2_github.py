@@ -1182,6 +1182,18 @@ def test_the_shell_reaches_the_model_and_an_unknown_call_is_loud():
     assert done.code == 99 and hub.unmodelled == ["gh frob"]
 
 
+def test_an_attempt_that_does_not_end_is_stopped_whole_and_said(monkeypatch):
+    """A subshell left waiting on the answer pipe, as in the one full run that hung: the
+    attempt's time runs out, its whole process group is killed (the subshell held the output
+    pipes), and the explorer gets Hung, with the server let go, within seconds."""
+    monkeypatch.setattr(sys.modules[__name__], "ATTEMPT_SECONDS", 2)
+    run = 'sleep 3; x="$(read -r y < "$RT2_DIR/resp")"'
+    hub = Hub(Config(), Scheduler())
+    hub.attempt = 1
+    with pytest.raises(Hung, match="did not end"):
+        run_attempt(run, hub, run_files())
+
+
 @pytest.mark.parametrize(
     "steps",
     [

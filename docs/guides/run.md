@@ -42,7 +42,7 @@ When cairn listens on an address that is not loopback, as the default command do
 
 ### Or pull a released image
 
-Each release of cairn is also published as an image for linux/amd64 and linux/arm64, built by the repository's workflow from the release's tag. A version such as `0.1.0` names one release: it is published once and never moved to newer code. Pulling it needs no login: the workflow pulls each release this way, logged out, before it makes the release. Instead of the clone and the build above:
+Each release of cairn is also published as an image for linux/amd64 and linux/arm64: the image the repository's workflow built and checked for the release's commit on `main`, which the release's tag publishes under its version without building it again. A version such as `0.1.0` names one release: it is published once and never moved to newer code. Pulling it needs no login: the workflow pulls each release this way, logged out, before it makes the release. Instead of the clone and the build above:
 
 ```bash
 docker pull ghcr.io/macayaven/cairn:0.1.0 &&
@@ -51,7 +51,7 @@ docker pull ghcr.io/macayaven/cairn:0.1.0 &&
 
 The second line gives the pulled image the name this guide's commands use, so run them as written, starting with the `docker run` above.
 
-To check what you pulled: `docker inspect --format '{{json .RepoDigests}}' ghcr.io/macayaven/cairn:0.1.0` prints the image's digest under each repository name your Docker knows it by; the one that starts `ghcr.io/macayaven/cairn@` must be the digest the repository's package page on GitHub shows for `0.1.0`. `docker buildx imagetools inspect --raw ghcr.io/macayaven/cairn:0.1.0` prints the release's image index: a manifest for each platform and, after them, attestation manifests listed with the platform `unknown/unknown`, each holding the attestations of one platform's image: the provenance of the build that made it, in the job that builds once for every change before anything is published, and its bill of materials. The same command's `--format` option prints those two themselves, as Docker's reference for `docker buildx imagetools inspect` shows.
+To check what you pulled: the `docker pull` above prints `Digest: sha256:` and a digest, that of the release's image index as this pull read it, which must be the digest the repository's package page on GitHub shows for `0.1.0`. `docker buildx imagetools inspect --raw ghcr.io/macayaven/cairn:0.1.0` prints the release's image index: a manifest for each platform and, after them, attestation manifests listed with the platform `unknown/unknown`, each holding the attestations of one platform's image: the provenance of the build that made it, in the job that builds once for every change before anything is published, and its bill of materials. The same command's `--format` option prints those two themselves, as Docker's reference for `docker buildx imagetools inspect` shows.
 
 ### Compose limits
 

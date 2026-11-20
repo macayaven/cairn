@@ -215,20 +215,19 @@ def test_verify_pulls_and_runs_the_same_published_amd64_digest(tmp_path):
 GUIDE_PULL = "Pull the image as the run guide does, with no login"
 
 
-def run_the_guide_pull(
-    tmp_path, repo_digest: str | list[str], **ref: str
-) -> tuple[int, str, list[str]]:
+def run_the_guide_pull(tmp_path, pulled: str, **ref: str) -> tuple[int, str, list[str]]:
     """Job `verify`'s anonymous pull as bash runs it, with a docker that records its calls and
-    answers `inspect` with REPO_DIGEST, the image's repository digests as Docker's `json`
-    format prints them. The tag pushed is v1.2.3 of the public Owner/Repo, unless `ref` says
-    otherwise."""
-    if isinstance(repo_digest, str):
-        repo_digest = [repo_digest]
+    whose pull prints `Digest: PULLED`, as docker pull does after a pull (Docker's reference
+    for docker image pull). The tag pushed is v1.2.3 of the public Owner/Repo, unless `ref`
+    says otherwise."""
     step = next(s for s in JOBS["verify"]["steps"] if s.get("name") == GUIDE_PULL)
     docker = tmp_path / "docker"
     docker.write_text(
         '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
-        'if [ "$1" = inspect ]; then printf "%s\\n" "$REPO_DIGEST"; fi\n'
+        'if [ "$1" = pull ]; then\n'
+        '  printf "1.2.3: Pulling from owner/repo\\nDigest: %s\\n" "$PULLED"\n'
+        '  printf "Status: Downloaded newer image for %s\\n%s\\n" "$2" "$2"\n'
+        "fi\n"
     )
     docker.chmod(0o755)
     calls = tmp_path / "calls"
@@ -237,7 +236,7 @@ def run_the_guide_pull(
         env={
             "PATH": f"{tmp_path}:/usr/bin:/bin",
             "CALLS": str(calls),
-            "REPO_DIGEST": json.dumps(repo_digest, separators=(",", ":")),
+            "PULLED": pulled,
             "GITHUB_REPOSITORY": "Owner/Repo",
             "GITHUB_REF_NAME": "v1.2.3",
             "GITHUB_REF_TYPE": "tag",
@@ -255,6 +254,9 @@ def run_the_guide_pull(
     return done.returncode, done.stdout, made
 
 
+PUSHED_INDEX = "sha256:" + "a" * 64
+
+
 def test_on_a_tag_verify_pulls_the_version_as_the_guide_says_with_no_login(tmp_path):
     steps = JOBS["verify"]["steps"]
     pull = next(s for s in steps if s.get("name") == GUIDE_PULL)
@@ -264,33 +266,21 @@ def test_on_a_tag_verify_pulls_the_version_as_the_guide_says_with_no_login(tmp_p
     assert steps.index(pull) < steps.index(login)
     assert set(pull) == {"name", "env", "run"}
     assert pull["env"] == {"REPOSITORY_PRIVATE": "${{ github.event.repository.private }}"}
-    published = "ghcr.io/owner/repo@sha256:" + "a" * 64
-    code, _, calls = run_the_guide_pull(tmp_path, published)
-    image = "ghcr.io/owner/repo:1.2.3"
-    # Logged out first; then the run guide's own two commands, by the version tag.
+    code, _, calls = run_the_guide_pull(tmp_path, PUSHED_INDEX)
+    # Logged out first; then the run guide's own command, by the version tag.
     assert code == 0
-    assert calls == [
-        "logout ghcr.io",
-        f"pull {image}",
-        f"inspect --format {{{{json .RepoDigests}}}} {image}",
-    ]
+    assert calls == ["logout ghcr.io", "pull ghcr.io/owner/repo:1.2.3"]
 
 
 def test_on_main_verify_pulls_the_commits_own_tag_with_no_login(tmp_path):
     """A push to main is published as `main` and `sha-<7>`: the commit's own tag is the one
-    no later push moves, so that is what is pulled. The first release then repeats a step
-    that main has run already."""
-    published = "ghcr.io/owner/repo@sha256:" + "a" * 64
+    no later push moves, so that is what is pulled, and a tag's run, whose image is main's,
+    pulls a digest main's run has pulled already."""
     code, _, calls = run_the_guide_pull(
-        tmp_path, published, GITHUB_REF_TYPE="branch", GITHUB_REF_NAME="main"
+        tmp_path, PUSHED_INDEX, GITHUB_REF_TYPE="branch", GITHUB_REF_NAME="main"
     )
-    image = "ghcr.io/owner/repo:sha-0123456"
     assert code == 0
-    assert calls == [
-        "logout ghcr.io",
-        f"pull {image}",
-        f"inspect --format {{{{json .RepoDigests}}}} {image}",
-    ]
+    assert calls == ["logout ghcr.io", "pull ghcr.io/owner/repo:sha-0123456"]
     assert "type=sha,enable=" in RAW_WORKFLOW  # the tag publish gives a push to main
 
 
@@ -303,40 +293,31 @@ def test_in_a_private_repository_nothing_is_pulled_without_a_login(tmp_path, pri
     assert out == "This repository is not public: nobody pulls its image without a login.\n"
 
 
-def test_the_pull_with_no_login_fails_when_the_digest_is_not_the_one_published(tmp_path):
-    other = "ghcr.io/owner/repo@sha256:" + "b" * 64
-    code, out, _ = run_the_guide_pull(tmp_path, other)
+@pytest.mark.parametrize(
+    "pulled", ["sha256:" + "b" * 64, PUSHED_INDEX + "0", "", "sha256:" + "A" * 64]
+)
+def test_the_pull_with_no_login_fails_unless_this_pull_printed_the_published_digest(
+    tmp_path, pulled
+):
+    """The digest this pull returned is compared, not what the engine knows the image by: an
+    engine that kept another index under the same name could list the published digest beside
+    the one it pulled."""
+    code, out, _ = run_the_guide_pull(tmp_path, pulled)
     assert code == 1
-    published = f"ghcr.io/owner/repo@sha256:{'a' * 64}"
-    assert out == (
-        "::error::ghcr.io/owner/repo:1.2.3, pulled with no login, has the repository digests"
-        f' ["{other}"], none of them {published}, the digest publish pushed\n'
+    assert out.splitlines()[-1] == (
+        f"::error::ghcr.io/owner/repo:1.2.3, pulled with no login, is {pulled or 'no digest'}"
+        f" by the digest the pull printed, not {PUSHED_INDEX}, the digest publish pushed"
     )
-
-
-def test_an_image_known_under_two_repository_names_is_checked_by_the_published_one(tmp_path):
-    """The engine may hold the image under another repository name too (a mirror, an earlier
-    tag): the check finds the published digest wherever it is in the list, not only first."""
-    published = "ghcr.io/owner/repo@sha256:" + "a" * 64
-    mirror = "mirror.example/owner/repo@sha256:" + "a" * 64
-    code, out, _ = run_the_guide_pull(tmp_path, [mirror, published])
-    assert code == 0, out
-    # The same digest under another name only is not the published image.
-    code, _, _ = run_the_guide_pull(tmp_path, [mirror])
-    assert code == 1
-    # Nor is a name that merely starts like it.
-    code, _, _ = run_the_guide_pull(tmp_path, [published + "0"])
-    assert code == 1
 
 
 def test_the_pull_with_no_login_is_the_one_the_run_guide_gives():
     guide = (REPO / "src" / "cairn" / "guides" / "run.md").read_text(encoding="utf-8")
     run = next(s for s in JOBS["verify"]["steps"] if s.get("name") == GUIDE_PULL)["run"]
     assert re.search(r"^docker pull ghcr\.io/macayaven/cairn:\d+\.\d+\.\d+ &&$", guide, re.M)
-    assert 'docker pull "$image"' in run.splitlines()
-    check = "docker inspect --format '{{json .RepoDigests}}' ghcr.io/macayaven/cairn:"
-    assert check in guide
-    assert "docker inspect --format '{{json .RepoDigests}}' \"$image\"" in run
+    assert "the `docker pull` above prints `Digest: sha256:` and a digest" in guide
+    assert "RepoDigests" not in guide
+    pulled = 'pulled="$(docker pull "$image" | tee /dev/stderr | sed -n ' + "'s/^Digest: //p')\""
+    assert pulled in run.splitlines()
 
 
 def test_release_jobs_do_not_run_the_application_environment_or_rehearsals_on_the_host():

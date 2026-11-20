@@ -167,9 +167,14 @@ def test_the_run_guide_builds_the_source_first_and_offers_the_image_second():
         f"docker pull {IMAGE} &&",
         f"docker tag {IMAGE} cairn:local",
     ]
+    assert "built by the repository's workflow from the release's tag" not in flat(
+        guide_section(RUN_GUIDE, "### Or pull a released image")
+    )
     for sentence in (
-        "Each release of cairn is also published as an image for linux/amd64 and linux/arm64,"
-        " built by the repository's workflow from the release's tag.",
+        "Each release of cairn is also published as an image for linux/amd64 and linux/arm64:"
+        " the image the repository's workflow built and checked for the release's commit on"
+        " `main`, which the release's tag publishes under its version without building it"
+        " again.",
         f"A version such as `{VERSION}` names one release: it is published once and never"
         " moved to newer code.",
         "Pulling it needs no login: the workflow pulls each release this way, logged out,"
@@ -192,10 +197,9 @@ def test_the_run_guide_says_how_to_check_what_was_pulled():
     (https://docs.docker.com/reference/cli/docker/buildx/imagetools/inspect/)."""
     image = flat(guide_section(RUN_GUIDE, "### Or pull a released image"))
     for sentence in (
-        f"`docker inspect --format '{{{{json .RepoDigests}}}}' {IMAGE}` prints the image's"
-        " digest under each repository name your Docker knows it by; the one that starts"
-        " `ghcr.io/macayaven/cairn@` must be the digest the repository's package page on"
-        f" GitHub shows for `{VERSION}`.",
+        "To check what you pulled: the `docker pull` above prints `Digest: sha256:` and a"
+        " digest, that of the release's image index as this pull read it, which must be the"
+        f" digest the repository's package page on GitHub shows for `{VERSION}`.",
         f"`docker buildx imagetools inspect --raw {IMAGE}` prints the release's image index:"
         " a manifest for each platform and, after them, attestation manifests listed with the"
         " platform `unknown/unknown`, each holding the attestations of one platform's image:"

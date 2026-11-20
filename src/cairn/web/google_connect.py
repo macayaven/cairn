@@ -82,6 +82,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import cairn.store.hosted as hosted_store
+from cairn.cookies import branded_cookie, cookie_path
 from cairn.identity import Google
 from cairn.memory import Forbidden, Memory
 from cairn.oauth import SETTLED_MAX
@@ -641,6 +642,10 @@ def google_routes(config: GoogleConnect, public_url: str) -> list[Route]:
     states = Flows(custody.sealer)
     redirect_uri = public_url.rstrip("/") + BACK_PATH
     secure = public_url.lower().startswith("https://")
+    flow_cookie = branded_cookie(COOKIE, secure)
+    flow_path = cookie_path(flow_cookie, COOKIE_PATH)
+    said_cookie = branded_cookie(SAID_COOKIE, secure)
+    said_path = cookie_path(said_cookie, SAID_PATH)
 
     def offered(memory: Memory) -> bool:
         person = memory.person
@@ -656,15 +661,15 @@ def google_routes(config: GoogleConnect, public_url: str) -> list[Route]:
         }  # fmt: skip
         response = RedirectResponse(f"{SAID_PATH}#google-connect", status_code=303)
         response.set_cookie(
-            SAID_COOKIE, custody.sealer.seal(json.dumps(outcome), OUTCOME), max_age=SAID_TTL,
-            path=SAID_PATH, secure=secure, httponly=True, samesite="lax",
+            said_cookie, custody.sealer.seal(json.dumps(outcome), OUTCOME), max_age=SAID_TTL,
+            path=said_path, secure=secure, httponly=True, samesite="lax",
         )  # fmt: skip
         response.headers["cache-control"] = "no-store"
         return response
 
     def ended(response: Response) -> Response:
         response.delete_cookie(
-            COOKIE, path=COOKIE_PATH, secure=secure, httponly=True, samesite="lax"
+            flow_cookie, path=flow_path, secure=secure, httponly=True, samesite="lax"
         )
         response.headers["cache-control"] = "no-store"
         return response
@@ -697,7 +702,7 @@ def google_routes(config: GoogleConnect, public_url: str) -> list[Route]:
         )  # fmt: skip
         response = RedirectResponse(url, status_code=303)
         response.set_cookie(
-            COOKIE, sealed, max_age=TTL, path=COOKIE_PATH, secure=secure, httponly=True,
+            flow_cookie, sealed, max_age=TTL, path=flow_path, secure=secure, httponly=True,
             samesite="lax",
         )  # fmt: skip
         response.headers["cache-control"] = "no-store"
@@ -714,7 +719,7 @@ def google_routes(config: GoogleConnect, public_url: str) -> list[Route]:
 
     async def finish(request: Request) -> Response:
         memory = _memory(request)
-        pending = states.open(request.cookies.get(COOKIE))
+        pending = states.open(request.cookies.get(flow_cookie))
         query = request.query_params
         given = query.getlist("state")
         if (
@@ -816,11 +821,12 @@ def _block() -> dict[str, Any] | None:
 templates.globals["google_connect"] = _block
 
 
-def outcome_for(scope: Scope, config: GoogleConnect) -> dict[str, Any]:
+def outcome_for(scope: Scope, config: GoogleConnect, *, secure: bool = True) -> dict[str, Any]:
     """The outcome a handler left for this request's person (SAID_COOKIE): {} when there is
     none, it does not open, it has expired, or it is another person's or workspace's."""
     memory = scope.get(MEMORY)
-    sealed = cookie_parser(Headers(scope=scope).get("cookie", "")).get(SAID_COOKIE)
+    said_cookie = branded_cookie(SAID_COOKIE, secure)
+    sealed = cookie_parser(Headers(scope=scope).get("cookie", "")).get(said_cookie)
     plain = config.custody.sealer.open(sealed, OUTCOME) if sealed else None
     try:
         found = json.loads(plain) if plain is not None else None
@@ -900,9 +906,13 @@ class Block:
     def __init__(self, app: ASGIApp, config: GoogleConnect, secure: bool = True) -> None:
         self.app = app
         self.config = config
+        self.secure = secure
+        said_cookie = branded_cookie(SAID_COOKIE, secure)
+        said_path = cookie_path(said_cookie, SAID_PATH)
+        self.said_cookie = said_cookie
         cleared = Response()
         cleared.delete_cookie(
-            SAID_COOKIE, path=SAID_PATH, secure=secure, httponly=True, samesite="lax"
+            said_cookie, path=said_path, secure=secure, httponly=True, samesite="lax"
         )
         self.cleared = cleared.headers["set-cookie"]
 
@@ -912,9 +922,11 @@ class Block:
         read: list[bool] = []
 
         def shown() -> dict[str, Any] | None:
-            if SAID_COOKIE in cookie_parser(Headers(scope=scope).get("cookie", "")):
+            if self.said_cookie in cookie_parser(Headers(scope=scope).get("cookie", "")):
                 read.append(True)
-            return block_for(scope, self.config, outcome_for(scope, self.config))
+            return block_for(
+                scope, self.config, outcome_for(scope, self.config, secure=self.secure)
+            )
 
         async def answer(message: Message) -> None:
             if message["type"] == "http.response.start" and read:

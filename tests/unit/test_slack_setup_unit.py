@@ -18,9 +18,12 @@ from cairn.server import SignIn, create_app
 from cairn.slack import setup
 from cairn.store import Store
 from cairn.store.hosted import Sealer
+from cairn.web.auth import HOST_ONLY
 from cairn.web.slack import Slack
 from cairn.web.templating import templates
 from cookie_names import session_cookie
+
+HTTPS_SAID_COOKIE = HOST_ONLY + setup.SAID_COOKIE
 
 BASE = "https://cairn.example.test"
 HOST = "cairn.example.test"
@@ -260,9 +263,11 @@ def test_a_revoked_token_whose_kept_secret_does_not_open_says_to_set_up_again(wo
 def test_an_outcome_is_said_once_and_only_to_its_person(world):
     ada = world.browser(world.ada)
     made = ada.post(setup.SETUP_PATH, follow_redirects=False)
-    cookie = [v for v in made.headers.get_list("set-cookie") if v.startswith(setup.SAID_COOKIE)]
+    cookie = [
+        v for v in made.headers.get_list("set-cookie") if v.startswith(f"{HTTPS_SAID_COOKIE}=")
+    ]
     assert len(cookie) == 1
-    for flag in ("path=/sources", "httponly", "samesite=lax", "secure"):
+    for flag in ("path=/;", "httponly", "samesite=lax", "secure"):
         assert flag in cookie[0].lower()
     sealed = cookie[0].split(";", 1)[0].split("=", 1)[1]
     first = ada.get("/sources")
@@ -270,7 +275,7 @@ def test_an_outcome_is_said_once_and_only_to_its_person(world):
     assert first.headers["cache-control"] == "no-store"
     assert setup.SAID["made"] not in html.unescape(ada.get("/sources").text)
     bob = world.browser(world.bob)
-    bob.cookies.set(setup.SAID_COOKIE, sealed, domain=HOST, path="/sources")
+    bob.cookies.set(HTTPS_SAID_COOKIE, sealed, domain=HOST, path="/")
     assert setup.SAID["made"] not in html.unescape(bob.get("/sources").text)
     assert setup.SAID["made"] not in html.unescape(ada.get("/sources?said=made").text)
 
@@ -289,11 +294,22 @@ def test_an_outcome_that_is_not_this_persons_now_is_not_said_and_is_cleared(worl
     sealed = Sealer(KEY).seal(json.dumps(outcome), purpose)
     if which == "garbage":
         sealed = "not-a-sealed-value"
-    ada.cookies.set(setup.SAID_COOKIE, sealed, domain=HOST, path="/sources")
+    ada.cookies.set(HTTPS_SAID_COOKIE, sealed, domain=HOST, path="/")
     page = ada.get("/sources")
     assert (setup.SAID["made"] in html.unescape(page.text)) == (which == "as_written")
-    cleared = [v for v in page.headers.get_list("set-cookie") if v.startswith(setup.SAID_COOKIE)]
+    cleared = [
+        v for v in page.headers.get_list("set-cookie") if v.startswith(f"{HTTPS_SAID_COOKIE}=")
+    ]
     assert len(cleared) == 1 and "max-age=0" in cleared[0].lower()
+
+
+def test_http_slack_said_cookie_keeps_plain_name_and_path():
+    outcomes = setup.Outcomes(Sealer(KEY), lambda: NOW, False, lambda scope: None)
+    assert outcomes.cookie == setup.SAID_COOKIE
+    assert outcomes.cookie_path == setup.SAID_PATH
+    https_outcomes = setup.Outcomes(Sealer(KEY), lambda: NOW, True, lambda scope: None)
+    assert https_outcomes.cookie == HTTPS_SAID_COOKIE
+    assert https_outcomes.cookie_path == "/"
 
 
 # The block

@@ -79,6 +79,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from cairn.cookies import branded_cookie, cookie_path
 from cairn.memory import Forbidden, Memory, RequestError, access_log
 from cairn.slack.client import SlackClient, SlackError
 from cairn.slack.manifest import SCOPES, build_manifest, manifest_link
@@ -297,6 +298,8 @@ class Outcomes:
         self.sealer = sealer
         self.now = now
         self.secure = secure
+        self.cookie = branded_cookie(SAID_COOKIE, secure)
+        self.cookie_path = cookie_path(self.cookie, SAID_PATH)
         self.memory_in = memory_in  # the request's Memory, as Auth put it on the scope
 
     def memory(self, request: Request) -> Memory:
@@ -316,15 +319,15 @@ class Outcomes:
         }  # fmt: skip
         response = RedirectResponse(ANCHOR, status_code=303)
         response.set_cookie(
-            SAID_COOKIE, self.sealer.seal(json.dumps(outcome), OUTCOME), max_age=SAID_TTL,
-            path=SAID_PATH, secure=self.secure, httponly=True, samesite="lax",
+            self.cookie, self.sealer.seal(json.dumps(outcome), OUTCOME), max_age=SAID_TTL,
+            path=self.cookie_path, secure=self.secure, httponly=True, samesite="lax",
         )  # fmt: skip
         response.headers["cache-control"] = "no-store"
         return response
 
     def read(self, scope: Scope) -> str:
         memory = self.memory_in(scope)
-        sealed = cookie_parser(Headers(scope=scope).get("cookie", "")).get(SAID_COOKIE)
+        sealed = cookie_parser(Headers(scope=scope).get("cookie", "")).get(self.cookie)
         plain = self.sealer.open(sealed, OUTCOME) if sealed else None
         try:
             found = json.loads(plain) if plain is not None else None
@@ -620,7 +623,11 @@ class Block:
         self.public_url = public_url
         cleared = Response()
         cleared.delete_cookie(
-            SAID_COOKIE, path=SAID_PATH, secure=outcomes.secure, httponly=True, samesite="lax"
+            outcomes.cookie,
+            path=outcomes.cookie_path,
+            secure=outcomes.secure,
+            httponly=True,
+            samesite="lax",
         )
         self.cleared = cleared.headers["set-cookie"]
 
@@ -630,7 +637,7 @@ class Block:
         read: list[bool] = []
 
         def shown() -> dict[str, Any] | None:
-            if SAID_COOKIE in cookie_parser(Headers(scope=scope).get("cookie", "")):
+            if self.outcomes.cookie in cookie_parser(Headers(scope=scope).get("cookie", "")):
                 read.append(True)
             memory = self.outcomes.memory_in(scope)
             return block_for(memory, self.public_url, self.outcomes.read(scope))

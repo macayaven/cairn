@@ -87,7 +87,8 @@
 # settings and the first-deploy checklist. A tag never deploys.
 # Where the jobs run: two repository variables, each a JSON value for runs-on, each
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
-# jobs and of `package`, which runs the build backend; CAIRN_RELEASE_RUNNER names the runner
+# jobs (`quick` and `browser` aside, which always run on ubuntu-latest) and of `package`,
+# which runs the build backend; CAIRN_RELEASE_RUNNER names the runner
 # of publish, verify, attest_main, attest, release, aliases and deploy, which no job of a pull
 # request uses and which runs no build. Five jobs run the GitHub CLI, gh, which GitHub's runners
 # have: release_check and image_build, on a tag, on the runner CAIRN_GATE_RUNNER names, and

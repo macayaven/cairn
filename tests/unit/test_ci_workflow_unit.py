@@ -1690,7 +1690,8 @@ def test_the_comments_say_where_the_files_are_built_and_why():
         " nothing: it checks that the artifact holds one wheel and one source archive of the"
         " tag's version, and makes the GitHub release with them and the version's section of"
         " CHANGELOG.md.",
-        "CAIRN_GATE_RUNNER names the runner of the gate's jobs and of `package`, which runs the"
+        "CAIRN_GATE_RUNNER names the runner of the gate's jobs (`quick` and `browser` aside,"
+        " which always run on ubuntu-latest) and of `package`, which runs the"
         " build backend; CAIRN_RELEASE_RUNNER names the runner of publish, verify, attest_main,"
         " attest, release, aliases and deploy, which no job of a pull request uses and which"
         " runs no build.",

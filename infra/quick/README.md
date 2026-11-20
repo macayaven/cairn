@@ -336,5 +336,10 @@ update but needs the pre-upgrade backup after an incompatible one.
 - Both configurations passed the OpenTofu formatting check and initialized from local provider
   packages. `tofu validate` and `tofu test` with mocked providers pass for both, and the
   gate's job `quick` runs them on every change that touches these files.
-- Neither path has been applied to a real account. VM boot, cloud access, certificate issuance
-  and bucket-backed restore still need a live check.
+- The Google Cloud path was applied once to a real project and destroyed (2026-11-20, with
+  the image of `main`, since this version's did not exist yet): the apply, the first boot, a
+  certificate, sign-in through IAP, the first key, a note, the replica in the bucket, the VM
+  replaced and the database restored from the bucket, a restart, and the teardown as written.
+  Not covered by it: a brand-new project whose APIs are off, a settings secret with a version,
+  and this version's own image. The AWS path has not been applied to a real account: its VM
+  boot, cloud access, certificate and bucket-backed restore still need a live check.

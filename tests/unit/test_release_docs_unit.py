@@ -391,3 +391,22 @@ def test_the_deploy_guide_quotes_the_line_a_build_before_the_floor_prints():
         == 1
     )
     assert "That is the line a rollback from 0.1.0 to the build before it shows." in said
+
+
+def test_the_security_guide_says_what_a_forget_and_an_import_do_to_a_page():
+    """security.md, "What the checks on pages catch": the two writes that are not a save a
+    gate can refuse. What the sentences rest on is run elsewhere: a forget that drops a claim
+    and completes (test_forget_import_check_unit.py, test_assembled_fence_unit.py), and an
+    import that takes a fold an earlier version made (test_old_fold_rebuild_unit.py)."""
+    says(
+        "security",
+        "## What the checks on pages catch",
+        "Forgetting a note is the one write that is never refused: it rewrites the pages that"
+        " cited the note from the passages that remain, and a claim that could not stay leaves"
+        " the page while its note stays stored.",
+        "An import takes each version as its archive holds it, checked as a save is; a claim an"
+        " earlier version of cairn folded from passages that differ only by white space is"
+        " accepted as that version made it.",
+    )
+    for name in ("test_forget_import_check_unit", "test_old_fold_rebuild_unit"):
+        assert (ROOT / "tests" / "unit" / f"{name}.py").is_file(), name

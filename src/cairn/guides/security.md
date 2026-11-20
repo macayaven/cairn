@@ -80,7 +80,7 @@ The guard matches patterns. It does not recognise a name, a postal address, free
 
 ## What the checks on pages catch
 
-{{name}} checks every page against its notes before it saves it, and keeps the last good version when a check fails.
+{{name}} checks every page against its notes before it saves it, and keeps the last good version when a check fails. Forgetting a note is the one write that is never refused: it rewrites the pages that cited the note from the passages that remain, and a claim that could not stay leaves the page while its note stays stored. An import takes each version as its archive holds it, checked as a save is; a claim an earlier version of {{name}} folded from passages that differ only by white space is accepted as that version made it.
 
 - Every claim on a page is a passage of a note, copied word for word, and cites the lines it came from.
 - A version, a flag, a number, a path or a line of code in a passage the page cites is on the page.

@@ -27,8 +27,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    if collection_path == BROWSER_TESTS and not config.getoption("--run-browser"):
-        return True  # a run from testpaths never walks into the folder
+    if collection_path.is_relative_to(BROWSER_TESTS) and not config.getoption("--run-browser"):
+        return True  # never enter or import tests/browser without --run-browser
     return None
 
 

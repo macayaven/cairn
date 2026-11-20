@@ -42,7 +42,7 @@
       {% endfor %}
     </fieldset>
     <div class="choices">
-      <button type="submit" class="quiet">Save</button>
+      <button type="submit" class="quiet" aria-label="Save the set {{ group.name }}">Save</button>
     </div>
   </form>
   <p class="ending"><a href="/sets/{{ group.id|seg }}/delete" aria-label="Delete the set {{ group.name }}">Delete the set {{ group.name }}</a></p>

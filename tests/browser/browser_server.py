@@ -19,10 +19,13 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
-from playwright.sync_api import Browser, BrowserContext, Page
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Browser, BrowserContext, Page
 
 INSTALL = "uv run python -m playwright install --only-shell chromium"
 STARTED = re.compile(r"Uvicorn running on (http://127\.0\.0\.1:\d+)")

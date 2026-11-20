@@ -12,10 +12,10 @@
   <tbody>
   {% for note, writer in notes %}
     <tr>
-      <td data-label="Note">{{ note.title }}<span class="hint"> {{ writer }}{% if note.via %} · via {{ note.via }}{% endif %}{% if note.source_ref %} · <span class="mono">{{ note.source_ref }}</span>{% endif %}</span></td>
+      <td data-label="Note">{{ note.title or 'Untitled note' }}<span class="hint"> {{ writer }}{% if note.via %} · via {{ note.via }}{% endif %}{% if note.source_ref %} · <span class="mono">{{ note.source_ref }}</span>{% endif %}</span></td>
       <td data-label="Written" class="count"><time datetime="{{ note.created_at }}">{{ note.created_at|day }}</time></td>
       <td data-label="Page">{% if note.waiting %}Waiting for its page{% elif note.page %}<a href="/b/{{ project.name|seg }}/p/{{ note.page|seg }}">{{ note.page }}</a>{% else %}On no page{% endif %}</td>
-      {% if erase %}<td data-label="Action" class="act"><a href="/b/{{ project.name|seg }}/notes/{{ note.id|seg }}/forget" aria-label="Forget {{ note.title }}">Forget</a></td>{% endif %}
+      {% if erase %}<td data-label="Action" class="act"><a href="/b/{{ project.name|seg }}/notes/{{ note.id|seg }}/forget" aria-label="Forget {{ note.title or 'Untitled note' }}">Forget</a></td>{% endif %}
     </tr>
   {% endfor %}
   </tbody>

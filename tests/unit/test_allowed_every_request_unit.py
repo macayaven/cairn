@@ -70,8 +70,11 @@ class Ada:
         view = store.for_account(principal.account_id, principal.user_id)
         self.key = view.create_key("laptop")
         client = store.register_client("an-agent", ["http://127.0.0.1:1/cb"])
+        self.client_id = client.id
         code = view.create_code(client.id, "http://127.0.0.1:1/cb", "c" * 43, audience=MCP)
-        self.token = store.redeem_code(code, client.id, audience=MCP).access_token
+        pair = store.redeem_code(code, client.id, audience=MCP)
+        self.token = pair.access_token
+        self.refresh_token = pair.refresh_token
 
 
 def initialize(client: TestClient, token: str) -> httpx.Response:
@@ -211,3 +214,29 @@ def test_the_check_reads_nothing_more_than_admitting_did(store):
             without, with_limits = credential(one), credential(other)
             without(), with_limits()  # each app's first request reads what it reads once
             assert traced(store, with_limits) == traced(store, without), credential.__name__
+
+
+def test_once_her_address_is_no_longer_allowed_her_refresh_token_is_refused_and_kept(store):
+    ada = Ada(store)
+    disallowed = TestClient(app(store, allowed_emails=(BROOK,)), base_url=BASE)
+    refused = disallowed.post(
+        "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": ada.refresh_token,
+            "client_id": ada.client_id,
+        },
+    )
+    assert refused.status_code == 400 and refused.json()["error"] == "invalid_grant"
+    restored = TestClient(app(store, allowed_emails=(ADA,)), base_url=BASE)
+    renewed = restored.post(
+        "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": ada.refresh_token,
+            "client_id": ada.client_id,
+        },
+    )
+    assert renewed.status_code == 200
+    body = renewed.json()
+    assert body["access_token"] and body["refresh_token"] != ada.refresh_token

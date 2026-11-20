@@ -198,6 +198,43 @@ def test_the_rule_for_an_environment_variables_name_is_written_once():
     assert written == ["config.py"]
 
 
+def test_every_connector_checks_env_names_through_config():
+    source_dir = Path(cairn.sources.__file__).parent
+    connectors = (
+        "connector.py",
+        "github.py",
+        "gmail.py",
+        "google_calendar.py",
+        "google_drive.py",
+        "google_meet.py",
+        "granola.py",
+        "langfuse.py",
+        "linear.py",
+    )
+    for name in connectors:
+        syntax = ast.parse((source_dir / name).read_text(encoding="utf-8"))
+        defs = {
+            node.name
+            for node in ast.walk(syntax)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert "_check_variable" not in defs, name
+        calls = [node for node in ast.walk(syntax) if isinstance(node, ast.Call)]
+        fullmatch_env = [
+            call
+            for call in calls
+            if isinstance(call.func, ast.Attribute)
+            and call.func.attr == "fullmatch"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "ENV_NAME"
+        ]
+        assert not fullmatch_env, name
+        called_check = any(
+            isinstance(call.func, ast.Name) and call.func.id == "check_env_name" for call in calls
+        )
+        assert called_check, name
+
+
 def test_connector_sync_keeps_its_report_and_request_counts():
     requested = []
 

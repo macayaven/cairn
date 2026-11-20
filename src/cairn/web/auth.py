@@ -21,6 +21,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cairn import oauth
 from cairn.compiler import Gate
+from cairn.cookies import HOST_ONLY as HOST_ONLY
+from cairn.cookies import branded_cookie as branded_cookie
 from cairn.guard import Guard
 from cairn.identity import Profile
 from cairn.memory import DENIED, Memory, access_log, record_access, unavailable
@@ -43,7 +45,6 @@ from cairn.web.turns import SCOPE_KEY, Compiles
 
 SESSION_COOKIE = "cairn_session"
 BRANDED_SESSION_COOKIE = "session"  # its name under a brand (B1): no cookie names cairn
-HOST_ONLY = "__Host-"  # a browser takes such a cookie only Secure, at Path=/, with no Domain
 # Every name the session cookie has had: signing out ends and clears each one a browser sends.
 SESSION_COOKIES = (
     SESSION_COOKIE,
@@ -62,25 +63,6 @@ SHARE_PATH = "/new"  # the web app's share target (cairn.web.compose)
 JOIN_PREFIX = "/join/"  # /join/<token>: an invitation, taken after signing in
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
 RATE_LIMITED = "rate_limited"  # the action of a request refused for its workspace's rate
-
-
-def branded_cookie(name: str, secure: bool) -> str:
-    """The name of a cookie: `name` with the __Host- prefix when the site is https
-    (`secure`), else `name` as it is (a browser refuses the prefix without Secure).
-
-    Why the prefix: another host under the same parent domain can set a cookie of a plain
-    name for the whole parent domain, and the browser sends it along with this server's own,
-    so a planted `session` would put a person in the planter's workspace and a planted
-    `signin` would sign them in as the planter. No host can set a __Host- cookie for another
-    host, and the server reads only the name it sets. The session cookie and the sign-in
-    state cookie (cairn.web.signin) both take their names from here.
-
-    Without a brand the names are `cairn_session` and `cairn_signin`, with the prefix on
-    https as under a brand (`__Host-cairn_session`, `__Host-cairn_signin`); a cookie a
-    browser still sends under the old name signs nobody in, and Auth clears it
-    (Sessions.retired). Over plain http no name carries the prefix; there a planted cookie
-    can still shadow them."""
-    return f"{HOST_ONLY}{name}" if secure else name
 
 
 @dataclass(frozen=True)
@@ -866,6 +848,10 @@ class Accounts:
         data. Each is looked up on the store when it is called."""
 
         def operation(name: str) -> Any:
+            if name == "rotate_refresh_token":
+                return lambda *args, **named: self._store.rotate_refresh_token(
+                    *args, allowed=self._allowed, **named
+                )
             return lambda *args, **named: getattr(self._store, name)(*args, **named)
 
         names = [field.name for field in dataclasses.fields(oauth.Ledger)]

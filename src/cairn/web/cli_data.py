@@ -21,6 +21,7 @@ import stat
 import sys
 from pathlib import Path
 
+from cairn.memory import EXPORTED_EVENT
 from cairn.plans import Plans
 from cairn.plans import load as load_plans
 from cairn.store import (
@@ -128,6 +129,7 @@ def _export(db: Path, account: str, out: Path) -> int:
             with os.fdopen(fd, "wb") as file:
                 os.fchmod(file.fileno(), 0o600)  # exactly 0600, whatever the umask
                 summary = view.export(file)
+            view._record_read(EXPORTED_EVENT, None, {})
         except Exception as error:
             out.unlink(missing_ok=True)
             # the system's reason or the class: a message may name another path or a note

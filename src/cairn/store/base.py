@@ -614,11 +614,12 @@ class StoreBase:
         actor unless the write belongs to another (an OAuth call on the unscoped store names
         the account and agent of the code or grant it settles). A view acting for a person
         names them in the detail. `at`: the write's own timestamp, when it has one. Each event
-        gets the next number in its workspace; past `audit_keep` events, the oldest are
-        deleted in the same transaction, a batch at a time (both lookups use the number's
-        index). A batch is AUDIT_PRUNE_BATCH, or half of what is kept when that is less, so a
-        prune never leaves fewer than half. The event, as its row holds it, is also one JSON
-        line on the "cairn.audit" logger once the transaction commits (_write): after the
+        gets the next number in its workspace; once `audit_keep` plus a batch have built up,
+        the oldest batch are deleted in the same transaction (both lookups use the number's
+        index), leaving the newest `audit_keep` events. A batch is AUDIT_PRUNE_BATCH, or half
+        of what is kept when that is less, so a prune never leaves fewer than `audit_keep`.
+        The event, as its row holds it, is also one JSON line on the "cairn.audit" logger
+        once the transaction commits (_write): after the commit, so a process that dies in
         commit, so a process that dies in between stores the event and logs no line; the
         command line puts the logger on stderr (serve with its access log, every other command
         alone), and a process with no handler on it writes the line nowhere.
@@ -655,20 +656,21 @@ class StoreBase:
             (seq, account_id, number, stamp, *actor, actor_id, action, project, stored, chain),
         )
         keep = self._kept(con)
-        if keep is not None and number - (oldest or number) + 1 > keep:  # one too many
+        if keep is not None:
             batch = min(AUDIT_PRUNE_BATCH, max(1, keep // 2))
-            cut = number - keep + batch - 1  # the last event that goes
-            con.execute(
-                "INSERT INTO settings (account_id, name, value, updated_at)"
-                " SELECT account_id, ?, json_object('n', n, 'chain', chain), ?"
-                " FROM audit_events WHERE account_id = ? AND n = ?"
-                " ON CONFLICT (account_id, name)"
-                " DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                (AUDIT_PRUNED_ROW, stamp, account_id, cut),
-            )
-            con.execute(
-                "DELETE FROM audit_events WHERE account_id = ? AND n <= ?", (account_id, cut)
-            )
+            if number - (oldest or number) + 1 >= keep + batch:
+                cut = number - keep  # keep the newest `keep`, pruning `batch` at a time
+                con.execute(
+                    "INSERT INTO settings (account_id, name, value, updated_at)"
+                    " SELECT account_id, ?, json_object('n', n, 'chain', chain), ?"
+                    " FROM audit_events WHERE account_id = ? AND n = ?"
+                    " ON CONFLICT (account_id, name)"
+                    " DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                    (AUDIT_PRUNED_ROW, stamp, account_id, cut),
+                )
+                con.execute(
+                    "DELETE FROM audit_events WHERE account_id = ? AND n <= ?", (account_id, cut)
+                )
         line = {
             "account_id": account_id,
             "n": number,

@@ -95,6 +95,7 @@ def test_every_breadcrumb_is_a_navigation_landmark_written_one_way(env):
         f"/b/ops/p/{page.slug}": [("/", "Projects"), ("/b/ops", "ops")],
         "/b/ops/new": [("/", "Projects"), ("/b/ops", "ops")],
         f"/b/ops/notes/{note.id}/forget": [("/", "Projects"), ("/b/ops", "ops")],
+        "/b/ops/access": [("/", "Projects"), ("/b/ops", "ops")],
         "/b/ops/delete": [("/", "Projects"), ("/b/ops", "ops")],
         "/b/ops/graph": [("/b/ops", "ops")],
         "/keys": [("/workspace", "Workspace")],
@@ -106,6 +107,7 @@ def test_every_breadcrumb_is_a_navigation_landmark_written_one_way(env):
         assert html.count(BREADCRUMB) == 1, path
         assert crumbs_of(html) == trail, path
         assert 'class="crumbs"' not in html.replace(BREADCRUMB, ""), path
+    assert "<h1>Who reaches ops</h1>" in client.get("/b/ops/access").text
 
 
 def test_no_template_writes_a_breadcrumb_its_own_way():
@@ -321,6 +323,13 @@ def test_every_repeated_row_action_names_its_row(team):
     assert 'aria-label="Change the role of Brook"' in members
     assert 'aria-label="Change the role of Quill"' in members
     assert 'aria-label="Remove Quill"' in members
+    sets = main_of(team.client.get("/sets", headers=as_(team, "ada")).text)
+    assert 'aria-label="Save the set work"' in sets
+    second_id = team.store.create_account("Second Place").id
+    invite = team.store.for_account(second_id).invite("ada@example.test")
+    team.store.accept_invite(invite.token, team.ada.user_id)
+    workspaces = main_of(team.client.get("/workspaces", headers=as_(team, "ada")).text)
+    assert 'aria-label="Go to Second Place"' in workspaces
 
 
 def test_forget_this_note_names_its_note(env):

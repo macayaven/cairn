@@ -188,10 +188,10 @@ def test_the_number_kept_is_a_whole_number_of_at_least_one(store, keep):
         store.audit_keep = keep
 
 
-@pytest.mark.parametrize("keep", [1, 2, 10, 999])
-def test_a_small_number_kept_keeps_at_least_half_of_it_with_the_real_batch(store, db, keep):
-    """The batch a prune deletes is never more than half of what is kept: with the real
-    batch of 1,000, a workspace told to keep 10 is never emptied down to its newest event."""
+@pytest.mark.parametrize("keep", [1, 2, 5, 10, 999])
+def test_a_small_number_kept_never_drops_below_keep_with_the_real_batch(store, db, keep):
+    """Pruning waits until a batch can be removed without dropping stored events below
+    `keep`, so a workspace told to keep 5 never dips to 4 right after a prune."""
     assert cairn.store.base.AUDIT_PRUNE_BATCH == 1_000
     store.audit_keep = keep
     ops = store.create_project("ops")
@@ -199,8 +199,9 @@ def test_a_small_number_kept_keeps_at_least_half_of_it_with_the_real_batch(store
     for n in range(keep * 3 + 3):
         store.record_note(ops.id, "unchanged", {"page": f"p{n}"})
         sizes.append(count_events(db, store.account_id))
-    assert max(sizes) <= keep
-    assert min(sizes[keep:]) >= max(1, keep - keep // 2)
+    batch = min(cairn.store.base.AUDIT_PRUNE_BATCH, max(1, keep // 2))
+    assert max(sizes) <= keep + batch - 1
+    assert min(sizes[keep:]) >= keep
 
 
 # The copy on the logger "cairn.audit"

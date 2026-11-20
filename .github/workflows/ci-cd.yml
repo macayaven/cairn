@@ -809,7 +809,7 @@ jobs:
         env:
           # The non-native platform starts slowly under QEMU on either runner architecture.
           CAIRN_SMOKE_HEALTH_TIMEOUT: ${{ ((runner.arch == 'ARM64' && matrix.arch == 'amd64') || (runner.arch == 'X64' && matrix.arch == 'arm64')) && '300' || '90' }}
-        run: python3 scripts/smoke_container.py cairn:ci
+        run: python3 scripts/smoke_container.py "$LOCAL" --platform "$PLATFORM"
 
   # The shipped compose files, unchanged, on the runner: Caddy in front of cairn with the
   # proxy network cairn trusts, Litestream replicating to a directory, and a lost database
@@ -1344,11 +1344,16 @@ jobs:
           image="ghcr.io/$repository:$tag"
           docker logout ghcr.io
           docker pull "$image"
-          pulled="$(docker inspect --format '{{index .RepoDigests 0}}' "$image")"
-          if [ "$pulled" != "ghcr.io/$repository@$DIGEST" ]; then
-            echo "::error::$image, pulled with no login, is $pulled, not the digest publish pushed ($DIGEST)"
-            exit 1
-          fi
+          # Every repository digest the engine has for it: it may know the image by another
+          # name too, so the published one is looked for in the list, quotes included.
+          pulled="$(docker inspect --format '{{json .RepoDigests}}' "$image")"
+          case "$pulled" in
+            *"\"ghcr.io/$repository@$DIGEST\""*) ;;
+            *)
+              echo "::error::$image, pulled with no login, has the repository digests $pulled, none of them ghcr.io/$repository@$DIGEST, the digest publish pushed"
+              exit 1
+              ;;
+          esac
       - name: Log in to GHCR
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
@@ -1362,7 +1367,7 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}@$AMD64"
           docker pull --quiet --platform linux/amd64 "$image"
           test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
-          python3 scripts/smoke_container.py "$image"
+          python3 scripts/smoke_container.py "$image" --platform linux/amd64
 
   # On a v* tag whose image was published and smoke-tested, builds the wheel and the source
   # archive, here and not in `release`: a build backend or a dependency of it that turned

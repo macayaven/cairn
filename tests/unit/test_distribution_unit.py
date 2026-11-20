@@ -179,9 +179,10 @@ def test_the_run_guide_says_how_to_check_what_was_pulled():
     (https://docs.docker.com/reference/cli/docker/buildx/imagetools/inspect/)."""
     image = flat(guide_section(RUN_GUIDE, "### Or pull a released image"))
     for sentence in (
-        f"`docker inspect --format '{{{{index .RepoDigests 0}}}}' {IMAGE}` prints the digest"
-        " you pulled; it must be the digest the repository's package page on GitHub shows"
-        f" for `{VERSION}`.",
+        f"`docker inspect --format '{{{{json .RepoDigests}}}}' {IMAGE}` prints the image's"
+        " digest under each repository name your Docker knows it by; the one that starts"
+        " `ghcr.io/macayaven/cairn@` must be the digest the repository's package page on"
+        f" GitHub shows for `{VERSION}`.",
         f"`docker buildx imagetools inspect --raw {IMAGE}` prints the release's image index:"
         " a manifest for each platform and, after them, attestation manifests listed with the"
         " platform `unknown/unknown`, each holding the attestations of one platform's image:"

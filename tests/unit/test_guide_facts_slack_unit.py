@@ -21,6 +21,7 @@ import httpx
 import pytest
 import uvicorn
 from guide_source import guide_source
+from markdown_it import MarkdownIt
 from starlette.testclient import TestClient
 from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, ask, said
 from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle
@@ -48,6 +49,7 @@ from cairn.slack import (
 from cairn.slack.client import SlackClient
 from cairn.slack.text import note_from_message
 from cairn.slack.verify import BODY_MAX, SKEW, OtherTeam, envelope, signature, verified
+from cairn.spans import chunk
 from cairn.store import Store
 from cairn.store.hosted import Sealer
 from cairn.store.slack import (
@@ -694,6 +696,90 @@ def test_connect_the_message_shortcut_files_a_message_once():
     assert said(blocks.filed(title="T", page_url=BASE, project="p", already=True)).startswith(
         "Already filed"
     )
+
+
+def a_filed_note(text: str) -> str:
+    return note_from_message(
+        {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text},
+        team_id=TEAM, team_domain="fable-works", conversation_id="C0LIBRARY1",
+        author="Cedar Quill", names={},
+    ).text  # fmt: skip
+
+
+def as_read(note: str) -> tuple[str, list[int], list[tuple[str, str]]]:
+    """The lines `note` holds between the author's heading and the link, the lines either
+    reader takes for a heading, and the rules and code the Markdown parser reads."""
+    tokens = MarkdownIt("commonmark", {"html": False}).enable("table").parse(note)
+    headings = {span.start_line - 1 for span in chunk("", note) if span.kind == "heading"}
+    headings |= {token.map[0] for token in tokens if token.type == "heading_open"}
+    marked = [(t.type, t.content) for t in tokens if t.type in ("hr", "fence", "code_block")]
+    lines = note.split("UTC\n\n", 1)[1].split("\n\n[Source in Slack]")[0]
+    return lines, sorted(headings), marked
+
+
+def test_connect_a_line_that_would_read_as_a_heading_gets_a_backslash():
+    """connect.md: "The note keeps that one heading: where the message has a line that would
+    read as another, a backslash is written before the `#` that starts it, or before the first
+    `=` or `-` of the line under it that makes it one, and the line reads as text.\""""
+    says(
+        *CONNECT,
+        "The note keeps that one heading: where the message has a line that would read as"
+        " another, a backslash is written before the `#` that starts it, or before the first `=`"
+        " or `-` of the line under it that makes it one, and the line reads as text.",
+    )
+    for text, lines in (
+        ("## Ada Park\nRow 4.", "\\## Ada Park\nRow 4."),
+        ("Ada Park\n===\nRow 4.", "Ada Park\n\\===\nRow 4."),
+        ("Ada Park\n---\nRow 4.", "Ada Park\n\\---\nRow 4."),
+    ):
+        note = a_filed_note(text)
+        assert as_read(note) == (lines, [0], [])
+        assert len(as_read(note.replace(lines, text))[1]) == 2  # the heading it would be
+
+
+def test_connect_a_rule_and_code_get_no_backslash():
+    """connect.md: "A line that would not read as a heading gets none, so a rule stays a rule,
+    and a line of `---` in a code block, fenced or indented, stays as it was written.\""""
+    says(
+        *CONNECT,
+        "A line that would not read as a heading gets none, so a rule stays a rule, and a line"
+        " of `---` in a code block, fenced or indented, stays as it was written.",
+    )
+    text = "# Settings\n\n---\n\n```\n---\n```\n\n    ---\n\nRow 4."
+    assert as_read(a_filed_note(text)) == (
+        "\\" + text,
+        [0],
+        [("hr", ""), ("fence", "---\n"), ("code_block", "---\n")],
+    )
+
+
+def test_connect_only_eight_such_lines_get_a_backslash_they_do_not_need():
+    """connect.md: "Only a message with eight or more lines that read as headings or could
+    underline one can get a backslash it does not need, on a rule below its first heading for
+    instance; a line of only `=` or `-` that reads as code is left as written there too.\"
+    That no message with fewer gets one is test_slack_needed_backslashes_unit's, on generated
+    messages."""
+    says(
+        *CONNECT,
+        "Only a message with eight or more lines that read as headings or could underline one"
+        " can get a backslash it does not need, on a rule below its first heading for instance;"
+        " a line of only `=` or `-` that reads as code is left as written there too.",
+    )
+    seven = "".join(f"# Shelf {n}\n" for n in range(1, 8))
+    below = "\n---\n\n    ===\n\nRow 4."
+    as_text = seven.replace("#", "\\#")
+    assert as_read(a_filed_note(seven + below)) == (
+        as_text + below,
+        [0],
+        [("hr", ""), ("code_block", "===\n")],
+    )
+    note = a_filed_note(seven + "# Shelf 8\n" + below)
+    assert as_read(note) == (
+        as_text + "\\# Shelf 8\n\n\\---\n\n    ===\n\nRow 4.",
+        [0],
+        [("code_block", "===\n")],
+    )
+    assert as_read(note.replace("\\---", "---"))[1:] == ([0], [("hr", ""), ("code_block", "===\n")])
 
 
 def test_connect_every_answer_is_for_you_alone():

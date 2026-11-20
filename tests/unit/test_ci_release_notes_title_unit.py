@@ -371,10 +371,10 @@ def test_the_readme_says_what_is_compared_and_the_row_says_what_the_tests_above_
     )
     assert means == (
         "The release's title is neither the tag nor empty, or its notes are not, byte for byte,"
-        " the text the job wrote: a person edited them, or saved the notes again in GitHub's web"
-        " form. The line says which, and whether the release is a draft or public; a public one"
-        " was changed after the job compared it, or after an earlier attempt published it, and"
-        " stays public as changed"
+        " the text the job wrote: a person edited them (saving the notes again in GitHub's web"
+        " form can count, since the form may rewrite its line ends). The line says which, and"
+        " whether the release is a draft or public; a public one was changed after the job"
+        " compared it, or after an earlier attempt published it, and stays public as changed"
     )
     assert next_step == (
         "A draft: delete it on the repository's releases page and re-run the job, which makes"

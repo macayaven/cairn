@@ -1,16 +1,20 @@
-"""Job `release` makes the release as a draft, compares the draft's files with the ones this run
-attested, publishes it with a request of its own and looks again; a retry starts from whatever
-an earlier attempt of the same run left, and nothing the job runs takes a release back.
+"""Job `release` makes the release as a draft, compares the draft's title, notes and files with
+the ones this run wrote and attested, publishes it with a request of its own and looks again; a
+retry starts from whatever an earlier attempt of the same run left, and nothing the job runs
+takes a release back.
 
 The release's text carries a mark, `<!-- cairn-ci-cd run RUN_ID -->`, an HTML comment GitHub
 does not show and its API returns in the release's `body`; a re-run of a job keeps its run's id.
 The step lists every release of the repository, drafts included, and takes the one for its tag
 as this run's only when it carries this run's mark and has this tag's pre-release flag. None:
-it makes a draft with the files and looks again. This run's draft: when it holds exactly the
-files this run attested, names and bytes, the step publishes it, by its id, and looks again;
-when it does not (an upload was cut) the step stops in one line that says what a person does:
-delete it on the releases page and re-run the job. A published one must hold exactly those
-files, byte for byte, and is left as it is. Anything else stops the job in one sentence.
+it makes a draft with the files and looks again. This run's draft: when its title and notes
+are the run's (test_ci_release_notes_title_unit) and it holds exactly the files this run
+attested, names and bytes, the step publishes it, by its id, and looks again; when its files
+are not those (an upload was cut) the step stops in one line that says what a person does:
+delete it on the releases page and re-run the job. A published one must carry that title and
+those notes and hold exactly those files, byte for byte, and is left as it is. A download
+that fails is not a difference: the step says so and a re-run compares again. Anything else
+stops the job in one sentence.
 
 The third report's must-fix 2: the step used to delete its draft by id, and a person who
 published it between the step's last look and that delete lost a public release. The fourth

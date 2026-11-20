@@ -5,7 +5,8 @@ The projects are those of tests/unit/test_generated_related_unit.py (its `projec
 the same on every run), which checks the answers themselves; here each answer is compared
 with the page made from it, read from the page's markup alone: the related pages in order,
 each with its title, its reasons in order (kind, term, kind of term, how many pages hold it),
-the claim on each side by its id and its text, character for character, and the count of the
+the claim on each side by its id and what is quoted of it, character for character (all of
+it; or, of a claim that is cut, the line its answer gives, else its head), and the count of the
 reasons not listed. Asked at the most pages an answer holds, and at 2, where pages are left
 out. A failure names project and page numbers, never a note's text.
 """
@@ -15,7 +16,7 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 from test_generated_related_unit import projects
-from test_related_page_unit import shown
+from test_related_page_unit import given_of, shown
 
 from cairn import relations
 from cairn.gate import lint_gate
@@ -25,11 +26,26 @@ from cairn.store import Store
 from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
+TEXT_MAX, LINE_MAX = relations.TEXT_MAX, relations.LINE_MAX  # as shipped
 FEW = 2  # a limit small enough to leave pages out
-# Each pass over every page: (the limit asked, the reasons an answer gives for a page). The
-# last gives one reason a page, so that pages count the reasons they do not list: with the
-# three an answer gives, no generated page has more.
-ASKED = ((relations.RELATED_MAX, relations.WHY_MAX), (FEW, relations.WHY_MAX), (FEW, 1))
+TEXT_GIVEN, LINE_GIVEN = 24, 34  # bounds on a claim's text and line small enough to be met
+# Each pass over every page: (the limit asked, the reasons an answer gives for a page, whether
+# claims are cut at the small bounds). The third gives one reason a page, so that pages
+# count the reasons they do not list: with the three an answer gives, no generated page has
+# more. The last cuts the claims, which are all shorter than the bounds an answer has.
+ASKED = (
+    (relations.RELATED_MAX, relations.WHY_MAX, False),
+    (FEW, relations.WHY_MAX, False),
+    (FEW, 1, False),
+    (relations.RELATED_MAX, relations.WHY_MAX, True),
+)
+
+
+def bounds(monkeypatch, reasons_given: int, cut: bool) -> None:
+    """One pass's bounds, for the answer and for the page made of it alike."""
+    monkeypatch.setattr(relations, "WHY_MAX", reasons_given)
+    monkeypatch.setattr(relations, "TEXT_MAX", TEXT_GIVEN if cut else TEXT_MAX)
+    monkeypatch.setattr(relations, "LINE_MAX", LINE_GIVEN if cut else LINE_MAX)
 
 
 def answered(answer: dict) -> list[dict]:
@@ -45,7 +61,7 @@ def answered(answer: dict) -> list[dict]:
                     "term_kind": reason["term_kind"],
                     "pages": reason.get("pages"),
                     **{
-                        side: (reason[side]["claim_id"], reason[side]["text"])
+                        side: (reason[side]["claim_id"], *given_of(reason[side]))
                         for side in ("here", "there")
                         if side in reason
                     },
@@ -71,7 +87,7 @@ def as_shown(pages: list[dict]) -> list[dict]:
                     "term_kind": reason["term_kind"],
                     "pages": None if reason["pages"] is None else int(reason["pages"]),
                     **{
-                        side: (reason[side]["claim_id"], reason[side]["text"])
+                        side: (reason[side]["claim_id"], reason[side]["part"], reason[side]["text"])
                         for side in ("here", "there")
                         if side in reason
                     },
@@ -112,9 +128,10 @@ def world(tmp_path_factory):
 
 
 def test_the_web_page_shows_the_pages_and_reasons_of_the_answer_in_its_order(world, monkeypatch):
-    differ, seen = [], dict.fromkeys(("pages", "reasons", "mentions", "counted", "left out"), 0)
-    for limit, reasons_given in ASKED:
-        monkeypatch.setattr(relations, "WHY_MAX", reasons_given)
+    differ = []
+    seen = dict.fromkeys(("pages", "reasons", "mentions", "counted", "left out", "cut"), 0)
+    for limit, reasons_given, cut in ASKED:
+        bounds(monkeypatch, reasons_given, cut)
         for name, slugs in world["projects"]:
             for slug in slugs:
                 answer = world["memory"].related(name, slug, limit)
@@ -123,7 +140,7 @@ def test_the_web_page_shows_the_pages_and_reasons_of_the_answer_in_its_order(wor
                 )
                 assert r.status_code == 200, (name, slug, limit)
                 if as_shown(shown(r.text)) != answered(answer):
-                    differ.append((name, slug, limit, reasons_given))
+                    differ.append((name, slug, limit, reasons_given, cut))
                 said = "This is not all of it" in r.text
                 if said is answer["searched"]["complete"]:
                     differ.append((name, slug, limit, reasons_given, "what was left out"))
@@ -131,12 +148,22 @@ def test_the_web_page_shows_the_pages_and_reasons_of_the_answer_in_its_order(wor
                 seen["reasons"] += sum(len(page["why"]) for page in answer["related"])
                 seen["left out"] += answer["searched"]["pages_left_out"] > 0
                 seen["counted"] += sum(page["more"] > 0 for page in answer["related"])
-                seen["mentions"] += sum(
-                    reason["kind"] == relations.MENTIONED_BY
-                    for page in answer["related"]
-                    for reason in page["why"]
-                )
+                for page in answer["related"]:
+                    for reason in page["why"]:
+                        seen["mentions"] += reason["kind"] == relations.MENTIONED_BY
+                        seen["cut"] += sum(
+                            bool(reason[side].get("text_cut"))
+                            for side in ("here", "there")
+                            if side in reason
+                        )
     assert differ == [], (len(differ), differ[:5])
     # so the comparison is not kept by answers in which nothing could differ
-    least = {"pages": 7_000, "reasons": 8_000, "mentions": 4_000, "counted": 400, "left out": 1_000}
+    least = {
+        "pages": 10_000,
+        "reasons": 12_000,
+        "mentions": 6_000,
+        "counted": 400,
+        "left out": 1_000,
+        "cut": 5_000,
+    }
     assert all(seen[what] >= count for what, count in least.items()), seen

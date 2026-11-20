@@ -683,9 +683,12 @@ Web UI (server-rendered HTML)
   linking to it and an element with id="related-<slug>"; each reason in words (a shared term
   as code, with how many pages of the project hold it; or that a claim of the other page
   names this page's title); each claim a reason rests on quoted as plain text, white space
-  kept, never drawn as Markdown, linked to its claim on its page ("#<claim id>"), with the
-  line given beside a claim cut wherever the answer holds one, and under it who wrote the
-  notes it cites (web/ui.writer_words), when, and whether any is outside text; "and N more
+  kept, never drawn as Markdown, linked to its claim on its page ("#<claim id>"), and under
+  it who wrote the notes it cites (web/ui.writer_words), when, and whether any is outside
+  text. A claim that is cut (`text_cut`) is never taken to hold a text: the page says it is
+  longer than what is shown and shows the line its answer gives (the line of its passage
+  that states the term, or names the title) wherever it holds one, else the head it holds
+  as its text, else nothing, and its link reads the whole claim on its page. Then "and N more
   reasons" for `more`; one sentence for what the read left out (related_left_out), with a
   link to show up to 20 when pages were left out; and, with no related page, one sentence
   that says so and what makes two pages related. N is 1 to 20 (8 when left out), and any

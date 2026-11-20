@@ -68,7 +68,7 @@ def test_a_page_links_its_related_pages_the_most_related_first_eight_unless_aske
     viewed = get(w, "/b/ops/p/asked")
     assert '<a href="/b/ops/p/asked/related">Related pages</a>' in viewed.text
     assert "Related pages" not in get(w, "/b/ops/p/asked?version=1").text
-    answer = Memory(w.ada.view, lint_gate).related("ops", "asked")
+    answer = Memory(w.ada.view, lint_gate).related("ops", "asked", RELATED_SHOWN)
     eight = [page["page"] for page in shown(get(w, "/b/ops/p/asked/related").text)]
     assert eight == [page["page"] for page in answer["related"]] and len(eight) == 8
     assert eight[0] == "page-9"  # it states two of the page's terms: the most related
@@ -171,7 +171,7 @@ def test_the_web_view_shows_a_person_the_answer_of_related(world):
         "In the web view a page's **Related pages** link shows a person the same answer, each"
         " claim quoted as plain text.",
     )
-    answer = Memory(w.ada.view, lint_gate).related("ops", "deploy")
+    answer = Memory(w.ada.view, lint_gate).related("ops", "deploy", RELATED_SHOWN)
     pages = shown(get(w, "/b/ops/p/deploy/related").text)
     assert [(p["page"], p["title"], p["more"]) for p in pages] == [
         (p["page"], p["title"], p["more"]) for p in answer["related"]
@@ -198,8 +198,21 @@ def test_the_contract_has_the_related_pages_address_and_what_it_is_recorded_as(w
         " sentence; a project out of reach or a page that is not there is the 404 the page view"
         " gives.",
         '/b/<project>/p/<slug> "page", /b/<project>/p/<slug>/related "related", /search "recall")',
+        "A claim that is cut (`text_cut`) is never taken to hold a text: the page says it is"
+        " longer than what is shown and shows the line its answer gives (the line of its passage"
+        " that states the term, or names the title) wherever it holds one, else the head it"
+        " holds as its text, else nothing, and its link reads the whole claim on its page.",
     )
     assert get(w, "/b/ops/p/deploy/related?limit=21").status_code == 400
     missing, viewed = get(w, "/b/ops/p/none/related"), get(w, "/b/ops/p/none")
     assert missing.status_code == viewed.status_code == 404
     assert main_of(missing.text) == main_of(viewed.text)
+    # the cut claim, in each shape: tests/unit/test_related_page_unit.py; here, one of a note
+    lines = [f"Brook checks ledger {n} at dawn." for n in range(relations.TEXT_MAX // 20)]
+    note(w, "Asked", "Ada reads `quill.lock` daily.\n")
+    note(w, "Long", "\n".join([*lines, "Ada pins `quill.lock`."]) + "\n")
+    (page,) = shown(get(w, "/b/ops/p/asked/related").text)
+    there = page["why"][0]["there"]
+    assert (there["part"], there["text"]) == ("line", "Ada pins `quill.lock`.")
+    assert there["says"].startswith("This claim is longer than what is shown")
+    assert there["link_says"] == ["Read the whole claim on Long"]

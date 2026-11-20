@@ -35,6 +35,7 @@ TERM_WORDS = {
     "version": "version",
     "inline_code": "code",
 }
+LONGER = "This claim is longer than what is shown"  # of a claim the related page cuts
 
 
 def _lines(span: Span) -> str:
@@ -228,11 +229,16 @@ def related_left_out(searched: Mapping[str, Any]) -> str | None:
 
 
 def _quoted(claim: Mapping[str, Any], mention: bool) -> dict[str, Any]:
-    """A claim a relation rests on, as the related page quotes it: its text as it is, never
-    drawn as Markdown; whether it is cut; the line given beside a claim cut, wherever the
-    answer holds one; and who wrote the notes it cites, each said once in the page view's
-    words (writer_words; a Slack message someone filed as search_hits says it), how many
-    notes that is, when the newest was written and whether any is outside text."""
+    """A claim a relation rests on, as the related page quotes it, never drawn as Markdown.
+    `part` says what `text` is of it: "whole", its text as it is; or, of a claim that is cut
+    (`text_cut`), "line", the line its answer gives (the line of its passage that states the
+    term, or names the title, itself in part when `line_cut`), wherever the answer holds
+    one; else "head", the head it holds as its text; else "none", and nothing to quote. A
+    claim that is cut is never taken to hold a text. `says`: the sentence that a claim is
+    longer than what is shown, None for a whole one. And who wrote the notes it cites, each
+    said once in the page view's words (writer_words; a Slack message someone filed as
+    search_hits says it), how many notes that is, when the newest was written and whether
+    any is outside text."""
     entries = claim["written_by"]
     more = claim.get("written_by_more", 0)
     writers = dict.fromkeys(
@@ -240,16 +246,25 @@ def _quoted(claim: Mapping[str, Any], mention: bool) -> dict[str, Any]:
         + (f": {entry['filed_message']}" if entry.get("filed_message") else "")
         for entry in entries
     )
-    line = claim.get("line")
-    holds = "names the title" if mention else "states the term"
-    in_part = ", in part" if claim.get("line_cut") else ""
+    cut = bool(claim.get("text_cut"))
+    line, text, says = claim.get("line"), claim.get("text"), None
+    if not cut:
+        part = "whole"
+    elif line is not None:
+        of_it = "part of the line" if claim.get("line_cut") else "the line"
+        holds = "names the title" if mention else "states the term"
+        part, text = "line", line
+        says = f"{LONGER}: this is {of_it} of its passage that {holds}."
+    elif text is not None:
+        part, says = "head", f"{LONGER}: these are its first {len(text):,} characters."
+    else:
+        part, says = "none", "This claim is longer than can be shown here."
     return {
         "id": claim["claim_id"],
-        "text": claim["text"],
-        "cut": bool(claim.get("text_cut")),
-        "line": line,
-        "line_cut": bool(claim.get("line_cut")),
-        "line_says": f"The line of its passage that {holds}{in_part}:",
+        "part": part,
+        "text": text,
+        "cut": cut,
+        "says": says,
         "writers": list(writers),
         "notes": len(entries) + more,
         "notes_more": more,

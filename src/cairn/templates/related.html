@@ -4,21 +4,20 @@
 {% block main %}
 {% set project_url = "/b/" ~ (project|seg) %}
 {% set page_url = project_url ~ "/p/" ~ (slug|seg) %}
-{# A claim a relation rests on, quoted: its text as it was written, white space kept, never
-   drawn as Markdown (a text that was cut can end inside a fence or a link); under it, who
-   wrote the notes it cites and when. `at`: its page's address; `on`: its page's title. #}
+{# A claim a relation rests on, quoted (memory_pages._quoted): what is shown of it as it was
+   written, white space kept, never drawn as Markdown (what is shown of a claim that was cut
+   can end inside a fence or a link); a claim not shown whole says so, and its link reads it
+   whole on its page; under it, who wrote the notes it cites and when. `at`: its page's
+   address; `on`: its page's title. #}
 {% macro quoted(claim, side, at, on) %}
-{% set claim_url = at ~ "#" ~ (claim.id|seg) %}
 <li>
-  <figure class="source" data-claim="{{ claim.id }}" data-side="{{ side }}">
-    <figcaption class="source-head"><strong>{{ on }}</strong> <a href="{{ claim_url }}">Open this claim on {{ on }}</a></figcaption>
-    <div class="source-lines"><div class="source-line">{{ claim.text }}</div></div>
-    {% if claim.cut %}
-    <div class="source-head" data-cut><span>Cut here: these are the first {{ "{:,}".format(claim.text|length) }} characters of the claim.</span> <a href="{{ claim_url }}">Read the whole claim on {{ on }}</a></div>
+  <figure class="source" data-claim="{{ claim.id }}" data-side="{{ side }}" data-part="{{ claim.part }}">
+    <figcaption class="source-head"><strong>{{ on }}</strong> <a href="{{ at }}#{{ claim.id|seg }}">{{ "Read the whole claim on" if claim.cut else "Open this claim on" }} {{ on }}</a></figcaption>
+    {% if claim.says %}
+    <div class="source-head" data-cut><span>{{ claim.says }}</span></div>
     {% endif %}
-    {% if claim.line is not none %}
-    <div class="source-head"><span>{{ claim.line_says }}</span></div>
-    <div class="source-lines"><div class="source-line">{{ claim.line }}</div></div>
+    {% if claim.text is not none %}
+    <div class="source-lines"><div class="source-line">{{ claim.text }}</div></div>
     {% endif %}
   </figure>
   <p class="back written">{% if claim.notes %}{% for said in claim.writers %}<span class="writer">{{ said }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% if claim.notes_more %} and {{ claim.notes_more }} more {{ "note" if claim.notes_more == 1 else "notes" }}{% endif %}{% if claim.written_at %} · {{ "written" if claim.notes == 1 else "the newest written" }} <time datetime="{{ claim.written_at }}">{{ claim.written_at|when }}</time>{% endif %}{% if claim.outside %} · <span class="outside">outside text</span>{% endif %}{% else %}It cites no note in your reach.{% endif %}</p>

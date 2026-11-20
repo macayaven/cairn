@@ -24,7 +24,7 @@ from cairn.gate import lint_gate
 from cairn.memory import RELATED_RANGE, Memory
 from cairn.server import create_app
 from cairn.store import Claim, Store, relating
-from cairn.web.ui import related_left_out, related_view
+from cairn.web.ui import RELATED_SHOWN, related_left_out, related_view
 from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
@@ -91,8 +91,9 @@ def flat(text: str) -> str:
 
 def shown(html: str) -> list[dict]:
     """The related pages a response shows, read from its markup alone: each entry's slug, its
-    title's link, its reasons (kind, term, kind of term, pages, and the claim on each side
-    with the text quoted) and how many more reasons it counts."""
+    title's link, its reasons (kind, term, kind of term, pages, and the claim on each side:
+    what is quoted of it, which part of the claim that is, and what the page says of a
+    claim it does not show whole) and how many more reasons it counts."""
     entries = []
     for entry in [n for n in tree(html).walk() if "data-related-page" in n.attrs]:
         (heading,) = entry.all("h2")
@@ -101,13 +102,17 @@ def shown(html: str) -> list[dict]:
         for reason in [n for n in entry.walk() if "data-reason" in n.attrs]:
             sides = {}
             for figure in [n for n in reason.walk() if "data-claim" in n.attrs]:
-                (text, *line) = figure.all(cls="source-line")
+                lines = figure.all(cls="source-line")  # one quotation at most
+                longer = [n for n in figure.walk() if "data-cut" in n.attrs]
                 sides[figure.attrs["data-side"]] = {
                     "claim_id": figure.attrs["data-claim"],
-                    "text": text.text(),
-                    "line": line[0].text() if line else None,
+                    "text": lines[0].text() if lines else None,
+                    "part": figure.attrs["data-part"],  # whole, line, head or none
+                    "says": flat(longer[0].text()) if longer else None,
                     "links": [a.attrs["href"] for a in figure.all("a")],
+                    "link_says": [flat(a.text()) for a in figure.all("a")],
                 }
+                assert len(lines) <= 1 and len(longer) <= 1
             reasons.append(
                 {
                     "kind": reason.attrs["data-reason"],
@@ -200,7 +205,7 @@ def test_it_is_what_memory_related_answers_in_order(w, world):
     note(w, "Asked", "Use `a.cfg`, `b.cfg` and `c.cfg`.\n")
     note(w, "Two", "Use `a.cfg` and `b.cfg`.\n")
     note(w, "One", "Use `c.cfg`; see Asked.\n")
-    answer = Memory(w.ada.view, lint_gate).related("ops", "asked")
+    answer = Memory(w.ada.view, lint_gate).related("ops", "asked", RELATED_SHOWN)
     pages = shown(get(w, "/b/ops/p/asked/related").text)
     assert [page["page"] for page in pages] == [page["page"] for page in answer["related"]]
     for page, given in zip(pages, answer["related"], strict=True):
@@ -297,16 +302,20 @@ def test_a_claim_whose_notes_are_out_of_reach_names_no_one(w):
     assert "<time" not in main_of(r.text)
 
 
-def test_the_view_words_every_field_a_claim_can_carry():
-    """A mention gains its line on the first part's branch; here the answer is made by hand, as
-    that branch will give it: a line is shown wherever it is present, on either side of either
-    kind of reason, and a Slack message someone filed says whose words it holds."""
+LONGER = "This claim is longer than what is shown: "
+
+
+def test_the_view_shows_a_claim_by_what_its_answer_holds_and_never_assumes_its_text():
+    """The answer is made by hand, in each shape a claim can take: whole, with its text; cut,
+    with the line that states the term or names the title and no text; cut, with a head as
+    its text where no line could be given; cut, with both, as an earlier answer gave it (the
+    line is shown); and cut with neither. And a Slack message someone filed says whose words
+    it holds."""
     filed = "A Slack message this writer filed: its words are its author's."
 
     def claim(n: int, **more) -> dict:
         return {
             "claim_id": f"cl_{n}",
-            "text": f"text {n}",
             "passage_ids": [],
             "outside": False,
             "written_by": [],
@@ -314,7 +323,20 @@ def test_the_view_words_every_field_a_claim_can_carry():
             **more,
         }
 
+    def reason(kind: str, **sides) -> dict:
+        shares = {"term": "x.cfg", "term_kind": "inline_code", "pages": 3}
+        mention = {"term": "Deploy", "term_kind": "title"}
+        return {"kind": kind, **(shares if kind == "shares" else mention), **sides}
+
     by = {"note": "n1", "kind": "person", "name": "Ada", "via": "slack", "outside": True}
+    whole = claim(
+        3,
+        text="text 3",
+        outside=True,
+        written_by=[by | {"filed_message": filed}],
+        written_by_more=1,
+        written_at=WHEN,
+    )
     answer = {
         "project": "ops",
         "page": "deploy",
@@ -326,26 +348,21 @@ def test_the_view_words_every_field_a_claim_can_carry():
                 "title": "Other",
                 "version": 2,
                 "why": [
-                    {
-                        "kind": "mentioned_by",
-                        "term": "Deploy",
-                        "term_kind": "title",
-                        "there": claim(1, text_cut=True, line="see Deploy", line_cut=True),
-                    },
-                    {
-                        "kind": "shares",
-                        "term": "x.cfg",
-                        "term_kind": "inline_code",
-                        "pages": 3,
-                        "here": claim(2, text_cut=True, line="use `x.cfg`"),
-                        "there": claim(
-                            3,
-                            outside=True,
-                            written_by=[by | {"filed_message": filed}],
-                            written_by_more=1,
-                            written_at=WHEN,
-                        ),
-                    },
+                    reason(
+                        "mentioned_by",
+                        there=claim(1, text_cut=True, line="see Deploy", line_cut=True),
+                    ),
+                    reason(
+                        "shares",
+                        here=claim(2, text_cut=True, line="use `x.cfg`"),
+                        there=whole,
+                    ),
+                    reason(
+                        "shares",
+                        here=claim(4, text_cut=True, text="a head of the claim"),
+                        there=claim(5, text_cut=True, text="its head", line="its line"),
+                    ),
+                    reason("mentioned_by", there=claim(6, text_cut=True)),
                 ],
                 "more": 0,
             }
@@ -361,16 +378,73 @@ def test_the_view_words_every_field_a_claim_can_carry():
     }
     view = related_view(answer, 8)
     (page,) = view["related"]
-    mention, shares = page["reasons"]
-    assert (mention["there"]["line"], mention["there"]["line_cut"]) == ("see Deploy", True)
-    assert mention["there"]["line_says"] == "The line of its passage that names the title, in part:"
-    assert (shares["here"]["line"], shares["here"]["line_cut"]) == ("use `x.cfg`", False)
-    assert shares["here"]["line_says"] == "The line of its passage that states the term:"
-    assert shares["there"]["line"] is None and shares["there"]["cut"] is False
-    assert shares["there"]["writers"] == [f"written by Ada: {filed}"]
-    assert (shares["there"]["notes"], shares["there"]["notes_more"]) == (2, 1)
+    mention, lined, headed, bare = page["reasons"]
+
+    def said(quoted: dict) -> tuple:
+        return quoted["part"], quoted["text"], quoted["says"]
+
+    assert said(mention["there"]) == (
+        "line",
+        "see Deploy",
+        LONGER + "this is part of the line of its passage that names the title.",
+    )
+    assert said(lined["here"]) == (
+        "line",
+        "use `x.cfg`",
+        LONGER + "this is the line of its passage that states the term.",
+    )
+    assert said(lined["there"]) == ("whole", "text 3", None)
+    assert said(headed["here"]) == (
+        "head",
+        "a head of the claim",
+        LONGER + "these are its first 19 characters.",
+    )
+    assert said(headed["there"])[:2] == ("line", "its line")  # a line, where there is one
+    assert said(bare["there"]) == ("none", None, "This claim is longer than can be shown here.")
+    assert [q["cut"] for q in (mention["there"], lined["there"], bare["there"])] == [
+        True,
+        False,
+        True,
+    ]
+    assert lined["there"]["writers"] == [f"written by Ada: {filed}"]
+    assert (lined["there"]["notes"], lined["there"]["notes_more"]) == (2, 1)
     assert mention["there"]["writers"] == [] and mention["there"]["notes"] == 0
     assert (view["left_out"], view["more_href"]) == (None, None)
+
+
+def test_the_page_draws_each_shape_of_a_claim_and_links_the_whole_one(w, world, monkeypatch):
+    """The same shapes through the page: a claim not shown whole says so, quotes the line or
+    the head it was given, or nothing, and its one link reads the whole claim on its page."""
+    whole = Memory(w.ada.view, lint_gate).related("ops", "deploy", RELATED_SHOWN)
+    (page,) = whole["related"]
+    mention, shares = page["why"]
+    mention["there"] = {**mention["there"], "text_cut": True, "line": "see  Deploy\t<b>now</b>"}
+    del mention["there"]["text"]
+    shares["here"] = {**shares["here"], "text_cut": True}
+    shares["there"] = {**shares["there"], "text_cut": True}
+    del shares["there"]["text"]
+    monkeypatch.setattr(Memory, "related", lambda self, project, slug, limit: whole)
+    r = get(w, "/b/ops/p/deploy/related")
+    assert r.status_code == 200
+    (entry,) = shown(r.text)
+    named, shared = entry["why"]
+    assert (named["there"]["part"], named["there"]["text"]) == ("line", "see  Deploy\t<b>now</b>")
+    assert (
+        named["there"]["says"] == LONGER + "this is the line of its passage that names the title."
+    )
+    assert (shared["here"]["part"], shared["here"]["text"]) == ("head", shares["here"]["text"])
+    assert shared["here"]["says"] == (
+        LONGER + f"these are its first {len(shares['here']['text'])} characters."
+    )
+    assert (shared["there"]["part"], shared["there"]["text"]) == ("none", None)
+    assert shared["there"]["says"] == "This claim is longer than can be shown here."
+    for quoted_claim, title in (
+        (named["there"], "Retention"),
+        (shared["here"], "Deploy"),
+        (shared["there"], "Retention"),
+    ):
+        assert quoted_claim["link_says"] == [f"Read the whole claim on {title}"]
+        assert len(quoted_claim["links"]) == 1 and "#cl_" in quoted_claim["links"][0]
 
 
 # Evidence is quoted, never rendered
@@ -416,15 +490,29 @@ def test_a_claims_text_is_shown_as_plain_text_and_nothing_of_it_is_markup(w):
     assert "<pre>" in get(w, "/b/ops/p/fence").text and "<pre" not in r.text
 
 
-def test_a_text_that_was_cut_inside_a_fence_or_a_link_draws_nothing_and_says_it_is_cut(w):
+def given_of(claim: dict) -> tuple[str, str | None]:
+    """What the page is to show of a claim an answer gives: all of it; or, of a claim that is
+    cut, its line where the answer holds one, else the head it holds as its text."""
+    if not claim.get("text_cut"):
+        return "whole", claim["text"]
+    if "line" in claim:
+        return "line", claim["line"]
+    return ("head", claim["text"]) if "text" in claim else ("none", None)
+
+
+def test_a_claim_cut_inside_a_fence_or_a_link_draws_nothing_and_says_it_is_longer(w):
+    """Claims saved by hand, which cite no passage, so no line of a passage can be given for
+    them: what is quoted of each stops inside a fence or a link."""
     note(w, "Asked", "Brook asked first.\n")
     long = {
-        "fenced": "Asked\n\n```sh\n" + "quill sync --all\n" * (relations.TEXT_MAX // 8),
+        "fenced": "<b>Asked</b> ```sh\n" + "quill sync --all\n" * (relations.TEXT_MAX // 8),
         "linked": "See Asked, then [the " + "long " * relations.TEXT_MAX + "](https://x.invalid)",
     }
     for slug, text in long.items():
         claim = Claim(id=f"cl_{slug}", text=text, span_ids=())
         w.ada.view.save_page(w.ops.id, slug, f"Page {slug}", "", [claim])
+    answer = Memory(w.ada.view, lint_gate).related("ops", "asked", RELATED_SHOWN)
+    given = {page["page"]: page["why"][0]["there"] for page in answer["related"]}
     r = get(w, "/b/ops/p/asked/related")
     pages = {page["page"]: page for page in shown(r.text)}
     body = tree(main_of(r.text))
@@ -432,29 +520,50 @@ def test_a_text_that_was_cut_inside_a_fence_or_a_link_draws_nothing_and_says_it_
     for slug, text in long.items():
         (reason,) = pages[slug]["why"]
         there = reason["there"]
-        assert there["text"] == text[: relations.TEXT_MAX] and len(text) > relations.TEXT_MAX
+        assert given[slug]["text_cut"] is True and len(text) > relations.TEXT_MAX
+        assert (there["part"], there["text"]) == given_of(given[slug]), slug
+        assert there["text"] and text.startswith(there["text"]) and there["text"] != text
+        assert there["says"].startswith(LONGER), slug
+        assert there["links"] == [f"/b/ops/p/{slug}#cl_{slug}"]
+        assert there["link_says"] == [f"Read the whole claim on Page {slug}"]
         figure = figures[f"cl_{slug}"]
-        (cut,) = [n for n in figure.walk() if "data-cut" in n.attrs]
-        assert flat(cut.text()) == (
-            f"Cut here: these are the first {relations.TEXT_MAX:,} characters of the claim."
-            f" Read the whole claim on Page {slug}"
-        )
-        assert there["links"] == [f"/b/ops/p/{slug}#cl_{slug}"] * 2
-        assert figure.all("pre") == [] and figure.all("code") == []
+        assert {n.tag for n in figure.walk()} <= QUOTING, slug
     assert not [a for a in body.all("a") if "x.invalid" in a.attrs["href"]]
+    assert body.all("b") == [] and body.all("pre") == []
 
 
-def test_a_claim_cut_shows_the_line_that_states_the_term(w):
+def test_a_claim_cut_is_shown_by_the_line_that_states_the_term(w):
     lines = [f"Brook checks ledger {n} at dawn." for n in range(relations.TEXT_MAX // 20)]
     note(w, "Asked", "Ada reads `quill.lock` daily.\n")
     note(w, "Long", "\n".join([*lines, "Ada pins `quill.lock`."]) + "\n")
     r = get(w, "/b/ops/p/asked/related")
     (page,) = shown(r.text)
     (reason,) = page["why"]
-    assert reason["here"]["line"] is None
-    assert reason["there"]["line"] == "Ada pins `quill.lock`."
-    assert "quill.lock" not in reason["there"]["text"]
-    assert "The line of its passage that states the term:" in flat(tree(r.text).text())
+    assert (reason["here"]["part"], reason["here"]["says"]) == ("whole", None)
+    assert reason["here"]["link_says"] == ["Open this claim on Asked"]
+    there = reason["there"]
+    assert (there["part"], there["text"]) == ("line", "Ada pins `quill.lock`.")
+    assert there["says"] == LONGER + "this is the line of its passage that states the term."
+    assert there["link_says"] == ["Read the whole claim on Long"]
+    assert "Brook checks ledger" not in r.text  # the line, and not the claim's head beside it
+
+
+def test_a_long_claim_that_names_the_title_is_shown_as_its_answer_gives_it(w):
+    """A claim of a real note, cut, that mentions the page: the page shows the line that names
+    the title where the answer gives one, and else the head it gives."""
+    filler = "Ada waits for the nightly log, " * (relations.TEXT_MAX // 20)
+    note(w, "Quill ledger", "Brook balances it at dusk.\n")
+    note(w, "Long", filler + "then opens the Quill ledger.\n")
+    answer = Memory(w.ada.view, lint_gate).related("ops", "quill-ledger", RELATED_SHOWN)
+    given = answer["related"][0]["why"][0]["there"]
+    assert given["text_cut"] is True
+    (page,) = shown(get(w, "/b/ops/p/quill-ledger/related").text)
+    (reason,) = page["why"]
+    there = reason["there"]
+    assert (there["part"], there["text"]) == given_of(given) and there["part"] in ("line", "head")
+    wanted = "names the title" if there["part"] == "line" else "these are its first"
+    assert there["says"].startswith(LONGER) and wanted in there["says"]
+    assert there["link_says"] == ["Read the whole claim on Long"]
 
 
 # What the read left out, and no related page
@@ -485,7 +594,7 @@ def test_an_answer_that_is_not_complete_says_what_was_not_looked_at_from_its_cou
     note(w, "Asked", "Use `a.cfg` and `b.cfg` and `long-name.cfg`.\n")
     note(w, "Few", "Set `a.cfg` once.\n")
     note(w, "Many", "\n".join(f"- Line {n} sets `b.cfg`." for n in range(3)) + "\n")
-    answer = Memory(w.ada.view, lint_gate).related("ops", "asked")
+    answer = Memory(w.ada.view, lint_gate).related("ops", "asked", RELATED_SHOWN)
     assert answer["searched"] == {
         "complete": False,
         "terms_looked_up": 2,

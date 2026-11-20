@@ -147,7 +147,10 @@ def test_release_qemu_installer_uses_the_native_platform_before_image_work(name)
         # One build of both platforms, written as an archive: nothing is pushed or loaded.
         build = next(s for s in steps if s.get("uses", "").startswith("docker/build-push"))
         assert set(build["with"]["platforms"].split(",")) == {"linux/amd64", "linux/arm64"}
-        assert build["with"]["outputs"] == ("type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar")
+        # Named, so buildkit gives each attestation statement the image as its subject.
+        assert build["with"]["outputs"] == (
+            "type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar,name=cairn"
+        )
         assert "push" not in build["with"] and "load" not in build["with"]
 
 

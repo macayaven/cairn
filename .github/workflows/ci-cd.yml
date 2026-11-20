@@ -435,13 +435,15 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Make the directory the archive goes in
         run: mkdir -p "$RUNNER_TEMP/image"
+      # The export is named (buildkit's `name=`) so that buildkit gives every attestation
+      # statement each platform's image as its subject; given no name it gives none.
       - name: Build linux/amd64 and linux/arm64
         if: github.ref_type != 'tag'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          outputs: type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar
+          outputs: type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar,name=cairn
           provenance: mode=max
           sbom: true
           cache-from: type=gha,scope=image

@@ -8,12 +8,15 @@ layout` writes when it copies such an index from a registry. buildx's index.json
 one image index, and without --root nothing else passes. oras's lists the index and every
 manifest under it (oras-go v2.7.0, content/oci/oci.go: each manifest it stores is tagged by its
 digest, and saveIndex writes one entry per tag); with --root the image index is the entry with
-DIGEST, and any other entry must be a manifest that index holds. Every descriptor's media type
-is checked, and its size against its blob: images are OCI image manifests of linux/amd64 (no
-variant) or linux/arm64 (no variant, or v8), the index has no config or layers, an attestation
-is listed as unknown/unknown and every one of its layers is an in-toto statement
-(Statement/v0.1, as buildkit writes it, or /v1) whose subjects, if any, are its image and whose
-predicate type is its layer's annotation. Every file under blobs/sha256/ is the bytes its name
+DIGEST (listed once for each name it was given, every listing alike), and any other entry must
+be a manifest that index holds, listed with the media type and size the index gives it and with
+no name. Every descriptor's media type is checked, and its size against its blob: images are
+OCI image manifests of linux/amd64 (no variant) or linux/arm64 (no variant, or v8), the index
+has no config or layers, an attestation is listed as unknown/unknown and every one of its
+layers is an in-toto statement (Statement/v0.1, as buildkit writes it, or /v1) whose predicate
+type is its layer's annotation, whose predicate is a JSON object that is not empty, and whose
+subjects, at least one, are all its image: buildkit names the image once for each name the
+export is given, and image_build names it. Every file under blobs/sha256/ is the bytes its name
 says; the index holds exactly one image for each of the two platforms, whose own config says it
 is built for that platform, and exactly one attestation manifest for each image (an entry
 annotated `vnd.docker.reference.type: attestation-manifest` and `vnd.docker.reference.digest:
@@ -127,8 +130,11 @@ def _root(top: dict, root: str | None) -> dict:
             raise Refused(f"index.json names {len(entries)} manifests, not one image index")
         return entries[0]
     chosen = [entry for entry in entries if entry.get("digest") == root]
-    if len(chosen) != 1 or chosen[0].get("mediaType") != INDEX:
-        raise Refused(f"index.json does not list {root} once, as an image index")
+    if not chosen or any(entry.get("mediaType") != INDEX for entry in chosen):
+        raise Refused(f"index.json does not list {root} as an image index")
+    # oras writes one entry for each name the root was given: all of them must agree.
+    if len({entry.get("size") for entry in chosen}) != 1:
+        raise Refused(f"index.json lists the image index {root} with sizes that differ")
     return chosen[0]
 
 
@@ -155,9 +161,14 @@ def _attested(blobs, proof: dict, image: str, platform: str) -> None:
             raise Refused(
                 f"a layer of {what} has a statement whose predicate type is not its annotation's"
             )
+        predicate = statement.get("predicate")
+        if not isinstance(predicate, dict) or not predicate:
+            raise Refused(f"a layer of {what} has a statement with no predicate")
         hexes = [(s.get("digest") or {}).get("sha256") for s in statement.get("subject") or []]
-        # buildkit names the image once per image name it was given, and not at all when it
-        # was given none, as image_build's export is; the index's annotation binds it then.
+        # buildkit names the image once per name image_build's export is given, with that
+        # platform's image digest, in the provenance and the bill of materials alike.
+        if not hexes:
+            raise Refused(f"a layer of {what} has a statement that names no subject")
         if any(f"sha256:{found}" != image for found in hexes):
             raise Refused(
                 f"a layer of {what} has a statement whose subject is not the image for {platform}"
@@ -187,12 +198,25 @@ def describe(path: Path, root: str | None = None) -> tuple[str, dict[str, str]]:
     if "config" in index or "layers" in index:
         raise Refused("the image index has a config or layers, as only a manifest has")
     manifests = index.get("manifests") or []
-    held = {m.get("digest") for m in manifests}
+    held = {m.get("digest"): m for m in manifests}
     for other in top.get("manifests") or []:
-        if other.get("digest") not in held | {digest}:
+        found = other.get("digest")
+        if found == digest:
+            continue
+        if found not in held:
+            raise Refused(f"index.json lists {found}, which the image index does not hold")
+        inner = held[found]
+        if (other.get("mediaType"), other.get("size")) != (
+            inner.get("mediaType"),
+            inner.get("size"),
+        ):
             raise Refused(
-                f"index.json lists {other.get('digest')}, which the image index does not hold"
+                f"index.json lists {found} as a {other.get('mediaType')} of {other.get('size')}"
+                f" bytes, not as the image index holds it"
             )
+        name = (other.get("annotations") or {}).get("org.opencontainers.image.ref.name")
+        if name is not None:
+            raise Refused(f"index.json gives the name {name} to {found}, not to the image index")
     images: dict[str, list[dict]] = {}
     attestations: dict[str, list[dict]] = {}
     for item in manifests:

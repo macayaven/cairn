@@ -293,8 +293,9 @@ def test_a_run_of_underlines_is_read_twice_however_long(bench, monkeypatch, text
 
 
 def test_a_code_block_below_a_heading_keeps_its_lines(bench):
+    """And the dashes under its closing fence are a rule, which no reader takes for a heading."""
     note, spans = filed(bench, "# Settings\n```\n---\nport: 8811\n===\n```\n---\nRow 4.")
-    assert "\\# Settings\n```\n---\nport: 8811\n===\n```\n\\---\nRow 4." in note
+    assert "\\# Settings\n```\n---\nport: 8811\n===\n```\n---\nRow 4." in note
     assert not faults(note, spans)
 
 
@@ -321,10 +322,11 @@ def test_the_underline_rule_only_saves_readings(bench, monkeypatch):
     assert not faults(note, spans) and len(asked) == 4
 
 
-def test_indented_code_below_a_heading_is_not_spared(bench):
-    """Its limit: only a code fence keeps a line of dashes below a heading that became text."""
+def test_indented_code_below_a_heading_keeps_its_lines(bench):
+    """It held the opposite, a backslash before the dashes, which no reader needed (sixth
+    round, finding 3: test_slack_needed_backslashes_unit)."""
     note, spans = filed(bench, "# Settings\n\n    ---\n    port: 8811\n\nRow 4.")
-    assert "\\# Settings\n\n    \\---\n    port: 8811\n\nRow 4." in note
+    assert "\\# Settings\n\n    ---\n    port: 8811\n\nRow 4." in note
     assert not faults(note, spans)
 
 
@@ -339,6 +341,7 @@ def test_a_note_that_keeps_a_second_heading_is_not_stored(bench, monkeypatch):
 
     asked = []
     monkeypatch.setattr(slack_text, "_headings", lambda note: asked.append(1) or {2: "R"})
-    assert filed(bench, "Row 4.") is None and len(asked) == slack_text._PASSES
+    # A line at a reading, then every line at each reading; the first reading serves both.
+    assert filed(bench, "Row 4.") is None and len(asked) == 2 * slack_text._PASSES - 1
     with pytest.raises(ValueError, match=r"^The message's headings could not be written as text$"):
         slack_text._one_heading("## Cedar Quill\n\nRow 4.")

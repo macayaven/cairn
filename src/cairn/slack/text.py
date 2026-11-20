@@ -4,8 +4,10 @@ The note holds one heading, its first line: who wrote the message and when, as t
 verified. Where a heading begins is asked of the note as written, never worked out from the
 message: of the passage splitter (cairn.spans.chunk), whose heading paths say whose words a
 passage is, and of the Markdown parser as the web view reads. Every line either finds a
-heading on is written as text (_one_heading). The splitter's line boundaries (str.splitlines:
-more than a line feed) are each written as a line feed first, a CR LF as one.
+heading on is written as text, and no other line where a line at a reading can tell
+(_one_heading): the note says whose words it holds, so a backslash no reader asked for is a
+false quotation. The splitter's line boundaries (str.splitlines: more than a line feed) are
+each written as a line feed first, a CR LF as one.
 """
 
 import re
@@ -94,7 +96,8 @@ def _headings(text: str) -> dict[int, str]:
     written as text joins the paragraph above it, and a line of "=" or "-" below would
     underline that paragraph next; so once a heading is found, every such line below it that
     is not in a code fence is given too, and a run of them costs one more reading, not one
-    each. (Indented code is not spared: the paragraph a line joins can take it in.)"""
+    each. (Indented code is not spared: the paragraph a line joins can take it in.) Not every
+    line so given would read as a heading: _one_heading says when they are all written."""
     lines = text.split("\n")
     found = {span.start_line - 1: "#" for span in chunk("", text) if span.kind == "heading"}
     code: set[int] = set()
@@ -115,22 +118,64 @@ def _headings(text: str) -> dict[int, str]:
     return found
 
 
-def _one_heading(text: str) -> str:
-    """`text` with a backslash before what makes any line after its first a heading, so the
-    words stay and read as text. It is read until no heading is found: twice as a rule, once
-    more for each list item that takes in a line indented past it once the line above is
-    text. ValueError rather than a note with a second heading, should _PASSES readings not be
-    enough."""
-    text = "\n".join(text.splitlines())
-    for _ in range(_PASSES):
-        found = _headings(text)
+def _made_text(text: str, found: dict[int, str], every: bool) -> str | None:
+    """`text` with a backslash before what makes a line of `found` a heading, so the words stay
+    and read as text: the first such line, or `every` one. Then it is read again (_headings),
+    and so on: _PASSES readings with the one that gave `found`. None when the last of them
+    still finds a heading."""
+    lines = text.split("\n")
+    for _ in range(_PASSES - 1):
         if not found:
-            return text
-        lines = text.split("\n")
-        for index, mark in found.items():
-            lines[index] = lines[index].replace(mark, "\\" + mark, 1)
-        text = "\n".join(lines)
-    raise ValueError("The message's headings could not be written as text")
+            break
+        for index in found if every else [min(found)]:
+            lines[index] = lines[index].replace(found[index], "\\" + found[index], 1)
+        found = _headings("\n".join(lines))
+    return None if found else "\n".join(lines)
+
+
+def _code_as_written(text: str, note: str) -> str:
+    """`note`, made of `text` by backslashes alone, with each line its Markdown parser reads
+    as code as `text` has it, but for a line the passage splitter then reads as a heading;
+    `note` itself unless the readers find one heading in that, at one more reading."""
+    written, made = text.split("\n"), note.split("\n")
+    lines = made.copy()
+    for token in _PARSER.parse(note):
+        if token.type in ("fence", "code_block") and token.map:
+            lines[slice(*token.map)] = written[slice(*token.map)]
+    for span in chunk("", "\n".join(lines)):
+        if span.kind == "heading" and span.start_line > 1:
+            lines[span.start_line - 1] = made[span.start_line - 1]
+    return note if lines == made or _headings("\n".join(lines)) else "\n".join(lines)
+
+
+def _one_heading(text: str) -> str:
+    """`text` with a backslash before what makes any line after its first a heading, and
+    nowhere else where that can be told.
+
+    What a line reads as depends on the lines above it, and on no backslash written below it.
+    So the first line a reading finds is a heading whatever is done below it, and it alone
+    gets the backslash; the note is read again, and the lines above the next one found are
+    then as they will stay. Every backslash written so is needed: without it, a reader finds
+    a second heading. It costs a reading a line, so it is done only when the first reading
+    gives fewer than _PASSES lines that could need one (a line of "=" or "-" under a blank
+    line underlines nothing and is not counted).
+
+    A message with more such lines, or one _PASSES readings do not finish, is written from
+    the start as it was before: every line _headings gives at each reading, the lines its
+    underline rule adds among them, a rule or indented code that no reader took for a heading
+    too. Code is then put back as written (_code_as_written); the other lines keep the
+    backslash, which is the limit. ValueError rather than a note with a second heading,
+    should _PASSES readings not be enough then either: at most twice _PASSES readings."""
+    text = "\n".join(text.splitlines())
+    lines, found = text.split("\n"), _headings(text)
+    if sum(mark == "#" or bool(lines[at - 1].strip()) for at, mark in found.items()) < _PASSES:
+        note = _made_text(text, found, False)
+        if note is not None:
+            return note
+    note = _made_text(text, found, True)
+    if note is None:
+        raise ValueError("The message's headings could not be written as text")
+    return _code_as_written(text, note)
 
 
 def _render(text: str, names: Mapping[str, str]) -> str:

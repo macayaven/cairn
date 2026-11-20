@@ -11,12 +11,18 @@ address (review, finding 3).
   value. Each source says what its address is of and where its credential comes from.
 - `inside(host)`: a link-local address (IPv4 169.254.0.0/16, IPv6 fe80::/10), a cloud's
   metadata name or address (METADATA_NAMES, METADATA_ADDRESSES), a multicast, unspecified
-  or broadcast address; also when written as an IPv4-mapped or NAT64 IPv6 address, or as
-  IPv4 in one number, in hex or with fewer than four parts. Private ranges and loopback are
-  not inside: a self-hoster's own services live there.
+  or broadcast address; also when written as an IPv4-mapped IPv6 address, as one a translator
+  rewrites from a prefix with one layout (64:ff9b::/96, ::ffff:0:0:0/96: the last 32 bits),
+  or as IPv4 in one number, in hex or with fewer than four parts. Every address of the
+  local-use translation range 64:ff9b:1::/48 is inside, whatever it embeds: each network
+  lays that range out its own way (RFC 6052, 2.2: after 32, 40, 48, 56, 64 or 96 bits), so
+  no reading of such an address is the right one. Private ranges and loopback are not
+  inside: a self-hoster's own services live there.
 - `CheckedTransport`: resolve every request through the source client and send it only
   to an address that passed the checks. The HTTP Host and TLS name stay the source's name.
-  A non-global address needs the operator's CAIRN_SOURCE_PRIVATE_ADDRESSES=allow.
+  A non-global address needs the operator's CAIRN_SOURCE_PRIVATE_ADDRESSES=allow. Plain http
+  to a loopback host is sent only when every address it is pinned to is loopback itself
+  (_loopback): never one a translator would rewrite into a loopback address.
 - `system_resolve(host, port)`: the system resolver. Tests hand in their own.
 """
 
@@ -51,8 +57,8 @@ _IPV4_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
 _NUMERIC = frozenset("0123456789abcdefx.")  # IPv4 written in a form inet_aton reads
 INSIDE = (
     "is an address inside this machine's network plumbing (a link-local address, a cloud's"
-    " metadata service, a multicast, unspecified or broadcast address), where a credential"
-    " is never sent"
+    " metadata service, a multicast, unspecified or broadcast address, or one of the range"
+    " kept for a network's own address translators), where a credential is never sent"
 )
 
 PRIVATE_ADDRESSES_SETTING = "CAIRN_SOURCE_PRIVATE_ADDRESSES"
@@ -74,7 +80,7 @@ def _policy_address(address: IPAddress) -> IPAddress:
     if isinstance(address, ipaddress.IPv6Address):
         if address.ipv4_mapped is not None:
             address = address.ipv4_mapped
-        elif address in _NAT64 or address in _NAT64_LOCAL or address in _IPV4_TRANSLATED:
+        elif address in _NAT64 or address in _IPV4_TRANSLATED:  # one layout: the last 32 bits
             address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
     return address
 
@@ -87,7 +93,16 @@ def _is_global(address: IPAddress) -> bool:
     return _policy_address(address).is_global
 
 
+def _loopback(address: IPAddress) -> bool:
+    """Whether a connection to `address` stays on this machine: a loopback address, or the
+    IPv4-mapped form of one, which the kernel delivers to it. A loopback address as a
+    translator would rewrite it (64:ff9b::7f00:1) is on the network, where the translator is."""
+    return (getattr(address, "ipv4_mapped", None) or address).is_loopback
+
+
 def _address_inside(address: IPAddress) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address in _NAT64_LOCAL:
+        return True  # its layout is the network's own: what it embeds cannot be read
     address = _policy_address(address)
     return (
         address.is_link_local
@@ -295,7 +310,7 @@ class CheckedTransport(httpx.AsyncBaseTransport):
         if (
             request.url.scheme == "http"
             and bare in LOOPBACK_HOSTS
-            and any(not _policy_address(address).is_loopback for address in addresses)
+            and any(not _loopback(address) for address in addresses)
         ):
             raise RefusedAddress(
                 "The plain HTTP source did not resolve to loopback.", request=request

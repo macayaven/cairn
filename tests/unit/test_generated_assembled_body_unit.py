@@ -26,6 +26,7 @@ end, blank lines around). A page the gate refuses (compile.fence_left_open) is n
 it is counted, not checked. Seeded, so every run builds the same pages. Made-up notes."""
 
 import difflib
+import hashlib
 import random
 import re
 from collections import Counter
@@ -373,6 +374,19 @@ def test_no_fence_of_the_assembled_body_runs_from_one_claim_into_another():
         faults.extend(f"{name}: {where}" for where in crossings(body, claims, spans))
     assert faults == []
     assert held == 0  # no page of these is one the body cannot hold
+
+
+# sha256 of these pages' bodies, one after another, as render_body wrote them with the
+# source of 23c24229 checked out (run there, copied here)
+AS_23C24229_WROTE_THEM = "9bea6a3495cfafd4d56c72c8abeec72e0775629bbce298548795e7dc13963d83"
+
+
+def test_the_renderer_kept_for_the_import_writes_these_pages_as_23c24229_did():
+    """So the reference of the test below is the old renderer, not a mirror of the new."""
+    digest = hashlib.sha256()
+    for _, claims, spans in cases():
+        digest.update(render_body_before_review_four("Ops", claims, spans).encode())
+    assert digest.hexdigest() == AS_23C24229_WROTE_THEM
 
 
 def test_only_a_page_that_held_the_fault_is_written_otherwise_than_before():

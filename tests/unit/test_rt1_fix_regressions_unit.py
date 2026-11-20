@@ -83,22 +83,26 @@ def forgotten(plan: Plan, name: str):
 
 
 def test_siblings_stored_in_reverse_leave_together_and_the_example_after_the_tail_stays():
-    """Sixteen siblings, one a note, stored in the reverse of their order, and four more in
-    one older note. Every title is "Ops". The forget takes the sixteen one a reading (each
-    is the oldest note's last claim), names the fourth of the older note at the seventeenth
-    reading, and takes the example with it. The plain loop keeps the example; the release
-    before the fix took the twenty siblings in one reading and kept it."""
+    """The page of test_forget_changed_title_unit.py::test_a_run_of_notes_each_older_than_
+    the_one_before_it_takes_a_render_for_each (01ae715b: eighteen siblings, nineteen
+    renders), but the oldest two siblings share one note, and an example closed where it
+    stands follows the tail. Every title is "Ops". The forget takes sixteen one a reading
+    (each is the oldest note's last claim), names the second of the shared note at the
+    seventeenth, and since that note still gives the title, the declared class leaves with
+    it: the example. The plain loop keeps it; the release before the fix took the eighteen
+    in one reading and kept it. The smallest found: fifteen and two, or sixteen and one,
+    keep it. With every sibling its own note, as in that test, the example stays."""
     older = [
         Note("item", "- item", "Ops"),
         Note("spent", SPENT, "Ops"),
         Note("parent", "- parent", "Ops"),
     ]
-    four = Note(
-        "four", "\n\n".join(f"    - ~~~\n      early {n}" for n in range(4)), "Ops", inner=older
+    pair = Note(
+        "pair", "\n\n".join(f"    - ~~~\n      early {n}" for n in range(2)), "Ops", inner=older
     )
     plan = Plan(
         [
-            *chain(16, [four]),
+            *chain(16, [pair]),
             Note("sep", "Between.", "Ops"),
             Note("tail", "        End of samples.", "Ops"),
             Note("example", CLOSED, "Ops"),
@@ -107,8 +111,8 @@ def test_siblings_stored_in_reverse_leave_together_and_the_example_after_the_tai
     )
     want, have, watch, _ = forgotten(plan, "sep")
     assert CLOSED in want
-    assert len(watch.renders) <= CLOSERS_MAX + 2, len(watch.renders)
     assert have == want
+    assert len(watch.renders) <= CLOSERS_MAX + 2, len(watch.renders)
 
 
 @pytest.mark.parametrize("count", [100])

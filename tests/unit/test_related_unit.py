@@ -617,9 +617,9 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
     for line in (
         "`terms_looked_up`: the page's terms looked up, 256 at most, the shortest first.",
         "`terms_not_looked_up`: its terms past those.",
-        "`claims_read`: claims of other pages read for those terms.",
+        "`claims_read`: claims of other pages read for those terms and for the title.",
         "`claims_not_read`: such claims not read, past 512 claims or a million bytes of their"
-        " passages; a term with a claim not read gives no reason.",
+        " passages; a term or a title with a claim not read gives no reason.",
         "`pages_left_out`: related pages past `limit`.",
         "`complete` is true when those three counts of what was left out are 0.",
     ):
@@ -650,6 +650,11 @@ def test_the_tools_description_says_a_long_claim_is_cut_and_that_page_gives_it_w
 
 def test_the_tools_description_says_which_terms_and_titles_relate_none():
     said = " ".join(tools()["related"].description.split())
+    assert (
+        "Or it is `mentioned_by`: `there` is a claim of the other page that names this page's"
+        " title in its prose, not inside code, a path, a flag or an address (the pages this"
+        " page mentions are not listed)."
+    ) in said
     for line in (
         "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"
         " the project hold, nor one longer than 200 characters; a title more than 5 other pages"

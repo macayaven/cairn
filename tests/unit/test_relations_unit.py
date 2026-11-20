@@ -332,3 +332,62 @@ def test_the_line_is_the_same_read_from_the_part_of_a_text_around_the_match():
         assert len(whole[0]) <= most
         cut += whole[1]
     assert checked == 1_800 and cut > 1_000
+
+
+# A title named in prose: the stretches of a passage that are no prose
+
+
+def test_the_stretches_that_are_no_prose_are_the_facts_own_and_the_code_blocks():
+    """Every url, path, flag, version and inline code, whether or not it is a term that
+    relates pages (a plain word in backticks covers too), and the body of every code block:
+    each by the fact's own start and end."""
+    text = (
+        "Started by `deploy/compose.yaml` or ./deploy/run.sh; see"
+        " https://fable.example/deploy with --dry-run on v2.4.1, then `deploy`."
+    )
+    assert [text[slice(*at)] for at in relations.covered(passage(text))] == [
+        "deploy/compose.yaml",
+        "./deploy/run.sh",
+        "https://fable.example/deploy",
+        "--dry-run",
+        "v2.4.1",
+        "deploy",
+    ]
+    fenced = "Before a deploy.\n\n```sh\ndeploy --now\n```\nAfter 5 min, on 2099-01-02."
+    assert [fenced[slice(*at)] for at in relations.covered(passage(fenced))] == ["deploy --now"]
+    # what the facts do not own is prose: a path written with no root, a fence's first line
+    bare = "Started by deploy/compose.yaml.\n\n```deploy\nquill run\n```"
+    assert [bare[slice(*at)] for at in relations.covered(passage(bare))] == ["quill run"]
+
+
+NAMED = [
+    # (the places a title was matched at, the stretches, the first place in the prose)
+    ([(10, 16)], [], (10, 16)),
+    ([(10, 16)], [(20, 30)], (10, 16)),
+    ([(10, 16)], [(10, 16)], None),  # the stretch itself
+    ([(10, 16)], [(0, 40)], None),  # inside a longer one
+    ([(10, 16)], [(15, 30)], None),  # partly inside: its last character
+    ([(10, 16)], [(0, 11)], None),  # its first
+    ([(10, 16)], [(12, 13)], None),  # around a stretch: a title of two words, code between
+    ([(10, 16)], [(0, 10), (16, 30)], (10, 16)),  # touching on both sides is outside
+    ([(10, 16), (40, 46)], [(0, 20)], (40, 46)),  # the first place that is outside
+    ([(10, 16), (40, 46)], [(0, 20), (38, 50)], None),
+    ([(10, 16), (40, 46), (70, 76)], [(0, 20), (38, 50), (90, 99)], (70, 76)),
+    ([], [(0, 20)], None),
+]
+
+
+@pytest.mark.parametrize(("places", "stretches", "first"), NAMED)
+def test_a_title_is_named_at_the_first_place_that_shares_no_character_with_a_stretch(
+    places, stretches, first
+):
+    assert relations.named_at(places, stretches) == first
+
+
+def test_many_places_and_many_stretches_are_walked_once():
+    """Both in the order they stand: a passage of thousands of facts, a title matched in
+    hundreds of places, each inside one of them but the last."""
+    stretches = [(10 * n, 10 * n + 6) for n in range(5_000)]
+    places = [(10 * n + 2, 10 * n + 4) for n in range(0, 5_000, 7)] + [(60_000, 60_005)]
+    assert relations.named_at(places, stretches) == (60_000, 60_005)
+    assert relations.named_at(places[:-1], stretches) is None

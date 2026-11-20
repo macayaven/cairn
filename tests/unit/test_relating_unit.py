@@ -262,12 +262,181 @@ def test_another_project_with_the_same_term_and_title_never_appears_and_is_never
     assert both.related_pages(ops.id, deploy, 20) == alone
 
 
-def test_a_one_word_title_is_found_inside_a_flag_that_holds_the_word(store, ops):
-    """What the index's own match means for a short title: it reads `--audit-keep` as the words
-    audit and keep, as a search does, so a page titled Audit is mentioned by that claim."""
+# A title is named in a claim's prose: not inside code, a path, a flag, a version or an address
+
+
+def named_by(store: Store, ops, slug: str) -> list[str]:
+    found = related(store, ops.id, slug)
+    return [page.slug for page in found.pages if page.why[0].kind == MENTIONED_BY]
+
+
+def test_the_places_the_index_marked_are_read_in_the_texts_own_characters():
+    opened, closed = relating.MARKS
+    marked = f"ab{opened}cd{closed}e{opened}f{closed}"
+    assert relating._places(marked) == [(2, 4), (5, 6)]
+    assert relating._places("no mark at all") == []
+    # marks that do not pair say nothing more: the read never asks for such a text, and
+    # reading one ends all the same
+    assert relating._places(f"a{opened}b") == []
+    assert relating._places(f"a{opened}b{closed}c{opened}d") == [(1, 2)]
+    text = "Quill ledger, then the QUILL\u2014ledger."
+    marked = f"{opened}Quill ledger{closed}, then the {opened}QUILL\u2014ledger{closed}."
+    assert [text[slice(*place)] for place in relating._places(marked)] == [
+        "Quill ledger",
+        "QUILL\u2014ledger",
+    ]
+
+
+def test_a_title_inside_a_path_in_backticks_is_not_named(store, ops):
+    """The case from the pages in a browser: the claim's only "deploy" is inside a path."""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    file(
+        store,
+        "ops",
+        "Replica",
+        "The replica is configured in `litestream.yml` and started by `deploy/compose.yaml`.\n",
+    )
+    found = related(store, ops.id, deploy)
+    assert found.pages == () and found.left.complete
+    assert found.left.claims_read == 1  # the claim was read, with its passage, to say so
+
+
+def test_a_one_word_title_inside_a_flag_is_not_named(store, ops):
+    """The index reads `--audit-keep` as the words audit and keep, as a search does, and
+    lists the claim; the passage says the words stand inside a flag, in backticks or bare."""
     audit = file(store, "ops", "Audit", "Ada reads the log.\n")
-    deploy = file(store, "ops", "Deploy", "Run the job with `--audit-keep` set to 7.\n")
-    assert reasons(related(store, ops.id, audit)) == {deploy: [(MENTIONED_BY, "Audit", "title", 2)]}
+    file(store, "ops", "Deploy", "Run the job with `--audit-keep` set to 7.\n")
+    file(store, "ops", "Nightly", "The job runs with --audit-keep 7 at night.\n")
+    assert named_by(store, ops, audit) == []
+    review = file(store, "ops", "Review", "The audit of March found `--audit-keep` unset.\n")
+    assert named_by(store, ops, audit) == [review]  # in prose too, in this claim
+
+
+@pytest.mark.parametrize(
+    "inside",
+    [
+        "See https://fable.example/deploy/guide first.",  # an address
+        "Start it with ./deploy/run.sh at noon.",  # a path with a root
+        "It lives under /srv/deploy/current now.",
+        "Run `deploy` and wait.",  # a plain word in backticks: no term, and still code
+        "Pass --deploy to ship.",  # a flag
+        "Then:\n\n```sh\nquill deploy --now\n```",  # a code block
+    ],
+)
+def test_a_title_inside_an_address_a_path_a_flag_or_code_is_not_named(store, ops, inside):
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    file(store, "ops", "Other", inside + "\n")
+    assert named_by(store, ops, deploy) == []
+    file(store, "ops", "Prose", "Before a deploy, read this. " + inside + "\n")
+    assert named_by(store, ops, deploy) == ["prose"]
+
+
+def test_what_the_facts_do_not_own_is_prose_and_names_the_title(store, ops):
+    """Pinned as it is: a path written with no root and outside backticks is no fact of a
+    passage, and the word after a fence's opening marks is not in the code block's body."""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    bare = file(store, "ops", "Bare", "Started by deploy/compose.yaml at dawn.\n")
+    fence = file(store, "ops", "Fence", "Then:\n\n```deploy\nquill run\n```\n")
+    assert named_by(store, ops, deploy) == [bare, fence]
+
+
+def test_a_title_that_reads_as_code_is_named_in_prose_and_not_in_backticks(store, ops):
+    compose = file(store, "ops", "compose.yaml", "Brook keeps it short.\n")
+    prose = file(store, "ops", "Prose", "Edit compose.yaml before the release.\n")
+    file(store, "ops", "Ticks", "Edit `compose.yaml` before the release.\n")
+    file(store, "ops", "Path", "It is `deploy/compose.yaml`, read at start.\n")
+    both = file(store, "ops", "Both", "Run `compose.yaml` checks; compose.yaml must parse.\n")
+    assert named_by(store, ops, compose) == [both, prose]
+
+
+def test_a_title_of_two_words_with_one_in_code_is_not_named(store, ops):
+    """The index matches the two words side by side whatever stands between them; a match
+    that lies partly inside code is inside it."""
+    ledger = file(store, "ops", "Quill ledger", "Brook balances it at dusk.\n")
+    file(store, "ops", "First", "Run `quill` ledger checks at noon.\n")
+    file(store, "ops", "Second", "Open quill `ledger` and wait.\n")
+    file(store, "ops", "Across", "Open quill `--x` ledger and wait.\n")  # code between: no match
+    assert named_by(store, ops, ledger) == []
+    whole = file(store, "ops", "Whole", "Run `quill` ledger checks, then the Quill ledger.\n")
+    assert named_by(store, ops, ledger) == [whole]
+
+
+def test_a_claim_reworded_from_its_passage_mentions_as_the_index_says(store, ops):
+    """Where a claim's text is not the text of the first passage it cites (a page saved by
+    hand), the places of the one are not the places of the other: the mention stands as the
+    index has it. So does that of a claim that cites no passage, or another project's."""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    note, _ = store.add_note(ops.id, "# Replica\n\nStarted by `deploy/compose.yaml` at dawn.\n")
+    (span,) = [s.id for s in store.note_spans(note.id) if s.kind == "paragraph"]
+    said = "The replica is started by `deploy/compose.yaml`."
+    store.save_page(
+        ops.id, "reworded", "Reworded", "", [Claim(id="cl_r", text=said, span_ids=[span])]
+    )
+    store.save_page(ops.id, "uncited", "Uncited", "", [Claim(id="cl_u", text=said, span_ids=())])
+    other = store.create_project("other")
+    far, _ = store.add_note(other.id, "# Far\n\n" + said + "\n")
+    (theirs,) = [s.id for s in store.note_spans(far.id) if s.kind == "paragraph"]
+    store.save_page(
+        ops.id, "outside", "Outside", "", [Claim(id="cl_o", text=said, span_ids=[theirs])]
+    )
+    assert named_by(store, ops, deploy) == ["outside", "reworded", "uncited"]
+    # the same words as the text of its own passage: not named
+    store.save_page(
+        ops.id,
+        "same",
+        "Same",
+        "",
+        [Claim(id="cl_s", text="Started by `deploy/compose.yaml` at dawn.", span_ids=[span])],
+    )
+    assert named_by(store, ops, deploy) == ["outside", "reworded", "uncited"]
+
+
+def test_a_cut_claim_gives_the_line_of_the_place_that_names_the_title(store, ops):
+    """Not the first place the index matched, which stands in a path: the first in prose."""
+    lines = (
+        ["Started by `deploy/compose.yaml` at dawn."]
+        + [f"Ada waits for nightly log {n}." for n in range(60)]
+        + ["After each deploy she rests."]
+        + [f"Brook rests {n}." for n in range(20)]
+        + ["A second deploy follows."]
+    )
+    whole = "\n".join(lines)
+    there = mention(store, ops, whole, title="Deploy")
+    assert (there.cut, there.line, there.line_cut) == (True, "After each deploy she rests.", False)
+
+
+def test_a_title_six_pages_hold_in_code_and_three_name_is_not_common(store, ops):
+    """The pages that count toward a common title are those that name it. (The claims that
+    count toward CLAIMS_COMMON are the index's: every claim that holds its words.)"""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    for n in range(6):
+        file(store, "ops", f"Code {n}", f"Page {n} runs `deploy --now`.\n")
+    for n in range(3):
+        file(store, "ops", f"Prose {n}", f"Page {n} waits for a deploy.\n")
+    found = related(store, ops.id, deploy)
+    assert named_by(store, ops, deploy) == ["prose-0", "prose-1", "prose-2"]
+    assert found.left.complete and found.left.claims_read == 9
+    for n in range(3, 6):
+        file(store, "ops", f"Prose {n}", f"Page {n} waits for a deploy.\n")
+    assert named_by(store, ops, deploy) == []  # six name it now: common
+
+
+def test_a_title_whose_claims_were_not_all_read_mentions_none_and_counts_them(
+    store, ops, monkeypatch
+):
+    """As a term: a page that may name the title or not leaves it unsettled, and the title
+    gives no reason; the claims not read are counted and the answer is not complete."""
+    deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
+    file(store, "ops", "Near", "Brook waits for a deploy.\n")
+    file(store, "ops", "Far", "Quill waits for a deploy, " + "and waits, " * 60 + "then rests.\n")
+    assert named_by(store, ops, deploy) == ["far", "near"]
+    monkeypatch.setattr(relating, "BYTES_MAX", 300)  # the long passage, twice, does not fit
+    found = related(store, ops.id, deploy)
+    assert found.pages == () and not found.left.complete
+    assert (found.left.claims_read, found.left.claims_not_read) == (1, 1)
+    monkeypatch.setattr(relating, "CLAIMS_MAX", 1)  # nor do two claims
+    found = related(store, ops.id, deploy)
+    assert found.pages == () and (found.left.claims_read, found.left.claims_not_read) == (0, 2)
 
 
 def test_an_account_with_no_page_answers_nothing(tmp_path):
@@ -358,7 +527,8 @@ def test_a_title_of_more_words_than_a_search_takes_relates_none_by_mention(store
 
 
 def test_a_title_more_than_five_other_pages_name_relates_none_by_mention(store, ops):
-    """As a term more than COMMON pages hold: read whole, so the answer is complete."""
+    """As a term more than COMMON pages hold: its claims are read whole, six of them, so the
+    answer is complete."""
     quill = file(store, "ops", "Quill", "Ada wrote it.\n")
     for n in range(COMMON):
         file(store, "ops", f"Notes {n}", f"Quill line {n}.\n")
@@ -368,7 +538,8 @@ def test_a_title_more_than_five_other_pages_name_relates_none_by_mention(store, 
     }
     file(store, "ops", "Notes more", "One more names Quill.\n")  # the sixth other page
     found = related(store, ops.id, quill)
-    assert found.pages == () and found.left == NOTHING_LEFT_OUT
+    assert found.pages == () and found.left == NOTHING_LEFT_OUT._replace(claims_read=COMMON + 1)
+    assert found.left.complete
 
 
 def test_a_title_more_than_sixty_four_claims_of_other_pages_hold_relates_none(store, ops):
@@ -385,10 +556,10 @@ def test_a_title_more_than_sixty_four_claims_of_other_pages_hold_relates_none(st
         "notes-0": [(MENTIONED_BY, "Quill", "title", 2)],
         "notes-1": [(MENTIONED_BY, "Quill", "title", 2)],
     }
-    assert found.left == NOTHING_LEFT_OUT
+    assert found.left == NOTHING_LEFT_OUT._replace(claims_read=CLAIMS_COMMON)  # each was read
     file(store, "ops", "Third", "Quill once more.\n")
     found = related(store, ops.id, quill)
-    assert found.pages == () and found.left == NOTHING_LEFT_OUT
+    assert found.pages == () and found.left == NOTHING_LEFT_OUT  # and here none: 65 list it
 
 
 # A term many claims hold

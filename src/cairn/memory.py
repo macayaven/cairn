@@ -128,9 +128,10 @@ relations.TEXT_MAX characters, which is given in place of its text (`_claim_text
 gives the claim whole): "text_cut": true and "line", the line that shows what the reason
 says. For a claim that states a shared term that is the line of the passage it cites that
 holds the term, taken where the term's fact stands and never by a search of the text; for
-a claim that mentions the page, the line of its own text that names the title, where the
-index matched it (cairn.store.relating._named; two lines, with their line break, when the
-title's words stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX
+a claim that mentions the page, the line that names the title in its prose, at the first
+place the index matched it outside code, a path, a flag, a version or an address
+(cairn.store.relating._mentioning; two lines, with their line break, when the title's
+words stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX
 characters of it that hold the term or the title, with "line_cut": true. Only a long claim
 of which no line can be told (one that mentions the page and holds a mark of the index or
 a null character) gives its first TEXT_MAX characters as "text", with "text_cut": true and

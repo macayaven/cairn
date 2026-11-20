@@ -11,8 +11,18 @@ Two kinds of relation:
   and two facts are one term when their kind is the same and facts.compared of each, as it
   was read in its passage, is the same text (`terms_of`). A fact is never read a second
   time, alone, and never read from a claim's text cut from its passage.
-- MENTIONED_BY: a claim of the other page holds this page's title as a phrase (the search
-  index decides: cairn.store.relating).
+- MENTIONED_BY: a claim of the other page names this page's title in its prose. The search
+  index says where the claim's text holds the title's words side by side
+  (cairn.store.relating), and the claim names the title only when at least one such place
+  lies outside every stretch of the passage it cites that is a url, a path, a flag, a
+  version or inline code, and outside its code blocks (`covered`: the facts of
+  cairn.facts.extract_facts on the passage, each by its own start and end; nothing is read
+  a second time alone). A place partly inside such a stretch is inside it (`named_at`). So
+  a page titled Deploy is not named by a claim whose only "deploy" stands in
+  `deploy/compose.yaml`, nor one titled Audit by `--audit-keep`. The places of a claim's
+  text are places of its passage because the claim is the passage's text; where it is not
+  (a page saved by hand; a claim that cites no passage of the project), the mention stands
+  as the index has it.
 
 Which terms relate pages (`specific`): every url, path, flag and version; an inline code
 only when it holds a character that is not a letter (a digit, a space, punctuation:
@@ -145,6 +155,37 @@ def line_of(text: str, start: int, end: int) -> tuple[str, bool]:
     room = max(0, LINE_MAX - (end - start))
     left = min(max(first, start - room // 2), last - LINE_MAX)
     return text[left : left + LINE_MAX], True
+
+
+def covered(span: Span) -> list[tuple[int, int]]:
+    """The stretches of a passage's text that are no prose, in the order they stand: every
+    fact of TERM_KINDS, a term that relates pages or not (a plain word in backticks covers
+    too), and the body of every code block, each by the fact's own start and end. What the
+    facts do not own is prose: a path written with no root (`deploy/compose.yaml` outside
+    backticks is no fact), the word after a fence's opening marks."""
+    return [
+        (fact.start, fact.end)
+        for fact in extract_facts(span)
+        if fact.kind in TERM_KINDS or fact.kind == "code_block"
+    ]
+
+
+def named_at(
+    places: Sequence[tuple[int, int]], stretches: Sequence[tuple[int, int]]
+) -> tuple[int, int] | None:
+    """Where a claim names a title in its prose: the first of `places`, where the index
+    matched the title's words in the claim's text, that shares no character with any of
+    `stretches` (`covered`, of the passage the claim is the text of). A place partly inside
+    a stretch is inside it, and one that only touches a stretch is outside. None when every
+    place is inside one: the claim holds the title's words only in code, a path, a flag, a
+    version or an address, and does not name the page. Both in the order they stand."""
+    at = 0
+    for start, end in places:
+        while at < len(stretches) and stretches[at][1] <= start:
+            at += 1  # the stretches that end before this place: before every later one too
+        if at == len(stretches) or end <= stretches[at][0]:
+            return start, end
+    return None
 
 
 def looked_up_before(term: Term) -> tuple[int, str, str]:

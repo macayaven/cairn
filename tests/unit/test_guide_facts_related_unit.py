@@ -108,7 +108,8 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
         "connect",
         "Each related page says why, with the claims the reason rests on: both pages state the"
         " same term (a URL, a path, a flag, a version, or code in backticks that is not a plain"
-        " word), or a claim of the other page holds this page's title.",
+        " word), or a claim of the other page names this page's title in its prose, not inside"
+        " code, a path, a flag or an address.",
     )
     file(
         memory,
@@ -123,6 +124,12 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
     file(memory, "Sync", "Nightly, `quill sync --all` runs.\n")
     file(memory, "Word", "Set `retries` to three.\n")  # a plain word in backticks
     file(memory, "Pointer", "Read the runbook before a deploy.\n")
+    # the title's word inside a path, a flag or an address names nothing
+    file(
+        memory,
+        "Script",
+        "Start `runbook/start.sh`, pass --runbook, see https://example.invalid/runbook.\n",
+    )
     answer = memory.related("ops", "runbook", 20)  # six pages: one more than the default gives
     assert why(answer) == {
         "address": [("shares", "https://example.invalid/quill")],

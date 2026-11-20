@@ -56,6 +56,7 @@ def heading_shows(title: str) -> tuple[str, set[str]]:
         ("##", "##"),
         ("# Settings\nRow 4.", "# Settings"),
         ("a\\b `x` \\`", "a\\b `x` \\`"),
+        ("a `|@e` b", "a `[email removed]` b"),  # removed from the code alone, as the note does
     ],
     ids=[
         "list item code",
@@ -69,6 +70,7 @@ def heading_shows(title: str) -> tuple[str, set[str]]:
         "only hashes",
         "a heading",
         "backslashes",
+        "an address in code",
     ],
 )
 def test_the_title_reads_as_the_characters_slack_displayed(text, shown):

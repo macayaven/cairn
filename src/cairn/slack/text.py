@@ -583,7 +583,9 @@ def _render(
         elif kind == "code" and isinstance(what, str):
             if displayed:
                 pieces.append(_shown(text[start:end]))
-            elif ("|" in what and not bars) or title:
+            elif title:  # its code alone is what an address is removed from, as below
+                pieces.append(_plain(f"`{what}`"))
+            elif "|" in what and not bars:
                 pieces.append(literal(text[start:end]))
             else:  # a space each side where Markdown would take one, or read a longer run
                 pad = " " if what.strip(" ") and (what[0] in "` " or what[-1] in "` ") else ""

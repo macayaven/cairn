@@ -215,6 +215,45 @@ def test_a_passage_listed_for_a_term_and_for_the_title_is_read_once_and_charged_
     assert set(extracted) >= set(sizes) and set(extracted.values()) == {2}, extracted
 
 
+def test_a_passage_the_page_and_another_page_both_cite_is_read_once_and_not_charged(
+    tmp_path, monkeypatch
+):
+    """A page saved by hand whose claim cites the page's own passage: the read holds that
+    passage whole already, as the page's, so it is not read again, its facts are extracted
+    once, and it is not charged to BYTES_MAX, which counts other pages' passages: with a
+    bound it does not fit in, the claim is read and the pages share both terms."""
+    store = Store(tmp_path / "cairn.db")
+    project = store.create_project("ops")
+    memory = Memory(store, lint_gate)
+    memory.note("ops", f"Ada sets {term(1)} and {term(2)}.\n", title="Asked", topic="Asked")
+    (claim,) = store.get_page(project.id, "asked").claims
+    store.save_page(
+        project.id,
+        "copy",
+        "Copy",
+        "",
+        [Claim(id="cl_copy", text=claim.text, span_ids=claim.span_ids)],
+    )
+    (span,) = store.get_spans(claim.span_ids[:1]).values()
+    monkeypatch.setattr(relating, "BYTES_MAX", len(span.text.encode()) - 1)
+    extracted: dict[str, int] = {}
+    reader = relations.extract_facts
+
+    def counted_reader(passage):
+        extracted[passage.id] = extracted.get(passage.id, 0) + 1
+        return reader(passage)
+
+    monkeypatch.setattr(relations, "extract_facts", counted_reader)
+    try:
+        found = store.related_pages(project.id, "asked", RELATED_MAX)
+    finally:
+        store.close()
+    assert found is not None and found.left.complete and found.left.claims_read == 1
+    assert [page.slug for page in found.pages] == ["copy"]
+    assert [reason.kind for reason in found.pages[0].why] == [SHARES, SHARES]
+    assert extracted == {span.id: 1}
+
+
 @pytest.mark.parametrize(
     ("terms", "statements", "rows"),
     [(10, 13, 27), (200, 16, 255), (3_000, 16, 871)],

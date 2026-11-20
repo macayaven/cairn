@@ -60,9 +60,10 @@ Bounded work, whoever asks, and nothing left out silently. What can be left out 
   their passages, in that order, until BYTES_MAX bytes are (each is measured first from
   its row, by a handle on the stored value that reads none of it, as cairn.graph measures
   one: a passage that does not fit is neither read nor fetched). A passage counts once,
-  however many of the claims listed cite it, for the terms and the title alike: within a
-  read its facts are read once (cairn.facts.extract_facts), and kept for that read alone,
-  for its terms (relations.placed) and for whether it names the title in prose
+  however many of the claims listed cite it, for the terms and the title alike, and not at
+  all when it is one of the page's own, which the read holds whole already: within a read
+  its facts are read once (cairn.facts.extract_facts), and kept for that read alone, for
+  its terms (relations.placed) and for whether it names the title in prose
   (relations.covered). A term one of whose claims was not read gives no reason at
   all: it is not known of every page whether it states the term, nor how many do. And so
   for the title. So every reason given says how many pages hold its term exactly, and no
@@ -142,7 +143,7 @@ CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
 # once a read: this repository's documents filed as 32 pages, each asked at limit 20, and the
 # worst read built (256 terms; 512 candidate claims of 2,000 bytes of flags, paths and
 # versions each). Time is the middle of three runs, under a load of 10 to 13; the counts do
-# not vary with the load, the times two- to threefold.
+# not vary with the load, the times do.
 #   bytes       complete  pairs  reasons lost      worst of the 32  worst page built
 #   250,000     3 of 32   106    1,199 of 1,874    0.34 s           0.48 s
 #   400,000     3 of 32   132      902             0.39 s           0.68 s
@@ -152,9 +153,10 @@ CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
 # The rule: the smallest value whose worst read is at most half a second on a quiet run and
 # which keeps 24 of the 32 answers complete, else 500,000. 750,000 is the smallest that keeps
 # 24. Its worst of the 32 is under half a second even under that load. The worst page built
-# is the one row over it: its read at 750,000 is the same as before passages were counted
-# once (the same claims read, the same answer), and that read took 0.37 s earlier the same
-# day under a load of 5.7, the quietest run measured.
+# is the one time over it: no other page cites its passages or names its title, so its read
+# is the same as before passages were counted once (the same claims read, the same answer),
+# and that read, on the code before that change and under a load of 5.7, the quietest run
+# measured, took 0.13, 0.21, 0.26, 0.37 and 0.51 s at the five values: 3.2 to 3.7 times less.
 BYTES_MAX = 750_000  # bytes of those claims' passages, as stored, read in all
 AT_ONCE = 64  # terms one statement asks the index for
 # The two marks the index is asked to put around what it matched of a title in a claim's
@@ -311,8 +313,10 @@ def related(
     named = _title(title)
     naming = _title_claims(con, *scope, slug, named)
     candidates = _candidates(con, *scope, [*(others for _, others in asked.values()), naming])
-    passages, unread = _within(
-        con, project_id, list(dict.fromkeys(c[0] for c in candidates.values() if c))
+    passages, unread = _within(  # a passage of the page's own is held whole already
+        con,
+        project_id,
+        list(dict.fromkeys(c[0] for c in candidates.values() if c and c[0] not in spans)),
     )
     held |= _terms(passages, spans, facts)
     read = {row for row, cited in candidates.items() if not (cited and cited[0] in unread)}

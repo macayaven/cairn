@@ -14,11 +14,12 @@ Matching
 - A rendered page (lint_pages(..., rendered=True), what every gate asks, cairn.gate: its
   body is what compiler.render_body writes of its claims, checked byte for byte) is read
   by its claims, never by its body as one document (CORE5): retention, the plain metrics
-  and grounding find a fact's text as extracted (facts.as_extracted: white space as
-  written, a code_block fact by each of its lines so read) as a whole token of the claims'
-  texts, each read alone by the same function as the passages it copies; a claim is in the
-  body when its text is, as it is. So the context a claim stands in never changes what is
-  read. A page of the `lint` command is read by its body, as above: such a page's body may
+  and grounding find a fact's text as it was read in its passage (Fact.as_read, compared by
+  facts.compared: white space as written, a code_block fact by each of its lines) as a
+  whole token of the claims' texts, each read whole and alone by facts.as_extracted, as the
+  passages it copies are; a claim is in the body when its text is, as it is. So the context
+  a claim stands in never changes what is read, and no fact is read again out of its
+  passage. A page of the `lint` command is read by its body, as above: such a page's body may
   hold text no claim holds (tests/acceptance/test_t3_lint.py), and that is what it scores.
 
 Pages and spans
@@ -80,7 +81,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from cairn.facts import Fact, as_extracted, extract_facts, normalize
+from cairn.facts import Fact, as_extracted, compared, extract_facts, normalize
 from cairn.spans import Span, chunk
 
 CONTENT_KINDS = frozenset({"paragraph", "bullet", "code", "table", "quote"})
@@ -445,13 +446,16 @@ def _units(fact: Fact) -> list[tuple[str, str]]:
 
 
 def _extracted_units(fact: Fact) -> list[tuple[str, str]]:
-    """_units, each as extracted (facts.as_extracted): a code block's lines, without blank and
-    comment-only lines, each with its indentation and inner white space; else the fact."""
+    """_units, each as it was read in its passage (Fact.as_read, compared by facts.compared):
+    a code block's lines, without blank and comment-only lines, each with its indentation and
+    inner white space; else the fact. Nothing is read for emphasis here: the fact's own text,
+    alone, reads otherwise than in its passage (third report, must-fix 3)."""
     if fact.kind == "code_block":
-        lines = [line for line in fact.value.split("\n") if line.strip()]
-        lines = [line for line in lines if not line.strip().startswith(("#", "//"))]
-        return [(as_extracted(line), line.rstrip(" \t\r")) for line in lines]
-    return [(as_extracted(fact.value), fact.value)]
+        lines = zip(fact.as_read.split("\n"), fact.value.split("\n"), strict=True)
+        kept = [(read, line) for read, line in lines if line.strip()]
+        kept = [(read, line) for read, line in kept if not line.strip().startswith(("#", "//"))]
+        return [(compared(read), line.rstrip(" \t\r")) for read, line in kept]
+    return [(compared(fact.as_read), fact.value)]
 
 
 @dataclass(frozen=True)

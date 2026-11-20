@@ -57,7 +57,7 @@ def release_view(gh, release, args):
     return gh.api_reply({key: fields[key] for key in opt.json.split(",")}, opt.jq)
 
 
-def serve_gh(gh, args):
+def serve_gh(gh, args, *, listing=None):
     path = Path(os.environ["RELEASE_STATE"])
     state = json.loads(path.read_text())
     state["calls"].append(args)
@@ -68,7 +68,8 @@ def serve_gh(gh, args):
             print(f"https://github.com/cli/cli/releases/tag/v{version}")
             rc = 0
         elif args[0] == "api":
-            rc = gh.api(state, args[1:])
+            # Only discovery can lag. A GET by id reads the current release object.
+            rc = gh.api(state, args[1:], listing=listing)
         elif args[:2] == ["release", "view"]:
             rc = release_view(gh, state["release"], args[2:])
         elif args[0] == "release":
@@ -94,7 +95,17 @@ if __name__ == "__main__":
     sys.exit(serve_gh(gh, sys.argv[1:]))
 
 
-def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None, gh_version="2.102.0"):
+def retry(
+    tmp_path,
+    tag,
+    existing,
+    *,
+    changed=None,
+    edit_when_public=None,
+    gh_version="2.102.0",
+    gh_script=__file__,
+    extra_state=None,
+):
     package = artifact(tmp_path)
     notes = release_check.notes("1.2.3", CHANGELOG, tag)
     (package / "notes.md").write_bytes(notes.encode())
@@ -104,7 +115,6 @@ def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None, gh_ve
     )
     remote = model.initial(tag, package, existing=existing)
     original = remote["release"]
-    original["name"] = tag
     if changed:
         edit(original, changed)
     state_path = tmp_path / "state.json"
@@ -119,6 +129,7 @@ def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None, gh_ve
                 "edit_when_public": edit_when_public,
                 "writes_at_edit": None,
             }
+            | (extra_state or {})
         )
     )
     bin_dir = tmp_path / "bin"
@@ -132,7 +143,7 @@ def retry(tmp_path, tag, existing, *, changed=None, edit_when_public=None, gh_ve
     else:
         search_path = f"{bin_dir}:{SYSTEM}"
         tool = bin_dir / "gh"
-        tool.write_text(f'#!/bin/sh\nexec {shlex.join([sys.executable, "-IB", __file__])} "$@"\n')
+        tool.write_text(f'#!/bin/sh\nexec {shlex.join([sys.executable, "-IB", gh_script])} "$@"\n')
         tool.chmod(0o755)
     env = {
         "PATH": search_path,

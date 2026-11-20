@@ -773,11 +773,16 @@ Writing from the web view (frozen by tests/acceptance/test_m1_mobile.py; cairn/w
   (role="alert"). A note the gate rejects: 422, the gate's violations listed, what was typed
   still in the form (escaped); the note is kept, as with the tool. Unknown project, or
   another account's: 404.
-- GET /new is the same composer with a `project` select of the caller's projects (by name),
-  posting to /notes. It pre-fills `title` and `text` from the query string and appends `url`
-  on a line of its own, unless the text already holds it: the share target lands here. With
-  no project yet it says so and shows the new-project form instead. POST /notes without a project:
-  400 and the form again.
+- GET /new is the same composer with a `project` select of the projects the caller can write
+  to (by name), posting to /notes. It pre-fills `title` and `text` from the query string and
+  appends `url` on a line of its own, unless the text already holds it: the share target lands
+  here. With no project yet it says so and shows the new-project form instead. POST /notes
+  without a project: 400 and the form again.
+- No composer is shown where the caller cannot write: GET /b/{project}/new for a project the
+  caller only reads, GET /new for a caller who reads projects and can write to none, and
+  whatever is posted to either form for a project the caller only reads, are 403 in the
+  store's words for that write, and nothing is stored. GET / offers Write a note only to a
+  caller who can write to a project.
 - GET / has a form posting to /projects (`name`, `description`, and `kind`, a select of every
   kind, "general" chosen): 303 to /b/<name> when created; 409 (name taken) or 400 (not a
   valid name, or an unknown kind) with the home page again, a message (role="alert") and

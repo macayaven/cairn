@@ -11,6 +11,10 @@ again. What was typed goes back only to the session that sent it; no log or audi
 holds it. Opening a composer reads and never writes. The note form sent after the sign-in
 ended comes back the same way, 401, with a link to sign in in a new tab (signed_out_draft,
 which Auth calls).
+
+No note form is shown where the person cannot write (_to_write): a project they only read
+answers Forbidden, in the store's words, for its form and for whatever is posted to it, and
+the picker lists only the projects they can write to.
 """
 
 import functools
@@ -84,6 +88,22 @@ def _landing(project: Project, noted: dict[str, Any]) -> str:
     if noted["version"] is None:
         return f"/b/{_seg(project.name)}"
     return f"/b/{_seg(project.name)}/p/{_seg(noted['page'])}"
+
+
+def _to_write(memory: Memory, target: Project | None = None) -> list[Project]:
+    """The projects the person can write to: what the picker lists. Forbidden, in the words
+    of the store's refusal of the write, when `target` is not one of them, or, with no
+    `target`, when the person reaches projects and can write to none: no note form is shown
+    where nothing can be written. With no project in reach the list is empty, and the
+    picker's page offers to make one."""
+    writable = memory.store.writable_projects()
+    if target is not None:
+        refused = all(project.id != target.id for project in writable)
+    else:
+        refused = not writable and bool(memory.store.list_projects())
+    if refused:
+        raise Forbidden(READ_ONLY_PROJECT)
+    return writable
 
 
 def _composer(
@@ -180,7 +200,8 @@ def _file(
     near, ticked = near_miss(values["source_ref"]), "as_written" in form
 
     def again(status: int, **problem: Any) -> Response:
-        projects = memory.store.list_projects() if picker else None
+        writable = _to_write(memory, target)  # a reader is refused, whatever else was wrong
+        projects = writable if picker else None
         asked = {"near": near, "as_written": ticked, **problem}
         return _composer(
             memory, status, brand=brand, project=shown, projects=projects, values=values, **asked
@@ -235,8 +256,7 @@ def compose_routes() -> list[Route]:
     def project_composer(request: Request) -> Response:
         memory = _memory(request)
         target = memory.project(request.path_params["project"])
-        if not any(p.id == target.id for p in memory.store.writable_projects()):
-            raise Forbidden(READ_ONLY_PROJECT)
+        _to_write(memory, target)
         return _composer(memory, brand=brand_of(request), project=target, projects=None, values={})
 
     async def project_note(request: Request) -> Response:
@@ -252,7 +272,7 @@ def compose_routes() -> list[Route]:
         text = shared_text(query.get("text", ""), query.get("url", ""))
         values = {"title": query.get("title", "").strip(), "text": text}
         memory = _memory(request)
-        projects, brand = memory.store.list_projects(), brand_of(request)
+        projects, brand = _to_write(memory), brand_of(request)
         return _composer(memory, brand=brand, project=None, projects=projects, values=values)
 
     async def quick_note(request: Request) -> Response:
@@ -300,6 +320,7 @@ def compose_routes() -> list[Route]:
                 signed_in=True,
                 projects=projects,
                 shared=shared,
+                can_write=bool(await run_in_threadpool(memory.store.writable_projects)),
                 project_form=typed,
                 project_error=str(refused),
             )

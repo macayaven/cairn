@@ -3,7 +3,7 @@
 {% block main %}
 <div class="heading-row">
   <h1>Projects</h1>
-  {% if projects %}<a class="button" href="/new">Write a note</a>{% endif %}
+  {% if can_write %}<a class="button" href="/new">Write a note</a>{% endif %}
 </div>
 <form class="search" method="get" action="/search" role="search">
   <input type="search" name="q" placeholder="Search every project" aria-label="Search every project">

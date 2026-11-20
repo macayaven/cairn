@@ -188,8 +188,9 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
     """The handlers of the pages that show memory, as ui_routes registers them."""
 
     def home(request: Request) -> Response:
-        """The projects, each with its page count and how far it is shared: a fixed number of
-        reads whatever the number of projects (Q1)."""
+        """The projects, each with its page count and how far it is shared, and the offer to
+        write a note when the caller can write to one: a fixed number of reads whatever the
+        number of projects (Q1)."""
         memory = _memory(request)
         projects = memory.projects()["projects"]
         sharing = memory.store.projects_sharing(project["id"] for project in projects)
@@ -201,6 +202,7 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
             "home.html",
             projects=projects,
             shared=shared,
+            can_write=bool(memory.store.writable_projects()),
             project_form=blank,
             project_error=None,
         )

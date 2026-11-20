@@ -241,6 +241,11 @@ class FakeStore:
     def list_projects(self) -> list[Project]:
         return sorted(self.projects.values(), key=lambda b: b.name.lower())
 
+    def writable_projects(self) -> list[Project]:
+        """The view acts for no person, so it writes wherever it reaches: the home page asks,
+        to offer a note. Who else writes where is tested over the real store."""
+        return self.list_projects()
+
     def get_project(self, ref: str) -> Project | None:
         return self.projects.get(ref) or self._by_name(ref)
 

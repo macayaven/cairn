@@ -15,7 +15,9 @@ release, still a draft, after the publication. At most `looks` looks, `apart` se
 the two values at the top of the step; then what the step did before. Any other state stops
 at once, as before: a release that is not this run's, an edited one, two for the tag, a file
 name that is not one of the three, a listing that fails, no release after the publication.
-The first look of a run never waits.
+(One state is both: this run's draft, edited as soon as it was made and listed with some of
+its file names. The step waits for the names, as for any draft of its own, and then stops on
+the edit; nothing is published either way.) The first look of a run never waits.
 
 gh is test_ci_release_retry_unit's stand-in, whose listing shows what was there before a
 write until the k-th look after it. `sleep` is a stand-in on the path, as gh is: it keeps its
@@ -275,6 +277,28 @@ def test_the_looks_for_the_draft_and_for_its_names_are_the_same_ten(tmp_path):
     )
     assert done.returncode == 1 and the_error(done) == DRAFT.format(tag="v1.2.3")
     assert len(slept(calls)) == LOOKS - 1 and len(writes(calls)) == 1
+
+
+@pytest.mark.parametrize("for_looks", ["1", ""], ids=["one look", "every look"])
+def test_a_draft_edited_as_soon_as_it_is_made_and_short_of_names_is_waited_for_then_stopped_on(
+    tmp_path, for_looks
+):
+    """The two together: the names are waited for first, since the title and the notes are
+    compared only when the look is done, and then the edit stops the job, with the line of an
+    edited draft. Nothing is downloaded and nothing published, with the wait or without."""
+    done, calls = run(
+        tmp_path,
+        "v1.2.3",
+        "",
+        CHANGED_ONCE_MADE=EDITED,
+        NAMES_LISTED_AT_FIRST=json.dumps([WHEEL]),
+        NAMES_LISTED_FOR_LOOKS=for_looks,
+    )
+    assert done.returncode == 1
+    assert the_error(done) == DIFFERS.format(tag="v1.2.3", state="a draft", what="notes")
+    assert len(slept(calls)) == (1 if for_looks else LOOKS - 1)
+    assert [line.split()[1:3] for line in writes(calls)] == [["release", "create"]]
+    assert not any(line.startswith("gh release download") for line in calls)
 
 
 def test_a_draft_a_person_published_with_some_of_the_names_listed_is_not_waited_for(tmp_path):

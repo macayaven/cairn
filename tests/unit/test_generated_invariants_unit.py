@@ -7,7 +7,8 @@ nothing. (b) Every such page exports and imports, and the imported page is equal
 also compiled by a composer that folds every passage of one text into one claim, as a model
 may (finding 5a): what it saves holds both invariants too.
 
-The grammar: repeated paragraphs and one a prefix of another, quotes, lists and nested
+The grammar: repeated paragraphs, one a prefix of another and one joined from the first lines of two
+earlier ones, quotes, lists and nested
 lists, fences with every closer shape, inline code with odd white space, headings to depth
 eight, titles with line breaks, no-break and other Unicode spaces. Seeded, so every run
 builds the same notes. Made-up notes."""
@@ -77,7 +78,7 @@ def fence(rng: random.Random) -> str:
 
 
 def block(rng: random.Random, made: list[str]) -> str:
-    kind = rng.randrange(12)
+    kind = rng.randrange(14)
     if kind == 0 and made:
         return rng.choice(made)  # a paragraph repeated
     if kind == 1 and made:
@@ -101,6 +102,13 @@ def block(rng: random.Random, made: list[str]) -> str:
         return "#" * rng.randint(1, 8) + " " + words(rng, 2)
     if kind == 10:
         return words(rng) + "\n" + rng.choice(["===", "---"])
+    if kind == 12 and len(made) > 1:  # the first lines of two earlier passages, joined
+        one, two = rng.sample(made, 2)
+        return one.split("\n")[0] + "\n" + two.split("\n")[0]
+    if kind == 11:  # two passages that differ only by white space inside inline code
+        spaced = rng.choice(["a  b.txt", "a\tb.txt", "a \u00a0b.txt"])
+        lead = rng.choice(["", "> Stray `\n>\n> "])  # a backtick a quote leaves as text
+        return f"{lead}Keep `{spaced}` here.\n\n{lead}Keep `a b.txt` here."
     return words(rng)
 
 
@@ -154,6 +162,17 @@ def fences_cross(page) -> list[str]:
     return found
 
 
+def code_read(text: str) -> list[str]:
+    """The inline code the parser reads in a passage, by the parser alone."""
+    return [
+        child.content
+        for token in BODY.parse(text)
+        if token.type == "inline"
+        for child in token.children or ()
+        if child.type == "code_inline"
+    ]
+
+
 def faults(store: Store, project_id: str) -> list[str]:
     out = []
     for slug in [p.slug for p in store.list_pages(project_id)]:
@@ -167,14 +186,26 @@ def faults(store: Store, project_id: str) -> list[str]:
         for gate in GATES:
             verdict = gate(candidate, spans)
             if not verdict.passed:
-                out.append(f"{slug}: {gate.__name__} {[v[0] for v in verdict.violations]}")
+                codes = [v.split(":")[0] for v in verdict.violations]
+                out.append(f"{slug}: {gate.__name__} {codes}")
         out.extend(f"{slug}: a fence runs on, {where}" for where in fences_cross(page))
+        for claim in page.claims:  # a fold: passages whose code the parser reads the same
+            if len({tuple(code_read(spans[i].text)) for i in claim.span_ids}) > 1:
+                out.append(f"{slug}: {claim.id} folds passages whose inline code differs")
     return out
 
 
 def reversed_order(page) -> Reply:
+    """The claims in reverse, and as "same" every group whose texts are equal but for white
+    space, as a model may call them (the gate refuses such a fold unless it is whole)."""
     numbers = list(range(len(page.claims), 0, -1))
-    return Reply(text=json.dumps({"order": numbers, "same": []}), prompt_tokens=9)
+    groups: dict[str, list[int]] = {}
+    for n, claim in enumerate(page.claims, 1):
+        groups.setdefault(" ".join(claim.text.split()), []).append(n)
+    same = [group for group in groups.values() if len(group) > 1]
+    folded = {n for group in same for n in group[1:]}
+    numbers = [n for n in numbers if n not in folded]
+    return Reply(text=json.dumps({"order": numbers, "same": same}), prompt_tokens=9)
 
 
 def folding(title: str, spans) -> Draft:
@@ -196,7 +227,7 @@ def build(store: Store) -> dict[str, int]:
     counts of what happened, and an AssertionError naming the case at the first fault."""
     memory = Memory(store, lint_gate)
     counts = {"cases": 0, "notes": 0, "refused": 0, "pages": 0, "tidied": 0, "arranged": 0}
-    counts |= {"composed": 0, "folds saved": 0}
+    counts |= {"composed": 0, "folds saved": 0, "arranger refused a fold": 0}
     for name, page_title, notes in cases(SEED, CASES):
         project = store.create_project(name)
         counts["cases"] += 1
@@ -204,18 +235,30 @@ def build(store: Store) -> dict[str, int]:
         for text in notes:
             counts["notes"] += 1
             try:
-                memory.note(name, text, title=page_title, topic=page_title)
+                answer = memory.note(name, text, title=page_title, topic=page_title)
                 filed.append(text)
             except RequestError:
                 counts["refused"] += 1
+                continue
+            # an extractive note is never refused by the gate (finding 1 was one)
+            assert answer["status"] in ("saved", "unchanged"), (name, answer["violations"])
         assert faults(store, project.id) == [], (name, "compiled")
         for slug in [p.slug for p in store.list_pages(project.id)]:
             counts["pages"] += 1
-            counts["tidied"] += tidy_page(store, project.id, slug).status == "arranged"
+            tidied = tidy_page(store, project.id, slug)
+            assert tidied.status in ("arranged", "unchanged"), (name, tidied.problem)
+            counts["tidied"] += tidied.status == "arranged"
             assert faults(store, project.id) == [], (name, "tidied")
             page = store.get_page(project.id, slug)
-            model = FakeModel([reversed_order(page)])
-            counts["arranged"] += arrange_page(store, project.id, slug, model).status == "arranged"
+            reply = reversed_order(page)
+            folds = json.loads(reply.text)["same"]
+            arranged = arrange_page(store, project.id, slug, FakeModel([reply, reply]))
+            if arranged.status in ("rejected", "invalid"):  # only a fold it must not make
+                assert folds, (name, arranged.problem)
+                counts["arranger refused a fold"] += 1
+            else:
+                assert arranged.status in ("arranged", "unchanged"), (name, arranged.problem)
+            counts["arranged"] += arranged.status == "arranged"
             assert faults(store, project.id) == [], (name, "arranged")
         before = snapshot(store, project.id)
         for text in filed:

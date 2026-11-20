@@ -33,6 +33,8 @@ def _lines(span: Span) -> str:
 
 # What the gates (cairn.gate) and the arranger record about a version, in words, by the name
 # callers meet (cairn.store.models.SHOWN_METRICS); a name without one here shows as it is.
+# The rows are shown in this order whatever order a version stored them in, the counts above
+# the ratios made of them; a name without words comes after these, by name (page_view).
 CHECKS = {
     "claims": "Claims",
     "passages_cited": "Source passages cited",
@@ -46,11 +48,16 @@ RATIO_METRICS = frozenset({"retention", "code_line_retention", "passage_coverage
 
 
 def _metric(value: Any, *, ratio: bool = False) -> str:
-    if ratio and isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f"{value * 100:,.1f}".rstrip("0").rstrip(".") + "%"
-    if isinstance(value, float):
-        return f"{value:,.3f}".rstrip("0").rstrip(".")
-    return str(value)
+    """A check's value as the page shows it. A ratio is a percentage only when it is a number
+    from 0 to 1, where times 100 cannot overflow; any other number is shown as the number it
+    is, and anything else as its text. An archive brings whole numbers of any size and any
+    finite float under any name (portable._metrics), so nothing here turns a whole number
+    into a float, and a float is written the short way that reads back as itself."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    if ratio and 0 <= value <= 1:
+        return f"{abs(value) * 100:,.1f}".rstrip("0").rstrip(".") + "%"  # abs: -0.0 is 0%
+    return repr(value)
 
 
 def writer_words(kind: str, name: str | None) -> str:
@@ -149,9 +156,10 @@ def page_view(memory: Memory, project: Project, page: Page) -> dict[str, Any]:
     for item in items:  # each claim's proof: its own sources, in the order it cites them
         item["proof"] = [by_id[span_id] for span_id, _ in item["cites"]]
         item["proof_lines"] = sum(source["cited"] for source in item["proof"])
+    shown = shown_metrics(page.metrics)
     metrics = [
-        (name, CHECKS.get(name, name), _metric(value, ratio=name in RATIO_METRICS))
-        for name, value in shown_metrics(page.metrics).items()
+        (name, CHECKS.get(name, name), _metric(shown[name], ratio=name in RATIO_METRICS))
+        for name in (*(n for n in CHECKS if n in shown), *sorted(shown.keys() - CHECKS.keys()))
     ]
     return {
         "items": items,
@@ -180,8 +188,9 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
     """The handlers of the pages that show memory, as ui_routes registers them."""
 
     def home(request: Request) -> Response:
-        """The projects, each with its page count and how far it is shared: a fixed number of
-        reads whatever the number of projects (Q1)."""
+        """The projects, each with its page count and how far it is shared, and the offer to
+        write a note when the caller can write to one: a fixed number of reads whatever the
+        number of projects (Q1)."""
         memory = _memory(request)
         projects = memory.projects()["projects"]
         sharing = memory.store.projects_sharing(project["id"] for project in projects)
@@ -193,6 +202,7 @@ def memory_handlers() -> tuple[Callable[..., Any], ...]:
             "home.html",
             projects=projects,
             shared=shared,
+            can_write=bool(memory.store.writable_projects()),
             project_form=blank,
             project_error=None,
         )

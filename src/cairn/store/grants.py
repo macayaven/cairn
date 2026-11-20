@@ -402,7 +402,7 @@ class GrantMethods(StoreBase):
         with self._read() as con:
             rows = con.execute(
                 "SELECT g.id, g.client_id, c.name, g.created_at, g.projects, g.access,"
-                " maker.label, m.key_id IS NOT NULL AND maker.id IS NULL"
+                " g.user_id, maker.label, m.key_id IS NOT NULL AND maker.id IS NULL"
                 " FROM oauth_grants AS g"
                 " JOIN oauth_clients AS c ON c.id = g.client_id"
                 " LEFT JOIN made_with AS m ON m.id = g.id"
@@ -424,10 +424,19 @@ class GrantMethods(StoreBase):
                     access=access,
                     made_with=made_with,
                     made_with_revoked=bool(revoked),
+                    approver_id=user_id,
                 )
-                for grant_id, client_id, name, created_at, projects, access, made_with, revoked in (
-                    rows
-                )
+                for (
+                    grant_id,
+                    client_id,
+                    name,
+                    created_at,
+                    projects,
+                    access,
+                    user_id,
+                    made_with,
+                    revoked,
+                ) in rows
             ]
 
     def revoke_grant(self, grant_id: str) -> bool:

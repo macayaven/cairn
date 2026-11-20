@@ -363,3 +363,88 @@ def test_docs_sources_summary_and_mcp_source_ref_article_are_clean(tmp_path):
         assert "sources the server reads on a timer" in docs_html
     finally:
         store.close()
+
+
+def test_agents_page_shows_approved_by_and_owner_visibility_subtitle(tmp_path):
+    from cookie_names import session_cookie
+
+    redirect = "http://127.0.0.1:9999/cb"
+    store = Store(tmp_path / "cairn.db")
+    try:
+        ada_s = store.sign_in(
+            "sso",
+            "ada",
+            "ada@example.test",
+            "Ada Lovelace",
+            issuer="https://id.example.test",
+            join="default",
+        )
+        sam_s = store.sign_in(
+            "sso",
+            "sam",
+            "sam@example.test",
+            "Sam Ortiz",
+            issuer="https://id.example.test",
+            join="default",
+        )
+        ada_store = store.for_account(ada_s.account_id, ada_s.user.id)
+        sam_store = store.for_account(sam_s.account_id, sam_s.user.id)
+        ws_store = store.for_account(ada_s.account_id)
+
+        ada_client = store.register_client("ada-agent", [redirect])
+        ada_code = ada_store.create_code(ada_client.id, redirect, "c" * 43)
+        assert store.redeem_code(ada_code, ada_client.id)
+
+        sam_client = store.register_client("sam-agent", [redirect])
+        sam_code = sam_store.create_code(sam_client.id, redirect, "d" * 43)
+        assert store.redeem_code(sam_code, sam_client.id)
+
+        ws_client = store.register_client("ws-agent", [redirect])
+        ws_code = ws_store.create_code(ws_client.id, redirect, "e" * 43)
+        assert store.redeem_code(ws_code, ws_client.id)
+
+        with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+            cookie_name = session_cookie("https")
+
+            # Owner Ada sees all workspace grants, Approved by column, and owner/admin subtitle
+            client.cookies.set(cookie_name, ada_s.token)
+            owner_html = client.get("/agents").text
+            assert (
+                "Agents approved in the browser across this workspace: owners and admins see"
+                " every member&#39;s connected agents and can disconnect any of them."
+            ) in owner_html or (
+                "Agents approved in the browser across this workspace: owners and admins see"
+                " every member's connected agents and can disconnect any of them."
+            ) in owner_html
+            assert (
+                "<tr><th>Agent</th><th>What it can see</th><th>Approved by</th>"
+                '<th>Connected</th><th><span class="hint">Action</span></th></tr>'
+            ) in owner_html
+
+            rows = owner_html.split("<tbody>", 1)[1].split("</tbody>", 1)[0].split("<tr>")
+            by_name = {}
+            for row in rows:
+                for name in ("ada-agent", "sam-agent", "ws-agent"):
+                    if name in row:
+                        by_name[name] = row
+
+            assert set(by_name) == {"ada-agent", "sam-agent", "ws-agent"}
+            assert "Ada Lovelace" in by_name["ada-agent"].split('data-label="Approved by"', 1)[1]
+            assert "any project Ada Lovelace cannot reach" in by_name["ada-agent"]
+            assert "Sam Ortiz" in by_name["sam-agent"].split('data-label="Approved by"', 1)[1]
+            assert "any project Sam Ortiz cannot reach" in by_name["sam-agent"]
+            assert "whoever approved it" not in by_name["sam-agent"]
+            assert "The workspace" in by_name["ws-agent"].split('data-label="Approved by"', 1)[1]
+            assert "nothing in this workspace" in by_name["ws-agent"]
+
+            # Member Sam sees only his own grant, his name under Approved by, and member subtitle
+            client.cookies.set(cookie_name, sam_s.token)
+            member_html = client.get("/agents").text
+            assert "Agents you approved in the browser." in member_html
+            assert "across this workspace" not in member_html
+            assert "sam-agent" in member_html
+            assert "ada-agent" not in member_html
+            assert "ws-agent" not in member_html
+            assert "Sam Ortiz" in member_html
+    finally:
+        store.close()

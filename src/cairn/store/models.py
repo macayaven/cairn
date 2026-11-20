@@ -190,6 +190,7 @@ class GrantInfo(BaseModel):
     # A1: the label of the key its approval was made with, as KeyInfo's.
     made_with: str | None = None
     made_with_revoked: bool = False
+    approver_id: str | None = None
 
 
 class Made(BaseModel):

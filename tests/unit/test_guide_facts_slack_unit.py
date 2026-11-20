@@ -750,16 +750,19 @@ def test_connect_a_rule_gets_no_backslash():
 
 
 def test_connect_a_line_read_as_code_holds_what_slack_displayed():
-    """connect.md: "A line the note reads as code, fenced or indented, holds what Slack
-    displayed: none of the backslashes and doubled asterisks that keep the other lines from
-    reading as Markdown are written in it, while a mention is still the person's name, a link
-    is still `[its words](its address)`, and an email address is still removed.\""""
+    """connect.md: "A line holds what Slack displayed where both the note and its passage read
+    it as code, fenced or indented: none of the backslashes and doubled asterisks that keep
+    the other lines from reading as Markdown are written in it, while a mention is still the
+    person's name, a link is still `[its words](its address)`, and an email address is still
+    removed.\" The passage is the line's own, as the note is split into them: what a page
+    shows of a claim."""
     says(
         *CONNECT,
-        "A line the note reads as code, fenced or indented, holds what Slack displayed: none of"
-        " the backslashes and doubled asterisks that keep the other lines from reading as"
-        " Markdown are written in it, while a mention is still the person's name, a link is"
-        " still `[its words](its address)`, and an email address is still removed.",
+        "A line holds what Slack displayed where both the note and its passage read it as code,"
+        " fenced or indented: none of the backslashes and doubled asterisks that keep the other"
+        " lines from reading as Markdown are written in it, while a mention is still the"
+        " person's name, a link is still `[its words](its address)`, and an email address is"
+        " still removed.",
     )
     sent = "items[0] = (a) * 2 * 3 <@U0QUILL01> <https://fable.test/a_b|Issue #4> quill@fable.test"
     shown = "items[0] = (a) * 2 * 3 @Brook Quill [Issue #4](https://fable.test/a_b) [email removed]"
@@ -778,20 +781,27 @@ def test_connect_a_line_read_as_code_holds_what_slack_displayed():
         [("fence", shown + "\n")],
     )
     assert as_read(a_filed_note(f"Settings:\n    {sent}")) == (f"Settings:\n    {prose}", [0], [])
+    # Code to the note alone: its block's closing fence is indented four, which ends the block
+    # for the passages and not for the note. Its passage is a paragraph, so it stays prose.
+    note = a_filed_note(f"Settings:\n ```\nrows\n    ```\n{sent}")
+    held, headings, ((kind, code),) = as_read(note)
+    assert (held, headings, kind) == (f"Settings:\n ```\nrows\n    ```\n{prose}", [0], "fence")
+    assert prose in code
+    assert [span.kind for span in chunk("", note)][1:4] == ["paragraph", "code", "paragraph"]
 
 
 def test_connect_the_two_limits_of_what_a_filed_message_holds():
     """connect.md: "Only a message with eight or more lines that read as headings or could
     underline one can get a backslash it does not need, on a rule below its first heading for
     instance; and only a message in which a line would end a code fence as Slack displayed it,
-    and not as prose, keeps the marks of prose in its code.\" That no other message does
-    either is test_slack_needed_backslashes_unit's, on generated messages."""
+    and not as prose, keeps the marks of prose where both read code.\" That no other message
+    does either is test_slack_needed_backslashes_unit's, on generated messages."""
     says(
         *CONNECT,
         "Only a message with eight or more lines that read as headings or could underline one"
         " can get a backslash it does not need, on a rule below its first heading for instance;"
         " and only a message in which a line would end a code fence as Slack displayed it, and"
-        " not as prose, keeps the marks of prose in its code.",
+        " not as prose, keeps the marks of prose where both read code.",
     )
     seven = "".join(f"# Shelf {n}\n" for n in range(1, 8))
     below = "\n---\n\n    items[0]\n\nRow 4."

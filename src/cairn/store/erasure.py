@@ -40,7 +40,7 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 
-from cairn.spans import CLOSERS_MAX, Span, claim_id
+from cairn.spans import _PARSER_LINES, CLOSERS_MAX, Span, _covering_fence, claim_id
 from cairn.store import ranking
 from cairn.store.access import MODELS_PREFIX
 from cairn.store.audit import DELETED_PROJECT
@@ -224,14 +224,18 @@ class ErasureMethods(StoreBase):
         an import would refuse leaves it as the note's own claims do, never the forget, and
         one line on the store's log counts those claims by page and version (for a page they
         leave empty, the count alone: a removed page's slug is made from a note's title),
-        and the forget's audit event counts them all (`claims_left`, when there are any).
-        The project keeps the note's digest, so the same text
-        is not stored there again. The workspace's stored bytes go down by the note's size;
-        the month's count of notes written does not. Recorded as note.forgotten (the note's
-        id, its project's id, how many pages changed, and how many claims left when any did);
-        nothing of its text, title or
-        source_ref. KeyError for a note unknown or out of reach; PermissionError for anyone
-        else who may not (see the module). Needs no room under any cap of a plan."""
+        and the forget's audit event counts them over all its pages (`claims_left`, when
+        there are any). `claims_left` is that count and no other: the claims the import's
+        check took from the versions the forget wrote, those that left for a fence that ran
+        on among them (_plan). The claims kept_claims does not keep, which cited the note
+        alone or were not the whole of the passages they still cite, are the forget itself
+        and are not in it. The project keeps the note's digest, so the same text is not
+        stored there again. The workspace's stored bytes go down by the note's size; the
+        month's count of notes written does not. Recorded as note.forgotten (the note's id,
+        its project's id, how many pages changed, and `claims_left` when it is not zero);
+        nothing of its text, title or source_ref. KeyError for a note unknown or out of
+        reach; PermissionError for anyone else who may not (see the module). Needs no room
+        under any cap of a plan."""
         index = self._index
         with self._write() as con:
             project_id, text_sha256, size = self._note_in_reach(con, note_id)
@@ -394,11 +398,22 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     that only the claims before it open and the body does not close (more than
     spans.CLOSERS_MAX of them, Refusal.FENCE_RUNS_ON): the claim that opens it leaves, the
     first in the body's order, and the rest are rendered and asked again, since without it
-    the body is another. A render for each such claim, CLOSERS_MAX times at most, so that a
-    note's author cannot make a forget cost a render for each claim: past that, the claim
-    then named leaves with every claim after it that holds a backtick or a tilde, and no
-    claim after it can open a fence. It reads the project's page versions, never the rest of
-    the database."""
+    the body is another. A render for each such claim, CLOSERS_MAX times, so that a note's
+    author cannot make a forget cost a render for each claim. Past that, the claim then
+    named leaves with the claims that the body writes after it and that can open a fence
+    (`_with_it`; fourth report, must-fix 2): what the body writes before it the parser has
+    read and found whole, and it stays, wherever the stored list holds it, and so does a
+    claim after it that can open none, such as one with inline code. What that still takes:
+    a claim after it whose own fence closes. Then no fence opens after that claim, so the
+    next render finds none: eighteen renders, in whatever order the lists were stored. One
+    more for each fence that had ended with its list item and now covers the block that
+    follows, the claim before the one that left: one for each item nested in another, and
+    the parser reads a fence in eight of those, so twenty-six. And whatever a page holds,
+    past twice CLOSERS_MAX renders every claim that holds a backtick or a tilde leaves with
+    the one named, so no fence is left (no page is known to come to that): 2 * CLOSERS_MAX
+    + 2 renders when fences are all that is at fault. It reads the project's page versions,
+    never the rest of the
+    database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
 
     gone = frozenset(
@@ -439,15 +454,56 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
                 break
             renders += 1
             if renders > CLOSERS_MAX and faults == [(run_on, Refusal.FENCE_RUNS_ON)]:
-                named |= {  # the ceiling: no claim after it can open a fence any more
-                    place
-                    for place, claim in enumerate(kept, 1)
-                    if place > run_on and ("`" in claim.text or "~" in claim.text)
-                }
+                named |= _with_it(title, kept, spans, run_on, renders > 2 * CLOSERS_MAX)
             kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in named)
             refused += len(named)
         planned.append((slug, version, title, kept, spans, refused, body))
     return planned
+
+
+def _with_it(
+    title: str, kept: Sequence[Claim], spans: Mapping[str, Span], run_on: int, anywhere: bool
+) -> set[int]:
+    """The places (1 for the first) of the claims of `kept` that leave with the claim at
+    `run_on`, whose fence the body titled `title` leaves to run on, once a forget is past
+    its ceiling of renders (_plan): the claims the body writes after that one (the order is
+    compiler._blocks', which writes the body: the claims with no section first) that can
+    open a fence (`_may_open_a_fence`). `anywhere`, past the second ceiling: every claim
+    that holds a backtick or a tilde, wherever the body writes it; a body of the rest has no
+    fence."""
+    from cairn.compiler import _blocks, section_headings  # the compiler builds on the store
+
+    if anywhere:
+        return {n for n, claim in enumerate(kept, 1) if "`" in claim.text or "~" in claim.text}
+    blocks = _blocks(title, kept, spans, str, section_headings, str)
+    written = [claim for _, claim in blocks if claim is not None]
+    at = next(n for n, claim in enumerate(written) if claim is kept[run_on - 1])
+    after = {id(claim) for claim in written[at + 1 :]}
+    return {
+        n for n, claim in enumerate(kept, 1) if id(claim) in after and _may_open_a_fence(claim.text)
+    }
+
+
+def _may_open_a_fence(text: str) -> bool:
+    """Whether a line of `text` opens a code fence that can run past the claim, wherever a
+    body writes it: the Markdown parser's answer, of each line read alone and without its
+    indentation (its tabs first read to the next stop of four, as the parser reads them),
+    to the question spans.open_fence_closer asks, whether a fence that starts there covers
+    a line written after a blank one. One parse for a line; a line without three backticks
+    or three tildes in a row is not parsed. What stands before a claim reaches into it in
+    one way: a list item holds what is indented under it, across the blank line, so a line
+    of the claim can lose indentation there and nothing else; and a line that opens no
+    fence with none of its indentation opens none with part of it. A fence in a quotation
+    ends with the quotation, at the blank line after the claim at the latest, and is not
+    counted. So a claim this is False of opens no fence that covers the block after it
+    (inline code is not a fence), and one it is True of may open none where it stands, or
+    one that closes in the claim."""
+    alone = (line.expandtabs(4).lstrip(" ") for line in _PARSER_LINES.split(text))
+    return any(
+        _covering_fence(line, 1, [line]) is not None
+        for line in alone
+        if "```" in line or "~~~" in line
+    )
 
 
 def _first_title(con: sqlite3.Connection, span_ids: Sequence[str]) -> str | None:

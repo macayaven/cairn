@@ -10,7 +10,9 @@ terraform {
 }
 
 provider "google" {
-  project = var.project_id
-  region  = local.region
-  zone    = var.zone
+  project               = var.project_id
+  billing_project       = var.project_id
+  user_project_override = true
+  region                = local.region
+  zone                  = var.zone
 }

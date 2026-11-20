@@ -9,17 +9,27 @@ image, and `publish` promotes that digest to the version's tag and to no `sha-` 
 whose commit main's run has not published stops before anything is published. The registry is
 the stand-in of test_ci_promote_unit: files named by tag."""
 
+import json
 import re
 import subprocess
+import tarfile
+from pathlib import Path
 
 import pytest
-from test_ci_promote_unit import Runner, digest, step
-from test_ci_workflow_unit import JOBS, MAIN_PUSH, TAG, evaluate, expression, jobs_that_run
+from test_ci_promote_unit import RECEIVE, Runner, digest, step
+from test_ci_workflow_unit import JOBS, MAIN_PUSH, TAG, evaluate, expression, jobs_that_run, needs
+from test_oci_archive_unit import as_oras_writes
+from test_oci_archive_unit import build as oci_build
 
 FETCH = "Fetch the image main's run published for this commit"
-IS_MAIN = "Check that the archive is main's image"
+ATTESTED = "Check that main's run attested this image for this commit"
+COPY = "Copy the image by its digest into a fresh layout and check it"
+HAND_ON = "Hand on main's image as this run's archive"
+SAME = "Check that the copy is the build"
+ARCHIVE = "Check the archive and give its digests"
 DECIDE = "Look for this build in the registry"
 PUSH = "Push the scanned build"
+REPO = Path(__file__).resolve().parents[2]
 COMMIT = "c" * 40  # the commit of every context and run here; sha-ccccccc
 MAIN = b'{"manifests":"main\'s build of the commit"}'
 
@@ -102,19 +112,13 @@ def test_on_a_tag_image_build_reads_sha_commit_by_its_digest(tmp_path):
     done = fetch(runner)
     assert done.returncode == 0, done.stdout + done.stderr
     main = digest(MAIN)
-    assert runner.oras_calls() == [
-        "manifest fetch ghcr.io/owner/repo:sha-ccccccc",
-        # By digest: a write to sha-ccccccc after this read cannot change what is checked.
-        f"cp --to-oci-layout ghcr.io/owner/repo@{main} {tmp_path}/image/layout:main",
-    ]
-    assert (tmp_path / "github_output").read_text() == f"digest={main}\n"
-    listed = subprocess.run(
-        ["tar", "-tf", str(tmp_path / "image" / "cairn.oci.tar")],
-        capture_output=True, text=True, check=True,
-    ).stdout.split()  # fmt: skip
-    # The names oci_archive.py reads: index.json at the top, blobs/sha256/<hex>.
-    assert "index.json" in listed and "oci-layout" in listed
-    assert f"blobs/sha256/{main.split(':')[1]}" in listed
+    assert runner.oras_calls() == ["manifest fetch ghcr.io/owner/repo:sha-ccccccc"]
+    # The digest of the bytes read, which the attestation check and the copy then name: a write
+    # to sha-ccccccc after this read cannot change what is checked.
+    assert (tmp_path / "github_output").read_text() == (
+        f"image=ghcr.io/owner/repo\ndigest={main}\n"
+    )
+    assert (tmp_path / "main.json").read_bytes() == MAIN
 
 
 def test_a_tag_whose_commit_main_has_not_published_stops_in_one_sentence(tmp_path):
@@ -130,7 +134,7 @@ def test_a_tag_whose_commit_main_has_not_published_stops_in_one_sentence(tmp_pat
         error
     )
     assert not any(call.startswith("cp ") for call in runner.oras_calls())
-    assert not (tmp_path / "image" / "cairn.oci.tar").exists()
+    assert (tmp_path / "github_output").read_text() == ""
 
 
 def test_the_tag_path_names_the_commit_as_main_s_publish_names_it():
@@ -151,31 +155,178 @@ def test_image_build_s_tag_steps_run_on_a_tag_only_and_its_build_on_a_branch_onl
         on_tag, on_main = step_runs(s, TAG), step_runs(s, MAIN_PUSH)
         if builds(s) or s.get("uses", "").startswith("docker/setup-qemu"):
             assert (on_tag, on_main) == (False, True), s.get("name")
-        elif s.get("name") in (FETCH, IS_MAIN) or (s.get("name") == "Install oras" and "if" in s):
+        elif s.get("name") in (FETCH, ATTESTED, COPY, HAND_ON, "Install oras"):
             assert (on_tag, on_main) == (True, False), s.get("name")
         else:
             assert (on_tag, on_main) == (True, True), s.get("name")
-    # The archive step and the upload are the same on both paths.
+    # The archive step and the upload are the same on both paths; on a tag, nothing is copied
+    # before main's attestation of the digest is checked.
     names = [s.get("name") for s in job["steps"]]
-    assert names.index(FETCH) < names.index("Check the archive and give its digests")
-    assert names.index("Check the archive and give its digests") < names.index(IS_MAIN)
+    order = [FETCH, ATTESTED, COPY, HAND_ON, ARCHIVE]
+    assert [names.index(name) for name in order] == sorted(names.index(name) for name in order)
 
 
-@pytest.mark.parametrize(("archived", "fails"), [("same", False), ("other", True)])
-def test_the_archive_must_be_main_s_image(tmp_path, archived, fails):
-    main = digest(MAIN)
-    other = "sha256:" + "e" * 64
-    s = step("image_build", IS_MAIN)
+def test_on_a_tag_the_archive_step_takes_main_s_digest_as_the_root():
+    """The archive step is the build's on a branch; on a tag the layout oras wrote lists more
+    than the index, and the script takes the index by the digest the attestation was checked
+    for, so no other root can pass."""
+    archive = step("image_build", ARCHIVE)
+    assert archive["run"] == (
+        'python3 scripts/oci_archive.py "$RUNNER_TEMP/image/cairn.oci.tar"'
+        ' ${ROOT:+--root "$ROOT"} --github-output "$GITHUB_OUTPUT"'
+    )
+    assert archive["env"] == {"ROOT": "${{ steps.main.outputs.digest }}"}
+    assert step("image_build", HAND_ON)["run"] == (
+        'mv "$RUNNER_TEMP/copied/cairn.oci.tar" "$RUNNER_TEMP/image/cairn.oci.tar"'
+    )
+
+
+# --- the attestation main's run made, checked before a tag promotes anything -------------------
+
+
+GH_STANDIN = r"""#!/bin/bash
+printf 'gh' >> "$CALLS"; printf ' [%s]' "$@" >> "$CALLS"; printf '\n' >> "$CALLS"
+exit "${GH_EXIT:-0}"
+"""
+
+
+def test_image_build_may_read_attestations_and_nothing_else_new():
+    assert JOBS["image_build"]["permissions"] == {"contents": "read", "attestations": "read"}
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_a_tag_promotes_only_a_digest_main_s_run_attested_for_its_commit(tmp_path, verified):
+    """gh attestation verify, on the bytes fetched (their SHA-256 is the digest): signed by this
+    repository's ci-cd.yml (--repo, --signer-workflow), for a run on refs/heads/main
+    (--source-ref) at the tag's full commit (--source-digest), with the default predicate type,
+    SLSA provenance v1, which actions/attest makes."""
+    runner = Runner(tmp_path)
+    (runner.bin / "gh").write_text(GH_STANDIN)
+    s = step("image_build", ATTESTED)
     assert s["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
         "MAIN": "${{ steps.main.outputs.digest }}",
-        "ARCHIVED": "${{ steps.archive.outputs.digest }}",
     }
-    done = Runner(tmp_path).run(s["run"], MAIN=main, ARCHIVED=main if archived == "same" else other)
-    assert (done.returncode != 0) is fails
-    if fails:
-        assert done.stdout.startswith(
-            f"::error::the archive holds {other}, not main's image {main}"
+    done = runner.run(
+        s["run"], GITHUB_SHA=COMMIT, MAIN=digest(MAIN), GH_EXIT="0" if verified else "1"
+    )
+    calls = [line for line in runner.calls.read_text().splitlines() if line.startswith("gh")]
+    assert calls == [
+        f"gh [attestation] [verify] [{tmp_path}/main.json] [--repo] [Owner/Repo]"
+        " [--signer-workflow] [github.com/Owner/Repo/.github/workflows/ci-cd.yml]"
+        f" [--source-ref] [refs/heads/main] [--source-digest] [{COMMIT}]"
+    ]
+    assert (done.returncode == 0) is verified
+    if not verified:
+        (error,) = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+        assert error.count(". ") == 0
+        assert digest(MAIN) in error and COMMIT in error and "refs/heads/main" in error
+        assert (
+            "run this tag's workflow again once main's run for that commit has attested it" in error
         )
+
+
+def test_main_s_run_attests_its_published_image_with_nothing_but_the_signing_rights():
+    """attest_main: after publish and verify on a push to main, the same two steps as attest's
+    image attestation, holding an identity token and the right to store attestations; it checks
+    out nothing, runs nothing from the repository and pushes nothing to the registry
+    (push-to-registry is off by default, so no packages permission)."""
+    job = JOBS["attest_main"]
+    assert job["permissions"] == {"id-token": "write", "attestations": "write"}
+    assert set(needs(job)) == {"publish", "verify"}
+    assert job["if"] == "github.event_name == 'push' && github.ref_type == 'branch'"
+    assert job["runs-on"] == JOBS["attest"]["runs-on"]
+    names = [s.get("name") for s in job["steps"]]
+    assert names == ["The image's name", "Attest the image"]
+    for name in names:
+        assert step("attest_main", name) == step("attest", name), name
+    assert "push-to-registry" not in step("attest_main", "Attest the image")["with"]
+    assert not any("checkout" in s.get("uses", "") for s in job["steps"])
+    ran = jobs_that_run(MAIN_PUSH)
+    assert "attest_main" in ran and "attest" not in ran
+    assert "attest_main" not in jobs_that_run(TAG, {"release_check": {"candidate": "false"}})
+
+
+# --- the round trip a tag does, proved by every pull request ----------------------------------
+
+
+def oras_layout(tmp_path: Path, **case) -> tuple[Path, str]:
+    """A layout as oras 1.3.6 writes it for the made-up build of test_oci_archive_unit."""
+    built, root = oci_build(tmp_path, oras=as_oras_writes, **case)
+    layout = tmp_path / "written"
+    layout.mkdir()
+    with tarfile.open(built) as archive:
+        archive.extractall(layout, filter="data")
+    built.unlink()
+    return layout, root
+
+
+def copy_runner(tmp_path: Path) -> Runner:
+    runner = Runner(tmp_path)
+    (tmp_path / "scripts").symlink_to(REPO / "scripts")
+    return runner
+
+
+def test_the_copy_step_is_one_step_in_image_build_and_in_every_scan():
+    on_tag, in_scan = step("image_build", COPY), step("image_scan", COPY)
+    bare = [{k: v for k, v in s.items() if k not in ("env", "if")} for s in (on_tag, in_scan)]
+    assert bare[0] == bare[1]
+    assert on_tag["env"] == {
+        "SOURCE": "${{ steps.main.outputs.image }}",
+        "DIGEST": "${{ steps.main.outputs.digest }}",
+    }
+    assert in_scan["env"] == {
+        "SOURCE": "localhost:5000/cairn",
+        "DIGEST": "${{ needs.image_build.outputs.digest }}",
+    }
+    assert "if" not in in_scan  # every scan, on every pull request
+    names = [s.get("name") for s in JOBS["image_scan"]["steps"]]
+    assert names.index(RECEIVE) < names.index(COPY) < names.index(SAME)
+    assert names.index(SAME) < names.index("Check that this platform's image is built for it")
+
+
+def test_the_copy_of_a_layout_as_oras_writes_it_passes_the_real_script(tmp_path):
+    layout, root = oras_layout(tmp_path)
+    runner = copy_runner(tmp_path)
+    done = runner.run(
+        step("image_scan", COPY)["run"], SOURCE="localhost:5000/cairn", DIGEST=root,
+        ORAS_LAYOUT=str(layout),
+    )  # fmt: skip
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert runner.oras_calls() == [
+        f"cp --to-oci-layout localhost:5000/cairn@{root} {tmp_path}/copied/layout:main"
+    ]
+    outputs = dict(
+        line.split("=", 1) for line in (tmp_path / "github_output").read_text().splitlines()
+    )
+    assert outputs["digest"] == root and set(outputs) == {"digest", "archive", "amd64", "arm64"}
+    same = step("image_scan", SAME)
+    assert same["env"] == {
+        "BUILT": "${{ needs.image_build.outputs.digest }} ${{ needs.image_build.outputs.amd64 }}"
+        " ${{ needs.image_build.outputs.arm64 }}",
+        "COPIED": "${{ steps.copied.outputs.digest }} ${{ steps.copied.outputs.amd64 }}"
+        " ${{ steps.copied.outputs.arm64 }}",
+    }
+    copied = f"{outputs['digest']} {outputs['amd64']} {outputs['arm64']}"
+    assert runner.run(same["run"], BUILT=copied, COPIED=copied).returncode == 0
+    other = f"{outputs['digest']} {outputs['arm64']} {outputs['amd64']}"
+    refused = runner.run(same["run"], BUILT=other, COPIED=copied)
+    assert refused.returncode == 1
+    assert refused.stdout.startswith(f"::error::the copy read back from the registry is {copied}")
+
+
+def test_a_copy_missing_a_manifest_s_blob_is_refused_before_anything_is_scanned(tmp_path):
+    layout, root = oras_layout(tmp_path)
+    index = json.loads((layout / "index.json").read_text())
+    child = next(e for e in index["manifests"] if e["digest"] != root)
+    (layout / "blobs" / "sha256" / child["digest"].split(":")[1]).unlink()
+    runner = copy_runner(tmp_path)
+    done = runner.run(
+        step("image_scan", COPY)["run"], SOURCE="localhost:5000/cairn", DIGEST=root,
+        ORAS_LAYOUT=str(layout),
+    )  # fmt: skip
+    assert done.returncode == 1
+    assert "::error::the build's archive is refused: the layout has no blob for" in done.stderr
 
 
 # --- publish: a tag promotes main's digest; nothing writes sha- twice ----------------------------
@@ -247,6 +398,7 @@ def test_publish_decides_before_it_fetches_the_archive():
         "FIRST": "${{ steps.decide.outputs.first }}",
         "COPY": "${{ steps.decide.outputs.copy }}",
         "FROM_ARCHIVE": "${{ steps.decide.outputs.archive }}",
+        "GH_TOKEN": "${{ github.token }}",
     }
 
 
@@ -258,8 +410,7 @@ def test_a_candidate_and_its_release_on_one_commit_promote_main_s_digest(tmp_pat
     main = digest(MAIN)
     for ref, version in (("v1.2.3-rc.1", "1.2.3-rc.1"), ("v1.2.3", "1.2.3")):
         assert fetch(runner).returncode == 0
-        assert (tmp_path / "github_output").read_text() == f"digest={main}\n"
-        (tmp_path / "image" / "layout").rename(tmp_path / f"layout-{version}")
+        assert (tmp_path / "github_output").read_text().endswith(f"digest={main}\n")
         decided, pushed, fetched = promote(runner, ref, [version], main)
         assert decided.returncode == 0, decided.stdout + decided.stderr
         assert pushed.returncode == 0, pushed.stdout + pushed.stderr
@@ -346,10 +497,9 @@ def test_a_tag_run_re_run_whole_promotes_the_same_digest_again_and_finishes(tmp_
     runner.put("sha-ccccccc", MAIN)
     (tmp_path / "image" / "cairn.oci.tar").unlink()
     main = digest(MAIN)
-    for attempt in (1, 2):
+    for _attempt in (1, 2):
         assert fetch(runner).returncode == 0
-        assert (tmp_path / "github_output").read_text() == f"digest={main}\n"
-        (tmp_path / "image" / "layout").rename(tmp_path / f"layout-{attempt}")
+        assert (tmp_path / "github_output").read_text().endswith(f"digest={main}\n")
         decided, pushed, fetched = promote(runner, "v1.2.3", ["1.2.3"], main)
         assert decided.returncode == 0, decided.stdout + decided.stderr
         assert pushed.returncode == 0, pushed.stdout + pushed.stderr
@@ -367,3 +517,58 @@ def test_with_publishing_off_a_tag_still_reads_main_s_image_and_so_stops():
     assert "CAIRN_PUBLISH" not in str(job.get("if", ""))
     fetch_step = next(s for s in job["steps"] if s.get("name") == FETCH)
     assert fetch_step["if"] == "github.ref_type == 'tag'"
+
+
+# --- a retried publish never moves `main` back ------------------------------------------------
+
+NEWER = b'{"manifests":"a newer commit\'s build"}'
+
+
+def test_publish_asks_for_the_head_of_main_with_the_run_s_token():
+    push = step("publish", PUSH)
+    assert push["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert 'gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha' in push["run"]
+    assert JOBS["publish"]["permissions"]["contents"] == "read"
+
+
+def test_an_old_run_retried_after_main_moved_writes_its_sha_tag_and_leaves_main(tmp_path):
+    """The old run pushed sha-ccccccc and failed; a newer push moved main; the old run's retry
+    finishes its own commit's tag and leaves `main`, which the newer commit's run moves."""
+    runner = Runner(tmp_path)
+    built = digest(runner.built)
+    runner.put("sha-ccccccc", runner.built)
+    runner.put("main", NEWER)
+    decided, pushed, _ = promote(runner, "main", ["main", "sha-ccccccc"], built, MAIN_HEAD="d" * 40)
+    assert decided.returncode == 0 and pushed.returncode == 0, pushed.stdout + pushed.stderr
+    assert runner.tags() == {"main": digest(NEWER), "sha-ccccccc": built}
+    (notice,) = [line for line in pushed.stdout.splitlines() if line.startswith("::notice::")]
+    assert "d" * 40 in notice and COMMIT in notice and notice.count(". ") == 0
+    assert (tmp_path / "github_output").read_text().endswith(f"digest={built}\n")
+
+
+def test_the_head_run_moves_main(tmp_path):
+    runner = Runner(tmp_path)
+    built = digest(runner.built)
+    runner.put("main", NEWER)
+    _, pushed, _ = promote(runner, "main", ["main", "sha-ccccccc"], built, MAIN_HEAD=COMMIT)
+    assert pushed.returncode == 0, pushed.stdout + pushed.stderr
+    assert runner.tags() == {"main": built, "sha-ccccccc": built}
+
+
+def test_a_head_that_cannot_be_read_stops_before_main_moves(tmp_path):
+    runner = Runner(tmp_path)
+    built = digest(runner.built)
+    runner.put("main", NEWER)
+    _, pushed, _ = promote(runner, "main", ["main", "sha-ccccccc"], built, HEAD_FAILS="1")
+    assert pushed.returncode == 1
+    (error,) = [line for line in pushed.stdout.splitlines() if line.startswith("::error::")]
+    assert "the head of main could not be read" in error and "re-run" in error
+    assert runner.tags()["main"] == digest(NEWER)
+
+
+def test_a_tag_never_asks_for_the_head_of_main(tmp_path):
+    runner = Runner(tmp_path)
+    runner.put("sha-ccccccc", MAIN)
+    _, pushed, _ = promote(runner, "v1.2.3", ["1.2.3"], digest(MAIN), HEAD_FAILS="1")
+    assert pushed.returncode == 0, pushed.stdout + pushed.stderr
+    assert "gh api" not in runner.calls.read_text()

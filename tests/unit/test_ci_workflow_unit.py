@@ -61,10 +61,10 @@ def test_every_action_is_pinned_to_a_full_commit_sha():
         assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action), action
 
 
-def test_only_the_deploy_and_attest_jobs_may_ask_for_an_id_token():
+def test_only_the_deploy_and_the_two_attest_jobs_may_ask_for_an_id_token():
     assert "id-token" not in WORKFLOW.get("permissions", {})
     holders = {name for name, job in JOBS.items() if "id-token" in job.get("permissions", {})}
-    assert holders == {"deploy", "attest"}
+    assert holders == {"deploy", "attest", "attest_main"}
     assert DEPLOY["permissions"]["id-token"] == "write"
 
 
@@ -790,7 +790,8 @@ def not_a_pull_request(event_name: str, ref: str) -> dict:
 # So does `package_check`, the rehearsal of the build a tag runs.
 CHEAP = {"test", "infra", "changes", "package_check", *ALWAYS_ON}
 THE_GATE = CHEAP | {"image", "stack", "host"}
-EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "deploy"}
+# On main, `attest_main` signs the published image's digest for the commit after `verify`.
+EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "attest_main", "deploy"}
 # A v* tag runs the gate, checks the tag against the version, publishes, smoke-tests what it
 # published, builds the wheel and the source archive and makes the GitHub release; it never
 # deploys.

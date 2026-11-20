@@ -84,14 +84,12 @@ case "${args[0]} ${args[1]}" in
     else [ -e "$REG/${ref##*:}" ] || exit 1; cat "$REG/${ref##*:}"; fi ;;
   "cp "*)
     if [[ " $* " == *" --to-oci-layout "* ]]; then
-      # registry -> a layout directory DIR:REF holding the source's bytes as its one entry
-      f="$(by_digest "${args[1]#*@}")" || exit 1
+      # registry -> a layout directory DIR:REF: the layout $ORAS_LAYOUT holds, written as
+      # oras 1.3.6 writes one (test_oci_archive_unit.as_oras_writes)
+      [ -n "$ORAS_LAYOUT" ] || exit 1
       dir="${args[2]%:*}"
-      mkdir -p "$dir/blobs/sha256"
-      sum="$(sha256sum < "$f")"
-      cp "$f" "$dir/blobs/sha256/${sum%% *}"
-      printf '{"imageLayoutVersion":"1.0.0"}' > "$dir/oci-layout"
-      printf '{"manifests":[{"digest":"sha256:%s"}]}' "${sum%% *}" > "$dir/index.json"
+      mkdir -p "$dir"
+      cp -R "$ORAS_LAYOUT/." "$dir/"
     else
       printf '%s' "$BUILT" > "$REG/${args[2]##*:}"
     fi ;;
@@ -104,6 +102,12 @@ esac
 
 GH = r"""#!/bin/bash
 printf 'gh %s\n' "$*" >> "$CALLS"
+if [ "$1" = api ]; then
+  # the head of main, as GET repos/OWNER/REPO/branches/main's commit.sha gives it
+  [ -z "$HEAD_FAILS" ] || exit 1
+  printf '%s\n' "${MAIN_HEAD:-$GITHUB_SHA}"
+  exit 0
+fi
 cat "$RELEASED"
 """
 
@@ -182,7 +186,8 @@ class Runner:
 
 def test_image_build_builds_once_reads_only_and_hands_on_one_archive():
     job = JOBS["image_build"]
-    assert job["permissions"] == {"contents": "read"}
+    # attestations: read, for a tag to read main's attestation of the image it promotes.
+    assert job["permissions"] == {"contents": "read", "attestations": "read"}
     assert "if" not in job and "needs" not in job and "environment" not in job
     configuration = yaml.safe_dump(job)
     assert "secrets." not in configuration and "login" not in configuration
@@ -191,11 +196,12 @@ def test_image_build_builds_once_reads_only_and_hands_on_one_archive():
     assert [s["name"] for s in job["steps"] if reaches_the_token(s)] == [
         "Check out",
         "Build linux/amd64 and linux/arm64",
+        "Check that main's run attested this image for this commit",
     ]
     archive = next(s for s in job["steps"] if s.get("id") == "archive")
     assert archive["run"] == (
         'python3 scripts/oci_archive.py "$RUNNER_TEMP/image/cairn.oci.tar"'
-        ' --github-output "$GITHUB_OUTPUT"'
+        ' ${ROOT:+--root "$ROOT"} --github-output "$GITHUB_OUTPUT"'
     )
     assert job["outputs"] == {
         "digest": "${{ steps.archive.outputs.digest }}",

@@ -81,14 +81,15 @@ def test_the_readme_says_what_the_job_runs_where_it_lists_the_gate():
     )
 
 
-def test_the_hosting_guide_says_which_two_jobs_hold_an_identity_token_and_why():
+def test_the_hosting_guide_says_which_three_jobs_hold_an_identity_token_and_why():
     guide = flat((REPO / "infra" / "gcp" / "README.md").read_text(encoding="utf-8"))
     holders = {name for name, job in JOBS.items() if "id-token" in job.get("permissions", {})}
-    assert holders == {"deploy", "attest"}
-    assert "`id-token: write` on the `deploy` job only" not in guide
+    assert holders == {"deploy", "attest", "attest_main"}
+    assert "`id-token: write` on two jobs only" not in guide
     assert (
-        "`id-token: write` on two jobs only: `deploy`, which uses it to sign in to Google Cloud"
-        " and runs nothing but pinned actions, two shell steps written in the workflow and the"
-        " deploy script, and `attest`, on a tag, which uses it to sign the release's build"
-        " provenance and runs no code from the repository" in guide
+        "`id-token: write` on three jobs only: `deploy`, which uses it to sign in to Google Cloud"
+        " and runs nothing but pinned actions, shell steps written in the workflow and the"
+        " deploy script; `attest`, on a tag, which uses it to sign the release's build"
+        " provenance; and `attest_main`, on `main`, which uses it to sign the published image's"
+        " digest for its commit. The two attest jobs run no code from the repository" in guide
     )

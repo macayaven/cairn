@@ -408,6 +408,8 @@ jobs:
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
     permissions:
       contents: read
+      # On a tag, to read main's attestation of the image it promotes.
+      attestations: read
     outputs:
       digest: ${{ steps.archive.outputs.digest }}
       archive: ${{ steps.archive.outputs.archive }}
@@ -455,10 +457,15 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
           echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
       # A tag builds nothing: its image is the one main's run built, checked and published for
-      # this commit as sha-<commit> (publish writes that tag once, and only on main). It is read
-      # by its digest, so a later write to that tag cannot change what this run checks, into an
-      # OCI layout that is archived as a build's archive is. The repository is public on a tag
-      # (release_check refuses one that is not), so the read needs no login.
+      # this commit as sha-<commit> (publish writes that tag once, and only on main). The name
+      # only finds it: the proof is the attestation main's run made of that digest after it
+      # published and verified it (job attest_main), which gh checks was signed by this
+      # repository's ci-cd.yml for a run on refs/heads/main at this tag's full commit, before
+      # anything is copied. The digest is that of the bytes read, so a later write to the tag
+      # cannot change what is checked. The repository is public on a tag (release_check
+      # refuses one that is not), so the reads need no login; gh needs the run's token to ask
+      # GitHub for the attestations. It needs the gh CLI on the runner, as GitHub's hosted
+      # runners have.
       - name: Fetch the image main's run published for this commit
         id: main
         if: github.ref_type == 'tag'
@@ -470,23 +477,45 @@ jobs:
             echo "::error::$image:$commit could not be read, so main's run has not published $GITHUB_SHA (it is still running, publishing is off, or it built another commit of that push); run this tag's workflow again once main's run for that commit has published it"
             exit 1
           fi
-          main="sha256:$(sha256sum < "$RUNNER_TEMP/main.json" | cut -d' ' -f1)"
-          oras cp --to-oci-layout "$image@$main" "$RUNNER_TEMP/image/layout:main"
-          tar -cf "$RUNNER_TEMP/image/cairn.oci.tar" -C "$RUNNER_TEMP/image/layout" oci-layout index.json blobs
-          echo "digest=$main" >> "$GITHUB_OUTPUT"
-      - name: Check the archive and give its digests
-        id: archive
-        run: python3 scripts/oci_archive.py "$RUNNER_TEMP/image/cairn.oci.tar" --github-output "$GITHUB_OUTPUT"
-      - name: Check that the archive is main's image
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=sha256:$(sha256sum < "$RUNNER_TEMP/main.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Check that main's run attested this image for this commit
         if: github.ref_type == 'tag'
         env:
+          GH_TOKEN: ${{ github.token }}
           MAIN: ${{ steps.main.outputs.digest }}
-          ARCHIVED: ${{ steps.archive.outputs.digest }}
         run: |
-          if [ "$ARCHIVED" != "$MAIN" ]; then
-            echo "::error::the archive holds $ARCHIVED, not main's image $MAIN"
+          if ! gh attestation verify "$RUNNER_TEMP/main.json" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci-cd.yml" \
+              --source-ref refs/heads/main --source-digest "$GITHUB_SHA"; then
+            echo "::error::$MAIN has no attestation signed by this repository's ci-cd.yml for a run on refs/heads/main at $GITHUB_SHA, so nothing shows it is main's image of this commit; run this tag's workflow again once main's run for that commit has attested it (job attest_main), or tag a commit whose main run did"
             exit 1
           fi
+      # The same step every scan runs on its runner's registry, so each pull request proves
+      # the copy a tag makes, oras's layout and the script's check of it.
+      - name: Copy the image by its digest into a fresh layout and check it
+        id: copied
+        if: github.ref_type == 'tag'
+        env:
+          SOURCE: ${{ steps.main.outputs.image }}
+          DIGEST: ${{ steps.main.outputs.digest }}
+        run: |
+          set -o pipefail
+          copied="$RUNNER_TEMP/copied"
+          rm -rf "$copied"
+          mkdir -p "$copied"
+          oras cp --to-oci-layout "$SOURCE@$DIGEST" "$copied/layout:main"
+          tar -cf "$copied/cairn.oci.tar" -C "$copied/layout" oci-layout index.json blobs
+          python3 scripts/oci_archive.py "$copied/cairn.oci.tar" --root "$DIGEST" --github-output "$GITHUB_OUTPUT"
+      - name: Hand on main's image as this run's archive
+        if: github.ref_type == 'tag'
+        run: mv "$RUNNER_TEMP/copied/cairn.oci.tar" "$RUNNER_TEMP/image/cairn.oci.tar"
+      - name: Check the archive and give its digests
+        id: archive
+        env:
+          # On a tag, main's index: the layout oras wrote lists the manifests under it too.
+          ROOT: ${{ steps.main.outputs.digest }}
+        run: python3 scripts/oci_archive.py "$RUNNER_TEMP/image/cairn.oci.tar" ${ROOT:+--root "$ROOT"} --github-output "$GITHUB_OUTPUT"
       # A re-run of this job replaces the artifact (overwrite); its new index digest then
       # differs from a version already published, which `publish` refuses.
       - name: Keep it for the jobs after this one
@@ -586,6 +615,31 @@ jobs:
               exit 1
             fi
           done
+      # The round trip a tag run makes from GHCR, made from this registry: the index copied by
+      # its digest into a fresh layout with the same step image_build runs on a tag, checked by
+      # the same script, and its digests compared with the build's.
+      - name: Copy the image by its digest into a fresh layout and check it
+        id: copied
+        env:
+          SOURCE: localhost:5000/cairn
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+        run: |
+          set -o pipefail
+          copied="$RUNNER_TEMP/copied"
+          rm -rf "$copied"
+          mkdir -p "$copied"
+          oras cp --to-oci-layout "$SOURCE@$DIGEST" "$copied/layout:main"
+          tar -cf "$copied/cairn.oci.tar" -C "$copied/layout" oci-layout index.json blobs
+          python3 scripts/oci_archive.py "$copied/cairn.oci.tar" --root "$DIGEST" --github-output "$GITHUB_OUTPUT"
+      - name: Check that the copy is the build
+        env:
+          BUILT: ${{ needs.image_build.outputs.digest }} ${{ needs.image_build.outputs.amd64 }} ${{ needs.image_build.outputs.arm64 }}
+          COPIED: ${{ steps.copied.outputs.digest }} ${{ steps.copied.outputs.amd64 }} ${{ steps.copied.outputs.arm64 }}
+        run: |
+          if [ "$COPIED" != "$BUILT" ]; then
+            echo "::error::the copy read back from the registry is $COPIED (index, amd64, arm64), not the build's $BUILT"
+            exit 1
+          fi
       # This leg's image, named by its own manifest digest, read from the registry: one image
       # (not an index), whose config says it is built for this leg's platform. The registry
       # answers for exactly that digest, whatever the runner's own platform.
@@ -1266,6 +1320,8 @@ jobs:
           FIRST: ${{ steps.decide.outputs.first }}
           COPY: ${{ steps.decide.outputs.copy }}
           FROM_ARCHIVE: ${{ steps.decide.outputs.archive }}
+          # To read the head of main before the main tag moves.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
           if [ "$COPY" = true ] && [ "$FROM_ARCHIVE" = true ]; then
@@ -1277,12 +1333,29 @@ jobs:
           elif [ "$COPY" = true ]; then
             oras tag "$IMAGE@$DIGEST" "$FIRST"
           fi
+          # The branch's tag (main) moves only while this run's commit is the branch's head: a
+          # retry of an older run would otherwise move it back over a newer commit's image.
+          moved=""
           for name in $NAMES; do
-            if [ "$name" != "$FIRST" ]; then
+            if [ "$name" = "$FIRST" ]; then
+              moved="$moved $name"
+            elif [ "$GITHUB_REF_TYPE" = branch ] && [ "$name" = "$GITHUB_REF_NAME" ]; then
+              if ! head="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"; then
+                echo "::error::$IMAGE:$FIRST is written, but the head of main could not be read, so $IMAGE:$name is left as it was; re-run this job to move it"
+                exit 1
+              fi
+              if [ "$head" = "$GITHUB_SHA" ]; then
+                oras tag "$IMAGE@$DIGEST" "$name"
+                moved="$moved $name"
+              else
+                echo "::notice::main is now at $head, not this run's $GITHUB_SHA, so $IMAGE:$FIRST is written and $IMAGE:$name is left to the run of the newer commit"
+              fi
+            else
               oras tag "$IMAGE@$DIGEST" "$name"
+              moved="$moved $name"
             fi
           done
-          for name in $NAMES; do
+          for name in $moved; do
             pushed="$(oras manifest fetch "$IMAGE:$name" | sha256sum)"
             if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
               echo "::error::$IMAGE:$name is sha256:${pushed%% *}, not the build's $DIGEST"
@@ -1380,6 +1453,41 @@ jobs:
           docker pull --quiet --platform linux/amd64 "$image"
           test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
           python3 scripts/smoke_container.py "$image" --platform linux/amd64
+
+  # On a push to main, once `publish` has pushed the image and `verify` has pulled and run it:
+  # a build provenance attestation of its digest, signed with this run's identity (this
+  # repository's ci-cd.yml, refs/heads/main, the commit). A tag's run promotes nothing that
+  # lacks one for its commit. The same two steps as attest's image attestation, with the
+  # same two permissions: it checks out nothing, runs nothing from the repository and pushes
+  # nothing to the registry (push-to-registry is off unless set), so it needs no packages
+  # permission.
+  attest_main:
+    name: build provenance of main's image
+    needs: [publish, verify]
+    if: github.event_name == 'push' && github.ref_type == 'branch'
+    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: The image's name
+        id: image
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          if [[ ! $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The publish job reported no image digest"
+            exit 1
+          fi
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Attest the image
+        env:
+          # As actions/attest-build-provenance v4.2.2, its wrapper, sets it.
+          NODE_OPTIONS: "--max-http-header-size=32768"
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ needs.publish.outputs.digest }}
 
   # On a v* tag whose image was published and smoke-tested, builds the wheel and the source
   # archive, here and not in `release`: a build backend or a dependency of it that turned

@@ -101,12 +101,106 @@ def builds_or_runs_the_checkout(name: str, job: dict) -> list[str]:
     return found
 
 
+CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+LOGIN = "docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550"
+DOWNLOAD = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
+ATTEST_ACTION_PINNED = "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6"
+GOOGLE_AUTH = "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093"
+# Every step a job holding a write permission or an identity token may have, in order: its
+# name and the pinned action it uses, or "run" for a shell step written in the workflow. A
+# new step, a new action, or an action at another commit fails here and is decided on.
+PRIVILEGED_STEPS = {
+    "publish": [
+        ("Install oras", "run"),
+        ("Log in to GHCR", LOGIN),
+        ("Image tags", "docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302"),
+        ("Look for this build in the registry", "run"),
+        ("Fetch the build", DOWNLOAD),
+        ("Push the scanned build", "run"),
+    ],
+    "aliases": [
+        ("Install oras", "run"),
+        ("Log in to GHCR", LOGIN),
+        ("Point latest and each X.Y at the highest release", "run"),
+    ],
+    "attest": [
+        ("Fetch what package built", DOWNLOAD),
+        ("Check the files", "run"),
+        ("The image's name", "run"),
+        ("Attest the wheel, the source archive and SHA256SUMS", ATTEST_ACTION_PINNED),
+        ("Attest the image", ATTEST_ACTION_PINNED),
+    ],
+    "attest_main": [("The image's name", "run"), ("Attest the image", ATTEST_ACTION_PINNED)],
+    "release": [
+        ("Fetch what package built", DOWNLOAD),
+        ("Check the files", "run"),
+        ("Create the release", "run"),
+    ],
+    "deploy": [
+        ("Check out", CHECKOUT),
+        ("Check the settings", "run"),
+        ("Log in to GHCR", LOGIN),
+        ("Authenticate to Google Cloud", GOOGLE_AUTH),
+        ("Find the registry host", "run"),
+        ("Log in to Artifact Registry", LOGIN),
+        ("Copy the image to Artifact Registry, by digest", "run"),
+        ("Refuse a run that is no longer the head of main", "run"),
+        ("Read the VM's report number", "run"),
+        ("Point production at the digest", "run"),
+        ("Wait for the VM to run it, healthy", "run"),
+        ("Check the public address", "run"),
+    ],
+}  # fmt: skip
+# The only lines of those shell steps that run a file: deploy's script, by its path, with one
+# of its commands.
+DEPLOY_LINE = re.compile(
+    r"\bbash scripts/deploy_production\.sh (copy|check-head|seq|promote|wait|check-url)\b"
+)
+# (`source` and `.` run a file too; a file they run is named with its path or its .sh.)
+RUNS_A_FILE = re.compile(r"(^|[\s;|&(`$])(bash|sh)\s+[^-\s]|\.sh\b|\.py\b|\./|\bscripts/")
+
+
+def privileged_steps(job: dict) -> list[tuple[str, str]]:
+    return [(s.get("name"), s.get("uses", "run")) for s in job["steps"]]
+
+
+def files_run(job: dict) -> list[str]:
+    """The lines of JOB's shell steps that run a file, deploy's own lines taken out."""
+    return [
+        line.strip()
+        for s in job["steps"]
+        for line in s.get("run", "").splitlines()
+        if RUNS_A_FILE.search(DEPLOY_LINE.sub("", line))
+    ]
+
+
+def test_a_privileged_job_runs_exactly_its_listed_steps_and_no_file_but_deploy_s_script():
+    holders = {name for name, job in JOBS.items() if holds_a_token(job)}
+    assert holders == set(PRIVILEGED_STEPS)
+    for name in holders:
+        assert privileged_steps(JOBS[name]) == PRIVILEGED_STEPS[name], name
+        assert files_run(JOBS[name]) == [], name
+    # What the check sees: a new script in deploy, and one under another name or way of
+    # running it; deploy's own script with a command it does not have.
+    for added in (
+        "bash release-helper.sh",
+        "sh ./scripts/other.sh",
+        "./tools/x",
+        "python3 tools/y.py",
+        "source env.sh",
+        "bash scripts/deploy_production.sh status",
+    ):
+        job = {"steps": [*JOBS["deploy"]["steps"], {"name": "Check the settings", "run": added}]}
+        assert files_run(job) == [added], added
+    assert files_run({"steps": [{"run": 'bash scripts/deploy_production.sh wait "$D"'}]}) == []
+
+
 def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_the_checkout():
     holders = [name for name, job in JOBS.items() if holds_a_token(job)]
-    assert set(holders) == {"publish", "aliases", "attest", "release", "deploy"}
+    assert set(holders) == {"publish", "aliases", "attest", "attest_main", "release", "deploy"}
     assert [f for name in holders for f in builds_or_runs_the_checkout(name, JOBS[name])] == []
-    # Neither `publish`, `aliases`, `attest` nor `release` checks out the repository at all.
-    for name in ("publish", "aliases", "attest", "release"):
+    # Neither `publish`, `aliases`, the two attest jobs nor `release` checks out anything.
+    for name in ("publish", "aliases", "attest", "attest_main", "release"):
         assert not any("actions/checkout" in s.get("uses", "") for s in JOBS[name]["steps"])
     # The model sees a build where one is: in a shell line, and in an action.
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("uv build --out-dir dist")
@@ -124,10 +218,10 @@ def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_t
     assert builds_or_runs_the_checkout("deploy", deploy) == []
 
 
-def test_only_attest_and_deploy_hold_an_identity_token_and_attest_runs_where_nothing_is_built():
+def test_only_the_attest_jobs_and_deploy_hold_an_identity_token_and_attest_where_nothing_is_built():
     holders = {name for name, job in JOBS.items() if "id-token" in job.get("permissions", {})}
-    assert holders == {"deploy", "attest"}
-    assert ATTEST["runs-on"] == JOBS["publish"]["runs-on"]
+    assert holders == {"deploy", "attest", "attest_main"}
+    assert ATTEST["runs-on"] == JOBS["attest_main"]["runs-on"] == JOBS["publish"]["runs-on"]
     assert ATTEST["if"] == PACKAGE["if"] == RELEASE["if"]
     assert "environment" not in ATTEST and "secrets." not in yaml.safe_dump(ATTEST)
 

@@ -601,6 +601,52 @@ def test_the_tools_description_says_which_terms_and_titles_relate_none():
     assert relations.TERM_MAX == 200
 
 
+def test_the_tools_description_says_what_a_claim_is_read_by_and_what_the_index_must_find():
+    said = " ".join(tools()["related"].description.split())
+    for line in (
+        "A claim that cites several passages is read by its first.",
+        "A term the search does not find as it is written (`1,250x`, compared without its"
+        " separator) relates none, from either page.",
+    ):
+        assert line in said, line
+
+
+NINE = [
+    "projects",
+    "new_project",
+    "note",
+    "recall",
+    "page",
+    "evidence",
+    "overview",
+    "graph",
+    "related",
+]
+
+
+def test_the_contract_counts_and_names_the_tools_there_are():
+    """Two sentences of the server's contract said the tool set was seven. They count and
+    name the tools that are registered, and what they say none of them does is so."""
+    import cairn.server
+
+    registered = list(tools())
+    assert registered == NINE
+    named = ", ".join(f"`{name}`" for name in registered[:-1]) + f" and `{registered[-1]}`"
+    count = {9: "nine"}[len(registered)]
+    said = " ".join(cairn.server.__doc__.split())
+    assert f"There is no usage tool: the MCP tools are {count} ({named})." in said
+    assert (
+        f"MCP has no tool for either: none of its {count} tools deletes a project or forgets"
+        " a note."
+    ) in said
+    assert "seven" not in said
+    for word in ("usage", "delete", "forget"):
+        assert not [name for name in registered if word in name], word
+        assert not [
+            name for name, tool in tools().items() if word in tool.input_schema["properties"]
+        ]
+
+
 RELATED = (
     "To see what else memory holds on a page's subject, call `related` with the page: it gives"
     " the pages of its project that state one of its terms (a path, a flag, a URL, a version,"

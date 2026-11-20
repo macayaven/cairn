@@ -54,7 +54,11 @@ is read by its first.
 When a page holds more terms than are looked up (cairn.store.relating.TERMS_MAX), the
 shortest are looked up first (`looked_up_before`): the terms a few pages share are short (a
 flag, a path, a name), and the long ones (a command line with its arguments, a sentence in
-code) are mostly one page's alone, which relate nothing.
+code) are mostly one page's alone, which relate nothing. Measured on this repository's own
+documents, each filed as a page (32 pages; 15 hold more than 64 terms, 5 more than 256, the
+most 692), against a read of every term: of the 212 places in the pages' best 8, looking up
+64 terms the shortest first keeps 195 and the longest first 147; looking up 256, as shipped,
+the shortest first keeps 211 and the longest first 207.
 """
 
 from collections.abc import Mapping, Sequence

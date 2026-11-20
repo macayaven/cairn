@@ -428,10 +428,12 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         in backticks that is not a plain word; it is given as it is compared, its case folded),
         `pages` pages of the project hold it, and `here` and `there` are this page's claim and
         the other page's that state it. Or it is `mentioned_by`: `there` is a claim of the other
-        page that holds this page's title (the pages this page mentions are not listed). A term
-        more than 5 pages hold relates none, nor one whose words more than 64 claims of the
-        project hold, nor one longer than 200 characters; a title more than 5 other pages name,
-        or more than 64 of their claims hold, relates none either. A term fewer pages hold
+        page that holds this page's title (the pages this page mentions are not listed). A claim
+        that cites several passages is read by its first. A term more than 5 pages hold relates
+        none, nor one whose words more than 64 claims of the project hold, nor one longer than
+        200 characters; a title more than 5 other pages name, or more than 64 of their claims
+        hold, relates none either. A term the search does not find as it is written (`1,250x`,
+        compared without its separator) relates none, from either page. A term fewer pages hold
         weighs more, and a page gives its 3 weightiest reasons and counts the others in `more`.
         Relations are worked out by rule from the pages as they are when asked: nothing of them
         is stored, nothing is inferred from meaning, and none joins two projects. Claims are

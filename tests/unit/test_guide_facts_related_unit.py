@@ -11,6 +11,7 @@ from guide_source import guide_source
 from starlette.testclient import TestClient
 
 from cairn import relations
+from cairn.arrange import tidy_page
 from cairn.gate import lint_gate
 from cairn.memory import BadRequest, Memory
 from cairn.server import create_app
@@ -200,8 +201,10 @@ def test_what_this_version_does_not_do(store, memory):
     says(
         "connect",
         "This version relates pages of one project only; it lists the pages that mention a page,"
-        " not the pages it mentions; it follows no path of several steps, groups nothing over a"
-        " whole project, and infers nothing from meaning.",
+        " not the pages it mentions; it relates no pages by a term a search does not find as it"
+        " is written (`1,250x`, which is compared without its separator); it reads a claim that"
+        " cites several passages by its first; it follows no path of several steps, groups"
+        " nothing over a whole project, and infers nothing from meaning.",
     )
     store.create_project("other")
     file(memory, "Asked", "Use `a.cfg`; see the Queue notes.\n")
@@ -218,6 +221,28 @@ def test_what_this_version_does_not_do(store, memory):
     # one page is asked about, and its answer holds pages, each with its reasons: no group
     assert set(asked) == {"project", "page", "title", "version", "related", "searched"}
     assert set(asked["related"][0]) == {"page", "title", "version", "why", "more"}
+    # a term written with its thousands separator relates none, from either page
+    file(memory, "Comma", "The cap is `1,250x` here.\n")
+    file(memory, "Plain", "The cap is `1250x` here.\n")
+    file(memory, "Twin", "Brook saw `1250x` twice.\n")
+    assert pages(memory.related("ops", "comma")) == []
+    assert (pages(memory.related("ops", "plain")), pages(memory.related("ops", "twin"))) == (
+        ["twin"],
+        ["plain"],
+    )
+    # a claim of several passages is read by its first: the line eleven notes of one page
+    # hold, folded into one claim by a tidy, relates by the term of that line
+    for n in range(11):
+        file(memory, "Fold", f"Ada pins `quill.lock` daily.\n\nBrook checks ledger {n} at dawn.\n")
+    file(memory, "Lock", "Quill reads `quill.lock` at noon.\n")
+    assert tidy_page(store, store.get_project("ops").id, "fold").status == "arranged"
+    (folded,) = [
+        c for c in store.get_page(store.get_project("ops").id, "fold").claims if "pins" in c.text
+    ]
+    assert len(folded.span_ids) == 11
+    (lock,) = memory.related("ops", "lock")["related"]
+    assert (lock["page"], lock["why"][0]["there"]["claim_id"]) == ("fold", folded.id)
+    assert lock["why"][0]["there"]["passage_ids"][0] == folded.span_ids[0]
     # the same thing said in other words relates nothing
     file(memory, "Retries", "Quill retries three times before it gives up.\n")
     file(memory, "Attempts", "Quill tries again 3 times, then stops.\n")

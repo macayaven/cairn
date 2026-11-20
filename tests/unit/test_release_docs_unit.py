@@ -293,3 +293,22 @@ def test_the_run_guide_links_dockers_install_pages_beside_the_engine_it_asks_for
     start = section("run", "## Start it")
     (row,) = [line for line in start.splitlines() if "28.3.3" in line]
     assert "https://docs.docker.com/engine/install/" in row
+
+
+def test_the_security_guide_says_a_body_is_the_notes_own_markdown_and_the_web_view_reads_html_off():
+    """security.md: "A page's body is the notes' own Markdown: ... Read the body with raw HTML
+    off, as the web view does: ..." The behaviour is pinned in test_claim_markdown_unit.py;
+    here, that the web view's parser has raw HTML off, which the second sentence rests on."""
+    says(
+        "security",
+        "## What the checks on pages catch",
+        "A page's body is the notes' own Markdown: a setext heading in a note puts the claims"
+        " after it under that heading, and a link definition shows nothing; the web view shows"
+        " each claim by itself, with its own source.",
+        "Read the body with raw HTML off, as the web view does: with it on, a comment a note"
+        " opens and does not close hides what follows.",
+    )
+    source = (ROOT / "src" / "cairn" / "web" / "markdown.py").read_text(encoding="utf-8")
+    parsers = [line for line in source.splitlines() if "MarkdownIt(" in line]
+    assert parsers and all('"html": False' in line for line in parsers), parsers
+    assert (ROOT / "tests" / "unit" / "test_claim_markdown_unit.py").is_file()

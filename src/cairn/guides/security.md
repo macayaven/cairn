@@ -90,6 +90,8 @@ When the operator connects a model, it only puts a page's claims in order and sa
 
 The checks take each claim by itself. They do not check that two passages that stood next to each other in a note are next to each other on a page a model arranged, so a sentence that leans on the one before it can stand apart from it. Each claim still opens its own lines in its note, where the order is the writer's.
 
+A page's body is the notes' own Markdown: a setext heading in a note puts the claims after it under that heading, and a link definition shows nothing; the web view shows each claim by itself, with its own source. Read the body with raw HTML off, as the web view does: with it on, a comment a note opens and does not close hides what follows.
+
 What the checks do not do: they compare text, not meaning. A page holds what the notes said, and if a note was wrong, its claim is wrong in the same words. A note's text is quoted material to {{name}}, never an instruction, but an agent that reads a page still reads what the note said.
 
 ## Who wrote what an agent reads

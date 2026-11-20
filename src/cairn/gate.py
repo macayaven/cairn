@@ -173,10 +173,18 @@ def importable(
     (`legacy` False: no claim passes by the comparison before CORE5), of the candidate's
     claims and the passages the gate was given: so every gate and an import share one
     definition, and a rule added to the import reaches the gates by itself. One violation
-    for each claim it names, "import.<rule>: -: ...", saying the page, the claim's place
-    and the rule in the import's words, never a claim's text or id. A verdict that already
+    for each claim it names (one for a page with no claim), "import.<rule>: -: ...", saying
+    the page, the claim's place and the rule in the import's words, never a claim's text or
+    id. A verdict that already
     failed is returned as it is (T4's frozen tests pin a rejection's exact violations), as
-    compiler._offered_only does. It reads nothing: the gate holds the passages."""
+    compiler._offered_only does. It reads nothing: the gate holds the passages.
+
+    `reworded`: the one rule left out, for the gates whose contract takes a claim in other
+    words than its passage (lint_gate, strict_lint_gate, compiler.provenance_gate; T4, T5d):
+    "does not say what a passage it cites says". Every other rule is asked of every claim,
+    in other words or not. An import refuses what they save for that rule, as
+    store.portable says; verbatim_gate, the gate of every composer but the extractive one
+    unless a caller names another, asks every rule."""
     from cairn.store.portable import version_faults  # the store's check, asked here
 
     if not result.passed:
@@ -184,9 +192,8 @@ def importable(
     whom = {"claim": "it", "a claim": "it", "version": "the version", "claims": "its claims"}
     violations = [
         f"{IMPORT}.{fault.name.lower()}: -: an import would refuse the page {page.slug!r}"
-        f" for claim {n}: {whom[fault.value[0]]} {fault.rule(page.claims)}"
-        for n, fault in version_faults(page.claims, spans, legacy=False)
-        if not (reworded and fault.name == "NOT_WHOLE")
+        f"{f' for claim {n}' if n else ''}: {whom[fault.value[0]]} {fault.rule(page.claims)}"
+        for n, fault in version_faults(page.claims, spans, legacy=False, reworded=reworded)
     ]
     if not violations:
         return result

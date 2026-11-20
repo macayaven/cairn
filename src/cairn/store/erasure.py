@@ -404,7 +404,7 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
         cited = [i for claim in claims for i in claim.span_ids if i not in gone]
         spans = _held_spans(con, project_id, cited)
         kept = kept_claims(claims, gone, spans)
-        refused = {place for place, _ in version_faults(kept, spans, legacy=True)}
+        refused = {place for place, _ in version_faults(kept, spans, legacy=True) if place}
         kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in refused)
         if kept:  # the title it had may be the forgotten note's own
             title = _first_title(con, [i for claim in kept for i in claim.span_ids]) or slug

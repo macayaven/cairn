@@ -22,6 +22,14 @@ its passage (T4, T5d: frozen), so they ask every rule but that one, and an impor
 what they save for it, as store.portable says; verbatim_gate, which every composer meets
 unless a caller names another, asks them all.
 
+What an import refuses of a version outside that check, and no gate asks: the shape of an
+archive's line (its keys, its slug, its numbering, its metrics, the claims a page holds at
+most, which Store.save_page bounds too); a body that is not what render_body writes of the
+claims, which every gate asks itself (gate.unclaimed_line); and the two rules across pages (a
+passage cited from one page only, one topic key a page), which a gate cannot see: it reads no
+store. A compile offers a composer the passages of its own note alone, and a note is filed
+on one page.
+
 The composer interface exists for the evaluation script alone; `serve` compiles with the
 extractive composer. Made-up notes."""
 
@@ -62,6 +70,7 @@ def numbered(claims, start=1):
 # Each reason: (the note's text, what a composer makes of the extractive claims of its
 # passages; `foreign` is a passage of another project that says the same).
 CASES = {
+    Refusal.NO_CLAIMS: [(SAME, lambda c, foreign: ())],
     Refusal.ID_SHAPE: [
         (SAME, lambda c, foreign, bad=bad: (c[0].model_copy(update={"id": bad}),))
         for bad in ("claim-1", "", "cl_ABCDEF0123456789")
@@ -190,6 +199,7 @@ def test_the_case_meets_that_reason_and_an_import_says_it(store, refusal, n):
     for legacy in (False, True):
         faults = list(version_faults(page.claims, spans, legacy=legacy))
         assert faults and faults[0][1] is refusal, faults
+    assert (faults[0][0] == 0) == (refusal is Refusal.NO_CLAIMS)  # no claim to name
     line = {
         "slug": "net",
         "version": 1,
@@ -222,6 +232,12 @@ def test_every_gate_refuses_what_the_import_refuses(store, refusal, n, gate):
     codes = {violation.split(":")[0] for violation in verdict.violations}
     if any(code.startswith("import.") for code in codes):  # no rule of the gate's own met it
         assert codes == {f"import.{refusal.name.lower()}"}
+        if refusal is Refusal.NO_CLAIMS:
+            assert verdict.violations == [
+                "import.no_claims: -: an import would refuse the page 'net': the version has"
+                " no claims"
+            ]
+            return
         assert all(
             ": -: an import would refuse the page 'net' for claim " in v for v in verdict.violations
         )
@@ -241,6 +257,19 @@ def test_the_readers_cases_are_refused_by_the_imports_reason_alone(store, refusa
     assert set(v.split(":")[0] for v in provenance_gate(page, spans).violations) == {
         f"import.{refusal.name.lower()}"
     }
+
+
+@pytest.mark.parametrize("gate", REWORDED, ids=lambda gate: gate.__name__)
+def test_a_claim_in_other_words_is_still_asked_every_other_rule(store, gate):
+    """The rule those three leave out is the one rule: a claim in other words that holds the
+    id of another claim of the page is refused for the id, as a whole one is."""
+    page, spans = candidate(store, Refusal.ID_TWICE, 0)
+    other = page.claims[0].model_copy(update={"text": "Ada keeps the port."})
+    claims = (other, page.claims[1])
+    said = page.model_copy(update={"claims": claims, "body": render_body("Net", claims, spans)})
+    verdict = gate(said, spans)
+    assert not verdict.passed
+    assert [violation.split(":")[0] for violation in verdict.violations] == ["import.id_twice"]
 
 
 def test_a_page_the_gate_fails_keeps_the_gates_own_violations_alone(store):
@@ -288,3 +317,5 @@ def test_an_old_fold_passes_for_a_version_that_exists_and_never_for_one_to_be_ma
     assert [violation.split(":")[0] for violation in asked.violations] == ["import.not_whole"]
     assert not asked.passed and not verbatim_gate(page, spans).passed
     assert importable(passed, page, spans, reworded=True) is passed  # the three that take words
+    faults = list(version_faults(page.claims, spans, legacy=False, reworded=True))
+    assert faults == []  # the comparison is not asked at all, old or new

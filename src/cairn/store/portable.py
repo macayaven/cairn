@@ -1353,6 +1353,7 @@ class Refusal(Enum):
     says it with the page, the version and the archive's project (`said`); a gate, of the
     page it judges (cairn.gate.import_violations)."""
 
+    NO_CLAIMS = ("version", "has no claims")  # cairn removes a page that is left with none
     ID_SHAPE = ("claim", "has an id cairn does not make")
     CITED_TWICE = ("claim", "cites a passage twice")
     NOT_OF_PROJECT = ("a claim", "cites a passage that is not of its project's notes")
@@ -1392,11 +1393,13 @@ def version_faults(
     spans: Mapping[str, Span],
     *,
     legacy: bool,
+    reworded: bool = False,
     text_bound: bool = True,
 ) -> Iterator[tuple[int, Refusal]]:
     """Why an import refuses `claims` as one version of a page, citing `spans` (the spans of
     its project's notes, by id): each fault as (the place of the claim that fails, 1 for the
-    first; the Refusal), and nothing for a version an import takes. The one check of a
+    first, 0 for a version with no claim; the Refusal), and nothing for a version an import
+    takes. The one check of a
     version's claims, which every writer of a version asks. An import refuses the version
     with the first fault (Refusal.said). A forget, which is never refused, writes the
     version without the claims named here (store.erasure). Every gate refuses a candidate it
@@ -1407,6 +1410,10 @@ def version_faults(
     (store.before_core5) passes, as a fold a tidy saved then. True for a version that
     exists, an archive's or the store's (an import, a forget); False for a gate, which
     judges a version to be made and takes today's comparison alone.
+
+    `reworded`: True leaves out the one rule that a claim is the whole of every span it
+    cites, and asks every other of every claim. For the gates whose contract takes a claim
+    in other words than its passage (cairn.gate.importable); never an import or a forget.
 
     An import asks in two steps, in the order it always did: everything but the bound on
     text when it reads the version's line (_page_version, `text_bound` False), and that
@@ -1426,6 +1433,8 @@ def version_faults(
     from cairn.gate import whole as copied
     from cairn.store.before_core5 import whole_before_core5
 
+    if not claims:
+        yield 0, Refusal.NO_CLAIMS
     alone: list[tuple[int, Claim]] = []
     read: dict[str, str | None] = {}  # each span's compared text, read once for the version
     for n, claim in enumerate(claims, 1):
@@ -1435,7 +1444,9 @@ def version_faults(
             yield n, Refusal.CITED_TWICE
         elif not set(claim.span_ids) <= spans.keys():
             yield n, Refusal.NOT_OF_PROJECT
-        elif not copied(claim, spans, read) and not (legacy and whole_before_core5(claim, spans)):
+        elif not (
+            reworded or copied(claim, spans, read) or (legacy and whole_before_core5(claim, spans))
+        ):
             yield n, Refusal.NOT_WHOLE
         elif fence_left_open([claim]):
             yield n, Refusal.FENCE
@@ -1590,8 +1601,6 @@ def _page_version(
         )
     except (TypeError, KeyError, ValidationError):  # neither message is shown: they quote the input
         raise ValueError(f"a claim of {slug!r} in {root} is not well formed") from None
-    if not claims:  # cairn removes a page that is left with none
-        raise ValueError(f"version {expected} of {slug!r} in {root} has no claims")
     for n, fault in version_faults(claims, spans, legacy=True, text_bound=False):
         raise ValueError(fault.said(slug, expected, root, n, claims))
     return Page(

@@ -256,14 +256,54 @@ def test_limit_8_a_mention_of_anyone_but_the_author_is_their_member_id(tmp_path)
 # Found on 9d1abc2f
 
 
-def test_the_reply_does_not_style_what_slack_displayed_as_code(tmp_path):
-    """A message that opens with a code block is named in the reply by its first line, as
-    mrkdwn (blocks._message, "verbatim" only stops links and mentions): Slack displayed
-    `*draft* _v2_` as code, and the reply shows "draft" bold and "v2" italic. Slack's page
+@pytest.mark.parametrize(
+    ("text", "author"),
+    [
+        ("```*draft* _v2_ ~old~\nport 8811```", "Cedar Quill"),
+        (f"<@{shortcuts.CEDAR}> standup", "*Cedar*"),
+    ],
+    ids=["code-block", "author-name"],
+)
+def test_the_reply_does_not_style_what_slack_displayed_as_characters(tmp_path, text, author):
+    """The reply names the note by its title as mrkdwn (blocks._message: "verbatim" stops
+    links and mentions, not styles), so marks Slack displayed as characters are styled: the
+    first line of a code block (`*draft* _v2_ ~old~`), or a name (`@*Cedar*`). Slack's page
     names no escape for these marks in mrkdwn."""
-    _, replies = filed_on_bench(tmp_path, "```*draft* _v2_ ~old~\nport 8811```")
+    named = shortcuts.cedar(real_name=author, profile={"real_name": author, "display_name": author})
+    _, replies = filed_on_bench(tmp_path, text, users={shortcuts.CEDAR: named})
     (sections,) = replies
     assert slack_styles(sections[0]) == [], sections
+
+
+def test_a_special_mention_shows_as_slack_displayed_it(tmp_path):
+    """Slack displays <!here> as "@here"; the note writes "[link omitted]" (text._render: a
+    reference that is no address and has no label), in the claim, the title and the reply."""
+    (page,), replies = filed_on_bench(tmp_path, "Standup <!here> at ten")
+    shown = "".join(text for claim in page.claims for text in Shown(str(render(claim.text))).text)
+    assert "@here" in shown and "link omitted" not in shown, shown
+    assert "link omitted" not in page.title and "link omitted" not in replies[0][0], replies
+
+
+def test_code_blocks_slack_names_in_rich_text_convert_in_linear_time():
+    """Each code block the rich text names is looked for in the message's text in four
+    ways, the first of which reads to the text's end when it is not there (text._known_code):
+    work grows with the square of the blocks. 40,000 characters of ```x``` take about 1.6 s
+    (0.14 s for 10,000), on a worker thread."""
+    spent = {}
+    for size in (10_000, 40_000):
+        count = size // 7
+        block = {"type": "rich_text_preformatted", "elements": [{"type": "text", "text": "x"}]}
+        message = {
+            "text": "```x```" * count, "ts": "1900000000.000100", "user": "U1",
+            "blocks": [{"type": "rich_text", "elements": [block] * count}],
+        }  # fmt: skip
+        start = time.perf_counter()
+        note_from_message(
+            message, team_id="T", team_domain="fable-works", conversation_id="C0LIB",
+            author="Cedar Quill", names={},
+        )  # fmt: skip
+        spent[size] = time.perf_counter() - start
+    assert spent[40_000] < 6 * spent[10_000], spent
 
 
 def test_asterisks_slack_did_not_pair_are_not_shown_doubled(tmp_path):
@@ -278,11 +318,17 @@ def test_asterisks_slack_did_not_pair_are_not_shown_doubled(tmp_path):
     assert replies[0][0].count("*") <= 2, replies
 
 
-def test_limit_5_as_stated_names_every_mark_its_passage_shows(filer):
+@pytest.mark.parametrize(
+    ("message", "mark"),
+    [("&gt; Readings\n\t*north* blue", "**"), ("&gt; Readings\n\t`port` blue", "`")],
+    ids=["bold", "code-span"],
+)
+def test_limit_5_as_stated_names_every_mark_its_passage_shows(filer, message, mark):
     """The limit's sentence names the backslashes and entities a line read as code in its
-    passage alone shows; it shows the doubled asterisks of Slack's bold too."""
-    filed = filer("&gt; Readings\n\t*north* blue")
-    assert claim_code(filed) and all("**" not in code for code in claim_code(filed)), filed.claims
+    passage alone shows; it shows the doubled asterisks of Slack's bold and the backticks
+    of Slack's code too."""
+    filed = filer(message)
+    assert claim_code(filed) and all(mark not in code for code in claim_code(filed)), filed.claims
 
 
 # Held since the seventh report's fix (each failed on 0d4e71a8)

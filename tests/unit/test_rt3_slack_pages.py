@@ -15,7 +15,16 @@ The checks, by severity:
   marks Markdown may take as structure or emphasis.
 - source: the note's source link is a link on the page.
 - refused: a message with text is filed, or refused for a stated reason.
-- author: the author line and the page title show what Slack displayed, with no escape.
+- reply: the reply in Slack names the note by the first line Slack displayed, read as
+  Slack reads mrkdwn: no Slack markup, no mark doubled, nothing Slack showed as characters
+  styled.
+- title: the body's heading of the title holds no code, link or image, and displays the
+  start of the first line Slack displayed, with no mark doubled.
+- author: the author line is the author's name, as the note writes it for Markdown.
+
+What the connect guide states is not counted (LIMIT_* below, and its stated rules: an
+address removed, a table's bars, the fence exception); the note's own code is not checked,
+since no page renders a note whole (its links and headings are).
 """
 
 import asyncio
@@ -341,8 +350,10 @@ def _patterns(raw: str, squash: bool, relax: bool = False) -> list[str]:
             literal("@" + piece.target)
         else:  # what Slack's page leaves open (it may show nothing: the lead goes on)
             for _ in range(piece.shown.count("\n") + 1):
-                wild.add((len(lines) - 1, len(lines[-1])))
-                lines[-1].append("[^\n]*?" if not squash else ".*?")
+                anything = "[^\n]*?" if not squash else ".*?"
+                if not lines[-1] or lines[-1][-1] != anything:  # one for a run: no backtracking
+                    wild.add((len(lines) - 1, len(lines[-1])))
+                    lines[-1].append(anything)
                 lines.append([])
                 leading.append(True)
             lines.pop()
@@ -379,6 +390,8 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
     )
     fenced = any(re.match(r"[ \t>*+\-0-9.)]*(```|~~~)", row) for row in rows)
     for view, html in views.items():
+        if view == "note":
+            continue  # no page renders a note whole; its reading serves LIMIT_PASSAGE
         blocks, inline = _code_lines(html), _inline_code(html)
         for block in shown.code_blocks:
             if not block or any(_contains(lines, block) for lines in blocks):
@@ -436,7 +449,7 @@ def _code_faults(raw: str, views: dict[str, str]) -> list[Fault]:
 def _text_faults(raw: str, claims: list[str], in_note: set[str] = frozenset()) -> list[Fault]:
     """The characters the claims show against those Slack displayed; code a claim alone
     shows that the note read as text is taken as the guide's limit says it shows."""
-    seen = []
+    seen, eased = [], []  # as shown; and with what the guide says code may show taken back
     slack_code = {line for block in display(raw, names).code_blocks for line in block}
     fenced = any(
         re.match(r"[ \t>*+\-0-9.)]*(```|~~~)", row) for row in display(raw).text().split("\n")
@@ -446,25 +459,31 @@ def _text_faults(raw: str, claims: list[str], in_note: set[str] = frozenset()) -
             continue
         found = Shown(str(render(claim)))
         text = "".join(found.text)
+        seen.append(text)
         for in_pre, code in found.code:
             lines = code.rstrip("\n").split("\n")
             if in_pre and all(line in slack_code for line in lines if line.strip()):
                 continue  # Slack's own code: shown as it is
-            if in_pre and fenced:  # the guide's fence exception: the marks of prose stay
+            in_both = any(line in in_note for line in lines if line.strip())
+            if in_pre and fenced and in_both:  # the fence exception: the marks of prose stay
                 text = text.replace(code, as_text(code).replace("**", "*"), 1)
-            elif in_pre and not any(line in in_note for line in lines if line.strip()):
+            elif in_pre and not in_both:
                 text = text.replace(code, as_text(code), 1)  # LIMIT_PASSAGE
-        seen.append(text)
-    page = re.sub(r"\s", "", "".join(seen))
-    for written in (SOURCE_LINE, "Source in Slack"):  # the source swallowed: its own class
-        if written.replace(" ", "") in page:
-            page = page.replace(written.replace(" ", ""), "", 1)
-            break
-    pattern = "".join(_patterns(raw, squash=True))
+        eased.append(text)
+    pages = []
+    for texts in (seen, eased):
+        page = re.sub(r"\s", "", "".join(texts))
+        for written in (SOURCE_LINE, "Source in Slack"):  # the source swallowed: its own class
+            if written.replace(" ", "") in page:
+                page = page.replace(written.replace(" ", ""), "", 1)
+                break
+        pages.append(page)
+    pattern = re.sub(r"(?:\.\*\?)+", ".*?", "".join(_patterns(raw, squash=True)))  # one a run
     if len(pattern) > 8000:
         return []
-    if re.fullmatch(pattern, page, re.DOTALL):
+    if any(re.fullmatch(pattern, page, re.DOTALL) for page in pages):
         return []
+    page = pages[1]
     kind = "other"
     if re.fullmatch(pattern, re.sub(r"\\(.)", r"\1", page), re.DOTALL):
         kind = "escape shown"
@@ -481,7 +500,7 @@ def faults(filed: Filed) -> list[Fault]:
     """Every fault of a filed message."""
     raw = filed.raw
     names.clear()
-    names[shortcuts.CEDAR] = filed.author
+    names[shortcuts.CEDAR] = " ".join(filed.author.split())  # a name is on one line (guide)
     shown = display(raw, names)
     out: list[Fault] = []
     if filed.note is None:

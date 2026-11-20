@@ -176,6 +176,7 @@ def display(raw: str, names: dict[str, str] | None = None) -> Display:
                 i = end + 3
             else:  # no closer: the page does not say; read as literal backticks
                 pieces.append(Piece("text", "```", sure=False))
+                poisoned = True
                 i += 3
             continue
         if char == "`":
@@ -211,10 +212,22 @@ def display(raw: str, names: dict[str, str] | None = None) -> Display:
         if piece.kind == "text" and not piece.sure and "`" in piece.shown:
             open_lines.add(line)
         line += piece.shown.count("\n")
+    # After a run of three backticks the page leaves open, anything may be in a block.
+    poison = min(
+        [at for at, p in enumerate(pieces) if not p.sure and "```" in p.shown]
+        + (
+            [at for at, p in enumerate(pieces) if not p.sure and p.kind in ("code", "block")]
+            if poisoned
+            else []
+        )
+        + [len(pieces)]
+    )
     for at, piece in enumerate(pieces):
-        if piece.kind in ("code", "block") and piece.sure and lines_of[at] in open_lines:
+        if at > poison and piece.sure:
+            pieces[at] = Piece(piece.kind, piece.shown, piece.target, sure=False)
+        elif piece.kind in ("code", "block") and piece.sure and lines_of[at] in open_lines:
             pieces[at] = Piece(piece.kind, piece.shown, sure=False)
-        elif piece.kind == "text" and lines_of[at] in open_lines and set(piece.shown) & set("<>`"):
+        elif piece.kind == "text" and lines_of[at] in open_lines and piece.sure:
             pieces[at] = Piece("text", piece.shown, sure=False)  # a "<" there may pair otherwise
     return shown
 

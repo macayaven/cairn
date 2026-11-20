@@ -6,6 +6,7 @@ a real store in a temporary file; made-up names."""
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -640,6 +641,13 @@ def test_the_contract_counts_and_names_the_tools_there_are():
         " a note."
     ) in said
     assert "seven" not in said
+    for name in registered:  # and each has its entry in the contract's list of tools
+        assert re.search(rf"^  {name}\(", cairn.server.__doc__, re.MULTILINE), name
+    assert (
+        "graph(project, limit=20) -> the project's graph, as GET /api/graph answers it (below)"
+    ) in said
+    limit = tools()["graph"].input_schema["properties"]["limit"]
+    assert (limit["default"], limit["minimum"], limit["maximum"]) == (20, 1, 20)
     for word in ("usage", "delete", "forget"):
         assert not [name for name in registered if word in name], word
         assert not [

@@ -381,7 +381,13 @@ def long_claim(lead: str, filler: str) -> str:
 
 @pytest.mark.parametrize(
     ("kind", "filler"),
-    [("plain text", "Brook waits. "), ("any text", COSTLIEST), ("any text", '"\\')],
+    [
+        ("plain text", "Brook waits. "),
+        ("any text", COSTLIEST),
+        ("any text", '"\\'),
+        ("any text", "\u20ac"),  # three bytes as stored, and as each surface sends it
+        ("any text", "\U0001f600"),  # four
+    ],
 )
 @pytest.mark.parametrize("limit", [8, 20])
 def test_the_largest_answer_made_through_the_product_is_within_the_largest_allowed(
@@ -391,7 +397,8 @@ def test_the_largest_answer_made_through_the_product_is_within_the_largest_allow
     either side a line longer than TEXT_MAX, within the bytes read as shipped: `limit` pages
     of three reasons, every side cut, with a line cut. Its every field is within the
     largest answer's, and its bytes are under the number stated; with text of control
-    characters, the costliest there are, it comes to more than half of that number."""
+    characters, the costliest there are, it comes to more than half of that number. `both`
+    pins the sizes compared to the bytes the server sends, for each of these texts."""
     asked = "\n\n".join(
         long_claim(f"Ada pins `{term(page, n)}` at noon.", filler)
         for page in range(20)

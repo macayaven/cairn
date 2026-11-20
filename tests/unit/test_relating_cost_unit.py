@@ -239,3 +239,82 @@ def test_the_bounds_met_are_counted_and_the_read_stays_inside_them(tmp_path, mon
     listed = 4 + 9 + 8 + 8  # ours and theirs; b.cfg's stop one past what makes it common
     given = (1 + 5) + 5 + 6  # the claims, the pages' heads, the passages the claims cite
     assert seen.rows == 2 + 2 * 1 + listed + 3 * 10 + given + 6
+
+
+# What is read of a long claim: bytes, by the handles the read opens
+
+
+class Handle:
+    """A handle on a stored value, counting the bytes read through it."""
+
+    def __init__(self, blob) -> None:
+        self.blob, self.size, self.read_bytes = blob, len(blob), 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *raised) -> None:
+        self.blob.close()
+
+    def __len__(self) -> int:
+        return self.size
+
+    def read(self, length: int = -1) -> bytes:
+        data = self.blob.read(length)
+        self.read_bytes += len(data)
+        return data
+
+
+class Handles:
+    """The connection of one read, keeping each handle it opens on a stored value."""
+
+    def __init__(self, con) -> None:
+        self.con, self.opened = con, []
+
+    def execute(self, *arguments):
+        return self.con.execute(*arguments)
+
+    def blobopen(self, table: str, column: str, row: int, **named):
+        handle = Handle(self.con.blobopen(table, column, row, **named))
+        self.opened.append((table, column, handle))
+        return handle
+
+
+def test_a_claim_of_any_length_is_read_to_the_bound_and_a_passage_is_measured_unread(
+    tmp_path, monkeypatch
+):
+    """A claim of 60,000 characters on each side of a reason: of each claim's text the read
+    takes the bytes that TEXT_MAX + 1 characters can fill and no more, through a handle;
+    no statement selects a claim's text; and a passage is measured by a handle that reads
+    nothing of it (its text is then read by the statement that reads the passages)."""
+    store = Store(tmp_path / "cairn.db")
+    project = store.create_project("ops")
+    memory = Memory(store, lint_gate)
+    filler = "Brook keeps the ledger and Ada reads it at dawn; " * 1_200
+    assert len(filler) > 58_000
+    memory.note("ops", filler + "Ada pins `quill.lock`.\n", title="Asked", topic="Asked")
+    memory.note("ops", filler + "Quill reads `quill.lock`.\n", title="Other", topic="Other")
+    reads = []
+    whole = relating.related
+
+    def with_handles(con, *arguments):
+        reads.append(Handles(con))
+        return whole(reads[-1], *arguments)
+
+    monkeypatch.setattr(relating, "related", with_handles)
+    with watched(store) as seen:
+        found = store.related_pages(project.id, "asked", RELATED_MAX)
+    (reason,) = found.pages[0].why
+    assert reason.here.cut and reason.there.cut and len(reason.there.text) == relations.TEXT_MAX
+    (read,) = reads
+    claims = [handle for table, column, handle in read.opened if table.endswith("_content")]
+    passages = [handle for table, column, handle in read.opened if table == "spans"]
+    assert {column for table, column, _ in read.opened} == {"c5", "text"}
+    assert len(claims) == 2 and min(handle.size for handle in claims) > 58_000
+    bound = 4 * (relations.TEXT_MAX + 1)
+    assert [handle.read_bytes for handle in claims] == [bound, bound]
+    assert len(passages) == 1 and passages[0].size > 58_000 and passages[0].read_bytes == 0
+    (index,) = {table.removesuffix("_content") for table, _, _ in read.opened} - {"spans"}
+    ours = [s for s in seen.statements if index in s]
+    assert ours and not [s for s in ours if f"{index}.text" in s]
+    store.close()

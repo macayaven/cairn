@@ -477,7 +477,8 @@ The note guard and the logs (frozen by tests/acceptance/test_g1_guard.py; cairn/
   the web view's too, and with `serve --audit-reads` also in the audit log (read.page,
   read.evidence, read.search, read.graph, read.note, read.notes; Memory.access): each GET of
   a page that shows memory is one record, named as the MCP tool that reads the same (/
-  "projects", /b/<project> "overview", /b/<project>/p/<slug> "page", /search "recall") or
+  "projects", /b/<project> "overview", /b/<project>/p/<slug> "page",
+  /b/<project>/p/<slug>/related "related", /search "recall") or
   after what it asks (/b/<project>/notes "notes", /b/<project>/access "project_access",
   /b/<project>/delete "ask_delete_project", the forget page "ask_forget"). The pages of the
   workspace's settings, people and credentials, and the composer's empty form, are not on
@@ -675,6 +676,22 @@ Web UI (server-rendered HTML)
   page's gate metrics are shown under "Checks" in words (web/ui.CHECKS; a name without
   words as it is), each row carrying its name (data-metric), and each source says which
   claims cite it by their number on the page. Earlier versions are linked.
+- GET /b/{project}/p/{slug}/related[?limit=N] (KG2), linked from the page's head as "Related
+  pages" for its latest version: what `related` answers for the page (Memory.related, one
+  read, recorded as `related` records it) and nothing else, shown by
+  cairn.web.ui.memory_pages.related_view: the related pages best first, each with its title
+  linking to it and an element with id="related-<slug>"; each reason in words (a shared term
+  as code, with how many pages of the project hold it; or that a claim of the other page
+  names this page's title); each claim a reason rests on quoted as plain text, white space
+  kept, never drawn as Markdown, linked to its claim on its page ("#<claim id>"), with the
+  line given beside a claim cut wherever the answer holds one, and under it who wrote the
+  notes it cites (web/ui.writer_words), when, and whether any is outside text; "and N more
+  reasons" for `more`; one sentence for what the read left out (related_left_out), with a
+  link to show up to 20 when pages were left out; and, with no related page, one sentence
+  that says so and what makes two pages related. N is 1 to 20 (8 when left out), and any
+  other is a 400 page that says so in REST's sentence; a project out of reach or a page
+  that is not there is the 404 the page view gives. A parameter it does not take is
+  ignored. The page view runs no statement more for the link. No script.
 - GET /setup: how agents connect: with only the URL when OAuth is on (the MCP URL, and the
   `claude mcp add --transport http cairn <url>` and `codex mcp add cairn --url <url>`
   commands; else how to turn it on), and with an API key: the MCP URL (public_url + "/mcp",

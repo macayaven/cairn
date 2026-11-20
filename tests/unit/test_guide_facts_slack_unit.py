@@ -23,7 +23,7 @@ import uvicorn
 from guide_source import guide_source
 from markdown_it import MarkdownIt
 from starlette.testclient import TestClient
-from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, TEAM, Bench, ask, said
+from test_slack_commands_unit import ADA_SLACK, BASE, BROOK_SLACK, REPLY, TEAM, Bench, ask, said
 from test_slack_shortcuts_unit import CEDAR, CONVERSATION, cedar, handle, replied
 from test_slack_store_unit import KEY, SECRET, TOKEN, a_note, ready, world  # noqa: F401
 
@@ -780,6 +780,30 @@ def test_connect_the_page_shows_the_title_and_the_author_as_the_note_writes_them
         bench.store.close()
 
 
+def test_connect_a_mention_of_anyone_but_the_author_is_their_member_id(tmp_path):
+    """connect.md: "In the note a mention of the message's author is their name, and a mention
+    of anyone else is their member ID: ...\" (The third tester's finding 8: the guide said
+    every mention was the person's name.)"""
+    says(
+        *CONNECT,
+        "In the note a mention of the message's author is their name, and a mention of anyone "
+        "else is their member ID: the shortcut asks Slack for the author's name alone.",
+    )
+    bench = Bench(tmp_path)
+    try:
+        bench.users[CEDAR] = cedar()
+        bench.link(ADA_SLACK, bench.ada, bench.library)
+        text = f"<@{CEDAR}> asks <@U0BIRCH01> on Monday"
+        message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100", "text": text}
+        asyncio.run(handle(bench, message).background())
+        ((_, _, note, _),) = bench.notes()
+        assert "\n\n@Cedar Quill asks @U0BIRCH01 on Monday\n\n" in note
+        assert [where for where, _ in bench.calls if where != "users.info"] == [REPLY]
+        assert [where for where, _ in bench.calls].count("users.info") == 1
+    finally:
+        bench.store.close()
+
+
 def a_filed_note(text: str) -> str:
     return note_from_message(
         {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text},
@@ -843,8 +867,8 @@ def test_connect_a_rule_gets_no_backslash():
 def test_connect_a_line_read_as_code_holds_what_slack_displayed():
     """connect.md: "A line holds what Slack displayed where both the note and its passage read
     it as indented code: none of the backslashes and doubled asterisks that keep the other
-    lines from reading as Markdown are written in it, while a mention is still the person's
-    name, a link is still `[its words](its address)`, and an email address is still
+    lines from reading as Markdown are written in it, while a mention is written as in the rest
+    of the note, a link is still `[its words](its address)`, and an email address is still
     removed.\" The passage is the line's own, as the note is split into them: what a page
     shows of a claim. (It said "fenced or indented" until the third tester's finding 3: a
     fence is now a code block of Slack's own, the sentence on those.)"""
@@ -852,9 +876,9 @@ def test_connect_a_line_read_as_code_holds_what_slack_displayed():
         *CONNECT,
         "A line holds what Slack displayed where both the note and its passage read it as"
         " indented code: none of the backslashes and doubled asterisks that keep the other"
-        " lines from reading as Markdown are written in it, while a mention is still the"
-        " person's name, a link is still `[its words](its address)`, and an email address is"
-        " still removed.",
+        " lines from reading as Markdown are written in it, while a mention is written as in"
+        " the rest of the note, a link is still `[its words](its address)`, and an email"
+        " address is still removed.",
     )
     sent = "items[0] = (a) * 2 * 3 <@U0QUILL01> <https://fable.test/a_b|Issue #4> quill@fable.test"
     shown = "items[0] = (a) * 2 * 3 @Brook Quill [Issue #4](https://fable.test/a_b) [email removed]"

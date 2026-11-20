@@ -371,3 +371,20 @@ def test_the_quick_guide_names_the_role_an_outside_account_needs():
     needs beside the two roles, as Google's page on OS Login roles lists it."""
     said = " ".join(read("infra/quick/README.md").split())
     assert said.count("`roles/compute.osLoginExternalUser`, granted on the organisation") == 1
+
+
+def test_the_deploy_guide_quotes_the_line_a_build_before_the_floor_prints():
+    """deploy/README.md quotes the refusal of an image that knows the floor. Going back from
+    0.1.0 runs the build before it, which predates the floor and prints a shorter line: a
+    rehearsal of the upgrade from schema 28 ran that build on an upgraded file and read it.
+    The guide quotes both, so an operator finds the line of their log word for word."""
+    said = " ".join(read("deploy/README.md").split())
+    assert (
+        said.count(
+            "`SchemaTooNew: the database has schema version <found>; this cairn knows up to"
+            " <known>. Run the cairn that wrote it or a newer one, or restore the database from"
+            " before the upgrade.`"
+        )
+        == 1
+    )
+    assert "That is the line a rollback from 0.1.0 to the build before it shows." in said

@@ -251,6 +251,8 @@ An older image refuses to open a database with a newer schema, unless that datab
 SchemaTooNew: the database has schema version <found> and needs a cairn of schema version <floor> or later; this cairn knows up to <known>. Run the cairn that wrote it or a newer one, or restore the database from before the upgrade.
 ```
 
+An image from before version 0.1.0, which is the first to record that number, prints the same line without its middle part: `SchemaTooNew: the database has schema version <found>; this cairn knows up to <known>. Run the cairn that wrote it or a newer one, or restore the database from before the upgrade.` That is the line a rollback from 0.1.0 to the build before it shows.
+
 Docker starts the container again (`restart: unless-stopped`), and each start ends with the same line, until the image or the database is put right. From schema 31 on, a database records the oldest schema version whose image runs on it. An update whose schema steps only add (tables, columns with defaults, indexes) leaves that number, so the image before it still runs on the updated database: going back to it needs no restore. An update with a step that changes what an older image relies on raises the number to itself, the older image refuses the database with the line above, which names the version it needs, and going back means restoring a database from before the change. The release's notes say which kind each update is. Schema 31 (release 0.1.0) is of the second kind.
 
 ## The hosted service: first deploy

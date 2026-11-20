@@ -145,3 +145,22 @@ def test_the_security_guide_says_the_copy_is_of_the_events_it_holds():
     for sentence in (SECURITY_CHAIN, SECURITY_AGAINST):
         assert text.count(sentence) == 1, sentence
     assert "the copy of each event on the server's output" not in text
+
+
+SPEC_ROW_SAYS = (
+    "Each event is chained to the one before it; `serve` copies each event it stores to a"
+    " logger after its write commits (an event committed just before the process dies can be"
+    " missing; other commands write theirs on their own stderr)."
+)
+
+
+def test_the_spec_row_on_the_audit_trail_says_what_the_copy_is():
+    """docs/spec-v1.md's Design row on the audit trail says what the tests above run: the
+    copy is written once the event's write commits (one committed just before the process
+    dies has no line), and a command of the command line writes its lines on its own
+    stderr. It fails until the row says it (the coordinator's sentence)."""
+    spec = (Path(__file__).resolve().parents[2] / "docs" / "spec-v1.md").read_text("utf-8")
+    (row,) = [line for line in spec.splitlines() if line.startswith("| Audit trail |")]
+    row = " ".join(row.split())
+    assert row.count(SPEC_ROW_SAYS) == 1
+    assert "and copied to a logger, so" not in row

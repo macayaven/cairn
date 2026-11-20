@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator
@@ -103,16 +104,35 @@ _KEEP = "how many events a workspace keeps is a whole number, 1 or more, or None
 # deleted since the last compaction, and when the last compaction began.
 COMPACT_DUE = "store.compact_due"
 COMPACTED_AT = "store.compacted_at"
-# The `updated_at` of the COMPACT_DUE row once a rewrite covered every deletion it records:
-# only emptying the write-ahead log is left (cairn.store.portable). Each deletion sets it to
-# its own time, so a deletion after the rewrite is never taken for one it covered.
+# The COMPACT_DUE row's `value` is the time of the first deletion since the last compaction
+# (what `stats`, `compact --if-due` and the host's nightly job read). Its `updated_at` is the
+# record's generation: each deletion writes one of its own (deletion_generation, a random
+# value, so two deletions at one instant differ); a rewrite that covered what it read writes
+# REWRITTEN + ":" + a value of that rewrite's own (only emptying the write-ahead log is left,
+# cairn.store.portable), and emptying the log clears the row only while it still holds the
+# mark the emptying covers. A deletion after either is never taken for one they covered.
 REWRITTEN = "rewritten"
-# How a deletion records itself: its time when none is recorded; its time as `updated_at`
-# in every case (cairn.store.accounts, cairn.store.erasure).
+# How a deletion records itself: its time when none is recorded; its own generation as
+# `updated_at` in every case (cairn.store.accounts, cairn.store.erasure).
 RECORD_DELETION = (
     "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, ?, ?)"
     " ON CONFLICT (account_id, name) DO UPDATE SET updated_at = excluded.updated_at"
 )
+
+
+def deletion_generation() -> str:
+    """A generation for the compaction record that no other deletion has (RECORD_DELETION)."""
+    return "deleted:" + secrets.token_hex(16)
+
+
+def is_rewritten(generation: str | None) -> bool:
+    """Whether the record's `updated_at` says a rewrite covered it (REWRITTEN, alone as an
+    earlier build of this release wrote it, or with the generation it covered)."""
+    return generation is not None and (
+        generation == REWRITTEN or generation.startswith(REWRITTEN + ":")
+    )
+
+
 # Q1: what the last `serve` was told to keep of each page's history, a row of the same kind
 # (cairn.store.history): JSON, {"keep": N or null} or {"plans": {name: N or null}, "default"}.
 KEEP_VERSIONS = "store.keep_versions"
@@ -188,6 +208,8 @@ class ConnectionState:
         "audit_keep",
         "audit_out",
         "compacting",
+        "compaction_guard",
+        "compaction_holder",
         "keep_versions",
         "observers",
         "readers",
@@ -211,6 +233,11 @@ class ConnectionState:
         # Whether Store.compact (or the emptying of the log it left due) is running: the
         # health check then gives the writer's holder the longer bound (COMPACT_STUCK_AFTER).
         self.compacting = False
+        # One compaction at a time in this process (the file lock beside the database,
+        # PortableMethods.compacting, keeps it to one across processes): the thread that
+        # holds it, which may take it again inside (compact within its caller's decision).
+        self.compaction_guard = threading.Lock()
+        self.compaction_holder: int | None = None
 
 
 class WriterLock:

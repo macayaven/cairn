@@ -121,6 +121,7 @@ before writers were exported: its note is written by whoever imports it, the vie
 """
 
 import contextlib
+import fcntl
 import hashlib
 import heapq
 import io
@@ -131,6 +132,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import threading
 import zipfile
 import zlib
 from collections.abc import Callable, Iterator, Mapping
@@ -162,6 +164,8 @@ from cairn.store.base import (
     _iso,
     _require_account,
     _transaction,
+    is_rewritten,
+    store_log,
 )
 from cairn.store.memory import (
     _NOTE_COLUMNS,
@@ -272,6 +276,17 @@ class NoRoom(CompactIncomplete):
         super().__init__(f"the database's disk has {free} bytes free, a rewrite needs {needed}")
         self.free = free
         self.needed = needed
+
+
+COMPACT_LOCK = ".compact.lock"  # `<db>.compact.lock`, beside the database's file
+
+
+class CompactionRunning(RuntimeError):
+    """Another compaction of this database is running, in this process or another: this one
+    did not start and changed nothing (PortableMethods.compacting). It never waits."""
+
+    def __init__(self) -> None:
+        super().__init__("another compaction is running on this database")
 
 
 class PortableMethods(StoreBase):
@@ -532,6 +547,53 @@ class PortableMethods(StoreBase):
         if self._user_id is not None and self._role_in(con) != "owner":
             raise PermissionError(NOT_AN_EXPORTER)
 
+    @contextlib.contextmanager
+    def compacting(self) -> Iterator[None]:
+        """One compaction at a time for a database, across processes: held from the
+        decision of what is due (read the record inside it) through the clearing of the
+        record. An exclusive flock(2) on `<db>.compact.lock` (COMPACT_LOCK), an empty file
+        beside the database's real path, made 0600 and kept; the kernel lets go of it when
+        the descriptor closes, so a process that is killed leaves nothing held. Inside one
+        process a lock of the store's says the same. Never waits: CompactionRunning when
+        either is held, nothing changed. The thread that holds it may take it again
+        (compact and empty_log take it themselves, inside their caller's decision). A
+        database in memory is no file: the store's lock alone. The operator's call
+        (PermissionError on any view). OSError when the lock file cannot be made or opened
+        (O_NOFOLLOW: a link planted there is refused)."""
+        if not self._owner:
+            raise PermissionError("only the store that opened the database compacts it")
+        state = self._state
+        if state.compaction_holder == threading.get_ident():
+            yield
+            return
+        if not state.compaction_guard.acquire(blocking=False):
+            raise CompactionRunning
+        fd = None
+        try:
+            path = self._compaction_lock_path()
+            if path:
+                fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise CompactionRunning from None
+            state.compaction_holder = threading.get_ident()
+            try:
+                yield
+            finally:
+                state.compaction_holder = None
+        finally:
+            if fd is not None:
+                os.close(fd)  # the flock goes with it
+            state.compaction_guard.release()
+
+    def _compaction_lock_path(self) -> str:
+        """`<db>.compact.lock` beside the database's real path; "" for one in memory."""
+        with self._locked() as con:
+            rows = con.execute("PRAGMA database_list").fetchall()
+        file = next((row[2] for row in rows if row[1] == "main"), "")
+        return os.path.realpath(file) + COMPACT_LOCK if file else ""
+
     def compact(self) -> None:
         """Rewrite the database file without its free space (VACUUM), then copy the
         write-ahead log into it and truncate the log to nothing (PRAGMA
@@ -553,24 +615,31 @@ class PortableMethods(StoreBase):
         the copy of the log into the file. Reads do not wait: they have connections of their
         own (base.Readers). Another process writing to the file waits too.
 
-        The record (compaction_state): the rewrite and the emptying of the log are kept
-        apart. Under the lock and before VACUUM, the deletion record (store.compact_due) is
-        read as it stands, its `updated_at` (each deletion sets it to its own time): what
-        the rewrite covers. Once VACUUM has returned, under the same hold of the lock and in
-        one transaction, compacted_at is set to when the rewrite began and the record is
-        marked as covered by it only if it still holds what was read: a deletion another
-        process (the server, beside the command line) records in between keeps it due, for
-        a rewrite of its own. A process that dies after VACUUM and before that transaction
-        leaves the record as it was, so the rewrite is done again: it costs the time of one
-        rewrite and loses nothing. A rewrite that did not happen,
-        whatever stopped it, records nothing (CompactIncomplete, `rewrote` False, when the
-        file was busy). When the rewrite succeeded and another connection held the log (a
-        replica service always does), CompactIncomplete with `rewrote` True: the deletion
-        stays recorded, as rewritten, so what stays due is emptying the log (empty_log),
-        never a second rewrite for it. Once the log is emptied the record goes, unless a
-        deletion came meanwhile."""
+        One compaction at a time on a database (compacting: CompactionRunning, nothing
+        changed, when another runs, in this process or another). The record
+        (compaction_state): the rewrite and the emptying of the log are kept apart. Under
+        the lock and before VACUUM, the deletion record (store.compact_due) is read as it
+        stands, its `updated_at`: a generation each deletion writes of its own
+        (base.deletion_generation), what the rewrite covers. Once VACUUM has returned, under
+        the same hold of the lock and in one transaction, compacted_at is set to when the
+        rewrite began and the record is marked as covered by it (REWRITTEN with a mark
+        of its own) only if it still holds what was read: a deletion another process (the
+        server, beside the command line) records in between keeps it due, for a rewrite of
+        its own. A process that dies after VACUUM and before that transaction leaves the
+        record as it was, so the rewrite is done again: it costs the time of one rewrite and
+        loses nothing. A rewrite that did not happen, whatever stopped it, records nothing
+        (CompactIncomplete, `rewrote` False, when the file was busy). When the rewrite
+        succeeded and another connection held the log (a replica service always does),
+        CompactIncomplete with `rewrote` True: the deletion stays recorded, as rewritten, so
+        what stays due is emptying the log (empty_log), never a second rewrite for it once
+        it is recorded. Once the log is emptied the record goes, unless a deletion came
+        meanwhile (_empty_log: by its generation)."""
         if not self._owner:
             raise PermissionError("only the store that opened the database compacts it")
+        with self.compacting():
+            self._compact_held()
+
+    def _compact_held(self) -> None:
         self._room_for_rewrite()
         began = self._stamp()
         with self._holding() as con:
@@ -582,15 +651,16 @@ class PortableMethods(StoreBase):
                 con.execute("VACUUM")
             except sqlite3.OperationalError as error:
                 raise _incomplete(f"the database could not be compacted: {error}", False) from None
+            mark = None if generation is None else _rewrite_mark()
             with _transaction(con):  # the deletions recorded before the rewrite are its own
                 _set_row(con, COMPACTED_AT, began)
-                if generation is not None:  # unchanged, or a later deletion keeps it due
+                if mark is not None:  # unchanged, or a later deletion keeps it due
                     con.execute(
                         "UPDATE settings SET updated_at = ?"
                         " WHERE account_id = ? AND name = ? AND updated_at = ?",
-                        (REWRITTEN, DEFAULT_ACCOUNT_ID, COMPACT_DUE, generation[0]),
+                        (mark, DEFAULT_ACCOUNT_ID, COMPACT_DUE, generation[0]),
                     )
-        self._empty_log(rewrote=True)
+        self._empty_log(rewrote=True, mark=mark)
 
     def empty_log(self) -> None:
         """What a rewrite left due (compaction_state().rewritten): copy the write-ahead log
@@ -601,7 +671,8 @@ class PortableMethods(StoreBase):
         call, as compact (PermissionError on any view)."""
         if not self._owner:
             raise PermissionError("only the store that opened the database compacts it")
-        self._empty_log(rewrote=False)
+        with self.compacting():
+            self._empty_log(rewrote=False, mark=None)
 
     @contextlib.contextmanager
     def _holding(self) -> Iterator[sqlite3.Connection]:
@@ -615,11 +686,28 @@ class PortableMethods(StoreBase):
             finally:
                 self._state.compacting = False
 
-    def _empty_log(self, rewrote: bool) -> None:
-        """Truncate the write-ahead log; then the record of a deletion the rewrite covered
-        goes, and the log is truncated once more for that record's own change (if another
-        connection holds it by then, the log keeps that change only)."""
+    def _empty_log(self, rewrote: bool, mark: str | None) -> None:
+        """Truncate the write-ahead log; then the record goes if it still holds the rewritten
+        generation this emptying covers: `mark`, the one compact just wrote, or for
+        empty_log the one read under the lock before the truncation. One statement, which
+        changes nothing once a deletion (or another process's rewrite after another
+        deletion) has moved the record on: that one stays due.
+
+        The log is then truncated once more, for the clearing's own change. When another
+        connection holds it by then (busy), one line on the "cairn.store" logger says so;
+        when that truncation fails (an OperationalError), one warning there with SQLite's
+        error name, never its text. In both nothing is raised, what was done stays done, and
+        the record stays as it is: cleared, or moved on. The log then
+        holds only changes made after its truncation: the clearing, and anything written
+        since, where a deletion recorded itself again and a rewrite marked itself, so what
+        either left is still due."""
         with self._holding() as con:
+            if mark is None:
+                found = con.execute(
+                    "SELECT updated_at FROM settings WHERE account_id = ? AND name = ?",
+                    (DEFAULT_ACCOUNT_ID, COMPACT_DUE),
+                ).fetchone()
+                mark = found[0] if found and is_rewritten(found[0]) else None
             try:
                 busy = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
             except sqlite3.OperationalError as error:
@@ -632,13 +720,27 @@ class PortableMethods(StoreBase):
                 " the database; run compact again when it is done",
                 rewrote,
             )
-        with self._write() as con:
-            con.execute(
-                "DELETE FROM settings WHERE account_id = ? AND name = ? AND updated_at = ?",
-                (DEFAULT_ACCOUNT_ID, COMPACT_DUE, REWRITTEN),
+        if mark is not None:
+            with self._write() as con:
+                con.execute(
+                    "DELETE FROM settings WHERE account_id = ? AND name = ? AND updated_at = ?",
+                    (DEFAULT_ACCOUNT_ID, COMPACT_DUE, mark),
+                )
+        with self._locked() as con:
+            try:
+                busy = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+            except sqlite3.OperationalError as error:  # its code, never its text
+                store_log.warning(
+                    "compact: the write-ahead log keeps the changes made after it was emptied:"
+                    " its last truncation failed (%s)",
+                    getattr(error, "sqlite_errorname", None) or "no code",
+                )
+                return
+        if busy:
+            store_log.info(
+                "compact: the write-ahead log keeps the changes made after it was emptied:"
+                " another connection held it"
             )
-        with self._locked() as con, contextlib.suppress(sqlite3.OperationalError):
-            con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
 
     def _room_for_rewrite(self) -> None:
         """NoRoom unless the database's disk has twice the database free (its file and its
@@ -676,8 +778,16 @@ class PortableMethods(StoreBase):
         return CompactionState(
             deleted_at=due[0] if due else None,
             compacted_at=done[0] if done else None,
-            rewritten=bool(due) and due[1] == REWRITTEN,
+            rewritten=bool(due) and is_rewritten(due[1]),
         )
+
+
+def _rewrite_mark() -> str:
+    """The record's `updated_at` once a rewrite covered the generation it read
+    (base.REWRITTEN): a mark of this rewrite's own, new even when the record was already
+    rewritten (the command line rewrites then too), so emptying the log after one rewrite
+    never clears what a later rewrite left due."""
+    return f"{REWRITTEN}:{secrets.token_hex(16)}"
 
 
 def _refuse(findings: list[tuple[str, Any]]) -> None:

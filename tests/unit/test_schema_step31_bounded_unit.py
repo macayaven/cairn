@@ -119,3 +119,90 @@ def test_step_31_holds_a_bounded_number_of_events_at_once(tmp_path, count):
     with connect(db) as con:
         (found,) = check_trail(con, DEFAULT_ACCOUNT_ID)
     assert found.checked == count and found.broken is None
+
+
+# Many workspaces (the second report's remark on 13): the step held the last value of every
+# workspace it had read, so its memory grew with their number. Measured as the items held by
+# the containers of the generator executemany reads from (its locals and the values it
+# closes over), sampled at every row taken: the same at 3 workspaces as at 600.
+
+
+class Sampling(sqlite3.Connection):
+    """executemany here notes, at each row it takes, how many items the producer's own
+    containers hold."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.most = 0
+        self.sampled = 0  # rows at which the producer's frame was read
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        def taken():
+            for row in parameters:
+                frame = getattr(parameters, "gi_frame", None)
+                if frame is not None:
+                    self.sampled += 1
+                    held = sum(
+                        len(value)
+                        for name, value in frame.f_locals.items()
+                        if name != "row" and isinstance(value, dict | list | set | tuple)
+                    )
+                    self.most = max(self.most, held)
+                yield row
+
+        return super().executemany(sql, taken())
+
+
+def with_workspaces(db: Path, workspaces: int, each: int = 2) -> None:
+    v30_database(db)
+    with connect(db) as con:
+        con.execute("DELETE FROM audit_events")
+        con.executemany(
+            "INSERT INTO audit_events (account_id, n, at, actor_kind, actor, actor_id, action,"
+            " project, detail) VALUES (?, ?, '2026-01-01T00:00:00', 'key', 'laptop', 'k1',"
+            " 'note.saved', 'ops', '{}')",
+            ((f"acct_{w:012x}", n) for w in range(workspaces) for n in range(1, each + 1)),
+        )
+        con.commit()
+
+
+def most_held(db: Path) -> tuple[int, int]:
+    con = sqlite3.connect(db, factory=Sampling, isolation_level=None)
+    try:
+        con.execute("BEGIN")
+        schema._MIGRATIONS[31](con)
+        con.execute("COMMIT")
+        return con.most, con.sampled
+    finally:
+        con.close()
+
+
+def test_step_31_holds_the_same_whatever_the_number_of_workspaces(tmp_path):
+    few, many = tmp_path / "few.db", tmp_path / "many.db"
+    with_workspaces(few, 3)
+    with_workspaces(many, 600)
+    (most_few, seen_few), (most_many, seen_many) = most_held(few), most_held(many)
+    assert (seen_few, seen_many) == (3 * 2, 600 * 2)  # every row taken was sampled
+    assert most_many == most_few
+
+
+def test_each_workspace_still_chains_from_the_start(tmp_path):
+    """The one step past: with one value kept, a workspace's first event still starts from
+    the start value, not from the workspace read before it."""
+    from cairn.store.audit import AUDIT_START, audit_link
+
+    db = tmp_path / "cairn.db"
+    with_workspaces(db, 3, each=2)
+    most_held(db)
+    with connect(db) as con:
+        rows = con.execute(
+            "SELECT seq, account_id, n, at, actor_kind, actor, actor_id, action, chain"
+            " FROM audit_events ORDER BY account_id, n"
+        ).fetchall()
+    previous: dict[str, str] = {}
+    for seq, account, n, at, kind, actor, actor_id, action, chain in rows:
+        value = audit_link(
+            previous.get(account, AUDIT_START), account, n, seq, at, kind, actor, actor_id, action
+        )
+        assert chain == value
+        previous[account] = value

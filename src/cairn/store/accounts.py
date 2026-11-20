@@ -16,6 +16,7 @@ from cairn.store.base import (
     _find_account,
     _index_name,
     _insert_account,
+    deletion_generation,
 )
 from cairn.store.models import Account
 from cairn.store.people import _FORGET_MEMBERS
@@ -125,7 +126,7 @@ class AccountMethods(StoreBase):
                 con.execute(statement, (account.id,) * statement.count("?"))
             con.execute(  # a compaction is due (cairn.store.portable.compaction_state)
                 RECORD_DELETION,
-                (DEFAULT_ACCOUNT_ID, COMPACT_DUE, self._stamp(), self._stamp()),
+                (DEFAULT_ACCOUNT_ID, COMPACT_DUE, self._stamp(), deletion_generation()),
             )
         self._queue_revocations(dropped)  # Google, by the rule
         self._truncate_log(f"workspace {account.id}")

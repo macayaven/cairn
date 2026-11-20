@@ -23,7 +23,15 @@ from pathlib import Path
 
 from cairn.plans import Plans
 from cairn.plans import load as load_plans
-from cairn.store import FIELD_MAX, CannotOpen, CompactIncomplete, OverLimit, Pruned, Store
+from cairn.store import (
+    FIELD_MAX,
+    CannotOpen,
+    CompactIncomplete,
+    CompactionRunning,
+    OverLimit,
+    Pruned,
+    Store,
+)
 
 COMMANDS = ("export", "import", "compact")
 # The --db help of a command that never creates the database (it exits 1 when there is none).
@@ -295,12 +303,45 @@ def _remove_new(db: Path, directories: list[Path]) -> None:
             return
 
 
+ANOTHER_COMPACTION = 3  # compact's exit code when another compaction runs on the database
+STILL_DUE = "a deletion recorded during the run still asks for a rewrite"
+
+
 def _compact(db: Path) -> int:
+    """`compact`: prune by the record, then the whole compaction, under the lock that keeps
+    one compaction at a time on the database (Store.compacting): exit 3 and nothing changed
+    when another one runs."""
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    before = db.stat().st_size
     store = Store(db)
+    try:
+        with store.compacting():
+            return _rewrite(store, db)
+    except CompactionRunning as error:
+        return _running(db, error)
+    finally:
+        store.close()
+
+
+def _running(db: Path, error: CompactionRunning) -> int:
+    print(
+        f"{db} was not compacted: {error}; nothing was changed, run compact again when it is done",
+        file=sys.stderr,
+    )
+    return ANOTHER_COMPACTION
+
+
+def _still_due(store: Store) -> None:
+    """One more line when the record, read as the run ends, asks for a rewrite: a deletion
+    recorded while it ran, which its rewrite did not cover."""
+    state = store.compaction_state()
+    if state.deleted_at is not None and not state.rewritten:
+        print(f"{STILL_DUE}: run compact --if-due again")
+
+
+def _rewrite(store: Store, db: Path) -> int:
+    before = db.stat().st_size
     try:
         pruned = store.prune_by_record()  # Q1: before the file is rewritten
         store.compact()
@@ -309,49 +350,52 @@ def _compact(db: Path) -> int:
             print(_pruned(pruned), file=sys.stderr)
         print(f"{db} was not fully compacted: {error}", file=sys.stderr)
         return 1
-    finally:
-        store.close()
     print(_pruned(pruned))
     print(f"compacted {db}: {before} -> {db.stat().st_size} bytes")
+    _still_due(store)
     return 0
 
 
 def _compact_if_due(db: Path) -> int:
     """`compact --if-due` (the Google Cloud host's nightly run, infra/gcp/files/host.sh): what
-    the record of compaction (Store.compaction_state) says is still due, so a deletion the
-    server's own compactor already rewrote for is not rewritten again. No deletion recorded:
-    nothing. The file rewritten since the last deletion: the write-ahead log alone
-    (Store.empty_log), not finished (exit 1, as compact's line) when another connection holds
-    it. Otherwise the whole compaction, as `compact`."""
+    the record of compaction (Store.compaction_state) says is still due, read once the lock
+    that keeps one compaction at a time is held (exit 3, nothing changed, when another one
+    runs), so a deletion the server's own compactor already rewrote for, and recorded, is
+    not rewritten again (one killed before its record is). No deletion recorded: nothing.
+    The file rewritten since the last deletion: the write-ahead log alone (Store.empty_log),
+    not finished (exit 1, as compact's line) when another connection holds it. Otherwise
+    the whole compaction, as `compact`. It exits 0 when it did what was due at its start;
+    a deletion recorded while it ran is said in one more line, for the next run."""
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
     store = Store(db)
     try:
-        due = store.compaction_state()
+        with store.compacting():
+            due = store.compaction_state()
+            if due.deleted_at is None:
+                print(
+                    f"nothing to compact in {db}: no deletion is recorded since the last"
+                    " compaction finished"
+                )
+                return 0
+            if not due.rewritten:
+                return _rewrite(store, db)
+            try:
+                store.empty_log()
+            except CompactIncomplete as error:
+                print(f"{db} was not fully compacted: {error}", file=sys.stderr)
+                return 1
+            print(
+                f"emptied the write-ahead log of {db}: the file was rewritten after the last"
+                " deletion, so only the log was due"
+            )
+            _still_due(store)
+            return 0
+    except CompactionRunning as error:
+        return _running(db, error)
     finally:
         store.close()
-    if due.deleted_at is None:
-        print(
-            f"nothing to compact in {db}: no deletion is recorded since the last compaction"
-            " finished"
-        )
-        return 0
-    if not due.rewritten:
-        return _compact(db)
-    store = Store(db)
-    try:
-        store.empty_log()
-    except CompactIncomplete as error:
-        print(f"{db} was not fully compacted: {error}", file=sys.stderr)
-        return 1
-    finally:
-        store.close()
-    print(
-        f"emptied the write-ahead log of {db}: the file was rewritten after the last deletion,"
-        " so only the log was due"
-    )
-    return 0
 
 
 def _pruned(pruned: Pruned) -> str:

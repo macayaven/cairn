@@ -994,8 +994,16 @@ class _Held:
 
         return CompactionState(deleted_at="2026-11-19T09:00:00+00:00", rewritten=self.only_log)
 
+    def compacting(self):
+        """The lock that keeps one compaction at a time: no other one runs here."""
+        import contextlib
+
+        return contextlib.nullcontext()
+
     def compact(self) -> None:
         if self.error is not None:
+            if getattr(self.error, "rewrote", None):  # as a store's record: rewritten
+                self.only_log = True
             raise self.error
 
     empty_log = compact

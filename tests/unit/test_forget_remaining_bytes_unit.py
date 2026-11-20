@@ -119,3 +119,34 @@ def test_a_claim_that_is_not_its_passage_whole_is_not_respelled():
     span = chunk("n1", "Ada owns the deploy and the rollback.")[0]
     claim = Claim(id="cl_y", text="Ada owns the deploy.", span_ids=(span.id,))
     assert kept_claims([claim], frozenset({"sp_gone"}), {span.id: span}) == (claim,)
+
+
+def test_a_page_an_earlier_forget_left_past_the_bound_takes_no_note_until_a_forget(store):
+    """What this rule does not repair by itself. A version as a forget wrote it before: the
+    forgotten spelling, fifteen bytes, citing the three that stayed, beside a claim of one
+    byte: past twice its passages' text, so an import refuses it. Every gate now asks the
+    import's check, so a note to the page is refused where the lint gate saved it (and the
+    export stayed refused); a tidy has nothing to change. Forgetting a note of the page
+    rewrites the version, and the note is then filed."""
+    project = store.create_project("alpha")
+    memory = Memory(store, lint_gate)
+    memory.note("alpha", TWINS[1], title="Log", topic="Log")
+    other = memory.note("alpha", "C", title="Log", topic="Log")
+    page = store.get_page(project.id, "log")
+    stale = page.claims[0].model_copy(update={"text": "A" + " " * 12 + "\nB"})
+    claims = [stale, *page.claims[1:]]
+    spans = store.get_spans([i for claim in claims for i in claim.span_ids])
+    body = render_body("Log", claims, spans)
+    held = store.save_page(project.id, "log", "Log", body, claims, expected_version=page.version)
+
+    waits = memory.note("alpha", "D", title="Log", topic="Log")
+    assert waits["status"] == "rejected"
+    assert [v.split(":")[0] for v in waits["violations"]] == ["import.text"]
+    assert tidy_page(store, project.id, "log").status == "unchanged"
+    assert store.get_page(project.id, "log") == held
+
+    store.forget_note(other["note_id"])
+    assert [c.text for c in store.get_page(project.id, "log").claims] == [TWINS[1]]
+    again = memory.note("alpha", "D", title="Log", topic="Log")
+    assert (again["note_id"], again["status"]) == (waits["note_id"], "saved")
+    assert [c.text for c in store.get_page(project.id, "log").claims] == [TWINS[1], "D"]

@@ -207,7 +207,7 @@ def test_normalize_reads_a_name_with_a_grouped_number_as_before():
 
 def judge(gate, passage: str, draft: str):
     (span,) = [s for s in chunk("src", f"# Job\n\n{passage}\n") if s.kind == "paragraph"]
-    claim = Claim(id="cl_1", text=draft, span_ids=(span.id,))
+    claim = Claim(id="cl_0000000000000001", text=draft, span_ids=(span.id,))
     candidate = CandidatePage(slug="job", title="Job", body=f"# Job\n\n{draft}\n", claims=(claim,))
     return gate(candidate, {span.id: span})
 

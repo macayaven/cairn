@@ -21,7 +21,7 @@ from cairn.compiler import render_body
 from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.store import Claim, Store
-from cairn.store.portable import version_faults
+from cairn.store.portable import Refusal, version_faults
 
 SAME = "Ada keeps port 80 open."
 
@@ -129,7 +129,7 @@ def test_the_later_of_two_claims_with_one_id_leaves(store, tmp_path, caplog):
     built = Built(store, [SAME, "Brook owns the rollback.", "Quill keeps the log."], doubled)
     waits = built.memory.note("alpha", "Wren reads the log.", title="Net", topic="Net")
     assert waits["status"] == "rejected"  # the page takes no note while it holds the id twice
-    assert waits["violations"][0].startswith("compile.claim_id_repeated:")
+    assert waits["violations"][0].startswith("import.id_twice:")
     with caplog.at_level(logging.INFO, logger="cairn.store"):
         store.forget_note(built.notes[2])
     assert [claim.text for claim in built.page().claims] == [SAME]
@@ -243,9 +243,8 @@ def test_the_claims_no_fault_names_pass_together(store):
     built = Built(store, texts, mixed)
     claims = built.page().claims
     spans = store.get_spans([i for claim in claims for i in claim.span_ids])
-    faults = list(version_faults("net", built.version, claims, spans, "projects/alpha/"))
-    assert [place for place, _ in faults] == [1, 2, 4]
-    assert all("port" not in reason and "cl_" not in reason for _, reason in faults)
+    faults = list(version_faults(claims, spans, legacy=True))
+    assert faults == [(1, Refusal.NOT_WHOLE), (2, Refusal.HEADINGS), (4, Refusal.ID_TWICE)]
     rest = [claim for place, claim in enumerate(claims, 1) if place not in {1, 2, 4}]
     assert [claim.text for claim in rest] == ["Quill keeps the log.", "Brook owns the rollback."]
-    assert list(version_faults("net", built.version, rest, spans, "projects/alpha/")) == []
+    assert list(version_faults(rest, spans, legacy=True)) == []

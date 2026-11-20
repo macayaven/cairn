@@ -140,6 +140,7 @@ import zlib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import IO, Any
 
 from pydantic import ValidationError
@@ -1345,100 +1346,128 @@ def _cited_once(page: Page, cited: dict[str, str], root: str) -> None:
                 )
 
 
+class Refusal(Enum):
+    """Each reason an import refuses the claims of a version for (version_faults): whom the
+    rule is said of (one claim, by its place or not; the version; its claims together) and
+    the rule, which holds counts and never a claim's text, its id or a heading. An import
+    says it with the page, the version and the archive's project (`said`); a gate, of the
+    page it judges (cairn.gate.import_violations)."""
+
+    ID_SHAPE = ("claim", "has an id cairn does not make")
+    CITED_TWICE = ("claim", "cites a passage twice")
+    NOT_OF_PROJECT = ("a claim", "cites a passage that is not of its project's notes")
+    NOT_WHOLE = ("claim", "does not say what a passage it cites says")
+    FENCE = ("claim", "leaves a code fence open that no closing line closes")
+    HEADINGS = ("claim", "folds passages under different headings")
+    ID_TWICE = ("version", "holds two claims with one id")
+    CITATIONS = (
+        "version",
+        "cites its passages {citations} times, more than {factor} times its {claims} claims"
+        " and {cited} passages",
+    )
+    TEXT = ("claims", "hold more than twice the text of the passages they cite")
+
+    def rule(self, claims: Sequence[Claim]) -> str:
+        """The rule in words, with the counts of `claims` (the version's) where it has any."""
+        return self.value[1].format(
+            citations=sum(len(claim.span_ids) for claim in claims),
+            factor=CITATION_FACTOR,
+            claims=len(claims),
+            cited=len({span_id for claim in claims for span_id in claim.span_ids}),
+        )
+
+    def said(self, slug: str, version: int, root: str, n: int, claims: Sequence[Claim]) -> str:
+        """An import's refusal of version `version` of the page `slug` in `root` for claim `n`."""
+        of = {
+            "claim": f"claim {n} of {slug!r} version {version} in {root}",
+            "a claim": f"a claim of {slug!r} in {root}",
+            "version": f"version {version} of {slug!r} in {root}",
+            "claims": f"the claims of {slug!r} version {version} in {root}",
+        }
+        return f"{of[self.value[0]]} {self.rule(claims)}"
+
+
 def version_faults(
-    slug: str,
-    version: int,
     claims: Sequence[Claim],
     spans: Mapping[str, Span],
-    root: str,
     *,
+    legacy: bool,
     text_bound: bool = True,
-) -> Iterator[tuple[int, str]]:
+) -> Iterator[tuple[int, Refusal]]:
     """Why an import refuses `claims` as one version of a page, citing `spans` (the spans of
     its project's notes, by id): each fault as (the place of the claim that fails, 1 for the
-    first; the reason, naming the page and the version, never a claim's text, its id or a
-    heading), and nothing for a version an import takes. The one check of a version's claims:
-    an import refuses the version with the first reason, and a forget, which is never
-    refused, writes the version without the claims named here (store.erasure, CORE6A), so
-    what either writes an import takes. An import asks it in two steps, in the order it
-    always did: everything but the bound on text when it reads the version's line
-    (_page_version, `text_bound` False), and that bound after its rule across pages
-    (_claim_text, of the same code: _past_bounds).
+    first; the Refusal), and nothing for a version an import takes. The one check of a
+    version's claims, which every writer of a version asks. An import refuses the version
+    with the first fault (Refusal.said). A forget, which is never refused, writes the
+    version without the claims named here (store.erasure). Every gate refuses a candidate it
+    names a claim of (cairn.gate.import_violations), so what a compile, a tidy or an
+    arrangement saves, an import takes, and a rule added here reaches them all.
+
+    `legacy`: whether a claim that is the whole of its spans by the comparison before CORE5
+    (store.before_core5) passes, as a fold a tidy saved then. True for a version that
+    exists, an archive's or the store's (an import, a forget); False for a gate, which
+    judges a version to be made and takes today's comparison alone.
+
+    An import asks in two steps, in the order it always did: everything but the bound on
+    text when it reads the version's line (_page_version, `text_bound` False), and that
+    bound after its rule across pages (_claim_text, of the same code: _past_bounds).
 
     A claim fails alone when its id is not shaped as cairn makes one, it cites a span twice
-    or one that is not in `spans`, it is not the whole of every span it cites (by the
-    verbatim gate's comparison, or the one before CORE5), it leaves a code fence open that
-    no line closes, or it folds spans under different heading paths. Of the claims that
-    pass, one whose id an earlier one holds fails. The rest are a version past a bound when
-    their citations are more than CITATION_FACTOR times the claims and the distinct spans,
-    or their text more than CLAIM_TEXT_FACTOR times those spans' text (UTF-8 bytes, a
-    claim's white space counted). Then, from the first claim on, a claim fails when it takes
-    the claims before it that do not fail past either bound: of a passage copied too often
-    the first copies stay and the later ones fail, and a claim of a passage of its own stays.
-    So the claims no fault names pass together."""
+    or one that is not in `spans`, it is not the whole of every span it cites, it leaves a
+    code fence open that no line closes, or it folds spans under different heading paths.
+    Of the claims that pass, one whose id an earlier one holds fails. The rest are a version
+    past a bound when their citations are more than CITATION_FACTOR times the claims and the
+    distinct spans, or their text more than CLAIM_TEXT_FACTOR times those spans' text (UTF-8
+    bytes, a claim's white space counted). Then, from the first claim on, a claim fails when
+    it takes the claims before it that do not fail past either bound: of a passage copied
+    too often the first copies stay and the later ones fail, and a claim of a passage of its
+    own stays. So the claims no fault names pass together."""
     from cairn.gate import fence_left_open  # the gate builds on the store
     from cairn.gate import whole as copied
     from cairn.store.before_core5 import whole_before_core5
 
-    where = f"{slug!r} version {version} in {root}"
     alone: list[tuple[int, Claim]] = []
+    read: dict[str, str | None] = {}  # each span's compared text, read once for the version
     for n, claim in enumerate(claims, 1):
-        if not CLAIM_ID.fullmatch(claim.id):  # never the id: the archive's, not cairn's
-            fault = f"claim {n} of {where} has an id cairn does not make"
+        if not CLAIM_ID.fullmatch(claim.id):
+            yield n, Refusal.ID_SHAPE
         elif len(set(claim.span_ids)) != len(claim.span_ids):
-            fault = f"claim {n} of {where} cites a passage twice"
+            yield n, Refusal.CITED_TWICE
         elif not set(claim.span_ids) <= spans.keys():
-            fault = f"a claim of {slug!r} in {root} cites a passage that is not of its"
-            fault += " project's notes"
-        elif not copied(claim, spans) and not whole_before_core5(claim, spans):
-            # its place, never its text or id (the archive's, not cairn's)
-            fault = f"claim {n} of {where} does not say what a passage it cites says"
-        elif fence_left_open([claim]):  # never the text
-            fault = f"claim {n} of {where} leaves a code fence open that no closing line closes"
+            yield n, Refusal.NOT_OF_PROJECT
+        elif not copied(claim, spans, read) and not (legacy and whole_before_core5(claim, spans)):
+            yield n, Refusal.NOT_WHOLE
+        elif fence_left_open([claim]):
+            yield n, Refusal.FENCE
         elif len({spans[span_id].heading_path for span_id in claim.span_ids}) > 1:
-            # never a heading: the archive's text
-            fault = f"claim {n} of {where} folds passages under different headings"
+            yield n, Refusal.HEADINGS
         else:
             alone.append((n, claim))
-            continue
-        yield n, fault
     first: dict[str, int] = {}  # the place of each id's first claim: `evidence` finds that one
     for n, claim in alone:
-        if first.setdefault(claim.id, n) != n:  # never the id: the archive's, not cairn's
-            yield n, f"version {version} of {slug!r} in {root} holds two claims with one id"
+        if first.setdefault(claim.id, n) != n:
+            yield n, Refusal.ID_TWICE
     rest = [(n, claim) for n, claim in alone if first[claim.id] == n]
-    yield from _past_bounds(slug, version, rest, spans, root, text_bound)
+    yield from _past_bounds(rest, spans, text_bound)
 
 
 def _past_bounds(
-    slug: str,
-    version: int,
-    placed: Sequence[tuple[int, Claim]],
-    spans: Mapping[str, Span],
-    root: str,
-    text_bound: bool,
-) -> Iterator[tuple[int, str]]:
+    placed: Sequence[tuple[int, Claim]], spans: Mapping[str, Span], text_bound: bool
+) -> Iterator[tuple[int, Refusal]]:
     """The faults of version_faults for claims that as a whole are past a bound of a version
     (`placed`: each claim with its place; each cites spans of `spans` only): nothing when
     they are within the bound on citations and, with `text_bound`, the bound on text; else
     one fault for each claim that takes the claims before it that do not fail past either
-    bound, each with the reason the whole version is refused for."""
+    bound, each with the Refusal the whole version is refused for."""
     citations = sum(len(claim.span_ids) for _, claim in placed)
     cited = {span_id for _, claim in placed for span_id in claim.span_ids}
     text = sum(len(claim.text.encode()) for _, claim in placed)
     if citations > CITATION_FACTOR * (len(placed) + len(cited)):
-        fault = (  # counts only, never a span or a claim
-            f"version {version} of {slug!r} in {root} cites its passages {citations} times,"
-            f" more than {CITATION_FACTOR} times its {len(placed)} claims and {len(cited)}"
-            " passages"
-        )
+        fault = Refusal.CITATIONS
     elif text_bound and text > CLAIM_TEXT_FACTOR * sum(
         len(spans[span_id].text.encode()) for span_id in cited
     ):
-        fault = (
-            f"the claims of {slug!r} version {version} in {root} hold more than"
-            " twice the text of the passages they cite"
-        )
+        fault = Refusal.TEXT
     else:
         return
     kept = citations = text = passages = 0  # of the claims so far that do not fail
@@ -1466,9 +1495,8 @@ def _claim_text(page: Page, chunks: Mapping[str, Span], root: str) -> None:
     whitespace counts): the bound on text of version_faults, asked once the import knows
     each span is cited from one page. The message names the page and version, never the
     text."""
-    placed = list(enumerate(page.claims, 1))
-    for _, fault in _past_bounds(page.slug, page.version, placed, chunks, root, True):
-        raise ValueError(fault)
+    for n, fault in _past_bounds(list(enumerate(page.claims, 1)), chunks, True):
+        raise ValueError(fault.said(page.slug, page.version, root, n, page.claims))
 
 
 def _collapsed(text: str) -> str:
@@ -1564,8 +1592,8 @@ def _page_version(
         raise ValueError(f"a claim of {slug!r} in {root} is not well formed") from None
     if not claims:  # cairn removes a page that is left with none
         raise ValueError(f"version {expected} of {slug!r} in {root} has no claims")
-    for _, fault in version_faults(slug, expected, claims, spans, root, text_bound=False):
-        raise ValueError(fault)
+    for n, fault in version_faults(claims, spans, legacy=True, text_bound=False):
+        raise ValueError(fault.said(slug, expected, root, n, claims))
     return Page(
         project_id="",
         slug=slug,

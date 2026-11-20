@@ -8,8 +8,9 @@ composer is held to refuses it first, so what is saved always exports and import
 
 Beside it, the import's other rule of a version that a composer could break (third report,
 must-fix 1, the second route): no two claims of a version share an id. Every gate refuses a
-page that holds one id twice, with a reason of its own (compile.claim_id_repeated), so no
-compile saves one. The composer interface (`compile_note(..., compose=...)`) exists for the
+page that holds one id twice, with the import's own reason (import.id_twice: every gate asks
+the import's check of a version, test_gate_asks_the_imports_check_unit), so no compile saves
+one. The composer interface (`compile_note(..., compose=...)`) exists for the
 evaluation script alone: `serve` compiles with the extractive composer, which gives each
 passage one claim, and the shipped model parser drops a claim it already gave. Made-up
 notes; every model is a FakeModel."""
@@ -102,7 +103,7 @@ def test_a_composed_fold_under_one_heading_is_saved_and_round_trips(store, tmp_p
 # No two claims of a version share an id (the second route of must-fix 1)
 
 GATES = (provenance_gate, lint_gate, strict_lint_gate, verbatim_gate)
-REPEATED = "compile.claim_id_repeated"
+REPEATED = "import.id_twice"
 
 
 def twice(title, spans) -> Draft:
@@ -131,8 +132,9 @@ def test_every_gate_refuses_one_id_held_twice_with_a_reason_of_its_own(gate):
         slug="p", title="Net", body=render_body("Net", doubled, spans), claims=doubled
     )
     violations = gate(page, spans).violations
-    assert [v for v in violations if v.startswith(REPEATED)] == [
-        f"{REPEATED}: {claim.id}: 2 claims of the page hold this id: give each claim its own"
+    assert violations == [
+        f"{REPEATED}: -: an import would refuse the page 'p' for claim 2: the version holds"
+        " two claims with one id"
     ]
     assert all("port 80" not in v for v in violations)  # never the claim's text
     once = CandidatePage(

@@ -97,8 +97,9 @@ def test_body_tolerates_claims_without_known_spans_or_headings():
 
 
 def test_gate_passes_a_grounded_page_and_counts_distinct_cited_spans():
-    one, two = span("sp_1", ("T",), "one"), span("sp_2", ("T",), "two")
-    claims = [claim(one), Claim(id="cl_both", text="two", span_ids=(one.id, two.id))]
+    one = span("sp_0000000000000001", ("T",), "one")
+    two = span("sp_0000000000000002", ("T",), "two")
+    claims = [claim(one), Claim(id="cl_00000000000000b0", text="two", span_ids=(one.id, two.id))]
     result = provenance_gate(page_of(claims), {s.id: s for s in (one, two)})
     assert (result.passed, result.violations) == (True, [])
     assert result.metrics == {"claims": 2, "spans_cited": 2}

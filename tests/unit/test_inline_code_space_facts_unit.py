@@ -27,7 +27,9 @@ def passages(text: str) -> dict[str, Span]:
 
 
 def verbatim(held: dict[str, Span]) -> list[Claim]:
-    return [Claim(id=f"cl_{n}", text=s.text, span_ids=(s.id,)) for n, s in enumerate(held.values())]
+    return [
+        Claim(id=f"cl_{n:016x}", text=s.text, span_ids=(s.id,)) for n, s in enumerate(held.values())
+    ]
 
 
 def page(*claims: Claim) -> CandidatePage:
@@ -49,7 +51,9 @@ def test_a_claim_that_respaces_inline_code_is_refused_by_lint_gate():
 def test_the_claim_that_keeps_the_code_as_written_passes_lint_gate():
     held = passages(SPACED)
     (span_id,) = held
-    result = lint_gate(page(Claim(id="cl_a", text=SPACED, span_ids=(span_id,))), held)
+    result = lint_gate(
+        page(Claim(id="cl_000000000000000a", text=SPACED, span_ids=(span_id,))), held
+    )
     assert (result.passed, result.violations) == (True, [])
 
 

@@ -214,11 +214,13 @@ class ErasureMethods(StoreBase):
         it is held to the import's own check of a version (portable.version_faults): a claim
         an import would refuse leaves it as the note's own claims do, never the forget, and
         one line on the store's log counts those claims by page and version (for a page they
-        leave empty, the count alone: a removed page's slug is made from a note's title).
+        leave empty, the count alone: a removed page's slug is made from a note's title),
+        and the forget's audit event counts them all (`claims_left`, when there are any).
         The project keeps the note's digest, so the same text
         is not stored there again. The workspace's stored bytes go down by the note's size;
         the month's count of notes written does not. Recorded as note.forgotten (the note's
-        id, its project's id, how many pages changed); nothing of its text, title or
+        id, its project's id, how many pages changed, and how many claims left when any did);
+        nothing of its text, title or
         source_ref. KeyError for a note unknown or out of reach; PermissionError for anyone
         else who may not (see the module). Needs no room under any cap of a plan."""
         index = self._index
@@ -272,6 +274,9 @@ class ErasureMethods(StoreBase):
             if removed:
                 _unname(con, self._account_id, name, name, removed)
             detail = {"note": note_id, "project": project_id, "pages": len(plan)}
+            left = sum(refused for _, _, _, _, _, refused, _ in plan)
+            if left:  # claims an import would refuse, which left their pages with the note
+                detail["claims_left"] = left
             self._audit(con, "note.forgotten", project=name, detail=detail)
             _compaction_due(con, self._stamp())
         self._truncate_log(f"note {note_id}")

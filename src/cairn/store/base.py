@@ -620,7 +620,7 @@ class StoreBase:
         of what is kept when that is less, so a prune never leaves fewer than `audit_keep`.
         The event, as its row holds it, is also one JSON line on the "cairn.audit" logger
         once the transaction commits (_write): after the commit, so a process that dies in
-        commit, so a process that dies in between stores the event and logs no line; the
+        between stores the event and logs no line; the
         command line puts the logger on stderr (serve with its access log, every other command
         alone), and a process with no handler on it writes the line nowhere.
 

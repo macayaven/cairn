@@ -71,7 +71,7 @@ Everything is in one SQLite database file on the machine where cairn runs. All w
 | An invitation | 7 days, or until it is used or revoked |
 | An agent that registered and was never approved | 7 days |
 | An agent that was approved | Its name and redirect addresses stay after its connections end, so that it can connect again without registering |
-| The audit log | The newest 100,000 events of each workspace, or as many as the operator set with `serve --audit-keep` (every one with `all`) |
+| The audit log | The newest 100,000 events of each workspace, or as many as the operator set with `serve --audit-keep` (every one with `all`), and up to 1,000 older ones: the oldest are removed a batch at a time (1,000, or half the number kept when that is less) |
 | Backups, with the shipped configuration | Eight days in the bucket; on Google Cloud, the bucket keeps what is removed from it restorable for 7 more days, and disk snapshots are kept 14 days |
 
 Each of these stops working at its time. Its record is removed by a sweep the server runs every ten minutes, unless the operator chose another interval or turned it off (`serve --sweep-every`).

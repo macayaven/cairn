@@ -55,7 +55,7 @@ def check_env_name(
     missing, when it looks like the `secret` itself (`looks_like`, when given), or when it
     is not a variable's name (ENV_NAME). Each refusal names the setting, never its value;
     `wrong` replaces the last one's words for a kind that says it its own way."""
-    if key not in config:
+    if config.get(key) is None:  # left out, or given as nothing
         raise ValueError(
             f"a {kind} source needs {key}: the name of the environment variable that holds {holds}"
         )

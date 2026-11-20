@@ -248,3 +248,37 @@ def test_the_claims_no_fault_names_pass_together(store):
     rest = [claim for place, claim in enumerate(claims, 1) if place not in {1, 2, 4}]
     assert [claim.text for claim in rest] == ["Quill keeps the log.", "Brook owns the rollback."]
     assert list(version_faults(rest, spans, legacy=True, run_on=None)) == []
+
+
+def forgotten_event(store) -> dict:
+    (event,) = [e for e in store.list_audit(100) if e.action == "note.forgotten"]
+    return event.detail
+
+
+def test_the_audit_event_of_a_forget_counts_the_claims_that_left_with_it(store):
+    """Evidence that leaves a page is recorded where the workspace's owners read, not only on
+    the server's log: the event of the forget says how many claims an import would have
+    refused left its pages, as a number and nothing of them."""
+
+    def reworded(claims):
+        return [claims[0].model_copy(update={"text": "Ada opens every port."}), *claims[1:]]
+
+    built = Built(store, [SAME, "Brook owns the rollback.", "Quill keeps the log."], reworded)
+    store.forget_note(built.notes[2])
+    detail = forgotten_event(store)
+    assert detail == {
+        "note": built.notes[2],
+        "project": built.project.id,
+        "pages": 1,
+        "claims_left": 1,
+    }
+
+
+def test_the_audit_event_of_a_forget_that_drops_nothing_is_as_it_was(store):
+    built = Built(store, [SAME, "Quill keeps the log."], lambda claims: claims[::-1])
+    store.forget_note(built.notes[1])
+    assert forgotten_event(store) == {
+        "note": built.notes[1],
+        "project": built.project.id,
+        "pages": 1,
+    }

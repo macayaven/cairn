@@ -148,7 +148,8 @@ PRIVACY_ERASED = (
 )
 PRIVACY_TABLE = (
     "| The audit log | The newest 100,000 events of each workspace, or as many as the operator"
-    " set with `serve --audit-keep` (every one with `all`) |"
+    " set with `serve --audit-keep` (every one with `all`), and up to 1,000 older ones: the"
+    " oldest are removed a batch at a time (1,000, or half the number kept when that is less) |"
 )
 PRIVACY_EXPORT = (
     "Exporting writes one thing to the database: an event of the audit log saying who exported"

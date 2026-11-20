@@ -361,7 +361,9 @@ def test_the_check_resolves_once_and_hands_the_ip_to_the_transport():
     assert next(answers) == ["169.254.169.254"]
 
 
-@pytest.mark.parametrize("answer", ["64:ff9b:1::93.184.216.34", "::ffff:0:93.184.216.34"])
+# 64:ff9b:1::93.184.216.34 was here too: the fifth round refuses that range whatever the
+# setting (test_source_translated_layouts_unit.py), so its refusal no longer says to allow it.
+@pytest.mark.parametrize("answer", ["::ffff:0:93.184.216.34"])
 def test_local_translation_prefixes_are_not_global(answer, monkeypatch):
     monkeypatch.delenv(u.PRIVATE_ADDRESSES_SETTING, raising=False)
     sent, transport = recording()

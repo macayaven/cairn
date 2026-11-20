@@ -5,9 +5,9 @@ and nothing else: where Slack is, the store's clock, and two waits made long.
 wraps the one function `serve` reads the switch through, serve_switch, so that the switch it
 returns, read from the same options and the same CAIRN_SLACK_KEY, calls the stand-in at
 JOURNEY_SLACK_API and answers through reply addresses on 127.0.0.1 (the stand-in's), not
-Slack's own. JOURNEY_DAYS_AHEAD, when set, moves the store's clock (cairn.store.base._clock,
-read at each call) that many days ahead, so a restart can stand for days passing; the clock
-requests are timed by, and so the window of Slack's signatures, stays the real one.
+Slack's own. JOURNEY_SERVER_TIME fixes the server's wall clock for the store and for Slack
+request timing. The journey can set that time apart from the stand-in's clock and advance it
+on restart.
 
 The server gives Slack 1.5 seconds to say who wrote a message and a note 1 second to get its
 turn (cairn.slack.people). Those limits are pinned by the acceptance tests, with no real time
@@ -18,9 +18,10 @@ create_app, uvicorn and the process."""
 import dataclasses
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime
 
 import cairn.store.base
+import cairn.web.app
 from cairn.server import main
 from cairn.slack import people
 from cairn.web import slack as web_slack
@@ -39,9 +40,13 @@ def to_the_stand_in(args, environ):
 
 web_slack.serve_switch = to_the_stand_in
 people.AUTHOR_WITHIN = people.TURN_WITHIN = 30.0  # read at each call: see the docstring
-if ahead := os.environ.get("JOURNEY_DAYS_AHEAD"):
-    real_clock = cairn.store.base._clock
-    cairn.store.base._clock = lambda: real_clock() + timedelta(days=float(ahead))
+if stamp := os.environ.get("JOURNEY_SERVER_TIME"):
+    fixed_time = datetime.fromisoformat(stamp)
+
+    def journey_clock():
+        return fixed_time
+
+    cairn.store.base._clock = cairn.web.app._utc_now = journey_clock
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

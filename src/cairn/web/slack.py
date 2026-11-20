@@ -60,8 +60,9 @@ The three addresses Slack calls (`slack_routes`)
      install's bot (Store.revoke_slack_bot); another user's token revoked changes nothing.
 - Each write checks the set-up stamp and the opened signing secret in its own transaction.
   A callback for an installation that has since changed is acknowledged.
-- Removal and revocation events need an outer event_time in a later second than set-up.
-  An earlier, equal, missing or invalid time is acknowledged before any write.
+- Removal and revocation events need an outer event_time in a later second than the server's
+  set-up stamp. An earlier, equal, missing or invalid time is audited and acknowledged
+  without recording the event id.
 - A refusal writes nothing. Each request is recorded on the access log (cairn.access):
   its action (ACTIONS: slack_event, slack_command, slack_action), the install and the
   status, under the actor kind "slack"; never the body, a secret, the signature or a header.
@@ -379,13 +380,14 @@ class OneClient:
             await made.aclose()
 
 
-def _logged(action: str, install: str, status: int) -> None:
+def _logged(action: str, install: str, status: int, *, ignored: bool = False) -> None:
     with contextlib.suppress(Exception):  # a log handler that raises fails no request
         access_log.info(
-            "%s for %s: %s",
+            "%s for %s: %s%s",
             action,
             install,
             status,
+            " (ignored)" if ignored else "",
             extra={
                 "actor_kind": "slack",
                 "actor": None,
@@ -478,16 +480,28 @@ def slack_routes(
         if install.state == "off" and not lifecycle:
             _logged(action, install_id, 200)  # off: acknowledged, and nothing is done
             return Response(status_code=200)
+        generation = inbound.generation
+        assert generation is not None  # the verified secret belongs to this set-up
+        ledger = desk.for_callback(generation)
         if lifecycle:
             # The event envelope gives dispatch time in whole seconds.
             event_time = found.payload.get("event_time")
             setup_second = datetime.fromisoformat(install.made_at).replace(microsecond=0)
-            if type(event_time) is not int or event_time <= int(setup_second.timestamp()):
-                _logged(action, install_id, 200)
+            why = None
+            if type(event_time) is not int:
+                why = "invalid_time"
+            elif event_time <= int(setup_second.timestamp()):
+                why = "at_or_before_setup"
+            if why is not None:
+                try:
+                    await run_in_threadpool(
+                        ledger._audit_ignored_slack_event, install, found.name, why
+                    )
+                except SlackInstallChanged:
+                    _logged(action, install_id, 200)
+                else:
+                    _logged(action, install_id, 200, ignored=True)
                 return Response(status_code=200)
-        generation = inbound.generation
-        assert generation is not None  # the verified secret belongs to this set-up
-        ledger = desk.for_callback(generation)
         if found.type == CHALLENGE:
             with contextlib.suppress(SlackInstallChanged):
                 await run_in_threadpool(ledger.slack_install_verified, install.id)

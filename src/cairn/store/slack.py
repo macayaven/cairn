@@ -32,7 +32,8 @@ The install
   pending or removed one holds no team), so making ready a team another workspace holds is
   TeamHeld, whatever races;
   `slack_team_held` counts the same states. A new bot token clears `bot_gone_at` and the count
-  of ended answers.
+  of ended answers. Saving the same credentials and team keeps the set-up stamp. Saving
+  credentials with an earlier clock than the previous stamp reports how far ahead it is.
 - `switch_slack_install(on=)`: an owner or admin. Off from ready or on; on from ready or off
   while it holds its secrets (ValueError otherwise). `slack_install_verified`: Slack's
   challenge answered, ready becomes on (the server's call, on the root store).
@@ -113,11 +114,12 @@ import copy
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple, cast
@@ -162,6 +164,7 @@ MEMBERS_ONLY = "a Slack user is linked to a person of this workspace"
 LINKED_ELSEWHERE = "this Slack user is linked to another person: unlink it first"
 NOT_OPEN = "this link offer is not open"
 NO_LINK = "this code links nothing"
+log = logging.getLogger("cairn.slack")
 
 
 class TeamHeld(ValueError):
@@ -525,24 +528,30 @@ class SlackMethods(StoreBase):
             if state != "pending" and was_team != team_id:  # it belongs to its team
                 raise NotItsTeam()
             account = self._account_id
-            kept = con.execute(
-                "SELECT signing_secret FROM slack_installs WHERE id = ?", (install_id,)
-            ).fetchone()[0]
-            held = (
-                sealer.open(kept, _associated("signing_secret", install_id, account))
-                if kept is not None
-                else None
+            signing_for = _associated("signing_secret", install_id, account)
+            bot_for = _associated("bot_token", install_id, account)
+            kept_signing, kept_bot = con.execute(
+                "SELECT signing_secret, bot_token FROM slack_installs WHERE id = ?", (install_id,)
+            ).fetchone()
+            held_signing = sealer.open(kept_signing, signing_for)
+            held_bot = sealer.open(kept_bot, bot_for)
+            same_signing = held_signing is not None and hmac.compare_digest(
+                held_signing.encode(), signing_secret.encode()
+            )
+            same_setup = (
+                was_team == team_id
+                and same_signing
+                and held_bot is not None
+                and hmac.compare_digest(held_bot.encode(), bot_token.encode())
             )
             # on stays on only with the signing secret a signed request proved already
-            proven = (
-                state == "on" and held is not None and hmac.compare_digest(held, signing_secret)
-            )
-            sealed = (
-                sealer.seal(signing_secret, _associated("signing_secret", install_id, account)),
-                sealer.seal(bot_token, _associated("bot_token", install_id, account)),
-            )
+            proven = state == "on" and same_signing
+            sealed = sealer.seal(signing_secret, signing_for), sealer.seal(bot_token, bot_for)
             now = self._instant()
-            made_at = _next_slack_setup(now, row[9])
+            made_at = row[9] if same_setup else _next_slack_setup(now, row[9])
+            detail = {}
+            if _when(row[9]) > now:
+                detail["ahead_seconds"] = (_when(made_at) - now).total_seconds()
             try:
                 con.execute(
                     "UPDATE slack_installs SET state = ?, team_id = ?, enterprise_id = ?,"
@@ -563,8 +572,16 @@ class SlackMethods(StoreBase):
                 )
             if was_team is not None and was_team != team_id:  # the old team's people are not its
                 con.execute("DELETE FROM slack_people WHERE install_id = ?", (install_id,))
-            self._slack_audit(con, "slack.install_ready", install_id, team=team_id)
-            return _install(self._slack_row(con, install_id))
+            self._slack_audit(con, "slack.install_ready", install_id, team=team_id, **detail)
+            install = _install(self._slack_row(con, install_id))
+        if "ahead_seconds" in detail:
+            with suppress(Exception):  # a log handler can fail after the save commits
+                log.warning(
+                    "slack: set-up stamp for %s is %.6f seconds ahead of the server clock",
+                    install_id,
+                    detail["ahead_seconds"],
+                )
+        return install
 
     def switch_slack_install(self, install_id: str, *, on: bool) -> SlackInstall:
         """Switch the install on or off (see the module). KeyError, PermissionError, or
@@ -1267,6 +1284,16 @@ class SlackMethods(StoreBase):
                     " ON CONFLICT DO NOTHING",
                     (install_id, event_id, self._stamp()),
                 ).rowcount
+            )
+
+    def _audit_ignored_slack_event(self, install: SlackInstall, event: str, why: str) -> None:
+        """Record the time decision through the verified callback's view."""
+        with self._write() as con:
+            self._audit(
+                con,
+                "slack.lifecycle_ignored",
+                account_id=install.account_id,
+                detail={"install": install.id, "event": event, "why": why},
             )
 
     def forget_slack_event(self, install_id: str, event_id: str) -> None:

@@ -9,10 +9,12 @@ import argparse
 import asyncio
 import base64
 import inspect
+import json
+import logging
 import re
 import shutil
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta
 from importlib.resources import files
 
 import httpx
@@ -289,6 +291,43 @@ def test_run_slack_a_backup_taken_before_a_removal_still_holds_what_came_through
         assert "The tide turns at nine." in copy.for_account(world.account).get_note(note).text
     finally:
         copy.close()
+
+
+def test_run_a_future_slack_setup_stamp_is_visible(world, caplog):  # noqa: F811
+    """run.md: show the inherited time during credential saves, including after removal."""
+    actual_time = world.clock.now
+    world.clock.now += timedelta(hours=2)
+    first = ready(world)
+    world.clock.now = actual_time
+    caplog.set_level(logging.WARNING, logger="cairn.slack")
+
+    replacement = ready(world, token=TOKEN + "-new")
+    first_warning = world.view.list_audit(action="slack.install_ready")[0]
+    ahead = datetime.fromisoformat(replacement.made_at) - actual_time
+    assert first_warning.detail.get("ahead_seconds") == ahead.total_seconds()
+    repeated = ready(world, token=TOKEN + "-new")
+    assert repeated.made_at == replacement.made_at
+    world.view.remove_slack_install(replacement.id)
+    reinstalled = ready(world, token=TOKEN + "-new")
+    assert reinstalled.id == first.id
+    assert first.made_at < replacement.made_at < reinstalled.made_at
+    stamps = [reinstalled.made_at, repeated.made_at, replacement.made_at]
+    seconds = [(datetime.fromisoformat(stamp) - actual_time).total_seconds() for stamp in stamps]
+    trail = world.view.list_audit(action="slack.install_ready")
+    assert [entry.detail.get("ahead_seconds") for entry in trail] == [*seconds, None]
+    warnings = [record.getMessage() for record in caplog.records if record.name == "cairn.slack"]
+    assert warnings == [
+        f"slack: set-up stamp for {first.id} is {ahead:.6f} seconds ahead of the server clock"
+        for ahead in reversed(seconds)
+    ]
+    says(
+        *RUN,
+        "If saving credentials carries forward a set-up stamp ahead of the server's clock,"
+        " the server warns and `slack.install_ready` records how many seconds ahead it is in"
+        " `ahead_seconds`.",
+        "Removing the installation and setting it up again while the server's clock is still"
+        " behind that stamp carries it forward.",
+    )
 
 
 # The connect guide, "From Slack": for a workspace's owner and its people
@@ -818,16 +857,16 @@ def test_privacy_only_an_author_of_the_same_slack_workspace_is_filed(bench):
 
 
 def test_privacy_when_the_app_is_removed(world):  # noqa: F811
-    """privacy.md: "When the app is removed, at Slack or on the **Sources** page, both secrets
-    and every link are deleted at once, and every note Slack created, typed or filed, is
+    """privacy.md: "When the server removes the installation, both secrets and every link
+    are deleted at once, and every note Slack created, typed or filed, is
     forgotten 10 days later, as a note is forgotten (below). Until then the **Sources** page
     says how many notes will go and when, and an owner can forget them at once with **Forget
     them now**; setting Slack up again for the same Slack workspace before that day keeps
     them.\""""
     says(
         *PRIVACY,
-        "When the app is removed, at Slack or on the **Sources** page, both secrets and every"
-        " link are deleted at once, and every note Slack created, typed or filed, is forgotten"
+        "When the server removes the installation, both secrets and every link are"
+        " deleted at once, and every note Slack created, typed or filed, is forgotten"
         " 10 days later, as a note is forgotten (below). Until then the **Sources** page says"
         " how many notes will go and when, and an owner can forget them at once with **Forget"
         " them now**; setting Slack up again for the same Slack workspace before that day keeps"
@@ -849,6 +888,88 @@ def test_privacy_when_the_app_is_removed(world):  # noqa: F811
     assert sorted(note for _, note in world.store.slack_notes_due()) == sorted([typed, filed])
     world.view.forget_slack_notes_now(install.id)
     assert world.view.get_note(typed) is None and world.view.get_note(filed) is None
+
+
+@pytest.mark.parametrize("ahead", [0, 30])
+def test_privacy_and_run_slack_removal_uses_two_clocks(world, ahead):  # noqa: F811
+    """privacy.md and run.md: what happens when Slack's removal time precedes set-up."""
+    slack_now = world.clock.now
+    world.clock.now += timedelta(seconds=ahead)
+    install = ready(world)
+    world.view.link_slack_user(install.id, ADA_SLACK, world.owner)
+    note = a_note(world)
+    world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
+
+    def http():
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"ok": False, "error": "token_revoked"})
+            )
+        )
+
+    sign_in = SignIn(providers=(GitHub("gh-id", "gh-secret"),), http=http)
+    app = create_app(
+        world.store, public_url=BASE, sign_in=sign_in, clock=world.clock,
+        slack=web_slack.Slack(key=KEY, http=http),
+    )  # fmt: skip
+    client = TestClient(app, base_url=BASE)
+    slack_now += timedelta(seconds=1)
+    world.clock.now += timedelta(seconds=1)
+    stamp = str(int(slack_now.timestamp()))
+    body = json.dumps({
+        "type": "event_callback", "team_id": install.team_id, "event_id": "Ev0FABLE01",
+        "event_time": int(stamp), "event": {"type": "app_uninstalled"},
+    }).encode()  # fmt: skip
+    reply = client.post(
+        f"/integrations/slack/{install.id}/events",
+        content=body,
+        headers={
+            "x-slack-request-timestamp": stamp,
+            "x-slack-signature": signature(SECRET, stamp, body).decode(),
+        },
+    )
+    assert (reply.status_code, reply.content) == (200, b"")
+    ignored = world.view.list_audit(action="slack.lifecycle_ignored")
+    if ahead:
+        assert [entry.detail for entry in ignored] == [
+            {"install": install.id, "event": "app_uninstalled", "why": "at_or_before_setup"}
+        ]
+        assert world.view.get_slack_install() == install
+        assert world.view.slack_person(install.id, ADA_SLACK) is not None
+        assert world.view.slack_notes_to_forget() is None
+        assert world.store.list_audit(action="slack.lifecycle_ignored") == []
+        world.view.switch_slack_install(install.id, on=False)
+        keeper = app.state.slack_keeper
+        world.clock.now += CHECK_EVERY
+        assert asyncio.run(keeper.check()) == 1
+        assert world.view.get_slack_install().holds_bot_token
+        world.clock.now += CHECK_EVERY
+        assert asyncio.run(keeper.check()) == 1
+        assert world.view.get_slack_install().state == "off"
+        world.clock.now += timedelta(days=3, seconds=1)
+        keeper.run_once()
+    else:
+        assert ignored == []
+    removed = world.view.get_slack_install()
+    assert removed.state == "removed" and not removed.holds_secrets
+    assert world.view.slack_person(install.id, ADA_SLACK) is None
+    assert world.view.slack_notes_to_forget().at == world.clock.now + FORGET_AFTER
+    says(
+        *PRIVACY,
+        "The server acts on an app removal from Slack only when Slack's dispatch time is in"
+        " a later second than the installation's set-up on the server's clock.",
+        "It ignores removals dated at or before that second or with no valid dispatch time"
+        " and records them in the workspace audit log.",
+        "Checking the bot token can reveal a missed removal.",
+    )
+    says(
+        *RUN,
+        "Keep the server's clock accurate so it can recognize removal events Slack dispatches"
+        " after set-up.",
+        "The `slack.lifecycle_ignored` audit entry names the event and gives the reason.",
+        "The reason is `at_or_before_setup` for an uninstall or revocation dated at or before"
+        " the server's set-up second, or `invalid_time` for a missing or invalid dispatch time.",
+    )
 
 
 def test_privacy_what_was_there_before_slack_is_not_slacks_to_forget(bench):
@@ -890,15 +1011,12 @@ def test_privacy_what_was_there_before_slack_is_not_slacks_to_forget(bench):
     assert all(bench.owner.get_note(note.id) is not None for note in (different, matching))
 
 
-@pytest.mark.parametrize("polling", ["on", "off", "timeout", "rate limit", "works"])
+@pytest.mark.parametrize(
+    "polling", ["on", "off", "timeout", "rate limit", "5xx", "connection", "works"]
+)
 def test_privacy_a_token_slack_ended_is_removed_three_days_later(world, polling):  # noqa: F811
-    """privacy.md: "When Slack revokes the bot's token, or no longer accepts it, Slack is
-    switched off and the token deleted; unless a new bot token is pasted on the **Sources**
-    page within 3 days, Slack is then removed here as above. With Slack switched on, the
-    server checks the bot token at most once every 6 hours. It marks the token as ended after
-    two checks report that it has ended, and any successful check resets the count. Timeouts
-    and rate limits can delay that. The server forgets notes that are due whether or
-    not Slack is switched on.\""""
+    """privacy.md: when the server checks, how it recognizes an ended token, what can delay
+    discovery and when it removes the installation and forgets its notes."""
     install = ready(world)
     note = a_note(world)
     world.view.record_slack_note(install.id, note, how="typed", brought_by=world.owner)
@@ -937,6 +1055,8 @@ def test_privacy_a_token_slack_ended_is_removed_three_days_later(world, polling)
             answer = {
                 "timeout": httpx.ReadTimeout("slow"),
                 "rate limit": httpx.Response(429, headers={"retry-after": "30"}),
+                "5xx": httpx.Response(503),
+                "connection": httpx.ConnectError("unreachable"),
                 "works": httpx.Response(200, json={"ok": True}),
             }[polling]
             assert asyncio.run(keeper.check()) == 1
@@ -963,14 +1083,14 @@ def test_privacy_a_token_slack_ended_is_removed_three_days_later(world, polling)
     assert world.view.get_note(note) is None
     says(
         *PRIVACY,
-        "When Slack revokes the bot's token, or no longer accepts it, Slack is switched off and"
-        " the token deleted; unless a new bot token is pasted on the **Sources** page within 3"
-        " days, Slack is then removed here as above.",
-        "With Slack switched on, the server checks the bot token at most once every 6 hours.",
-        "It marks the token as ended after two checks report that it has ended, and any"
-        " successful check resets the count.",
-        "Timeouts and rate limits can delay that.",
-        "The server forgets notes that are due whether or not Slack is switched on.",
+        "The server switches the installation off and deletes the bot token when it acts on a"
+        " revocation of that token or when two checks say the token has ended.",
+        "After 3 days with an ended bot token, the server removes the installation unless a"
+        " new bot token was pasted on the **Sources** page.",
+        "These checks run at most once every 6 hours while the server runs with `serve --slack`.",
+        "Any successful check resets the count.",
+        "Timeouts, rate limits, HTTP 5xx responses and failed connections can delay discovery.",
+        "The server forgets notes that are due even when it runs without `--slack`.",
     )
 
 

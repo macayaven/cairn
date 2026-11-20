@@ -2,8 +2,9 @@
 as done, or left it a draft (gh release create makes a draft, uploads the files, then publishes
 it, in separate requests: gh's own help for the command): the step lists every release of the
 repository, drafts included, and recognises the one for this tag only when its pre-release flag
-is the one this tag gets and every file it holds is byte for byte one this run attested; a
-published one must hold them all, and a draft gets the ones it lacks and is published. Then it
+is the one this tag gets and it holds no file but the ones this run attested; a published one
+must hold them all, byte for byte, and a draft gets the ones it lacks or holds cut off, and this
+run's notes, and is published. Then it
 succeeds without making a release again, so `aliases` runs. A listing that fails is not taken
 for none, and anything else stops the job in one sentence. gh is a stand-in that keeps the
 releases as a JSON file and runs the step's own --jq expression with jq."""
@@ -30,7 +31,9 @@ case "$1 $2" in
     jq -r "$jq_expr" "$EXISTING/releases.json" ;;
   "release upload")
     shift 3
-    cp "$@" "$EXISTING/assets/" ;;
+    for file in "$@"; do
+      case "$file" in --*) ;; *) cp "$file" "$EXISTING/assets/" ;; esac
+    done ;;
   "release edit")
     exit 0 ;;
   "release download")
@@ -170,13 +173,6 @@ def test_this_run_s_release_made_by_an_earlier_attempt_is_recognised_not_made_ag
         (
             "v1.2.3",
             "",
-            made_earlier("v1.2.3", False, draft=True, names=["cairn_memory-1.2.3.tar.gz"]),
-            {"cairn_memory-1.2.3.tar.gz": b"a source arch"},  # cut off mid-upload
-            "cairn_memory-1.2.3.tar.gz is not the file this run attested",
-        ),
-        (
-            "v1.2.3",
-            "",
             [made_earlier("v1.2.3", False), made_earlier("v1.2.3", False, draft=True)],
             attached("v1.2.3"),
             "there are 2 releases for it",
@@ -243,7 +239,8 @@ def test_the_listing_takes_every_page_and_drafts_by_their_tag():
 
 
 WHL, TGZ = "cairn_memory-1.2.3-py3-none-any.whl", "cairn_memory-1.2.3.tar.gz"
-PUBLISH = "gh release edit v1.2.3 --draft=false"
+PUBLISH = "gh release edit v1.2.3 --draft=false --notes-file notes.md"
+FULL_DRAFT = {WHL: b"a wheel", TGZ: b"a source archive", "SHA256SUMS": b"the checksums"}
 
 
 @pytest.mark.parametrize(
@@ -253,12 +250,17 @@ PUBLISH = "gh release edit v1.2.3 --draft=false"
         ("v1.2.3-rc.1", "true", None, [], f"{PUBLISH.replace("3", "3-rc.1")} --latest=false"),
         ("v1.2.3", "", ["SHA256SUMS"], [WHL, TGZ], PUBLISH),
         ("v1.2.3", "", [], [WHL, TGZ, "SHA256SUMS"], PUBLISH),
+        ("v1.2.3", "", {TGZ: b"a source arch"}, [WHL, TGZ, "SHA256SUMS"], PUBLISH),  # cut off
+        ("v1.2.3", "", {**FULL_DRAFT, WHL: b"another"}, [WHL], PUBLISH),
     ],
 )  # fmt: skip
 def test_a_draft_left_by_a_lost_attempt_gets_its_missing_files_and_is_published(
     tmp_path, tag, candidate, names, uploaded, edit
 ):
-    names = attached(tag) if names is None else {n: attached(tag)[n] for n in names}
+    if names is None:
+        names = attached(tag)
+    elif not isinstance(names, dict):
+        names = {n: attached(tag)[n] for n in names}
     existing = made_earlier(tag, candidate == "true", draft=True, names=list(names))
     existing["assets"] = [{"name": n, "size": 1} for n in names]
     done, made = run(tmp_path, tag, candidate, existing, names)
@@ -266,7 +268,10 @@ def test_a_draft_left_by_a_lost_attempt_gets_its_missing_files_and_is_published(
     assert made == []
     calls = (tmp_path / "calls").read_text().splitlines()
     uploads = [line for line in calls if line.startswith("gh release upload")]
-    assert uploads == ([f"gh release upload {tag} {' '.join(uploaded)}"] if uploaded else [])
+    # A draft is no one's to read yet, so a file of it that is not this run's (an upload the
+    # lost runner cut off) is replaced, as are its notes.
+    want = [f"gh release upload {tag} --clobber {' '.join(uploaded)}"] if uploaded else []
+    assert uploads == want
     assert [line for line in calls if line.startswith("gh release edit")] == [edit]
     assert f"The draft GitHub release {tag} is this run's" in done.stdout
 
@@ -276,8 +281,9 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
     assert (
         "A re-run of `release` lists the repository's releases, drafts included (a listing that"
         " fails stops the job), and takes the one for its tag as this run's when it has this"
-        " tag's pre-release flag and each file it holds is byte for byte one this run"
-        " attested: a published one that holds them all is left as it is, and a draft, which"
-        " gh leaves when its runner is lost while it uploads, gets the files it lacks and is"
-        " published; either way `aliases` runs. Any other release for the tag stops the job."
+        " tag's pre-release flag and holds no file but the ones this run attested: a published"
+        " one that holds them all, byte for byte, is left as it is, and a draft, which gh leaves"
+        " when its runner is lost while it uploads, gets the files it lacks or holds cut off,"
+        " and this run's notes, and is published; either way `aliases` runs. Any other release"
+        " for the tag stops the job."
     ) in readme

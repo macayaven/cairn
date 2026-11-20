@@ -97,8 +97,11 @@ def kept_claims(
     spelling, and the white space that equality leaves out must not outlive that note, in
     this forget or one made before this rule. Any other kept claim keeps its text.
     A kept claim whose id was made from a forgotten span (spans.claim_id: a span id is a
-    digest of its text) takes the id of the first span it keeps, or, when another claim
-    already has that one, an id made from its place and the spans it keeps."""
+    digest of its text) takes the id of the first span it keeps, or, when another kept claim
+    holds that one, an id made from its place and the spans it keeps, drawn again until no
+    kept claim holds it (fourth report, must-fix 5; as compiler.rebuilt_folds draws one): a
+    page may hold any id of cairn's shape, so no claim loses its id, or its place on the
+    page, to this one."""
     from cairn.gate import whole  # the gate builds on the store
 
     kept = []
@@ -118,10 +121,10 @@ def kept_claims(
     taken = {claim.id for claim in kept if claim.id not in made_from_gone}
     for place, claim in enumerate(kept):
         if claim.id in made_from_gone:
-            new = claim_id(claim.span_ids[0])
-            if new in taken:
-                key = json.dumps([place, claim.span_ids]).encode()
-                new = "cl_" + hashlib.sha256(key).hexdigest()[:16]
+            new, tries = claim_id(claim.span_ids[0]), 0
+            while new in taken:
+                key = json.dumps([place, claim.span_ids, tries]).encode()
+                new, tries = "cl_" + hashlib.sha256(key).hexdigest()[:16], tries + 1
             taken.add(new)
             kept[place] = claim.model_copy(update={"id": new})
     return tuple(kept)

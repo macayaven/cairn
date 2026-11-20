@@ -58,7 +58,16 @@ def test_the_security_guide_says_which_second_factor_counts_and_where():
         " as {{name}} reads them, do not say how a person signed in, so the server does not"
         " start with the option and either of them.",
     )
+    says(
+        SECURITY,
+        "Providers that report only method-specific `amr` values (such as `pwd` and `otp` or"
+        " `hwk` without `mfa`) or other `acr` values (such as NIST `aal:2`) are refused unless"
+        ' the provider maps them to `amr: ["mfa"]` or one of those two PAPE policies.',
+    )
     assert identity.second_factor({"amr": ["pwd", "mfa"]})
+    assert identity.second_factor({"amr": ["pwd", "otp"]}) is False
+    assert identity.second_factor({"amr": ["pwd", "hwk"]}) is False
+    assert identity.second_factor({"acr": "urn:nist:800-63-3:aal:2"}) is False
     assert len(identity.SECOND_FACTOR_ACR) == 2
     assert all(acr.startswith("http://schemas.openid.net/pape/policies/2007/06/multi-factor")
                for acr in identity.SECOND_FACTOR_ACR)  # fmt: skip

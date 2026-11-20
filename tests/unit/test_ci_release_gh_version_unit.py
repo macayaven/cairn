@@ -28,6 +28,7 @@ OLD = (
     " job's handling of a draft was read, so it is not trusted with the release; update GitHub"
     " CLI on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
 )
+NOT_PLAIN = "of a version it does not print as three plain numbers"
 NONE = (
     "::error::gh is not on this runner, so the GitHub release for v1.2.3 cannot be made;"
     " install GitHub CLI 2.102.0 or later on the runner CAIRN_RELEASE_RUNNER names, or unset it"
@@ -81,8 +82,9 @@ def test_the_check_is_the_job_s_first_step_and_holds_no_token():
 @pytest.mark.parametrize(
     "version", ["2.102.0", "2.102.1", "2.105.0", "2.110.12", "3.0.0", "10.0.0"]
 )
-def test_a_gh_at_or_after_2_102_0_passes_and_is_asked_for_nothing_else(tmp_path, version):
-    done, calls, errors = check(tmp_path, GH_VERSION=f"gh version {version} (2026-11-01)")
+@pytest.mark.parametrize("built", [" (2026-11-01)", ""], ids=["dated", "with no date"])
+def test_a_gh_at_or_after_2_102_0_passes_and_is_asked_for_nothing_else(tmp_path, version, built):
+    done, calls, errors = check(tmp_path, GH_VERSION=f"gh version {version}{built}")
     assert (done.returncode, errors) == (0, []), done.stdout + done.stderr
     assert calls == ["--version"]
 
@@ -95,9 +97,19 @@ def test_a_gh_at_or_after_2_102_0_passes_and_is_asked_for_nothing_else(tmp_path,
         ("gh version 2.51.3 (2024-06-01)", "2.51.3"),
         ("gh version 2.9.0 (2022-04-01)", "2.9.0"),
         ("gh version 1.999.0 (2021-01-01)", "1.999.0"),
-        ("gh version (devel)", "of a version it does not print"),
-        ("version 2.102.0", "of a version it does not print"),
-        ("", "of a version it does not print"),
+        ("gh version (devel)", NOT_PLAIN),
+        ("version 2.102.0", NOT_PLAIN),
+        ("", NOT_PLAIN),
+        # A pre-release of the tool is not that release (sixth report): three numbers, and
+        # then a space or the end of the line, or the version is not taken.
+        ("gh version 2.102.0-rc.1 (2026-10-01)", NOT_PLAIN),
+        ("gh version 2.102.0-rc.1", NOT_PLAIN),
+        ("gh version 2.105.0-beta.2 (2026-11-01)", NOT_PLAIN),
+        ("gh version 2.102.0rc1 (2026-10-01)", NOT_PLAIN),
+        ("gh version 2.102.0+local (2026-10-01)", NOT_PLAIN),
+        ("gh version 2.102.0.1 (2026-10-01)", NOT_PLAIN),
+        ("gh version 2.102 (2026-10-01)", NOT_PLAIN),
+        ("gh version 3 (2027-01-01)", NOT_PLAIN),
     ],
 )
 def test_a_gh_before_2_102_0_is_refused_in_one_line_and_asked_for_nothing_else(
@@ -140,7 +152,7 @@ def test_the_version_is_read_and_compared_as_image_build_reads_it():
     ours = [line.strip() for line in CHECK["run"].splitlines()]
     for line in (
         "version=\"$(gh --version | sed -n 's/^gh version"
-        " \\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p')\"",
+        " \\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\)\\( .*\\)\\{0,1\\}$/\\1/p')\"",
         'IFS=. read -r major minor _ <<< "${version:-0.0.0}"',
         'if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 102 ]; }; then',
     ):
@@ -164,8 +176,17 @@ def test_the_header_the_readme_and_the_two_rows_say_what_the_step_does():
         "gh on this runner is …, before 2.102.0, the version in whose source this job's handling"
         " of a draft was read, so it is not trusted with the release"
     ) == (
-        "The runner's `gh` is older than the one the job was read against; nothing was fetched"
-        " or written",
+        "The runner's `gh` is older than the one the job was read against, or prints a version"
+        " that is not three plain numbers (a pre-release of the tool, a development build),"
+        " which is not taken for a release; nothing was fetched or written",
         "Update `gh` on the runner `CAIRN_RELEASE_RUNNER` names, or unset it, then re-run the job.",
+    )
+    assert cells(
+        "gh on this runner is …, before 2.102.0, which fixed how gh attestation verify matches"
+        " --signer-workflow and --source-ref, so it is not trusted with main's attestation"
+    )[0] == (
+        "The runner's `gh` predates the fix of both advisories, or prints a version that is not"
+        " three plain numbers (a pre-release of the tool, a development build), which is not"
+        " taken for a release"
     )
     assert (REPO / "tests" / "unit" / "test_ci_one_build_unit.py").is_file()

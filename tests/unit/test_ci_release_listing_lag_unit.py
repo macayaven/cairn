@@ -15,9 +15,10 @@ release, still a draft, after the publication. At most `looks` looks, `apart` se
 the two values at the top of the step; then what the step did before. Any other state stops
 at once, as before: a release that is not this run's, an edited one, two for the tag, a file
 name that is not one of the three, a listing that fails, no release after the publication.
-(One state is both: this run's draft, edited as soon as it was made and listed with some of
-its file names. The step waits for the names, as for any draft of its own, and then stops on
-the edit; nothing is published either way.) The first look of a run never waits.
+Every look judges the mark, the flag, the title and the notes it shows, so a draft edited as
+soon as it was made stops the step at once, short of names or not. The first look of a run
+never waits. What the step compares it reads by the release's id
+(test_ci_release_fresh_read_unit); the listing's file names only say whether to wait.
 
 gh is test_ci_release_retry_unit's stand-in, whose listing shows what was there before a
 write until the k-th look after it. `sleep` is a stand-in on the path, as gh is: it keeps its
@@ -32,6 +33,7 @@ from test_ci_release_retry_unit import (
     CREATE,
     DRAFT,
     LISTING,
+    READ,
     README,
     REFUSED,
     attached,
@@ -109,8 +111,9 @@ def test_a_draft_listed_from_the_k_th_look_after_its_creation_is_published_in_th
     seen = looks(calls)
     assert seen[0] == LISTING and seen[1].startswith(f"gh release create {tag} --draft ")
     waited = [LISTING, *[f"sleep {APART}", LISTING] * (shown_from - 1)]
-    assert after(calls, "gh release create")[: len(waited) + 1] == [
+    assert after(calls, "gh release create")[: len(waited) + 2] == [
         *waited,
+        READ.format(id=88),
         f"gh release download {tag} --dir {tmp_path}/draft",
     ]
     assert [line.split()[1:3] for line in writes(calls)] == [
@@ -186,35 +189,36 @@ def test_a_draft_listed_with_some_of_its_file_names_is_waited_for_and_published_
     assert done.returncode == 0, done.stdout + done.stderr
     assert slept(calls) == [f"sleep {APART}"] * for_looks
     waited = [LISTING, *[f"sleep {APART}", LISTING] * for_looks]
-    assert after(calls, "gh release create")[: len(waited) + 1] == [
+    assert after(calls, "gh release create")[: len(waited) + 2] == [
         *waited,
+        READ.format(id=88),
         f"gh release download {tag} --dir {tmp_path}/draft",
     ]
     assert [(r["id"], r["draft"]) for r in held(tmp_path)] == [(88, False)]
 
 
 @pytest.mark.parametrize(("tag", "candidate"), BOTH)
-@pytest.mark.parametrize("listed", [[], [WHEEL], [SOURCE, WHEEL]], ids=["none", "one", "two"])
-def test_a_draft_never_listed_with_its_third_file_name_ends_on_the_unfinished_line_after_the_wait(
-    tmp_path, tag, candidate, listed
+@pytest.mark.parametrize("kept", [0, 1, 2], ids=["none", "one", "two"])
+def test_a_draft_that_lacks_a_file_ends_on_the_unfinished_line_after_the_wait(
+    tmp_path, tag, candidate, kept
 ):
-    """What a draft that really lacks a file reads as. The step looks its ten times, then
-    compares exactly as before: the unfinished line, nothing downloaded and nothing published.
-    (Here the files are whole and only the listing is short, so the re-run publishes.)"""
-    done, calls = run(tmp_path, tag, candidate, NAMES_LISTED_AT_FIRST=json.dumps(listed))
+    """The draft holds fewer files than the step uploaded, at every look and when read by
+    its id. The step cannot tell that from a listing short of names, so it looks its ten
+    times; then the read says what the draft holds, and the step stops on the unfinished
+    line, with nothing downloaded and nothing published. (A whole draft the listing never
+    names in full is published after the same wait: test_ci_release_fresh_read_unit.)"""
+    done, calls = run(tmp_path, tag, candidate, CHANGED_ONCE_MADE=f".assets |= .[:{kept}]")
     assert done.returncode == 1
     assert the_error(done) == DRAFT.format(tag=tag)
     assert slept(calls) == [f"sleep {APART}"] * (LOOKS - 1)
     assert after(calls, "gh release create") == [
         LISTING,
         *[f"sleep {APART}", LISTING] * (LOOKS - 1),
+        READ.format(id=88),
     ]
     assert [line.split()[1:3] for line in writes(calls)] == [["release", "create"]]
     (draft,) = held(tmp_path)
-    assert (draft["id"], draft["draft"]) == (88, True)
-    done, calls = attempt(tmp_path, tag, candidate)
-    assert done.returncode == 0, done.stdout + done.stderr
-    assert slept(calls) == [] and held(tmp_path) == [{**draft, "draft": False}]
+    assert (draft["id"], draft["draft"], len(draft["assets"])) == (88, True, kept)
 
 
 @pytest.mark.parametrize(
@@ -244,12 +248,26 @@ def test_a_draft_never_listed_with_its_third_file_name_ends_on_the_unfinished_li
 )
 def test_a_file_name_that_is_not_one_of_the_three_is_no_reason_to_wait(tmp_path, listed):
     """One step past: a name beside the three, one that begins like one of them, and names
-    the shell would read as a pattern over the step's own directory, which holds the three."""
-    done, calls = run(tmp_path, "v1.2.3", "", NAMES_LISTED_AT_FIRST=json.dumps(listed))
+    the shell would read as a pattern over the step's own directory, which holds the three.
+    The draft holds them, in the listing and when read by its id: no wait, and the unfinished
+    line at once."""
+    held_ = json.dumps([{"name": name, "size": 1} for name in listed])
+    done, calls = run(tmp_path, "v1.2.3", "", CHANGED_ONCE_MADE=f".assets = {held_}")
     assert done.returncode == 1
     assert the_error(done) == DRAFT.format(tag="v1.2.3")
-    assert slept(calls) == [] and after(calls, "gh release create") == [LISTING]
+    assert slept(calls) == []
+    assert after(calls, "gh release create") == [LISTING, READ.format(id=88)]
     assert len(writes(calls)) == 1 and held(tmp_path)[0]["draft"] is True
+
+
+def test_a_file_name_the_listing_alone_shows_is_not_judged(tmp_path):
+    """The listing's names only say whether to wait. A name it shows that the draft does not
+    hold stops no wait and no publication: the read by its id says what the draft holds."""
+    done, calls = run(
+        tmp_path, "v1.2.3", "", NAMES_LISTED_AT_FIRST=json.dumps([WHEEL, "other.txt"])
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert slept(calls) == [] and [(r["id"], r["draft"]) for r in held(tmp_path)] == [(88, False)]
 
 
 @pytest.mark.parametrize("names", [[SUMS, WHEEL], [WHEEL], []], ids=["two", "one", "none"])
@@ -262,12 +280,13 @@ def test_a_draft_found_by_the_first_look_with_some_of_the_names_is_compared_at_o
     done, calls = run(tmp_path, "v1.2.3", "", existing, {}, NAMES_LISTED_AT_FIRST=json.dumps(names))
     assert done.returncode == 1
     assert the_error(done) == DRAFT.format(tag="v1.2.3")
-    assert slept(calls) == [] and looks(calls) == [LISTING] and held(tmp_path) == [existing]
+    assert slept(calls) == [] and held(tmp_path) == [existing]
+    assert looks(calls) == [LISTING, READ.format(id=77)]
 
 
 def test_the_looks_for_the_draft_and_for_its_names_are_the_same_ten(tmp_path):
     """Not listed at five looks, then listed with one name: the tenth look is the last, and
-    the step goes on to the comparison, which stops on the unfinished line."""
+    the step goes on to the read by id, which finds the draft whole, and publishes it."""
     done, calls = run(
         tmp_path,
         "v1.2.3",
@@ -275,17 +294,18 @@ def test_the_looks_for_the_draft_and_for_its_names_are_the_same_ten(tmp_path):
         MADE_SHOWN_FROM_LOOK="6",
         NAMES_LISTED_AT_FIRST=json.dumps([WHEEL]),
     )
-    assert done.returncode == 1 and the_error(done) == DRAFT.format(tag="v1.2.3")
-    assert len(slept(calls)) == LOOKS - 1 and len(writes(calls)) == 1
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert len(slept(calls)) == LOOKS - 1 and len(writes(calls)) == 2
 
 
 @pytest.mark.parametrize("for_looks", ["1", ""], ids=["one look", "every look"])
-def test_a_draft_edited_as_soon_as_it_is_made_and_short_of_names_is_waited_for_then_stopped_on(
+def test_a_draft_edited_as_soon_as_it_is_made_and_short_of_names_stops_at_the_first_look(
     tmp_path, for_looks
 ):
-    """The two together: the names are waited for first, since the title and the notes are
-    compared only when the look is done, and then the edit stops the job, with the line of an
-    edited draft. Nothing is downloaded and nothing published, with the wait or without."""
+    """The two together. Every look judges the title and the notes it shows, so the edit stops
+    the job at the first look after the creation, whatever the names would have waited for
+    (sixth report, must-fix 2: such a draft was waited for, and went on when a later listing
+    showed it restored). Nothing is downloaded and nothing published."""
     done, calls = run(
         tmp_path,
         "v1.2.3",
@@ -296,20 +316,19 @@ def test_a_draft_edited_as_soon_as_it_is_made_and_short_of_names_is_waited_for_t
     )
     assert done.returncode == 1
     assert the_error(done) == DIFFERS.format(tag="v1.2.3", state="a draft", what="notes")
-    assert len(slept(calls)) == (1 if for_looks else LOOKS - 1)
+    assert slept(calls) == [] and after(calls, "gh release create") == [LISTING]
     assert [line.split()[1:3] for line in writes(calls)] == [["release", "create"]]
     assert not any(line.startswith("gh release download") for line in calls)
 
 
 def test_a_draft_a_person_published_with_some_of_the_names_listed_is_not_waited_for(tmp_path):
-    """The wait is for this run's draft. Published meanwhile, it is a release, and the names
-    listed for it are compared at once, as before."""
+    """The wait is for this run's draft. Published meanwhile with one file, it is a release,
+    and what it holds is judged at once, on the read by its id."""
     done, calls = run(
         tmp_path,
         "v1.2.3",
         "",
-        NAMES_LISTED_AT_FIRST=json.dumps([WHEEL]),
-        CHANGED_ONCE_MADE=".draft = false",
+        CHANGED_ONCE_MADE=".draft = false | .assets |= .[:1]",
     )
     assert done.returncode == 1 and slept(calls) == []
     assert the_error(done).startswith(REFUSED.format(tag="v1.2.3") + f"its files are [{WHEEL}]")
@@ -335,6 +354,7 @@ def test_a_publication_listed_from_the_k_th_look_after_it_is_compared_and_the_jo
         LISTING,
         *[f"sleep {APART}", LISTING] * (shown_from - 1),
         f"gh release download {tag} --dir {tmp_path}/published",
+        READ.format(id=88 if not existing else 77),
     ]
     (public,) = held(tmp_path)
     assert public["draft"] is False and len(writes(calls)) == (1 if existing else 2)
@@ -516,15 +536,17 @@ def test_the_readme_says_the_wait_with_the_step_s_two_values_and_the_row_says_wh
         " release after the creation, or this run's draft with some, not all, of its three file"
         " names; this run's release still a draft after the publication): at most ten looks,"
         " three seconds apart, and then the job goes on as it would have at once: it stops, or"
-        " compares the draft's files, and a re-run starts from what is listed then. Nothing"
-        " else is waited for, and the first look of a run never waits."
+        " reads the draft by its id, and a re-run starts from what is listed then. Nothing else"
+        " is waited for: every look stops at once on a mark, a flag, a title or notes that are"
+        " not this run's, and the first look of a run never waits."
     ) in readme
     means, next_step = cells("GitHub does not list the release for … as this job has just left it")
     assert means == (
         "After the job made the draft, the listing showed no release for the tag at each of its"
         " ten looks, three seconds apart; or after it published the draft, the listing showed"
-        " no release, or at each of those looks still a draft: GitHub's listing is further"
-        " behind than the job waits, or a person deleted the release in that moment"
+        " no release, or at each of those looks still a draft; or the release, read by its id"
+        " at the end, was a draft again: GitHub's listing is further behind than the job waits,"
+        " or a person deleted the release or made it a draft in that moment"
     )
     assert next_step == (
         "Re-run the job, which starts from what is listed then: it makes the draft if there is"

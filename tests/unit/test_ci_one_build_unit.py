@@ -277,9 +277,15 @@ def attestation_check(tmp_path, **env: str):
     return done, calls, errors
 
 
+NOT_PLAIN = "of a version it does not print as three plain numbers"
+
+
 @pytest.mark.parametrize("version", ["2.102.0", "2.105.0", "2.110.12", "3.0.0"])
-def test_a_gh_at_or_after_the_fix_of_both_advisories_checks_the_attestation(tmp_path, version):
-    done, calls, _ = attestation_check(tmp_path, GH_VERSION=f"gh version {version} (2026-11-01)")
+@pytest.mark.parametrize("built", [" (2026-11-01)", ""], ids=["dated", "with no date"])
+def test_a_gh_at_or_after_the_fix_of_both_advisories_checks_the_attestation(
+    tmp_path, version, built
+):
+    done, calls, _ = attestation_check(tmp_path, GH_VERSION=f"gh version {version}{built}")
     assert done.returncode == 0
     assert calls[0] == "gh [--version]" and calls[1].startswith("gh [attestation] [verify]")
 
@@ -290,8 +296,18 @@ def test_a_gh_at_or_after_the_fix_of_both_advisories_checks_the_attestation(tmp_
         ("gh version 2.101.0 (2026-09-15)", "2.101.0"),
         ("gh version 2.51.3 (2024-06-01)", "2.51.3"),
         ("gh version 1.999.0 (2021-01-01)", "1.999.0"),
-        ("gh version (devel)", "of a version it does not print"),
-        ("", "of a version it does not print"),
+        ("gh version (devel)", NOT_PLAIN),
+        ("", NOT_PLAIN),
+        # A pre-release of the tool is not that release (sixth report): three numbers, and
+        # then a space or the end of the line, or the version is not taken.
+        ("gh version 2.102.0-rc.1 (2026-10-01)", NOT_PLAIN),
+        ("gh version 2.102.0-rc.1", NOT_PLAIN),
+        ("gh version 2.105.0-beta.2 (2026-11-01)", NOT_PLAIN),
+        ("gh version 2.102.0rc1 (2026-10-01)", NOT_PLAIN),
+        ("gh version 2.102.0+local (2026-10-01)", NOT_PLAIN),
+        ("gh version 2.102.0.1 (2026-10-01)", NOT_PLAIN),
+        ("gh version 2.102 (2026-10-01)", NOT_PLAIN),
+        ("gh version 3 (2027-01-01)", NOT_PLAIN),
     ],
 )
 def test_a_gh_before_2_102_0_is_not_trusted_with_the_check(tmp_path, printed, said):

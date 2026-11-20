@@ -269,10 +269,11 @@ def test_a_claim_of_outside_text_says_so_with_each_note_it_cites(env):
 
 
 def test_a_long_claim_is_cut_at_the_bound_and_says_so_with_the_line_that_holds_the_term(env):
-    """Past relations.TEXT_MAX characters a claim's text is its first TEXT_MAX and `text_cut`,
-    with the line of its passage that holds the term (a window of a line longer than
-    LINE_MAX, and `line_cut`); `page` gives the claim whole. A claim that is not cut has none
-    of the three fields, and everything else a claim says is what a hit of `recall` says."""
+    """Past relations.TEXT_MAX characters a claim gives `text_cut` and, in place of its text,
+    the line of its passage that holds the term (a window of a line longer than LINE_MAX, and
+    `line_cut`): no head of the claim beside it. `page` gives the claim whole. A claim within
+    the bound gives its text and none of the three fields, and everything else a claim says
+    is what a hit of `recall` says."""
     long = "Brook pins `quill.lock` and then " + "waits for the nightly log, " * 300 + "stops."
     note(env, "Asked", "Ada reads `quill.lock` daily.\n")
     note(env, "Long", long + "\n")
@@ -283,13 +284,12 @@ def test_a_long_claim_is_cut_at_the_bound_and_says_so_with_the_line_that_holds_t
     there = reason["there"]
     (hit,) = answer(env.client, env.key, "recall", query="pins", project="ops")["hits"]
     assert hit["text"] == long and len(long) > 8_000
-    assert there["text"] == long[: relations.TEXT_MAX] and there["text_cut"] is True
+    assert "text" not in there and there["text_cut"] is True
     assert there["line"] == long[: relations.LINE_MAX] and there["line_cut"] is True
     for field in ("claim_id", "passage_ids", "outside", "written_by", "written_at"):
         assert there[field] == hit[field], field
     assert list(there) == [
         "claim_id",
-        "text",
         "text_cut",
         "line",
         "line_cut",
@@ -318,7 +318,7 @@ def test_a_claim_cut_whose_line_is_short_gives_the_line_whole_and_no_mark_on_it(
         "why"
     ][0]["there"]
     assert (there["text_cut"], there["line"]) == (True, "Ada pins `quill.lock`.")
-    assert "line_cut" not in there and "quill.lock" not in there["text"]
+    assert "line_cut" not in there and "text" not in there
 
 
 def test_a_long_claim_that_mentions_the_page_says_it_is_cut_and_gives_the_line_that_names_it(env):
@@ -330,9 +330,9 @@ def test_a_long_claim_that_mentions_the_page_says_it_is_cut_and_gives_the_line_t
     (reason,) = found["related"][0]["why"]
     there = reason["there"]
     assert reason["kind"] == "mentioned_by" and "here" not in reason
-    assert (len(there["text"]), there["text_cut"]) == (relations.TEXT_MAX, True)
+    assert "text" not in there and there["text_cut"] is True
     assert there["line"] == "Then she opens the Quill ledger." and "line_cut" not in there
-    assert list(there)[:4] == ["claim_id", "text", "text_cut", "line"]
+    assert list(there)[:3] == ["claim_id", "text_cut", "line"]
     # a line longer than LINE_MAX: a window of it around the title, marked
     note(env, "Wide", "Ada waits for the nightly log, " * 40 + "then opens the Quill ledger.\n")
     wide = [
@@ -343,7 +343,25 @@ def test_a_long_claim_that_mentions_the_page_says_it_is_cut_and_gives_the_line_t
         if page["page"] == "wide"
     ]
     assert wide[0]["line_cut"] is True and len(wide[0]["line"]) == relations.LINE_MAX
-    assert wide[0]["line"].endswith("then opens the Quill ledger.")
+    assert wide[0]["line"].endswith("then opens the Quill ledger.") and "text" not in wide[0]
+
+
+@pytest.mark.parametrize("held", [relating.MARKS[0], relating.MARKS[1], "\x00"])
+def test_a_claim_cut_that_no_line_can_be_given_of_gives_its_head_as_text(env, held):
+    """The one case: a claim that mentions the page and holds a mark of the index or a null
+    character, where the index cannot say which line names the title. It gives its first
+    TEXT_MAX characters as `text`, with `text_cut`, and no line; over MCP and REST alike."""
+    whole = "Ada waits for the nightly log. " * 30 + f"She opens {held} the Quill ledger."
+    Memory(env.store, lint_gate).note("ops", "Brook balances it.\n", title="Quill ledger")
+    Memory(env.store, lint_gate).note("ops", whole + "\n", title="Long")
+    found = answer(env.client, env.key, "related", project="ops", slug="quill-ledger")
+    assert rest(env, "quill-ledger").json() == found
+    (reason,) = found["related"][0]["why"]
+    there = reason["there"]
+    assert reason["kind"] == "mentioned_by"
+    assert (there["text"], there["text_cut"]) == (whole[: relations.TEXT_MAX], True)
+    assert "line" not in there and "line_cut" not in there
+    assert list(there)[:4] == ["claim_id", "text", "text_cut", "passage_ids"]
 
 
 def test_a_claim_folded_from_many_passages_names_the_first_eight_and_counts_the_rest(env):
@@ -609,9 +627,9 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
 def test_the_tools_description_says_a_long_claim_is_cut_and_that_page_gives_it_whole():
     said = " ".join(tools()["related"].description.split())
     assert (
-        "A claim longer than 600 characters is given cut (`text_cut`), with the line that"
-        " holds the term or names the title (`line`; `line_cut` when that is cut to 400), and"
-        " `page` gives it whole."
+        "A claim longer than 600 characters has `text_cut` and, in place of `text`, `line`: the"
+        " line that holds the term or names the title (`line_cut` when that is cut to 400), or"
+        " its first 600 characters as `text` where no line can be told; `page` gives it whole."
     ) in said
     assert (relations.TEXT_MAX, relations.LINE_MAX) == (600, 400)
     assert "A smaller `limit` gives a smaller answer." in said

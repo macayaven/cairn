@@ -122,7 +122,8 @@ class Stated(NamedTuple):
     holds the term, where the term's fact stands (relations.line_of); for one that mentions
     the page, the line of its own text that names the title, where the index matched it
     (`_named`). `line_cut` says that line is given in part. A claim that is not cut has no
-    line."""
+    line. An answer gives a claim cut by its line and leaves its first characters out; it
+    gives them only when there is no line (cairn.memory)."""
 
     claim_id: str
     text: str

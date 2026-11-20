@@ -123,24 +123,27 @@ gives no reason), and the claim of this page and of the other that state it; or 
 "mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that holds
 this page's title. This version does not list the pages a page mentions. Each claim is
 {"claim_id", "text", "passage_ids", "outside", "written_by", "written_at"} (and
-`written_by_more`), as a hit of `recall` carries them, but for its text: whole up to
-relations.TEXT_MAX characters, and past that its first TEXT_MAX and "text_cut": true (`page`
-gives the claim whole). A claim cut that states a shared term has "line" too, the line of
-the passage it cites that holds the term, taken where the term's fact stands and never by
-a search of the text; a line longer than relations.LINE_MAX is given as LINE_MAX characters
-of it that hold the term, with "line_cut": true. A claim cut that mentions the page has
-"line" the same way: the line of its own text that names the title, where the index
-matched it (cairn.store.relating._named; two lines, with their line break, when the
-title's words stand on two). A claim that is not cut has none of the three fields.
-`passage_ids` names the first
-relations.PASSAGES_MAX passages a claim cites, and "passage_ids_more" counts the others,
-only when there are more (a claim a tidy folded from many; who wrote it is still said of
-every note it cites). So an answer's size is bounded by constants: `limit` pages of
-relations.WHY_MAX reasons, each a term of relations.TERM_MAX characters at most and two
-claims of TEXT_MAX and LINE_MAX characters, PASSAGES_MAX passages and WRITTEN_BY_MAX
-writers. The largest answer they allow at `limit` 20 is 353,924 bytes over REST and 468,625
-over MCP for text of one byte a character, and 1,466,924 and 1,804,225 whatever the text
-holds; at the default `limit` of 5, 88,949 and 117,775, and 367,949 and 452,575
+`written_by_more`), as a hit of `recall` carries them, but for a claim longer than
+relations.TEXT_MAX characters, which is given in place of its text (`_claim_text`; `page`
+gives the claim whole): "text_cut": true and "line", the line that shows what the reason
+says. For a claim that states a shared term that is the line of the passage it cites that
+holds the term, taken where the term's fact stands and never by a search of the text; for
+a claim that mentions the page, the line of its own text that names the title, where the
+index matched it (cairn.store.relating._named; two lines, with their line break, when the
+title's words stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX
+characters of it that hold the term or the title, with "line_cut": true. Only a long claim
+of which no line can be told (one that mentions the page and holds a mark of the index or
+a null character) gives its first TEXT_MAX characters as "text", with "text_cut": true and
+no line. So a claim has its text whole, or "text_cut" with a line, or "text_cut" with a
+head: never a head beside a line. `passage_ids` names the first relations.PASSAGES_MAX
+passages a claim cites, and "passage_ids_more" counts the others, only when there are more
+(a claim a tidy folded from many; who wrote it is still said of every note it cites). So
+an answer's size is bounded by constants: `limit` pages of relations.WHY_MAX reasons, each
+a term of relations.TERM_MAX characters at most and two claims of TEXT_MAX characters of
+text or LINE_MAX of a line, PASSAGES_MAX passages and WRITTEN_BY_MAX writers. The largest
+answer they allow at `limit` 20 is 302,804 bytes over REST and 413,185 over MCP for text
+of one byte a character, and 1,175,804 and 1,460,785 whatever the text holds; at the
+default `limit` of 5, 76,169 and 103,915, and 295,169 and 366,715
 (tests/unit/test_related_size_unit.py builds that answer from the constants, and checks
 answers made from claims of 322,320 characters against it field by field). No answer shows
 a weight.
@@ -971,13 +974,18 @@ def _held_by(reason: Reason, stated: Mapping[Any, dict[str, Any]]) -> dict[str, 
     return {"pages": reason.pages, "here": stated[reason.here]}
 
 
-def _claim_cut(claim: relating.Stated) -> dict[str, Any]:
-    """What a claim given by `related` says when its text is cut (relations.TEXT_MAX):
-    `text_cut`; for a term it states, `line`, the line of its passage that holds the term;
-    and `line_cut` when that line is given in part. Nothing for a claim given whole."""
-    said: dict[str, Any] = {"text_cut": True} if claim.cut else {}
-    if claim.line is not None:
-        said["line"] = claim.line
+def _claim_text(claim: relating.Stated) -> dict[str, Any]:
+    """What `related` gives of a claim's text, one of three and never a head beside a line.
+    A claim within relations.TEXT_MAX characters: `text`, whole. A longer one: `text_cut`
+    and, in place of its text, `line`, the line that holds the term it states or names the
+    title it mentions, with `line_cut` when that line is given in part. A longer one of
+    which no line can be told (cairn.store.relating._named): `text_cut` and its first
+    TEXT_MAX characters as `text`."""
+    if not claim.cut:
+        return {"text": claim.text}
+    if claim.line is None:
+        return {"text": claim.text, "text_cut": True}
+    said: dict[str, Any] = {"text_cut": True, "line": claim.line}
     if claim.line_cut:
         said["line_cut"] = True
     return said
@@ -1553,8 +1561,7 @@ class Memory:
         stated = {
             claim: {
                 "claim_id": claim.claim_id,
-                "text": claim.text,
-                **_claim_cut(claim),
+                **_claim_text(claim),
                 **_passages_named(claim.span_ids),
                 "outside": any(entry["outside"] for entry in entries),
                 **_writers(entries),

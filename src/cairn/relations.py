@@ -41,17 +41,19 @@ heaviest first, equal weights by slug, and each with its WHY_MAX weightiest reas
 weights: a mention, then the terms by kind and text) and how many more there are. No answer
 shows a weight: the order is the answer, and each reason says how many pages hold its term.
 
-What a reason gives of a claim: its text whole up to TEXT_MAX characters, and past that
-its first TEXT_MAX, marked cut. A reader of a claim cut must still see the term stated, so
-a claim cut that states a shared term is given with the line of its passage that holds the
-term (`line_of`): the line the term's fact stands on (`placed`: the fact's own start and
-end, never a second search of the text), whole up to LINE_MAX characters, else LINE_MAX
-characters of it around the term. A claim cut that mentions the page is given the same
-way with the line of its own text that names the title, where the index matched it
-(cairn.store.relating). And the passages it cites: the first PASSAGES_MAX, and
-a count of the others. A claim cites one passage as it is compiled; a tidy folds claims of
-the same text into one that cites every passage of theirs, without a bound, and the claim
-is read by its first.
+What a reason gives of a claim: its text whole up to TEXT_MAX characters. A longer claim
+is marked cut, and what its reader must see is the term stated, not the claim's first
+words: so a claim cut that states a shared term is given by the line of its passage that
+holds the term (`line_of`), in place of its text: the line the term's fact stands on
+(`placed`: the fact's own start and end, never a second search of the text), whole up to
+LINE_MAX characters, else LINE_MAX characters of it around the term. A claim cut that
+mentions the page is given the same way by the line of its own text that names the title,
+where the index matched it (cairn.store.relating). Only where the index cannot say which
+line that is does a claim cut give its first TEXT_MAX characters instead; an answer never
+holds a head beside a line (cairn.memory words it). And the passages it cites: the first
+PASSAGES_MAX, and a count of the others. A claim cites one passage as it is compiled; a
+tidy folds claims of the same text into one that cites every passage of theirs, without a
+bound, and the claim is read by its first.
 
 When a page holds more terms than are looked up (cairn.store.relating.TERMS_MAX), the
 shortest are looked up first (`looked_up_before`): the terms a few pages share are short (a

@@ -407,12 +407,15 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       from either page. `pages` is how many pages hold the term, exactly: a term whose pages
       are not all known gives no reason. `here` and `there` are claims as a hit of `recall`
       carries one: "claim_id", "text", "passage_ids", "outside", "written_by", "written_at";
-      but a text longer than 600 characters is its first 600 with "text_cut": true, and beside
-      it "line": for a claim that states the term, the line of the passage it cites that holds
-      the term; for a claim that mentions the page, the line of its own text that names the
-      title, where the index matched it (two lines, with their line break, when the title's
-      words stand on two); 400 characters of a longer line, with "line_cut": true. `page`
-      gives the claim whole; a claim that is not cut has none of the three fields.
+      but a claim longer than 600 characters gives "text_cut": true and, in place of its
+      "text", "line": for a claim that states the term, the line of the passage it cites that
+      holds the term; for a claim that mentions the page, the line of its own text that names
+      the title, where the index matched it (two lines, with their line break, when the
+      title's words stand on two); 400 characters of a longer line, with "line_cut": true.
+      Only a long claim of which no line can be told (it mentions the page and holds a mark of
+      the index or a null character) gives its first 600 characters as "text", with
+      "text_cut": true and no line: never a head beside a line. `page` gives the claim whole;
+      a claim within 600 characters gives its "text" whole and none of the other three fields.
       "passage_ids" names the first 8 passages a claim cites, and "passage_ids_more" counts
       the rest, only when there are more (a claim a tidy folded from many). `why` holds 3
       reasons at most and `more` counts the rest; `limit` is 1 to 20, and any other is a tool

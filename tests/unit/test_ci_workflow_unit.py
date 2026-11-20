@@ -1482,14 +1482,16 @@ def test_release_builds_nothing_installs_nothing_and_checks_out_nothing():
     assert RELEASE["if"] == PACKAGE["if"]
     assert RELEASE["permissions"] == {"contents": "write"}
     steps = RELEASE["steps"]
+    # (The first asks the runner's gh for its version: test_ci_release_gh_version_unit.)
     assert [s.get("uses", "run").split("@")[0] for s in steps] == [
+        "run",
         "actions/download-artifact",
         "run",
         "run",
     ]
     configuration = yaml.safe_dump(RELEASE)
     assert not re.search(r"\buv\b|setup-uv|\bpip\b|actions/checkout", configuration)
-    download = steps[0]
+    download = steps[1]
     assert download["with"] == {"name": "release", "path": "${{ runner.temp }}/release"}
 
 
@@ -1526,7 +1528,8 @@ THE_FILES = ["cairn_memory-1.2.3-py3-none-any.whl", "cairn_memory-1.2.3.tar.gz",
 
 
 def test_the_check_passes_one_wheel_and_one_source_archive_of_the_version(tmp_path):
-    check = RELEASE["steps"][1]
+    check = RELEASE["steps"][2]
+    assert check["name"] == "Check the files"
     done = run_release_step(tmp_path, check, THE_FILES)
     assert (done.returncode, done.stderr) == (0, ""), done.stdout
 
@@ -1544,13 +1547,13 @@ def test_the_check_passes_one_wheel_and_one_source_archive_of_the_version(tmp_pa
     ],
 )
 def test_the_check_refuses_anything_else(tmp_path, files):
-    done = run_release_step(tmp_path, RELEASE["steps"][1], files)
+    done = run_release_step(tmp_path, RELEASE["steps"][2], files)
     assert done.returncode == 1
     assert "::error::" in done.stdout
 
 
 def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
-    create = RELEASE["steps"][2]
+    create = RELEASE["steps"][3]
     assert create["name"] == "Create the release"
     assert create["env"] == {
         "GH_TOKEN": "${{ github.token }}",
@@ -1618,7 +1621,7 @@ def test_the_write_token_reaches_the_step_that_makes_the_release_and_nothing_els
     steps = RELEASE["steps"]
     assert [step["name"] for step in steps if reaches_the_token(step)] == ["Create the release"]
     # The model sees a token handed to the download explicitly, and setup-uv's implicit one.
-    download = steps[0]
+    download = steps[1]
     given = {**download, "with": {**download["with"], "github-token": "${{ github.token }}"}}
     assert reaches_the_token(given)
     uv = next(s for s in PACKAGE["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))

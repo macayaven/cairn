@@ -432,10 +432,22 @@ FORBIDDEN = {
     "an edit of a release": r"\bgh\s+release\s+edit\b",
     "another program that speaks HTTP": r"\b(curl|wget)\b",
 }
-# Every line of the job that names gh, whole, in the order the text has them: the listing (a
-# read: no method, field or input), the download, the creation of a draft, and the publication,
-# the one write to a release that exists. Any other line that names it is one too many.
+# Every line of the job that names gh, whole, in the order the text has them: the first step's
+# four, which find gh and read its version, and say so when it is missing or too old; then the
+# listing (a read: no method, field or input), the download, the creation of a draft, and the
+# publication, the one write to a release that exists. Any other line that names it is one too
+# many.
 GH_LINES = [
+    "if ! command -v gh > /dev/null; then",
+    'echo "::error::gh is not on this runner, so the GitHub release for $GITHUB_REF_NAME cannot'
+    " be made; install GitHub CLI 2.102.0 or later on the runner CAIRN_RELEASE_RUNNER names, or"
+    " unset it to use GitHub's\"",
+    "version=\"$(gh --version | sed -n 's/^gh version"
+    " \\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p')\"",
+    'echo "::error::gh on this runner is ${version:-of a version it does not print}, before'
+    " 2.102.0, the version in whose source this job's handling of a draft was read, so it is not"
+    " trusted with the release; update GitHub CLI on the runner CAIRN_RELEASE_RUNNER names, or"
+    " unset it to use GitHub's\"",
     'gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] |'
     ' select(.tag_name == \\"$GITHUB_REF_NAME\\") | [.id, .draft, .prerelease, ((.body // \\"\\")'
     ' | contains(\\"$mark\\")), (.name | . == null or . == \\"\\" or . =='
@@ -567,7 +579,7 @@ def test_gh_is_asked_for_a_draft_so_the_release_it_makes_is_never_its_own_to_del
     243, 313), a draft's like any other. Nothing here can run gh's code: the test holds the
     flag on the job's line, the README's sentence, the step's own sentences, and that the
     sentence about gh deleting its release is gone."""
-    create, publish = GH_LINES[2:]
+    create, publish = GH_LINES[-2:]
     assert re.search(r"^gh release create \S+ --draft ", create)
     assert create.endswith('"${files[@]}"')
     assert publish.startswith('gh api --method PATCH "repos/$GH_REPO/releases/$id" ')

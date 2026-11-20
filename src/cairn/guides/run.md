@@ -313,7 +313,7 @@ After a workspace, a project or a note is deleted, `serve` compacts the database
 
 ## A graph to explore
 
-`serve --graph-explorer` makes a project's **Graph** page one to explore: its pages or its notes a batch of at most 20 at a time, with **Next batch** for the rest, a search within the view, a page's claims, the passages a claim cites, and a page for each note. That page is the only one that runs a script, cairn's own, and it works without it. Without the option the graph page is drawn by the server alone and runs no script.
+By default `serve` makes a project's **Graph** page one to explore: its pages or its notes a batch of at most 20 at a time, with **Next batch** for the rest, a search within the view, a page's claims, the passages a claim cites, and a page for each note. That page is the only one that runs a script, cairn's own, and it works without it. To run no script on any page, pass `--no-graph-explorer`: the graph page is then drawn by the server alone and runs no script (`--graph-explorer` is still accepted).
 
 ## Numbers to watch
 

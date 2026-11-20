@@ -612,17 +612,19 @@ def graph_markup(html: str) -> SimpleNamespace:
 
 
 def test_with_the_graph_explorer_the_graph_page_alone_loads_cairns_own_script(store):
-    """security.md, "The web pages": "No page runs a script. With `serve --graph-explorer` a
-    project's graph page alone loads one script, cairn's own, by a nonce made for that page
-    and with its hash, and the page still works without it.\""""
+    """security.md, "The web pages": "Every page except a project's **Graph** page runs no
+    script. By default `serve` loads one script on that page alone, cairn's own, by a nonce
+    made for that page and with its hash, and the page still works without it; with `serve
+    --no-graph-explorer` no page runs a script.\""""
     import base64
     import hashlib
 
     guide_says(
         "security.md",
-        "No page runs a script. With `serve --graph-explorer` a project's graph page alone"
-        " loads one script, {{name}}'s own, by a nonce made for that page and with its hash,"
-        " and the page still works without it.",
+        "Every page except a project's **Graph** page runs no script. By default `serve` loads"
+        " one script on that page alone, {{name}}'s own, by a nonce made for that page and with"
+        " its hash, and the page still works without it; with `serve --no-graph-explorer` no"
+        " page runs a script.",
     )
     world = graph_world(store)
     own = (files("cairn") / "static" / "graph-view.js").read_bytes()  # shipped in the package
@@ -654,22 +656,23 @@ def test_with_the_graph_explorer_the_graph_page_alone_loads_cairns_own_script(st
 def test_the_graph_is_drawn_by_the_server_and_listed_again_in_both_states(store):
     """security.md, "The web pages": "A project's page links its **Graph**: its pages, the
     claims on them, the passages those claims cite and the notes the passages come from,
-    drawn by the server and listed again as text below the drawing. Without `--graph-explorer`
-    the page shows at most 20 pages; with it, one view at a time (the pages, the notes, a
-    page's claims or a claim's passages), at most 20 to a batch, with **Next batch** for the
-    rest, and each note has a page of its own. A key reads at most 20 pages of the graph at
-    `GET /api/graph?project=<name>`, an agent at the MCP resource
-    `graph://project/<name>/<limit>`, and a project out of reach is answered as one that does
-    not exist.\""""
+    drawn by the server and listed again as text below the drawing. By default under `serve`
+    it shows one view at a time (the pages, the notes, a page's claims or a claim's
+    passages), at most 20 to a batch, with **Next batch** for the rest, and each note has a
+    page of its own; with `--no-graph-explorer` the page shows at most 20 pages on one static
+    sheet. A key reads at most 20 pages of the graph at `GET /api/graph?project=<name>`, an
+    agent at the MCP resource `graph://project/<name>/<limit>`, and a project out of reach is
+    answered as one that does not exist.\""""
     guide_says(
         "security.md",
-        "drawn by the server and listed again as text below the drawing. Without"
-        " `--graph-explorer` the page shows at most 20 pages; with it, one view at a time (the"
-        " pages, the notes, a page's claims or a claim's passages), at most 20 to a batch, with"
-        " **Next batch** for the rest, and each note has a page of its own. A key reads at most"
-        " 20 pages of the graph at `GET /api/graph?project=<name>`, an agent at the MCP"
-        " resource `graph://project/<name>/<limit>`, and a project out of reach is answered as"
-        " one that does not exist.",
+        "drawn by the server and listed again as text below the drawing. By default under"
+        " `serve` it shows one view at a time (the pages, the notes, a page's claims or a"
+        " claim's passages), at most 20 to a batch, with **Next batch** for the rest, and each"
+        " note has a page of its own; with `--no-graph-explorer` the page shows at most 20"
+        " pages on one static sheet. A key reads at most 20 pages of the graph at"
+        " `GET /api/graph?project=<name>`, an agent at the MCP resource"
+        " `graph://project/<name>/<limit>`, and a project out of reach is answered as one that"
+        " does not exist.",
     )
     world = graph_world(store, pages=23)
     ada, cy = cookie(world.sessions["ada"]), cookie(world.sessions["cy"])
@@ -712,25 +715,26 @@ def test_the_graph_is_drawn_by_the_server_and_listed_again_in_both_states(store)
 
 
 def test_run_md_says_what_the_graph_explorer_switches_on(store, tmp_path, monkeypatch, capsys):
-    """run.md, "A graph to explore": "`serve --graph-explorer` makes a project's **Graph**
-    page one to explore: its pages or its notes a batch of at most 20 at a time, with **Next
+    """run.md, "A graph to explore": "By default `serve` makes a project's **Graph** page
+    one to explore: its pages or its notes a batch of at most 20 at a time, with **Next
     batch** for the rest, a search within the view, a page's claims, the passages a claim
     cites, and a page for each note. That page is the only one that runs a script, cairn's
-    own, and it works without it. Without the option the graph page is drawn by the server
-    alone and runs no script.\" The batches, the views and the script are pinned by the two
-    tests above; here, the option and the search."""
+    own, and it works without it. To run no script on any page, pass `--no-graph-explorer`:
+    the graph page is then drawn by the server alone and runs no script (`--graph-explorer`
+    is still accepted).\" The batches, the views and the script are pinned by the two tests
+    above; here, the options and the search."""
     import uvicorn
 
     from cairn.web import cli
 
     guide_says(
         "run.md",
-        "`serve --graph-explorer` makes a project's **Graph** page one to explore: its pages or"
-        " its notes a batch of at most 20 at a time, with **Next batch** for the rest, a search"
+        "By default `serve` makes a project's **Graph** page one to explore: its pages or its"
+        " notes a batch of at most 20 at a time, with **Next batch** for the rest, a search"
         " within the view, a page's claims, the passages a claim cites, and a page for each"
         " note. That page is the only one that runs a script, cairn's own, and it works without"
-        " it. Without the option the graph page is drawn by the server alone and runs no"
-        " script.",
+        " it. To run no script on any page, pass `--no-graph-explorer`: the graph page is then"
+        " drawn by the server alone and runs no script (`--graph-explorer` is still accepted).",
     )
     made = []
 
@@ -740,13 +744,14 @@ def test_run_md_says_what_the_graph_explorer_switches_on(store, tmp_path, monkey
 
     monkeypatch.setattr(cli, "create_app", note)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("serve started"))
-    for argv in ([], ["--graph-explorer"]):
+    for argv in ([], ["--graph-explorer"], ["--no-graph-explorer"]):
         with pytest.raises(SystemExit):
             server.main(["serve", "--db", str(tmp_path / "kb.db"), *argv])
-    assert made == [False, True]
+    assert made == [True, True, False]
     with pytest.raises(SystemExit):
         server.main(["serve", "--help"])
-    assert "--graph-explorer" in capsys.readouterr().out
+    helped = capsys.readouterr().out
+    assert "--graph-explorer" in helped and "--no-graph-explorer" in helped
     world = graph_world(store, pages=3)
     with TestClient(create_app(store, public_url=BASE, graph_explorer=True), base_url=BASE) as c:
         found = c.get("/b/ops/graph?q=page%202", headers=cookie(world.sessions["ada"])).text

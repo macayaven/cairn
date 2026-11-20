@@ -8,8 +8,8 @@ answered as one that does not exist (404); a reach larger than cairn.graph's bou
 the same for every project. Each request is one access-log record named
 `graph`. No MCP tool draws the graph.
 
-With the explorer on (G2, `serve --graph-explorer`; graph_routes(explorer=True)) /api/graph
-is the same route and code as above, and GET /b/<project>/graph is the explorer
+With the explorer on (G2, `serve`'s default unless `--no-graph-explorer`;
+graph_routes(explorer=True)) /api/graph is the same route and code as above, and GET
 (cairn.graph.graph_neighbourhood, drawn by cairn.web.graph_view.render_explorer): `focus`
 is the view, "project" (its pages, the default), "notes", "page:<slug>" (a page's claims) or
 a claim's own focus (its passages and their notes); `q` keeps what matches in the batch;

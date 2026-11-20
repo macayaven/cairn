@@ -89,3 +89,21 @@ def test_the_docker_options_say_how_to_switch_the_tidy_off():
     assert "## Tidy pages without a model" in (README.parent / "docs/guides/run.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_the_docker_options_say_how_to_switch_the_graph_explorer_off():
+    text = README.read_text(encoding="utf-8")
+    (line,) = [line for line in text.splitlines() if line.startswith("- **No graph script:**")]
+    assert "add `--no-graph-explorer`" in line
+    assert "docs/guides/run.md#a-graph-to-explore" in line
+    off = cli._parser().parse_args(
+        ["serve", "--db", "/data/cairn.db", "--host", "0.0.0.0", "--no-graph-explorer"]
+    )
+    assert off.no_graph_explorer is True and off.graph_explorer is False
+    on = cli._parser().parse_args(
+        ["serve", "--db", "/data/cairn.db", "--host", "0.0.0.0", "--graph-explorer"]
+    )
+    assert on.graph_explorer is True and on.no_graph_explorer is False
+    assert "## A graph to explore" in (README.parent / "docs/guides/run.md").read_text(
+        encoding="utf-8"
+    )

@@ -9,8 +9,8 @@ fails closed here. Pages are visited by slug, claims and citations in stored ord
 latest page version is read. A limit stops traversal, never adds dangling edges, and is
 reported as truncation. No totals for omitted material are computed.
 
-With the explorer on (G2, `serve --graph-explorer`), the graph page reads
-graph_neighbourhood and a note's page reads graph_note_detail; project_graph, which
+With the explorer on (G2, `serve`'s default unless `--no-graph-explorer` is given), the graph page
+reads graph_neighbourhood and a note's page reads graph_note_detail; project_graph, which
 /api/graph and the agent's resource read, is the same code in both states, and neither
 function calls it. Each request is one read snapshot that rechecks the project and the
 view's reach as project_graph does, and answers a project out of reach with the KeyError a
@@ -266,8 +266,8 @@ def _project_graph(
     return {"nodes": nodes, "edges": edges, "counts": shown_counts, "truncated": truncated}
 
 
-# The explorer (G2, `serve --graph-explorer`): what follows serves only the explorer's pages.
-# project_graph above, which /api/graph and the agent's resource read, is not called by it
+# The explorer (G2, `serve`'s default unless `--no-graph-explorer`): what follows serves only the
+# explorer's pages. project_graph above, which /api/graph and the agent's resource read, is not
 # and does not call it. A page's claims are read from the search index's rows, which every
 # save of the page replaces in its own transaction, never from the page's stored JSON.
 NEIGHBOURHOOD_BYTES = 65_536

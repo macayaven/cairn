@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from axe_playwright_python.sync_playwright import Axe
 from browser_checks import inspect
-from browser_server import Visit
-from playwright.sync_api import Locator, expect
+from browser_server import Server, Visit, close_visit, open_visit
+from playwright.sync_api import Browser, Locator, expect
 
 NOTE = """The tide gauge at the north quay reads in centimetres.
 
@@ -98,6 +98,7 @@ def test_a_person_walks_from_sign_in_to_sign_out(visit: Visit, axe: Axe):
     expect(page.get_by_role("heading", level=1, name="harbour-log graph")).to_be_visible()
     expect(page.get_by_role("region", name="Graph diagram")).to_be_visible()
     expect(page.get_by_role("link", name="Harbour survey", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name="3D view")).to_be_visible()
     inspect(axe, page, "graph")
 
     page.get_by_role("navigation", name="Main").get_by_role("link", name="Workspace").click()
@@ -133,3 +134,32 @@ def test_a_person_walks_from_sign_in_to_sign_out(visit: Visit, axe: Axe):
     inspect(axe, page, "signed out")
     visit.go("/b/harbour-log")
     expect(page.get_by_role("heading", level=1, name="Sign in")).to_be_visible()
+
+
+def test_default_graph_explorer_works_with_scripts_disabled(browser: Browser, server: Server):
+    with server.api() as api:
+        assert api.post("/api/projects", json={"name": "no-js-graph"}).status_code == 201
+        made = api.post(
+            "/api/projects/no-js-graph/notes",
+            json={"title": "Beacon notes", "text": "The south beacon blinks every 4 seconds."},
+        )
+        assert made.status_code == 201, made.text
+
+    visit = open_visit(browser, server, java_script_enabled=False)
+    try:
+        visit.sign_in()
+        visit.go("/b/no-js-graph/graph")
+        page = visit.page
+        expect(page.get_by_role("heading", level=1, name="no-js-graph graph")).to_be_visible()
+        expect(page.get_by_role("region", name="Graph diagram")).to_be_visible()
+        expect(page.get_by_role("link", name="Beacon notes", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="3D view")).to_be_hidden()
+
+        page.get_by_role("link", name="Notes", exact=True).click()
+        expect(page).to_have_url(f"{server.base}/b/no-js-graph/graph?focus=notes")
+        note_link = page.get_by_role("link", name="Beacon notes", exact=True)
+        expect(note_link).to_be_visible()
+        note_link.click()
+        expect(page.get_by_text("The south beacon blinks every 4 seconds.")).to_be_visible()
+    finally:
+        close_visit(visit)

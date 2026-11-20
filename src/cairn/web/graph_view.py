@@ -1,7 +1,7 @@
 """Render a graph without client code; its list is the keyboard-accessible equivalent.
 
-With the explorer on (G2, `serve --graph-explorer`), render_explorer draws and lists the
-graph the same way, one view and one batch at a time, and its page is the one page that
+With the explorer on (G2, `serve`'s default unless `--no-graph-explorer`), render_explorer
+draws and lists the graph the same way, one view and one batch at a time, and its page is the
 loads a script: GRAPH_SCRIPT, the file src/cairn/static/graph-view.js, by a tag that carries
 the SHA-256 of the file's bytes as `integrity` and a nonce made for that response with
 `secrets`; that response's policy adds `script-src 'nonce-...'` and nothing else, and no

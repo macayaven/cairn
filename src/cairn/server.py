@@ -787,8 +787,8 @@ Writing from the web view (frozen by tests/acceptance/test_m1_mobile.py; cairn/w
 - Installable: every page links /static/manifest.webmanifest (public, like the stylesheet):
   name, short_name, start_url "/", display "standalone", the SVG icon, and a share_target
   (GET /new with title, text and url). The UI's Content-Security-Policy has
-  `manifest-src 'self'`; there is still no script anywhere but one: with `serve
-  --graph-explorer`, the graph page alone loads cairn's own (G2; cairn.web.graph_view).
+  `manifest-src 'self'`; there is still no script anywhere but one: unless `serve
+  --no-graph-explorer` is given, the graph page alone loads cairn's own (G2; cairn.web.graph_view).
 - The two typefaces ship in /static/fonts/ (public, like the stylesheet; SIL Open Font
   License 1.1, each licence beside its font), and the policy has `font-src 'self'`.
 - The search box is on the home page and on every project page. Every page is laid out for

@@ -448,3 +448,69 @@ def test_agents_page_shows_approved_by_and_owner_visibility_subtitle(tmp_path):
             assert "Sam Ortiz" in member_html
     finally:
         store.close()
+
+
+def test_serve_enables_graph_explorer_by_default_and_no_graph_explorer_disables_it(
+    tmp_path, monkeypatch
+):
+    import pytest
+    import uvicorn
+
+    from cairn import server
+    from cairn.web import cli
+    from cairn.web.templating import UI_HEADERS
+
+    seen = []
+
+    def fake_create_app(store, **settings):
+        seen.append(settings["graph_explorer"])
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "create_app", fake_create_app)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("serve started"))
+
+    for argv in ([], ["--graph-explorer"], ["--no-graph-explorer"]):
+        with pytest.raises(SystemExit):
+            server.main(["serve", "--db", str(tmp_path / "kb.db"), *argv])
+    assert seen == [True, True, False]
+
+    with pytest.raises(SystemExit) as refused:
+        cli._parser().parse_args(
+            ["serve", "--db", "x.db", "--graph-explorer", "--no-graph-explorer"]
+        )
+    assert refused.value.code == 2
+
+    store = Store(tmp_path / "csp.db")
+    try:
+        key = store.create_key("owner")
+        project = store.create_project("ops")
+        store.add_note(project.id, "# Runbook\n\nCheck disk before compact.\n", via="web")
+
+        with TestClient(
+            create_app(store, public_url=BASE, graph_explorer=False), base_url=BASE
+        ) as off_client:
+            _login(off_client, key)
+            off_graph = off_client.get("/b/ops/graph")
+            assert off_graph.status_code == 200
+            assert (
+                off_graph.headers["content-security-policy"]
+                == UI_HEADERS["content-security-policy"]
+            )
+            assert off_client.get("/static/graph-view.js").status_code == 404
+
+        with TestClient(
+            create_app(store, public_url=BASE, graph_explorer=True), base_url=BASE
+        ) as on_client:
+            _login(on_client, key)
+            on_graph = on_client.get("/b/ops/graph")
+            assert on_graph.status_code == 200
+            csp = on_graph.headers["content-security-policy"]
+            prefix = UI_HEADERS["content-security-policy"] + "; script-src 'nonce-"
+            assert csp.startswith(prefix) and csp.endswith("'")
+            assert csp.count("script-src") == 1
+            notes_view = on_client.get("/b/ops/graph?focus=notes")
+            assert notes_view.status_code == 200
+            assert "; via: web" in notes_view.text
+            assert "source_ref: ;" not in notes_view.text
+    finally:
+        store.close()

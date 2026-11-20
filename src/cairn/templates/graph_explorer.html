@@ -58,7 +58,7 @@
 <h2>Graph content</h2>
 <ul>
 {% for node in nodes %}
-<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ node.label }}</a>{% else %}{{ node.label }}{% endif %}{% if node.explore_href %} <a href="{{ node.explore_href }}" aria-label="Open the view of {{ node.kind }} {{ node.label }}">Open its view</a>{% endif %}{% if node.kind == 'note' %}; source_ref: {{ node.source_ref or '' }}; via: {{ node.via or '' }}{% endif %}</li>
+<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ node.label }}</a>{% else %}{{ node.label }}{% endif %}{% if node.explore_href %} <a href="{{ node.explore_href }}" aria-label="Open the view of {{ node.kind }} {{ node.label }}">Open its view</a>{% endif %}{% if node.kind == 'note' %}{% if node.source_ref %}; source_ref: {{ node.source_ref }}{% endif %}{% if node.via %}; via: {{ node.via }}{% endif %}{% endif %}</li>
 {% endfor %}
 </ul>
 <h2>Relationships</h2>

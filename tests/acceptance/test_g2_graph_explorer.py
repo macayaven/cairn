@@ -1,12 +1,13 @@
-"""G2 acceptance tests: a project's graph you can explore, behind a switch that is off.
+"""G2 acceptance tests: a project's graph you can explore, on by default under serve
+(--no-graph-explorer turns it off).
 
 The contract goes in the docstrings of src/cairn/graph.py, src/cairn/web/graph_routes.py and
 src/cairn/web/graph_view.py; decision 134 is the graph as it is without the switch.
 
 The switch
-- `serve --graph-explorer` and `create_app(..., graph_explorer=False)`. Off unless the
-  operator gives it, and it needs nothing else switched on. `create_app` refuses anything but
-  True or False.
+- `serve` enables the explorer by default; `serve --no-graph-explorer` turns it off (and
+  `--graph-explorer` stays accepted; giving both exits 2). `create_app(..., graph_explorer=False)`
+  keeps False as the library default and refuses anything but True or False.
 
 Off (the default): nothing changes
 - GET /b/<project>/graph is the page decision 134 describes: the same template output, the
@@ -211,7 +212,7 @@ def get(w, path: str, who=None):
 # The switch
 
 
-def test_the_switch_is_off_unless_given_and_takes_true_or_false_only(tmp_path, monkeypatch):
+def test_the_switch_is_on_by_default_in_serve_and_takes_true_or_false_only(tmp_path, monkeypatch):
     made = []
 
     def note(store, **settings):
@@ -220,10 +221,15 @@ def test_the_switch_is_off_unless_given_and_takes_true_or_false_only(tmp_path, m
 
     monkeypatch.setattr(cli, "create_app", note)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("serve started"))
-    for argv in ([], ["--graph-explorer"]):
+    for argv in ([], ["--graph-explorer"], ["--no-graph-explorer"]):
         with pytest.raises(SystemExit):
             server.main(["serve", "--db", str(tmp_path / "kb.db"), *argv])
-    assert made == [False, True]
+    assert made == [True, True, False]
+    with pytest.raises(SystemExit) as refused:
+        server.main(
+            ["serve", "--db", str(tmp_path / "kb.db"), "--graph-explorer", "--no-graph-explorer"]
+        )
+    assert refused.value.code == 2
     store = Store(tmp_path / "app.db")
     try:
         assert create_app(store).state.graph_explorer is False

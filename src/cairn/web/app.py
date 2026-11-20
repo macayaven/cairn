@@ -425,12 +425,13 @@ def create_app(
     it is offered to connects a Google account on the Sources page, and the store keeps and
     uses its sealed token (cairn.store.hosted). It needs `sign_in` and `public_url`
     (ValueError otherwise). None, the default: no route, no block, no table read.
-    `graph_explorer` (G2; `serve --graph-explorer`): a project's graph page becomes the
-    explorer (cairn.web.graph_routes), the one page that loads a script, cairn's own
-    /static/graph-view.js, by a nonce and its hash; it needs nothing else. False, the
-    default: the graph page is decision 134's, with no script, and /static/graph-view.js,
-    /static/graph-view.css and /b/<project>/graph/notes/<id> are 404. True or False only
-    (ValueError otherwise); `app.state.graph_explorer` holds it.
+    `graph_explorer` (G2; on in `serve` by default, `--no-graph-explorer` turns it off): a
+    project's graph page becomes the explorer (cairn.web.graph_routes), the one page that loads
+    a script, cairn's own /static/graph-view.js, by a nonce and its hash; it needs nothing else.
+    False, create_app's default when called without `serve`: the graph page is decision 134's,
+    with no script, and /static/graph-view.js, /static/graph-view.css and
+    /b/<project>/graph/notes/<id> are 404. True or False only (ValueError otherwise);
+    `app.state.graph_explorer` holds it.
     `slack` (K1; `serve --slack`; cairn.web.slack): the three addresses Slack calls, open paths
     of Auth with their own protection, the set-up and linking addresses of a signed-in
     browser, the Sources page's block, and the loop that checks bot tokens. The store seals

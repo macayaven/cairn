@@ -847,11 +847,19 @@ def test_connect_a_line_read_as_code_in_its_passage_alone_shows_what_writes_it_a
         "A page shows each passage of the note alone, and a line the note reads as text can read "
         "as code in its passage alone, a line indented with a tab under a quotation for instance: "
         "there it shows the backslashes and entities that write it as text, and not the blanks "
-        "that end it.",
+        "that end it; and it shows the rest of the Markdown that writes it too, the doubled"
+        " asterisks of bold, the backticks about code within a line, a link as"
+        " `[its words](its address)`.",
     )
-    for sent, code in (
+    for sent, code in (  # the last three: the tester's second attack, finding 5
         ("&gt; Readings\n\t[x] &amp; y", "\\[x\\] &amp; y\n"),
         ("&gt; Readings\n\tnorth\tblue\t", "north\tblue\n"),
+        ("&gt; Readings\n\t*north* blue", "**north** blue\n"),
+        ("&gt; Readings\n\t`port` blue", "`port` blue\n"),
+        (
+            "&gt; Readings\n\t<https://fable.test/r|rows> blue",
+            "[rows](https://fable.test/r) blue\n",
+        ),
     ):
         note = a_filed_note(sent)
         assert as_read(note)[2] == []  # text to the note whole

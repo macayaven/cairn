@@ -43,12 +43,11 @@ def test_the_tools_are_the_ones_the_server_lists():
     says(
         "connect",
         "The tools are `projects`, `new_project`, `note`, `recall`, `page`, `evidence`,"
-        " `overview` and `graph`.",
+        " `overview`, `graph` and `related`.",
     )
     names = [tool.name for tool in asyncio.run(build_mcp().list_tools())]
-    assert sorted(names) == sorted(
-        ["projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph"]
-    )
+    listed = "projects new_project note recall page evidence overview graph related"
+    assert sorted(names) == sorted(listed.split())
 
 
 def test_the_graph_tool_is_the_resource_for_clients_that_only_call_tools():

@@ -199,7 +199,8 @@ def test_agents_see_each_projects_kind_and_guidance(env):
 
     names = {t["name"] for t in tools_list(env)}
     assert names == {
-        "projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph"
+        "projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph",
+        "related",  # KG1
     }  # fmt: skip
 
 

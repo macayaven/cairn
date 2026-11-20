@@ -117,3 +117,10 @@ def compile_turn(request: HTTPConnection) -> AbstractAsyncContextManager[Any]:
     a request no Auth admitted (nothing reaches a compile without one)."""
     compiles = request.scope.get(SCOPE_KEY)
     return compiles.turn() if isinstance(compiles, Compiles) else contextlib.nullcontext()
+
+
+# One read of related pages at a time in a process (Store.related_pages), taken the same way:
+# over REST and MCP a read waits for it on the event loop, holding no thread and no
+# connection, and its worker thread then takes the store's own turn with nobody ahead of it.
+# A read that waits long waits; none is refused for it.
+RELATED_READS = Compiles(1)

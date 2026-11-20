@@ -4,6 +4,8 @@ one project's, in one snapshot. Real stores in temporary files, notes filed thro
 Memory.note as `serve` files them; made-up names."""
 
 import json
+import sqlite3
+import threading
 from contextlib import closing
 
 import pytest
@@ -793,6 +795,107 @@ def test_a_person_is_answered_for_the_projects_their_rule_reaches(store):
         "retention": [(SHARES, "--audit-keep", "inline_code", 2)]
     }
     assert brook.related_pages(private.id, "deploy") is None
+
+
+# One read of related pages at a time: the store's turn, taken before a connection
+
+
+class Asking:
+    """The store's turn, saying when the thread named `who` asks for it."""
+
+    def __init__(self, turn, who: str) -> None:
+        self.turn, self.who, self.asked = turn, who, threading.Event()
+
+    def __enter__(self):
+        if threading.current_thread().name == self.who:
+            self.asked.set()
+        return self.turn.__enter__()
+
+    def __exit__(self, *raised):
+        return self.turn.__exit__(*raised)
+
+
+def test_a_second_read_of_related_pages_waits_its_turn_and_a_page_view_does_not(
+    store, ops, monkeypatch
+):
+    """Two reads of related pages at once: the second takes no connection of the pool until
+    the first has given its connection back, and a page read in between is served at once,
+    on another connection. Threads meet at events; nothing sleeps."""
+    deploy = file(store, "ops", "Deploy", "Run `--audit-keep` at night.\n")
+    file(store, "ops", "Retention", "`--audit-keep` says how many; see Deploy.\n")
+    readers, seen = store._state.readers, []
+    took, gave = readers.take, readers.give
+
+    def taking(observers):
+        con = took(observers)
+        seen.append((threading.current_thread().name, "take", id(con)))
+        return con
+
+    def giving(con):
+        seen.append((threading.current_thread().name, "give", id(con)))
+        gave(con)
+
+    monkeypatch.setattr(readers, "take", taking)
+    monkeypatch.setattr(readers, "give", giving)
+    inside, go_on = threading.Event(), threading.Event()
+    whole = relating.related
+
+    def held(*arguments):
+        if threading.current_thread().name == "first":
+            inside.set()
+            assert go_on.wait(timeout=60)
+        return whole(*arguments)
+
+    monkeypatch.setattr(relating, "related", held)
+    asking = Asking(store._state.related_turn, "second")
+    monkeypatch.setattr(store._state, "related_turn", asking)
+    answers = {}
+
+    def read() -> None:
+        answers[threading.current_thread().name] = related(store, ops.id, deploy)
+
+    first = threading.Thread(target=read, name="first")
+    second = threading.Thread(target=read, name="second")
+    first.start()
+    assert inside.wait(timeout=60)
+    second.start()
+    assert asking.asked.wait(timeout=60)  # the second asks while the first holds the turn
+    page = store.get_page(ops.id, deploy)  # a page view, meanwhile
+    assert page is not None and second.is_alive()
+    go_on.set()
+    first.join(timeout=60)
+    second.join(timeout=60)
+    assert not first.is_alive() and not second.is_alive()
+    assert reasons(answers["first"]) == reasons(answers["second"]) != {}
+    ((_, _, at_first), (here, _, at_page), (_, _, back)) = seen[:3]
+    assert [entry[:2] for entry in seen] == [
+        ("first", "take"),
+        ("MainThread", "take"),
+        ("MainThread", "give"),
+        ("first", "give"),
+        ("second", "take"),
+        ("second", "give"),
+    ]
+    assert here == "MainThread" and at_page != at_first and back == at_page
+
+
+def test_a_read_of_related_pages_that_fails_gives_its_turn_back(store, ops, monkeypatch):
+    """An error inside the read, or a page that is not there: the turn is given back, and the
+    next read is served."""
+    deploy = file(store, "ops", "Deploy", "Run `--audit-keep` at night.\n")
+    file(store, "ops", "Retention", "`--audit-keep` says how many; see Deploy.\n")
+
+    def failing(*arguments):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(relating, "related", failing)
+    with pytest.raises(sqlite3.OperationalError):
+        store.related_pages(ops.id, deploy)
+    assert not store._state.related_turn.locked()
+    monkeypatch.undo()
+    assert store.related_pages(ops.id, "nothing-here") is None
+    assert not store._state.related_turn.locked()
+    assert reasons(related(store, ops.id, deploy)) != {}
 
 
 def test_the_rules_and_the_read_ask_no_model_and_nothing_of_the_web_layer():

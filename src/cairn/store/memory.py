@@ -1198,8 +1198,14 @@ class MemoryMethods(StoreBase):
         nothing of the answer. Terms are read from passages of the project alone; who wrote
         a passage a claim cites is named for every passage the view reaches, as `page` names
         it. A page read before the workspace saved any page has no index to ask, and no
-        relation."""
-        with self._read() as con:
+        relation.
+
+        One such read at a time, of every view of the store: a read waits for the one under
+        way before it takes a connection (ConnectionState.related_turn), so the others hold
+        none, and reads of anything else are served by the other connections meanwhile. A
+        read that waits long waits: it is never refused, and goes on when the turn is given
+        back, which it is however the read before ended."""
+        with self._state.related_turn, self._read() as con:
             scope = self._scope(con)
             head = con.execute(
                 "SELECT title, version FROM page_heads WHERE project_id = ? AND slug = ?"

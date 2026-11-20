@@ -428,7 +428,10 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       claims and the 250,000 bytes of passages read, the related pages past `limit`. The
       store's read runs at most 17 statements, whatever the page and the project hold
       (cairn.store.relating says which, and tests/unit/test_relating_cost_unit.py counts
-      them). A read of the page for the audit log (read.page), which never holds a term.
+      them). One read of related pages at a time in a server process, over MCP and REST
+      alike: another waits for it holding no connection and is answered in its turn, however
+      long that takes; none is refused for waiting. A read of the page for the audit log
+      (read.page), which never holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments

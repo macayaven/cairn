@@ -90,7 +90,7 @@ from cairn.store.audit import AUDIT_LIMIT_MAX
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.store.usage import OverLimit
 from cairn.web.auth import _memory, may_manage_credentials
-from cairn.web.turns import compile_turn
+from cairn.web.turns import RELATED_READS, Compiles, compile_turn
 
 Handler = Callable[[Request], Response | Awaitable[Response]]
 AUDIT_AT_ONCE = 100  # the events GET /api/audit answers when no `limit` is given
@@ -98,12 +98,16 @@ NOT_AUDITOR = "only a key that manages the workspace reads its audit log"
 AUDIT_LIMIT = f"'limit' is a whole number, 1 to {AUDIT_LIMIT_MAX}"
 
 
-def _logged(action: str, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
+def _logged(
+    action: str, handler: Handler, turn: Compiles | None = None
+) -> Callable[[Request], Awaitable[Response]]:
     """`handler` as one access-log record named `action`, whatever it answers. A sync
     handler still runs on a worker thread, as Starlette runs one: it reads the database. The
     access runs on that thread with it, so a read's audit event (`serve --audit-reads`),
     written behind the store's lock, never holds up the event loop. `__wrapped__` is the
-    handler, so a test can read what it reads (inspect.unwrap)."""
+    handler, so a test can read what it reads (inspect.unwrap). With a `turn`, a sync
+    handler waits for one of it on the event loop, holding no thread, before its thread
+    is taken."""
 
     async def endpoint(request: Request) -> Response:
         memory = _memory(request)
@@ -115,7 +119,10 @@ def _logged(action: str, handler: Handler) -> Callable[[Request], Awaitable[Resp
             with memory.access(action):
                 return handler(request)  # type: ignore[return-value]
 
-        return await run_in_threadpool(accessed)
+        if turn is None:
+            return await run_in_threadpool(accessed)
+        async with turn.turn():
+            return await run_in_threadpool(accessed)
 
     endpoint.__wrapped__ = handler  # type: ignore[attr-defined]
     return endpoint
@@ -432,7 +439,7 @@ def rest_routes() -> list[Route]:
         ),
         Route(pages_path, _logged("pages", pages)),
         Route(pages_path + "/{slug}", _logged("page", page)),
-        Route(pages_path + "/{slug}/related", _logged("related", related)),
+        Route(pages_path + "/{slug}/related", _logged("related", related, RELATED_READS)),
         Route(pages_path + "/{slug}/claims/{claim_id}/evidence", _logged("evidence", evidence)),
         Route("/api/search", _logged("recall", search)),
         Route("/api/usage", _logged("usage", usage), methods=["GET"]),

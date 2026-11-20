@@ -59,7 +59,7 @@ from cairn.web.graph_resource import (
     reject_graph_uri,
     valid_graph_uri,
 )
-from cairn.web.turns import compile_turn
+from cairn.web.turns import RELATED_READS, compile_turn
 
 _INSTRUCTIONS = """\
 {product} is shared memory for agents. It compiles notes into pages, and every claim on a page \
@@ -410,7 +410,7 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
             return read_graph(memory, project, str(limit))
 
     @mcp.tool(annotations=reads)
-    def related(
+    async def related(
         ctx: Context,
         project: ProjectRef,
         slug: Slug,
@@ -450,7 +450,14 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         past 512 claims or 250,000 bytes of their passages; a term with a claim not read gives
         no reason. `pages_left_out`: related pages past `limit`. `complete` is true when those
         three counts of what was left out are 0."""
-        with _call(ctx, "related") as memory:
-            return memory.related(project, slug, limit)
+
+        def found() -> dict:
+            with _call(ctx, "related") as memory:
+                return memory.related(project, slug, limit)
+
+        # One read of related pages at a time in the process, waited for on the event loop,
+        # holding no thread; then the read on a worker thread, as every other tool runs.
+        async with RELATED_READS.turn():
+            return await run_in_threadpool(found)
 
     return mcp

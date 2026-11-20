@@ -419,3 +419,15 @@ def test_google_reads_the_email_and_its_flag_from_userinfo_alone():
         return httpx.Response(404)
 
     assert refused(Google("g-id", "g-secret"), handler) == 403
+
+
+def test_https_or_loopback_refuses_inside_addresses():
+    for blocked in (
+        "https://169.254.169.254/v1",
+        "https://metadata.google.internal/v1",
+        "https://[fd00:ec2::254]/v1",
+        "https://[::ffff:0:169.254.169.254]/v1",
+    ):
+        assert identity._https_or_loopback(blocked) is False
+    assert identity._https_or_loopback("http://127.0.0.1:8400/v1") is True
+    assert identity._https_or_loopback("https://10.0.0.5/v1") is True

@@ -178,7 +178,8 @@ def verbatim_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     compared line for line for code, tables and prose that holds structure, and otherwise as
     text whose runs of white space read as one space, with every list or quote marker kept at
     the start of its line. Nothing is left out, nothing is added, and no two passages are
-    joined; a claim that cites several passages is a fold of passages that say the same.
+    joined; a claim that cites several passages is a fold of passages that say the same,
+    under one heading path, as the import asks.
 
     What it guarantees, and what it does not: it keeps a passage whole; it does not keep two
     passages together. "The operation is safe." cannot be cut from "The operation is safe.
@@ -203,9 +204,25 @@ def whole(claim: Claim, spans: Mapping[str, Span]) -> bool:
 
 
 def _refusals(claims: Iterable[Claim], spans: Mapping[str, Span]) -> list[str]:
-    """The grounding.not_verbatim violations of `claims`, in order, reading each passage once."""
+    """The grounding.not_verbatim violations of `claims`, in order, reading each passage once:
+    a claim that is not every passage it cites, whole, or a fold of passages under different
+    headings (the import's rule, store.portable._page_version: the body shows a claim under
+    one section, so what is saved can always be exported and imported; second report,
+    finding 5a). Never the headings: the note's text."""
     readings: dict[str, _Reading] = {}
-    return [v for claim in claims if (v := _not_verbatim(claim, spans, readings))]
+    return [
+        v
+        for claim in claims
+        if (v := _not_verbatim(claim, spans, readings) or _folds_sections(claim, spans))
+    ]
+
+
+def _folds_sections(claim: Claim, spans: Mapping[str, Span]) -> str | None:
+    if len({spans[i].heading_path for i in claim.span_ids if i in spans}) < 2:
+        return None
+    return _refusal(
+        claim, "it folds passages under different headings: cite the passages of one heading"
+    )
 
 
 def _not_verbatim(

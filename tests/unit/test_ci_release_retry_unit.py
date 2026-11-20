@@ -526,12 +526,28 @@ def test_gh_is_asked_for_a_draft_so_the_release_it_makes_is_never_its_own_to_del
     arrived. The publication is then the job's: `publishRelease` (http.go, 182 to 206) sends
     PATCH to the release's address with `"draft": false` and, when --latest was given,
     `"make_latest"`, and the job's line sends the same and has nothing after it to undo.
-    Nothing here can run gh's code: the test holds the flag on the job's line, the README's
-    sentence, and that the sentence about gh deleting its release is gone. What these two
-    files do not show, and no sentence here or in the README says: what
-    `shared.ConcurrentUpload` does inside an upload, and that `gh release download` gives a
-    draft's files (the stand-ins assume it; if it did not, the job would stop at "its files
-    could not be downloaded to compare" and delete nothing)."""
+    The upload (pkg/cmd/release/shared/upload.go): `ConcurrentUpload` runs
+    `uploadWithDelete` for each file (111 to 128), which deletes a file only under
+    `if a.ExistingURL != nil && a.ExistingURL.String() != "" {` (141 to 146) and then
+    `backoff.Retry(...)` of `uploadAsset` with `backoff.WithMaxRetries(bo, 3)`, again only when
+    `shouldRetry`: a network error or `httpError.StatusCode >= 500` (130 to 155);
+    `AssetsFromArgs`, which `create` takes its files from (create.go, 172), builds each
+    `AssetForUpload` with Open, Size, Name, Label and MIMEType and no `ExistingURL` (upload.go,
+    62 to 70), and nothing in create.go or create/http.go sets one. No line of upload.go
+    deletes a release. So a failed upload leaves the draft, and leaves it public when a person
+    published it meanwhile (test_generated_release_retry_unit, "a draft a person publishes
+    while its files upload"). The download (pkg/cmd/release/download/download.go, 167):
+    `shared.FetchRelease(ctx, httpClient, baseRepo, opts.TagName)`, which is "FetchRelease
+    finds a published repository release by its tagName, or a draft release by its pending
+    tag name" (shared/fetch.go, 182): beside `releases/tags/TAG` it runs `fetchDraftRelease`
+    (237 to 270), a GraphQL query `release(tagName: $tagName)` for `DatabaseID` and `IsDraft`
+    and then REST `releases/<DatabaseID>`, and it takes "a release found by either lookup"
+    (204 to 218). It lists nothing, and needs a token GraphQL shows the draft to; the source
+    says only that the draft lookup fails "when unauthenticated". Every asset is then fetched
+    by its own API address with `Accept: application/octet-stream` (download.go, 198 to 208,
+    243, 313), a draft's like any other. Nothing here can run gh's code: the test holds the
+    flag on the job's line, the README's sentence, the step's own sentences, and that the
+    sentence about gh deleting its release is gone."""
     create, publish = GH_LINES[2:]
     assert re.search(r"^gh release create \S+ --draft ", create)
     assert create.endswith('"${files[@]}"')
@@ -550,8 +566,13 @@ def test_gh_is_asked_for_a_draft_so_the_release_it_makes_is_never_its_own_to_del
     comment = " ".join(CREATE["run"].replace("#", "").split())
     assert (
         "Asked for a draft it publishes nothing, and its cleanup of the release it made is only"
-        " for a draft it meant to publish itself, so an upload that fails leaves this draft."
+        " for a draft it meant to publish itself. It sends a file again, three times at most,"
+        " only after a failed connection or a 5xx, and removes a file only when given the"
+        " address of one already there, which a creation never gives it. So an upload that"
+        " fails leaves this draft, with the files that arrived, and leaves it public if a"
+        " person published it meanwhile."
     ) in comment
+    assert "(the CLI finds a draft by its tag, as it finds a release)" in comment
 
 
 REFUSED = "::error::a GitHub release for {tag} exists and is not one this run can finish: "
@@ -688,12 +709,14 @@ def test_the_retry_is_said_in_the_readme_with_its_condition():
         " the releases page and re-runs the job, which makes the release again (the table below"
         " has the line). Any other release for the tag stops the job."
     ) in readme
-    assert (
-        "No request compares and publishes at once, so a draft a person changes between the"
-        " job's comparison and its publication is published as changed; the job compares again"
-        " after it publishes, stops on the difference and deletes nothing: do not edit this"
-        " tag's release by hand while the `release` job runs."
-    ) in readme
+    (limits,) = [" ".join(p.split()) for p in README.split("\n") if p.startswith("Three limits.")]
+    assert limits.endswith(
+        " The third limit is job `release`'s: no request compares and publishes at once, so a"
+        " draft a person changes between the job's comparison and its publication is published"
+        " as changed; the job compares again after it publishes, stops on the difference and"
+        " deletes nothing, so the changed release stays public: do not edit this tag's release"
+        " by hand while the `release` job runs."
+    )
     assert "deleted if it is still the same draft" not in readme
     assert "either way `aliases` runs" not in readme
     assert "no write to a release that exists" not in readme

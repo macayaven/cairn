@@ -28,14 +28,18 @@ and stopped would read the same again.
 
 GitHub and gh are a stand-in `gh` that keeps the releases as data. The listing goes through
 the step's own --jq expression, run by jq. `gh release download` gives a release's files, a
-draft's too, and refuses to write over a file that is there. `gh release create` is modelled
+draft's too (shared/fetch.go, 182 to 270: `FetchRelease` "finds a published repository release
+by its tagName, or a draft release by its pending tag name"), and refuses to write over a
+file that is there (download/download.go, 304 and 439 to 447). `gh release create` is modelled
 on gh's source, v2.102.0, pkg/cmd/release/create/create.go: `if hasAssets && !opts.Draft {`
 ... `draftWhileUploading = true`, `params["draft"] = true` (lines 500 to 512);
 `cleanupDraftRelease := func(err error) error { if !draftWhileUploading { return err }` and
 then `deleteRelease(httpClient, baseRepo.RepoHost(),
 safeurl.NewImmutableSafeURL(newRelease.APIURL))` (533 to 541), called when
 `shared.ConcurrentUpload` or `publishRelease` returns an error (550 to 560), and not when
-`createRelease` does (514 to 531). So: with files and no --draft it makes a draft, uploads,
+`createRelease` does (514 to 531). The upload deletes a file only when its `ExistingURL` is
+set (shared/upload.go, 141 to 146), which a creation's files never have (62 to 70), and no
+release ever. So: with files and no --draft it makes a draft, uploads,
 publishes, and on a failed upload or publication deletes the release by its id, published or
 not; with --draft it makes the draft, uploads, and deletes nothing. `gh api --method PATCH`
 on a release's id with `draft=false` publishes that release, as `publishRelease` does
@@ -679,6 +683,29 @@ def test_the_publication_changes_nothing_on_a_draft_a_person_published_and_fails
     assert after["attempts"][0]["failed"] == "api --method PATCH"
     assert retry.returncode == 0, retry.stdout + retry.stderr
     assert kinds(state, 2) == ["create", "publish"] and faults(runs) == []
+
+
+@pytest.mark.parametrize("kind", TAGS)
+def test_a_draft_a_person_publishes_while_its_files_upload_is_never_taken_back(gh, tmp_path, kind):
+    """The fourth report's fault one step on: the upload fails after a person published the
+    draft the command had just made. gh, asked for a draft, cleans up nothing, and its upload
+    removes no file: the release stays public with the files that arrived, and the re-run
+    says it cannot finish it and writes nothing."""
+    tag = TAGS[kind]
+    base = history(gh, tmp_path / "base", tag, [])
+    before = base[0][1]["attempts"][0]["log"].index("upload") + 1
+    runs = history(
+        gh, tmp_path / "h", tag, [], fault=["upload", "cut"], person="publish", before=before
+    )
+    (first, after), (retry, state) = runs
+    assert first.returncode != 0 and after["attempts"][0]["struck"]
+    (public,) = ours(after)
+    assert (public["id"], public["draft"]) == (900, False)
+    assert public["files"] == {WHEEL: WHOLE[WHEEL], SOURCE: WHOLE[SOURCE][:10]}
+    (error,) = errors(retry)
+    assert retry.returncode == 1 and "exists and is not one this run can finish: its files" in error
+    assert ours(state) == [public] and [w["kind"] for w in state["writes"]] == ["create"]
+    assert faults(runs) == []
 
 
 def test_the_grammar_holds_the_reviewers_inputs_and_the_person_does_what_is_said(gh, tmp_path):

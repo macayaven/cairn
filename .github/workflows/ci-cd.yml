@@ -1740,9 +1740,13 @@ jobs:
           # only one and carries this run's mark and this tag's pre-release flag; any other
           # stops the job. (1) No release: the GitHub CLI makes one as a draft, with the files.
           # Asked for a draft it publishes nothing, and its cleanup of the release it made is
-          # only for a draft it meant to publish itself, so an upload that fails leaves this
-          # draft. (2) This run's draft, just made or left by an earlier attempt: its files are
-          # compared with the ones this run attested, names and bytes, and a draft that does
+          # only for a draft it meant to publish itself. It sends a file again, three times at
+          # most, only after a failed connection or a 5xx, and removes a file only when given
+          # the address of one already there, which a creation never gives it. So an upload
+          # that fails leaves this draft, with the files that arrived, and leaves it public if
+          # a person published it meanwhile. (2) This run's draft, just made or left by an
+          # earlier attempt: its files are compared with the ones this run attested, names and
+          # bytes (the CLI finds a draft by its tag, as it finds a release), and a draft that does
           # not hold exactly those stops the job, which says what a person does. (3) The draft
           # is published by a request of its own, to the id the look gave. That is the job's
           # one write to a release that exists, and it is safe: it sets draft to false and

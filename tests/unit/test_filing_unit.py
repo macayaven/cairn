@@ -110,6 +110,10 @@ def test_a_note_that_keeps_losing_is_answered_waiting_and_waits(memory, store, m
     answer = memory.note("ops", TEXT, topic="Relay")
     assert answer["status"] == WAITING and answer["message"] == WAITS
     assert answer["page"] == "relay" and answer["violations"][0].startswith("compile.stale_page")
+    # Decision 178: the page's current version, which does not hold the note yet.
+    project_id = store.list_projects()[0].id
+    assert answer["version"] == store.get_page(project_id, "relay").version
+    assert store.note_page(project_id, answer["note_id"]) == (True, None)
     assert [n.note_id for n in store.waiting_notes()] == [answer["note_id"]]
     assert "note.rejected" not in [event.action for event in store.list_audit()]
 

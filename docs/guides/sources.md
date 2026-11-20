@@ -244,7 +244,7 @@ When a document I filed before has changed, write one note that says what change
 what it replaces, with the same topic and source_ref.
 ```
 
-cairn checks that a version or a flag in a note reaches the page or is listed as left out, and that every line of code reaches it, which is why the recipe keeps them exact.
+cairn checks that a version, a flag and every line of code in a passage a page cites is on that page, which is why the recipe keeps them exact.
 
 ### Documents from Google Drive, read by the server
 

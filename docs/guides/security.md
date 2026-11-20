@@ -84,7 +84,7 @@ The guard matches patterns. It does not recognise a name, a postal address, free
 cairn checks every page against its notes before it saves it, and keeps the last good version when a check fails.
 
 - Every claim on a page is a passage of a note, copied word for word, and cites the lines it came from.
-- A version, a flag or a line of code in a note the page draws on is on the page, or is listed as left out.
+- A version, a flag, a number, a path or a line of code in a passage the page cites is on the page.
 - A number, a flag or a path in a claim is in the lines it cites.
 
 When the operator connects a model, it only puts a page's claims in order and says which ones repeat each other. It answers with claim numbers, and cairn builds the page from text it already holds, so the model writes no word of it. The page says which model arranged it.

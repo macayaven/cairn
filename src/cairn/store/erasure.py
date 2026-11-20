@@ -76,16 +76,18 @@ LIMITED_ERASER = (
     " forgetting a note takes a person, or a key of the whole workspace"
 )
 # The renders that each name a claim a forget makes of a page before every claim written
-# directly before the one named that the body leaves open leaves with it (_plan's second
-# stated class). Why a cap: notes stored in reverse that spell the title two ways in turn,
-# under a heading that says one spelling, cost a render a note in the plain rule and in the
-# rule without it (a thousand: 1,001 renders, over a minute). Why 64: outside that family
-# (test_forget_title_line_unit.py's pages are of it, 25 renders) a forget rendered a page at
-# most 19 times on the pages tried: the generated pages, seeds 0 to 299, where the plain
-# rule rendered up to 37 times, and test_forget_changed_title_unit.py's. So the class takes
-# nothing there, and that worst case renders RENDERS_MAX + 2 times, at any size
-# (tests/unit/test_forget_render_cap_unit.py, test_forget_cost_unit.py).
-RENDERS_MAX = 64
+# directly before the one named that the body leaves open, and every claim after it that
+# can open a fence, leave with it whatever the title does (_plan's second stated class).
+# Why a cap: notes stored in reverse that spell the title two ways in turn, under a heading
+# that says one spelling, cost a render a note in the plain rule and in the rule without
+# it (a thousand: 1,001 renders, 74 s; with the cap at 64, 66 renders and 17 s inside the
+# write). Why 32: outside that family (test_forget_title_line_unit.py's pages are of it, 25
+# renders) a forget rendered a page at most 19 times on the pages tried: the generated
+# pages, seeds 0 to 299, where the plain rule rendered up to 37 times, and
+# test_forget_changed_title_unit.py's; runbook-style notes filed one after another, 2. So
+# the class takes nothing there, and that worst case renders RENDERS_MAX + 2 times, at any
+# size (tests/unit/test_forget_render_cap_unit.py, test_forget_cost_unit.py).
+RENDERS_MAX = 32
 # The keys of an audit event's detail made from a note: a page's slug comes from its title.
 # The other keys a project's events carry are counts, kinds, codes, rule ids, a model's name,
 # person ids and the project's own name and id (see the store contract's Audit log).
@@ -457,41 +459,46 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
       This is wider than the plain rule: a claim whose list item would not hold the block
       that follows them leaves, though the plain rule kept it (no fence of it would cover
       that block). What stays: a claim whose fence is closed, by its own line or by the
-      body, and every claim before it or before a heading.
+      body, and every claim before it or before a heading. And, in place of the second
+      kind, every claim after it that can open a fence, whatever the title does: past the
+      cap a forget is no longer exact, and a title that changes at every step must not
+      hold those claims to one a render.
 
     The kinds are chosen on the body just rendered, and the page is titled again by the
-    claims left: a claim under a heading that says the title is written with no heading,
-    so another title can be another body. The first two leave in the order the plain rule
-    would name them, nearest first. The second leaves only while the title's text is this
-    render's (the eighth round: loosened as the first is, it took a claim the plain rule
-    keeps on two generated pages and saved no render). The first leaves only as far as the
-    plain rule would name each in a body written as this render's below its title line
-    (`_with_it`; sixth report, must-fix 1): the title after each claim that leaves, and the
-    first heading of each claim, are read once for all of them (`_Titles`); a new title
-    changes more than its line only where the first heading of a claim still on the page
-    says it or this render's title, and where it does at a step the claims before that
-    step leave and the next render starts from there (RT1: holding to the note that gave
-    the title cost a render for each claim of a run stored in reverse, and holding to its
-    spelling a render a claim where the spelling alternates).
+    claims left: a claim under a heading that says the title is written with no heading, so
+    another title can be another body. The first two leave in the order the plain rule would
+    name them, nearest first. The second leaves only while the title's text is this
+    render's, within the cap (the eighth round: loosened as the first is, it took a claim
+    the plain rule keeps on two generated pages and saved no render). The first leaves only
+    as far as the plain rule would name each in a body written as this render's below its
+    title line (`_with_it`; sixth report, must-fix 1): the title after each claim that
+    leaves, and the first heading of each claim, are read once for all of them (`_Titles`);
+    a new title changes more than its line only where the first heading of a claim still on
+    the page says it or this render's title, and where it does at a step the claims before
+    that step leave and the next render starts from there (RT1: holding to the note that
+    gave the title cost a render for each claim of a run stored in reverse, and holding to
+    its spelling a render a claim where the spelling alternates).
 
     What it costs. Until a forget has named CLOSERS_MAX claims, each render is one the plain
     rule makes too and takes at least the claim it names, so a forget renders no more often
     than the plain rule; past that the second kind can change the body, and what ends the
     loop is only that a render which names a claim takes it. Where the title changes at
     every step and a first heading says one of its spellings, so that the body differs at
-    each step, a forget takes one claim a render as the plain rule does, and the third
-    kind ends that at RENDERS_MAX + 2 renders (a hundred, three hundred or a thousand
-    notes: 66, where the plain rule renders 101, 301 and 1,001 times). No number of renders
-    is promised all the same: past RENDERS_MAX a claim after the one named leaves only as
-    the second kind, which a title that changes at every step holds back, so such claims
-    can still leave one a render; and a new title can uncover a fence the old one kept
-    apart (nineteen renders,
-    and nineteen in the plain rule: test_forget_changed_title_unit.py). A render parses the
-    body whole at most CLOSERS_MAX + 2 times, each claim alone, and puts a few questions of
-    twice the body at most. On the pages tried a forget rendered at most once more than the
-    plain rule, and that only past CLOSERS_MAX, and handed the parser at most 25 characters
-    for each character of its body in each render (tests/unit/test_forget_cost_unit.py):
-    counts from those pages, not bounds.
+    each step, a forget takes one claim a render as the plain rule does, and the third kind
+    ends that at RENDERS_MAX + 2 renders (a hundred, three hundred or a thousand notes: 34,
+    where the plain rule renders 101, 301 and 1,001 times). No number of renders is promised
+    all the same: a new title can uncover a fence the old one kept apart (nineteen renders,
+    and nineteen in the plain rule: test_forget_changed_title_unit.py), and past RENDERS_MAX
+    too. Where each claim named is the oldest note's, and its going titles the page with a
+    spelling that one heading alone says, over a tail that then stands after the next claim
+    to name, with a list item at the margin between each such claim and the one before it,
+    nothing is left open before the claim named and nothing after it can open a fence: a
+    forget renders once a claim, as the plain rule does (forty such claims, 41 renders). A
+    render parses the body whole at most CLOSERS_MAX + 2 times, each claim alone, and puts a
+    few questions of twice the body at most. On the pages tried a forget rendered at most
+    once more than the plain rule, and that only past CLOSERS_MAX, and handed the parser at
+    most 25 characters for each character of its body in each render
+    (tests/unit/test_forget_cost_unit.py): counts from those pages, not bounds.
     It reads the project's page versions, never the rest of the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
 
@@ -560,8 +567,8 @@ def _with_it(
     render's with each gone (`_Titles.steady` with `text`, the eighth round).
 
     Past RENDERS_MAX: every claim the body writes directly before that one whose fence it
-    left open (`_left_open`), all at once and not asked of what follows them, whatever the
-    title does.
+    left open (`_left_open`), all at once and not asked of what follows them, and every
+    claim after it that can open a fence, whatever the title does at any step.
 
     Else, in every render: the claims the body writes directly before that one that the
     plain loop would name next, one a render, the nearest first (`_before_it`), once all
@@ -598,7 +605,11 @@ def _with_it(
     past, capped = renders > CLOSERS_MAX, renders > RENDERS_MAX
     blocks, named = laid_out(kept), kept[run_on - 1]
     at = next(n for n, (_, claim) in enumerate(blocks) if claim is named)
-    later = [c for text, c in blocks[at + 1 :] if past and c and _may_open_a_fence(text)]
+    later = [
+        c for text, c in blocks[at + 1 :] if (past or capped) and c and _may_open_a_fence(text)
+    ]
+    if capped:  # all of them, and the run the body left open before it, whatever the title
+        return _places(kept, [*later, *(blocks[n][1] for n in _left_open(body, blocks, at))])
     took = later[: max(titles.steady(kept, [named, *later], title, text=True) - 1, 0)]
     leave = {id(claim) for claim in took}
     nearest = []  # the claims written directly before the one named, the nearest first
@@ -606,9 +617,7 @@ def _with_it(
         if claim is None:
             break
         nearest.append(claim)
-    if capped:
-        leave |= {id(blocks[n][1]) for n in _left_open(body, blocks, at)}
-    elif len(took) == len(later) and nearest:
+    if len(took) == len(later) and nearest:
         steady = titles.steady(kept, [named, *took, *nearest], title)
         without = [claim for claim in kept if claim is not named and id(claim) not in leave]
         written = laid_out(without)  # the same blocks before the one named, then what follows
@@ -616,8 +625,13 @@ def _with_it(
             line = _PARSER_LINES.split(written[at][0])[0]
             asked = _before_it(body, blocks, at, line, most=steady - len(took))
             leave |= {id(blocks[n][1]) for n in asked}
+    return _places(kept, [claim for claim in kept if id(claim) in leave])
+
+
+def _places(kept: Sequence[Claim], claims: Iterable[Claim | None]) -> set[int]:
+    """The places (1 for the first) of `claims` among `kept`."""
     place = {id(claim): n for n, claim in enumerate(kept, 1)}
-    return {place[i] for i in leave}
+    return {place[id(claim)] for claim in claims if claim is not None}
 
 
 class _Titles:
@@ -790,12 +804,13 @@ def _open_run(
 
 
 def _left_open(body: str, blocks: Sequence[tuple[str, Claim | None]], at: int) -> set[int]:
-    """Which blocks directly before the block at `at`, the one `body` leaves to run on, leave
-    with it past RENDERS_MAX (_plan's second stated class): the claims of `_open_run`, the
-    nearest first, as long as each holds a code fence that the body left open, one that
-    starts in the claim and covers the line after its last (a fence with no closing line,
-    ended by the end of its list item), and none before the first that does not. Not asked
-    of what follows them: one parse of the body as it is, whatever the title does next."""
+    """Which blocks directly before the block at `at`, the one `body` leaves to run on,
+    leave with it past RENDERS_MAX (_plan's third kind, the second stated class): the claims
+    of `_open_run`, the nearest first, as long as each holds a code fence that the body left
+    open, one that starts in the claim and covers the line after its last (a fence with no
+    closing line, ended by the end of its list item), and none before the first that does
+    not. Not asked of what follows them: one parse of the body as it is, whatever the title
+    does next."""
     found = _open_run(body, blocks, at)
     if found is None:
         return set()

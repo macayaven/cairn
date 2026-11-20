@@ -128,6 +128,28 @@ def test_a_span_markdown_cannot_read_as_slack_did_is_its_marks_typed(text, body)
     assert "**" not in page_reads(body)[0]
 
 
+@pytest.mark.parametrize(
+    ("text", "body"),
+    [
+        ("<@U0BIRCH01> * 3", "@U0BIRCH01 * 3"),
+        ("`x` * 3", "`x` * 3"),
+        ("<https://fable.test/x|docs> * 3", "[docs](https://fable.test/x) * 3"),
+        ("<!date^1900000000^{date}|17> * 3", "17 * 3"),
+        ("- <@U0BIRCH01> * 3", "- @U0BIRCH01 * 3"),
+        ("<x|12>. * 3", "12. \\* 3"),
+        ("<x|1>2. * 3", "12. \\* 3"),
+        ("<x|- > * 3", "-  \\* 3"),
+    ],
+)
+def test_a_line_starts_with_the_marks_written_on_it_whatever_wrote_them(text, body):
+    """Found trying the fix: a `*` between blanks after a mention, code or a link was given a
+    backslash, as if it started its line, and `<x|12>. * 3` was written `12. * 3`, a list in
+    a list, as if `. * 3` did. What starts a line is what the note writes on it, a reference's
+    words included."""
+    assert body_of(filed(text)) == body
+    assert page_reads(body)[0].count("*") == 1  # the page shows it, and no list's bullet
+
+
 def test_the_title_writes_a_span_as_markdown_reads_it():
     title = filed("*[WIP]*<https://fable.test/x|PR 12>").title  # the link is its words alone
     assert title == "\\*\\[WIP\\]\\*PR 12"

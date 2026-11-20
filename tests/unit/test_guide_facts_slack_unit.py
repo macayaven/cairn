@@ -1090,8 +1090,9 @@ def test_connect_emphasis_is_written_only_where_slack_shows_it():
     """connect.md: "Bold, italic and struck text are Slack's only where its marks make them:
     ...\" (The tester's second attack, finding 2: every `*x*` was doubled, so `2 * 3 * 4` was
     `2 ** 3 ** 4`; each case is test_slack_emphasis_unit's. Trying the fix found the last
-    two: a span a page read otherwise showed its asterisks doubled, and a `*` after a list's
-    mark began a list.)"""
+    three: a span a page read otherwise showed its asterisks doubled, a `*` after a list's
+    mark began a list, and a line's start was taken to be where the message's text resumed
+    after a mention or a link's words.)"""
     says(
         *CONNECT,
         "Bold, italic and struck text are Slack's only where its marks make them: a `*`, `_` or"
@@ -1104,8 +1105,8 @@ def test_connect_emphasis_is_written_only_where_slack_shows_it():
         " digit on its outer one, `*(b)*` right before a date's words for instance, its marks"
         " are typed. Every other `*` and `_` is the character typed, with a backslash before"
         " it unless it is a `*` between two blanks past the blanks and the marks of a"
-        " quotation or a list that start its line, or a `_` between two letters or digits, so"
-        " `2 * 3 * 4` and `snake_case` are written as typed.",
+        " quotation or a list that start its line in the note, or a `_` between two letters or"
+        " digits, so `2 * 3 * 4` and `snake_case` are written as typed.",
     )
     for sent, written in (
         ("*bold* _italic_ ~struck~", "**bold** _italic_ ~struck~"),
@@ -1115,6 +1116,7 @@ def test_connect_emphasis_is_written_only_where_slack_shows_it():
         ("*see <https://fable.test/x|docs>*", "\\*see [docs](https://fable.test/x)\\*"),
         ("*(b)*<!date^1900000000^{date}|17 Mar>", "\\*\\(b\\)\\*17 Mar"),
         ("&gt; * a and 2 * 3\n- * b", "> \\* a and 2 * 3\n- \\* b"),
+        ("<@U0BIRCH01> * 3\n<x|12>. * 4", "@U0BIRCH01 * 3\n12. \\* 4"),
     ):
         assert as_read(a_filed_note(sent))[0] == written, sent
 

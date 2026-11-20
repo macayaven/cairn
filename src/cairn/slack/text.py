@@ -102,7 +102,9 @@ def _name(name: str, literal: Callable[[str], str] = _literal) -> str:
     return literal(" ".join(name.splitlines()))
 
 
-def _prose(text: str, clear: bool = True, last: str = " ", then: str = " ") -> str:
+def _prose(
+    text: str, clear: bool = True, last: str = " ", then: str = " ", lead: str | None = ""
+) -> str:
     """Text Slack displayed as prose, as Markdown that displays the same. A backtick here is
     one Slack paired with no other and displayed as it is: left bare, Markdown would pair it
     with the backtick that opens a code span (_render) and read that span's code as prose.
@@ -114,8 +116,9 @@ def _prose(text: str, clear: bool = True, last: str = " ", then: str = " ") -> s
     indentation and in any container) gets a backslash before its first tilde. `clear`:
     whether what was written on the line before `text` is such marks alone, or nothing.
     Emphasis is written where Slack shows it and nowhere else (_emphasis; `last` and
-    `then`: what the note writes just before and just after `text`)."""
-    text = _emphasis(_redact(_decode(text)), last, then)
+    `then`: what the note writes just before and just after `text`, `lead` what of the
+    marks that start its line _CONTAINER has yet to read: _lead)."""
+    text = _emphasis(_redact(_decode(text)), last, then, lead)
     if clear:
         return _FENCE_LEAD.sub(r"\1\\~", text)
     first, feed, rest = text.partition("\n")
@@ -158,11 +161,26 @@ def _paired(text: str) -> dict[int, int]:
 
 _ESCAPED = {"&": "&amp;", "<": "&lt;", **{mark: "\\" + mark for mark in "\\[]()!`"}}
 BLANKS = {"  ", " \t", "\t ", "\t\t"}  # a blank each side
-# The marks of quotations and list items that may start a line (_emphasis).
+# The marks of quotations and list items that may start a line (_emphasis), and a list
+# item's mark as far as it is written while the line's next character is still to come.
 _CONTAINER = re.compile(r"(?:[ \t>]|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]))*")
+_PARTIAL = re.compile(r"[-+*]|[0-9]{1,9}[.)]?")
 
 
-def _emphasis(text: str, last: str = " ", then: str = " ") -> str:
+def _lead(lead: str | None, written: str) -> str | None:
+    """What of the marks that start a line _CONTAINER has yet to read once `written` is
+    written on it, `lead` before: "" where they are all read or none is written yet, the
+    start of a list item's mark whose blank is still to come, and None where the line holds
+    something past them. The note's line, not the message's: a reference's words count."""
+    _, feed, last = written.rpartition("\n")
+    if not feed and lead is None:
+        return None
+    line = last if feed else lead + last
+    rest = line[_CONTAINER.match(line).end() :]
+    return rest if not rest or _PARTIAL.fullmatch(rest) else None
+
+
+def _emphasis(text: str, last: str = " ", then: str = " ", lead: str | None = "") -> str:
     """`text`, prose as Slack displayed it, as Markdown: a `*` and a `_` that Slack shows as
     emphasis (_paired) written `**` and `_`, so the page shows bold and italic, and a `~` as
     typed (a page cannot strike). Every other `*` and `_` is the character typed, with a
@@ -176,7 +194,9 @@ def _emphasis(text: str, last: str = " ", then: str = " ") -> str:
     read `**a****b**` otherwise. And a span is written so only where the page's parser reads
     its two marks as emphasis (_reads): `last` and `then` are the characters the note writes
     just before and just after `text` (a blank where it starts or ends a line). Else its
-    marks are typed too, with their backslashes: `*(b)*` before a date's words shows so."""
+    marks are typed too, with their backslashes: `*(b)*` before a date's words shows so.
+    `lead`: what of the marks that start the line `text` starts on is written before it and
+    yet to be read (_lead), None where the line holds more."""
     paired, written = _paired(text), []
     for at, character in enumerate(text):
         if at in paired:
@@ -205,9 +225,9 @@ def _emphasis(text: str, last: str = " ", then: str = " ") -> str:
         if not _reads(text[at], before, written[at + 1][:1], written[close - 1][-1:], after):
             for mark in chain:
                 written[mark] = "\\" + text[mark]
-    line = 0  # where the marks that start the line end
-    for at, character in enumerate(text):
-        if not at or text[at - 1] == "\n":
+    line = 0 if lead is None else _CONTAINER.match(lead + text).end() - len(lead)
+    for at, character in enumerate(text):  # `line`: where the marks that start its line end
+        if at and text[at - 1] == "\n":
             line = _CONTAINER.match(text, at).end()
         before, after = text[at - 1 : at], text[at + 1 : at + 2]
         if at in paired:
@@ -707,7 +727,9 @@ def _render(
 
     def prose(text: str, then: str = " ") -> str:  # `then`: what the note writes after it
         last = next((piece[-1] for piece in reversed(pieces) if piece), " ")  # and before
-        return _shown(text) if displayed else _prose(text, clear, last.strip("\n") or " ", then)
+        if displayed:
+            return _shown(text)
+        return _prose(text, clear, last.strip("\n") or " ", then, lead)
 
     tokens: list[tuple[int, int, str, object]] = []
     # A block's line: where it starts, read once (`read`: up to where), and where the marks
@@ -735,7 +757,8 @@ def _render(
     pieces: list[str] = []
     # fresh: nothing is written on the line; clear: only what may stand before a fence (_prose)
     # gap: the text before a reference that shows nothing, which is as if it were not there
-    offset, below, fresh, clear, place, gap = 0, False, True, True, -1, ""
+    # lead: what of the marks that start the line is yet to be read (_lead)
+    offset, below, fresh, clear, place, gap, lead = 0, False, True, True, -1, "", ""
     for start, end, kind, what in tokens[:-1]:
         reference = None
         if not kind and text[start] != "`":
@@ -747,7 +770,7 @@ def _render(
         then = "\n" if isinstance(what, list) else reference[:1] if reference else "`"
         pieces.append(prose(_apart(before, below, kind == "block", True, fresh), then))
         gap, fresh = "", pieces[-1].endswith("\n") if pieces[-1] else fresh
-        clear = _clear(clear, pieces[-1])
+        clear, lead = _clear(clear, pieces[-1]), _lead(lead, pieces[-1])
         if isinstance(what, list):
             place += 1
             if title:
@@ -775,7 +798,7 @@ def _render(
         else:  # two backticks with no code between them
             pieces.append(prose(text[start:end]))
         offset, below, fresh = end, kind == "block", fresh and not pieces[-1]
-        clear = _clear(clear, pieces[-1])
+        clear, lead = _clear(clear, pieces[-1]), _lead(lead, pieces[-1])
     pieces.append(prose(_apart(gap + text[offset:], below, False, False, fresh)))
     return "".join(pieces)
 

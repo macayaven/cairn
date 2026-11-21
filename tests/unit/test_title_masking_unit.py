@@ -179,6 +179,32 @@ def test_the_kinds_of_characters_are_the_index_own(monkeypatch):
     assert opened == []
 
 
+def test_a_read_asks_the_tokenizer_three_statements_once_and_none_after(tmp_path, monkeypatch):
+    """A read of related pages that judges where a title stands asks the tokenizer how it
+    reads the characters of the passages it judges and of the title, in a database of its
+    own in memory: made, given the characters, asked. A second read of the same asks none."""
+    from test_relating_cost_unit import mentioned
+
+    store, project_id = mentioned(tmp_path, "Then she opens the Quill ledger `at dawn`.")
+    monkeypatch.setattr(relating, "_KINDS", {})
+    asked, made = [], relating._classifying
+
+    def classifying() -> sqlite3.Connection:
+        con = made()
+        con.set_trace_callback(
+            lambda said: None if said.lstrip().startswith("--") else asked.append(said)
+        )
+        return con
+
+    monkeypatch.setattr(relating, "_classifying", classifying)
+    for statements in (["CREATE", "INSERT", "SELECT"], []):
+        asked.clear()
+        found = store.related_pages(project_id, "quill-ledger", relations.RELATED_MAX)
+        assert [reason.kind for reason in found.pages[0].why] == [relations.MENTIONED_BY]
+        assert [said.split()[0] for said in asked] == statements
+    store.close()
+
+
 def test_blanking_reads_each_character_a_bounded_number_of_times():
     """However many combining marks a stretch holds, or the text between stretches, each
     character is read a bounded number of times: a stretch of marks alone between two

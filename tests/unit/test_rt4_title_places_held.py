@@ -1,0 +1,582 @@
+"""What an adversarial read of the title rule of related pages attacked, past the fix that
+judges each place a title stands by itself, and found to hold (RT4, fourth round).
+
+The oracle here is independent of cairn's reader: it does not use SQLite's highlight,
+relations.blanked, spans.code_read or anything of cairn.store.relating. It tokenises a claim
+and a title as FTS5's unicode61 tokenizer is documented to for the index's declaration
+(no options: categories "L* N* Co", case folded, remove_diacritics 1), finds every run of
+the title's tokens in the claim, and calls a run prose when none of its characters lies in
+code as the page renders the claim (its own markdown-it, set as the page's parser is: every
+character of the run's words swapped for a private-use marker, the claim rendered, and each
+marker looked for inside <code> or <pre>, or a code element between two of them), nor in a
+stretch the documented rule calls a fact (cairn.facts.extract_facts: a url, a path, a flag,
+a version, inline code, a fenced block from its opening line). The facts are cairn's own
+reading: the oracle does not check them. Two tests check the oracle: its tokens against the
+index's own (fts5vocab, never highlight) and its parser against the page's renderer.
+
+The cases one step past the fix that do not hold are in test_rt4_title_places_found.py.
+Made-up names."""
+
+import json
+import random
+import sqlite3
+import unicodedata
+from html.parser import HTMLParser
+from types import SimpleNamespace
+
+import pytest
+import test_related_unit as api
+from markdown_it import MarkdownIt
+from test_relating_cost_unit import watched
+
+from cairn import relations
+from cairn.compiler import compile_note
+from cairn.facts import extract_facts
+from cairn.gate import lint_gate
+from cairn.llm import FakeModel
+from cairn.llm_compiler import LLMComposer
+from cairn.memory import Memory
+from cairn.spans import Span
+from cairn.store import Store, relating, schema
+from cairn.web.markdown import render
+
+env = api.env
+TITLE = "Step by Step"
+
+# The oracle: the index's tokens, as documented
+
+DIACRITICS = frozenset(  # remove_diacritics=1: the marks Latin letters decompose into
+    mark
+    for code in [*range(0xC0, 0x250), *range(0x1E00, 0x1F00)]
+    for mark in unicodedata.normalize("NFD", chr(code))[1:]
+    if unicodedata.combining(mark)
+)
+
+
+def token_char(ch: str) -> bool:
+    if ch in DIACRITICS:  # read as part of its word, and folded away
+        return True
+    if ord(ch) < 128:
+        return ch.isalnum()
+    category = unicodedata.category(ch)
+    return category[0] in "LN" or category == "Co"
+
+
+def folded(ch: str) -> str:
+    if ch in DIACRITICS:
+        return ""
+    parts = unicodedata.normalize("NFD", ch)
+    if len(parts) == 2 and parts[0].isascii() and unicodedata.combining(parts[1]):
+        return parts[0].lower()
+    return ch.casefold() if len(ch.casefold()) == 1 else ch
+
+
+def tokens(text: str) -> list[tuple[str, int, int]]:
+    found, at = [], 0
+    while at < len(text):
+        if not token_char(text[at]):
+            at += 1
+            continue
+        end = at
+        while end < len(text) and token_char(text[end]):
+            end += 1
+        found.append(("".join(map(folded, text[at:end])), at, end))
+        at = end
+    return found
+
+
+def occurrences(text: str, title: str) -> list[tuple[int, int]]:
+    want, have = [t for t, _, _ in tokens(title)], tokens(text)
+    n = len(want)
+    return [
+        (have[i][1], have[i + n - 1][2])
+        for i in range(len(have) - n + 1)
+        if n and [t for t, _, _ in have[i : i + n]] == want
+    ]
+
+
+# The oracle: code as the page renders it
+
+PAGE = (
+    MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
+    .enable("table")
+    .disable(["image", "heading", "lheading"])
+)
+
+
+class Walk(HTMLParser):
+    """The rendered page as events: a code element opened or closed, and each character
+    shown, with whether it stands in code (an attribute's characters count, in code when the
+    element is <code> or <pre> or stands in one)."""
+
+    def __init__(self, attributes: bool = True) -> None:
+        super().__init__(convert_charrefs=True)
+        self.depth, self.events, self.attributes = 0, [], attributes
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("code", "pre"):
+            self.events.append(("open", tag))
+            self.depth += 1
+        for _, value in attrs if self.attributes else ():
+            self.events += [("char", ch, self.depth > 0) for ch in value or ""]
+
+    def handle_endtag(self, tag):
+        if tag in ("code", "pre"):
+            self.depth -= 1
+            self.events.append(("close", tag))
+
+    def handle_data(self, data):
+        self.events += [("char", ch, self.depth > 0) for ch in data]
+
+
+def walked(html: str, attributes: bool = True) -> list:
+    walk = Walk(attributes)
+    walk.feed(html)
+    walk.close()
+    return walk.events
+
+
+def blocks(text: str) -> list:
+    return [(t.type, t.map) for t in PAGE.parse(text) if t.nesting >= 0]
+
+
+def in_page_code(text: str, start: int, end: int) -> bool:
+    markers, chars, code = {}, list(text), 0xF0000
+    for at in range(start, end):
+        if token_char(text[at]):
+            chars[at], markers[chr(code)] = chr(code), at
+            code += 1
+    swapped = "".join(chars)
+    assert blocks(swapped) == blocks(text), "the oracle abstains: the swap moved a block"
+    events = walked(PAGE.render(swapped))
+    seen: dict[str, list[bool]] = {}
+    places = [n for n, e in enumerate(events) if e[0] == "char" and e[1] in markers]
+    for n in places:
+        seen.setdefault(events[n][1], []).append(events[n][2])
+    code_lines = {
+        line
+        for t in PAGE.parse(text)
+        if t.type in ("fence", "code_block") and t.map
+        for line in range(*t.map)
+    }
+    for marker, at in markers.items():
+        if marker not in seen and text.count("\n", 0, at) in code_lines:
+            return True  # a fence's opening line, not shown: code
+        if any(seen.get(marker, ())):
+            return True
+    return bool(places) and any(e[0] != "char" for e in events[places[0] : places[-1]])
+
+
+def fact_stretches(text: str) -> list[tuple[int, int]]:
+    span = Span(
+        id="sp_oracle",
+        source_id="n",
+        kind="paragraph",
+        heading_path=(),
+        start_line=1,
+        end_line=1 + text.count("\n"),
+        text=text,
+    )
+    stretches = []
+    for fact in extract_facts(span):
+        if fact.kind in relations.TERM_KINDS:
+            stretches.append((fact.start, fact.end))
+        elif fact.kind == "code_block":  # from its opening line
+            stretches.append((text.rfind("\n", 0, fact.start - 1) + 1, fact.end))
+    return stretches
+
+
+def prose_places(text: str, title: str) -> list[tuple[int, int]]:
+    facts = fact_stretches(text)
+    return [
+        (s, e)
+        for s, e in occurrences(text, title)
+        if not any(a < e and s < b for a, b in facts) and not in_page_code(text, s, e)
+    ]
+
+
+# Cases decided by hand: (title, claim, whether it names the title in prose)
+
+NFC, NFD = (unicodedata.normalize(form, "Café Noir") for form in ("NFC", "NFD"))
+CASES = [
+    # overlapping, adjacent, code and prose in either order, straddling a code span's edge
+    (TITLE, "Read `Step` by Step by Step today.", True),
+    (TITLE, "Step by Step by Step by Step.", True),
+    (TITLE, "Step by Step Step by Step.", True),
+    ("Echo Echo", "Say Echo Echo Echo aloud.", True),
+    ("Echo Echo", "Say Echo Echo Echo Echo aloud.", True),
+    ("Echo Echo", "Say `Echo` Echo `Echo` aloud.", False),
+    ("Echo Echo", "Say `Echo` Echo Echo `Echo` aloud.", True),
+    (TITLE, "Read `Step by Step` and Step by Step.", True),
+    (TITLE, "Read Step by Step and `Step by Step`.", True),
+    (TITLE, "Read Step `by Step` today.", False),
+    (TITLE, "Read `Step by` Step today.", False),
+    (TITLE, "Read `Step` by Step by Step by `Step` today.", True),
+    # split by a code span, a line break, punctuation, an entity, invisible characters
+    ("Alpha Beta", "Alpha `x` Beta.", False),
+    ("Alpha Beta", "Alpha `x` Beta and `Alpha Beta`.", False),
+    ("Alpha Beta", "Alpha` `Beta.", False),
+    ("Alpha Beta", "Alpha`x`Beta today.", False),
+    ("Alpha Beta", "Alpha\nBeta today.", True),
+    ("Alpha Beta", "Alpha, Beta today.", True),
+    ("Alpha Beta", "Alpha&amp;Beta today.", False),
+    ("Alpha Beta", "Alpha&nbsp;Beta today.", False),
+    ("Alpha Beta", "Alpha­Beta today.", True),
+    ("Alpha Beta", "Alpha​Beta today.", True),
+    # a fact or a code span against the title's first or last word
+    ("Alpha Beta", "Alpha Beta`x` today.", True),
+    ("Alpha Beta", "`x`Alpha Beta today.", True),
+    ("Alpha Beta", "Alpha Beta/usr/lib today.", True),
+    ("Alpha Beta", "Alpha Beta--audit-keep today.", True),
+    ("Alpha Beta", "see Alpha Beta:https://example.com/x today.", True),
+    ("Alpha Beta", "Alpha Beta-v1.2.3 today.", True),
+    ("Alpha Beta", "Alpha Beta`--audit-keep` today.", True),
+    # digits, an apostrophe, a hyphen, letters with marks, one word, a prefix
+    ("Route 66", "Take Route 66 west.", True),
+    ("O'Brien Notes", "Read O'Brien Notes today.", True),
+    ("Well-Known Path", "Take the well-known path.", True),
+    ("Well-Known Path", "Take the `well`-known path.", False),
+    (NFC, f"Order {NFD} today.", True),
+    (NFD, f"Order {NFC} today.", True),
+    (NFC, f"Order `{NFD}` today.", False),
+    ("Ñandú Über", "Saw ñandú über the hill.", True),
+    ("Ñandú Über", unicodedata.normalize("NFD", "Saw Ñandú Über and `Ñandú Über`."), True),
+    ("Echo", "Say Echoes and Echo.", True),
+    ("Echo", "Say Echoes.", False),
+    # every kind of code
+    (TITLE, "Read ``Step by Step`` today.", False),
+    (TITLE, "Read ```Step by Step``` today.", False),
+    (TITLE, "Read `` `Step by Step` `` today.", False),
+    (TITLE, "Read ``Step ` by Step`` today.", False),
+    (TITLE, "Read ` Step by Step ` today.", False),
+    (TITLE, "Read \\`Step by Step\\` today.", False),  # literal backticks; a fact's to the facts
+    (TITLE, "Read `Step by Step\\` today` x.", False),
+    (TITLE, "```text\nStep by Step\n```", False),
+    (TITLE, "```Step by Step\nx\n```", False),
+    (TITLE, "~~~ Step by Step\nx\n~~~", False),
+    (TITLE, "```\nStep by Step", False),
+    (TITLE, "Intro line.\n    Step by Step", True),  # a lazy continuation
+    (TITLE, "- Item.\n\n    Step by Step", True),
+    (TITLE, "- Item.\n\n        Step by Step", False),
+    (TITLE, "- Item.\n\n\t\tStep by Step", False),
+    (TITLE, "\tStep by Step", False),
+    (TITLE, "> Quote.\n>\n>     Step by Step", False),
+    (TITLE, "> Quote.\n>     Step by Step", True),
+    (TITLE, "Notes\n---\n    Step by Step", False),
+    (TITLE, "Step by Step\n---", True),
+    (TITLE, "`Step by Step`\n---", False),
+    (TITLE, "<code>Step by Step</code>", True),  # raw HTML is text on the page
+    (TITLE, "<pre>\nStep by Step\n</pre>", True),
+    (TITLE, "[Step by Step](https://example.com/a)", True),
+    (TITLE, "[docs](<Step by Step>)", True),
+    (TITLE, '[docs](https://example.com/a "Step by Step")', True),
+    (TITLE, "![Step by Step](https://example.com/a.png)", True),
+    (TITLE, "![`Step by Step`](https://example.com/a.png)", False),
+    (TITLE, "![a `b](v) Step by Step` x", False),
+    (TITLE, "<https://example.com/Step-by-Step>", False),
+    (TITLE, "| a | b |\n|---|---|\n| `x` | Step by Step |", True),
+    (TITLE, "| a | b |\n|---|---|\n| `Step by Step` | x |", False),
+    (TITLE, "| a | b |\n|---|---|\n| `x \\| y` | Step by Step |", True),
+    (TITLE, "| a | `b` |\n|---|---|\n| Step by Step | `Step by Step` |", True),
+    (TITLE, "1. `x`\n   Step by Step", True),
+    (TITLE, "*Step* by **Step** today.", True),
+]
+
+
+def store_at(tmp_path, name: str) -> tuple[Store, Memory]:
+    store = Store(tmp_path / f"{name}.db", clock=lambda: api.WRITTEN)
+    store.create_project("ops")
+    return store, Memory(store, lint_gate)
+
+
+def names_by_cairn(memory: Memory, title: str, claim: str) -> bool:
+    focus = memory.note("ops", "The field guide is on the shelf.", title=title, topic=title)
+    other = memory.note("ops", claim, title="Reader", topic="Reader")
+    (stated,) = memory.page("ops", other["page"])["claims"]
+    assert stated["text"] == claim  # the note is one passage, and the claim is its text
+    answer = memory.related("ops", focus["page"], 20)
+    assert answer["searched"]["complete"]
+    return any(why["kind"] == "mentioned_by" for p in answer["related"] for why in p["why"])
+
+
+def test_the_oracles_tokens_are_the_index_tokens_on_every_text_it_judges():
+    texts = [text for case in CASES for text in case[:2]]
+    texts += ["a" + ch + "b" for ch in sorted(set("".join(texts)))]
+    with sqlite3.connect(":memory:") as con:
+        con.execute(schema._CLAIM_INDEX.format(index="t"))
+        con.execute("CREATE VIRTUAL TABLE v USING fts5vocab(t, instance)")
+        con.executemany("INSERT INTO t (rowid, text) VALUES (?, ?)", enumerate(texts, 1))
+        index: dict[int, list[str]] = {}
+        for doc, term in con.execute(
+            "SELECT doc, term FROM v WHERE col = 'text' ORDER BY doc, offset"
+        ):
+            index.setdefault(doc, []).append(term)
+    for n, text in enumerate(texts, 1):
+        assert index.get(n, []) == [t for t, _, _ in tokens(text)], text
+
+
+def test_the_oracles_parser_shows_code_where_the_page_does():
+    for _, claim, _ in CASES:
+        assert walked(PAGE.render(claim), False) == walked(str(render(claim)), False), claim
+
+
+@pytest.mark.parametrize(("title", "claim", "names"), CASES)
+def test_each_place_of_a_title_is_judged_as_the_oracle_judges_it(tmp_path, title, claim, names):
+    assert bool(prose_places(claim, title)) is names  # the oracle agrees with the hand
+    store, memory = store_at(tmp_path, "case")
+    try:
+        assert names_by_cairn(memory, title, claim) is names
+    finally:
+        store.close()
+
+
+ATOMS = ["Step", "by", "Step by Step", " ", " ", "\n", "\n\n", "`", "``", "x", "- ", "> ", "    "]
+ATOMS += ["\t", "1. ", "|", "\\|", "[", "](u)", "*", "~~~", "```"]
+
+
+def test_generated_claims_are_judged_as_the_oracle_judges_them(tmp_path):
+    """Seeded: 1,500 draws of the atoms above, those that hold the title kept (no heading mark,
+    no picture: those are pinned as failing), each judged by cairn and by the oracle; the
+    oracle abstains on none here."""
+    rng, store, memory = random.Random(20261121), *store_at(tmp_path, "generated")
+    try:
+        project, verdicts = 0, {True: 0, False: 0}
+        for _ in range(1500):
+            claim = "".join(rng.choice(ATOMS) for _ in range(rng.randint(3, 14))).strip()
+            if not occurrences(claim, TITLE) or not claim:
+                continue
+            project += 1
+            name = f"p{project}"
+            store.create_project(name)
+            focus = memory.note(name, "The guide.", title=TITLE, topic=TITLE)
+            other = memory.note(name, claim, title="Reader", topic="Reader")
+            texts = [c["text"] for c in memory.page(name, other["page"])["claims"]]
+            answer = memory.related(name, focus["page"], 20)
+            got = any(w["kind"] == "mentioned_by" for p in answer["related"] for w in p["why"])
+            assert got is any(prose_places(text, TITLE) for text in texts), claim
+            verdicts[got] += 1
+        assert verdicts[True] >= 250 and verdicts[False] >= 60, verdicts
+    finally:
+        store.close()
+
+
+# The cutoffs
+
+
+def plain(env, n: int) -> str:
+    return api.note(env, f"Group {n}", f"Group {n} reads Step by Step today.")["page"]
+
+
+def surfaces(env, focus: str) -> dict[str, tuple[bool, list[str]]]:
+    response = api.rest(env, focus, "?limit=20")
+    assert response.status_code == 200
+    answers = {
+        "Memory": Memory(env.store, lint_gate).related("ops", focus, 20),
+        "REST": response.json(),
+        "MCP": api.answer(env.client, env.key, "related", project="ops", slug=focus, limit=20),
+    }
+    return {
+        reader: (
+            answer["searched"]["complete"],
+            sorted(
+                page["page"]
+                for page in answer["related"]
+                if any(why["kind"] == "mentioned_by" for why in page["why"])
+            ),
+        )
+        for reader, answer in answers.items()
+    }
+
+
+@pytest.mark.parametrize("named", [5, 6])
+def test_five_pages_naming_a_title_relate_and_six_do_not_whatever_holds_it_in_code(env, named):
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    pages = [plain(env, n) for n in range(named)]
+    for n in range(3):  # beside them, pages that hold it only in code: they never count
+        api.note(env, f"Code {n}", f"Run `Step by Step` {n} and ```Step by Step``` again.")
+    expected = sorted(pages) if named <= relations.COMMON else []
+    assert surfaces(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
+@pytest.mark.parametrize("in_code", [True, False], ids=["in-code", "in-prose"])
+@pytest.mark.parametrize("held", [63, 64])
+def test_claims_that_hold_the_title_count_in_prose_or_not_at_the_bound(env, held, in_code):
+    """CLAIMS_COMMON counts the claims of other pages that hold the title's words, in prose or
+    not (the ruling): 63 on one page and one more elsewhere relate; 64 and one more do not,
+    and the answer is complete and holds no mention."""
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    said = "Ada reads `Step by Step` {n}." if in_code else "Ada reads Step by Step {n}."
+    many = api.note(env, "Many", "\n\n".join(said.format(n=n) for n in range(held)))["page"]
+    claims = api.answer(env.client, env.key, "page", project="ops", slug=many)["claims"]
+    assert len(claims) == held
+    one = plain(env, 0)
+    assert held + 1 - relations.CLAIMS_COMMON in (0, 1)
+    expected = (
+        [] if held + 1 > relations.CLAIMS_COMMON else sorted([one, *([] if in_code else [many])])
+    )
+    assert surfaces(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
+def test_the_tool_and_the_contract_say_the_claims_count_in_prose_or_not():
+    import cairn.server
+
+    for text in (api.tools()["related"].description, cairn.server.__doc__):
+        assert "in prose or not" in " ".join(text.split())
+
+
+# What a reason shows of a claim cut
+
+
+@pytest.mark.parametrize(
+    "prose",
+    ["Then Step by Step again.", "Then `Step` by Step by Step again."],
+    ids=["plain", "overlap"],
+)
+def test_a_claim_cut_gives_the_line_of_its_first_place_in_prose_never_one_in_code(env, prose):
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    lines = ["Read `Step by Step` first.", "Read `Step` by `Step by Step` too."]
+    lines += [f"Filler {n} keeps the claim long enough to be cut." for n in range(14)]
+    text = "\n".join([*lines, prose, "And `Step by Step` once more."])
+    assert len(text) > relations.TEXT_MAX
+    reader = api.note(env, "Reader", text)["page"]
+    (claim,) = api.answer(env.client, env.key, "page", project="ops", slug=reader)["claims"]
+    assert claim["text"] == text
+    (page,) = api.answer(env.client, env.key, "related", project="ops", slug=focus)["related"]
+    (why,) = page["why"]
+    assert (why["kind"], why["there"]["text_cut"], why["there"]["line"]) == (
+        "mentioned_by",
+        True,
+        prose,
+    )
+    assert "text" not in why["there"]
+
+
+# The database in memory: cost, closing, locks, reach
+
+
+@pytest.fixture
+def scratch_watch(monkeypatch):
+    """Every database in memory a read opens: its statements, and whether it was closed."""
+    seen = SimpleNamespace(connections=[], statements=[], fail=False, during=None)
+    opened = relating._scratch
+
+    def watched_scratch():
+        con = opened()
+        con.set_trace_callback(seen.statements.append)
+        seen.connections.append(con)
+        if seen.during is not None:
+            seen.during()
+        if seen.fail:
+            con.set_authorizer(
+                lambda action, *_: (
+                    sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_INSERT else sqlite3.SQLITE_OK
+                )
+            )
+        return con
+
+    monkeypatch.setattr(relating, "_scratch", watched_scratch)
+    return seen
+
+
+def closed(con: sqlite3.Connection) -> bool:
+    try:
+        con.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return True
+    return False
+
+
+def test_a_read_opens_one_database_in_memory_runs_three_statements_and_closes_it(
+    env, scratch_watch
+):
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    for n in range(4):
+        api.note(env, f"Group {n}", f"Group {n} reads `Step` by Step by Step {n}.\n\nAnd again.")
+    with watched(env.store) as seen:
+        Memory(env.store, lint_gate).related("ops", focus, 20)
+    (con,) = scratch_watch.connections
+    assert closed(con)
+    statements = [s for s in scratch_watch.statements if not s.lstrip().startswith("--")]
+    assert len(statements) == 3, statements
+    assert len(seen.statements) <= 17
+
+
+def test_an_error_inside_the_database_in_memory_closes_it_and_the_next_read_runs(
+    env, scratch_watch
+):
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    api.note(env, "Reader", "Reader reads `Step` by Step by Step.")
+    scratch_watch.fail = True
+    with pytest.raises(sqlite3.DatabaseError):
+        Memory(env.store, lint_gate).related("ops", focus, 20)
+    assert closed(scratch_watch.connections[-1])
+    scratch_watch.fail = False
+    api.note(env, "Other", "Other reads Step by Step.")  # the store writes again
+    answer = Memory(env.store, lint_gate).related("ops", focus, 20)
+    assert answer["searched"]["complete"] and len(answer["related"]) == 2
+    assert all(closed(con) for con in scratch_watch.connections)
+
+
+def test_a_read_writes_nothing_holds_no_write_lock_and_waits_on_none(env, tmp_path, scratch_watch):
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    api.note(env, "Reader", "Reader reads `Step` by Step by Step.")
+    side = sqlite3.connect(tmp_path / "cairn.db", timeout=0, isolation_level=None)
+    try:
+        version = side.execute("PRAGMA data_version").fetchone()
+        taken = []
+
+        def write_beside():  # mid-read: another connection takes the write lock at once
+            side.execute("BEGIN IMMEDIATE")
+            taken.append(True)
+            side.execute("ROLLBACK")
+
+        scratch_watch.during = write_beside
+        Memory(env.store, lint_gate).related("ops", focus, 20)
+        assert taken == [True]
+        assert side.execute("PRAGMA data_version").fetchone() == version  # nothing written
+        scratch_watch.during = None
+        side.execute("BEGIN IMMEDIATE")  # and the reverse: a writer holds it while a read runs
+        try:
+            answer = Memory(env.store, lint_gate).related("ops", focus, 20)
+        finally:
+            side.execute("ROLLBACK")
+        assert [p["page"] for p in answer["related"]] == ["reader"]
+    finally:
+        side.close()
+
+
+def test_the_database_in_memory_is_given_only_passages_of_the_project_asked(env, scratch_watch):
+    vault = env.store.create_project("vault")
+    for n in range(3):  # before the project's rows, and below between them: inside its span
+        api.note(env, f"Cellar {n}", f"Juniper {n} reads Step by Step in the cellar.", "vault")
+    api.note(env, TITLE, "Juniper's own guide.", "vault")
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    for n in range(3, 6):
+        api.note(env, f"Cellar {n}", f"Juniper {n} reads Step by Step in the cellar.", "vault")
+    api.note(env, "Reader", "Reader reads `Step` by Step by Step.")
+    answer = Memory(env.store, lint_gate).related("ops", focus, 20)
+    assert [p["page"] for p in answer["related"]] == ["reader"]
+    assert "Juniper" not in json.dumps(answer) and vault.id not in json.dumps(answer)
+    given = " ".join(s for s in scratch_watch.statements if s.lstrip().upper().startswith("INSERT"))
+    assert "Reader reads" in given and "Juniper" not in given and "Cellar" not in given
+
+
+# A claim that is not its passage's text: stated to mention as the index has it
+
+
+def test_a_claim_a_model_compiled_apart_from_its_passage_mentions_as_the_index_has_it(env):
+    """Stated (cairn.server's contract: a claim that is not its passage's text mentions as
+    the index has it). Not only a page saved by hand reaches it: the product's own compile
+    with a model does, when the model leaves out the blanks at a line's end, which the
+    verbatim gate does not read; the page then shows the title only in code, and the
+    claim mentions it."""
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    note, _ = env.store.add_note(env.ops.id, "Read `Step by Step` today.  \nBrook keeps it.")
+    (span,) = [s for s in env.store.note_spans(note.id) if s.kind == "paragraph"]
+    claim = {"text": "Read `Step by Step` today.\nBrook keeps it.", "span_ids": [span.id]}
+    model = FakeModel([json.dumps({"claims": [claim]})])
+    assert compile_note(env.store, note, compose=LLMComposer(model)).status == "saved"
+    (page,) = [p for p in env.store.list_pages(env.ops.id) if p.slug != focus]
+    assert [c.text for c in page.claims] == [claim["text"]] != [span.text]
+    assert not prose_places(claim["text"], TITLE)  # the oracle: the title stands in code only
+    assert surfaces(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, [page.slug]))

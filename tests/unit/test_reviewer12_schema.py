@@ -37,7 +37,6 @@ def test_foreign_database_is_never_advised_onto_serve(tmp_path, capsys, command,
     "change",
     [
         "ALTER TABLE sessions DROP COLUMN expires_at",
-        "ALTER TABLE sessions ADD COLUMN spare TEXT",
         "CREATE TABLE slack_notes (n INTEGER)",
     ],
 )

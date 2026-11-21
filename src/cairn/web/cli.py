@@ -200,7 +200,11 @@ schema gets one shared refusal, including from the read-only commands `stats` an
 `key-create` and `import` can publish a new database at an unused path after their work
 succeeds. Only `serve` initializes an existing empty file. A failed start reports the last
 schema and compatibility floor its own steps committed. An older server shares the lock.
-Stop other older commands and library writers before upgrading.
+Stop other older commands and library writers before upgrading. A database of an older
+schema is cairn's when what cairn's steps made at its version is in it (each object by name
+and type, each of cairn's tables with every one of cairn's columns); more may be, such as a
+replica's own tables. One that is not is answered by every command, `serve` included, as
+"not a cairn database" (below), and nothing is written.
 
 A --db path the store cannot open as a cairn database (the store raises CannotOpen from
 SQLite's own refusal before it writes anything, and a folder cairn may not make for it is the

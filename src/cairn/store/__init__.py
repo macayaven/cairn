@@ -1090,6 +1090,15 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   no step: the first one's transaction reads the version under its write lock and raises
   SchemaTooOld, naming that version and SCHEMA_VERSION, and rolls back having written
   nothing; a busy database raises SQLite's error, as any open does.
+  Before either, a database of an older version is recognized as cairn's (schema.py's
+  _check_source): every object cairn's steps made at that version is there, by name and
+  type, and each of cairn's tables holds every one of cairn's columns. More may be there:
+  another program's tables (a replica's, such as Litestream's two), an operator's own index,
+  table or column, SQLite's statistics tables; the steps leave another program's tables as
+  they were, and a step that rebuilds one of cairn's tables (sessions at 30, audit_events at
+  31) keeps cairn's columns and indexes only. A file that holds less, or something else
+  under a name a later step makes, raises ForeignSchema (an UnknownSchema and a
+  sqlite3.DatabaseError) before anything is written.
   From 31 on, a database records its floor (schema.py's oldest_build): the lowest schema
   version whose cairn runs on it. A step that only adds (schema.py's _ONLY_ADDS: 29 and 30)
   leaves it; any other raises it to itself. Opening a database whose version is higher than

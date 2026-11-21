@@ -656,7 +656,11 @@ def _historical_shapes() -> dict[int, tuple[dict[str, str], dict[str, tuple[str,
 
 
 def _check_source(con: sqlite3.Connection, version: int) -> None:
-    """Recognize the complete source shape before suggesting or applying its next step."""
+    """Recognize the source before suggesting or applying its next step: every object cairn's
+    steps made at that version (name and type) is in the file, and each of cairn's tables holds
+    every one of cairn's columns, compared as sets. More may be there (a replicator's own tables,
+    an operator's index, SQLite's statistics tables), except under a name a later step makes:
+    that step could not make it."""
     if version == 1:
         try:
             _check_v0(con)
@@ -666,6 +670,13 @@ def _check_source(con: sqlite3.Connection, version: int) -> None:
             raise ForeignSchema(str(error)) from error
     if version < 1:
         raise ForeignSchema("not a cairn database: unknown schema version")
-    objects, fields = _historical_shapes()[version]
-    if _objects(con) != objects or any(_fields(con, t) != names for t, names in fields.items()):
+    shapes = _historical_shapes()
+    objects, fields = shapes[version]
+    later = {name for step, (made, _) in shapes.items() if step > version for name in made}
+    held = _objects(con)
+    if (
+        any(held.get(name) != kind for name, kind in objects.items())
+        or any(not set(names) <= set(_fields(con, t)) for t, names in fields.items())
+        or (held.keys() - objects.keys()) & later
+    ):
         raise ForeignSchema(f"not a cairn database of schema version {version}")

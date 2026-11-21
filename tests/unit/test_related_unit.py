@@ -693,6 +693,76 @@ def test_a_term_and_a_title_that_hold_a_null_or_a_quote_answer_over_every_surfac
         assert [(p["page"], p["why"][0]["term"]) for p in found["related"]] == [(f"two-{n}", term)]
 
 
+def mentioned(env, focus: str) -> dict[str, tuple[bool, list[str]]]:
+    """Whether each surface's answer is complete, and the pages it says mention `focus`."""
+    response = rest(env, focus, "?limit=20")
+    assert response.status_code == 200
+    answers = {
+        "Memory": Memory(env.store, lint_gate).related("ops", focus, 20),
+        "REST": response.json(),
+        "MCP": answer(env.client, env.key, "related", project="ops", slug=focus, limit=20),
+    }
+    return {
+        surface: (
+            found["searched"]["complete"],
+            sorted(
+                page["page"]
+                for page in found["related"]
+                if any(why["kind"] == "mentioned_by" for why in page["why"])
+            ),
+        )
+        for surface, found in answers.items()
+    }
+
+
+@pytest.mark.parametrize("others", [0, 5], ids=["alone", "beside-five"])
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Read Cafe\u0301/notes today.",  # the reviewer's: a path flush after the title
+        "Read Cafe\u0301--draft today.",  # a flag flush after it
+        "Read /notes/\u0301Café today.",  # a path flush before it, a mark between
+    ],
+    ids=["path-after", "flag-after", "path-before"],
+)
+def test_a_title_flush_against_a_fact_names_the_page_as_the_index_reads_its_words(
+    env, said, others
+):
+    """The facts read `/notes` after `Café` written with a combining accent as a path,
+    `--draft` as a flag, `/notes/` before a mark as a path; the index reads the slash, the
+    hyphen and the mark there as what ends or precedes a word, so the title stands whole in
+    prose and names the page. Blanking the path or the flag keeps those separators, so the
+    title stays a word of its own: alone, one mention; beside five other pages that name
+    it, six do, and none relates, the answer complete, on every surface."""
+    focus = note(env, "Café", "The field guide is on the shelf.")["page"]
+    for n in range(others):
+        note(env, f"Group {n}", f"Group {n} reads Café today.")
+    reader = note(env, "Reader", said)["page"]
+    (claim,) = answer(env.client, env.key, "page", project="ops", slug=reader)["claims"]
+    assert claim["text"] == said
+    expected = [reader] if not others else []
+    assert mentioned(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
+def test_a_claim_cut_gives_the_line_of_the_first_place_however_many_matches_overlap(env):
+    """The reviewer's shape: the first `Go Go` stands whole on one line, and the next two
+    lines hold more matches that overlap it. The line given is the first place's alone."""
+    focus = note(env, "Go Go", "The field guide is on the shelf.")["page"]
+    filler = [f"Filler {n} keeps the claim long enough to be cut." for n in range(14)]
+    text = "\n".join([*filler, "Go Go", "Go Go", "Go alone."])
+    assert len(text) > relations.TEXT_MAX
+    reader = note(env, "Reader", text)["page"]
+    (claim,) = answer(env.client, env.key, "page", project="ops", slug=reader)["claims"]
+    assert claim["text"] == text
+    (page,) = answer(env.client, env.key, "related", project="ops", slug=focus)["related"]
+    (why,) = page["why"]
+    assert (why["kind"], why["there"]["text_cut"], why["there"]["line"]) == (
+        "mentioned_by",
+        True,
+        "Go Go",
+    )
+
+
 def test_a_title_in_a_path_between_backticks_markdown_does_not_pair_names_the_page(env):
     """Between two backticks of one line that Markdown does not pair, the facts read inline
     code and so no path; the page shows the text as prose, so a title inside a path there
@@ -813,7 +883,10 @@ def test_the_contract_says_which_terms_and_which_places_of_a_title_relate_pages(
         " between escaped backticks, or in a URL, a path, a flag or a version between two"
         " backticks of one line that Markdown does not pair, which the facts read as inline"
         " code and so as none of those (the index, given the passage's text with every"
-        " stretch that is no prose blanked out, says where the title stands in prose; a claim"
+        " stretch that is no prose blanked out, each character of it that the index's"
+        " tokenizer reads as part of a word made another such character and each it reads as"
+        " a separator kept, so that no word begins or ends elsewhere, says where the title"
+        " stands in prose; a claim"
         " that is not its passage's text character for character, as one saved by hand or one"
         " that differs from its passage only by the blanks that end its lines, which the gate"
         " accepts, mentions as the index has it; a claim that holds a mark of the index or a"
@@ -822,11 +895,14 @@ def test_the_contract_says_which_terms_and_which_places_of_a_title_relate_pages(
         "The store's read runs at most 17 statements, whatever the page and the project hold,"
         " beside those that work out what the caller may reach (cairn.store.relating says"
         " which, and tests/unit/test_relating_cost_unit.py counts them); to judge where a title"
-        " stands in prose it runs 3 more, in a database of its own in memory, and the Markdown"
-        " parser reads each passage it judges at most once. Judging a title can cost what"
-        " rendering the passages it judges costs: 2.55 s for the worst shape measured, 750,000"
-        " bytes of passages dense with unclosed pictures and code spans, beside 2.43 s for the"
-        " page's own render of them.",
+        " stands in prose it runs 3 more, in a database of its own in memory, 3 more in"
+        " another when the passages it judges or the title hold a character the process has"
+        " not asked the index's tokenizer about, and the Markdown parser reads each passage it"
+        " judges at most once. Judging a title can cost what rendering the passages it judges"
+        " costs: 2.26 s for the worst shape measured, 750,000 bytes of passages dense with"
+        " unclosed pictures and code spans, beside 2.19 s for the page's own render of them;"
+        " and the first time a process meets them, 0.67 s more to ask the tokenizer how it"
+        " reads the most characters 750,000 bytes hold, 203,623, all distinct.",
     ):
         assert line in said, line
     assert "not a plain word" not in said

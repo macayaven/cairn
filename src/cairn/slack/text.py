@@ -18,6 +18,7 @@ one.
 """
 
 import re
+import secrets
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -586,7 +587,13 @@ def _known_code(
     each way was searched for to the text's end): the places a block or a span can start
     are found from where the last one ended on (_Next), and whether a way stands at one is
     told by the digests of _Hashes, in a step, however long the way; a later place is looked
-    for no further than the length of what stands before it."""
+    for no further than the length of what stands before it, and is a step too: the digests
+    of the way and of what stands before it are both asked first. The characters are
+    compared in full only where the digests agree, so where they are what was asked or at a
+    collision of digests: for a span, the way at its first place, and the way and what
+    stands before it at the place it takes, each within the stretch from where its search
+    starts to where it ends (the second reviewer's eighth report, must-fix 4: each later
+    place compared the whole way, and the work grew as the square of the message)."""
     places: list[tuple[int, int, int, str, object]] = []
     if not code:
         return places
@@ -614,6 +621,8 @@ def _known_code(
             while where <= first + len(head) and where < len(text):
                 if (
                     where - len(head) >= at
+                    and digests.agrees(where, len(found), value)  # both digests first, so a
+                    and digests.agrees(where - len(head), len(head), mark)  # place is a step
                     and digests.holds(found, where, value)
                     and digests.holds(head, where - len(head), mark)
                 ):
@@ -643,9 +652,16 @@ def _ticks(text: str) -> tuple[list[int], list[int]]:
 class _Hashes:
     """A digest of each start of `text`, so that whether a stretch of it is a given string is
     told in one step, however long the string (_known_code): a polynomial hash modulo a
-    Mersenne prime, and the characters compared only where the digests are equal."""
+    Mersenne prime, and the characters compared only where the digests are equal.
 
-    _BASE, _MOD = 1_000_003, (1 << 61) - 1
+    The base is drawn once per process from `secrets`, between 2 and the modulus less 2: a
+    message cannot be written against a base it cannot know, so it cannot make its stretches
+    collide and bring back a full comparison at each place. Two different stretches of
+    length n collide for at most n of the bases, about n in 2.3 * 10**18. Nothing a note
+    holds depends on the base: a full comparison still decides every match."""
+
+    _MOD = (1 << 61) - 1
+    _BASE = 2 + secrets.randbelow(_MOD - 3)
 
     def __init__(self, text: str) -> None:
         self.text, self.sums, self.powers = text, [0], [1]
@@ -660,13 +676,17 @@ class _Hashes:
             value = (value * self._BASE + ord(character)) % self._MOD
         return value
 
-    def holds(self, way: str, at: int, value: int) -> bool:
-        """Whether `text` holds `way`, whose digest is `value`, at `at`."""
-        end = at + len(way)
-        if end > len(self.text):
+    def agrees(self, at: int, size: int, value: int) -> bool:
+        """Whether the `size` characters of `text` at `at` have the digest `value`: a step."""
+        end = at + size
+        if at < 0 or end > len(self.text):
             return False
-        here = (self.sums[end] - self.sums[at] * self.powers[len(way)]) % self._MOD
-        return here == value and self.text.startswith(way, at)
+        return (self.sums[end] - self.sums[at] * self.powers[size]) % self._MOD == value
+
+    def holds(self, way: str, at: int, value: int) -> bool:
+        """Whether `text` holds `way`, whose digest is `value`, at `at`: compared in full only
+        where the digests agree, so where it does or at a collision."""
+        return self.agrees(at, len(way), value) and self.text.startswith(way, at)
 
 
 class _Next:

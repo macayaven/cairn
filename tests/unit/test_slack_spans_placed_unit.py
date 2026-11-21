@@ -2,9 +2,13 @@
 gives the element right before it, that element agrees with the place, one step past the
 cases of test_rt3_slack_spans_found. Every message is made up."""
 
+import inspect
+
 import pytest
 from test_rt3_slack_spans_found import READER, code, prose, shown
+from test_rt3_slack_spans_held import build, filed, messages
 
+from cairn.slack import text as text_module
 from cairn.slack.text import note_from_message
 from cairn.spans import chunk
 
@@ -102,3 +106,52 @@ def test_a_span_written_as_characters_keeps_any_blank_that_ends_it(blank, after)
     assert first_line(note.split("\n\n", 1)[1]) == "ax" + blank
     passage = next(span.text for span in chunk("", note) if "`a`" in span.text)
     assert first_line(passage[passage.index("`a`") :]) == "ax" + blank
+
+
+def test_the_digests_base_is_drawn_at_random_in_the_sound_range():
+    """A message cannot be written against a base it cannot know: the base of _Hashes is
+    drawn once per process from `secrets`, between 2 and the modulus less 2."""
+    source = inspect.getsource(text_module._Hashes)
+    assert "secrets.randbelow" in source
+    assert 2 <= text_module._Hashes._BASE <= text_module._Hashes._MOD - 2
+
+
+@pytest.mark.parametrize("base", [1, 2, 1_000_003, (1 << 61) - 3])
+def test_no_note_depends_on_the_digests_base(monkeypatch, base):
+    """The suite stays deterministic though the base is drawn at random: the base changes
+    which stretches of a message have equal digests, never what is placed, since a full
+    comparison still decides every match. Base 1 is outside the sound range on purpose: every
+    two stretches with the same characters in any order collide, so the full comparison
+    decides at each of them. The held harness's messages and the found cases give the same
+    notes, titles and replies, character for character, under each base as under another."""
+    sent = [build(lines) for lines in messages(150, 20261121)]
+    sent += [build([[("prose", "x"), ("named", "`")], [("named", "a"), ("named", "  ")]])]
+    sent += [placed_message(text, elements) for text, elements in FOUND]
+
+    def drafts() -> list[tuple[str, str, str]]:
+        return [(d.title, d.text, d.shown) for d in map(filed, sent)]
+
+    monkeypatch.setattr(text_module._Hashes, "_BASE", 7)
+    expected = drafts()
+    monkeypatch.setattr(text_module._Hashes, "_BASE", base)
+    assert drafts() == expected
+
+
+def placed_message(text: str, elements: list[dict]) -> dict:
+    section = {"type": "rich_text_section", "elements": elements}
+    return {
+        "type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text,
+        "blocks": [{"type": "rich_text", "elements": [section]}],
+    }  # fmt: skip
+
+
+FOUND = [
+    ("`k````", [code("`")]),
+    ("`x` or `x`", [prose("`x` or "), code("x")]),
+    ("`````", [code(""), code("`")]),
+    ("x````", [prose("x`"), code("`")]),
+    ("`a``  `", [code("a"), code("  ")]),
+    ("y`x``a`y`a`", [prose("y"), code("a"), prose("y"), code("a")]),
+    ("`a``x````", [code("a"), code("`")]),
+    ("ab ba `ab` `ba`", [prose("ab ba "), code("ab"), prose(" "), code("ba")]),
+]

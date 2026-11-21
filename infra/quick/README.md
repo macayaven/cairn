@@ -29,12 +29,13 @@ reserved public IPv4 address, an instance profile, an S3 bucket with versioning 
 Manager secret.
 It puts the subnet in the first Availability Zone that offers `t3.small`, and later applies
 leave it there.
-What is deleted or overwritten in the bucket stays restorable for 7 days: it becomes an earlier
-version of the object, a lifecycle rule removes such a version 7 days later, and the VM's role
-can delete an object but not a version.
+What is deleted or overwritten in the bucket stays restorable for at least 7 days: it becomes an
+earlier version of the object. From the midnight UTC after those days a lifecycle rule makes that
+version eligible for removal, and S3 removes it some time after that, with no deadline it states.
+The VM's role can delete an object but not a version.
 While it runs, budget for [EC2 instance time](https://aws.amazon.com/ec2/pricing/on-demand/),
 [the disk](https://aws.amazon.com/ebs/pricing/), [the IPv4 address](https://aws.amazon.com/vpc/pricing/),
-[S3 storage (replica files Litestream deleted stay 7 days) and requests](https://aws.amazon.com/s3/pricing/),
+[S3 storage (replica files Litestream deleted stay at least 7 days) and requests](https://aws.amazon.com/s3/pricing/),
 [the secret and its API calls](https://aws.amazon.com/secrets-manager/pricing/),
 and billable transfer.
 
@@ -105,11 +106,18 @@ variable's value in place of a `$` and the name after it, or nothing when no var
 name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
 value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
 on what Compose says, as a line in the unit's journal that starts with `cairn-quick: compose:`.
-The other changes come without a word from Compose, so after every start the boot compares each
-setting in the secret with what cairn's container was given and names each one that differs, the
-name and nothing of its value, on a line that starts with `cairn-quick: settings check:`. A start
-without such a line shows that every setting the container received arrived as written;
-`cairn-quick: settings check: did not run` means that it could not compare.
+The other changes come without a word from Compose, so after every start the boot compares the
+settings in the secret with what cairn's container was given. It reads the lines written
+`NAME=value`, the value between single quotes or to the end of the line, and names each of those
+that differs, the name and nothing of its value, on a line that starts with
+`cairn-quick: settings check:`. A value in double quotes that runs over more than one line is not
+read as one value: its first line is named as differing, and a later line of it that looks like a
+setting can be named too. Compose reads more forms than that (a colon for the equals sign,
+`export` before the name, spaces before it), so every other line that is not blank or a comment
+is counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`,
+with the names cairn was given: write those as `NAME=value`. A start with neither kind of line
+shows that every setting cairn was given arrived as written; with a `not compared` line, every
+setting but those; `cairn-quick: settings check: did not run` means that nothing was compared.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -159,7 +167,7 @@ rm /root/cairn-cold-20261120T101500Z.tgz
 
 The archive holds the data volume as it was while nothing ran: the database with its
 write-ahead log, and any file you wrote beside it. A cold copy you delete from your machine
-(`aws s3 rm`) stays restorable for 7 days, like anything deleted in the bucket.
+(`aws s3 rm`) stays restorable for at least 7 days, like anything deleted in the bucket.
 
 ### AWS teardown
 
@@ -295,11 +303,18 @@ variable's value in place of a `$` and the name after it, or nothing when no var
 name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
 value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
 on what Compose says, as a line in the unit's journal that starts with `cairn-quick: compose:`.
-The other changes come without a word from Compose, so after every start the boot compares each
-setting in the secret with what cairn's container was given and names each one that differs, the
-name and nothing of its value, on a line that starts with `cairn-quick: settings check:`. A start
-without such a line shows that every setting the container received arrived as written;
-`cairn-quick: settings check: did not run` means that it could not compare.
+The other changes come without a word from Compose, so after every start the boot compares the
+settings in the secret with what cairn's container was given. It reads the lines written
+`NAME=value`, the value between single quotes or to the end of the line, and names each of those
+that differs, the name and nothing of its value, on a line that starts with
+`cairn-quick: settings check:`. A value in double quotes that runs over more than one line is not
+read as one value: its first line is named as differing, and a later line of it that looks like a
+setting can be named too. Compose reads more forms than that (a colon for the equals sign,
+`export` before the name, spaces before it), so every other line that is not blank or a comment
+is counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`,
+with the names cairn was given: write those as `NAME=value`. A start with neither kind of line
+shows that every setting cairn was given arrived as written; with a `not compared` line, every
+setting but those; `cairn-quick: settings check: did not run` means that nothing was compared.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -440,4 +455,5 @@ update but needs the pre-upgrade backup after an incompatible one.
   None of that touched AWS: S3, the VM's role, the metadata firewall, cloud-init and systemd
   were not part of it.
   The boot script has changed since that apply on Google Cloud (it now passes on its tools'
-  errors, runs Compose without progress lines, and compares the settings after a start): the changed script has run only on the laptop.
+  errors, runs Compose without progress lines, and compares the settings after a start, counting the
+  lines it does not read): the changed script has run only on the laptop.

@@ -814,25 +814,28 @@ class MemoryMethods(StoreBase):
         return {span_id: found[span_id] for span_id in wanted if span_id in found}
 
     def passages_of_other_projects(
-        self, project_id: str, span_ids: Iterable[str]
+        self, project_id: str, slug: str, version: int
     ) -> frozenset[str]:
-        """Which of `span_ids`, the passages a page of the project `project_id` cites, the
-        store holds of a note that is not of that project, of its workspace or another: by id
-        alone, whatever this view reaches of that note, and never its text. An id the page
-        already shows is no new knowledge; whether it is another project's is all that is
-        said (compiler.own_claims: the writers leave such a claim out). Empty for a project out
-        of this view's reach. One statement, by the spans' primary key; none for no id."""
-        wanted = list(dict.fromkeys(span_ids))
-        if not wanted:
-            return frozenset()
+        """Which passages the stored version `version` of the page `slug` of the project
+        `project_id` cites that the store holds of a note that is not of that project, of its
+        workspace or another: by id alone, whatever this view reaches of that note, and never
+        its text. The ids are read from the stored page itself, never taken from the caller,
+        so an id the page shows is all it can be asked about, and that is no new knowledge;
+        whether it is another project's is all that is said (compiler.own_claims: the writers
+        leave such a claim out, asking for the version they read). Empty for a project out of
+        this view's reach and for a page or version not stored (a version pruned since the
+        writer read it: its save is then refused as stale, StalePage, before any citation is
+        asked). One statement: the version by its primary key, its passages by theirs."""
         with self._read() as con:
             found = con.execute(
-                "SELECT spans.id FROM spans JOIN notes ON notes.id = spans.note_id"
-                " WHERE spans.id IN (SELECT value FROM json_each(?)) AND notes.project_id != ?"
-                " AND ? IN (SELECT projects.id FROM projects WHERE projects.account_id = ? AND "
-                + _IN_REACH.format("projects.id")
-                + ")",
-                (json.dumps(wanted), project_id, project_id, *self._scope(con)),
+                "SELECT DISTINCT spans.id FROM page_versions AS p, json_each(p.claims) AS claim,"
+                " json_each(claim.value, '$.span_ids') AS cited"
+                " JOIN spans ON spans.id = cited.value JOIN notes ON notes.id = spans.note_id"
+                " WHERE p.project_id = ?1 AND p.slug = ?2 AND p.version = ?3"
+                " AND notes.project_id != ?1"
+                " AND ?1 IN (SELECT projects.id FROM projects WHERE projects.account_id = ?4"
+                " AND (?5 IS NULL OR projects.id IN (SELECT value FROM json_each(?6))))",
+                (project_id, slug, version, *self._scope(con)),  # _IN_REACH, numbered
             ).fetchall()
         return frozenset(span_id for (span_id,) in found)
 

@@ -152,13 +152,87 @@ def test_the_shipped_backup_settings_are_the_ones_the_privacy_guide_states():
         "The shipped configuration copies changes every 10 seconds and keeps a daily snapshot"
         " for eight days; the shipped Google Cloud configuration also snapshots the machine's"
         " data disk daily and keeps each snapshot 14 days.",
-        "Eight days in the bucket; on Google Cloud, the bucket keeps what is removed from it"
-        " restorable for 7 more days, and disk snapshots are kept 14 days",
+        "| Backups, with the shipped configuration | Eight days in the bucket. ",
+        "With the shipped Google Cloud configuration, disk snapshots are kept 14 days |",
         "With the shipped configuration that is eight days for the copies in the storage bucket.",
-        "its bucket keeps what it removes restorable for 7 more days, and it takes a daily"
-        " snapshot of the machine's data disk, kept 14 days.",
+        "The shipped Google Cloud configuration also takes a daily snapshot of the machine's"
+        " data disk, kept 14 days.",
     ):
         assert said in privacy, said
+
+
+# privacy.md: what a bucket keeps of what is removed from it, in each shipped definition
+
+KEPT_IN_A_BUCKET = (
+    "The bucket of the shipped Google Cloud configuration, and of the quick deploy on AWS or"
+    " on Google Cloud, keeps what is removed from it restorable for 7 more days (on AWS until"
+    " the midnight, UTC, that follows them); a bucket the operator made keeps what the"
+    " operator set on it."
+)
+
+
+def days_a_bucket_keeps(variables_tf: str, quick_gcp_tf: str, quick_aws_tf: str) -> dict[str, int]:
+    """For how many days each bucket the shipped definitions make keeps what is removed from
+    it, read from the definitions as they are shipped; 0 where nothing is kept."""
+    full = variables_tf.split('variable "replica_soft_delete_days"', 1)[1]
+    soft = re.search(
+        r"soft_delete_policy\s*\{\s*retention_duration_seconds\s*=\s*(\d+)", quick_gcp_tf
+    )
+    seconds = int(soft[1]) if soft else 0
+
+    def resource(kind: str) -> str:
+        return quick_aws_tf.partition(f'resource "{kind}" "replica"')[2].split("\nresource ", 1)[0]
+
+    versions = resource("aws_s3_bucket_versioning")
+    rule = resource("aws_s3_bucket_lifecycle_configuration")
+    noncurrent = re.search(
+        r"noncurrent_version_expiration\s*\{\s*noncurrent_days\s*=\s*(\d+)", rule
+    )
+    on = all(re.search(r'\bstatus\s*=\s*"Enabled"', text) for text in (versions, rule))
+    return {
+        "Google Cloud": int(re.search(r"default\s*=\s*(\d+)", full)[1]),
+        "quick deploy on Google Cloud": seconds // 86_400 if seconds % 86_400 == 0 else 0,
+        "quick deploy on AWS": int(noncurrent[1]) if on and noncurrent else 0,
+    }
+
+
+def test_each_shipped_bucket_keeps_what_is_removed_from_it_as_long_as_the_privacy_guide_says():
+    """privacy.md, the row "Backups, with the shipped configuration" and the bullet "Backups"
+    under Deletion, in the same words: `KEPT_IN_A_BUCKET`. Google Cloud keeps a removed
+    object for the days of its soft delete policy. On AWS a removed object becomes an earlier
+    version, which the bucket's one lifecycle rule removes after as many days, counted up to
+    the next midnight UTC (Amazon S3, "Lifecycle configuration elements": "rounding up the
+    resulting time to the next day at midnight UTC"). A bucket the operator made is the
+    operator's: the plain Compose install has no definition of one."""
+    variables_tf = (ROOT / "infra" / "gcp" / "variables.tf").read_text()
+    quick_gcp_tf = (ROOT / "infra" / "quick" / "gcp" / "main.tf").read_text()
+    quick_aws_tf = (ROOT / "infra" / "quick" / "aws" / "main.tf").read_text()
+    assert days_a_bucket_keeps(variables_tf, quick_gcp_tf, quick_aws_tf) == {
+        "Google Cloud": 7,
+        "quick deploy on Google Cloud": 7,
+        "quick deploy on AWS": 7,
+    }
+    privacy = " ".join(guide_text("privacy").split())
+    row = "| Backups, with the shipped configuration | Eight days in the bucket. "
+    assert f"{row}{KEPT_IN_A_BUCKET} With the shipped Google Cloud configuration" in privacy
+    assert (
+        "eight days for the copies in the storage bucket."
+        f" {KEPT_IN_A_BUCKET} The shipped Google Cloud configuration also takes"
+    ) in privacy
+    assert privacy.count(KEPT_IN_A_BUCKET) == 2
+    # No definition of a bucket ships with the Compose files: that bucket is the operator's.
+    assert not list((ROOT / "deploy").glob("*.tf"))
+
+    # The check sees a rule that keeps longer, versions switched off, and a shorter policy.
+    longer = quick_aws_tf.replace("noncurrent_days = 7", "noncurrent_days = 30")
+    assert days_a_bucket_keeps(variables_tf, quick_gcp_tf, longer)["quick deploy on AWS"] == 30
+    off = quick_aws_tf.replace('status = "Enabled"', 'status = "Suspended"', 1)
+    assert days_a_bucket_keeps(variables_tf, quick_gcp_tf, off)["quick deploy on AWS"] == 0
+    shorter = quick_gcp_tf.replace(
+        "retention_duration_seconds = 604800", "retention_duration_seconds = 0"
+    )
+    kept = days_a_bucket_keeps(variables_tf, shorter, quick_aws_tf)
+    assert kept["quick deploy on Google Cloud"] == 0
 
 
 def test_the_privacy_guide_states_the_forgotten_digest_limits(tmp_path):

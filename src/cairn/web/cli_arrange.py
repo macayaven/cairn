@@ -460,7 +460,7 @@ def run(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"no database at {args.db}", file=sys.stderr)
         return 1
-    store = Store(args.db)
+    store = Store(args.db, upgrade=False)
     try:
         if plans is None and _any_plan(store):  # a tidy spends nothing, and still saves
             print(NEEDS_PLANS, file=sys.stderr)

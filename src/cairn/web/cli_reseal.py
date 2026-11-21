@@ -70,7 +70,7 @@ def run(args: argparse.Namespace) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)  # refuses a database it cannot open before anything else is read
+    store = Store(db, upgrade=False)  # refuses a database it cannot open before anything is read
     try:
         try:  # names a variable, never a value
             google = google_connect.read_sealer(os.environ) if args.google_connect else None

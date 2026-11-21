@@ -1,9 +1,9 @@
 """What the upgrade to schema 32 and the `repair` command say is what they committed (report
-9, must-fix 2). `repair` never upgrades a database by the way: one of an older schema is
-refused before it is opened for writing, as `stats` refuses it, and the file is left as it
-was. The upgrade's counts reach the store's log only once the step's transaction, floor and
-version included, has committed: a step that fails after the repair logs nothing and leaves
-the file at 31 with every page. A removal the upgrade commits marks a compaction due, as a
+9, must-fix 2). `repair` never upgrades a database by the way: its open refuses one of an
+older schema, as every command's but `serve`'s does, and the file is left as it was. The
+upgrade's counts reach the store's log only once the step's transaction, floor and version
+included, has committed: a step that fails after the repair logs nothing and leaves the file
+at 31 with every page. A removal the upgrade commits marks a compaction due, as a
 forget does; a database with no such page is not marked. Made-up notes."""
 
 import logging
@@ -73,7 +73,7 @@ def test_repair_refuses_a_database_of_an_older_schema_and_leaves_it_as_it_was(
         f"the database at {db} has an older schema (version {version}; this cairn's is"
         f" {schema.SCHEMA_VERSION}): start the server once on it (serve --db) to bring it up to"
         " date, which holds every page to its own project's notes and logs how many pages it"
-        " rewrote and removed; repair does not upgrade it\n"
+        " rewrote and removed; only serve upgrades it, and repair changed nothing\n"
     )
     assert user_version(db) == version and table_rows(db) == held
 

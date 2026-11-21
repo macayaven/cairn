@@ -329,16 +329,18 @@ def test_the_waiting_command_lists_notes_without_their_text(db, capsys):
 
 
 def test_an_upgrade_keeps_every_pages_address_and_a_merged_page_stays_merged(db):
-    """run.md: "An upgrade keeps the address of every page that remains, so links to it and
-    to the claims that remain on it keep working. Since pages are filed by topic, a page that
-    held notes of two topics before the upgrade keeps them both and takes the topic of its
-    latest title: later notes of that topic join it, and later notes of the other topic build
-    a page of their own.\""""
+    """run.md: "An upgrade keeps the address of every page that remains, so links to it keep
+    working; a link to one of its claims keeps working where the claim kept its id. Since
+    pages are filed by topic, a page that held notes of two topics before the upgrade keeps
+    them both and takes the topic of its latest title: later notes of that topic join it, and
+    later notes of the other topic build a page of their own." (A claim step 32 rewrote may
+    take another id: report 10.)"""
     says(
         "run",
-        "An upgrade keeps the address of every page that remains, so links to it and to the"
-        " claims that remain on it keep working. Since pages are filed by topic, a page that"
-        " held notes of two topics before the upgrade keeps them both and takes the topic of its"
+        "An upgrade keeps the address of every page that remains, so links to it keep working;"
+        " a link to one of its claims keeps working where the claim kept its id. Since pages are"
+        " filed by topic, a page that held notes of two topics before the upgrade keeps them"
+        " both and takes the topic of its"
         " latest title: later notes of that topic join it, and later notes of the other topic"
         " build a page of their own.",
     )

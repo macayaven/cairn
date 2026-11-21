@@ -192,6 +192,21 @@ raises UnknownSchema before it writes anything) stops every command the same way
 store's sentence as the line: "the database was not made by this version of cairn: it has
 schema version <version> but no table <table>".
 
+Only `serve` brings a database of an older schema to SCHEMA_VERSION, and only once it holds
+the server's lock (R1, below): its open, the store's default, comes after take_serve_lock.
+Every other command opens the store with upgrade=False, which reads the version under the
+write lock of the step that would have run and raises SchemaTooOld before anything is
+written: exit 1, one line on stderr (cli_data.OLDER_SCHEMA, which names the command and says
+to start the server once on it), nothing on stdout, nothing written (a log a killed server
+left beside the file is folded into it by SQLite as the connection closes, its rows
+unchanged). `stats` and
+`audit-verify` read with SQLite alone and refuse one in their own words. A busy database is
+SQLite's error, as before; an empty or new file is still made at this schema by the commands
+that make one. An older build's `serve` took the same lock on the same file (since the first
+public version), so a new server cannot upgrade beneath one; an older build's other
+commands take no lock, and one still open across the upgrade can still write into the
+upgraded database.
+
 A --db path the store cannot open as a cairn database (the store raises CannotOpen from
 SQLite's own refusal before it writes anything, and a folder cairn may not make for it is the
 same) stops every command with exit 1 and one line on stderr, nothing on stdout, chosen by
@@ -262,7 +277,16 @@ from cairn.sources.runner import (
     sync_all,
 )
 from cairn.sources.url import private_addresses_allowed
-from cairn.store import JOINS, CannotOpen, SchemaTooNew, SourceInfo, Store, UnknownSchema
+from cairn.store import (
+    JOINS,
+    SCHEMA_VERSION,
+    CannotOpen,
+    SchemaTooNew,
+    SchemaTooOld,
+    SourceInfo,
+    Store,
+    UnknownSchema,
+)
 from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import (
@@ -749,7 +773,7 @@ def _waiting(db: Path, workspace: str | None, as_json: bool) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         notes = store.waiting_notes()
         if workspace is not None:
@@ -796,7 +820,7 @@ def _plan_command(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"no database at {args.db}", file=sys.stderr)
         return 1
-    store = Store(args.db)
+    store = Store(args.db, upgrade=False)
     try:
         if args.command == "workspace-list":
             rows = [
@@ -1080,7 +1104,7 @@ def _workspace(args: argparse.Namespace) -> Store:
     there is no database or no such workspace."""
     if not args.db.is_file():
         raise KeyError(f"no database at {args.db}")
-    store = Store(args.db)
+    store = Store(args.db, upgrade=False)
     if args.workspace is None:
         return store
     try:
@@ -1344,7 +1368,7 @@ def _open_store(db: Path) -> Store:
     folder made 0700 and the file 0600 before SQLite opens it (H1)."""
     cli_data.make_folder(db)
     cli_data.make_database(db)
-    return Store(db)
+    return Store(db, upgrade=False)
 
 
 # H1: what a key made on the command line can do, said by the help of key-create and key-list.
@@ -1444,7 +1468,7 @@ def _key_list(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         projects, sets = store.list_projects(), store.list_sets()
         names = {project.id: project.name for project in projects} | {s.id: s.name for s in sets}
@@ -1487,7 +1511,7 @@ def _session_end(db: Path, email: str) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         ended = sum(store.end_person_sessions(email).values())
     finally:
@@ -1506,7 +1530,7 @@ def _key_revoke(db: Path, label: str, with_made: bool = False) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         made = store.made_by(label)
         revoked = store.revoke_key(label, with_made=with_made)
@@ -1926,7 +1950,7 @@ def _serve(args: argparse.Namespace) -> int:
         return 2
     try:
         cli_data.make_database(args.db)  # 0600 before SQLite opens it (H1)
-        store = Store(args.db)
+        store = Store(args.db)  # the one open that upgrades: the lock above is held
     except BaseException:
         lock.release()
         raise
@@ -2095,6 +2119,11 @@ def main(argv: list[str] | None = None) -> int:
             return _run(args)
     except SchemaTooNew as error:  # raised by Store(...) before it reads or writes anything
         print(NEWER_DATABASE.format(refusal=error), file=sys.stderr)
+        return 1
+    except SchemaTooOld as error:  # raised by Store(..., upgrade=False) before it writes
+        found, known = error.found, SCHEMA_VERSION
+        older = cli_data.OLDER_SCHEMA
+        print(older.format(db=db, found=found, known=known, command=args.command), file=sys.stderr)
         return 1
     except UnknownSchema as error:  # raised by Store(...) before it writes anything
         print(error, file=sys.stderr)

@@ -639,8 +639,9 @@ def own_claims(store: Store, page: Page | None) -> tuple[Page | None, frozenset[
     writer cite a passage of its choosing, so nothing learns it without writing the tables.
     A claim that folds a passage of the page's own project with one of another project's is
     left out whole, its own passage with it (schema step 32 and `repair` keep that passage).
-    Filing another note, or a tidy, does not bring it back: writing its note's text into the
-    project again does, since the store answers with the stored note and compiles it again.
+    Filing another note, or a tidy, does not bring it back: filing the same note again, with
+    its original source reference and topic, does, since the store answers with the stored
+    note and compiles it again.
     One read when the page cites a passage; the page itself when no claim leaves."""
     if page is None:
         return None, frozenset()

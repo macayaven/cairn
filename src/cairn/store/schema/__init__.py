@@ -56,6 +56,7 @@ from cairn.store.schema.v02_accounts import (
     _V2_PROJECTS,
     _V2_SESSIONS,
     _add_accounts,
+    _check_v0,
 )
 from cairn.store.schema.v03_oauth import (
     _OAUTH_CLIENTS,
@@ -299,6 +300,19 @@ class SchemaTooNew(RuntimeError):
     It is left untouched."""
 
 
+class SchemaTooOld(RuntimeError):
+    """The database has an older schema than this cairn's, and the store was opened with
+    upgrade=False (Store): refused while it opens, under the write lock of the step that would
+    have brought it up, before anything is written; the file is left as it was. `found` is
+    the database's version; the message names it and SCHEMA_VERSION."""
+
+    def __init__(self, found: int) -> None:
+        self.found = found
+        super().__init__(
+            f"the database has schema version {found}; this cairn's is {SCHEMA_VERSION}"
+        )
+
+
 class UnknownSchema(RuntimeError):
     """The database has this code's schema version but lacks a table of the schema this code
     makes, so this version of cairn did not make it. Raised while the store opens, before it
@@ -336,9 +350,12 @@ def _refuse(path: str | Path, error: sqlite3.Error) -> None:
 # Schema versions
 
 
-def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str]) -> None:
+def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str], upgrade: bool = True) -> None:
     """Bring the database to SCHEMA_VERSION, one transaction per step, so a step that fails
-    leaves the database as it was. A current database is not written to. A newer one is
+    leaves the database as it was. With `upgrade` False, an older database is refused
+    (SchemaTooOld) by the first step, from the version it reads under its write lock, and
+    the step rolls back having written nothing; an empty file is still made at this schema.
+    A current database is not written to. A newer one is
     opened as it is, with no step run and nothing written, when this cairn's version is at or
     above the floor it records (oldest_build), and refused before anything is written
     otherwise (SchemaTooNew). From _OLDEST_BUILD on, a step that changes what an older build
@@ -352,7 +369,7 @@ def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str]) -> None:
             after = _AFTER.set(said)
             try:
                 with _transaction(con):
-                    _run_step(con)
+                    _run_step(con, upgrade)
             finally:
                 _AFTER.reset(after)
             for say in said:  # committed: the step's transaction is over
@@ -362,7 +379,7 @@ def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str]) -> None:
         _STAMP.reset(reset)
 
 
-def _run_step(con: sqlite3.Connection) -> None:
+def _run_step(con: sqlite3.Connection, upgrade: bool = True) -> None:
     """One step of _upgrade, in its transaction."""
     # Read again under the write lock: another process may have done this step.
     version = _schema_version(con)
@@ -370,6 +387,10 @@ def _run_step(con: sqlite3.Connection) -> None:
         _create(con)
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     elif version < SCHEMA_VERSION:
+        if not upgrade:
+            if version == 1:  # v0, or a file of someone else's with a table: told apart first
+                _check_v0(con)
+            raise SchemaTooOld(version)
         step = version + 1
         _MIGRATIONS[step](con)
         if step >= _OLDEST_BUILD and step not in _ONLY_ADDS:

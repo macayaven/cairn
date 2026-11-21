@@ -21,13 +21,13 @@ HIRING = "# Hiring\n\nDee starts in March.\n"
 # privacy guide's words (test_guide_facts_own_project_unit: PRIVACY_PROJECT, PRIVACY_NOTE).
 DELETE_ELSEWHERE = (
     "A page of another project cannot cite its notes; should one still cite them, which only a"
-    " program that wrote into the database directly could leave, it changes as it does when a"
-    " note is forgotten."
+    " program that wrote into the database directly, or an older version's writer still open"
+    " across the upgrade, could leave, it changes as it does when a note is forgotten."
 )
 FORGET_ELSEWHERE = (
     "1 page of other projects of this workspace cites the note, which only a program that wrote"
-    " into the database directly could leave. Each changes or goes in the same way. They are"
-    " counted here and not named."
+    " into the database directly, or an older version's writer still open across the upgrade,"
+    " could leave. Each changes or goes in the same way. They are counted here and not named."
 )
 
 

@@ -662,14 +662,16 @@ COMPOSE_READS = (
     "Compose reads the file, and takes a value as written only between single quotes. A"
     " single quote inside is written `\\'`, so a value must not end in an odd number of"
     " backslashes: the last takes the closing quote, and the value runs on to the next"
-    " single quote in the file, over the lines between, which then set nothing. With no"
-    " such quote, Compose stops with `unterminated quoted value`, the unit fails and the"
-    " boot passes that line on. With one, Compose reads on from what follows it: when it"
-    " cannot read that, it stops as well; when it can, it starts cairn with one setting"
-    " where more were meant. The check below then reads the same value when a comment or"
-    " nothing follows that quote on its line, and is quiet; other text there makes the"
-    " line one it counts. Outside single quotes Compose changes four kinds of value: it"
-    " puts a variable's value in place of a `$` and the name after it, or nothing when no"
+    " single quote in the file, over the lines between, which then set nothing; with an"
+    " even number the value closes there and keeps them all. With no such quote, Compose"
+    " stops with `unterminated quoted value`, the unit fails and the boot passes that line"
+    " on. With one, Compose reads on from what follows it: when it cannot read that, it"
+    " stops as well; when it can, it starts cairn with one setting where more were meant."
+    " The check below then reads the same value as Compose, and is quiet, when the value"
+    " has no two backslashes together (one before the quote, then, not three or five) and"
+    " a comment or nothing follows the later quote on its line; otherwise it counts the"
+    " line. Outside single quotes Compose changes four kinds of value: it puts a"
+    " variable's value in place of a `$` and the name after it, or nothing when no"
     " variable has that name; where no quotes hold the value, it drops the blanks at"
     " either end, and a `#` after a space with the rest of the line, unless the `#` is the"
     " value's first character; and it removes double quotes around a value, reading `\\n`"
@@ -704,11 +706,12 @@ COMPOSE_SAYS = (
     " the check reads set one name, Compose takes the later, and the check compares that"
     " one. A start with no `settings check` line shows that every setting cairn was given"
     " arrived as written, with two things aside: a carriage return that ends its line,"
-    " which Compose drops and the check does not count, and a value that a backslash"
-    " carried past its closing quote, which arrives as Compose and the check both read it."
-    " With a `not compared` line and no other, that holds for every setting but those the"
-    " line names and those on the lines it counts; `cairn-quick: settings check: did not"
-    " run` means that nothing was compared."
+    " which Compose drops and the check does not count, and a value with no two"
+    " backslashes together that a single backslash carried past its closing quote, which"
+    " arrives as Compose and the check both read it. With a `not compared` line and no"
+    " other, that holds for every setting but those the line names and those on the lines"
+    " it counts; `cairn-quick: settings check: did not run` means that nothing was"
+    " compared."
 )
 
 
@@ -786,6 +789,31 @@ def test_a_backslash_before_the_closing_quote_carries_the_value_to_the_next_quot
     got, said = judged_with_compose_deciding(vm, settings.encode())
     assert got == given
     assert said == []
+
+
+@pytest.mark.parametrize(
+    ("backslashes", "given", "journal"),
+    [
+        # Odd: the last backslash takes the quote, and the value runs on to BAR's opening quote.
+        # Even: the value closes and keeps them all, and BAR is a setting of its own.
+        (1, {"FOO": "zq7'\nBAR="}, []),
+        (2, {"FOO": "zq7" + chr(92) * 2, "BAR": "#kx9"}, [NOT_COMPARED.format(1) + ": FOO"]),
+        (3, {"FOO": "zq7" + chr(92) * 2 + "'\nBAR="}, [NOT_COMPARED.format(1) + ": FOO"]),
+        (4, {"FOO": "zq7" + chr(92) * 4, "BAR": "#kx9"}, [NOT_COMPARED.format(1) + ": FOO"]),
+        (5, {"FOO": "zq7" + chr(92) * 4 + "'\nBAR="}, [NOT_COMPARED.format(1) + ": FOO"]),
+    ],
+)
+def test_the_check_is_quiet_about_a_carried_value_only_with_one_backslash(
+    vm, backslashes, given, journal
+):
+    """The guide (`COMPOSE_READS`), for each count from one to five before the quote, with a
+    comment after the later quote, Compose deciding. Compose is quiet for all five. The
+    check reads no value with two backslashes together, so it reads the carried value as
+    Compose does with one backslash only, and counts the line with two to five."""
+    settings = f"FOO='zq7{chr(92) * backslashes}'\nBAR='#kx9'\nLAST=x\n"
+    got, said = judged_with_compose_deciding(vm, settings.encode())
+    assert got == given | {"LAST": "x"}
+    assert said == journal
 
 
 def test_text_after_the_quote_a_carried_value_ran_to_is_counted_or_stops_compose(vm):

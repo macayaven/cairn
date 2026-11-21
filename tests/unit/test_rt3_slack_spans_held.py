@@ -24,13 +24,17 @@ blocks.filed sends it (its title is Draft.shown, which is checked). Every messag
 up."""
 
 import random
+import re
+import sys
 import time
+from collections.abc import Collection
 from itertools import pairwise
 
 import pytest
 from markdown_it import MarkdownIt
 from test_rt3_slack_model import decode, display
 
+from cairn.slack import text as slack_text
 from cairn.slack.text import note_from_message
 from cairn.spans import chunk
 
@@ -553,3 +557,239 @@ def test_a_blank_kept_at_the_title_cut_is_no_character_reference():
         lines = [[("prose", "w" * pad), ("named", "a"), ("named", "  "), ("prose", " tail")]]
         assert faults(lines) == []
         assert "&#" not in filed(build(lines)).shown
+
+
+# Work, counted, never timed: every Python line of cairn.slack.text run, and the characters
+# each call into C reads where it goes through the module's helpers (its compiled patterns
+# and `re` calls, the parser, the passage splitter, _Next's searches, _Hashes' digests and
+# full comparisons, _ticks). Not seen: what a line's own C work reads (a slice, a join, a
+# `find`, an `==` outside those helpers counts one step, however long), how far a failed
+# `match` reads (one), and the parser's work beyond its input's length.
+
+
+class Work:
+    """The counts of one conversion, by what did the work."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.counts: dict[str, int] = {}
+        count, module = self.add, slack_text
+
+        class Pattern:
+            def __init__(self, wrapped, name: str) -> None:
+                self.wrapped, self.name = wrapped, name
+
+            def __getattr__(self, attr: str):
+                call = getattr(self.wrapped, attr)
+                if attr in ("match", "search"):
+
+                    def first(string, pos=0, endpos=None):
+                        end = len(string) if endpos is None else min(endpos, len(string))
+                        got = call(string, pos, end)
+                        miss = end if attr == "search" else pos + 1
+                        count(self.name, (got.end() if got else miss) - pos)
+                        return got
+
+                    return first
+                if attr in ("fullmatch", "finditer", "findall"):
+
+                    def region(string, pos=0, endpos=None):
+                        end = len(string) if endpos is None else min(endpos, len(string))
+                        count(self.name, end - pos)
+                        return call(string, pos) if endpos is None else call(string, pos, end)
+
+                    return region
+                if attr in ("sub", "subn", "split"):
+
+                    def whole(*args, **kwargs):
+                        count(self.name, len(args[0 if attr == "split" else 1]))
+                        return call(*args, **kwargs)
+
+                    return whole
+                return call
+
+        for name, value in list(vars(module).items()):
+            if isinstance(value, re.Pattern):
+                monkeypatch.setattr(module, name, Pattern(value, name))
+
+        class Re:
+            def __getattr__(self, attr: str):
+                call = getattr(re, attr)
+
+                def counted(pattern, string, *args, **kwargs):
+                    count("re." + attr, len(args[0] if attr == "sub" else string))
+                    return call(pattern, string, *args, **kwargs)
+
+                return counted if attr in ("findall", "sub", "fullmatch", "match") else call
+
+        monkeypatch.setattr(module, "re", Re())
+        parse, split, ticks, render = (
+            module._PARSER.parse,
+            module.chunk,
+            module._ticks,
+            module._render,
+        )
+
+        class Parser:
+            def parse(self, text, *args, **kwargs):
+                count("parse", len(text))
+                return parse(text, *args, **kwargs)
+
+        def chunk(source, text):
+            count("chunk", len(text))
+            return split(source, text)
+
+        def counted_ticks(text):
+            count("_ticks", len(text))
+            return ticks(text)
+
+        def counted_render(*args, **kwargs):
+            count("renders", 1)
+            return render(*args, **kwargs)
+
+        class Next(module._Next):
+            def __call__(self, at: int) -> int:
+                was, found = (self.since, self.found), super().__call__(at)
+                if (self.since, self.found) != was:
+                    count("_Next", min(found + len(self.what), self.end) - at)
+                return found
+
+        class Compared(str):
+            def startswith(self, way, at=0, *args) -> bool:
+                count("compared", len(way))
+                return str.startswith(self, way, at, *args)
+
+        class Hashes(module._Hashes):
+            def __init__(self, text: str) -> None:
+                count("digests", len(text))
+                super().__init__(Compared(text))  # what holds compares in full is counted
+
+            def of(self, way: str) -> int:
+                count("digests", len(way))
+                return super().of(way)
+
+            def agrees(self, at: int, size: int, value: int) -> bool:
+                count("digests", 1)
+                return super().agrees(at, size, value)
+
+            def holds(self, way: str, at: int, value: int) -> bool:
+                count("digests", 1)
+                return super().holds(way, at, value)
+
+        for name, value in [
+            ("_PARSER", Parser()),
+            ("chunk", chunk),
+            ("_ticks", counted_ticks),
+            ("_render", counted_render),
+            ("_Next", Next),
+            ("_Hashes", Hashes),
+        ]:
+            monkeypatch.setattr(module, name, value)  # fmt: skip
+
+    def add(self, what: str, amount: int) -> None:
+        self.counts[what] = self.counts.get(what, 0) + amount
+
+    def run(self, sent: dict) -> dict[str, int]:
+        self.counts = {}
+        lines, here = [0], slack_text.__file__
+
+        def local(frame, event, arg):
+            lines[0] += event == "line"
+            return local
+
+        previous = sys.gettrace()
+        sys.settrace(lambda frame, event, arg: local if frame.f_code.co_filename == here else None)
+        try:
+            filed(sent)
+        finally:
+            sys.settrace(previous)
+        return {**self.counts, "lines": lines[0]}
+
+
+def sized(sent: dict) -> int:
+    """A message's length: its text and every text its rich text holds."""
+    held, left = 0, [sent["blocks"]]
+    while left:
+        node = left.pop()
+        if isinstance(node, list):
+            left += node
+        elif isinstance(node, dict):
+            held += len(node["text"]) if isinstance(node.get("text"), str) else 0
+            left.append(node.get("elements"))
+    return len(sent["text"]) + held
+
+
+def sent_with(text: str, *sections: list[dict], blocks: Collection[int] = ()) -> dict:
+    kinds = ["rich_text_preformatted" if at in blocks else "rich_text_section"
+             for at in range(len(sections))]  # fmt: skip
+    elements = [{"type": kind, "elements": s} for kind, s in zip(kinds, sections, strict=True)]
+    return {
+        "type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text,
+        "blocks": [{"type": "rich_text", "elements": elements}],
+    }  # fmt: skip
+
+
+EMOJI = {"type": "emoji", "name": "x", "style": {"code": True}}
+WORK = {  # each grows with n; the reviewer's shape first
+    "after a span left out": lambda n: sent_with(
+        "y" * n + "`k`" + "`" * (2 * n + 2), [text_of("y" * n), code_of("`" * n), text_of("`" * n)]
+    ),
+    "a text before at every place": lambda n: sent_with(
+        "````" * n, [e for _ in range(n) for e in (text_of("`"), code_of("`"))]
+    ),
+    "a long text before that never stands": lambda n: sent_with(
+        "`" * (4 * n), [e for _ in range(4) for e in (text_of("x" * n), code_of("`"))]
+    ),
+    "text before and span real at every place": lambda n: sent_with(
+        "`x`" * (2 * n), [e for _ in range(n) for e in (text_of("`x`"), code_of("x"))]
+    ),
+    "named spans the text does not hold": lambda n: sent_with("`a`" * n, [code_of("zz")] * n),
+    "empty spans in bulk": lambda n: sent_with(
+        "``" * n + "`x`", [*[code_of("")] * n, code_of("x")]
+    ),
+    "each way a prefix of the next": lambda n: sent_with(
+        "".join("`a" + "`" * (k % 5) + "`" for k in range(n)),
+        [code_of("a" + "`" * (k % 5)) for k in range(n)],
+    ),
+    "blocks and spans": lambda n: sent_with(
+        "```b```\n`s`\n" * n, *[[text_of("b")], [code_of("s")]] * n, blocks=range(0, 2 * n, 2)
+    ),
+    "touching spans as characters": lambda n: sent_with(
+        "`a``` `" * n, [e for _ in range(n) for e in (code_of("a"), code_of("` "))]
+    ),
+    "a section a line, text before each": lambda n: sent_with(
+        "\n".join(["x````"] * n), *[[text_of("x`"), code_of("`")]] * n
+    ),
+    "an unread span before each": lambda n: sent_with(
+        " `:x:````" * n, [e for _ in range(n) for e in (text_of(" "), EMOJI, code_of("`"))]
+    ),
+    "a run as long as the message": lambda n: sent_with("`" * 3 * n, [code_of("`" * (3 * n - 2))]),
+    "a first line the title cut walks": lambda n: sent_with(
+        "*a* " * (2 * n) + "\nb", [text_of("*a* " * (2 * n) + "\nb")]
+    ),
+    "a table and blocks, rendered again": lambda n: sent_with(
+        "h | x\n--|--\n" + "```b```\n" * n,
+        [text_of("h | x\n--|--\n")],
+        *[[text_of("b")]] * n,
+        blocks=range(1, n + 1),
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", WORK)
+def test_converting_works_at_most_a_constant_times_the_message(monkeypatch, shape):
+    """At 64, 128, 256 and 512, the work per character of the message does not grow (on
+    release/0.1.0 at cfc08f19, every shape's ratio falls, or rises under two percent from
+    64 to 512), what placing compares in full is at most four times the message (a real
+    match ends each look, so only digests that collide could add to it), and the note is
+    rendered at most four times (four passes of at most three renders, and the title's one,
+    allow thirteen). On the commit before c39954ff, the first shape fails here."""
+    work, ratios = Work(monkeypatch), []
+    for n in (64, 128, 256, 512):
+        sent = WORK[shape](n)
+        counts = work.run(sent)
+        size = sized(sent)
+        assert counts.get("compared", 0) <= 4 * size, (n, counts)
+        assert counts["renders"] <= 4, counts
+        ratios.append(sum(v for k, v in counts.items() if k != "renders") / size)
+    assert all(b <= a * 1.05 for a, b in pairwise(ratios)), ratios
+    assert ratios[-1] <= ratios[0] * 1.05, ratios  # nor creeps up step by step

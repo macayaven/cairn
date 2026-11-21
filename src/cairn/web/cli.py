@@ -774,7 +774,7 @@ def _waiting(db: Path, workspace: str | None, as_json: bool) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(db)
+    store = cli_data.open_existing(db)
     try:
         notes = store.waiting_notes()
         if workspace is not None:
@@ -821,7 +821,7 @@ def _plan_command(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"no database at {args.db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(args.db)
+    store = cli_data.open_existing(args.db)
     try:
         if args.command == "workspace-list":
             rows = [
@@ -1105,7 +1105,7 @@ def _workspace(args: argparse.Namespace) -> Store:
     there is no database or no such workspace."""
     if not args.db.is_file():
         raise KeyError(f"no database at {args.db}")
-    store = Store.open_existing(args.db)
+    store = cli_data.open_existing(args.db)
     if args.workspace is None:
         return store
     try:
@@ -1372,7 +1372,7 @@ def _open_store(db: Path) -> Store:
     cli_data.make_folder(db)
     if cli_data.make_database(db):
         return Store(db, upgrade=False)
-    return Store.open_existing(db)
+    return cli_data.open_existing(db)
 
 
 # H1: what a key made on the command line can do, said by the help of key-create and key-list.
@@ -1472,7 +1472,7 @@ def _key_list(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(db)
+    store = cli_data.open_existing(db)
     try:
         projects, sets = store.list_projects(), store.list_sets()
         names = {project.id: project.name for project in projects} | {s.id: s.name for s in sets}
@@ -1515,7 +1515,7 @@ def _session_end(db: Path, email: str) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(db)
+    store = cli_data.open_existing(db)
     try:
         ended = sum(store.end_person_sessions(email).values())
     finally:
@@ -1534,7 +1534,7 @@ def _key_revoke(db: Path, label: str, with_made: bool = False) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(db)
+    store = cli_data.open_existing(db)
     try:
         made = store.made_by(label)
         revoked = store.revoke_key(label, with_made=with_made)
@@ -1963,6 +1963,7 @@ def _serve(args: argparse.Namespace) -> int:
     try:
         cli_data.make_database(args.db)
         store = Store(args.db, on_schema_commit=changes.append)
+        cli_data.warn_readable(args.db)
         try:
             arranger = cli_arrange.serve_arranger(
                 args,
@@ -2135,8 +2136,6 @@ def main(argv: list[str] | None = None) -> int:
     if (refused := cli_data.linked(db)) is not None:
         print(refused, file=sys.stderr)
         return 2
-    if (said := cli_data.readable(db)) is not None:  # the command goes on
-        print(said, file=sys.stderr, flush=True)
     try:
         if args.command == "serve":  # serve puts the line on stderr with its access log
             return _run(args)

@@ -23,7 +23,7 @@ from typing import Any
 from cairn.store import CannotOpen
 from cairn.store.audit import check_trail
 from cairn.store.schema import ForeignSchema, _refuse, current_version
-from cairn.web.cli_data import DB_EXISTS, OLDER_SCHEMA
+from cairn.web.cli_data import DB_EXISTS, OLDER_SCHEMA, warn_readable
 from cairn.web.cli_stats import CANNOT_READ, _connect
 
 COMMAND = "audit-verify"
@@ -66,6 +66,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         try:
             current_version(con)
+            warn_readable(db)
             try:
                 found = check_trail(con, args.workspace)
             except KeyError:

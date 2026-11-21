@@ -14,7 +14,7 @@ It refuses as the other commands that open an existing database do, with their l
 1, one line on stderr, nothing on stdout): no database at the path or a folder there ("no
 database at PATH"), a file that is not a database, one it may not read, and one of a newer
 schema, and one at this schema's version that lacks one of its tables (CannotOpen,
-SchemaTooNew and UnknownSchema, which cairn.web.cli.main turns into its lines). An older cairn schema
+SchemaTooNew and UnknownSchema, which cairn.web.cli.main turns into its lines). An older schema
 gets the common command-line advice to start the server once to upgrade it.
 
 `--json` prints one object (cairn.web.stats.numbers); without it, one line per number of
@@ -44,7 +44,7 @@ from cairn.store.base import _iso
 from cairn.store.erasure import count_pages_citing_other_projects
 from cairn.store.numbers import part_rows
 from cairn.store.schema import ForeignSchema, _refuse, current_version
-from cairn.web.cli_data import DB_EXISTS, OLDER_SCHEMA
+from cairn.web.cli_data import DB_EXISTS, OLDER_SCHEMA, warn_readable
 from cairn.web.stats import COUNTS, numbers
 
 COMMAND = "stats"
@@ -96,6 +96,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         try:
             version = current_version(con)
+            warn_readable(db)
         except ForeignSchema:
             raise
         except sqlite3.Error as error:

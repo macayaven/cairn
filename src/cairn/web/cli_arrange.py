@@ -132,7 +132,7 @@ from typing import TYPE_CHECKING, Any
 from cairn.plans import Plans
 from cairn.plans import load as load_plans
 from cairn.store import Store
-from cairn.web.cli_data import DB_EXISTS
+from cairn.web.cli_data import DB_EXISTS, open_existing
 
 if TYPE_CHECKING:
     from cairn.arrange import Arranger, Price
@@ -470,7 +470,7 @@ def run(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"no database at {args.db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(args.db)
+    store = open_existing(args.db)
     try:
         if plans is None and _any_plan(store):  # a tidy spends nothing, and still saves
             print(NEEDS_PLANS, file=sys.stderr)

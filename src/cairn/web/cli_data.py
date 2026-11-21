@@ -11,7 +11,7 @@ SQLite makes beside it are 0600 too, whatever the umask. cairn.web.cli.main chec
 command's --db before the command runs: a symbolic link is refused, exit 2, in one line
 (LINKED_DB), with nothing made at either end of it; an existing database others on this
 machine can read (its group or everyone else may read it, and may pass every folder above
-it) is not changed and not refused, and the command says so first, once, in one line on
+it) is not changed and not refused, and a command that accepts its schema says so once on
 stderr (READABLE_DB: its mode and the chmod that makes it private). A file in a folder only
 its owner may enter is quiet whatever its own mode: the container's /data is 0700."""
 
@@ -131,7 +131,7 @@ def _export(db: Path, account: str, out: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(db)
+    store = open_existing(db)
     try:
         try:
             view = store.for_account(account)
@@ -194,7 +194,7 @@ def _import(
         return 1
     with file:
         try:
-            target = closing(Store.open_existing(db)) if os.path.lexists(db) else new_store(db)
+            target = closing(open_existing(db)) if os.path.lexists(db) else new_store(db)
             with target as store:
                 if plans is None:
                     print(NO_PLAN, file=sys.stderr)
@@ -300,6 +300,18 @@ def readable(db: Path | None) -> str | None:
     return None if found is None else READABLE_DB.format(db=db, mode=found)
 
 
+def warn_readable(db: Path) -> None:
+    if reason := readable(db):
+        print(reason, file=sys.stderr, flush=True)
+
+
+def open_existing(db: Path) -> Store:
+    """An accepted database gets its permissions notice before the command acts."""
+    store = Store.open_existing(db)
+    warn_readable(db)
+    return store
+
+
 def _missing_directories(directory: Path) -> list[Path]:
     """The directories mkdir(parents=True) would make for `directory`, deepest first."""
     missing = []
@@ -353,7 +365,7 @@ def _compact(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(db)
+    store = open_existing(db)
     try:
         with store.compacting():
             return _rewrite(store, db)
@@ -408,7 +420,7 @@ def _compact_if_due(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store.open_existing(db)
+    store = open_existing(db)
     try:
         with store.compacting():
             due = store.compaction_state()
@@ -454,7 +466,7 @@ def _repair(db: Path) -> int:
     store: Store | None = None
     each: list[tuple[str, int, int]] = []
     try:
-        store = Store.open_existing(db)
+        store = open_existing(db)
         with store.compacting():
             done = store.repair_own_projects(lambda *counts: each.append(counts))
     except CompactionRunning as error:

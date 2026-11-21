@@ -77,7 +77,10 @@ RUN_REPAIR = (  # its behaviour: test_repair_command_unit.py
     " readers see each page as it was before or as it is after and whose writes wait for it as"
     " for a forget; as a forget does, it marks a compaction due. Like `compact`, it changes"
     " nothing and exits 3 while a compaction runs, and it changes nothing and exits 1 when"
-    " another write holds the database for too long: run it again."
+    " another write holds the database for too long: run it again. It holds"
+    " `cairn.db.compact.lock` as `compact` does, so while it runs a `compact` says that another"
+    " compaction is running and exits 3, and the server's own compactor logs `compact skipped:"
+    " another compaction is running on this database` and tries again at the next poll."
 )
 GONE_SAYS = "A page can cite only passages from its own project."
 

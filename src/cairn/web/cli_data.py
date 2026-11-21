@@ -433,7 +433,8 @@ def _repair(db: Path) -> int:
         )
         return ANOTHER_COMPACTION
     except sqlite3.OperationalError as error:
-        if (error.sqlite_errorcode or 0) & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+        code = getattr(error, "sqlite_errorcode", None)
+        if code is None or code & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
             raise
         print(
             f"{db} was not repaired: the database is busy; nothing was changed, run repair again",

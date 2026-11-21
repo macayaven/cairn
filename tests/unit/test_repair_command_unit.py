@@ -155,3 +155,20 @@ def test_a_write_held_past_the_stores_wait_leaves_the_database_as_it_was(
     err = capsys.readouterr().err
     assert f"{db} was not repaired: the database is busy; nothing was changed" in err
     assert table_rows(db) == held
+
+
+def test_while_it_runs_a_compact_says_another_compaction_is_running(tmp_path, capsys, monkeypatch):
+    """It holds the lock compact holds (the run guide's word: `compact` exits 3 meanwhile)."""
+    db = tmp_path / "cairn.db"
+    written_behind_the_stores_back(db, "another workspace, held")
+    meanwhile: list[int] = []
+
+    class Meanwhile(Store):
+        def repair_own_projects(self, each):
+            meanwhile.append(cli.main(["compact", "--db", str(db)]))
+            return super().repair_own_projects(each)
+
+    monkeypatch.setattr(cli_data, "Store", Meanwhile)
+    assert cli.main(["repair", "--db", str(db)]) == 0
+    assert meanwhile == [cli_data.ANOTHER_COMPACTION]
+    assert "another compaction is running" in capsys.readouterr().err

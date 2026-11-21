@@ -998,11 +998,16 @@ def latest_at_exit(a, attempts, mine, state, rid, hub, out, notes):
     if not made:
         notes.append("L (another's act): a person made the run's release Latest")
         return
-    p, higher = made[-1], state["releases"][want]["tag_name"]
     mine_now = state["releases"][rid]
-    if mine_now["draft"] or mine_now["prerelease"] or stable_key(higher) <= stable_key(hub.tag):
+    if (
+        want is None
+        or mine_now["draft"]
+        or mine_now["prerelease"]
+        or stable_key(state["releases"][want]["tag_name"]) <= stable_key(hub.tag)
+    ):
         notes.append("L (race): the run's release was changed after its last read")
         return
+    p, higher = made[-1], state["releases"][want]["tag_name"]
     if p.attempt == a.number:
         after = [x for x in mine if x.kind == "listing" and x.fate == "ok" and x.seq > p.seq]
         if after and higher in after[-1].others:

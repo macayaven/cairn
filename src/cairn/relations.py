@@ -102,6 +102,7 @@ from cairn.facts import Fact, cased, extract_facts
 from cairn.spans import Span
 
 TERM_KINDS = ("url", "path", "flag", "version", "inline_code")  # the facts that can be terms
+NOT_PROSE = ("url", "path", "flag", "version")  # the facts a title in which names nothing
 CODE_MIN = 12  # an inline code of letters only relates pages from this many characters
 TERM_MAX = 200  # a term longer than this as written relates none
 COMMON = 5  # a term more pages of the project hold than this relates none
@@ -174,27 +175,20 @@ def line_of(text: str, start: int, end: int) -> tuple[str, bool]:
 
 
 def covered(span: Span, facts: Sequence[Fact] | None = None) -> list[tuple[int, int]]:
-    """The stretches of a passage's text that are no prose, in the order they stand: every
-    fact of TERM_KINDS, a term that relates pages or not (a plain word in backticks covers
-    too), by the fact's own start and end; and every fenced code block from the start of its
-    opening line, the word after the fence's marks included, to the end of its body (a
-    code block's fact is its body, which starts on the line after the opening one). What
-    the facts do not own is prose to them: a path written with no root
+    """The stretches of a passage's text that its facts read as a url, a path, a flag or a
+    version (NOT_PROSE), each by the fact's own start and end, in the order they stand; a
+    term that relates pages or not. Nothing else of the facts: what is code, in backticks
+    or in a block, is what the page that shows the claim renders as code
+    (cairn.spans.code_read), and the facts' inline code and code blocks are not. What the
+    facts do not read as one of these is prose to them: a path written with no root
     (`deploy/compose.yaml` outside backticks is no fact), an email address, a host with no
-    scheme, a Windows path; whether a block indented is code, the Markdown parser says
-    (cairn.spans.code_read). `facts`: as `placed`."""
-    text = span.text
+    scheme, a Windows path, and text between two backticks of one line that Markdown does
+    not pair, which the facts read as inline code and so as no path. `facts`: as `placed`."""
     return [
-        (opening(text, fact.start) if fact.kind == "code_block" else fact.start, fact.end)
+        (fact.start, fact.end)
         for fact in (extract_facts(span) if facts is None else facts)
-        if fact.kind in TERM_KINDS or fact.kind == "code_block"
+        if fact.kind in NOT_PROSE
     ]
-
-
-def opening(text: str, body: int) -> int:
-    """Where the line before the one at `body` starts: a fenced block's opening line, its
-    body starting on the next. A body at the text's start has no line before it."""
-    return text.rfind("\n", 0, body - 1) + 1 if body > 0 else 0
 
 
 def blanked(text: str, stretches: Iterable[tuple[int, int]], asked: str) -> str:

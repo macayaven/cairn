@@ -63,7 +63,6 @@ def mentions(env, focus: str) -> dict[str, tuple[bool, list[str]]]:
     }
 
 
-@pytest.mark.xfail(strict=True, reason=FACTS_PAIR)
 @pytest.mark.parametrize("claim", PAIRED_BY_THE_FACTS)
 @pytest.mark.parametrize("extra", [0, 5], ids=["alone", "beside-five"])
 def test_a_title_the_page_shows_as_prose_between_unpaired_backticks_names_the_page(

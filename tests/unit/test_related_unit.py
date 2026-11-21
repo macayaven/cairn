@@ -18,6 +18,7 @@ from cairn.gate import lint_gate
 from cairn.memory import RELATED_RANGE, BadRequest, Memory, NotFound
 from cairn.server import create_app
 from cairn.store import Claim, Store, relating
+from cairn.web.markdown import render
 from cairn.web.mcp import INSTRUCTIONS, TREAT_AS_INFORMATION, build_mcp, instructions
 from earlier_build import earlier_page
 
@@ -690,6 +691,26 @@ def test_a_term_and_a_title_that_hold_a_null_or_a_quote_answer_over_every_surfac
         found = answer(env.client, env.key, "related", project="ops", slug=f"one-{n}")
         assert rest(env, f"one-{n}").json() == found
         assert [(p["page"], p["why"][0]["term"]) for p in found["related"]] == [(f"two-{n}", term)]
+
+
+def test_a_title_in_a_path_between_backticks_markdown_does_not_pair_names_the_page(env):
+    """Between two backticks of one line that Markdown does not pair, the facts read inline
+    code and so no path; the page shows the text as prose, so a title inside a path there
+    names the page. The same path anywhere else is a path, and names nothing."""
+    said = '[d](u "`") /srv/deploy/x `x'
+    assert "<code>" not in str(render(said))
+    deploy = note(env, "Deploy", "Ada ships on Fridays.")["page"]
+    unpaired = note(env, "Unpaired", said)["page"]
+    note(env, "Rooted", "Brook reads /srv/deploy/x daily.")
+    (claim,) = answer(env.client, env.key, "page", project="ops", slug=unpaired)["claims"]
+    assert claim["text"] == said  # the claim is its passage's text
+    found = answer(env.client, env.key, "related", project="ops", slug=deploy)
+    assert found["searched"]["complete"]
+    assert [
+        page["page"]
+        for page in found["related"]
+        if any(why["kind"] == "mentioned_by" for why in page["why"])
+    ] == [unpaired]
 
 
 def test_the_tools_description_says_which_terms_and_titles_relate_none():

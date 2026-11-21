@@ -348,34 +348,32 @@ def test_a_match_on_two_lines_is_given_with_both():
 # A title named in prose: the stretches of a passage that are no prose
 
 
-def test_the_stretches_that_are_no_prose_are_the_facts_own_and_the_code_blocks():
-    """Every url, path, flag, version and inline code, whether or not it is a term that
-    relates pages (a plain word in backticks covers too), each by the fact's own start and
-    end; and every fenced code block from its opening line, the word after its marks
-    included, to the end of its body."""
+def test_the_stretches_that_are_no_prose_to_the_facts_are_their_urls_paths_flags_versions():
+    """Every url, path, flag and version, each by the fact's own start and end, and nothing
+    else of the facts: what is code, inline or in a block, is what the page renders as code
+    (cairn.spans.code_read), not what the facts read as code."""
     text = (
         "Started by `deploy/compose.yaml` or ./deploy/run.sh; see"
         " https://fable.example/deploy with --dry-run on v2.4.1, then `deploy`."
     )
     assert [text[slice(*at)] for at in relations.covered(passage(text))] == [
-        "deploy/compose.yaml",
         "./deploy/run.sh",
         "https://fable.example/deploy",
         "--dry-run",
         "v2.4.1",
-        "deploy",
     ]
-    fenced = "Before a deploy.\n\n```sh\ndeploy --now\n```\nAfter 5 min, on 2099-01-02."
-    covered = [fenced[slice(*at)] for at in relations.covered(passage(fenced))]
-    assert covered == ["```sh\ndeploy --now"]
-    # what the facts do not own is prose: a path written with no root, an email address
-    bare = "Started by deploy/compose.yaml for ada@deploy.dev.\n\n```deploy\nquill run\n```"
-    assert [bare[slice(*at)] for at in relations.covered(passage(bare))] == ["```deploy\nquill run"]
-    for opened in ("> ~~~deploy\n> quill run\n> ~~~", "- Ada\n\n  ```deploy\n  run\n  ```"):
-        (stretch,) = relations.covered(passage(opened))
-        assert opened[slice(*stretch)].lstrip("> -Ad\n").startswith(("~~~deploy", "```deploy"))
-    empty = "```deploy\n```"
-    assert [empty[slice(*at)] for at in relations.covered(passage(empty))] == ["```deploy\n"]
+    for code in (
+        "Before a deploy.\n\n```sh\ndeploy --now\n```\nAfter 5 min, on 2099-01-02.",
+        "Started by deploy/compose.yaml for ada@deploy.dev.\n\n```deploy\nquill run\n```",
+        "> ~~~deploy\n> quill run\n> ~~~",
+        "```deploy\n```",
+        "Read \\`deploy\\` today.",  # escaped: the facts read inline code, the page prose
+    ):
+        assert relations.covered(passage(code)) == [], code
+    # between backticks Markdown does not pair, the facts read inline code and no path
+    unpaired = '[d](u "`") /srv/deploy/x `x'
+    assert relations.covered(passage(unpaired)) == []
+    assert relations.covered(passage("/srv/deploy/x")) == [(0, 13)]
 
 
 def test_what_is_not_prose_is_blanked_in_place_by_a_character_the_title_does_not_hold():

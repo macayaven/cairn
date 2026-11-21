@@ -270,6 +270,19 @@ def test_the_code_read_without_emphasis_is_the_web_views_code(text):
 # Whatever reads a claim reads it as the page that shows it does (spans.claim_markdown): the
 # code the code reader finds is the code the page's renderer shows (cairn.web.markdown.render),
 # in the shapes where a heading, an underline or a picture would change the reading.
+FENCES = [
+    "```Deploy\nx\n```",
+    "~~~ Deploy\nx\n~~~",  # of tildes
+    "   ```Deploy\n   x\n   ```",  # indented one to three
+    "> ```Deploy\n> x\n> ```",  # in a quotation
+    "- ```Deploy\n  x\n  ```",  # in a list item
+    "```Deploy\nx Deploy",  # unclosed
+]
+CLOSED_BY_THE_PAGE = [  # where the facts' fence runs on, and the page shows prose
+    "> ```Deploy\n> x\n\nDeploy after",  # closed at the end of its quotation
+    "- Item\n  ```\n  x\nDeploy after `y`",  # and of its list item
+    "para\n    ```\n    Deploy after",  # a fence line indented four under a paragraph
+]
 AGREED = [
     "`Step by\n===\nStep` today.",  # a setext underline inside a code span
     "> # `Step\n> by Step` today.",  # a heading line in a quote
@@ -287,6 +300,9 @@ AGREED = [
     "Run:\n\n```sh\nquill `run`\n```\n\n    indented `x`",  # fenced and indented blocks
     "- Read the guide.\n\n    Step `by` Step",  # indented under a list item
     "*a `b*` c* _d `e_`",  # emphasis around code
+    *FENCES,
+    *CLOSED_BY_THE_PAGE,
+    "para\n    ```Deploy\n    x\n    ```",  # fence lines indented four: a code span here
 ]
 
 
@@ -321,6 +337,17 @@ def test_the_page_and_the_code_reader_read_a_claim_with_the_same_rules():
     assert [rule for rule in page["inline"] if rule != "emphasis"] == reader["inline"]
     assert set(spans.CLAIM_RULES_OFF) == {"image", "heading", "lheading"}
     assert not set(spans.CLAIM_RULES_OFF) & {*page["block"], *page["inline"]}
+
+
+def test_a_fence_the_page_opens_is_code_from_its_opening_line_to_where_the_page_closes_it():
+    """The word after a fence's marks, which the page shows as no text at all, is code to
+    the reader; what follows a fence the page closes at the end of its quotation or list
+    item is prose, and so is a fence line indented four under a paragraph."""
+    for text in FENCES:
+        assert "Deploy" in "".join(text[slice(*at)] for at in code_read(text)), text
+    for text in CLOSED_BY_THE_PAGE:
+        code = "".join(text[slice(*at)] for at in code_read(text))
+        assert "Deploy after" not in code and "Deploy after" in render(text), text
 
 
 def test_a_text_longer_than_the_page_parses_is_code_whole():

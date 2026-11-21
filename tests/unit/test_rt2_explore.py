@@ -1025,12 +1025,10 @@ def latest_at_exit(a, attempts, mine, state, rid, hub, out, notes):
         and classify(x.errors[0])[0] == "lost-latest"
     ]
     if stopped:
-        out.append(
-            Violation(
-                "L",
-                "a re-run after the lost-latest stop exits 0 with GitHub's Latest below a "
-                "higher version, which the re-run does not check",
-            )
+        # a stated limit (README, the lost-latest row): the remedy is to set Latest by hand
+        notes.append(
+            "L (stated: 'a re-run of the job after this stop sends no publication and succeeds "
+            "without looking at GitHub's latest again, so re-running does not repair it')"
         )
     else:
         notes.append(f"{HAND}: an earlier attempt's publication")

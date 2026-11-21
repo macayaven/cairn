@@ -217,19 +217,26 @@ def test_pinned_a_higher_version_the_listing_shows_only_later_leaves_latest_lowe
     assert not check(ex)[0], trace(ex)
 
 
-def test_a_re_run_after_the_lost_latest_stop_succeeds_without_looking_at_latest():
-    """The lost-latest line says to set v1.3.0 as Latest and then re-run. A person who only
-    re-runs (re-running a failed job is the usual answer to a red run) gets a run that finds
-    the release published, sends no publication, so `said` stays empty and Latest is not
-    checked: it ends well with GitHub's Latest on v1.2.3, below v1.3.0, and job `aliases` runs.
-    Invariant: GitHub's Latest is the highest stable version when the job exits zero."""
+def test_pinned_a_re_run_after_the_lost_latest_stop_succeeds_without_looking_at_latest():
+    """The stated limit (the coordinator's ruling on the tester's finding): the lost-latest line
+    says to set v1.3.0 as Latest and then re-run. A person who only re-runs gets a run that finds
+    the release published and sends no publication, so Latest is not checked: it ends well with
+    GitHub's Latest on v1.2.3, below v1.3.0. Closing it needs a read of GitHub's current Latest,
+    recorded for the next version."""
+    readme_says(
+        "a re-run of the job after this stop sends no publication and succeeds without looking "
+        "at GitHub's latest again, so re-running does not repair it"
+    )
     ex = replay(
         [LATER, ("after attempt 1, the person", "only re-runs")],
         existing=("v1.2.2",),
         by_hand=("v1.3.0",),
     )
+    assert "after the publication shows v1.3.0" in ex.attempts[0].errors[0], trace(ex)
     assert ex.attempts[1].code == 0 and ex.hub.truth["latest"] == 88, trace(ex)
-    assert not broken(ex, "L"), trace(ex)
+    violations, notes = check(ex)
+    assert any("re-running does not repair it" in n for n in notes), trace(ex)
+    assert not violations, trace(ex)
 
 
 # --- decision 6: a second release missing from the listing (pinned limits) ----------------------

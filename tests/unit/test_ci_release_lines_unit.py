@@ -378,14 +378,19 @@ def test_the_row_the_read_by_id_does_not_bear_out_has_its_row():
         "GitHub's listing shows the release for … without this run's mark, pre-release flag,"
         " title or notes, while read by its id it is … and has all four as this run wrote them"
     )
+    # The outside reviewer's remark: the row said the listing showed a mark the release did
+    # not have, the other way round for a missing mark. The row says what was shown where,
+    # what the step then does and what a person does.
     assert means == (
-        "The listing showed the release with a mark, a flag, a title or notes that, read by its"
-        " id at once, it does not have: the listing was behind, an edit a person has undone for"
-        " one; the job wrote nothing after that look"
+        "The listing showed the release without this run's mark, pre-release flag, title or"
+        " notes as the job wrote them, and the job's read of it by its id, at once, found all"
+        " four as the job wrote them: the listing was behind, an edit a person has undone for"
+        " one. The job stopped there, on the row, and wrote nothing more"
     )
     assert next_step == (
-        "Look at the release on the repository's releases page first; when it is this run's as"
-        " the job wrote it, re-run the job, which starts from what is listed then."
+        "Look at the release on the repository's releases page first; when it shows this run's"
+        " release as the job wrote it, re-run the job, which starts from what is listed then and"
+        " reads the release by its id again."
     )
 
 

@@ -63,8 +63,19 @@ NOT_FOUND = (
 )
 NO_ANSWER = (
     "::error::the GitHub release for {tag} could not be read by its id, as the lines above"
-    " say, so nothing was compared; re-run this job, and delete nothing"
+    " say, {compared}; re-run this job, and delete nothing"
 )
+# What the job had compared when that read failed, said in the line (the outside reviewer's
+# remark: "nothing was compared" was printed after all three files had been compared too).
+COMPARED = {
+    1: "so nothing was compared",
+    2: "after its three files were fetched and each was found to be the file this run attested,"
+    " so whether the release changed around their download is not known",
+    3: "after this job compared its draft's files with this run's and published it, so the"
+    " published release's files were not compared",
+    4: "after its three files were fetched and each was found to be the file this run attested,"
+    " so whether the release changed around their download is not known",
+}
 STALE = (
     "::error::GitHub's listing, at this job's last look, does not list the release for {tag} as"
     " this job has just left it, and it can be seconds behind a write; look at the repository's"
@@ -387,19 +398,21 @@ def test_every_look_of_a_wait_stops_on_an_edit_whatever_the_wait_was_for(tmp_pat
 
 
 @pytest.mark.parametrize(("tag", "candidate"), BOTH)
-@pytest.mark.parametrize("at", [1, 2, 3])
+@pytest.mark.parametrize("at", [1, 2, 3, 4])
 @pytest.mark.parametrize(
     ("knob", "line"), [("DELETED_BEFORE_READ", NOT_FOUND), ("FAILS_AT_READ", NO_ANSWER)]
 )
 def test_a_read_that_fails_stops_the_step_in_a_line_that_says_which_and_nothing_is_written_after(
     tmp_path, tag, candidate, at, knob, line
 ):
-    """At each of the three reads of a first run: before the download, before the publication,
-    before success. A release that is not found has probably been deleted; a read that got no
-    answer says nothing about the release. Neither is a release that differs."""
+    """At each of the four reads of a first run: before the download, after the draft's files
+    were compared, after the publication, after the published release's files were compared. A
+    release that is not found has probably been deleted; a read that got no answer says nothing
+    about the release, and its line says what the job had compared by then. Neither is a
+    release that differs."""
     done, calls = run(tmp_path, tag, candidate, **{knob: str(at)})
     assert done.returncode == 1
-    assert the_error(done) == line.format(tag=tag)
+    assert the_error(done) == line.format(tag=tag, compared=COMPARED[at])
     assert reads(calls)[-1] == len(calls) - 1 and len(reads(calls)) == at
     assert len(writes(calls)) == (1 if at < 3 else 2)
     assert "is this run's and is published" not in done.stdout
@@ -412,7 +425,10 @@ def test_a_read_that_fails_stops_the_step_in_a_line_that_says_which_and_nothing_
 
 
 def test_the_two_lines_have_their_rows_and_neither_tells_anyone_to_delete():
-    for line in (NOT_FOUND, NO_ANSWER):
+    for line in (
+        NOT_FOUND,
+        *(NO_ANSWER.format(tag="{tag}", compared=c) for c in COMPARED.values()),
+    ):
         assert "delete it" not in line and ". " not in line
     assert cells(
         "the GitHub release for …, which GitHub's listing showed, was not found when read by its"
@@ -424,12 +440,14 @@ def test_the_two_lines_have_their_rows_and_neither_tells_anyone_to_delete():
         "Re-run the job, which starts from what is listed then.",
     )
     assert cells(
-        "the GitHub release for … could not be read by its id, as the lines above say, so"
-        " nothing was compared"
+        "the GitHub release for … could not be read by its id, as the lines above say, …"
     ) == (
-        "GitHub did not answer the job's read of the release (the CLI's own line above the"
-        " error names the status): that says nothing about the release",
-        "Re-run the job. Delete nothing.",
+        "GitHub did not answer one of the job's reads of the release by its id (the CLI's own"
+        " line above the error names the status), which says nothing about the release; the"
+        " line says what the job had compared by then: nothing; the three files of the release"
+        " it read, each this run's, byte for byte; or, after it published the draft, the"
+        " draft's files and not yet the published release's",
+        "Re-run the job, which reads and compares the release again. Delete nothing.",
     )
 
 

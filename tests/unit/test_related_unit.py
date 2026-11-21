@@ -693,6 +693,57 @@ def test_a_term_and_a_title_that_hold_a_null_or_a_quote_answer_over_every_surfac
         assert [(p["page"], p["why"][0]["term"]) for p in found["related"]] == [(f"two-{n}", term)]
 
 
+def mentioned(env, focus: str) -> dict[str, tuple[bool, list[str]]]:
+    """Whether each surface's answer is complete, and the pages it says mention `focus`."""
+    response = rest(env, focus, "?limit=20")
+    assert response.status_code == 200
+    answers = {
+        "Memory": Memory(env.store, lint_gate).related("ops", focus, 20),
+        "REST": response.json(),
+        "MCP": answer(env.client, env.key, "related", project="ops", slug=focus, limit=20),
+    }
+    return {
+        surface: (
+            found["searched"]["complete"],
+            sorted(
+                page["page"]
+                for page in found["related"]
+                if any(why["kind"] == "mentioned_by" for why in page["why"])
+            ),
+        )
+        for surface, found in answers.items()
+    }
+
+
+@pytest.mark.parametrize("others", [0, 5], ids=["alone", "beside-five"])
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Read Cafe\u0301/notes today.",  # the reviewer's: a path flush after the title
+        "Read Cafe\u0301--draft today.",  # a flag flush after it
+        "Read /notes/\u0301Café today.",  # a path flush before it, a mark between
+    ],
+    ids=["path-after", "flag-after", "path-before"],
+)
+def test_a_title_flush_against_a_fact_names_the_page_as_the_index_reads_its_words(
+    env, said, others
+):
+    """The facts read `/notes` after `Café` written with a combining accent as a path,
+    `--draft` as a flag, `/notes/` before a mark as a path; the index reads the slash, the
+    hyphen and the mark there as what ends or precedes a word, so the title stands whole in
+    prose and names the page. Blanking the path or the flag keeps those separators, so the
+    title stays a word of its own: alone, one mention; beside five other pages that name
+    it, six do, and none relates, the answer complete, on every surface."""
+    focus = note(env, "Café", "The field guide is on the shelf.")["page"]
+    for n in range(others):
+        note(env, f"Group {n}", f"Group {n} reads Café today.")
+    reader = note(env, "Reader", said)["page"]
+    (claim,) = answer(env.client, env.key, "page", project="ops", slug=reader)["claims"]
+    assert claim["text"] == said
+    expected = [reader] if not others else []
+    assert mentioned(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
 def test_a_title_in_a_path_between_backticks_markdown_does_not_pair_names_the_page(env):
     """Between two backticks of one line that Markdown does not pair, the facts read inline
     code and so no path; the page shows the text as prose, so a title inside a path there

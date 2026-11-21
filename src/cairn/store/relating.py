@@ -171,7 +171,7 @@ import contextlib
 import json
 import sqlite3
 import threading
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
 from cairn import relations
@@ -536,10 +536,13 @@ def _mentioning(
     passage = {row: candidates[row][0] for row, its_passage in judged.items() if its_passage}
     numbered = {span_id: n for n, span_id in enumerate(dict.fromkeys(passage.values()), 1)}
     texts = {}  # each of those passages, by its number, with what is not prose blanked out
+    asked = named or ""
+    if numbered:  # how the index's tokenizer reads each character they hold
+        kind = _kinds([relations.fill_for(asked), *(c for s in numbered for c in spans[s].text)])
     for span_id, n in numbered.items():
         span = spans[span_id]
         stretches = [*relations.covered(span, facts[span_id]), *code_read(span.text)]
-        texts[n] = relations.blanked(span.text, stretches, named or "")
+        texts[n] = relations.blanked(span.text, stretches, asked, kind)
     places = _in_prose(named, texts) if named and texts else {}
     names: dict[str, tuple[int, tuple[int, int] | None]] = {}
     for row, at in naming:
@@ -579,6 +582,59 @@ def _judged(
 def _scratch() -> sqlite3.Connection:
     """A database of the read's own, in memory, closed when `_in_prose` is done with it; each
     statement its own transaction."""
+    return sqlite3.connect(":memory:", isolation_level=None)
+
+
+# What the index's tokenizer reads each character as (relations.TOKEN, MARK, SEPARATOR; 0 for
+# one not asked yet), by code point: one table for each SQLite library and declaration of the
+# index, since the reading is theirs alone and neither changes while a process runs.
+_KINDS: dict[tuple[str, str], bytearray] = {}
+_PROBES = ("qzx", "qzy")  # two words of letters, around the character asked
+
+
+def _kinds(chars: Iterable[str]) -> Callable[[str], int]:
+    """What the index's tokenizer reads each character as, asked of the tokenizer itself and
+    never of a table written here: an index of the claims' declaration, in a database of its
+    own in memory (`_classifying`), is given each character of `chars` not asked before
+    twice, at a text's start before a word (it starts a word there, or separates) and
+    inside one (it goes on with the word, or ends it), and asked where it finds the two
+    probe words: a TOKEN starts a word, a MARK goes on with one and starts none (a combining
+    mark), a SEPARATOR does neither. Three statements there (made, given the characters,
+    asked), for the characters this process has not asked about, and none when it has
+    asked about them all; the answers are kept for the process (`_KINDS`)."""
+    known = _KINDS.setdefault((sqlite3.sqlite_version, schema._CLAIM_INDEX), bytearray(0x110000))
+    new = sorted({char for char in chars if not known[ord(char)]})
+    if not new:
+        return lambda char: known[ord(char)]
+    opened, closed = [m for m in map(chr, range(0xFDD0, 0xFDF0)) if m not in new][:2]
+    first, then = _PROBES
+    given = [[2 * n + 1, char + then] for n, char in enumerate(new)]
+    given += [[2 * n + 2, first + char + then] for n, char in enumerate(new)]
+    with contextlib.closing(_classifying()) as classifying:
+        classifying.execute(schema._CLAIM_INDEX.format(index="chars"))
+        classifying.execute(
+            "INSERT INTO chars (rowid, text) SELECT json_extract(value, '$[0]'),"
+            " json_extract(value, '$[1]') FROM json_each(?1)",
+            (json.dumps(given),),
+        )
+        marked = dict(
+            classifying.execute(
+                "SELECT rowid, highlight(chars, 5, ?2, ?3) FROM chars WHERE chars MATCH ?1",
+                (f"{first} OR {then}", opened, closed),
+            ).fetchall()
+        )
+    for n, char in enumerate(new):
+        starts = marked.get(2 * n + 1) != f"{char}{opened}{then}{closed}"
+        ends = marked.get(2 * n + 2) == f"{opened}{first}{closed}{char}{opened}{then}{closed}"
+        known[ord(char)] = (
+            relations.TOKEN if starts else relations.SEPARATOR if ends else relations.MARK
+        )
+    return lambda char: known[ord(char)]
+
+
+def _classifying() -> sqlite3.Connection:
+    """A database of its own, in memory, in which `_kinds` asks the index's tokenizer how it
+    reads characters, closed when that is done; each statement its own transaction."""
     return sqlite3.connect(":memory:", isolation_level=None)
 
 

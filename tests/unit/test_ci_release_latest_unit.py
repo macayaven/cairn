@@ -25,6 +25,7 @@ from test_ci_release_retry_unit import (
     README,
     TAG_READ,
     attached,
+    cells,
     held,
     made_earlier,
     run,
@@ -315,4 +316,29 @@ def test_the_readme_and_the_comments_say_one_release_job_at_a_time_and_the_check
         "The look after the publication checks it: when it lists a higher stable version and"
         " the publication said latest, the job stops with a line of its own and edits no other"
         " release"
+    ) in comment
+
+
+# A stated limit (the coordinator's ruling on the tester's case): after the lost-latest stop, a
+# re-run sends no publication, so it does not look at GitHub's latest again and succeeds, the
+# latest staying on the lower version (test_a_re_run_that_finds_its_release_published_sends_and_
+# checks_nothing_of_latest runs it). The line's remedy is the releases page, and the documents say
+# that re-running does not repair it.
+NO_REPAIR = (
+    "The line's remedy is to set the higher version as the latest release on the releases page:"
+    " a re-run of the job after this stop sends no publication and succeeds without looking at"
+    " GitHub's latest again, so re-running does not repair it."
+)
+
+
+def test_the_row_and_the_comment_say_a_re_run_does_not_repair_github_s_latest():
+    _, next_step = cells(
+        "the GitHub release for …, read by its id, is this run's and public, with the title and"
+        " the notes this run wrote and exactly the files this run attested, and this job's"
+        " publication asked GitHub to make it the repository's latest release"
+    )
+    assert next_step.endswith(" " + NO_REPAIR), next_step
+    comment = " ".join(CREATE["run"].replace("#", "").split())
+    assert (
+        "the job's concurrency group). " + NO_REPAIR.replace("of the job", "of this job")
     ) in comment

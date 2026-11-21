@@ -1846,6 +1846,9 @@ jobs:
           # stops with a line of its own and edits no other release (a person published the
           # higher one by hand meanwhile, or the look before was behind; another run of this
           # workflow cannot, since one `release` runs at a time, the job's concurrency group).
+          # The line's remedy is to set the higher version as the latest release on the
+          # releases page: a re-run of this job after this stop sends no publication and
+          # succeeds without looking at GitHub's latest again, so re-running does not repair it.
           # When GitHub publishes and the reply is lost, the job fails and nothing is undone:
           # the re-run finds the release published. (4) After each write the job looks again.
           # It ends well only on a published release that holds exactly the files this run

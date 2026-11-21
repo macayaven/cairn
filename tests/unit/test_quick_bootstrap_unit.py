@@ -1038,6 +1038,41 @@ def test_no_piece_of_a_setting_gets_through_whatever_the_form_of_its_line(vm):
     assert said.count(f"cairn-quick: compose: {LEFT_OUT}") == 8 + len(quoting)
 
 
+LEFT_OUT_WHEN = (
+    "A line is left out when it holds a value of 6 to 11 characters, or 12 characters in a row"
+    " of a settings line, its name included: so an error that names a setting with a long name"
+    " is not shown, and the boot's own closing line (`Docker Compose up failed` or `could not"
+    " read the cairn settings secret`) always is."
+)
+
+
+def test_an_error_that_names_a_long_named_setting_is_left_out_and_the_boots_line_stays(vm):
+    """A whole settings line counts as a value, so twelve characters in a row of a setting's
+    name leave an error line out as twelve of its value do: the safe side. The line the boot
+    writes itself is never one of the tools' and is always there. The guide's recovery
+    section and the comment over `say_errors` say so."""
+    settings = b"CAIRN_GOOGLE_CLIENT_SECRET=hq2mv7cz4nd8ft1ydc5\nSHORT=zq7wm2\n"
+    errors = (
+        "error: CAIRN_GOOGLE_CLIENT_SECRET is not known",  # the name, nothing of the value
+        "error: zq7wm2 refused",  # a value of six characters, whole
+        "error: SHORT is not known",  # a name under twelve characters: shown
+    )
+    config = {"STANDIN_COMPOSE_ERROR": "\n".join(errors)}
+    done = run(vm, mode="compose-failure", settings=settings, config=config)
+    assert done.returncode != 0
+    said = done.stderr.splitlines()
+    assert "CAIRN_GOOGLE_CLIENT_SECRET" not in done.stderr and "zq7wm2" not in done.stderr
+    assert "cairn-quick: compose: error: SHORT is not known" in said
+    assert said[-1].startswith("cairn-quick: Docker Compose up failed.")
+    recovery = (QUICK / "README.md").read_text().split("## First-boot recovery\n")[1]
+    assert LEFT_OUT_WHEN in " ".join(recovery.split("\n## ")[0].split())
+    script = BOOTSTRAP.read_text()
+    comment = script[: script.index("say_errors() {")].rsplit("\n\n", 1)[1]
+    said_there = " ".join(line.lstrip("# ") for line in comment.splitlines())
+    assert "12 in a row of a settings line (its name included" in said_there
+    assert "6 characters of a short value" in said_there
+
+
 def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):
     """The value travels on standard output into a staged file and nowhere else. Should a
     tool also repeat it among its errors, that line is left out and the others stay."""

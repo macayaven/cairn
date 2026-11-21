@@ -376,6 +376,10 @@ fails, and its journal has the tool's own error on lines that start with
 that would repeat one is left out, a syntax error in the settings file is given by its
 line number, and Compose's warning of a `$` before a name no variable has is passed on without
 that name.
+A line is left out when it holds a value of 6 to 11 characters, or 12 characters in a row of a
+settings line, its name included: so an error that names a setting with a long name is not shown,
+and the boot's own closing line (`Docker Compose up failed` or `could not read the cairn settings
+secret`) always is.
 
 After fixing a package problem, trigger an immediate retry.
 

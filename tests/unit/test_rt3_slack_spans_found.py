@@ -62,7 +62,6 @@ def shown(text: str, elements: list[dict]) -> list[tuple[str, str]]:
     return out
 
 
-@pytest.mark.xfail(strict=True, reason="a span of backticks is placed one backtick early")
 def test_1_a_named_span_of_backticks_after_a_span_the_rich_text_leaves_out():
     """A span the rich text does not name, then right after it a named span holding one
     backtick. Slack displayed "k" as code and "`" as code (the guide allows the second as its

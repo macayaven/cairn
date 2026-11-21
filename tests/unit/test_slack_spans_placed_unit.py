@@ -18,3 +18,12 @@ def test_a_later_place_is_not_taken_where_the_rich_text_is_silent_between():
     sent = "y`x``a`y`a`"
     page = shown(sent, [prose("y"), code("a"), prose("y"), code("a")])
     assert page == [("text", "y"), ("code", "x"), ("text", "ay"), ("code", "a")]
+
+
+def test_a_backtick_that_closes_a_span_is_not_taken_where_the_text_before_is_not_there():
+    """The text "x " the rich text gives before the span of one backtick does not stand right
+    before any place it could take (the span "k" it leaves out is between), so the rich text
+    tells nothing there: one backtick before the run on its line is unpaired, the run's first
+    closes that span, and the code starts one later."""
+    page = shown("x `k````", [prose("x "), code("`")])
+    assert page == [("text", "x "), ("code", "k"), ("text", "`")]

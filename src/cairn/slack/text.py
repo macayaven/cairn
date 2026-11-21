@@ -21,7 +21,7 @@ import re
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from itertools import pairwise
+from itertools import accumulate, pairwise
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 from markdown_it import MarkdownIt
@@ -567,7 +567,11 @@ def _known_code(
     right before a later place and over the first one, as the backticks of an empty span or
     a backtick Slack displayed as a character do (the Slack tester's second attack on spans,
     cases 3 and 4). Only so: where the rich text is silent about what stands between, a later
-    place that the same text stands before may be the next span's.
+    place that the same text stands before may be the next span's. Where it tells nothing
+    so (an element of a shape not read, none, or text that stands at no place), and the
+    first place starts a run of backticks with an odd number of backticks before it on its
+    line since the last span placed, the run's first backtick closes a span the text's
+    backticks bound, and the span starts one later where it stands there (case 1).
 
     Each place is looked at once, whatever the code (the tester's second attack, finding 6:
     each way was searched for to the text's end): the places a block or a span can start
@@ -577,7 +581,7 @@ def _known_code(
     places: list[tuple[int, int, str, object]] = []
     if not code:
         return places
-    digests, at = _Hashes(text), 0
+    digests, at, ticks = _Hashes(text), 0, None
     starts = {True: _Next(text, "```", len(text)), False: _Next(text, "`", len(text))}
     for block, shown, before in code:
         sent = _sent(shown)
@@ -595,9 +599,9 @@ def _known_code(
             where = where if found else starts[block](where + 1)
         if found is None:
             break
-        if not block and before is not None:
-            head, first = _sent(before), where
-            value, mark = known[0][1], digests.of(head)
+        head, first, value = None if before is None else _sent(before), where, known[0][1]
+        if not block and head is not None:
+            mark = digests.of(head)
             while where <= first + len(head) and where < len(text):
                 if (
                     where - len(head) >= at
@@ -607,11 +611,25 @@ def _known_code(
                     break
                 where = starts[False](where + 1)
             else:
-                where = first
+                where, head = first, None
+        if not block and head is None and (first == at or text[first - 1] != "`"):
+            ticks = ticks or _ticks(text)
+            if min(ticks[1][first], ticks[0][first] - ticks[0][at]) % 2:  # the run closes one
+                where += digests.holds(found, first + 1, value)
         at = where + len(found)
         lines = _redact(shown).split("\n")
         places.append((where, at, "block", lines) if block else (where, at, "code", lines[0]))
     return places
+
+
+def _ticks(text: str) -> tuple[list[int], list[int]]:
+    """For each place in `text`, how many backticks stand before it, and how many on its line
+    (_known_code): the text is read once."""
+
+    def step(count: int, character: str) -> int:
+        return 0 if character == "\n" else count + (character == "`")
+
+    return [0, *accumulate(map("`".__eq__, text))], list(accumulate(text, step, initial=0))
 
 
 class _Hashes:

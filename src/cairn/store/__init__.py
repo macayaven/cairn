@@ -1507,6 +1507,12 @@ class Store(
             _refuse(path, error)  # CannotOpen when SQLite may not open or create the file
             raise
         try:
+            # A writer that stopped abruptly may have left committed frames in its WAL.
+            # Refusing its schema must not checkpoint those frames on our last close.
+            wal = Path(f"{path}-wal")
+            keep_log = str(path) != ":memory:" and wal.is_file()
+            if keep_log:
+                self._con.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
             # Freed rows and pages are zeroed: what makes a deletion an erasure (see
             # delete_account in the contract). A library that cannot is refused, not trusted.
             self._con.execute("PRAGMA secure_delete = ON")
@@ -1514,7 +1520,10 @@ class Store(
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
             _upgrade(self._con, self._stamp, upgrade, create, on_schema_commit)
             if str(path) != ":memory:":
-                (journal,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
+                pragma = "PRAGMA journal_mode = WAL" if create or upgrade else "PRAGMA journal_mode"
+                (journal,) = self._con.execute(pragma).fetchone()
+                if keep_log and (create or upgrade):
+                    self._con.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, False)
                 self._state.readers = _readers_for(self._con, journal)
         except sqlite3.Error as error:
             self._con.close()

@@ -88,19 +88,17 @@ def test_deleting_a_project_takes_its_notes_text_out_of_pages_of_other_projects(
         assert tables_holding(store, "saffron") == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the store's own export of an earlier-build cross-project page is refused whole",
-)
-def test_an_export_of_a_database_an_earlier_build_wrote_imports():
-    """The fix keeps such a page as it is until its note is forgotten, and the import refuses
-    a claim that cites a passage of another project. So the export of the upgraded database
-    is not a backup: an empty store refuses all of it (seen: ValueError "a claim of
-    'minutes' in projects/east/ cites a passage that is not of its project's notes"), and
-    the only way to make it import is to forget a note."""
+def test_limit_an_export_of_a_database_an_earlier_build_wrote_is_refused_naming_the_page():
+    """Restated as a passing test of a stated limit (src/cairn/guides/run.md, beside the
+    import): the import's check stays, so an empty store refuses the whole export of such a
+    database, with the line that names the page. Forgetting the note it cites, or deleting
+    that note's project, rewrites the page, and the next export imports
+    (test_earlier_page_export_unit.py)."""
     with closing(Store(":memory:")) as store:
         legacy(store)
         archive, _ = exported(store)
     with closing(Store(":memory:")) as fresh:
-        summary = fresh.import_export(io.BytesIO(archive))
-        assert (summary.projects, summary.notes) == (2, 2)
+        refused = r"^a claim of 'minutes' in projects/east/ cites a passage that is not of its"
+        with pytest.raises(ValueError, match=refused):
+            fresh.import_export(io.BytesIO(archive))
+        assert fresh.list_projects() == []

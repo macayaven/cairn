@@ -143,10 +143,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   named projects or read-only (`LIMITED_ERASER`), with no person the workspace itself; anyone
   else gets PermissionError (`NOT_AN_ERASER`) and nothing changes. `view.may_erase(project_id)`
   says so (KeyError when unknown) and `view.forget_preview(note_id)` says what a forget
-  would rebuild and remove; both are reads. Each is one transaction with its audit event,
-  project.deleted {"id", "name", "notes", "pages"} or note.forgotten {"note", "project",
-  "pages"}, each with "elsewhere" when pages of other projects changed, subtracts what it removed
-  from `stored_bytes`, marks a compaction due (see
+  would rebuild and remove, with how many pages of other projects it would change only to a
+  view that may forget the note (0 for any other); both are reads. Each is one transaction
+  with its audit event, project.deleted {"id", "name", "notes", "pages"} or note.forgotten
+  {"note", "project", "pages"}, each with "elsewhere" when pages of other projects changed,
+  subtracts what it removed from `stored_bytes`, marks a compaction due (see
   Compaction state) and ends with the truncating checkpoint delete_account ends with, so the
   removed text is gone from the main file, -wal and -shm at once. Cost: both touch only the
   rows they remove or rewrite, through indexes, and never rewrite the database file; a

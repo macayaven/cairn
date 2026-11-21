@@ -2,8 +2,10 @@
 
 A page of another project that cites a note is written as a database an earlier build holds
 it (tests/earlier_build.py). The oracle for "the text is gone" is a scan of every table of
-the database. Each case is marked as failing on purpose, strictly, so the file passes as
-committed. Made-up notes."""
+the database. The case was found failing on the ninth round and is fixed since (a forget
+leaves each other project whose page it changes the row a delete leaves, so the draft stays
+stale after the note's project goes). What report 8's rule left: test_rt1_own_project_found.py.
+Made-up notes."""
 
 from contextlib import closing
 

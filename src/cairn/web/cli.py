@@ -194,18 +194,13 @@ schema version <version> but no table <table>".
 
 Only `serve` brings a database of an older schema to SCHEMA_VERSION, and only once it holds
 the server's lock (R1, below): its open, the store's default, comes after take_serve_lock.
-Every other command opens the store with upgrade=False, which reads the version under the
-write lock of the step that would have run and raises SchemaTooOld before anything is
-written: exit 1, one line on stderr (cli_data.OLDER_SCHEMA, which names the command and says
-to start the server once on it), nothing on stdout, nothing written (a log a killed server
-left beside the file is folded into it by SQLite as the connection closes, its rows
-unchanged). `stats` and
-`audit-verify` read with SQLite alone and refuse one in their own words. A busy database is
-SQLite's error, as before; an empty or new file is still made at this schema by the commands
-that make one. An older build's `serve` took the same lock on the same file (since the first
-public version), so a new server cannot upgrade beneath one; an older build's other
-commands take no lock, and one still open across the upgrade can still write into the
-upgraded database.
+Administrative commands open an existing database at a compatible schema. An older cairn
+schema gets one shared refusal, including from the read-only commands `stats` and
+`audit-verify`. Opening it leaves its schema, durable WAL and journal mode alone.
+`key-create` and `import` can publish a new database at an unused path after their work
+succeeds. Only `serve` initializes an existing empty file. A failed start reports the last
+schema and compatibility floor its own steps committed. An older server shares the lock.
+Stop other older commands and library writers before upgrading.
 
 A --db path the store cannot open as a cairn database (the store raises CannotOpen from
 SQLite's own refusal before it writes anything, and a folder cairn may not make for it is the

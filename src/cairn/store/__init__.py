@@ -1477,8 +1477,9 @@ class Store(
     default, `Store(path)`, as before. With `upgrade=False` such a database is refused instead
     (SchemaTooOld), from the version read under the write lock of the step that would have
     run, before anything is written; an empty or new file is still made at this schema. Of
-    cairn's commands only `serve` upgrades, once it holds the server's lock; every other one
-    opens with `upgrade=False` (cairn.web.cli)."""
+    cairn's commands only `serve` upgrades, while holding the server's lock. Administrative
+    writers use open_existing on the public path and keep its journal mode. New imports
+    and first keys use a private staging file."""
 
     def __init__(
         self,

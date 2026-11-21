@@ -2,13 +2,10 @@
 install's numbers and each workspace's, read without writing anything (cairn.web.stats says
 what they are).
 
-It never opens the store, which would set the file's journal mode (and, by its default,
-upgrade an older database): it opens the file with SQLite alone, read-only. With no "-wal"
-file beside it no server is writing it, so it is opened immutable (no lock, no "-shm" or
-"-wal" file made), which also reads a database on a volume this user may not write, such as
-a mounted backup. With a "-wal" file (a server is running, or one stopped without its last
-checkpoint) it is opened read-only, reading through the log as SQLite does; where SQLite
-cannot, the command refuses. Nothing is written, made, removed, or changed in mode.
+It opens SQLite read-only. With a WAL or rollback journal beside the database, the reader
+uses SQLite's locking and reads committed rows through the WAL. On a quiet WAL database,
+immutable mode also permits reading a volume on which SQLite cannot make its working
+files. A hot rollback journal requires recovery by its owner first.
 
 It refuses as the other commands that open an existing database do, with their lines (exit
 1, one line on stderr, nothing on stdout): no database at the path or a folder there ("no
@@ -28,7 +25,8 @@ that no note of the page's own project holds, another project's or one no longer
 store's repair, hold_to_own_projects, makes, writing nothing): `other_projects` in the
 object, one line without `--json`. It reads every page version, so it is asked for, never
 paid on every call. cairn's writers make no such page; one there was written behind the
-store's back, or saved through Store.save_page citing passages the store does not hold.
+store's back, by an older writer still open across the upgrade, or through Store.save_page
+citing passages the store does not hold.
 """
 
 import argparse

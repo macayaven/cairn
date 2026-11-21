@@ -526,7 +526,8 @@ def test_the_changelog_says_a_forget_reaches_every_page_of_the_workspace():
     """The second reviewer's seventh report, must-fix 1: a page of another project that cited
     a forgotten note kept its text, and the tester found the same of a deleted project. Every
     removal of notes now changes every page of the workspace that cited them, and a page
-    takes a new citation only of its own project's notes (Store.save_page)."""
+    cites only its own project's notes (Store.save_page; schema step 32 for what an earlier
+    build saved)."""
     from cairn.store.memory import NOT_OF_PROJECT
 
     entry = next(
@@ -536,5 +537,16 @@ def test_the_changelog_says_a_forget_reaches_every_page_of_the_workspace():
         "A forgotten note, and the notes of a deleted project, leave every page of the workspace"
         " that cited them, whatever its project"
     ) in entry
-    assert "a page takes a new citation only of its own project's notes" in entry
+    # the second reviewer's eighth report, must-fix 2 and 3: nothing is carried; the upgrade
+    # (schema step 32) rewrites what an earlier build saved, and every write refuses it
+    assert "a page cites only its own project's notes" in entry
+    assert (
+        "the upgrade to this version rewrites any page an earlier build had saved citing"
+        " another project's note"
+    ) in entry
+    assert "takes a new citation" not in entry
+    assert "`stats --other-projects` counts such pages and `repair` rewrites them" in entry
+    from cairn.store import SCHEMA_VERSION
+
+    assert SCHEMA_VERSION == 32
     assert NOT_OF_PROJECT == "A page can cite only passages from its own project."

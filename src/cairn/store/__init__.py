@@ -1478,7 +1478,7 @@ class Store(
     (SchemaTooOld), from the version read under the write lock of the step that would have
     run, before anything is written; an empty or new file is still made at this schema. Of
     cairn's commands only `serve` upgrades, while holding the server's lock. Administrative
-    writers use open_existing on the public path and keep its journal mode. New imports
+    writers open the public path with create=False and keep its journal mode. New imports
     and first keys use a private staging file."""
 
     def __init__(
@@ -1538,11 +1538,6 @@ class Store(
         except BaseException:
             self._con.close()
             raise
-
-    @classmethod
-    def open_existing(cls, path: Path) -> "Store":
-        """Open a compatible database. SQLite may neither create the file nor initialize it."""
-        return cls(path, upgrade=False, create=False)
 
     def health(self, wait: float | None = None, stuck_after: float = STUCK_AFTER) -> Health:
         """Whether the store can serve, from one bounded read that writes nothing (what

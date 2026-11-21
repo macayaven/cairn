@@ -339,7 +339,7 @@ def warn_readable(db: Path) -> None:
 
 def open_existing(db: Path) -> Store:
     """An accepted database gets its permissions notice before the command acts."""
-    store = Store.open_existing(db)
+    store = Store(db, upgrade=False, create=False)
     warn_readable(db)
     return store
 

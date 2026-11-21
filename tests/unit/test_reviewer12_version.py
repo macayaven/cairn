@@ -30,9 +30,9 @@ def test_the_first_version_read_is_already_inside_the_transaction(tmp_path, monk
 
     monkeypatch.setattr(sqlite3, "connect", traced)
     if newer:
-        with closing(Store.open_existing(db)):
+        with closing(Store(db, upgrade=False, create=False)):
             pass
     else:
         with pytest.raises(SchemaTooOld):
-            Store.open_existing(db)
+            Store(db, upgrade=False, create=False)
     assert reads == [("PRAGMA user_version", True), ("PRAGMA application_id", True)]

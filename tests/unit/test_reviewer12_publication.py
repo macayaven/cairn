@@ -34,7 +34,7 @@ def test_publication_checkpoints_the_import_before_linking(tmp_path, monkeypatch
     with monkeypatch.context() as patch:
         patch.setattr(Store, "close", leave_wal)
         assert restore(db, source) == 0
-    with closing(Store.open_existing(db)) as published:
+    with closing(Store(db, upgrade=False, create=False)) as published:
         assert published.get_project("orchard") is not None
 
 
@@ -51,7 +51,7 @@ def test_a_database_created_at_publication_wins(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(os, "link", first)
     assert restore(db, source) == 1
     assert "already exists" in capsys.readouterr().err
-    with closing(Store.open_existing(db)) as other:
+    with closing(Store(db, upgrade=False, create=False)) as other:
         assert [p.name for p in other.list_projects()] == ["first"]
 
 

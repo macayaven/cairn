@@ -288,6 +288,7 @@ from cairn.store import (
     UnknownSchema,
 )
 from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
+from cairn.store.schema import ForeignSchema
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import (
     cli_arrange,
@@ -2124,6 +2125,10 @@ def main(argv: list[str] | None = None) -> int:
         found, known = error.found, SCHEMA_VERSION
         older = cli_data.OLDER_SCHEMA
         print(older.format(db=db, found=found, known=known, command=args.command), file=sys.stderr)
+        return 1
+    except ForeignSchema:
+        line = NOT_A_DATABASE_YET if args.command in CREATES else NOT_A_DATABASE
+        print(line.format(path=db), file=sys.stderr)
         return 1
     except UnknownSchema as error:  # raised by Store(...) before it writes anything
         print(error, file=sys.stderr)

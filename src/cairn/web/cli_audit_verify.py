@@ -22,7 +22,7 @@ from typing import Any
 
 from cairn.store import SCHEMA_VERSION, CannotOpen
 from cairn.store.audit import check_trail
-from cairn.store.schema import _check_tables, _refuse, _schema_version
+from cairn.store.schema import ForeignSchema, _check_source, _check_tables, _refuse, _schema_version
 from cairn.web.cli_data import DB_EXISTS
 from cairn.web.cli_stats import CANNOT_READ, _connect
 
@@ -72,6 +72,8 @@ def run(args: argparse.Namespace) -> int:
             version = _schema_version(con)  # SchemaTooNew: a newer cairn it may not read
             if version >= SCHEMA_VERSION:
                 _check_tables(con)  # UnknownSchema: this version did not make it
+            if 0 != version < SCHEMA_VERSION:
+                _check_source(con, version)
             if version < SCHEMA_VERSION:
                 print(
                     OLDER_DATABASE.format(db=db, found=version, known=SCHEMA_VERSION),
@@ -83,6 +85,8 @@ def run(args: argparse.Namespace) -> int:
             except KeyError:
                 print(NO_WORKSPACE.format(workspace=args.workspace, db=db), file=sys.stderr)
                 return 1
+        except ForeignSchema:
+            raise
         except sqlite3.Error as error:
             _refuse(db, error)  # CannotOpen: not a database, or one it may not read
             print(CANNOT_READ.format(db=db, reason=type(error).__name__), file=sys.stderr)

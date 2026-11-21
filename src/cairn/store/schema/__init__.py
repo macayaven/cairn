@@ -9,6 +9,7 @@ import functools
 import re
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
 from cairn.store.base import DEFAULT_ACCOUNT_ID, _has_table, _insert_account, _transaction
@@ -46,6 +47,7 @@ from cairn.store.schema.shared import (
     _delete_securely,
     _secure_index,
 )
+from cairn.store.schema.v01 import DDL as _FIRST_SCHEMA
 from cairn.store.schema.v02_accounts import (
     _ACCOUNTS,
     _API_KEYS_BY_LABEL,
@@ -320,6 +322,10 @@ class UnknownSchema(RuntimeError):
     first table missing."""
 
 
+class ForeignSchema(UnknownSchema, sqlite3.DatabaseError):
+    """An older version number on a file whose structure differs from cairn at that version."""
+
+
 class CannotOpen(sqlite3.DatabaseError):
     """The path cannot be opened as a cairn database: SQLite may not open or create a file
     there (SQLITE_CANTOPEN), may not write it (SQLITE_READONLY), or finds that the file is not
@@ -387,9 +393,8 @@ def _run_step(con: sqlite3.Connection, upgrade: bool = True) -> None:
         _create(con)
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     elif version < SCHEMA_VERSION:
+        _check_source(con, version)
         if not upgrade:
-            if version == 1:  # v0, or a file of someone else's with a table: told apart first
-                _check_v0(con)
             raise SchemaTooOld(version)
         step = version + 1
         _MIGRATIONS[step](con)
@@ -535,3 +540,61 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     _OLDEST_BUILD: _drop_retired,
     _OWN_PASSAGES: _hold_to_own_projects,
 }
+
+
+# Keep the historical steps themselves. Reference databases never run a caller's hooks.
+_HISTORY = tuple(_MIGRATIONS.values())
+_SEARCH_TABLE = re.compile(
+    r"claim_search_acct_(?:default|[0-9a-f]{12})(?:_(?:config|content|data|docsize|idx))?"
+)
+
+
+def _objects(con: sqlite3.Connection) -> dict[str, str]:
+    """Schema objects common to all databases of a version. Each workspace's FTS is optional."""
+    return {
+        name: kind
+        for name, kind in con.execute(
+            "SELECT name, type FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"
+        )
+        if not _SEARCH_TABLE.fullmatch(name)
+    }
+
+
+def _fields(con: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    return tuple(row[0] for row in con.execute("SELECT name FROM pragma_table_xinfo(?)", (table,)))
+
+
+@functools.cache
+def _historical_shapes() -> dict[int, tuple[dict[str, str], dict[str, tuple[str, ...]]]]:
+    """Build once, in memory, from the empty original schema and each real step in order."""
+    shapes = {}
+    stamp = _STAMP.set(lambda: "2000-01-01T00:00:00+00:00")
+    try:
+        with closing(sqlite3.connect(":memory:", isolation_level=None)) as ref:
+            ref.executescript(_FIRST_SCHEMA)
+            for version in range(1, len(_HISTORY) + 2):
+                if version > 1:
+                    with _transaction(ref):
+                        _HISTORY[version - 2](ref)
+                objects = _objects(ref)
+                fields = {t: _fields(ref, t) for t in objects if objects[t] == "table"}
+                shapes[version] = objects, fields
+    finally:
+        _STAMP.reset(stamp)
+    return shapes
+
+
+def _check_source(con: sqlite3.Connection, version: int) -> None:
+    """Recognize the complete source shape before suggesting or applying its next step."""
+    if version == 1:
+        try:
+            _check_v0(con)
+        except sqlite3.DatabaseError as error:
+            if getattr(error, "sqlite_errorcode", None) is not None:
+                raise
+            raise ForeignSchema(str(error)) from error
+    if version < 1:
+        raise ForeignSchema("not a cairn database: unknown schema version")
+    objects, fields = _historical_shapes()[version]
+    if _objects(con) != objects or any(_fields(con, t) != names for t, names in fields.items()):
+        raise ForeignSchema(f"not a cairn database of schema version {version}")

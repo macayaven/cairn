@@ -744,7 +744,8 @@ def test_connect_the_reply_names_the_note_as_slack_displayed_it(tmp_path):
     says(
         *CONNECT,
         "The reply in Slack names the note by its title as Slack displayed it, in plain text:"
-        " nothing of it is bold, a mention or a link there.",
+        " nothing of it is bold, a mention or a link there, and code within a line shows the"
+        " backticks about it, as the title writes them.",
     )
     bench = Bench(tmp_path)
     try:
@@ -753,6 +754,12 @@ def test_connect_the_reply_names_the_note_as_slack_displayed_it(tmp_path):
         message = {"type": "message", "user": CEDAR, "ts": "1900000000.000100"}
         reply = replied(bench, handle(bench, {**message, "text": "Q&amp;A [notes] *now*"}))
         assert reply.startswith("Filed: Q&amp;A [notes] now\n")  # Slack shows "Q&A [notes] now"
+        # The second reviewer's seventh report: Slack showed `status` in a code face, and the
+        # reply its backticks (the third tester's model reads the title's line with them).
+        status = {**message, "text": "`status` ok", "ts": "3.000001"}
+        asyncio.run(handle(bench, status).background())
+        named = [body for where, body in bench.calls if where == REPLY][-1]["blocks"][-1]
+        assert named["text"] == {"type": "plain_text", "text": "`status` ok"}
         asyncio.run(
             handle(
                 bench, {**message, "text": "```*draft* <!here>```", "ts": "2.000001"}

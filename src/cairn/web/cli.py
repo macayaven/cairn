@@ -335,6 +335,19 @@ CREATES = ("serve", "key-create", "import")
 # path once and nothing from inside the file.
 NOT_A_DATABASE = "the file at {path} is not a cairn database; --db names the database file"
 NOT_A_DATABASE_YET = NOT_A_DATABASE + ", or a path where none exists yet"
+# An existing file that holds no database yet (the store's Uninitialized): only serve makes one.
+UNINITIALIZED = "the database at {db} is uninitialized: start serve to initialize it"
+# What `serve` says when it stops after its start wrote: the schema its own steps committed,
+# with the floor the last one recorded, then the other writes of its start, in order.
+SERVE_COMMITTED = "serve committed schema {before} -> {after} at {db} ({floor}) before it stopped"
+COMPATIBILITY_FLOOR = "compatibility floor {floor}"
+NO_RECORDED_FLOOR = "no recorded floor"
+SERVE_CHANGED = "serve changed {db}: {writes}"
+CREATED_THE_FILE = "created the database file"
+JOURNAL_CHANGED = "journal mode {before} -> {after}"
+RECORDED_RETENTION = "recorded audit retention"
+SHORTENED_SESSIONS = "shortened {count} web sessions"
+RECORDED_BOUND = "recorded the page history bound"
 # SQLite's wait for another process's lock ran out (SQLITE_BUSY or SQLITE_LOCKED).
 BUSY = (
     "the database at {db} is busy: another process held it past SQLite's wait; {command}"
@@ -1970,13 +1983,13 @@ def _serve(args: argparse.Namespace) -> int:
     writes: list[str] = []
 
     def journal_changed(before: str, after: str) -> None:
-        writes.append(f"journal mode {before} -> {after}")
+        writes.append(JOURNAL_CHANGED.format(before=before, after=after))
 
     store = None
     finished = False
     try:
         if cli_data.make_database(args.db):
-            writes.append("created the database file")
+            writes.append(CREATED_THE_FILE)
         store = Store(args.db, on_schema_commit=changes.append, on_journal_change=journal_changed)
         cli_data.warn_readable(args.db)
         try:
@@ -2036,12 +2049,12 @@ def _serve(args: argparse.Namespace) -> int:
         # B1: a sign-in made under a longer --session-days, or before the option was
         # removed, lasts no longer than the length in force now (renewal only extends).
         if store._con.total_changes != before_app:
-            writes.append("recorded audit retention")
+            writes.append(RECORDED_RETENTION)
         shortened = store.cap_web_sessions(
             args.session_days * 86_400 if args.session_days else SESSION_TTL
         )
         if shortened:
-            writes.append(f"shortened {shortened} web sessions")
+            writes.append(SHORTENED_SESSIONS.format(count=shortened))
         # No access log: uvicorn's prints each request's query string, and the OAuth pages
         # carry a client's `state` and the sealed authorization request there. Proxy headers
         # are read only from --trusted-proxy peers, and the list is always given, so neither
@@ -2071,17 +2084,15 @@ def _serve(args: argparse.Namespace) -> int:
             if not finished and changes:
                 last = changes[-1]
                 floor = (
-                    "no recorded floor"
+                    NO_RECORDED_FLOOR
                     if last.floor is None
-                    else f"compatibility floor {last.floor}"
+                    else COMPATIBILITY_FLOOR.format(floor=last.floor)
                 )
-                print(
-                    f"serve committed schema {changes[0].before} -> {last.after} at {args.db}"
-                    f" ({floor}) before it stopped",
-                    file=sys.stderr,
-                )
+                before, after = changes[0].before, last.after
+                said = SERVE_COMMITTED.format(before=before, after=after, db=args.db, floor=floor)
+                print(said, file=sys.stderr)
             if not finished and writes:
-                print(f"serve changed {args.db}: {', '.join(writes)}", file=sys.stderr)
+                print(SERVE_CHANGED.format(db=args.db, writes=", ".join(writes)), file=sys.stderr)
             if store is not None:
                 store.close()
         finally:
@@ -2117,7 +2128,7 @@ def _history_at_start(
         store.record_history_bound(plans=bounds, default=plans.default)
     else:
         store.record_history_bound(keep)
-    writes.append("recorded the page history bound")
+    writes.append(RECORDED_BOUND)
     over = 0 if keep is None or plans is not None else store.pages_over(keep)
     if not over:
         return None
@@ -2190,9 +2201,7 @@ def main(argv: list[str] | None = None) -> int:
         print(error, file=sys.stderr)
         return 2
     except Uninitialized:
-        print(
-            f"the database at {db} is uninitialized: start serve to initialize it", file=sys.stderr
-        )
+        print(UNINITIALIZED.format(db=db), file=sys.stderr)
         return 1
     except ForeignSchema:
         line = NOT_A_DATABASE_YET if args.command in CREATES else NOT_A_DATABASE

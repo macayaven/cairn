@@ -206,7 +206,7 @@ def _import(
             print(f"no workspace {account!r} in {db}", file=sys.stderr)
             return 1
         except (ValueError, OverLimit) as error:
-            print(f"nothing was imported: {error}", file=sys.stderr)
+            print(NOTHING_IMPORTED.format(error=error), file=sys.stderr)
             return 1
     print(f"imported {_counts(summary)} into {account} in {db}")
     print(f"cut {summary.fields_cut} note fields to their bounds ({', '.join(FIELD_MAX)})")
@@ -229,6 +229,12 @@ def make_folder(db: Path) -> list[Path]:
             raise CannotOpen(db) from error
         made.append(folder)
     return made
+
+
+# What import says when it imported nothing; a new database it could not publish says why.
+NOTHING_IMPORTED = "nothing was imported: {error}"
+ALREADY_THERE = "{db} already exists"
+CANNOT_PUBLISH = "cannot publish {db}: {reason}"
 
 
 # H1: what the command line says of a --db that is a symbolic link (exit 2), and of an
@@ -389,9 +395,9 @@ def new_store(db: Path) -> Iterator[Store]:
             try:
                 os.link(staged, db)
             except FileExistsError:
-                raise ValueError(f"{db} already exists") from None
+                raise ValueError(ALREADY_THERE.format(db=db)) from None
             except OSError as error:
-                raise ValueError(f"cannot publish {db}: {error.strerror}") from error
+                raise ValueError(CANNOT_PUBLISH.format(db=db, reason=error.strerror)) from error
     except PermissionError as error:
         raise CannotOpen(db) from error
     for line in events:

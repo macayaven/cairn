@@ -200,8 +200,8 @@ def covered(span: Span, facts: Sequence[Fact] | None = None) -> list[tuple[int, 
 
 def fill_for(asked: str) -> str:
     """The character that makes another word of a word that stands only in part in prose
-    (`prose_runs`, `blanked`): the first of private use that `asked`, the phrase a title is
-    asked as, does not hold."""
+    (`prose_runs`): the first of private use that `asked`, the phrase a title is asked as,
+    does not hold."""
     return next(chr(code) for code in range(0xE000, 0xF900) if chr(code) not in asked)
 
 
@@ -236,61 +236,6 @@ def prose_runs(
             runs.append((start - left, fill * left + text[start:begin] + fill * right))
         start = end
     return runs
-
-
-def in_word(
-    text: str, at: int, kind: Callable[[str], int], known: tuple[int, bool] = (-1, False)
-) -> bool:
-    """Whether text[at] is part of a word as the index's tokenizer reads it (`kind`): a
-    character of a TOKEN is, wherever it stands; a MARK is when what it follows is; nothing
-    before the text's start is. `known` is a place at or before `at` whose answer is known
-    already, and its answer: the walk back over marks stops there."""
-    stop, answer = known
-    while at > stop and kind(text[at]) == MARK:
-        at -= 1
-    return answer if at == stop else kind(text[at]) == TOKEN
-
-
-def blanked(
-    text: str, stretches: Iterable[tuple[int, int]], asked: str, kind: Callable[[str], int]
-) -> str:
-    """`text` with what is not prose blanked out in place, as one text. The index is not
-    given it (it is given `prose_runs`): it is kept for the tests that check the masking it
-    did. Of every stretch (`covered`, and what the
-    Markdown parser reads as code: cairn.spans.code_read), each character that the index's
-    tokenizer reads as part of a word where it stands (`kind`, the tokenizer's own reading
-    of each character: `in_word`) made `fill_for(asked)`, which it reads as part of a word
-    too and which no title asked holds; each character it reads as a separator stays as it
-    is. So every word of the text begins and ends where it did, and a place in the one text
-    is a place in the other: a word in a stretch is a word that is no word of the title, a
-    word that stands in one only in part is another word, and a separator at a stretch's
-    edge still ends the word beside it. A stretch that holds no word (one of blanks between
-    two backticks) is given one, one character made `fill` where it joins no word beside
-    it, so that no phrase is read across a stretch. Where the index then finds the title,
-    it stands whole in prose, no stretch inside it."""
-    fill = fill_for(asked)
-    if kind(fill) != TOKEN:
-        raise ValueError("the index's tokenizer does not read the blanking character as a word")
-    chars, known = list(text), (-1, False)  # the last character of the stretch before
-    for start, end in _joined(stretches):
-        held = before = in_word(text, start - 1, kind, known)
-        worded = False
-        for at in range(start, end):
-            read = kind(text[at])
-            held = read == TOKEN or (read == MARK and held)
-            if held:
-                chars[at], worded = fill, True
-        if not worded:  # no character of it is in a word: only the one before can be
-            alone = (
-                at
-                for at in range(start, end)
-                if (at > start or not before)
-                and (at + 1 == len(text) or kind(text[at + 1]) == SEPARATOR)
-            )
-            if (at := next(alone, None)) is not None:
-                chars[at] = fill
-        known = (end - 1, held)
-    return "".join(chars)
 
 
 def _joined(stretches: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:

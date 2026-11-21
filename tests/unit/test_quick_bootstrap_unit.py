@@ -664,9 +664,10 @@ COMPOSE_READS = (
     " quoted value`, the unit fails and the boot passes that line on). Outside them"
     " Compose changes four kinds of value: it puts a variable's value in place of a `$`"
     " and the name after it, or nothing when no variable has that name; where no quotes"
-    " hold the value, it drops a `#` after a space, with the rest of the line, and the"
-    " blanks at either end; and it removes double quotes around a value, reading `\\n` and"
-    " its like between them as the characters they stand for."
+    " hold the value, it drops the blanks at either end, and a `#` after a space with the"
+    " rest of the line, unless the `#` is the value's first character; and it removes"
+    " double quotes around a value, reading `\\n` and its like between them as the"
+    " characters they stand for."
 )
 COMPOSE_SAYS = (
     "Compose reports one of these, the `$` before a name no variable has, and the boot"
@@ -708,6 +709,7 @@ def test_compose_changes_four_kinds_of_setting_and_reports_one(vm):
         "COMMENT": "abc #def",
         "DOUBLE": '"quoted"',
         "BLANKS": "  ab cd  ",
+        "HASHED": " #ab",  # the # is the value's first character once the blank is dropped
         "ESCAPED": '"a\\tb\\nc"',  # a backslash and a letter, twice, in double quotes
         "HELD": '"  pa$CAIRN_DOMAIN #x  "',  # double quotes hold blanks and a #, not a $name
     }
@@ -728,6 +730,7 @@ def test_compose_changes_four_kinds_of_setting_and_reports_one(vm):
     assert got["COMMENT"] == "abc"  # dropped from the # after a space
     assert got["DOUBLE"] == "quoted"  # without its quotes
     assert got["BLANKS"] == "ab cd"  # without the blanks at its ends
+    assert got["HASHED"] == "#ab"  # the blank dropped, the # and what follows it kept
     # A tab and a line end, where the file has two characters for each.
     assert got["ESCAPED"] == "a\tb\nc"
     assert got["HELD"] == "  pacairn.example.net #x  "
@@ -1032,9 +1035,7 @@ def test_a_line_the_check_is_not_sure_of_is_one_line_not_compared(vm, line, give
         ("PLAIN='abc' # said", "abc", []),
         ("PLAIN=abc\r", "abc", []),
         ("PLAIN='abc'\r", "abc", []),
-        # Carriage returns the check must see as the file has them: Compose keeps one inside
-        # single quotes, and drops a second one at a line's end, which is a blank like others.
-        ("PLAIN='a\r\nb'\r", "a\r\nb", []),
+        # A second carriage return at a line's end is a blank like others: Compose drops it.
         ("PLAIN=abc\r\r", "abc", [DIFFERS.format("PLAIN")]),
         # Two lines for one name: Compose takes the later, and the check compares that one.
         ("PLAIN=abc  \nPLAIN=abc", "abc", []),
@@ -1049,6 +1050,16 @@ def test_a_value_is_compared_as_written_blanks_and_all(vm, line, given, journal)
     got, said = judged_with_compose_deciding(vm, f"{line}\nLAST=x\n".encode())
     assert got == {"PLAIN": given, "LAST": "x"}
     assert said == journal
+
+
+def test_a_carriage_return_inside_single_quotes_is_compared_as_the_file_has_it(vm):
+    """The check reads the file with its line ends as they are. Compose 5.5.0 keeps a
+    carriage return inside single quotes, and the start is then quiet; a Compose that
+    dropped it would have changed the value, and the check would name it. Either way the
+    journal follows what Compose gave."""
+    got, said = judged_with_compose_deciding(vm, b"PLAIN='a\r\nb'\r\nLAST=x\n")
+    assert got["PLAIN"] in ("a\r\nb", "a\nb") and got["LAST"] == "x"
+    assert said == ([] if got["PLAIN"] == "a\r\nb" else [DIFFERS.format("PLAIN")])
 
 
 @pytest.mark.parametrize(
@@ -1154,11 +1165,12 @@ LEFT_OUT_WHEN = (
     " line's first `=` or `:`, without the blanks and quotes at its ends, when that is 6"
     " to 11 characters long; or 12 characters in a row of a settings line, its name"
     " included, the blanks and quotes at the line's ends aside. So an error that names a"
-    " setting with a long name is not shown, and the boot's own closing line (`Docker"
-    " Compose up failed` or `could not read the cairn settings secret`) always is. Less"
-    " than that reaches the journal when a tool's error line holds it: a whole value of 5"
-    " characters or fewer, a part of a value of 6 to 11, up to 11 characters in a row of a"
-    " longer one, and a value that the tool writes otherwise than the file does."
+    " setting whose name has 12 characters or more is not shown, and the boot's own"
+    " closing line (`Docker Compose up failed` or `could not read the cairn settings"
+    " secret`) always is. Less than that reaches the journal when a tool's error line"
+    " holds it: a name of 11 characters or fewer, a whole value of 5 characters or fewer,"
+    " a part of a value of 6 to 11, up to 11 characters in a row of a longer one, and a"
+    " value that the tool writes otherwise than the file does."
 )
 
 
@@ -1175,6 +1187,7 @@ def test_a_piece_of_a_value_under_the_filters_thresholds_reaches_the_journal(vm)
         "error: quick-brown seen",  # eleven in a row
         "error: abcde seen",  # five of six
         "error: 12345 seen",  # a whole value of five
+        "error: SHORT is not known",  # a name under twelve characters
         'error: say \\"hello\\" to them',  # another form than the file's
     )
     left_out = ("error: quick-brown-f seen", "error: A=1 seen")  # twelve in a row; a whole line

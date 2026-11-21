@@ -133,7 +133,15 @@ def test_the_upgrade_guide_names_the_files_a_replaced_vm_does_not_get_back(tmp_p
     assert "\n### Restore by hand\n" in headings
 
 
-KEPT = "What is deleted or overwritten in the bucket stays restorable for 7 days"
+KEPT = "What is deleted or overwritten in the bucket stays restorable for"
+# On AWS the days are a floor: S3 makes a version eligible at the midnight UTC after them and
+# "doesn't guarantee a completion time" for removing it.
+KEPT_ON_AWS = (
+    f"{KEPT} at least 7 days: it becomes an earlier version of the object. From the midnight"
+    " UTC after those days a lifecycle rule makes that version eligible for removal, and S3"
+    " removes it some time after that, with no deadline it states."
+)
+KEPT_ON_GOOGLE = f"{KEPT} 7 days: that is the soft delete policy"
 
 
 def readme_section(title, level="##"):
@@ -172,8 +180,9 @@ def test_the_bucket_keeps_what_is_deleted_or_overwritten_for_seven_days():
     """Litestream deletes the files it no longer needs, and on a bucket without versions a
     delete is final: so is one made by a mistyped command or from a VM someone else got
     into. With versions, a delete leaves the bytes as a noncurrent version (Amazon S3,
-    "Deleting object versions from a versioning-enabled bucket"), and the rule removes them
-    seven days later, then the delete marker left alone, and any upload that never ended."""
+    "Deleting object versions from a versioning-enabled bucket"), and the rule makes them
+    eligible for removal at least seven days later, then the delete marker left alone, and
+    any upload that never ended."""
     versioning = block("resource", "aws_s3_bucket_versioning", "replica")
     assert re.search(r'^\s+status\s*=\s*"Enabled"$', versioning, re.M)
     lifecycle = block("resource", "aws_s3_bucket_lifecycle_configuration", "replica")
@@ -204,8 +213,16 @@ def test_both_clouds_keep_deletions_as_long_and_the_guide_says_so_in_the_same_wo
     lifecycle = block("resource", "aws_s3_bucket_lifecycle_configuration", "replica")
     days = int(re.search(r"^\s+noncurrent_days\s*=\s*(\d+)$", lifecycle, re.M)[1])
     assert seconds == days * 86_400 == 7 * 86_400
-    for cloud in ("AWS", "Google Cloud"):
-        assert KEPT in " ".join(readme_section(cloud).split()), cloud
+    assert KEPT_ON_AWS in " ".join(readme_section("AWS").split())
+    assert KEPT_ON_GOOGLE in " ".join(readme_section("Google Cloud").split())
+    # Nowhere does the AWS section give the days without "at least".
+    aws = " ".join(readme_section("AWS").split())
+    assert len(re.findall(r"\b7 days\b", aws)) == len(re.findall(r"at least 7 days\b", aws)) == 3
+    comment = (
+        (AWS / "main.tf").read_text().split('resource "aws_s3_bucket_lifecycle_configuration"')[0]
+    )
+    assert "at least seven days" in comment.rsplit("\n\n", 1)[1]
+    assert "no deadline" in comment.rsplit("\n\n", 1)[1]
 
 
 def test_the_vm_can_delete_a_backup_file_but_not_its_kept_version(tmp_path):

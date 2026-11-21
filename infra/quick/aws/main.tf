@@ -126,8 +126,9 @@ resource "aws_s3_bucket_versioning" "replica" {
   }
 }
 
-# Seven days after it was deleted or overwritten a version goes, then the delete marker it
-# left alone. Nothing here gives a current object a lifetime.
+# A version is kept at least seven days after it was deleted or overwritten. From the midnight
+# UTC after them it is eligible for removal, and S3 removes it some time later, with no deadline
+# it states; then the delete marker it left alone. Nothing here gives a current object a lifetime.
 resource "aws_s3_bucket_lifecycle_configuration" "replica" {
   bucket = aws_s3_bucket.replica.id
 

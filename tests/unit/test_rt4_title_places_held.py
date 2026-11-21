@@ -148,7 +148,7 @@ def in_page_code(text: str, start: int, end: int) -> bool:
             code += 1
     swapped = "".join(chars)
     assert blocks(swapped) == blocks(text), "the oracle abstains: the swap moved a block"
-    events = walked(PAGE.render(swapped))
+    events = walked(str(render(swapped)))  # the page's own rendering is the standard
     seen: dict[str, list[bool]] = {}
     places = [n for n, e in enumerate(events) if e[0] == "char" and e[1] in markers]
     for n in places:
@@ -580,3 +580,128 @@ def test_a_claim_a_model_compiled_apart_from_its_passage_mentions_as_the_index_h
     assert [c.text for c in page.claims] == [claim["text"]] != [span.text]
     assert not prose_places(claim["text"], TITLE)  # the oracle: the title stands in code only
     assert surfaces(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, [page.slug]))
+
+
+# Fifth round: the shapes past the shared parser's agreement texts, the page's rendering
+# (cairn.web.markdown.render) the standard for code. Each verdict decided by hand.
+
+SHAPES = [
+    ("| a | b |\n|---|---|\n| `x \\| Step by Step` | y |", False),
+    ("| a | b |\n|---|---|\n| `x \\|` Step by Step | y |", True),
+    ("| a | b |\n|---|---|\n| `x \\| y` Step by Step | `z` |", True),
+    ("| a | b |\n|---|---|\n| `a | b` | Step by Step |", True),
+    ("| a | `b` |\n| `Step by Step` | c |", False),  # no delimiter row: no table
+    ("| a | b |\n| Step by Step | `c` |", True),
+    ("[x]: <Step by Step> `t`", True),  # a definition the page does not show
+    ("[Step by Step]: /u", True),
+    ("[docs][Step `by` Step]", False),
+    ("See [Step by Step] and `x`.", True),
+    ("[docs](Step-by-Step) and `x`", True),
+    ("Read `Step by  \nStep` today.", False),
+    ("Read `Step by\\\nStep` today.", False),
+    ("Read Step by  \nStep `x` today.", True),
+    ("> > ```\n> > Step by Step\n> x", False),
+    ("> > ```\n> > x\n> Step by Step", False),
+    ("- Item.\n\n    Step by Step `x`", True),
+    ("- Item.\n\n        Step by Step", False),
+    ("- Item\n\n  ```\n  Step by Step", False),
+    ("- Item\n  ```\n  x\nStep by Step `y`", False),
+    ("- ```\n  x\n- Step by Step `y`", True),
+    ("-\tStep by Step `x`", True),
+    ("-\t\tStep by Step", False),
+    ("1.\tStep by Step `x`", True),
+    ("-\tItem\n\n\t\tStep by Step", False),
+    ("&#96;Step by Step` x", True),
+    ("&amp;`Step by Step` x", False),
+    ("\\\\`Step by Step` x", False),
+    ("<a@b.c> Step by Step `x`", True),
+    ("<`Step by Step`>", False),
+    ("    Step by Step", False),
+    ("    x\nStep by Step `y`", True),
+    ("   Step by Step `x`", True),
+    ("* * *\n    Step by Step", False),
+    ("Read `Step by Step`` today.", True),
+    ("Read ``Step by Step` today`` x.", False),
+    ("<div>\n`Step by Step`\n</div>", False),
+    ("Step by Step <span>`x`</span>", True),
+    ("[d`](u) Step by Step `x", False),
+    ('<span title="`">Step by Step</span> `x', False),  # raw HTML is text: a code span
+]
+
+
+@pytest.mark.parametrize(("claim", "names"), SHAPES)
+def test_a_shape_past_the_agreement_texts_is_judged_as_the_page_shows_it(tmp_path, claim, names):
+    assert bool(prose_places(claim, TITLE)) is names
+    store, memory = store_at(tmp_path, "shape")
+    try:
+        assert names_by_cairn(memory, TITLE, claim) is names
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("fill", ["a", "\U0001d400"], ids=["ascii", "astral"])
+def test_a_claim_of_max_rendered_characters_is_read_and_one_more_is_code_whole(tmp_path, fill):
+    from cairn.spans import MAX_RENDERED
+
+    store, memory = store_at(tmp_path, "long")
+    try:
+        for size, names in ((MAX_RENDERED, True), (MAX_RENDERED + 1, False)):
+            head = "Read Step by Step today. "
+            text = (head + (fill + " ") * size)[: size - 1] + "x"
+            assert len(text) == size
+            assert str(render(text)).startswith("<pre>") is not names  # as the page shows it
+            store.create_project(f"p{size}")
+            focus = memory.note(f"p{size}", "The guide.", title=TITLE, topic=TITLE)
+            other = memory.note(f"p{size}", text, title="Reader", topic="Reader")
+            (stated,) = memory.page(f"p{size}", other["page"])["claims"]
+            assert stated["text"] == text
+            answer = memory.related(f"p{size}", focus["page"], 20)
+            assert answer["searched"]["complete"]
+            got = any(w["kind"] == "mentioned_by" for p in answer["related"] for w in p["why"])
+            assert got is names is bool(prose_places(text, TITLE))
+    finally:
+        store.close()
+
+
+PIECES = ["Step", "by", "Step by Step", " ", " ", "\n", "\n\n", "`", "``", "x", "|", "\\|"]
+PIECES += ["|---|---|\n", "[x]: /u\n", "[d][x]", "[Step by Step]", "  \n", "\\\n", "> ", "> > "]
+PIECES += ["```", "~~~", "- ", "1. ", "    ", "        ", "\t", "-\t", "&#96;", "\\`", "&amp;"]
+PIECES += ["<https://e.x/", "<", ">", "\r\n"]
+
+
+def test_generated_claims_of_the_new_pieces_are_judged_as_the_page_shows_them(tmp_path):
+    """Seeded: 1,500 draws of the pieces above, those that hold the title kept; no picture
+    or heading mark (pinned, test_rt4_title_places_found.py), and no backtick in a link's
+    title or address (pinned as failing, test_rt4_title_places_found2.py)."""
+    rng, store, memory = random.Random(20261122), *store_at(tmp_path, "generated2")
+    try:
+        verdicts = {True: 0, False: 0}
+        for n in range(1500):
+            claim = "".join(rng.choice(PIECES) for _ in range(rng.randint(3, 16))).strip()
+            if not claim or not occurrences(claim, TITLE):
+                continue
+            store.create_project(f"g{n}")
+            focus = memory.note(f"g{n}", "The guide.", title=TITLE, topic=TITLE)
+            other = memory.note(f"g{n}", claim, title="Reader", topic="Reader")
+            texts = [c["text"] for c in memory.page(f"g{n}", other["page"])["claims"]]
+            answer = memory.related(f"g{n}", focus["page"], 20)
+            got = any(w["kind"] == "mentioned_by" for p in answer["related"] for w in p["why"])
+            assert got is any(prose_places(text, TITLE) for text in texts), claim
+            verdicts[got] += 1
+        assert verdicts[True] >= 300 and verdicts[False] >= 60, verdicts
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("named", [5, 6])
+def test_the_cutoffs_hold_for_a_title_beside_an_escaped_bar_in_a_cell(env, named):
+    focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
+    cell = "| a | b |\n|---|---|\n| `x \\|` {n} Step by Step | y |"
+    pages = [api.note(env, f"Cell {n}", cell.format(n=n))["page"] for n in range(named)]
+    for n in range(2):  # and the title inside the cell's code span: never counted
+        api.note(env, f"Code {n}", f"| a | b |\n|---|---|\n| `x \\| Step by Step {n}` | y |")
+    expected = sorted(pages) if named <= relations.COMMON else []
+    seen = surfaces(env, focus)
+    assert {k: seen[k] for k in ("Memory", "REST")} == dict.fromkeys(
+        ("Memory", "REST"), (True, expected)
+    )

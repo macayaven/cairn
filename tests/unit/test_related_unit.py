@@ -6,12 +6,14 @@ a real store in a temporary file; made-up names."""
 
 import json
 import logging
+import random
 import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
+from test_title_masking_unit import flush_class, standing, stretches_of, words
 
 from cairn import relations, spans
 from cairn.gate import lint_gate
@@ -763,6 +765,52 @@ def test_a_title_read_across_a_wordless_path_names_nothing(env, path, others):
         assert claim["text"] == said
     expected = sorted(pages)
     assert mentioned(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
+FLUSH = [
+    *random.Random(12).sample(flush_class(), 40),
+    ("Cafe\u0301 Beta", "Read Cafe\u0301/_\u0301Beta today."),
+]
+
+
+@pytest.mark.parametrize("others", [0, 5], ids=["alone", "beside-five"])
+def test_a_title_flush_against_a_stretch_names_the_page_where_it_stands_whole(env, others):
+    """Cases of the class (test_title_masking_unit.flush_class: each kind of stretch flush
+    between a title's words, before and after a whole title), each in a project of its own:
+    the reader names the page where the reading there says the title stands whole in prose;
+    beside five other pages that name it, six then do, and none relates, else the five."""
+    verdicts = set()
+    for n, (title, said) in enumerate(FLUSH):
+        project = f"f{n}"
+        env.store.create_project(project)
+        whole = bool(standing(words([said])[0], title, stretches_of(said)))
+        verdicts.add(whole)
+        focus = note(env, title, "The field guide is on the shelf.", project)["page"]
+        pages = [
+            note(env, f"Group {g}", f"Group {g} reads {title} today.", project)["page"]
+            for g in range(others)
+        ]
+        reader = note(env, "Reader", said, project)["page"]
+        named = sorted([*pages, reader] if whole else pages)
+        expected = named if len(named) <= relations.COMMON else []
+        response = rest(env, focus, "?limit=20", project)
+        assert response.status_code == 200
+        answers = [
+            Memory(env.store, lint_gate).related(project, focus, 20),
+            response.json(),
+            answer(env.client, env.key, "related", project=project, slug=focus, limit=20),
+        ]
+        for found in answers:
+            assert found["searched"]["complete"], (title, said)
+            assert (
+                sorted(
+                    page["page"]
+                    for page in found["related"]
+                    if any(why["kind"] == "mentioned_by" for why in page["why"])
+                )
+                == expected
+            ), (title, said)
+    assert verdicts == {True, False}
 
 
 def test_a_claim_cut_gives_the_line_of_the_first_place_however_many_matches_overlap(env):

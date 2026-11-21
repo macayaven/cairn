@@ -1150,11 +1150,40 @@ def test_no_piece_of_a_setting_gets_through_whatever_the_form_of_its_line(vm):
 
 
 LEFT_OUT_WHEN = (
-    "A line is left out when it holds a value of 6 to 11 characters, or 12 characters in a row"
-    " of a settings line, its name included: so an error that names a setting with a long name"
-    " is not shown, and the boot's own closing line (`Docker Compose up failed` or `could not"
-    " read the cairn settings secret`) always is."
+    "A line is left out when it holds a whole line of the settings; or what follows a"
+    " line's first `=` or `:`, without the blanks and quotes at its ends, when that is 6"
+    " to 11 characters long; or 12 characters in a row of a settings line, its name"
+    " included, the blanks and quotes at the line's ends aside. So an error that names a"
+    " setting with a long name is not shown, and the boot's own closing line (`Docker"
+    " Compose up failed` or `could not read the cairn settings secret`) always is. Less"
+    " than that reaches the journal when a tool's error line holds it: a whole value of 5"
+    " characters or fewer, a part of a value of 6 to 11, up to 11 characters in a row of a"
+    " longer one, and a value that the tool writes otherwise than the file does."
 )
+
+
+def test_a_piece_of_a_value_under_the_filters_thresholds_reaches_the_journal(vm):
+    """What the filter does not do, so that no sentence promises it (`LEFT_OUT_WHEN`): in a
+    tool's error line, eleven characters in a row of a long value pass, and five of a value
+    of six, a whole value of five, and a value the tool writes with its quotes escaped. A
+    whole line of the settings, however short, and twelve in a row do not."""
+    settings = (
+        b"LONG=the-quick-brown-fox-jumps\nSHORT=abcdef\nPIN=12345\nA=1\n"
+        b'SPOKEN=say "hello" to them\n'
+    )
+    shown = (
+        "error: quick-brown seen",  # eleven in a row
+        "error: abcde seen",  # five of six
+        "error: 12345 seen",  # a whole value of five
+        'error: say \\"hello\\" to them',  # another form than the file's
+    )
+    left_out = ("error: quick-brown-f seen", "error: A=1 seen")  # twelve in a row; a whole line
+    config = {"STANDIN_COMPOSE_ERROR": "\n".join((*shown, *left_out))}
+    done = run(vm, mode="compose-failure", settings=settings, config=config)
+    said = done.stderr.splitlines()
+    for line in shown:
+        assert f"cairn-quick: compose: {line}" in said, line
+    assert "quick-brown-f" not in done.stderr and "A=1" not in done.stderr
 
 
 def test_an_error_that_names_a_long_named_setting_is_left_out_and_the_boots_line_stays(vm):
@@ -1180,8 +1209,11 @@ def test_an_error_that_names_a_long_named_setting_is_left_out_and_the_boots_line
     script = BOOTSTRAP.read_text()
     comment = script[: script.index("say_errors() {")].rsplit("\n\n", 1)[1]
     said_there = " ".join(line.lstrip("# ") for line in comment.splitlines())
-    assert "12 in a row of a settings line (its name included" in said_there
-    assert "6 characters of a short value" in said_there
+    assert "a line holding a whole settings line" in said_there
+    assert "a value of 6 to 11 characters" in said_there
+    assert "12 in a row of a settings line (its name included)" in said_there
+    assert said_there.endswith("Less gets through.")
+    assert "never" not in said_there
 
 
 @pytest.mark.parametrize("cloud", ["aws", "gcp"])

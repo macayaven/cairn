@@ -123,9 +123,9 @@ sys.stdout.buffer.write(data)
 '
 }
 
-# The tools' own error lines for the journal, never a setting's value. Left out: a line
-# holding 6 characters of a short value or 12 in a row of a settings line (its name included)
-# or of what follows its first = or :.
+# The tools' own error lines for the journal. Left out: a line holding a whole settings
+# line, a value of 6 to 11 characters or 12 in a row of a settings line (its name included).
+# Less gets through.
 say_errors() {
   python3 - "$@" >&2 <<'PY'
 import re, sys

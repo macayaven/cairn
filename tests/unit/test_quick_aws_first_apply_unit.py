@@ -287,7 +287,8 @@ def test_the_recovery_guide_says_where_a_failed_read_or_start_explains_itself():
         assert re.search(rf"say_errors '?{label}'? ", script), label
         assert f"`cairn-quick: {label}:`" in recovery, label
     assert 'print(f"cairn-quick: {label}: {line}")' in script
-    assert "They never hold a setting's value" in recovery
+    assert "The boot filters those lines" in recovery
+    assert "never hold" not in recovery and "no piece" not in recovery
 
 
 def test_the_vm_may_add_a_cold_copy_and_nothing_else_under_its_prefix(tmp_path):

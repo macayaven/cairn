@@ -386,14 +386,17 @@ sudo journalctl -b -u cairn-quick-provision.service -u cairn-quick.service -u do
 
 When the settings secret cannot be read or Compose cannot start the stack, `cairn-quick.service`
 fails, and its journal has the tool's own error on lines that start with
-`cairn-quick: settings read:` or `cairn-quick: compose:`. They never hold a setting's value: a line
-that would repeat one is left out, a syntax error in the settings file is given by its
-line number, and Compose's warning of a `$` before a name no variable has is passed on without
-that name.
-A line is left out when it holds a value of 6 to 11 characters, or 12 characters in a row of a
-settings line, its name included: so an error that names a setting with a long name is not shown,
-and the boot's own closing line (`Docker Compose up failed` or `could not read the cairn settings
-secret`) always is.
+`cairn-quick: settings read:` or `cairn-quick: compose:`. The boot filters those lines: a syntax
+error in the settings file is given by its line number, Compose's warning of a `$` before a name no
+variable has is passed on without that name, and a line that repeats enough of a setting is left
+out. A line is left out when it holds a whole line of the settings; or what follows a line's first
+`=` or `:`, without the blanks and quotes at its ends, when that is 6 to 11 characters long; or 12
+characters in a row of a settings line, its name included, the blanks and quotes at the line's ends
+aside. So an error that names a setting with a long name is not shown, and the boot's own closing
+line (`Docker Compose up failed` or `could not read the cairn settings secret`) always is. Less than
+that reaches the journal when a tool's error line holds it: a whole value of 5 characters or fewer,
+a part of a value of 6 to 11, up to 11 characters in a row of a longer one, and a value that the
+tool writes otherwise than the file does.
 
 After fixing a package problem, trigger an immediate retry.
 

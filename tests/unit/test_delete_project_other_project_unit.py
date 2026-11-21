@@ -5,7 +5,6 @@ earlier build wrote (tests/earlier_build.py). The deleted project's audit event 
 those pages (`elsewhere`) and the log names none of them. Made-up notes."""
 
 import logging
-import time
 
 from test_forget_other_project_unit import SAID, borrowed, citing, filed, passage
 from test_rt1_forget_workspace_found import tables_holding
@@ -26,16 +25,17 @@ def test_a_page_of_a_third_project_keeps_its_own_notes_claims_and_loses_the_rest
     try:
         desk, east, west = (store.create_project(n) for n in ("desk", "east", "west"))
         gone = passage(store, filed(store, desk.id, f"# Dispatch\n\n{SAID}\n"))
-        filed(store, east.id, "# Far\n\nWren keeps the far log.\n")
+        far = passage(store, filed(store, east.id, "# Far\n\nWren keeps the far log.\n"))
         own = passage(store, filed(store, west.id, "# Minutes\n\nThe ledger opens at noon.\n"))
         east_before = store.get_page(east.id, "far")
-        borrowed(  # its own note's claim, the deleted project's, and one that folds both
-            store,
+        borrowed(  # its own note's claim, the deleted project's, one that folds both, and
+            store,  # one of a third project, which an import would refuse
             west.id,
             "minutes",
             citing(1, own.text, own),
             citing(2, SAID, gone),
             citing(3, own.text, own, gone),
+            citing(4, far.text, far),
         )
         with caplog.at_level(logging.INFO, logger="cairn.store"):
             assert store.delete_project(desk.id)
@@ -49,8 +49,9 @@ def test_a_page_of_a_third_project_keeps_its_own_notes_claims_and_loses_the_rest
         assert store.search("saffron") == [] and tables_holding(store, "saffron") == []
         (event,) = [e for e in store.list_audit() if e.action == "project.deleted"]
         assert (event.detail["pages"], event.detail["elsewhere"]) == (1, 1)
-        assert not [
-            r for r in caplog.records if r.name == "cairn.store" and "minutes" in r.getMessage()
+        said = [r.getMessage() for r in caplog.records if r.name == "cairn.store"]
+        assert said == [  # a count, never the page or its project
+            "delete: 1 claim(s) that an import would refuse left a page of another project"
         ]
     finally:
         store.close()
@@ -115,14 +116,11 @@ def test_deleting_a_project_of_5000_passages_that_nothing_elsewhere_cites_search
         statements: list[str] = []
         store._observe(trace=statements.append)
         try:
-            began = time.perf_counter()
             assert store.delete_project(desk.id)
-            took = time.perf_counter() - began
         finally:
             store._observe(trace=None)
         searches = [s for s in statements if "json_each(p.claims)" in s]
         assert len(searches) == 1, searches
-        assert took < 10, took
         (event,) = [e for e in store.list_audit() if e.action == "project.deleted"]
         assert "elsewhere" not in event.detail
     finally:

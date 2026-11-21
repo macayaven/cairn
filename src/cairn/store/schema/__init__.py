@@ -544,8 +544,19 @@ def _schema_version(con: sqlite3.Connection) -> int:
                 f" version {floor} or later; this cairn knows up to {SCHEMA_VERSION}"
             )
         return version
-    if version == 0 and con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
-        return 1
+    if version == 0:
+        if con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
+            return 1
+        # BEGIN IMMEDIATE reserves page one even for a zero-byte file. Use the file
+        # SQLite actually opened to distinguish that reservation from an existing header.
+        filename = con.execute("PRAGMA database_list").fetchone()[2]
+        if filename:
+            try:
+                allocated = Path(filename).stat().st_size
+            except OSError as error:
+                raise CannotOpen(filename) from error
+            if allocated:
+                raise ForeignSchema("not a cairn database: allocated pages without a schema")
     return version
 
 

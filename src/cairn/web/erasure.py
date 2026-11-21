@@ -64,6 +64,7 @@ def erasure_routes() -> list[Route]:
             note=note,
             rebuilt=[(slug, titles.get(slug, slug)) for slug in preview.rebuilt],
             removed=[(slug, titles.get(slug, slug)) for slug in preview.removed],
+            elsewhere=preview.elsewhere,
         )
 
     def forget(request: Request) -> Response:

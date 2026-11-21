@@ -582,7 +582,8 @@ REST (JSON; project = id or name; unknown project or page, or another account's 
   projection at the MCP resource graph://project/<project>/<limit> (cairn.web.graph_resource)
 - DELETE /api/projects/{project}?confirm=<its name> -> {"deleted": true} (H5b;
   Store.delete_project); DELETE /api/projects/{project}/notes/{note_id} -> {"note_id",
-  "rebuilt", "removed"} (page slugs; Store.forget_note). 404 for a project, or a note of it,
+  "rebuilt", "removed", "elsewhere"} (page slugs of the project, and how many pages of other
+  projects, never which; Store.forget_note). 404 for a project, or a note of it,
   out of reach, and for a note of another project; 403 for a caller who reaches the project
   but did not make it and is not an owner, or a key limited to some projects or read-only;
   400 when `confirm` is not the

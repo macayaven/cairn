@@ -91,6 +91,8 @@ PAGE_DETAIL: dict[str, dict[str, str]] = {
     },
 }
 PAGE_EVENTS = tuple(PAGE_DETAIL)
+# Why save_page refused a claim that cites a passage of another project's note.
+NOT_OF_PROJECT = "A page can cite only passages from its own project."
 NAME_MAX = 80
 # Rows are scoped by resolving their project through the bound account and the view's reach,
 # bound as _scope gives them: the account id, then the reach twice (StoreBase._reach).
@@ -859,6 +861,11 @@ class MemoryMethods(StoreBase):
         longer holds raises CitesForgotten (a StalePage) and writes nothing: a page read or
         drafted before the note was forgotten never brings its text back.
 
+        A save whose claims cite a span the store holds of a note of another project raises
+        ValueError (NOT_OF_PROJECT) and writes nothing, as the import's check and the gates
+        refuse it; a page an earlier build saved so is left as it is, until the note it cites
+        is forgotten (cairn.store.erasure).
+
         Topics (N1): `topic` is the topic key the save is for (the compiler's). When the slug
         is another topic's, or the key has another page of the project, the save raises
         StalePage and writes nothing, so a compile that chose its page on what it read
@@ -883,6 +890,8 @@ class MemoryMethods(StoreBase):
         index = self._index
         with self._write() as con:
             self._require_project(con, project_id)
+            if _cites_another_project(con, project_id, claims):
+                raise ValueError(NOT_OF_PROJECT)
             if by_model:  # the latest version, and whether the project is at "never"
                 latest, kept = con.execute(
                     "SELECT COALESCE(MAX(version), 0), EXISTS (SELECT 1 FROM settings"
@@ -1361,6 +1370,24 @@ def _forgotten(con: sqlite3.Connection, project_id: str, text_sha256: str) -> bo
         (project_id, text_sha256),
     )
     return found.fetchone() is not None
+
+
+def _cites_another_project(
+    con: sqlite3.Connection, project_id: str, claims: Sequence[Claim]
+) -> bool:
+    """Whether a claim cites a span the store holds of a note of another project (save_page).
+    A span it does not hold is not asked here: a save may cite spans of its own making (the
+    tests' and an operator's), and one a forget removed is _cites_forgotten's. No statement
+    for claims that cite nothing; else one, by the spans' primary key."""
+    cited = list(dict.fromkeys(i for claim in claims for i in claim.span_ids))
+    return bool(cited) and bool(
+        con.execute(
+            "SELECT 1 FROM spans JOIN notes ON notes.id = spans.note_id"
+            " WHERE spans.id IN (SELECT value FROM json_each(?)) AND notes.project_id != ?"
+            " LIMIT 1",
+            (json.dumps(cited), project_id),
+        ).fetchone()
+    )
 
 
 def _cites_forgotten(con: sqlite3.Connection, project_id: str, claims: Sequence[Claim]) -> bool:

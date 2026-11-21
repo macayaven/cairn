@@ -1952,11 +1952,17 @@ def _serve(args: argparse.Namespace) -> int:
         print(ANOTHER_SERVER.format(db=args.db), file=sys.stderr)
         return 2
     changes: list[SchemaChange] = []
+    writes: list[str] = []
+
+    def journal_changed(before: str, after: str) -> None:
+        writes.append(f"journal mode {before} -> {after}")
+
     store = None
     finished = False
     try:
-        cli_data.make_database(args.db)
-        store = Store(args.db, on_schema_commit=changes.append)
+        if cli_data.make_database(args.db):
+            writes.append("created the database file")
+        store = Store(args.db, on_schema_commit=changes.append, on_journal_change=journal_changed)
         cli_data.warn_readable(args.db)
         try:
             arranger = cli_arrange.serve_arranger(
@@ -1971,6 +1977,7 @@ def _serve(args: argparse.Namespace) -> int:
         except ValueError as error:  # a cairn.llm.LLMConfigError names the setting only
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2
+        before_app = store._con.total_changes  # create_app can commit the audit retention setting
         try:
             app = create_app(
                 store,
@@ -2013,7 +2020,13 @@ def _serve(args: argparse.Namespace) -> int:
             return 2
         # B1: a sign-in made under a longer --session-days, or before the option was
         # removed, lasts no longer than the length in force now (renewal only extends).
-        store.cap_web_sessions(args.session_days * 86_400 if args.session_days else SESSION_TTL)
+        if store._con.total_changes != before_app:
+            writes.append("recorded audit retention")
+        shortened = store.cap_web_sessions(
+            args.session_days * 86_400 if args.session_days else SESSION_TTL
+        )
+        if shortened:
+            writes.append(f"shortened {shortened} web sessions")
         # No access log: uvicorn's prints each request's query string, and the OAuth pages
         # carry a client's `state` and the sealed authorization request there. Proxy headers
         # are read only from --trusted-proxy peers, and the list is always given, so neither
@@ -2026,7 +2039,7 @@ def _serve(args: argparse.Namespace) -> int:
             print(says, file=sys.stderr, flush=True)
         if (says := no_operator_notes(sign_in is not None, args.public_url, notes)) is not None:
             print(says, file=sys.stderr, flush=True)
-        if (says := _history_at_start(store, plans, _kept(args, plans))) is not None:  # Q1
+        if (says := _history_at_start(store, plans, _kept(args, plans), writes)) is not None:  # Q1
             print(says, file=sys.stderr, flush=True)
         with _access_log_on_stderr(), _no_client_request_lines():
             uvicorn.run(
@@ -2052,6 +2065,8 @@ def _serve(args: argparse.Namespace) -> int:
                     f" ({floor}) before it stopped",
                     file=sys.stderr,
                 )
+            if not finished and writes:
+                print(f"serve changed {args.db}: {', '.join(writes)}", file=sys.stderr)
             if store is not None:
                 store.close()
         finally:
@@ -2075,7 +2090,9 @@ def _kept(args: argparse.Namespace, plans: Plans | None) -> int | None:
     return KEEP_VERSIONS if args.keep_versions is None else args.keep_versions
 
 
-def _history_at_start(store: Store, plans: Plans | None, keep: int | None) -> str | None:
+def _history_at_start(
+    store: Store, plans: Plans | None, keep: int | None, writes: list[str]
+) -> str | None:
     """Record in the database what this `serve` keeps of each page's history, for `compact`
     (Store.record_history_bound), and the line it says when pages hold more versions than
     it keeps; None when none does, with plans, or when it keeps every version. Nothing is
@@ -2083,9 +2100,10 @@ def _history_at_start(store: Store, plans: Plans | None, keep: int | None) -> st
     if plans is not None:
         bounds = {name: plan.versions_per_page for name, plan in plans.table.items()}
         store.record_history_bound(plans=bounds, default=plans.default)
-        return None
-    store.record_history_bound(keep)
-    over = 0 if keep is None else store.pages_over(keep)
+    else:
+        store.record_history_bound(keep)
+    writes.append("recorded the page history bound")
+    over = 0 if keep is None or plans is not None else store.pages_over(keep)
     if not over:
         return None
     pages = "1 page holds" if over == 1 else f"{over} pages hold"

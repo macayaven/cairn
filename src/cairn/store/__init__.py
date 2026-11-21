@@ -1490,6 +1490,7 @@ class Store(
         upgrade: bool = True,
         create: bool = True,
         on_schema_commit: Callable[[SchemaChange], None] | None = None,
+        on_journal_change: Callable[[str, str], None] | None = None,
     ) -> None:
         self._lock = WriterLock(ticks)  # `ticks`: when its holder took it (Store.health)
         self._state = ConnectionState()  # shared with every view, as the lock is
@@ -1521,8 +1522,12 @@ class Store(
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
             _upgrade(self._con, self._stamp, upgrade, create, on_schema_commit)
             if str(path) != ":memory:":
-                pragma = "PRAGMA journal_mode = WAL" if create or upgrade else "PRAGMA journal_mode"
-                (journal,) = self._con.execute(pragma).fetchone()
+                (journal,) = self._con.execute("PRAGMA journal_mode").fetchone()
+                if (create or upgrade) and journal != "wal":
+                    (new_mode,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
+                    if new_mode != journal and on_journal_change is not None:
+                        on_journal_change(journal, new_mode)
+                    journal = new_mode
                 if keep_log and (create or upgrade):
                     self._con.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, False)
                 self._state.readers = _readers_for(self._con, journal)

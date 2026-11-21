@@ -115,3 +115,34 @@ def test_an_export_holds_nothing_of_the_row_and_imports():
         summary = fresh.import_export(io.BytesIO(archive))
         assert (summary.projects, summary.notes) == (1, 1)
         assert markers(fresh) == []
+
+
+def test_a_forget_that_changes_only_its_own_projects_pages_writes_no_row():
+    with closing(Store(":memory:")) as store:
+        desk = store.create_project("desk")
+        filed(store, desk.id, MINUTES)
+        store.forget_note(filed(store, desk.id, f"# Minutes\n\n{SAID}\n").id)
+        assert markers(store) == []
+
+
+def test_a_forget_that_changes_pages_of_two_other_projects_writes_one_row_in_each():
+    with closing(Store(":memory:")) as store:
+        desk, east, west = (store.create_project(n) for n in ("desk", "east", "west"))
+        first, second = (
+            passage(store, filed(store, desk.id, f"# {title}\n\n{text}\n"))
+            for title, text in (("Dispatch", SAID), ("Ledger", "Wren keeps the far log."))
+        )
+        filed(store, west.id, MINUTES)
+        for project, slug in ((east, "minutes"), (west, "minutes")):
+            borrowed(
+                store, project.id, slug, citing(1, SAID, first), citing(2, second.text, second)
+            )
+        store.forget_note(first.source_id)
+        assert markers(store) == ["east", "west"]
+        store.forget_note(second.source_id)  # a later forget: no second row
+        assert markers(store) == ["east", "west"]
+        with store._read() as con:
+            (rows,) = con.execute(
+                "SELECT COUNT(*) FROM forgotten WHERE text_sha256 = ?", (erasure.PASSAGES_REMOVED,)
+            ).fetchone()
+        assert rows == 2

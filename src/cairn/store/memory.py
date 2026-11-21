@@ -1368,7 +1368,8 @@ def _keyed(
 
 def _forgotten(con: sqlite3.Connection, project_id: str, text_sha256: str) -> bool:
     """Whether the project has forgotten a note with this text (its SHA-256, hex). A delete's
-    row (erasure.PASSAGES_REMOVED, the empty string) is no digest and never matches."""
+    row or a forget's in another project (erasure.PASSAGES_REMOVED, the empty string) is no
+    digest and never matches."""
     found = con.execute(
         "SELECT 1 FROM forgotten WHERE project_id = ? AND text_sha256 = ?",
         (project_id, text_sha256),
@@ -1410,8 +1411,8 @@ def _cites_another_project(
 
 
 def _cites_forgotten(con: sqlite3.Connection, account_id: str, claims: Sequence[Claim]) -> bool:
-    """Whether, in a workspace that has forgotten a note (or whose delete of a project changed
-    a page of another, erasure.PASSAGES_REMOVED), a claim cites a span the store does not
+    """Whether, in a workspace that has forgotten a note (or whose forget or delete changed a
+    page of another project, erasure.PASSAGES_REMOVED), a claim cites a span the store does not
     hold: one of a forgotten note or a deleted project. The workspace is asked, not the page's
     project, since a forget changes every page of it that cited the note (store/erasure.py).
     Only such a workspace is asked further, so one that never forgot anything costs one

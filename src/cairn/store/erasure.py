@@ -21,11 +21,11 @@ never stored in that project again (add_note raises ForgottenNote), and a page s
 cites a span the store no longer holds, in such a workspace, is CitesForgotten (save_page):
 a compile or arrangement that read the page before the note was forgotten never brings it
 back. The digests go with their project and their workspace and are never exported. A
-delete that changes or removes a page of another project leaves that project one row of
-`forgotten` that is no digest of any text (PASSAGES_REMOVED): it records only that passages
-a page of the project cited went with another project, so a page drafted before never
-brings them back. It goes with its project like the others, is never exported, and refuses
-no note, since no text has that digest.
+forget or a delete that changes or removes a page of another project leaves that project
+one row of `forgotten` that is no digest of any text (PASSAGES_REMOVED): it records only
+that passages a page of the project cited went with another project, so a page drafted
+before never brings them back. It goes with its project like the others, is never
+exported, and refuses no note, since no text has that digest.
 
 The audit log keeps that each happened, who did it and when, and nothing that names what
 is gone. delete_project moves every event of the project, project.deleted included, from the
@@ -109,11 +109,12 @@ RENDERS_HARD = 32
 # The other keys a project's events carry are counts, kinds, codes, rule ids, a model's name,
 # person ids and the project's own name and id (see the store contract's Audit log).
 NOTE_DERIVED = ("page",)
-# The row of `forgotten` a delete leaves each other project whose page it changed or removed:
-# no digest of any text (a note's is 64 hex characters), so it refuses no note. It records
-# only that passages a page of that project cited went with another project, so a save
-# drafted before the delete is CitesForgotten (memory._cites_forgotten) and never brings them
-# back. It goes with its project like the digests, and is never exported.
+# The row of `forgotten` a forget or a delete leaves each other project whose page it changed
+# or removed (_rewrite): no digest of any text (a note's is 64 hex characters), so it refuses
+# no note. It records only that passages a page of that project cited went with another
+# project, so a save drafted before is CitesForgotten (memory._cites_forgotten) and never
+# brings them back, whatever becomes of that other project. It goes with its project like the
+# digests, and is never exported.
 PASSAGES_REMOVED = ""
 # The tables whose rows name projects in a reach (a JSON array of project and set ids, or NULL
 # for every project), and the column that holds it.
@@ -209,13 +210,7 @@ class ErasureMethods(StoreBase):
             self._refuse_erasure(con, maker_id)
             gone = _passages(con, "notes.project_id", project_id)
             plan = _plan(con, self._account_id, gone, deleted=project_id)
-            _rewrite(con, self._account_id, index, plan, self._stamp())
-            for at in dict.fromkeys(at for at, *_ in plan):  # a page drafted before: stale
-                con.execute(
-                    "INSERT INTO forgotten (project_id, text_sha256) VALUES (?, ?)"
-                    " ON CONFLICT DO NOTHING",
-                    (at, PASSAGES_REMOVED),
-                )
+            _rewrite(con, self._account_id, index, plan, self._stamp(), project_id)
             notes, size = con.execute(
                 "SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(text AS BLOB))), 0) FROM notes"
                 " WHERE project_id = ?",
@@ -319,7 +314,7 @@ class ErasureMethods(StoreBase):
             con.execute("DELETE FROM waiting WHERE note_id = ?", (note_id,))  # N1
             con.execute("DELETE FROM note_writers WHERE note_id = ?", (note_id,))  # A1
             con.execute("DELETE FROM slack_notes WHERE note_id = ?", (note_id,))  # K1
-            _rewrite(con, self._account_id, index, plan, self._stamp())
+            _rewrite(con, self._account_id, index, plan, self._stamp(), project_id)
             con.execute(
                 "INSERT INTO forgotten (project_id, text_sha256) VALUES (?, ?)"
                 " ON CONFLICT DO NOTHING",
@@ -982,12 +977,20 @@ def _passages(con: sqlite3.Connection, column: str, value: str) -> frozenset[str
 
 
 def _rewrite(
-    con: sqlite3.Connection, account_id: str, index: str, plan: list[_Planned], stamp: str
+    con: sqlite3.Connection,
+    account_id: str,
+    index: str,
+    plan: list[_Planned],
+    stamp: str,
+    leaving: str,
 ) -> None:
     """Write what `_plan` planned, in the caller's transaction (forget_note, delete_project):
     each page that keeps a claim continues as one new version, numbered one past its latest,
     every earlier version deleted; a page left with no claim is removed with its topic key and
-    search rows, and its slug leaves the events of its project."""
+    search rows, and its slug leaves the events of its project. Each project other than
+    `leaving` (the one the notes are leaving: a forgotten note's, or the deleted one) whose
+    page this changes or removes gets one row PASSAGES_REMOVED, once, so a save drafted
+    before stays stale whatever becomes of `leaving` and its digests."""
     for at, _, slug, version, title, kept, _, _, body in plan:  # at: the page's project
         if kept:
             cited = {i for claim in kept for i in claim.span_ids}
@@ -1015,6 +1018,11 @@ def _rewrite(
                 )
             if _has_table(con, index):  # its rows and its project's counts
                 ranking.index_page(con, account_id, index, at, slug, title, ())
+    for at in dict.fromkeys(at for at, *_ in plan if at != leaving):
+        con.execute(
+            "INSERT INTO forgotten (project_id, text_sha256) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            (at, PASSAGES_REMOVED),
+        )
     removed: dict[str, list[str]] = {}  # by the name of each page's project
     for _, named, slug, _, _, kept, *_ in plan:
         if not kept:

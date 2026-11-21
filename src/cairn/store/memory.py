@@ -825,8 +825,8 @@ class MemoryMethods(StoreBase):
         leave such a claim out, asking for the version they read). Empty for a project out of
         this view's reach and for a page or version not stored (a version pruned since the
         writer read it: its save is then refused as stale, StalePage, before any citation is
-        asked). One statement: the version by its primary key, its passages by theirs, and
-        its project's reach by the project's own id, never the workspace's other projects."""
+        asked). The lookup seeks the version, its passages and its project by their keys.
+        Resolving a signed-in member's reach first reads the workspace's projects (_scope)."""
         with self._read() as con:
             found = con.execute(
                 "SELECT DISTINCT spans.id FROM page_versions AS p, json_each(p.claims) AS claim,"
@@ -926,7 +926,10 @@ class MemoryMethods(StoreBase):
         the workspace's projects whether it has forgotten one, so beside 0, 1,500 and 6,000
         other projects that forgot nothing a save costs 7, 157 and 607 units of 100 steps (a
         note's compile 9, 399 and 1,569: its reads of the page and of its topic key ask each
-        project too, _OWN_PROJECT); under a storage cap the workspace's page versions pass,
+        project too, _OWN_PROJECT). The stored-version lookup alone costs 0, 0 and 0 on the
+        unrestricted store. Through a signed-in member's view it costs 0, 390 and 1,560
+        units because resolving the member's reach reads the workspace's projects.
+        Under a storage cap the workspace's page versions pass,
         _keep_history reads every older version of the workspace to find the oldest (within
         the cap it reads one row); past `--audit-keep`, one save in AUDIT_PRUNE_BATCH
         deletes that many events; and FTS5's own merging adds a few units as its segments

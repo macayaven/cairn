@@ -534,16 +534,19 @@ def _displayed_code(message: Mapping) -> list[tuple[bool, str, str | None]]:
 
 def _before(element: object) -> str | None:
     """What the message's text holds for an element of rich text, as Slack displayed it, where
-    that is known: a text element's own characters where it has no style, and two backticks
-    for an empty span of code (_known_code). None for anything else."""
-    if not isinstance(element, Mapping) or element.get("type") != "text":
+    that is known (_known_code): a text element's own characters where it has no style, and
+    two backticks for an empty span of code. "" where it tells nothing of the place and no
+    span the text's backticks bound ends there: a span named, a link, a mention, an emoji.
+    None where such a span may: an element styled as code of a shape not read."""
+    if not isinstance(element, Mapping):
         return None
     text, style = element.get("text"), element.get("style")
+    code = isinstance(style, Mapping) and style.get("code") is True
+    if element.get("type") != "text":
+        return None if code else ""
     if isinstance(text, str) and not style:
         return _lines(text + ".")[:-1]  # a line feed that ends it is kept
-    if isinstance(style, Mapping) and style.get("code") is True and text == "":
-        return "``"
-    return None
+    return "``" if code and text == "" else ""
 
 
 def _sent(shown: str) -> str:

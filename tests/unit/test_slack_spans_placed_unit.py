@@ -27,3 +27,11 @@ def test_a_backtick_that_closes_a_span_is_not_taken_where_the_text_before_is_not
     closes that span, and the code starts one later."""
     page = shown("x `k````", [prose("x "), code("`")])
     assert page == [("text", "x "), ("code", "k"), ("text", "`")]
+
+
+def test_a_backtick_before_a_link_does_not_make_the_link_code():
+    """A link stands right before the span: the rich text says no span the text bounds ends
+    there, so the backtick Slack displayed as a character before the link pairs with none."""
+    link = {"type": "link", "url": "https://fable.test/x", "text": "x"}
+    page = shown("x`<https://fable.test/x|x>````", [prose("x`"), link, code("`"), prose("`")])
+    assert page == [("text", "x`x"), ("code", "`"), ("text", "`")]

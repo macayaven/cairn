@@ -387,14 +387,17 @@ def _upgrade(
     `stamp`: the store's clock, as an ISO timestamp."""
     reset = _STAMP.set(stamp)
     try:
-        while _schema_version(con) < SCHEMA_VERSION:
+        while True:
             said: list[Callable[[], None]] = []
             after = _AFTER.set(said)
             try:
                 with _transaction(con):
                     step = _run_step(con, upgrade, create)
+                    if step is None:
+                        _check_tables(con)
+                        return
                     change = None
-                    if on_commit is not None and step is not None:
+                    if on_commit is not None:
                         before, end = step
                         floor = _recorded_floor(con, end) if end >= _OLDEST_BUILD else None
                         change = SchemaChange(before, end, floor)
@@ -404,7 +407,6 @@ def _upgrade(
                 on_commit(change)
             for say in said:  # committed: the step's transaction is over
                 say()
-        _check_tables(con)
     finally:
         _STAMP.reset(reset)
 
@@ -413,7 +415,7 @@ def _run_step(
     con: sqlite3.Connection, upgrade: bool = True, create: bool = True
 ) -> tuple[int, int] | None:
     """One step of _upgrade, in its transaction."""
-    # Read again under the write lock: another process may have done this step.
+    # The first version read is under the same write lock as the step it selects.
     version = _schema_version(con)
     if version == 0:
         if not create:

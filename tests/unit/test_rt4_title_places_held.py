@@ -4,7 +4,9 @@ judges each place a title stands by itself, and found to hold (RT4, fourth round
 The oracle here is independent of cairn's reader: it does not use SQLite's highlight,
 relations.blanked, spans.code_read or anything of cairn.store.relating. It tokenises a claim
 and a title as FTS5's unicode61 tokenizer is documented to for the index's declaration
-(no options: categories "L* N* Co", case folded, remove_diacritics 1), finds every run of
+(no options: categories "L* N* Co", case folded, remove_diacritics 1, a diacritic going on
+with a word and starting none, a code point SQLite's older Unicode does not assign read as a
+word's), finds every run of
 the title's tokens in the claim, and calls a run prose when none of its characters lies in
 code as the page renders the claim (cairn.web.markdown.render, page.html's `md`: every
 character of the run's words swapped for a private-use marker, the claim rendered, and each
@@ -18,10 +20,12 @@ oracle does not check them. Two tests check the oracle: its tokens against the i
 The cases found one step past each fix, now fixed and kept as regression tests, are in
 test_rt4_title_places_found.py and test_rt4_title_places_found2.py. Made-up names."""
 
+import itertools
 import json
 import random
 import sqlite3
 import unicodedata
+from contextlib import closing
 from html.parser import HTMLParser
 from types import SimpleNamespace
 
@@ -37,7 +41,7 @@ from cairn.gate import lint_gate
 from cairn.llm import FakeModel
 from cairn.llm_compiler import LLMComposer
 from cairn.memory import Memory
-from cairn.spans import Span
+from cairn.spans import Span, code_read
 from cairn.store import Store, relating, schema
 from cairn.web.markdown import render
 
@@ -55,12 +59,15 @@ DIACRITICS = frozenset(  # remove_diacritics=1: the marks Latin letters decompos
 
 
 def token_char(ch: str) -> bool:
-    if ch in DIACRITICS:  # read as part of its word, and folded away
-        return True
+    """Whether `ch` starts a word, or goes on with one (a diacritic only goes on with one)."""
+    if ch in DIACRITICS:
+        return False
     if ord(ch) < 128:
         return ch.isalnum()
     category = unicodedata.category(ch)
-    return category[0] in "LN" or category == "Co"
+    # SQLite's tables are of an older Unicode: a code point unassigned there is read as a
+    # word's (the emoji modifiers came later); the calibration tests guard the rest
+    return category[0] in "LN" or category in ("Co", "Cn") or 0x1F3FB <= ord(ch) <= 0x1F3FF
 
 
 def folded(ch: str) -> str:
@@ -79,8 +86,8 @@ def tokens(text: str) -> list[tuple[str, int, int]]:
             at += 1
             continue
         end = at
-        while end < len(text) and token_char(text[end]):
-            end += 1
+        while end < len(text) and (token_char(text[end]) or text[end] in DIACRITICS):
+            end += 1  # a diacritic goes on with the word before it, and starts none
         found.append(("".join(map(folded, text[at:end])), at, end))
         at = end
     return found
@@ -749,3 +756,234 @@ def test_a_path_after_a_fence_a_list_item_closes_names_the_page_as_the_facts_rea
         assert names_by_cairn(memory, "Deploy", claim) is True
     finally:
         store.close()
+
+
+# Seventh round: masking that moves no word (relations.blanked with the index's own reading
+# of each character, relating._kinds), attacked flush against every kind of stretch
+
+NFD_CAFE = unicodedata.normalize("NFD", "Café")
+FLUSH_TITLES = [
+    "Cafe", "Route 66", "66 Route", NFD_CAFE, "Café", "東京", "東京 Tower", "O'Brien", "Rock'",
+    "Well-Known", "snake_case", "Ab", "Ab", "Wave 👋🏽", "Team 👩‍💻",
+    "Ange︎", unicodedata.normalize("NFD", "Noël"), "x́", "Ünder",
+]  # fmt: skip
+FLUSH_AFTER = ["/notes", "/srv/x", "https://e.x/a", "--force", "-v1.2", "v1.2.3", ".1.2.3"]
+FLUSH_AFTER += ["`x`", "``x``", "\n```\nx\n```", "\n    x", "`́`", "́`x`", "/́x"]
+FLUSH_AFTER += ["'s", "-x"]
+FLUSH_BEFORE = ["https://e.x/a/", "/srv/x/", "--force", "--force=", "v1.2.3", "1.2.3", "`x`"]
+FLUSH_BEFORE += ["``x``", "<https://e.x/>", "`́`"]
+
+
+def flush_claims(title: str) -> list[str]:
+    claims = [f"Read {title}{after} today." for after in FLUSH_AFTER]
+    claims += [f"Read {before}{title} today." for before in FLUSH_BEFORE]
+    claims += [f"```\nx\n```\n{title} today.", f"    x\n\n{title} today."]
+    claims += [
+        f"Read {b}{title}{a} today." for b in ("/srv/x/", "`x`", "--y") for a in FLUSH_AFTER[:8]
+    ]
+    return [claim for claim in claims if occurrences(claim, title)]
+
+
+def index_tokens(texts: list[str]) -> list[list[str]]:
+    with closing(sqlite3.connect(":memory:")) as con:
+        con.execute(schema._CLAIM_INDEX.format(index="t"))
+        con.execute("CREATE VIRTUAL TABLE v USING fts5vocab(t, instance)")
+        con.executemany("INSERT INTO t (rowid, text) VALUES (?, ?)", enumerate(texts, 1))
+        found: dict[int, list[str]] = {}
+        for doc, term in con.execute(
+            "SELECT doc, term FROM v WHERE col = 'text' ORDER BY doc, offset"
+        ):
+            found.setdefault(doc, []).append(term)
+    return [found.get(n, []) for n in range(1, len(texts) + 1)]
+
+
+def test_a_title_flush_against_every_kind_of_stretch_is_judged_as_the_page_shows_it(tmp_path):
+    """Every fact kind and every kind of code flush before and after a title's first and
+    last word, for titles that end and start in each kind of character; the oracle's tokens
+    are the index's on every text judged (fts5vocab), so it abstains on none."""
+    store, memory = store_at(tmp_path, "flush")
+    try:
+        judged, verdicts = 0, {True: 0, False: 0}
+        for title in FLUSH_TITLES:
+            claims = flush_claims(title)
+            for text, terms in zip([title, *claims], index_tokens([title, *claims]), strict=True):
+                assert terms == [t for t, _, _ in tokens(text)], text
+            for claim in claims:
+                judged += 1
+                store.create_project(f"f{judged}")
+                focus = memory.note(f"f{judged}", "The guide.", title=title, topic=title)
+                other = memory.note(f"f{judged}", claim, title="Reader", topic="Reader")
+                texts = [c["text"] for c in memory.page(f"f{judged}", other["page"])["claims"]]
+                answer = memory.related(f"f{judged}", focus["page"], 20)
+                assert answer["searched"]["complete"]
+                got = any(w["kind"] == "mentioned_by" for p in answer["related"] for w in p["why"])
+                assert got is any(prose_places(text, title) for text in texts), (title, claim)
+                verdicts[got] += 1
+        assert judged > 500 and verdicts[False] > 60, (judged, verdicts)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("title", "shape"),
+    [
+        (NFD_CAFE, "Group {n} reads " + NFD_CAFE + "/notes today."),  # the reviewer's
+        ("東京", "Group {n} reads 東京`x` today."),
+        ("Ab", "Group {n} reads /srv/x/ Ab--force today."),
+    ],
+    ids=["nfd-before-a-path", "cjk-before-a-code-span", "fill-character-title"],
+)
+@pytest.mark.parametrize("named", [5, 6])
+def test_the_cutoffs_hold_for_a_title_flush_against_a_stretch(env, title, shape, named):
+    focus = api.note(env, title, "The field guide is on the shelf.")["page"]
+    pages = []
+    for n in range(named):
+        assert prose_places(shape.format(n=n), title)
+        pages.append(api.note(env, f"Flush {n}", shape.format(n=n))["page"])
+    api.note(env, "Code", f"Run `{title}` here.")  # only in code: never counted
+    expected = sorted(pages) if named <= relations.COMMON else []
+    assert surfaces(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
+MASK_PIECES = ["Alpha", "Beta", "Alpha Beta", NFD_CAFE, "Café", "東京", "Ab", "Route", "66"]
+MASK_PIECES += ["O'Brien", "snake_case", " ", " ", "\n", "`", "``", "/notes", "/srv/x", "--force"]
+MASK_PIECES += ["v1.2.3", "https://e.x/a", "-", "/", ".", "'", "_", "́", "    ", "```\n", "~~~"]
+MASK_PIECES += ["- ", "> ", "x", "é", ""]
+MASK_TITLES = ["Alpha Beta", NFD_CAFE, "Café", "東京", "Ab", "Route 66", "O'Brien", "snake_case"]
+
+
+@pytest.mark.parametrize(
+    "arbitrary", [False, True], ids=["cairns-stretches", "arbitrary-stretches"]
+)
+def test_masking_moves_no_word_outside_a_stretch_and_finds_the_title_where_it_stands_whole(
+    arbitrary,
+):
+    """1,500 seeded passages each: the masked text (relations.blanked, with the index's own
+    reading of each character) holds every word of the passage that lies outside every
+    stretch, where it stood; every other word holds the fill; and the title stands in it
+    exactly where it stands whole outside every stretch of the passage. Arbitrary stretches
+    leave out the one shape the masking states it does not cover (one or two separators
+    with word characters right against both sides), which no fact and no code can make
+    (test_no_fact_and_no_code_is_separators_alone_between_two_words)."""
+    rng = random.Random(1122 + arbitrary)
+    for _ in range(1500):
+        text = "".join(rng.choice(MASK_PIECES) for _ in range(rng.randint(2, 18)))
+        title = rng.choice(MASK_TITLES)
+        span = Span(
+            id="sp", source_id="n", kind="paragraph", heading_path=(), start_line=1,
+            end_line=1 + text.count("\n"), text=text,
+        )  # fmt: skip
+        stretches = [*relations.covered(span), *code_read(text)]
+        kind = relating._kinds(text + title + relations.fill_for(title))
+        for _ in range(rng.randint(0, 3) if arbitrary else 0):
+            start = rng.randrange(len(text) + 1)
+            end = rng.randrange(start, len(text) + 1)
+            alone = not any(kind(c) != relations.SEPARATOR for c in text[start:end])
+            flush = start > 0 and end < len(text) and kind(text[start - 1]) != relations.SEPARATOR
+            if not (alone and flush and kind(text[end]) == relations.TOKEN and end - start <= 2):
+                stretches.append((start, end))
+        masked = relations.blanked(text, stretches, title, kind)
+        assert len(masked) == len(text)
+        assert index_tokens([text, masked]) == [
+            [t for t, _, _ in tokens(text)],
+            [t for t, _, _ in tokens(masked)],
+        ]
+        covered = [(a, b) for a, b in stretches if a < b]
+
+        def outside(s: int, e: int) -> bool:
+            return not any(a < e and s < b for a, b in covered)  # noqa: B023
+
+        kept = {(t, s, e) for t, s, e in tokens(text) if outside(s, e)}
+        after = set(tokens(masked))
+        assert kept <= after, (text, stretches, masked)
+        fill = relations.fill_for(title)
+        assert all(fill in masked[s:e] for _, s, e in after - kept), (text, stretches, masked)
+        where = [place for place in occurrences(text, title) if outside(*place)]
+        assert occurrences(masked, title) == where, (text, title, stretches, masked)
+
+
+def test_no_fact_and_no_code_is_separators_alone_between_two_words():
+    """The masking's stated gap (a stretch of one or two separators with word characters
+    right against both sides gets no fill) is reached by no stretch a note can make: every
+    run of one to three separators between two words, read by the facts (a URL, a path, a
+    flag, a version) and by the page's parser."""
+    kind = relating._kinds("AlphaBeta")
+    marks = "/.-:~@#\\_+=,;!?*&%$^'\"()[]{}<>|` \t"
+    for size in (1, 2, 3):
+        for run in itertools.product(marks, repeat=size):
+            text = "Alpha" + "".join(run) + "Beta"
+            span = Span(
+                id="sp", source_id="n", kind="paragraph", heading_path=(), start_line=1,
+                end_line=1, text=text,
+            )  # fmt: skip
+            for start, end in [*relations.covered(span), *code_read(text)]:
+                alone = all(not char.isalnum() for char in text[start:end])
+                flush = start > 0 and end < len(text)
+                assert not (
+                    alone and flush and kind(text[start - 1]) == kind(text[end]) == relations.TOKEN
+                ), text
+
+
+@pytest.mark.parametrize("claim", ["Alpha`-`Beta today.", "Alpha`/`Beta today.", "Alpha` `Beta."])
+def test_a_code_span_of_a_separator_between_two_title_words_names_nothing(tmp_path, claim):
+    assert "<code>" in str(render(claim))  # the page: Alpha<code>-</code>Beta: code inside it
+    assert not prose_places(claim, "Alpha Beta")
+    store, memory = store_at(tmp_path, "wordless")
+    try:
+        assert names_by_cairn(memory, "Alpha Beta", claim) is False
+    finally:
+        store.close()
+
+
+def test_every_character_sampled_is_read_by_relating_as_the_index_reads_it():
+    """relating._kinds against fts5vocab on the claims' own declaration (no tokenize option
+    is declared): every 97th code point, the index's marks, the fill characters, the
+    noncharacters and every character of this file's corpora."""
+    chars = {chr(c) for c in range(1, 0x110000, 97) if not 0xD800 <= c <= 0xDFFF}
+    chars |= set(relating.MARKS) | {chr(c) for c in range(0xE000, 0xE010)}
+    chars |= {chr(c) for c in range(0xFDD0, 0xFDF0)} | {"￾", "￿", "\U0010ffff"}
+    chars |= set("".join([*FLUSH_TITLES, *MASK_PIECES, *(c for _, c, _ in CASES)]))
+    chars = sorted(chars)
+    kind = relating._kinds(chars)
+    read = index_tokens([text for char in chars for text in (char + "z", "y" + char + "z")])
+    for n, char in enumerate(chars):
+        alone, inside = read[2 * n], read[2 * n + 1]
+        expected = (
+            relations.SEPARATOR
+            if len(inside) == 2
+            else relations.MARK
+            if alone == ["z"]
+            else relations.TOKEN
+        )
+        assert kind(char) == expected, hex(ord(char))
+
+
+@pytest.mark.parametrize(
+    ("lines", "first"),
+    [
+        (["Say `Echo Echo` first.", "Say `Echo` Echo Echo Echo now."], 1),  # two and three deep
+        (["Say `Echo Echo` first.", "Say Echo", "Echo Echo again."], (1, 2)),  # across lines
+        (
+            ["Say `Echo Echo` first.", "Say `Echo` Echo", "Echo `Echo` now.", "Echo Echo Echo."],
+            (1, 2),
+        ),
+    ],
+    ids=["overlapping-on-one-line", "across-two-lines", "first-across-lines-before-a-later"],
+)
+def test_the_line_given_is_the_first_places_in_prose_however_its_places_overlap(env, lines, first):
+    focus = api.note(env, "Echo Echo", "The field guide is on the shelf.")["page"]
+    filler = [f"Filler {n} keeps the claim long enough to be cut." for n in range(14)]
+    text = "\n".join([*lines[:1], *filler, *lines[1:]])
+    assert len(text) > relations.TEXT_MAX
+    reader = api.note(env, "Reader", text)["page"]
+    (claim,) = api.answer(env.client, env.key, "page", project="ops", slug=reader)["claims"]
+    assert claim["text"] == text
+    (page,) = api.answer(env.client, env.key, "related", project="ops", slug=focus)["related"]
+    (why,) = page["why"]
+    rest = lines[1:]
+    expected = (
+        rest[first - 1] if isinstance(first, int) else "\n".join(rest[first[0] - 1 : first[1]])
+    )
+    assert (why["kind"], why["there"]["text_cut"], why["there"]["line"]) == (
+        "mentioned_by", True, expected,
+    )  # fmt: skip

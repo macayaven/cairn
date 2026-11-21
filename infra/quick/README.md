@@ -106,8 +106,9 @@ closing quote, and the value runs on to the next single quote in the file, over 
 which then set nothing. With no such quote, Compose stops with `unterminated quoted value`, the unit
 fails and the boot passes that line on. With one, Compose reads on from what follows it: when it
 cannot read that, it stops as well; when it can, it starts cairn with one setting where more were
-meant. The check below then reads the same value when a comment or nothing follows that quote on its
-line, and is quiet; other text there makes the line one it counts. Outside single quotes Compose
+meant. The check below is quiet when it can read the whole quoted value and only a comment or
+nothing follows the closing quote. With three backslashes before the first quote, Compose
+can still start with one setting while the check reports a line it could not compare. Outside single quotes Compose
 changes four kinds of value: it puts a variable's value in place of a `$` and the name after it, or
 nothing when no variable has that name; where no quotes hold the value, it drops the blanks at
 either end, and a `#` after a space with the rest of the line, unless the `#` is the value's first
@@ -325,8 +326,9 @@ closing quote, and the value runs on to the next single quote in the file, over 
 which then set nothing. With no such quote, Compose stops with `unterminated quoted value`, the unit
 fails and the boot passes that line on. With one, Compose reads on from what follows it: when it
 cannot read that, it stops as well; when it can, it starts cairn with one setting where more were
-meant. The check below then reads the same value when a comment or nothing follows that quote on its
-line, and is quiet; other text there makes the line one it counts. Outside single quotes Compose
+meant. The check below is quiet when it can read the whole quoted value and only a comment or
+nothing follows the closing quote. With three backslashes before the first quote, Compose
+can still start with one setting while the check reports a line it could not compare. Outside single quotes Compose
 changes four kinds of value: it puts a variable's value in place of a `$` and the name after it, or
 nothing when no variable has that name; where no quotes hold the value, it drops the blanks at
 either end, and a `#` after a space with the rest of the line, unless the `#` is the value's first

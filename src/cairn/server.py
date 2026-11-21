@@ -414,7 +414,10 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       title, between escaped backticks, or in a URL, a path, a flag or a version between two
       backticks of one line that Markdown does not pair, which the facts read as inline code
       and so as none of those (the index, given the passage's text with
-      every stretch that is no prose blanked out, says where the title stands in prose; a
+      every stretch that is no prose blanked out, each character of it that the index's
+      tokenizer reads as part of a word made another such character and each it reads as a
+      separator kept, so that no word begins or ends elsewhere, says where the title stands
+      in prose; a
       claim that is not its passage's text character for character, as one saved by hand or
       one that differs from its passage only by the blanks that end its lines, which the
       gate accepts, mentions as the index has it; a claim that holds a mark of the index or
@@ -458,10 +461,14 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       and the project hold, beside those that work out what the caller may reach
       (cairn.store.relating says which, and tests/unit/test_relating_cost_unit.py counts
       them); to judge where a title stands in prose it runs 3 more, in a database of its own
-      in memory, and the Markdown parser reads each passage it judges at most once. Judging a
-      title can cost what rendering the passages it judges costs: 2.55 s for the worst shape
-      measured, 750,000 bytes of passages dense with unclosed pictures and code spans, beside
-      2.43 s for the page's own render of them. One read of
+      in memory, 3 more in another when the passages it judges or the title hold a character
+      the process has not asked the index's tokenizer about, and the Markdown parser reads
+      each passage it judges at most once. Judging a title can cost what rendering the
+      passages it judges costs: 2.26 s for the worst shape measured, 750,000 bytes of
+      passages dense with unclosed pictures and code spans, beside 2.19 s for the page's own
+      render of them; and the first time a process meets them, 0.67 s more to ask the
+      tokenizer how it reads the most characters 750,000 bytes hold, 203,623, all distinct.
+      One read of
       related pages at a time in a server process, for every workspace it serves, over MCP,
       REST and the web view alike: another waits for it holding no thread and no connection
       and is answered in its turn, however long that takes; none is refused for waiting. A

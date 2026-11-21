@@ -26,9 +26,12 @@ Two kinds of relation:
   line, indented blocks; text indented under a list item is the item's prose). The page
   alone says what is code: the facts' own inline code and code blocks are not asked. The
   search index's own tokenizer says where the places are, on the text with those stretches
-  blanked out where they stand (`blanked`; cairn.store.relating), and nothing here reads the
-  words. So a page titled Deploy is not named by a claim whose only "deploy" stands in
-  `deploy/compose.yaml`, or after the marks that open a fence, nor one titled Audit by
+  blanked out where they stand (`blanked`: each character of a stretch that the tokenizer
+  reads as part of a word made another such character, each it reads as a separator kept,
+  so that no word begins or ends elsewhere), and it says how it reads each character
+  (cairn.store.relating): nothing here decides what a word is. So a page titled Deploy is
+  not named by a claim whose only "deploy" stands in `deploy/compose.yaml`, or after the
+  marks that open a fence, nor one titled Audit by
   `--audit-keep`; what the facts and the parser do not read as one of those is prose, so a
   bare `deploy/notes.md` or `ada@deploy.dev` names Deploy, and so does a title in a link's
   address written in angle brackets, in a link's title, between escaped backticks, or in a

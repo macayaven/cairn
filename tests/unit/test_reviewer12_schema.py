@@ -1,5 +1,6 @@
 """A version number alone does not identify a cairn database."""
 
+import gc
 import sqlite3
 from contextlib import closing
 
@@ -42,6 +43,7 @@ def test_foreign_database_is_never_advised_onto_serve(tmp_path, capsys, command,
 )
 def test_serve_refuses_a_damaged_older_shape_before_the_first_step(tmp_path, capsys, change):
     db = at_28_file(tmp_path)
+    gc.collect()  # close the historical fixture's connections before comparing disk bytes
     with closing(sqlite3.connect(db)) as con:
         con.execute(change)
     before = db.read_bytes()

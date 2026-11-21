@@ -44,7 +44,7 @@ from test_ci_workflow_unit import RAW_WORKFLOW, TAG, jobs_that_run
 WROTE = f"the notes\n\n{MARK}\n"  # as test_ci_release_retry_unit's files give it: notes.md, then
 EDITED = f"other notes\n\n{MARK}\n"  # the mark; and a person's text around the same mark
 DIFFERS = (
-    "::error::the GitHub release for {tag}, {state}, carries run "
+    "::error::read by its id, the GitHub release for {tag}, {state}, carries run "
     + RUN_ID
     + "'s mark and differs from what that run wrote in its {what}; delete it on the"
     " repository's releases page if it is still a draft, or put back what the run wrote, and"
@@ -202,7 +202,9 @@ def test_notes_edited_after_the_comparison_are_seen_by_the_second_and_the_releas
     assert done.returncode == 1
     assert the_error(done) == DIFFERS.format(tag=tag, state="public", what="notes")
     assert writes(calls)[-1].startswith("gh api --method PATCH ")
-    assert calls.index(writes(calls)[-1]) == len(calls) - 2  # then one look, and no more
+    # then one look, the read by id its row sends the job to, and no more
+    assert calls.index(writes(calls)[-1]) == len(calls) - 3
+    assert calls[-1].startswith("gh api repos/owner/repo/releases/")
     (public,) = held(tmp_path)
     assert (public["draft"], public["body"]) == (False, EDITED)
     done, calls = attempt(tmp_path, tag, candidate)
@@ -341,7 +343,9 @@ def test_a_title_edited_after_the_comparison_is_seen_by_the_second_and_the_relea
     )
     assert done.returncode == 1
     assert the_error(done) == DIFFERS.format(tag=tag, state="public", what="title")
-    assert calls.index(writes(calls)[-1]) == len(calls) - 2  # then one look, and no more
+    # then one look, the read by id its row sends the job to, and no more
+    assert calls.index(writes(calls)[-1]) == len(calls) - 3
+    assert calls[-1].startswith("gh api repos/owner/repo/releases/")
     (public,) = held(tmp_path)
     assert (public["draft"], public["name"], public["body"]) == (False, "Spring", WROTE)
     done, calls = attempt(tmp_path, tag, candidate)
@@ -372,15 +376,16 @@ def test_the_readme_says_what_is_compared_and_the_row_says_what_the_tests_above_
     for said in (readme, " ".join(CREATE["run"].split()), " ".join(RAW_WORKFLOW.split())):
         assert "shows the tag for a release" not in said
     means, next_step = cells(
-        "the GitHub release for …, …, carries run …'s mark and differs from what that run wrote"
-        " in its …"
+        "read by its id, the GitHub release for …, …, carries run …'s mark and differs from what"
+        " that run wrote in its …"
     )
     assert means == (
-        "The release's title is neither the tag nor empty, or its notes are not, byte for byte,"
-        " the text the job wrote: a person edited them (saving the notes again in GitHub's web"
-        " form can count, since the form may rewrite its line ends). The line says which, and"
-        " whether the release is a draft or public; a public one was changed after the job"
-        " compared it, or after an earlier attempt published it, and stays public as changed"
+        "Read by its id, the release's title is neither the tag nor empty, or its notes are not,"
+        " byte for byte, the text the job wrote: a person edited them (saving the notes again in"
+        " GitHub's web form can count, since the form may rewrite its line ends). The line says"
+        " which, and whether the release, read by its id, is a draft or public; a public one was"
+        " changed after the job compared it, or after an earlier attempt published it, and stays"
+        " public as changed"
     )
     assert next_step == (
         "A draft: delete it on the repository's releases page and re-run the job, which makes"

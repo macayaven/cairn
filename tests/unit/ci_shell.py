@@ -43,8 +43,10 @@ def run_step(
 # lists no release for the tag until `gh release create` is asked for one; then that one, with
 # the title and the text the step gave it and the files the step holds, a draft until the
 # publication is sent. The listing and the read of the release by its id both answer through
-# the step's own --jq expression (its last argument). Each write's arguments are kept, one a
-# line, in $RUNNER_TEMP/gh-create and $RUNNER_TEMP/gh-publish.
+# the step's own --jq expression (its last argument); the tag names $GITHUB_SHA; each file is an
+# asset, uploaded, of its size, with the id 70 and then its place, and is given by that id.
+# Each write's arguments are kept, one a line, in $RUNNER_TEMP/gh-create and
+# $RUNNER_TEMP/gh-publish.
 FIRST_ATTEMPT_GH = r"""#!/bin/sh
 given() {  # the argument of the creation that follows $1
   awk -v flag="$1" 'found { print; exit } $0 == flag { found = 1 }' "$RUNNER_TEMP/gh-create"
@@ -54,16 +56,27 @@ release() {  # the release the creation asked for, as GitHub holds it now
   [ ! -e "$RUNNER_TEMP/gh-publish" ] || draft=false
   pre=false
   ! grep -qx -- --prerelease "$RUNNER_TEMP/gh-create" || pre=true
-  ls cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS | jq -R '{name: .}' | jq -s \
+  for file in cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS; do
+    printf '%s\t%s\n' "$file" "$(wc -c < "$file" | tr -d ' ')"
+  done | jq -R 'split("\t") | {name: .[0], size: (.[1] | tonumber), state: "uploaded",
+    updated_at: "2026-11-20T12:00:00Z"}' | jq -s \
     --arg tag "$(sed -n 3p "$RUNNER_TEMP/gh-create")" --arg title "$(given --title)" \
     --rawfile body "$(given --notes-file)" --argjson draft "$draft" --argjson pre "$pre" \
     '{id: 7, tag_name: $tag, name: $title, draft: $draft, prerelease: $pre, body: $body,
-      assets: .}'
+      assets: (to_entries | map(.value + {id: (70 + .key)}))}'
 }
 case "$1 $2" in
+  "api -H")  # the tag, read as the commit it names: the run's
+    [ "$3" = "Accept: application/vnd.github.sha" ] || exit 2
+    [ "$4" = "repos/owner/repo/commits/tags/$GITHUB_REF_NAME" ] || exit 2
+    printf '%s' "$GITHUB_SHA" ;;
   "release create") printf '%s\n' "$@" > "$RUNNER_TEMP/gh-create" ;;
   "api --method") printf '%s\n' "$@" > "$RUNNER_TEMP/gh-publish" ;;
-  "release download") mkdir "$5" && cp cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS "$5"/ ;;
+  "api --allow-escape-sequences")  # one file, by its asset id
+    [ "$3 $4" = "-H Accept: application/octet-stream" ] || exit 2
+    place=$((${5##*/} - 70))
+    set -- cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS
+    shift "$place" && cat "$1" ;;
   "api --paginate")
     [ -e "$RUNNER_TEMP/gh-create" ] || exit 0
     while [ $# -gt 1 ]; do shift; done

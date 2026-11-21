@@ -11,9 +11,11 @@ when a later listing showed the title restored.
 
 Now the listing finds the release and shows whether the tag has more than one. What is
 compared is read by the release's id, which was measured to show each write at once: once
-after the listing gave the id, before any download; again as the last request before the
-publication; and again as the last request before the step says it is finished. The mark, the
-tag, the two flags, the title, the notes and the file names are judged on each such read.
+after the listing gave the id, before any download; again as the last read of the release
+before the publication; and again as the last before the step says it is finished. Only the
+tag's read comes after each (test_ci_release_tag_unit), and the tests here leave it out. The
+mark, the tag, the two flags, the title, the notes and the file names are judged on each such
+read.
 Every look, a wait's among them, still stops at once on a missing mark, another flag, another
 title or other notes. A read that fails stops the step in a line of its own, one for a release
 that is not found and one for a read that got no answer, and nothing is written after it.
@@ -24,23 +26,25 @@ listing can show another record for k looks, behind the step's write or behind a
 import json
 
 import pytest
+import test_ci_release_retry_unit as retry
+from test_ci_release_lines_unit import DRAFTED, ELSEWHERE
 from test_ci_release_listing_lag_unit import APART, LOOKS, WHEEL, slept
 from test_ci_release_notes_title_unit import DIFFERS, WROTE
 from test_ci_release_retry_unit import (
     CREATE,
-    DRAFT,
     LISTING,
     MARK,
     README,
     REFUSED,
     attached,
-    attempt,
     cells,
+    fetches,
     held,
     looks,
     made_earlier,
-    run,
     the_error,
+    unfinished,
+    untagged,
     writes,
 )
 
@@ -53,7 +57,7 @@ EDITS = {
 }
 READ = "gh api repos/owner/repo/releases/{id} --jq "
 NOT_FOUND = (
-    "::error::the GitHub release for {tag}, which the listing showed, was not found when read"
+    "::error::the GitHub release for {tag}, which GitHub's listing showed, was not found when read"
     " by its id, so it has probably been deleted; re-run this job, which starts from what is"
     " listed then"
 )
@@ -62,9 +66,21 @@ NO_ANSWER = (
     " say, so nothing was compared; re-run this job, and delete nothing"
 )
 STALE = (
-    "::error::GitHub does not list the release for {tag} as this job has just left it; re-run"
-    " this job, which starts from what is listed then"
+    "::error::GitHub's listing, at this job's last look, does not list the release for {tag} as"
+    " this job has just left it, and it can be seconds behind a write; look at the repository's"
+    " releases page first, then re-run this job, which starts from what is listed then"
 )
+
+
+def run(*args, **env):
+    """test_ci_release_retry_unit's run, its calls without the tag's reads."""
+    done, calls = retry.run(*args, **env)
+    return done, untagged(calls)
+
+
+def attempt(*args, **env):
+    done, calls = retry.attempt(*args, **env)
+    return done, untagged(calls)
 
 
 def reads(calls: list[str]) -> list[int]:
@@ -136,7 +152,8 @@ def test_an_edited_public_release_the_listing_still_shows_as_it_was_is_not_finis
 @pytest.mark.parametrize("what", EDITS)
 def test_a_draft_edited_between_the_first_read_and_the_publication_is_not_published(tmp_path, what):
     """One step past: the edit comes after the read that follows the listing, while the files
-    are downloaded. The read that is the last request before the publication sees it."""
+    are fetched. The read after the fetches, the last of the release before the publication,
+    sees it."""
     existing = made_earlier("v1.2.3", False, draft=True)
     change = {
         "notes": '.body |= sub("the notes"; "other notes")',
@@ -150,7 +167,7 @@ def test_a_draft_edited_between_the_first_read_and_the_publication_is_not_publis
     assert done.returncode == 1
     assert the_error(done).startswith(said("v1.2.3", "a draft", what))
     assert writes(calls) == [] and held(tmp_path)[0]["draft"] is True
-    assert reads(calls) == [1, 3] and calls[2].startswith("gh release download")
+    assert reads(calls) == [1, 5] and calls[2:5] == fetches(77)
 
 
 def test_a_file_removed_from_a_draft_the_listing_still_shows_whole_is_not_downloaded(tmp_path):
@@ -158,7 +175,7 @@ def test_a_file_removed_from_a_draft_the_listing_still_shows_whole_is_not_downlo
     matching = made_earlier("v1.2.3", False, draft=True)
     existing = made_earlier("v1.2.3", False, draft=True, names=["SHA256SUMS", WHEEL])
     done, calls = run(tmp_path, "v1.2.3", "", existing, {}, stale=([matching], None))
-    assert done.returncode == 1 and the_error(done) == DRAFT.format(tag="v1.2.3")
+    assert done.returncode == 1 and unfinished(the_error(done), "v1.2.3")
     assert writes(calls) == [] and reads(calls) == [1] and len(calls) == 2
 
 
@@ -195,7 +212,7 @@ def test_a_draft_an_earlier_attempt_left_whole_and_listed_short_is_published(
 
 
 @pytest.mark.parametrize(("tag", "candidate"), BOTH)
-def test_the_read_by_id_is_the_last_request_before_the_publication_and_before_success(
+def test_the_read_by_id_is_the_last_read_of_the_release_before_the_publication_and_success(
     tmp_path, tag, candidate
 ):
     done, calls = run(tmp_path, tag, candidate)
@@ -205,19 +222,21 @@ def test_the_read_by_id_is_the_last_request_before_the_publication_and_before_su
     assert seen[2:] == [
         LISTING,
         read,
-        f"gh release download {tag} --dir {tmp_path}/draft",
+        *fetches(88),
         read,
         writes(calls)[-1],
         LISTING,
-        f"gh release download {tag} --dir {tmp_path}/published",
+        read,
+        *fetches(88),
         read,
     ]
     assert writes(calls)[-1].startswith("gh api --method PATCH repos/owner/repo/releases/88 ")
-    # The read asks for one release by the id the listing gave, with the listing's own fields.
+    # The read asks for one release by the id the listing gave, with the listing's own fields
+    # first, and then what the fetches and the comparison of two reads take.
     (listing,) = {line for line in calls if line.startswith(LISTING)}
     (asked,) = {line for line in calls if line.startswith(read)}
-    fields = listing.split(" | ", 2)[2]
-    assert asked == read + f'select(.tag_name == "{tag}") | {fields}'
+    fields = listing.split(" then (", 1)[1].rsplit(") elif ", 1)[0]
+    assert asked.startswith(read + f'select(.tag_name == "{tag}") | ({fields}), ')
 
 
 @pytest.mark.parametrize(("tag", "candidate"), BOTH)
@@ -227,8 +246,8 @@ def test_a_release_found_public_is_read_by_id_before_the_step_says_it_is_finishe
     existing = made_earlier(tag, candidate == "true")
     done, calls = run(tmp_path, tag, candidate, existing, attached(tag))
     assert done.returncode == 0, done.stdout + done.stderr
-    assert writes(calls) == [] and reads(calls) == [1, 3] and len(calls) == 4
-    assert calls[2].startswith("gh release download")
+    assert writes(calls) == [] and reads(calls) == [1, 5] and len(calls) == 6
+    assert calls[2:5] == fetches(77)
 
 
 # --- three states of one release the two sources can disagree on ----------------------------------
@@ -284,21 +303,20 @@ def test_a_release_listed_public_and_matching_that_is_an_edited_draft_is_not_pub
 
 def test_a_release_whose_tag_was_changed_is_not_this_tag_s_whatever_the_listing_shows(tmp_path):
     """One step past: the listing still shows the draft under this tag; read by its id, it is
-    another tag's. Publishing it would publish that tag's release."""
+    another tag's. Publishing it would publish that tag's release. The line says what each
+    showed."""
     matching = made_earlier("v1.2.3", False, draft=True)
     existing = {**matching, "tag_name": "v9.9.9"}
     done, calls = run(
         tmp_path, "v1.2.3", "", existing, attached("v1.2.3"), stale=([matching], None)
     )
     assert done.returncode == 1 and writes(calls) == [] and held(tmp_path) == [existing]
-    assert the_error(done).startswith(
-        REFUSED.format(tag="v1.2.3") + "read by its id it is not a release for this tag"
-    )
+    assert the_error(done) == ELSEWHERE
 
 
 def test_a_release_returned_to_a_draft_after_the_publication_is_not_finished(tmp_path):
     """The listing shows the publication; a person makes the release a draft again before the
-    last read. The step does not say it is published."""
+    last read. The step does not say it is published, and says what its read by id showed."""
     existing = made_earlier("v1.2.3", False, draft=True)
     done, calls = run(
         tmp_path,
@@ -310,7 +328,7 @@ def test_a_release_returned_to_a_draft_after_the_publication_is_not_finished(tmp
         AT_READ_CHANGE=".draft = true",
         PERSON_LISTED_FROM_LOOK="5",
     )
-    assert done.returncode == 1 and the_error(done) == STALE.format(tag="v1.2.3")
+    assert done.returncode == 1 and the_error(done) == DRAFTED
     assert "is this run's and is published" not in done.stdout and len(writes(calls)) == 1
 
 
@@ -320,7 +338,8 @@ def test_a_release_returned_to_a_draft_after_the_publication_is_not_finished(tmp
 def test_a_draft_short_of_names_with_a_wrong_title_stops_at_the_first_look_it_is_seen(tmp_path):
     """The reviewer's third input. The draft the step has just made is listed with one file
     name and another title; two looks later a person has put the title back and the names are
-    the three. The step used to wait for the names and go on. It stops at the first look."""
+    the three. The step used to wait for the names and go on. It stops at the first look, on
+    the read by id that look's row sends it to, which shows the title too."""
     done, calls = run(
         tmp_path,
         "v1.2.3",
@@ -334,14 +353,17 @@ def test_a_draft_short_of_names_with_a_wrong_title_stops_at_the_first_look_it_is
     assert done.returncode == 1
     assert the_error(done) == DIFFERS.format(tag="v1.2.3", state="a draft", what="title")
     assert slept(calls) == [] and len(writes(calls)) == 1 and held(tmp_path)[0]["draft"] is True
-    assert reads(calls) == []
+    first_look = looks(calls).index(LISTING, looks(calls).index(LISTING) + 1)
+    assert reads(calls) == [first_look + 1]
 
 
 @pytest.mark.parametrize("what", ["notes", "title", "the mark", "the flag"])
 @pytest.mark.parametrize("wait", ["made", "published"])
 def test_every_look_of_a_wait_stops_on_an_edit_whatever_the_wait_was_for(tmp_path, what, wait):
     """In the wait for the names after the creation, and in the wait for the listing to show
-    the publication: the third look shows the edit, and the step stops there."""
+    the publication: the third look shows the edit, and the step stops there, on what its read
+    by id at once shows: the draft it made, or the release it has published, which the listing
+    still shows as a draft."""
     change = {
         "notes": '.body |= sub("the notes"; "other notes")',
         "title": '.name = "Spring"',
@@ -355,7 +377,8 @@ def test_every_look_of_a_wait_stops_on_an_edit_whatever_the_wait_was_for(tmp_pat
         env |= {"PUBLISHED_SHOWN_FROM_LOOK": "9", "PERSON_SHOWS_BEHIND": "1"}
     done, calls = run(tmp_path, "v1.2.3", "", **env)
     assert done.returncode == 1
-    assert the_error(done).startswith(said("v1.2.3", "a draft", what))
+    state = "a draft" if wait == "made" else "public"
+    assert the_error(done).startswith(said("v1.2.3", state, what))
     assert len(writes(calls)) == (1 if wait == "made" else 2)
     assert len(slept(calls)) == (2 if wait == "made" else 1)
 
@@ -392,7 +415,8 @@ def test_the_two_lines_have_their_rows_and_neither_tells_anyone_to_delete():
     for line in (NOT_FOUND, NO_ANSWER):
         assert "delete it" not in line and ". " not in line
     assert cells(
-        "the GitHub release for …, which the listing showed, was not found when read by its id,"
+        "the GitHub release for …, which GitHub's listing showed, was not found when read by its"
+        " id,"
         " so it has probably been deleted"
     ) == (
         "The listing gave the job a release for the tag, and GitHub answered 404 for that id: a"
@@ -412,22 +436,40 @@ def test_the_two_lines_have_their_rows_and_neither_tells_anyone_to_delete():
 def test_the_step_s_comment_and_the_readme_say_what_is_read_where():
     comment = " ".join(CREATE["run"].replace("#", "").split())
     assert (
-        "The listing finds the release and shows whether the tag has more than one; it can be"
-        " behind a write, a person's as much as this job's, so nothing is compared on it. What"
-        " is compared is read by the release's id, which was measured to show each write at"
-        " once: after the look that gave the id, as the last request before the publication,"
-        " and as the last request before this step says the release is finished."
+        "(b) The listing, which finds the release, shows whether the tag has more than one, and"
+        " lists the other tags' published releases, from which the publication says whether"
+        " this release is GitHub's latest, and the look after it whether a higher one is listed;"
+        " it can be behind a write, a person's as much as this job's, so its row only stops the"
+        " job or sends it to a read by id at once, nothing is published or said finished on it,"
+        " and a higher"
+        " version published seconds before the last look can be missing from it, a backport then"
+        " being said to be the latest. (c) The release, read by its id, which was measured to"
+        " show each write at"
+        " once: it judges the tag, the mark, the two flags, the title, the notes and the file"
+        " names, and gives each file's asset id, state and size."
     ) in comment
     assert (
-        "A file replaced between the download and the publication is published as replaced:"
-        " that is the stated race, and the comparison after the publication stops on it."
+        "(e) The release by its id again, which must be as (c) showed it: the same assets (ids,"
+        " names, sizes, update times), title, notes and flags, so no file was replaced and"
+        " nothing edited while the files were fetched. (f) The tag again. Then the publication;"
+        " then (b) until the listing shows it, and (c) to (f) once more before this step says"
+        " the release is finished."
+    ) in comment
+    assert (
+        "What a person changes after the last read of the release, before the publication or"
+        " before this step ends, is not seen: that moment is the stated race."
     ) in comment
     readme = " ".join(README.split())
     assert (
-        "The listing only finds the release and shows whether the tag has more than one: what"
-        " the job compares it reads by the release's id, which shows a write at once where the"
-        " listing can be seconds behind one, a person's as much as the job's. It reads it after"
-        " the look that gave the id, as its last request before the publication, and as its"
-        " last request before it succeeds."
+        "The listing finds the release, shows whether the tag has more than one and lists the"
+        " other tags' published releases, from which the publication says whether the release"
+        " is GitHub's latest (a higher version published seconds before the job's last look can"
+        " be missing from it, and a backport is then said to be the latest)."
+    ) in readme
+    assert (
+        "What is published, and what the job succeeds on, is judged on reads by the release's"
+        " id, which show a write at once where the listing can be seconds behind one, a person's"
+        " as much as the job's: the job reads it after the look that gave the id, as its last"
+        " read of the release before the publication, and as its last before it succeeds."
     ) in readme
     assert WROTE.endswith("\n")

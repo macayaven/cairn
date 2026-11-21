@@ -232,7 +232,7 @@ PRIVILEGED_DEFINITIONS = {
         "90094caae1a5888d5fcdce1e5bb80a92c0cb7539a7db7fd131655532ed5c4e83",
         "1a6b7627d1ef6deb2d94425608ef7bae00108989018ac6ac819381746041cbe0",
         "8306689dab0ead439f5f7fd02a80289fa3c8492078e2f988a4a993978ed26baa",
-        "a494380ef5e74b3f32a7075e134120ee726c3b8a0d321bacf7f6ef2c83ab37cc",
+        "15967f2834f514881a03bd3e915a940bf0e8cada04ea0e9bab8c6490556b8d11",
     ],
     "attest": [
         "c131c0a395998bfe5cc8c174d51ff4369af022467b11be44b08ef7229b36955b",
@@ -248,11 +248,11 @@ PRIVILEGED_DEFINITIONS = {
         "17a3c14e979955db5dc020a60609de3a40456b894c3987fd0e6396fad1590ba9",
     ],
     "release": [
-        "5165d1610aa4638259b10262874a992db6b2b557007a329103fbbd9dcba655d4",
+        "4bb09ca69af57a45d23480e4307aaf7ce5b204767d176d6e57e3daa0fed16962",
         "6153b4d908585eb1ba57111b2d53e509fce748ccd5770de0447b66079fe1fd48",
         "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
         "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
-        "59443bb2361427d9e8e38eec8eca96ff5d21af7d67be5c7ef9b4c14d642c5803",
+        "3f8542bb7f66031a137fbc884a4f48f00b43dd99e8f0f6a603b492ea563e4933",
     ],
     "deploy": [
         "401510e913f6e37136331eeefa6d88fce27bbba126b17c42793f7694b9600454",
@@ -529,6 +529,7 @@ def run_create(tmp_path, tag: str, candidate: str):
         "PATH": f"{bin_}:/usr/bin:/bin",
         "RUNNER_TEMP": str(tmp_path),
         "GITHUB_REF_NAME": tag,
+        "GITHUB_SHA": COMMIT,
         "GH_REPO": "owner/repo",
         "CANDIDATE": candidate,
     }
@@ -538,17 +539,20 @@ def run_create(tmp_path, tag: str, candidate: str):
 
 
 PUBLICATION = ["api", "--method", "PATCH", "repos/owner/repo/releases/7", "--silent", "-F"]
+COMMIT = "1a2b3c4d" * 5  # the run's commit, which the tag names
 
 
 def test_a_release_publishes_the_two_files_and_their_checksums_as_before(tmp_path):
     create, publish = run_create(tmp_path, "v1.2.3", "")
-    assert publish == [*PUBLICATION, "draft=false"]
+    assert publish == [*PUBLICATION, "draft=false", "-f", "make_latest=true"]
     assert create == [
         "release",
         "create",
         "v1.2.3",
         "--draft",
         "--verify-tag",
+        "--target",
+        COMMIT,
         "--title",
         "v1.2.3",
         "--notes-file",
@@ -570,6 +574,8 @@ def test_a_candidate_is_a_pre_release_never_marked_latest(tmp_path):
         "v1.2.3-rc.2",
         "--draft",
         "--verify-tag",
+        "--target",
+        COMMIT,
         "--title",
         "v1.2.3-rc.2",
         "--notes-file",

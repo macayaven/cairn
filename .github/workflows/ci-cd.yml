@@ -1682,11 +1682,27 @@ jobs:
   # title), the notes this run wrote and the same files, both byte for byte; a draft with them
   # is published, and a published one is left as it is. It needs the gh CLI on its runner, as
   # GitHub's hosted runners have.
+  # One such job runs at a time across all runs (its concurrency group, of its own): another
+  # tag's `release` waits until this one ends, so no run of this workflow publishes a release
+  # between this job's last look and its publication, where it would make this one say it is
+  # GitHub's latest above a higher version. `queue: max` lets up to 100 wait: a job waiting is
+  # not replaced by a newer one, as GitHub does by default and as a waiting `aliases` is, which
+  # would leave its tag without a release. A re-run of this job waits as a first run does. The
+  # ones waiting start in the order they began to wait, which GitHub says is not guaranteed: a
+  # candidate and its release tagged close together run one after the other, either first, and
+  # a candidate published after its release is a pre-release, never the latest. A run re-run
+  # later keeps the workflow of its own commit, and a commit from before this group has none.
+  # That GitHub takes `queue` in a job's concurrency is read in its workflow syntax reference,
+  # not measured.
   release:
     name: GitHub release
     needs: [release_check, publish, verify, package, attest]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    concurrency:
+      group: cairn-release
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
     steps:
@@ -1758,6 +1774,7 @@ jobs:
           prerelease=false
           candidate=()
           latest=()
+          said=""
           if [ "$CANDIDATE" = "true" ]; then
             prerelease=true
             candidate=(--prerelease --latest=false)
@@ -1768,12 +1785,42 @@ jobs:
           # of the job keeps the run's id; notes.md itself is attested, so it is left as it is.
           mark="<!-- cairn-ci-cd run $GITHUB_RUN_ID -->"
           { cat notes.md; printf '\n%s\n' "$mark"; } > "$RUNNER_TEMP/body.md"
+          # The tag is part of what is judged: this run built and attested the files of
+          # $GITHUB_SHA, and a release is its tag's. A person can delete the tag or move it
+          # (a forced push) while the job runs, and a draft keeps its tag name, which is only
+          # a string, so no read of the release shows it. So the tag is read first, before
+          # anything is written; as the last request before the publication; and as the last
+          # request before this step says the release is finished; each time it must name
+          # $GITHUB_SHA, or the step stops and writes nothing more. It is read with GitHub's
+          # "Get a commit", `GET /repos/{owner}/{repo}/commits/{ref}` with the ref
+          # `tags/<tag>` and the header `Accept: application/vnd.github.sha`, which "Returns
+          # the commit's SHA-1 hash" (GitHub's REST reference): the commit, for an annotated
+          # tag as for a lightweight one ("Get a reference" gives an annotated tag's own
+          # object). And the draft is made with --target $GITHUB_SHA: the CLI sends it as the
+          # release's target (create.go, 459 to 461: `if opts.Target != "" {`,
+          # `params["target_commitish"] = opts.Target`), --verify-tag or not, and the API
+          # says of `target_commitish`: "Unused if the Git tag already exists. Default: the
+          # repository's default branch." A publication whose tag a person deleted after the
+          # last read makes GitHub create the tag (seen in round 6 for a draft whose tag did
+          # not exist); with this target it is meant to land on this run's commit, not on the
+          # default branch's head. That GitHub uses the creation's target then is not
+          # measured: that one moment is the race this step cannot close. A tag a person moves
+          # in that moment is published on, and the read of the tag after the publication
+          # stops the job with its line.
           # The release is made by separate requests, and nothing here takes one back. A look
           # lists every release of the repository, drafts included (GitHub lists drafts to a
           # token that may write, as this job's may); a listing that fails stops the job instead
           # of being taken for none. The release for this tag is this run's only if it is the
-          # only one and carries this run's mark and this tag's pre-release flag; any other
-          # stops the job. (1) No release: the GitHub CLI makes one as a draft, with the files.
+          # only one and carries this run's mark and this tag's pre-release flag; any other a
+          # look lists stops the job. A look judges its row only to stop early: two rows for
+          # the tag stop the job on the listing, which its line says, and a row that does not
+          # show this run's release as it wrote it is read by its id at once, and the job stops
+          # on what that read shows, or on the row when that read shows this run's release as
+          # it wrote it, its line saying both. A release the
+          # listing does not show yet, one a person makes while the job runs or the draft of an
+          # earlier attempt just before a re-run, is not seen, and the job can make or publish
+          # its own beside it: that is a stated limit, and the release it publishes and
+          # succeeds on is still its own, judged by its id. (1) No release: the GitHub CLI makes one as a draft, with the files.
           # Asked for a draft it publishes nothing, and its cleanup of the release it made is
           # only for a draft it meant to publish itself. It sends a file again, three times at
           # most, only after a failed connection or a 5xx, and removes a file only when given
@@ -1781,26 +1828,38 @@ jobs:
           # that fails leaves this draft, with the files that arrived, and leaves it public if
           # a person published it meanwhile. (2) This run's draft, just made or left by an
           # earlier attempt: its files are compared with the ones this run attested, names and
-          # bytes (the CLI finds a draft by its tag, as it finds a release), and a draft that does
-          # not hold exactly those stops the job, which says what a person does. (3) The draft
+          # bytes, each fetched by its asset id, and a draft that does not hold exactly those
+          # stops the job, which says what a person does. (3) The draft
           # is published by a request of its own, to the id the look gave. That is the job's
           # one write to a release that exists, and it is safe: it sets draft to false and
-          # nothing else (for a candidate it says again, as the creation did, that it is not
-          # the latest), so a draft a person published meanwhile is already what it would
-          # make it, one a person removed makes it fail, and the files were compared first.
+          # says whether the release is GitHub's latest, and nothing else, so a draft a person
+          # published meanwhile is already what it would make it but for which release is the
+          # latest, one a person removed makes it fail, and the files were compared first. It
+          # always says it, since GitHub's `make_latest` "Defaults to `true` for newly
+          # published releases" (GitHub's REST reference, "Update a release"), which made a
+          # stable backport, v1.2.3 published while v1.3.0 is, the repository's latest
+          # release. A candidate never is, as the creation said too; a stable version is only
+          # when it is the highest stable version among the published releases the last look
+          # listed and itself, as `stable_versions` orders them, the function job `aliases`
+          # orders versions with, word for word. The look after the publication checks it:
+          # when it lists a higher stable version and the publication said latest, the job
+          # stops with a line of its own and edits no other release (a person published the
+          # higher one by hand meanwhile, or the look before was behind; another run of this
+          # workflow cannot, since one `release` runs at a time, the job's concurrency group).
           # When GitHub publishes and the reply is lost, the job fails and nothing is undone:
           # the re-run finds the release published. (4) After each write the job looks again.
           # It ends well only on a published release that holds exactly the files this run
           # attested, byte for byte, which it leaves as it is: that is all a re-run does after
           # an attempt that finished, so that a release tag's `aliases` runs. A look that does
           # not show the job's own write is made again, as the top of this step says; when the
-          # last one still does not, the job stops, so it never makes a second release.
+          # last one still does not, the job stops, so it never makes a second release of
+          # its own in one attempt.
           # This step's text issues no removal of a release or of a release's file and
           # replaces no file.
           # The mark alone does not make a release this run's: a person can change the title,
-          # and the notes around the mark. So each look also reads both, and the step compares
-          # them with what it wrote; a release that differs stops the job, which then
-          # writes nothing more. The creation sends the title only when one is given, and the
+          # and the notes around the mark. So each read by id also reads both, and the step
+          # compares them with what it wrote (each look too, to read by id at once); a release
+          # that, read by its id, differs stops the job, which then writes nothing more. The creation sends the title only when one is given, and the
           # notes as the file holds them (cli/cli at v2.102.0,
           # pkg/cmd/release/create/create.go, 453 to 458: `if opts.Name != "" {`,
           # `params["name"] = opts.Name`, `if opts.Body != "" {`, `params["body"] = opts.Body`;
@@ -1812,49 +1871,139 @@ jobs:
           # is normalised: they come as base64, which the step decodes into a file
           # and compares with the file it wrote, so no reading here drops a line end or changes
           # a byte (a command substitution would drop the line ends at the end).
-          # The listing finds the release and shows whether the tag has more than one; it can
-          # be behind a write, a person's as much as this job's, so nothing is compared on it.
-          # What is compared is read by the release's id, which was measured to show each
-          # write at once: after the look that gave the id, as the last request before the
-          # publication, and as the last request before this step says the release is
-          # finished. Each such read judges the tag, the mark, the two flags, the title, the
-          # notes and the file names. Each look still stops at once on what it shows of a
-          # missing mark, another flag, another title or other notes, in a wait too. The
-          # files' bytes are compared by download. A file replaced between the download and
-          # the publication is published as replaced: that is the stated race, and the
-          # comparison after the publication stops on it.
+          # What the step reads, in order, and why. (a) The tag, as the commit it names, as
+          # said above. (b) The listing, which finds the release, shows whether the tag has
+          # more than one, and lists the other tags' published releases, from which the
+          # publication says whether this release is GitHub's latest, and the look after it
+          # whether a higher one is listed; it can be behind a write, a person's as much as
+          # this job's, so its row only stops the job or sends it to a read by id at once,
+          # nothing is published or said finished on it, and a higher version published
+          # seconds before the last look can be missing from it, a backport then being said to
+          # be the latest.
+          # (c) The release, read by its id, which
+          # was measured to show each write at once: it judges the tag, the mark, the two
+          # flags, the title, the notes and the file names, and gives each file's asset id,
+          # state and size. (d) Each file, fetched by that asset id with GitHub's "Get a
+          # release asset",
+          # `GET /repos/{owner}/{repo}/releases/assets/{asset_id}` with the header `Accept:
+          # application/octet-stream`, and only once (c) shows it `uploaded` and of the size
+          # of the file this run attested: the bytes of the release that was judged, and of no
+          # other release for the tag, where the CLI's `release download` finds one by its tag.
+          # The CLI follows GitHub's redirect to the bytes, and with --allow-escape-sequences
+          # writes them as they come (pkg/cmd/api/api.go, 534 to 546: "the opt-out flag and
+          # discarded output stream verbatim"; without it, text that holds an escape character
+          # is refused). Each is compared with this run's file, byte for byte. (e) The release
+          # by its id again, which must be as (c) showed it: the same assets (ids, names,
+          # sizes, update times), title, notes and flags, so no file was replaced and nothing
+          # edited while the files were fetched. (f) The tag again. Then the publication; then
+          # (b) until the listing shows it, and (c) to (f) once more before this step says the
+          # release is finished. A look whose row shows a missing mark, another flag, another
+          # title or other notes reads the release by its id at once, in a wait too, and the
+          # job stops on what that read shows, or on the row when that read shows this run's
+          # release as it wrote it. What a person changes after the last read of the release,
+          # before the publication or before this step ends, is not seen: that moment is the
+          # stated race.
           fields="[.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), (.name | . == null or . == \"\" or . == \"$GITHUB_REF_NAME\"), ((.body // \"\") | @base64), ([.assets[].name] | sort | join(\" \"))] | @tsv"
+          # A read by the release's id gives, after those fields, the release as one value to
+          # compare two reads by (its tag, title, notes, flags, and each asset's id, name,
+          # state, size and update time), and then a line for each asset: name, id, state, size.
+          details="([.tag_name, .name, .draft, .prerelease, .body, ([.assets[] | [.id, .name, .state, .size, .updated_at]] | sort)] | tojson | @base64), (.assets[] | [.name, .id, .state, .size] | @tsv)"
+          # The listing prints those fields for each release of this tag, and `published <tag>`
+          # for each other release that is neither a draft nor a pre-release.
           listing() {
-            gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | $fields"
+            gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | if .tag_name == \"$GITHUB_REF_NAME\" then ($fields) elif .draft or .prerelease then empty else \"published \" + .tag_name end"
+          }
+          # The stable versions among the tags on stdin, without their `v`, lowest first: job
+          # `aliases` has this function too, word for word.
+          stable_versions() {
+            awk '/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { print substr($0, 2) }' | sort -t. -k1,1n -k2,2n -k3,3n
+          }
+          # Whether this tag is the highest stable version among the published releases the
+          # last look listed and itself: true or false, what the publication sends.
+          is_latest() {
+            local top
+            top="$( { printf '%s\n' "$released"; printf '%s\n' "$GITHUB_REF_NAME"; } | stable_versions | tail -n 1)"
+            if [ "v$top" = "$GITHUB_REF_NAME" ]; then echo true; else echo false; fi
           }
           unlisted() {
             echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
             exit 1
           }
-          refuse() {
-            echo "::error::a GitHub release for $GITHUB_REF_NAME exists and is not one this run can finish: $1; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job"
-            exit 1
-          }
-          unfinished() {
-            echo "::error::the GitHub release for $GITHUB_REF_NAME is a draft that an earlier attempt of run $GITHUB_RUN_ID left unfinished, which this job neither deletes nor publishes; delete it on the repository's releases page and re-run this job, which makes the release again"
-            exit 1
-          }
-          unread() {
-            echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing unless the releases page shows a file of the draft missing or unfinished"
-            exit 1
-          }
-          differs() {
-            echo "::error::the GitHub release for $GITHUB_REF_NAME, $state, carries run $GITHUB_RUN_ID's mark and differs from what that run wrote in its $1; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job"
+          # The lines below that state what a release is (a draft or public, its title, its
+          # notes, its files) are written from a read of it by its id, and say so; a line that
+          # rests on what the listing shows says so, and sends a person to the releases page
+          # first, since the listing can be seconds behind a write.
+          crowded() {
+            echo "::error::GitHub's listing shows $count releases for $GITHUB_REF_NAME, and this job finishes a release only when it is its tag's only one; the listing can be seconds behind a write, so look at the repository's releases page first: when it shows more than one, delete those nobody should publish, keeping a public release of this run that holds its files, and re-run this job"
             exit 1
           }
           unseen() {
-            echo "::error::GitHub does not list the release for $GITHUB_REF_NAME as this job has just left it; re-run this job, which starts from what is listed then"
+            echo "::error::GitHub's listing, at this job's last look, does not list the release for $GITHUB_REF_NAME as this job has just left it, and it can be seconds behind a write; look at the repository's releases page first, then re-run this job, which starts from what is listed then"
             exit 1
           }
-          # One release, as a look or a read by its id gave it: this run's by its mark and
-          # its flag, with the title and the notes this run wrote. The notes are the sixth
-          # field, empty only when the release has no text, and then it has no mark and the
-          # job has stopped before it reads further.
+          refuse() {
+            echo "::error::read by its id, a GitHub release for $GITHUB_REF_NAME exists and is not one this run can finish: $1; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job"
+            exit 1
+          }
+          unfinished() {
+            echo "::error::read by its id, the GitHub release for $GITHUB_REF_NAME is this run's draft and does not hold exactly the files this run attested: $1; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again"
+            exit 1
+          }
+          unread() {
+            echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state as read by its id, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing unless the releases page shows a file of the draft missing or unfinished"
+            exit 1
+          }
+          differs() {
+            echo "::error::read by its id, the GitHub release for $GITHUB_REF_NAME, $state, carries run $GITHUB_RUN_ID's mark and differs from what that run wrote in its $1; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job"
+            exit 1
+          }
+          changed() {
+            echo "::error::the GitHub release for $GITHUB_REF_NAME, $state, changed between this job's two reads of it by its id, around the download of its files, so the files it compared may not be the ones the release holds; re-run this job, which reads and compares it again"
+            exit 1
+          }
+          drafted() {
+            echo "::error::the GitHub release for $GITHUB_REF_NAME, read by its id after this job published it, is a draft again; look at it on the repository's releases page, and re-run this job, which compares it and publishes it again if it is still this run's"
+            exit 1
+          }
+          # The row is not this run's release as it wrote it and the read by its id is: the
+          # listing was behind, an edit a person has since undone for one. The job stops on the
+          # row, writing nothing on it, and its line says what each showed.
+          behind() {
+            echo "::error::GitHub's listing shows the release for $GITHUB_REF_NAME without this run's mark, pre-release flag, title or notes, while read by its id it is $state and has all four as this run wrote them; the listing can be seconds behind a write, an edit a person has since undone included, so look at the repository's releases page first, then re-run this job, which starts from what is listed then"
+            exit 1
+          }
+          elsewhere() {
+            echo "::error::the release GitHub's listing showed for $GITHUB_REF_NAME is, read by its id, a release of another tag; look at it on the repository's releases page, and re-run this job, which starts from what is listed then"
+            exit 1
+          }
+          # The publication said this release is GitHub's latest, from the look before it, and
+          # the look after it lists a higher stable version: published meanwhile by hand, or
+          # missing from that look, the listing being behind. The job edits no other release.
+          lost_latest() {
+            local higher
+            higher="v$(printf '%s\n' "$released" | stable_versions | tail -n 1)"
+            echo "::error::the GitHub release for $GITHUB_REF_NAME, read by its id, is this run's and public, with the title and the notes this run wrote and exactly the files this run attested, and this job's publication asked GitHub to make it the repository's latest release; GitHub's listing after the publication shows $higher published, a higher stable version, so GitHub's latest release may now be $GITHUB_REF_NAME, below it: on the repository's releases page set $higher as the latest release, then re-run this job, which finds $GITHUB_REF_NAME published and changes nothing, so that job aliases runs"
+            exit 1
+          }
+          # The tag, read where git keeps it: this run's only while it names this run's commit.
+          # A read that fails is a tag that may be gone; which status GitHub gives a tag that
+          # is gone was not measured, so the line says both.
+          tagged() {
+            local at
+            if ! at="$(gh api -H 'Accept: application/vnd.github.sha' "repos/$GH_REPO/commits/tags/$GITHUB_REF_NAME" 2> "$RUNNER_TEMP/tag.err")" || ! [[ "$at" =~ ^[0-9a-f]{40}$ ]]; then
+              cat "$RUNNER_TEMP/tag.err" >&2
+              echo "::error::the tag $GITHUB_REF_NAME could not be read as a commit of the repository (it is gone, or GitHub did not answer: gh's own words, if any, are above), so this job writes nothing more for its release and does not call it finished; re-run this job if the repository's tags page shows $GITHUB_REF_NAME at this run's commit $GITHUB_SHA, and otherwise publish nothing for it"
+              exit 1
+            fi
+            if [ "$at" != "$GITHUB_SHA" ]; then
+              echo "::error::the tag $GITHUB_REF_NAME names commit $at, not this run's commit $GITHUB_SHA, whose files this run built and attested, so this job writes nothing more for its release and does not call it finished; delete this run's release for it on the repository's releases page if there is one and nobody should publish it, and re-run this job only once the tag names $GITHUB_SHA again"
+              exit 1
+            fi
+          }
+          # One release, as a read by its id gave it: this run's by its mark and its flag,
+          # with the title and the notes this run wrote, or the job stops. The notes are the
+          # sixth field, empty only when the release has no text, and then it has no mark and
+          # the job has stopped before it reads further.
           judge() {
             local what=""
             IFS=$'\t' read -r id draft pre ours titled notes names <<< "$1"
@@ -1867,32 +2016,49 @@ jobs:
             cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md" || what="${what:+$what and }notes"
             [ -z "$what" ] || differs "$what"
           }
-          # What GitHub lists for the tag now: nothing (found is empty), or this run's release.
+          # Whether a look's row shows this run's release as it wrote it: the same four things,
+          # judged on the row without stopping; the row's fields are kept for the waits.
+          fits() {
+            IFS=$'\t' read -r id draft pre ours titled notes names <<< "$1"
+            [ "$ours" = true ] && [ "$pre" = "$prerelease" ] && [ "$titled" = true ] || return 1
+            printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
+            cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md"
+          }
+          # What GitHub lists for the tag now: nothing (found is empty), or one release; and
+          # the other tags' published releases ($released). A row that does not show this
+          # run's release as it wrote it is read by its id at once, and the job stops on what
+          # that read shows, or on the row when that read shows this run's release as written.
           look() {
-            found="$(listing)" || unlisted
+            local all
+            all="$(listing)" || unlisted
+            found="$(awk '!/^published /' <<< "$all")"
+            released="$(awk '/^published / { print $2 }' <<< "$all")"
             [ -n "$found" ] || return 0
             count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
-            [ "$count" = 1 ] || refuse "there are $count releases for it"
-            judge "$found"
+            [ "$count" = 1 ] || crowded
+            fits "$found" || { fresh; behind; }
           }
           # The release the look found, read by its id: what it is now, whatever the listing
-          # shows, with its file names. A read that fails is not a release that differs: the
+          # shows, with its file names; $read_as is the whole of it, and its assets' lines are
+          # kept for the fetches. A read that fails is not a release that differs: the
           # CLI ends the line it prints for an HTTP error with `(HTTP <status>)`
           # (pkg/cmd/api/api.go, 553 to 557 and 685), and a 404 is a release that is not there.
           fresh() {
             local now
-            if ! now="$(gh api "repos/$GH_REPO/releases/$id" --jq "select(.tag_name == \"$GITHUB_REF_NAME\") | $fields" 2> "$RUNNER_TEMP/read.err")"; then
+            if ! now="$(gh api "repos/$GH_REPO/releases/$id" --jq "select(.tag_name == \"$GITHUB_REF_NAME\") | ($fields), $details" 2> "$RUNNER_TEMP/read.err")"; then
               cat "$RUNNER_TEMP/read.err" >&2
               if grep -q 'HTTP 404' "$RUNNER_TEMP/read.err"; then
-                echo "::error::the GitHub release for $GITHUB_REF_NAME, which the listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then"
+                echo "::error::the GitHub release for $GITHUB_REF_NAME, which GitHub's listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then"
               else
                 echo "::error::the GitHub release for $GITHUB_REF_NAME could not be read by its id, as the lines above say, so nothing was compared; re-run this job, and delete nothing"
               fi
               exit 1
             fi
-            [ -n "$now" ] || refuse "read by its id it is not a release for this tag"
-            judge "$now"
-            [ "$names" = "$want" ] || { [ "$draft" = false ] || unfinished; refuse "its files are [$names], not [$want]"; }
+            [ -n "$now" ] || elsewhere
+            judge "$(sed -n 1p <<< "$now")"
+            read_as="$(sed -n 2p <<< "$now")"
+            sed '1,2d' <<< "$now" > "$RUNNER_TEMP/assets.tsv"
+            [ "$names" = "$want" ] || { [ "$draft" = false ] || unfinished "its files are [$names], not [$want]"; refuse "its files are [$names], not [$want]"; }
           }
           # Whether the names listed are some of this run's three files, not all, and no other.
           some_files() {
@@ -1928,36 +2094,48 @@ jobs:
               look
             done
           }
-          # Its files against the ones this run attested, downloaded into $2: the names, then
-          # the bytes. $1 is what a difference does. A download that fails is not a
+          # Its files against the ones this run attested, $1 being what a difference does:
+          # each fetched into $2 by the asset id the last read by id gave it, once that read
+          # shows it uploaded and of the attested file's size; then the release is read by its
+          # id again, and must be as the read before showed it. A fetch that fails is not a
           # difference: the job stops and says so, and a re-run compares again.
           same_files() {
-            local name got
-            gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || unread
-            got="$(ls -A "$RUNNER_TEMP/$2" | LC_ALL=C sort | tr '\n' ' ')"
-            [ "${got% }" = "$want" ] || "$1" "its files are [${got% }], not [$want]"
+            local name row asset upload size before="$read_as"
+            mkdir -p "$RUNNER_TEMP/$2"
             for name in "${files[@]}"; do
+              row="$(awk -F '\t' -v name="$name" '$1 == name' "$RUNNER_TEMP/assets.tsv")"
+              IFS=$'\t' read -r _ asset upload size <<< "$row"
+              { [[ "$asset" =~ ^[0-9]+$ ]] && [ "$upload" = uploaded ] && [ "$size" = "$(wc -c < "$name" | tr -d ' ')" ]; } || "$1" "$name is not the file this run attested"
+              gh api --allow-escape-sequences -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" > "$RUNNER_TEMP/$2/$name" || unread
               cmp -s "$name" "$RUNNER_TEMP/$2/$name" || "$1" "$name is not the file this run attested"
             done
+            fresh
+            [ "$read_as" = "$before" ] || changed
           }
+          tagged
           look
           if [ -z "$found" ]; then
-            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
-              --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --target "$GITHUB_SHA" \
+              --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" \
+              "${files[@]}"
             look_after made
             [ -n "$found" ] || unseen
           fi
           fresh
           if [ "$draft" = true ]; then
             same_files unfinished draft
-            fresh
+            [ "$prerelease" = true ] || latest=(-f "make_latest=$(is_latest)")
+            said="${latest[1]#make_latest=}"
+            tagged
             gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
             look_after published
             { [ -n "$found" ] && [ "$draft" = false ]; } || unseen
+            fresh
           fi
           same_files refuse published
-          fresh
-          [ "$draft" = false ] || unseen
+          [ "$draft" = false ] || drafted
+          tagged
+          [ "$said" != true ] || [ "$(is_latest)" = true ] || lost_latest
           echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with the title and the notes this run wrote and exactly the files this run attested."
 
   # Points `latest` at the highest released version and each X.Y at the highest released
@@ -2016,12 +2194,15 @@ jobs:
             exit 1
           fi
           oras repo tags "$image" > "$RUNNER_TEMP/published"
-          versions="$(printf '%s\n' "$released" | awk -v list="$RUNNER_TEMP/published" '
+          # The stable versions among the tags on stdin, without their `v`, lowest first: job
+          # `release` has this function too, word for word, and says by it which release is
+          # GitHub's latest.
+          stable_versions() {
+            awk '/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { print substr($0, 2) }' | sort -t. -k1,1n -k2,2n -k3,3n
+          }
+          versions="$(printf '%s\n' "$released" | stable_versions | awk -v list="$RUNNER_TEMP/published" '
             BEGIN { while ((getline tag < list) > 0) published[tag] = 1 }
-            /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ {
-              version = substr($0, 2)
-              if (version in published) print version
-            }' | sort -t. -k1,1n -k2,2n -k3,3n)"
+            $0 in published')"
           if [ -z "$versions" ]; then
             echo "No released version is in the registry: latest and X.Y stay where they are."
             exit 0

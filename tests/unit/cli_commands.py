@@ -34,6 +34,7 @@ ARGS: dict[str, list[str]] = {
     "export": ["--account", DEFAULT_ACCOUNT_ID, "--out", "{dir}/export.zip"],
     "import": ["--account", DEFAULT_ACCOUNT_ID, "--in", "{dir}/archive.zip"],
     "compact": [],
+    "repair": [],  # it rewrites pages, as the upgrade to schema 32 did
     "plan-set": ["--account", DEFAULT_ACCOUNT_ID, "--default"],
     "usage": ["--account", DEFAULT_ACCOUNT_ID],
     "workspace-list": [],

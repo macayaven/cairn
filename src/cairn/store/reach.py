@@ -164,6 +164,7 @@ MANAGEMENT = frozenset(
         "record_history_bound",
         "pages_over",
         "prune_by_record",  # the operator's: it removes versions in every workspace
+        "repair_own_projects",  # the operator's: it rewrites pages in every workspace
         "numbers_part",  # the operator's (Q1): counts across every workspace
         "database_file",
         "sweep_expired",  # the operator's: what has run out, in every workspace
@@ -623,6 +624,7 @@ OTHER_WORKSPACES = frozenset(
         "record_history_bound",
         "pages_over",
         "prune_by_record",
+        "repair_own_projects",
         "numbers_part",
         "database_file",
         "sweep_expired",

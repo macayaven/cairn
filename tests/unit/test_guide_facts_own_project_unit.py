@@ -46,8 +46,8 @@ RUN_IMPORT = (
     " before that upgrade, or from a database a program wrote into directly, holds one."
     " Start this version of cairn once on the database the file came from, which runs that"
     " upgrade, and export again. In a database already at schema 32, `stats"
-    " --other-projects` (above) counts such pages; forgetting the note a page cites, or"
-    " deleting that note's project, rewrites the page when both are in one workspace."
+    " --other-projects` (above) counts such pages, and `repair` (above) rewrites them as the"
+    " upgrade did: run it, then export again."
 )
 RUN_UPGRADE = (
     "The upgrade to schema 32 (release 0.1.0) holds every page to its own project's notes: a"
@@ -69,13 +69,23 @@ RUN_STATS = (
     " by writing into the database's tables, or by calling cairn's own code with passages the"
     " database does not hold."
 )
+RUN_REPAIR = (  # its behaviour: test_repair_command_unit.py
+    "To clear them, run `docker exec cairn python -m cairn.server repair --db /data/cairn.db`;"
+    " it rewrites those pages as the upgrade did, in one transaction, and prints how many pages"
+    " it rewrote and how many it removed, in all and for each workspace by its id, naming none,"
+    " or `nothing to change` when there are none. It runs beside a running server, whose"
+    " readers see each page as it was before or as it is after and whose writes wait for it as"
+    " for a forget; as a forget does, it marks a compaction due. Like `compact`, it changes"
+    " nothing and exits 3 while a compaction runs, and it changes nothing and exits 1 when"
+    " another write holds the database for too long: run it again."
+)
 GONE_SAYS = "A page can cite only passages from its own project."
 
 
 def test_the_guides_say_it():
     assert PRIVACY_NOTE in guide("privacy")
     assert PRIVACY_PROJECT in guide("privacy")
-    for said in (RUN_IMPORT, RUN_UPGRADE, RUN_STATS):
+    for said in (RUN_IMPORT, RUN_UPGRADE, RUN_STATS, RUN_REPAIR):
         assert said in guide("run")
     for gone in ("keeps it until then", "a later note on that page keeps one it has"):
         assert gone not in guide("privacy") + guide("run")

@@ -1078,7 +1078,9 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   page that cites, in any version, a passage that no note of its own project holds (another
   project's, of its workspace or another, or one whose note another workspace forgot) is
   rewritten as a forget rewrites a page, with its own project's notes' claims alone
-  (cairn.store.erasure.hold_to_own_projects), and the floor is raised to 32.
+  (cairn.store.erasure.hold_to_own_projects), and the floor is raised to 32. The `repair`
+  command runs the same over a database already at 32 (Store.repair_own_projects, the
+  operator's: one write transaction, a compaction marked due when a page changed).
   Each version step
   is one transaction, so a step that fails leaves the database as it was.
   From 31 on, a database records its floor (schema.py's oldest_build): the lowest schema

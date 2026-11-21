@@ -1,4 +1,4 @@
-"""The command line's data commands: export, import and compact (cairn.web.cli dispatches
+"""The command line's data commands: export, import, compact and repair (cairn.web.cli dispatches
 here). They print paths, counts, the workspace's id, the names of the note fields an import
 cut, the notice that imported projects are private, and refusals that name a file, an id, a
 project's name, a rule or a limit, and failures that name the file and the system's reason or
@@ -17,6 +17,7 @@ its owner may enter is quiet whatever its own mode: the container's /data is 070
 
 import argparse
 import os
+import sqlite3
 import stat
 import sys
 from pathlib import Path
@@ -34,7 +35,7 @@ from cairn.store import (
     Store,
 )
 
-COMMANDS = ("export", "import", "compact")
+COMMANDS = ("export", "import", "compact", "repair")
 # The --db help of a command that never creates the database (it exits 1 when there is none).
 DB_EXISTS = "the SQLite file serve uses, which must exist"
 NO_PLAN = "no plan is applied: this import caps nothing (--plans FILE holds it to one)"
@@ -79,6 +80,13 @@ def add_commands(commands: argparse._SubParsersAction) -> None:
         help="only what a recorded deletion still needs: nothing without one, the write-ahead"
         " log alone when the file was rewritten since, else the whole compaction",
     )
+    repair = commands.add_parser(
+        "repair",
+        help="rewrite each page that cites a passage not of its own project's notes, as the"
+        " upgrade to schema 32 did: the pages stats --other-projects counts",
+        allow_abbrev=False,
+    )
+    repair.add_argument("--db", type=Path, required=True, help=DB_EXISTS)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -97,6 +105,8 @@ def run(args: argparse.Namespace) -> int:
                 print(f"cannot use those plans: {error}", file=sys.stderr)
                 return 2
         return _import(args.db, args.account, args.source, args.max_bytes, plans)
+    if args.command == "repair":
+        return _repair(args.db)
     return _compact_if_due(args.db) if args.if_due else _compact(args.db)
 
 
@@ -398,6 +408,53 @@ def _compact_if_due(db: Path) -> int:
         return _running(db, error)
     finally:
         store.close()
+
+
+def _repair(db: Path) -> int:
+    """`repair`: Store.repair_own_projects, one transaction over the whole database (the
+    command takes no workspace, as compact and stats take none), under the lock that keeps
+    one compaction at a time (exit 3, nothing changed, while one runs, as compact). A write
+    another connection holds past the store's wait leaves the database as it was (exit 1).
+    Once committed it prints the totals, then each workspace's counts by its id; it names no
+    page, project or note. With no such page: "nothing to change", exit 0, nothing written."""
+    if not db.is_file():
+        print(f"no database at {db}", file=sys.stderr)
+        return 1
+    store = Store(db)
+    each: list[tuple[str, int, int]] = []
+    try:
+        with store.compacting():
+            done = store.repair_own_projects(lambda *counts: each.append(counts))
+    except CompactionRunning as error:
+        print(
+            f"{db} was not repaired: {error}; nothing was changed, run repair again when it is"
+            " done",
+            file=sys.stderr,
+        )
+        return ANOTHER_COMPACTION
+    except sqlite3.OperationalError as error:
+        if (error.sqlite_errorcode or 0) & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise
+        print(
+            f"{db} was not repaired: the database is busy; nothing was changed, run repair again",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        store.close()
+    if not done["workspaces"]:
+        print(
+            f"nothing to change in {db}: no page cites a passage that is not of its own"
+            " project's notes"
+        )
+        return 0
+    print(
+        f"repaired {db}: {done['rewritten']} page(s) rewritten with their own project's"
+        f" claims, {done['removed']} removed, in {done['workspaces']} workspace(s)"
+    )
+    for account, rewritten, removed in each:
+        print(f"workspace {account}: {rewritten} rewritten, {removed} removed")
+    return 0
 
 
 def _pruned(pruned: Pruned) -> str:

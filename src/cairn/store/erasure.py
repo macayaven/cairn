@@ -45,7 +45,7 @@ import hashlib
 import json
 import sqlite3
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from cairn.spans import (
     _PARSER,
@@ -299,10 +299,11 @@ class ErasureMethods(StoreBase):
         changed, how many of them were of other projects as `elsewhere` and `claims_left`,
         each when it is not zero); nothing of its text, title or source_ref. The answer, the
         preview, the log and the event count the pages of other projects and name none of
-        them or their projects: the one who forgets may not reach them. Only a database an
-        earlier build wrote holds such a page (save_page refuses a new citation of another
-        project's passage), and an upgrade does not rewrite it: it is found here, when the note is
-        forgotten. KeyError for a note unknown or out of reach; PermissionError for anyone
+        them or their projects: the one who forgets may not reach them. save_page refuses a
+        new citation of another project's passage, and the upgrade to schema 32 and the
+        `repair` command (repair_own_projects) rewrite every such page they find; one a program
+        wrote into the tables since is found here too, when the note is forgotten. KeyError
+        for a note unknown or out of reach; PermissionError for anyone
         else who may not (see the module). Needs no room under any cap of a plan."""
         index = self._index
         with self._write() as con:
@@ -349,6 +350,27 @@ class ErasureMethods(StoreBase):
             if self._erasure_refusal(con, maker_id) is not None:
                 found = found.model_copy(update={"elsewhere": 0})
             return found
+
+    def repair_own_projects(self, each: Callable[[str, int, int], None]) -> dict[str, int]:
+        """The `repair` command's write (the operator's): hold_to_own_projects over the whole
+        database, as the upgrade to schema 32 ran it, in one write transaction like a
+        forget's, with `each` called for each workspace that had any (its id, the pages
+        rewritten, the pages removed) before the commit. When a page changed, a compaction is
+        marked due and the write-ahead log truncated after the commit, as a forget does: the
+        versions it deleted held another project's text. The server's readers see each page as
+        it was before or as it is after, never between; its writers wait for it as for a
+        forget, and one that drafted on such a page before it is StalePage and reads the page
+        again. On a database with no such page it makes one search and writes nothing.
+        PermissionError on a view: only the store that opened the database repairs it."""
+        if not self._owner:
+            raise PermissionError("only the store that opened the database repairs it")
+        with self._write() as con:
+            done = hold_to_own_projects(con, None, self._stamp(), each)
+            if done["rewritten"] or done["removed"]:
+                _compaction_due(con, self._stamp())
+        if done["rewritten"] or done["removed"]:
+            self._truncate_log("pages held to their own projects' notes")
+        return done
 
     def _note_in_reach(self, con: sqlite3.Connection, note_id: str) -> tuple[str, str, int]:
         """(project id, text digest, UTF-8 size) of a note of a project in the view's reach;
@@ -1062,7 +1084,10 @@ _CITES_OUTSIDE_ITS_PROJECT = (
 
 
 def hold_to_own_projects(
-    con: sqlite3.Connection, account_id: str | None, stamp: str
+    con: sqlite3.Connection,
+    account_id: str | None,
+    stamp: str,
+    each: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, int]:
     """Hold every page to its own project's notes, on `con`, in the caller's transaction:
     each page any version of which cites a passage that no note of the page's own project
@@ -1084,8 +1109,11 @@ def hold_to_own_projects(
     whatever the database holds; on a database that holds no such page it makes one search
     and writes nothing. It writes no audit event: inside the upgrade no audit writer of this
     build may run (a step is history), so the store's log is the record, one line for each
-    workspace that had any, written once its pages are done, counts only. Returns how many
-    `workspaces` had any, and how many pages were `rewritten` and `removed`."""
+    workspace that had any, written once its pages are done, counts only; `each`, when
+    given, is called with the workspace's id and its counts rewritten and removed in place of
+    that line (the `repair` command prints them once the transaction commits). Returns how
+    many `workspaces` had any, and how many pages were `rewritten` and `removed`."""
+    said = _log_repaired if each is None else _each(each)
     done: Counter = Counter()
     tally: Counter = Counter()  # the pages of the workspace `at`, the one being repaired
     at, after = None, ("", "", "")
@@ -1101,7 +1129,7 @@ def hold_to_own_projects(
         account, name, project_id, slug = row
         after = (account, name, slug)
         if account != at:
-            _log_repaired(at, tally)
+            said(at, tally)
             done["workspaces"] += 1
             at, tally = account, Counter()
         gone = frozenset(  # the passages its versions cite that are not of its project's
@@ -1118,8 +1146,18 @@ def hold_to_own_projects(
         what = "rewritten" if planned[5] else "removed"
         tally[what] += 1
         done[what] += 1
-    _log_repaired(at, tally)
+    said(at, tally)
     return {what: done[what] for what in ("workspaces", "rewritten", "removed")}
+
+
+def _each(each: Callable[[str, int, int], None]) -> Callable[[str | None, Counter], None]:
+    """hold_to_own_projects' `each`, called as _log_repaired is."""
+
+    def said(account_id: str | None, tally: Counter) -> None:
+        if account_id is not None:
+            each(account_id, tally["rewritten"], tally["removed"])
+
+    return said
 
 
 def _log_repaired(account_id: str | None, tally: Counter) -> None:

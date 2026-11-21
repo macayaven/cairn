@@ -666,7 +666,7 @@ COMPOSE_READS = (
     " such quote, Compose stops with `unterminated quoted value`, the unit fails and the"
     " boot passes that line on. With one, Compose reads on from what follows it: when it"
     " cannot read that, it stops as well; when it can, it starts cairn with one setting"
-    " where two were meant. The check below then reads the same value when a comment or"
+    " where more were meant. The check below then reads the same value when a comment or"
     " nothing follows that quote on its line, and is quiet; other text there makes the"
     " line one it counts. Outside single quotes Compose changes four kinds of value: it"
     " puts a variable's value in place of a `$` and the name after it, or nothing when no"
@@ -690,24 +690,25 @@ COMPOSE_SAYS = (
     " named as differing, and a later line of it that looks like a setting can be named"
     " too. Compose reads more forms than that, among them a colon for the equals sign,"
     " `export` or blanks before the name, a hyphen in the name, a name alone on its line"
-    " (its value then comes from the environment Compose runs in), blanks before the"
-    " equals sign or between it and a single quote, text after a closing single quote, and"
-    " two backslashes together between single quotes, so every other line that is not"
-    " blank or a comment is counted on one line, `cairn-quick: settings check: N line(s)"
-    " of the settings not compared`. That line goes on with names cairn was given: each"
-    " one that a counted line begins with, after `export` or blanks if it has them, a name"
-    " alone on its line included; and any other setting cairn was given, with another"
-    " value than the image's own, that no line the check read holds, which adds one to N."
-    " It ends `; M unnamed` when M of the counted lines begin with no name cairn was"
-    " given: a setting cairn did not get, or text of another line. Write the named ones as"
-    " `NAME=value`. When two lines that the check reads set one name, Compose takes the"
-    " later, and the check compares that one. A start with no `settings check` line shows"
-    " that every setting cairn was given arrived as written, with two things aside: a"
-    " carriage return that ends its line, which Compose drops and the check does not"
-    " count, and a value that a backslash carried past its closing quote, which arrives as"
-    " Compose and the check both read it. With a `not compared` line and no other, that"
-    " holds for every setting but those the line names and those on the lines it counts;"
-    " `cairn-quick: settings check: did not run` means that nothing was compared."
+    " (its value then comes from the environment Compose runs in, or from the boot's own"
+    " `.env`), blanks before the equals sign or between it and a single quote, text after"
+    " a closing single quote, and two backslashes together between single quotes, so every"
+    " other line that is not blank or a comment is counted on one line, `cairn-quick:"
+    " settings check: N line(s) of the settings not compared`. That line goes on with"
+    " names cairn was given: each one that stands at the start of a counted line, after"
+    " blanks or `export` if the line has them, with `=`, `:` or the end of the line after"
+    " it; and any other setting cairn was given, with another value than the image's own,"
+    " that no line the check read holds, which adds one to N. It ends `; M unnamed` when"
+    " on M of the counted lines the check found no such name: a setting cairn did not get,"
+    " or text of another line. Write the named ones as `NAME=value`. When two lines that"
+    " the check reads set one name, Compose takes the later, and the check compares that"
+    " one. A start with no `settings check` line shows that every setting cairn was given"
+    " arrived as written, with two things aside: a carriage return that ends its line,"
+    " which Compose drops and the check does not count, and a value that a backslash"
+    " carried past its closing quote, which arrives as Compose and the check both read it."
+    " With a `not compared` line and no other, that holds for every setting but those the"
+    " line names and those on the lines it counts; `cairn-quick: settings check: did not"
+    " run` means that nothing was compared."
 )
 
 
@@ -799,12 +800,16 @@ def test_text_after_the_quote_a_carried_value_ran_to_is_counted_or_stops_compose
     settings = f"FOO='zq7{TAKEN}\nBAR='kx9'\nLAST=x\n".encode()
     (vm / "deploy" / "cairn.env").write_bytes(settings)
     refusal = compose_service(vm, refused=True).strip()
-    assert "cairn.env: line 2: unexpected character" in refusal and "kx9" in refusal
+    assert re.search(r"cairn\.env: line \d+: unexpected character", refusal) and "kx9" in refusal
     done = run(
         vm, mode="compose-failure", settings=settings, config={"STANDIN_COMPOSE_ERROR": refusal}
     )
     assert done.returncode != 0
-    assert "cairn-quick: compose: the settings file, line 2: unexpected character" in done.stderr
+    assert re.search(
+        r"^cairn-quick: compose: the settings file, line \d+: unexpected character$",
+        done.stderr,
+        re.MULTILINE,
+    )
     assert "kx9" not in done.stderr and "zq7" not in done.stderr
 
 
@@ -1163,28 +1168,38 @@ def test_a_name_on_a_line_not_read_is_named_though_a_line_read_holds_it_too(
 
 
 @pytest.mark.parametrize(
-    ("line", "environment", "journal"),
+    ("line", "environment", "given", "journal"),
     [
         # The reviewer's case: the environment gives the name the value the image has too.
-        ("PYTHONUNBUFFERED", {"PYTHONUNBUFFERED": "1"}, NOT_COMPARED.format(1) + ": {}"),
-        ("export PYTHONUNBUFFERED", {"PYTHONUNBUFFERED": "1"}, NOT_COMPARED.format(1) + ": {}"),
-        ("  PYTHONUNBUFFERED  ", {"PYTHONUNBUFFERED": "1"}, NOT_COMPARED.format(1) + ": {}"),
+        ("PYTHONUNBUFFERED", {"PYTHONUNBUFFERED": "1"}, "1", NOT_COMPARED.format(1) + ": {}"),
+        (
+            "export PYTHONUNBUFFERED",
+            {"PYTHONUNBUFFERED": "1"},
+            "1",
+            NOT_COMPARED.format(1) + ": {}",
+        ),
+        ("  PYTHONUNBUFFERED  ", {"PYTHONUNBUFFERED": "1"}, "1", NOT_COMPARED.format(1) + ": {}"),
         # Another value than the image's, or a name the image has not: one line, counted once.
-        ("PYTHONUNBUFFERED", {"PYTHONUNBUFFERED": "0"}, NOT_COMPARED.format(1) + ": {}"),
-        ("LABEL", {"LABEL": "abc"}, NOT_COMPARED.format(1) + ": {}"),
-        # No variable of that name where Compose runs: cairn is given nothing, and the name
-        # on the line, which could be anything, is not printed.
-        ("LABEL", {}, NOT_COMPARED.format(1) + "; 1 unnamed"),
+        ("PYTHONUNBUFFERED", {"PYTHONUNBUFFERED": "0"}, "0", NOT_COMPARED.format(1) + ": {}"),
+        ("LABEL", {"LABEL": "abc"}, "abc", NOT_COMPARED.format(1) + ": {}"),
+        # A name the boot's own .env sets, and nothing in the environment: Compose reads it there.
+        ("CAIRN_DOMAIN", {}, "cairn.example.net", NOT_COMPARED.format(1) + ": {}"),
+        # No variable of that name in either place: cairn is given nothing, and the name on
+        # the line, which could be anything, is not printed.
+        ("LABEL", {}, None, NOT_COMPARED.format(1) + "; 1 unnamed"),
     ],
 )
-def test_a_name_alone_on_its_line_is_named_when_cairn_was_given_it(vm, line, environment, journal):
-    """Compose takes the value of a name alone on its line from the environment it runs in.
-    The check does not read that line. It counted it and did not name it when the value was
-    the image's own, and counted it twice when it was not. The line now names every name
-    cairn was given that begins a line not read, and says how many such lines have none."""
+def test_a_name_alone_on_its_line_is_named_when_cairn_was_given_it(
+    vm, line, environment, given, journal
+):
+    """Compose takes the value of a name alone on its line from the environment it runs in,
+    or from the `.env` beside its file. The check does not read that line. It counted it and
+    did not name it when the value was the image's own, and counted it twice when it was
+    not. The line now names every name cairn was given that the check finds at the start of
+    a line not read, and says on how many such lines it found none."""
     name = line.split()[-1]
     got, said = judged_with_compose_deciding(vm, f"{line}\nLAST=x\n".encode(), environment)
-    assert got == {"LAST": "x"} | ({name: environment[name]} if environment else {})
+    assert got == {"LAST": "x"} | ({name: given} if given is not None else {})
     assert said == [journal.format(name)]
 
 

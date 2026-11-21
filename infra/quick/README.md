@@ -105,7 +105,7 @@ inside is written `\'`, so a value must not end in an odd number of backslashes:
 closing quote, and the value runs on to the next single quote in the file, over the lines between,
 which then set nothing. With no such quote, Compose stops with `unterminated quoted value`, the unit
 fails and the boot passes that line on. With one, Compose reads on from what follows it: when it
-cannot read that, it stops as well; when it can, it starts cairn with one setting where two were
+cannot read that, it stops as well; when it can, it starts cairn with one setting where more were
 meant. The check below then reads the same value when a comment or nothing follows that quote on its
 line, and is quiet; other text there makes the line one it counts. Outside single quotes Compose
 changes four kinds of value: it puts a variable's value in place of a `$` and the name after it, or
@@ -124,21 +124,22 @@ that starts with `cairn-quick: settings check:`. A value in double quotes that r
 one line is not read as one value: its first line is named as differing, and a later line of it that
 looks like a setting can be named too. Compose reads more forms than that, among them a colon for
 the equals sign, `export` or blanks before the name, a hyphen in the name, a name alone on its line
-(its value then comes from the environment Compose runs in), blanks before the equals sign or
-between it and a single quote, text after a closing single quote, and two backslashes together
-between single quotes, so every other line that is not blank or a comment is counted on one line,
-`cairn-quick: settings check: N line(s) of the settings not compared`. That line goes on with names
-cairn was given: each one that a counted line begins with, after `export` or blanks if it has them,
-a name alone on its line included; and any other setting cairn was given, with another value than
-the image's own, that no line the check read holds, which adds one to N. It ends `; M unnamed` when
-M of the counted lines begin with no name cairn was given: a setting cairn did not get, or text of
-another line. Write the named ones as `NAME=value`. When two lines that the check reads set one
-name, Compose takes the later, and the check compares that one. A start with no `settings check`
-line shows that every setting cairn was given arrived as written, with two things aside: a carriage
-return that ends its line, which Compose drops and the check does not count, and a value that a
-backslash carried past its closing quote, which arrives as Compose and the check both read it. With
-a `not compared` line and no other, that holds for every setting but those the line names and those
-on the lines it counts; `cairn-quick: settings check: did not run` means that nothing was compared.
+(its value then comes from the environment Compose runs in, or from the boot's own `.env`), blanks
+before the equals sign or between it and a single quote, text after a closing single quote, and two
+backslashes together between single quotes, so every other line that is not blank or a comment is
+counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`. That
+line goes on with names cairn was given: each one that stands at the start of a counted line, after
+blanks or `export` if the line has them, with `=`, `:` or the end of the line after it; and any
+other setting cairn was given, with another value than the image's own, that no line the check read
+holds, which adds one to N. It ends `; M unnamed` when on M of the counted lines the check found no
+such name: a setting cairn did not get, or text of another line. Write the named ones as
+`NAME=value`. When two lines that the check reads set one name, Compose takes the later, and the
+check compares that one. A start with no `settings check` line shows that every setting cairn was
+given arrived as written, with two things aside: a carriage return that ends its line, which Compose
+drops and the check does not count, and a value that a backslash carried past its closing quote,
+which arrives as Compose and the check both read it. With a `not compared` line and no other, that
+holds for every setting but those the line names and those on the lines it counts;
+`cairn-quick: settings check: did not run` means that nothing was compared.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -323,7 +324,7 @@ inside is written `\'`, so a value must not end in an odd number of backslashes:
 closing quote, and the value runs on to the next single quote in the file, over the lines between,
 which then set nothing. With no such quote, Compose stops with `unterminated quoted value`, the unit
 fails and the boot passes that line on. With one, Compose reads on from what follows it: when it
-cannot read that, it stops as well; when it can, it starts cairn with one setting where two were
+cannot read that, it stops as well; when it can, it starts cairn with one setting where more were
 meant. The check below then reads the same value when a comment or nothing follows that quote on its
 line, and is quiet; other text there makes the line one it counts. Outside single quotes Compose
 changes four kinds of value: it puts a variable's value in place of a `$` and the name after it, or
@@ -342,21 +343,22 @@ that starts with `cairn-quick: settings check:`. A value in double quotes that r
 one line is not read as one value: its first line is named as differing, and a later line of it that
 looks like a setting can be named too. Compose reads more forms than that, among them a colon for
 the equals sign, `export` or blanks before the name, a hyphen in the name, a name alone on its line
-(its value then comes from the environment Compose runs in), blanks before the equals sign or
-between it and a single quote, text after a closing single quote, and two backslashes together
-between single quotes, so every other line that is not blank or a comment is counted on one line,
-`cairn-quick: settings check: N line(s) of the settings not compared`. That line goes on with names
-cairn was given: each one that a counted line begins with, after `export` or blanks if it has them,
-a name alone on its line included; and any other setting cairn was given, with another value than
-the image's own, that no line the check read holds, which adds one to N. It ends `; M unnamed` when
-M of the counted lines begin with no name cairn was given: a setting cairn did not get, or text of
-another line. Write the named ones as `NAME=value`. When two lines that the check reads set one
-name, Compose takes the later, and the check compares that one. A start with no `settings check`
-line shows that every setting cairn was given arrived as written, with two things aside: a carriage
-return that ends its line, which Compose drops and the check does not count, and a value that a
-backslash carried past its closing quote, which arrives as Compose and the check both read it. With
-a `not compared` line and no other, that holds for every setting but those the line names and those
-on the lines it counts; `cairn-quick: settings check: did not run` means that nothing was compared.
+(its value then comes from the environment Compose runs in, or from the boot's own `.env`), blanks
+before the equals sign or between it and a single quote, text after a closing single quote, and two
+backslashes together between single quotes, so every other line that is not blank or a comment is
+counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`. That
+line goes on with names cairn was given: each one that stands at the start of a counted line, after
+blanks or `export` if the line has them, with `=`, `:` or the end of the line after it; and any
+other setting cairn was given, with another value than the image's own, that no line the check read
+holds, which adds one to N. It ends `; M unnamed` when on M of the counted lines the check found no
+such name: a setting cairn did not get, or text of another line. Write the named ones as
+`NAME=value`. When two lines that the check reads set one name, Compose takes the later, and the
+check compares that one. A start with no `settings check` line shows that every setting cairn was
+given arrived as written, with two things aside: a carriage return that ends its line, which Compose
+drops and the check does not count, and a value that a backslash carried past its closing quote,
+which arrives as Compose and the check both read it. With a `not compared` line and no other, that
+holds for every setting but those the line names and those on the lines it counts;
+`cairn-quick: settings check: did not run` means that nothing was compared.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh

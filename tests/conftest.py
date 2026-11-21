@@ -63,13 +63,15 @@ def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) 
         def __getattr__(self, attr: str):  # what Jinja reads of a template it extends
             return getattr(self.template, attr)
 
-        def render(self, *given, **context):
+        def render(self, *given, **named):
+            context = dict(*given, **named)
             reserved = set(templating.templates.globals) - templating.PER_PAGE
             shadowed = sorted(set(context) & reserved)
             assert not shadowed, f"{self.name} is handed {shadowed}, a template global's names"
-            html = self.template.render(*given, **context)
+            html = self.template.render(context)
             if '<footer class="colophon">' in html and context.get("brand") is None:
-                said = f"<span>{escape(context['product'].name)} {escape(__version__)}</span>"
+                product = context.get("product") or templating.product_of(None)
+                said = f"<span>{escape(product.name)} {escape(__version__)}</span>"
                 assert said in html.split('<footer class="colophon">', 1)[1], self.name
             return html
 

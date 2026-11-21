@@ -436,6 +436,19 @@ def _run_step(
     return None
 
 
+def current_version(con: sqlite3.Connection) -> int:
+    """Classify a read-only connection in a single SQLite snapshot."""
+    with _transaction(con, "DEFERRED"):
+        version = _schema_version(con)
+        if version == 0:
+            raise Uninitialized
+        if version < SCHEMA_VERSION:
+            _check_source(con, version)
+            raise SchemaTooOld(version)
+        _check_tables(con)
+        return version
+
+
 def _floor_of(version: int) -> int:
     """The floor of a database this cairn's steps brought to `version`: the newest step up
     to it that is not in _ONLY_ADDS."""

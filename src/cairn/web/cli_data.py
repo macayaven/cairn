@@ -43,9 +43,7 @@ COMMANDS = ("export", "import", "compact", "repair")
 # The --db help of a command that never creates the database (it exits 1 when there is none).
 DB_EXISTS = "the SQLite file serve uses, which must exist"
 NO_PLAN = "no plan is applied: this import caps nothing (--plans FILE holds it to one)"
-# What every command but `serve`, `stats` and `audit-verify` says, on one line of stderr (exit
-# 1), when its open refuses a database of an older schema (SchemaTooOld; cairn.web.cli.main):
-# in stats' words (cli_stats.OLDER_DATABASE), with the command's name.
+# The common refusal for an older cairn schema, including both read-only commands.
 OLDER_SCHEMA = (
     "the database at {db} has an older schema (version {found}; this cairn's is {known}): start"
     " the server once on it (serve --db) to bring it up to date, which holds every page to its"

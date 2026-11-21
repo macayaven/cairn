@@ -347,6 +347,7 @@ def test_an_export_leaves_what_billing_wrote_out(tmp_path):
 def test_workspace_list_prints_no_subscription(tmp_path, capsys):
     db = tmp_path / "cairn.db"
     _billed(db)
+    Store(db).close()  # the upgrade, as the server's start runs it: only serve upgrades
     assert cli.main(["workspace-list", "--db", str(db)]) == 0
     printed = capsys.readouterr().out
     rows = json.loads(printed)

@@ -444,6 +444,7 @@ def test_a_subscription_an_older_build_left_does_not_ask_for_plans(db, model, ca
     )
     con.commit()
     con.close()
+    Store(db).close()  # the upgrade, as the server's start runs it: arrange refuses an older one
     argv = ["arrange", "--db", str(db), "--account", "acct_default", "--model-env", "CAIRN_T"]
     assert cli.main(argv) == 0
     assert "--plans" not in capsys.readouterr().err

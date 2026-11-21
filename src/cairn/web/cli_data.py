@@ -27,7 +27,6 @@ from cairn.plans import Plans
 from cairn.plans import load as load_plans
 from cairn.store import (
     FIELD_MAX,
-    SCHEMA_VERSION,
     CannotOpen,
     CompactIncomplete,
     CompactionRunning,
@@ -40,12 +39,14 @@ COMMANDS = ("export", "import", "compact", "repair")
 # The --db help of a command that never creates the database (it exits 1 when there is none).
 DB_EXISTS = "the SQLite file serve uses, which must exist"
 NO_PLAN = "no plan is applied: this import caps nothing (--plans FILE holds it to one)"
-# repair's refusal of a database of an older schema, in stats' words (cli_stats.OLDER_DATABASE)
-OLDER_FOR_REPAIR = (
+# What every command but `serve`, `stats` and `audit-verify` says, on one line of stderr (exit
+# 1), when its open refuses a database of an older schema (SchemaTooOld; cairn.web.cli.main):
+# in stats' words (cli_stats.OLDER_DATABASE), with the command's name.
+OLDER_SCHEMA = (
     "the database at {db} has an older schema (version {found}; this cairn's is {known}): start"
     " the server once on it (serve --db) to bring it up to date, which holds every page to its"
-    " own project's notes and logs how many pages it rewrote and removed; repair does not"
-    " upgrade it"
+    " own project's notes and logs how many pages it rewrote and removed; only serve upgrades"
+    " it, and {command} changed nothing"
 )
 
 
@@ -128,7 +129,7 @@ def _export(db: Path, account: str, out: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         try:
             view = store.for_account(account)
@@ -196,7 +197,7 @@ def _import(
         imported = False
         try:
             make_database(db)  # 0600 before SQLite opens it (H1)
-            store = Store(db)
+            store = Store(db, upgrade=False)
             try:
                 if plans is None:
                     print(NO_PLAN, file=sys.stderr)
@@ -334,7 +335,7 @@ def _compact(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         with store.compacting():
             return _rewrite(store, db)
@@ -389,7 +390,7 @@ def _compact_if_due(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         with store.compacting():
             due = store.compaction_state()
@@ -418,22 +419,6 @@ def _compact_if_due(db: Path) -> int:
         store.close()
 
 
-def _version_of(db: Path) -> int | None:
-    """The schema version of the database at `db`, read without writing it (SQLite alone,
-    read-only); None when SQLite cannot read it, which the store's open then refuses in its
-    own words."""
-    try:
-        con = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)
-    except sqlite3.Error:
-        return None
-    try:
-        return con.execute("PRAGMA user_version").fetchone()[0]
-    except sqlite3.Error:
-        return None
-    finally:
-        con.close()
-
-
 def _repair(db: Path) -> int:
     """`repair`: Store.repair_own_projects, one transaction over the whole database (the
     command takes no workspace, as compact and stats take none), under the lock that keeps
@@ -441,19 +426,17 @@ def _repair(db: Path) -> int:
     another connection holds past the store's wait leaves the database as it was (exit 1).
     Once committed it prints the totals, then each workspace's counts by its id; it names no
     page, project or note. With no such page: "nothing to change", exit 0, nothing written.
-    It never upgrades a database by the way: one of an older schema is refused (exit 1,
-    OLDER_FOR_REPAIR) before the store opens it, as `stats` refuses it, since the upgrade is
-    the repair (schema step 32) and the server logs its counts."""
+    It never upgrades a database by the way: its open refuses one of an older schema (exit 1,
+    OLDER_SCHEMA, from cairn.web.cli.main), as every command's but `serve`'s does, since the
+    upgrade is the repair (schema step 32) and the server logs its counts. A database held
+    past the store's wait while it opens is busy, as one held while it repairs."""
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    found = _version_of(db)
-    if found is not None and found < SCHEMA_VERSION:
-        print(OLDER_FOR_REPAIR.format(db=db, found=found, known=SCHEMA_VERSION), file=sys.stderr)
-        return 1
-    store = Store(db)
+    store: Store | None = None
     each: list[tuple[str, int, int]] = []
     try:
+        store = Store(db, upgrade=False)
         with store.compacting():
             done = store.repair_own_projects(lambda *counts: each.append(counts))
     except CompactionRunning as error:
@@ -473,7 +456,8 @@ def _repair(db: Path) -> int:
         )
         return 1
     finally:
-        store.close()
+        if store is not None:
+            store.close()
     if not done["workspaces"]:
         print(
             f"nothing to change in {db}: no page cites a passage that is not of its own"

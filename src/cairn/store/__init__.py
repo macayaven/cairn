@@ -1085,7 +1085,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   command runs the same over a database already at 32 (Store.repair_own_projects, the
   operator's: one write transaction, a compaction marked due when a page changed).
   Each version step
-  is one transaction, so a step that fails leaves the database as it was.
+  is one transaction, so a step that fails leaves the database as it was. Opened with
+  `upgrade=False` (every command of cairn's but `serve`), a database of an older version runs
+  no step: the first one's transaction reads the version under its write lock and raises
+  SchemaTooOld, naming that version and SCHEMA_VERSION, and rolls back having written
+  nothing; a busy database raises SQLite's error, as any open does.
   From 31 on, a database records its floor (schema.py's oldest_build): the lowest schema
   version whose cairn runs on it. A step that only adds (schema.py's _ONLY_ADDS: 29 and 30)
   leaves it; any other raises it to itself. Opening a database whose version is higher than
@@ -1256,6 +1260,7 @@ from cairn.store.schema import (
     SCHEMA_VERSION,
     CannotOpen,
     SchemaTooNew,
+    SchemaTooOld,
     UnknownSchema,
     _refuse,
     _runs_on,
@@ -1404,6 +1409,7 @@ __all__ = [
     "Removed",
     "Reservation",
     "SchemaTooNew",
+    "SchemaTooOld",
     "SearchHit",
     "Searched",
     "Shared",
@@ -1462,13 +1468,22 @@ class Store(
     HostedMethods,
     SlackMethods,
 ):
-    """One account's view of the SQLite database that holds every account."""
+    """One account's view of the SQLite database that holds every account.
+
+    Opening it brings a database of an older schema to SCHEMA_VERSION first: the library's
+    default, `Store(path)`, as before. With `upgrade=False` such a database is refused instead
+    (SchemaTooOld), from the version read under the write lock of the step that would have
+    run, before anything is written; an empty or new file is still made at this schema. Of
+    cairn's commands only `serve` upgrades, once it holds the server's lock; every other one
+    opens with `upgrade=False` (cairn.web.cli)."""
 
     def __init__(
         self,
         path: str | Path,
         clock: Callable[[], datetime] | None = None,
         ticks: Callable[[], float] = time.monotonic,
+        *,
+        upgrade: bool = True,
     ) -> None:
         self._lock = WriterLock(ticks)  # `ticks`: when its holder took it (Store.health)
         self._state = ConnectionState()  # shared with every view, as the lock is
@@ -1487,7 +1502,7 @@ class Store(
             self._con.execute("PRAGMA secure_delete = ON")
             if self._con.execute("PRAGMA secure_delete").fetchone() != (1,):
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
-            _upgrade(self._con, self._stamp)
+            _upgrade(self._con, self._stamp, upgrade)
             if str(path) != ":memory:":
                 (journal,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
                 self._state.readers = _readers_for(self._con, journal)

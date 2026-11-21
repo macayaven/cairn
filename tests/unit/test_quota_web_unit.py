@@ -527,20 +527,18 @@ def test_workspace_list_is_in_the_top_help_and_its_help_says_what_each_field_is(
         assert sentence in said, sentence
 
 
-def test_workspace_list_migrates_an_older_database_as_every_command_does(tmp_path, capsys):
+def test_workspace_list_refuses_an_older_database_as_every_command_but_serve_does(tmp_path, capsys):
+    """In one line on stderr, exit 1, the file as it was: only `serve` upgrades
+    (test_only_serve_upgrades_unit.py)."""
     from test_store_unit import empty_v0_database
-
-    from cairn.store import SCHEMA_VERSION
 
     db = tmp_path / "cairn.db"
     empty_v0_database(db)
-    rows = workspace_list(db, capsys)
-    assert [row["account"] for row in rows] == ["acct_default"]
-    con = sqlite3.connect(db)
-    try:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    finally:
-        con.close()
+    before = dump(db)
+    assert main(["workspace-list", "--db", str(db)]) == 1
+    out, err = capsys.readouterr()
+    assert out == "" and err.count("\n") == 1 and "start the server once on it" in err
+    assert "workspace-list changed nothing" in err and dump(db) == before
 
 
 def test_workspace_list_refuses_a_newer_database_as_usage_does(tmp_path, capsys):

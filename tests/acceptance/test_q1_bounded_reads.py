@@ -82,8 +82,8 @@ C. Numbers an operator can read
     file that is not a database, one it may not read, one in a folder it may not write, a
     folder, and one of a newer schema. One of an older schema is refused the same way, on
     purpose, with a sentence that says to start the server once (it holds "start" and
-    "serve"): the other commands upgrade an older database, and a command that only reads
-    must not. `--json` prints one object:
+    "serve"): only `serve` upgrades an older database, and every other command refuses one.
+    `--json` prints one object:
     - for the install: `schema` (the schema's number), `db_bytes` and `wal_bytes` (the sizes
       of the database file and of its "-wal" file, 0 when there is none), `free_bytes`
       (free space on its disk: `shutil.disk_usage(...).free` for the database's folder or

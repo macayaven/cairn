@@ -69,16 +69,14 @@ RUN_UPGRADE = (
     " refuses an older one."
 )
 RUN_COMMANDS = (  # its list: test_every_command_that_opens_the_database_is_named
-    "Every command that takes `--db` but `stats`, `audit-verify` and `repair` opens the"
-    " database for writing and so upgrades an older one first, as `serve` does: `serve`,"
-    " `key-create`, `key-list`, `key-revoke`, `session-end`, every `source-` and `credential-`"
-    " command, `export`, `import`, `compact` (`--if-due` too), `plan-set`, `usage`,"
-    " `workspace-list`, `waiting`, `arrange` and `reseal`; once the upgrade has committed, its"
-    " counts are lines on that command's stderr that start `repair: workspace`. `stats`,"
-    " `audit-verify` and `repair` refuse a database of an older schema instead and change"
-    " nothing."
+    "`serve` runs the upgrade once it holds the lock that keeps one server on the database,"
+    " which an older version's server holds too, and only `serve` does; every other command"
+    " refuses a database of an older schema with one line on stderr that says to start the"
+    " server once on it, exits 1 and changes nothing. An older version's other commands take"
+    " no such lock: stop them before the upgrade, as `docker stop cairn` does for those run in"
+    " its container, since one still open across the upgrade can write into the upgraded"
+    " database."
 )
-REFUSE_OLDER = ("stats", "audit-verify", "repair")
 RUN_ADDRESSES = (
     "An upgrade keeps the address of every page that remains, so links to it and to the claims"
     " that remain on it keep working."
@@ -216,23 +214,24 @@ def test_stats_counts_a_page_citing_a_note_its_workspace_has_forgotten_since(tmp
 
 
 def test_every_command_that_opens_the_database_is_named():
-    """RUN_COMMANDS against the parser: every command that takes --db is named, by its name or
-    by its group (`source-`, `credential-`), unless it refuses an older schema (each has its
-    line), and no command is named that is not one; a new command fails here until the
-    sentence names it."""
+    """RUN_COMMANDS against the parser: `serve` is the one command it says upgrades, and every
+    other command that takes --db is one test_only_serve_upgrades_unit.py runs against a file
+    at 31 and at 28 (its ARGS, read from the parser), each refused with its line and the file
+    left byte for byte; a new command fails there until it has its arguments."""
     import argparse
     import re
+
+    from cli_commands import ARGS
 
     from cairn.web import cli_audit_verify, cli_data, cli_stats
 
     sub = next(a for a in cli._parser()._actions if isinstance(a, argparse._SubParsersAction))
     takes_db = {n for n, p in sub.choices.items() if "db" in {a.dest for a in p._actions}}
-    opens = takes_db - set(REFUSE_OLDER)
-    assert set(REFUSE_OLDER) <= takes_db
-    assert cli_stats.OLDER_DATABASE and cli_audit_verify.OLDER_DATABASE
-    assert cli_data.OLDER_FOR_REPAIR
-    listed = RUN_COMMANDS.split(" first, as `serve` does: ")[1].split(";")[0]
-    named = set(re.findall(r"`([a-z-]+)`", listed)) - {"--if-due"}
-    groups = {g for g in named if g.endswith("-")}
-    covered = (named - groups) | {n for n in opens if any(n.startswith(g) for g in groups)}
-    assert covered == opens, sorted(covered ^ opens)
+    assert set(ARGS) == takes_db and "serve" in takes_db
+    said = RUN_COMMANDS.split(";")[0]
+    assert set(re.findall(r"`([a-z-]+)`", said)) == {"serve"}
+    assert "only `serve` does; every other command refuses a database of an older schema" in (
+        RUN_COMMANDS
+    )
+    for line in (cli_data.OLDER_SCHEMA, cli_stats.OLDER_DATABASE, cli_audit_verify.OLDER_DATABASE):
+        assert "start the server once on it (serve --db)" in line

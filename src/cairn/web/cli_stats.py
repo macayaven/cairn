@@ -2,21 +2,21 @@
 install's numbers and each workspace's, read without writing anything (cairn.web.stats says
 what they are).
 
-It never opens the store, which would upgrade an older database and set the file's journal
-mode: it opens the file with SQLite alone, read-only. With no "-wal" file beside it no server
-is writing it, so it is opened immutable (no lock, no "-shm" or "-wal" file made), which
-also reads a database on a volume this user may not write, such as a mounted backup. With a
-"-wal" file (a server is running, or one stopped without its last checkpoint) it is opened
-read-only, reading through the log as SQLite does; where SQLite cannot, the command refuses.
-Nothing is written, made, removed, or changed in mode.
+It never opens the store, which would set the file's journal mode (and, by its default,
+upgrade an older database): it opens the file with SQLite alone, read-only. With no "-wal"
+file beside it no server is writing it, so it is opened immutable (no lock, no "-shm" or
+"-wal" file made), which also reads a database on a volume this user may not write, such as
+a mounted backup. With a "-wal" file (a server is running, or one stopped without its last
+checkpoint) it is opened read-only, reading through the log as SQLite does; where SQLite
+cannot, the command refuses. Nothing is written, made, removed, or changed in mode.
 
 It refuses as the other commands that open an existing database do, with their lines (exit
 1, one line on stderr, nothing on stdout): no database at the path or a folder there ("no
 database at PATH"), a file that is not a database, one it may not read, and one of a newer
 schema, and one at this schema's version that lacks one of its tables (CannotOpen,
 SchemaTooNew and UnknownSchema, which cairn.web.cli.main turns into its lines). One of
-an older schema is refused too, on purpose (OLDER_DATABASE): the other commands upgrade it,
-and a command that only reads must not; starting the server once upgrades it.
+an older schema is refused too, in its own words (OLDER_DATABASE), as every command but
+`serve` refuses one; starting the server once upgrades it.
 
 `--json` prints one object (cairn.web.stats.numbers); without it, one line per number of
 the install, then one line per workspace, by its id. Counts, sizes and times only. The

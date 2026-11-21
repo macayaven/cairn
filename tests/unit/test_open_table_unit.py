@@ -127,11 +127,13 @@ OWN_WRITE: dict[str, str] = {
 SIDE_FILES_ONLY: dict[tuple[str, str], str] = {
     **{
         (row, "busy clears"): (
-            "the holder's connection made the -wal and -shm files; a command that neither makes"
-            " nor upgrades the database does not fold a log it found at its open on its last"
-            " close (the store's SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE), so they stay beside the file"
+            "a -wal file was beside the database when the store opened it, and an open that"
+            " neither makes nor upgrades the database does not fold a log it found there on its"
+            " last close (the store's SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE): the -wal and -shm files"
+            " may be left changed"
         )
         for row in ROWS
+        if row not in SERVES  # serve's open may make or upgrade: it folds a log it found
     },
     **{
         (row, "busy clears"): (

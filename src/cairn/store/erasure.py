@@ -1085,15 +1085,20 @@ _CITES_OUTSIDE_ITS_PROJECT = (
 # every one) after (?2, ?3), in the order of the unique index on (account_id, name), with the
 # slug of its first page, in its versions' primary key order, any version of which cites
 # outside its project; NULL for a project that has none, which the outer query passes over.
-# LIMIT -1 keeps the inner query a co-routine (not flattened into the outer one, which would
-# ask the subquery twice), so each project's versions are searched once, up to that page.
+# The projects after (?2, ?3) are those of ?2 after ?3 and then those of the workspaces after
+# ?2, each a seek on the index, merged in order (a single row value would seek on account_id
+# alone and walk the workspace's projects from its first on every search); the subquery is
+# asked of each project as the merge hands it on, and each LIMIT -1 keeps a query a
+# co-routine, so each project's versions are searched once, up to that page.
 _NEXT_PROJECT = (
-    "SELECT account_id, name, id, slug FROM (SELECT projects.account_id, projects.name,"
-    " projects.id, (SELECT p.slug FROM page_versions AS p WHERE p.project_id = projects.id"
-    f" AND {_CITES_OUTSIDE_ITS_PROJECT} ORDER BY p.slug LIMIT 1) AS slug FROM projects"
-    " WHERE (?1 IS NULL OR projects.account_id = ?1)"
-    " AND (projects.account_id, projects.name) > (?2, ?3)"
-    " ORDER BY projects.account_id, projects.name LIMIT -1) WHERE slug IS NOT NULL LIMIT 1"
+    "SELECT account_id, name, id, slug FROM (SELECT account_id, name, id,"
+    " (SELECT p.slug FROM page_versions AS p WHERE p.project_id = later.id"
+    f" AND {_CITES_OUTSIDE_ITS_PROJECT} ORDER BY p.slug LIMIT 1) AS slug"
+    " FROM (SELECT account_id, name, id FROM projects"
+    " WHERE account_id = ?2 AND name > ?3 AND (?1 IS NULL OR account_id = ?1)"
+    " UNION ALL SELECT account_id, name, id FROM projects"
+    " WHERE account_id > ?2 AND (?1 IS NULL OR account_id = ?1)"
+    " ORDER BY 1, 2 LIMIT -1) AS later LIMIT -1) WHERE slug IS NOT NULL LIMIT 1"
 )
 # The next such page of the project ?1 after the slug ?2: the search goes on from there, by
 # the primary key, so the project's versions are read once in all.

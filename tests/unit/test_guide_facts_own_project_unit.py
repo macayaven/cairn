@@ -72,7 +72,7 @@ RUN_STATS = (
 RUN_REPAIR = (  # its behaviour: test_repair_command_unit.py
     "To clear them, run `docker exec cairn python -m cairn.server repair --db /data/cairn.db`;"
     " it rewrites those pages as the upgrade did, in one transaction, and prints how many pages"
-    " it rewrote and how many it removed, in all and for each workspace by its id, naming none,"
+    " it rewrote and how many it removed, in all and for each workspace by its id, naming no page,"
     " or `nothing to change` when there are none. It runs beside a running server, whose"
     " readers see each page as it was before or as it is after and whose writes wait for it as"
     " for a forget; as a forget does, it marks a compaction due. Like `compact`, it changes"

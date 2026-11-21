@@ -42,6 +42,9 @@ def test_the_repair_reads_the_page_versions_a_bounded_number_of_times():
     searches), since each search restarts from the last page found with no index for its
     order. Measured: 400 pages among 0, 12,000 and 48,000 clean versions took 0.24, 1.43 and
     5.82 s inside the upgrade's one transaction. Memory stays flat (held file). Only a file
-    with pages written behind the store's back, or by an earlier build's direct save, pays."""
+    with pages written behind the store's back, or by an earlier build's direct save, pays.
+    Since the fix the search is one pass (test_hold_to_own_projects_unit: 631, 36 and 666 for
+    the searches alone); the whole repair still costs 631, 1,905 and 19,742, each page's rewrite
+    reading the workspace's search rows (ranking.index_page), which keeps this case failing."""
     alone, pages, both = work(1500, 0), work(0, 40), work(1500, 40)
     assert both - pages <= 4 * alone, (alone, pages, both)

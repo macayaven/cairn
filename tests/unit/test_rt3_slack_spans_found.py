@@ -99,7 +99,6 @@ def test_4_a_literal_backtick_before_a_named_span_of_backticks_stays_before_it()
     assert shown("x````", [prose("x`"), code("`")]) == [("text", "x`"), ("code", "`")]
 
 
-@pytest.mark.xfail(strict=True, reason="a span of blanks after another vanishes at a line end")
 def test_5_a_span_of_blanks_right_after_another_at_a_lines_end_shows_its_blanks():
     """Slack displayed the code "a" and then a code span of two blanks. Written as plain
     characters at the end of the line, the blanks are dropped: the page shows "a" alone."""

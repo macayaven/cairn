@@ -805,7 +805,10 @@ def _render(
             elif "|" in what and not bars:
                 pieces.append(literal(text[start:end]))
             elif spanned == "named" or (spanned and start in named):
-                pieces.append(_plain(what))  # its backticks and the last's would be one run
+                # its backticks and the last's would be one run; a blank that ends it as an
+                # entity, so a line's end does not drop it, nor the blanks before it
+                blank = what[-1] in " \t"
+                pieces.append(_plain(what[: -1 if blank else None]) + blank * f"&#{ord(what[-1])};")
             else:  # a space each side where Markdown would take one, or read a longer run
                 ticks = "`" * (1 + max(map(len, re.findall("`+", what)), default=0))
                 pad = " " if what.strip(" ") and (what[0] in "` " or what[-1] in "` ") else ""

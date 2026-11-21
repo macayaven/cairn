@@ -18,6 +18,7 @@ one.
 """
 
 import re
+import secrets
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -651,9 +652,16 @@ def _ticks(text: str) -> tuple[list[int], list[int]]:
 class _Hashes:
     """A digest of each start of `text`, so that whether a stretch of it is a given string is
     told in one step, however long the string (_known_code): a polynomial hash modulo a
-    Mersenne prime, and the characters compared only where the digests are equal."""
+    Mersenne prime, and the characters compared only where the digests are equal.
 
-    _BASE, _MOD = 1_000_003, (1 << 61) - 1
+    The base is drawn once per process from `secrets`, between 2 and the modulus less 2: a
+    message cannot be written against a base it cannot know, so it cannot make its stretches
+    collide and bring back a full comparison at each place. Two different stretches of
+    length n collide for at most n of the bases, about n in 2.3 * 10**18. Nothing a note
+    holds depends on the base: a full comparison still decides every match."""
+
+    _MOD = (1 << 61) - 1
+    _BASE = 2 + secrets.randbelow(_MOD - 3)
 
     def __init__(self, text: str) -> None:
         self.text, self.sums, self.powers = text, [0], [1]

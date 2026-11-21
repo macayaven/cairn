@@ -1,9 +1,11 @@
 """Nobody is offered a note form where they cannot write (fifth report, "Read and write
 access"). The home page offers Write a note only to a person who can write to a project; the
 quick form at /new, the share target too, lists only the projects they can write to, and
-answers a person who reads projects and writes to none as a project's own form answers a
-reader: 403, in the same words. A note sent to a project the person only reads is 403
-whatever else is wrong with it, and nothing of it is stored. Every name here is made up."""
+answers a person who reads projects and writes to none with 403, as a project's own form
+answers a reader, but in words that name no project, since none was chosen there (the first
+reviewer: "this project is read-only" said of no project). A note sent to a project the
+person only reads is 403 whatever else is wrong with it, and nothing of it is stored. Every
+name here is made up."""
 
 import html
 import re
@@ -19,6 +21,11 @@ BASE = "https://cairn.example.test"
 ISSUER = "https://id.example.test"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
 READ_ONLY = "This project is read-only for you: you can read it but not write to it."
+# The quick form's own refusal: no project was chosen, so it names none and says what to do.
+NONE_TO_WRITE = (
+    "You can read the projects you reach but not write to any of them: create a project of"
+    " your own on the Projects page, or ask for the right to write to one."
+)
 OFFER = '<a class="button" href="/new">Write a note</a>'
 NOTE = "# Quill\n\nQuill rests on the seventh day.\n"
 SHARED = {"title": "Quill & co", "text": "Quill caches results.", "url": "https://example.test/q"}
@@ -77,10 +84,12 @@ def listed(page: str) -> list[str]:
     return re.findall(r'<option\b[^>]*value="([^"]*)"', select.group(0))
 
 
-def refused_as_a_reader(response) -> bool:
-    """The project form's answer to a reader: 403, its words, and no form to write in."""
+def refused_as_a_reader(response, words: str = READ_ONLY) -> bool:
+    """The answer to a reader: 403, the project form's words (or, where no project was
+    chosen, the quick form's: `words`) and no others, and no form to write in."""
     assert "<textarea" not in response.text and "<select" not in response.text
-    return response.status_code == 403 and READ_ONLY in response.text
+    other = NONE_TO_WRITE if words == READ_ONLY else READ_ONLY
+    return response.status_code == 403 and words in response.text and other not in response.text
 
 
 # The home page
@@ -136,10 +145,10 @@ def test_the_quick_form_lists_only_the_projects_the_person_can_write_to(world, n
 
 
 @pytest.mark.parametrize("shared", [{}, SHARED], ids=["new", "share-target"])
-def test_the_quick_form_answers_a_reader_of_everything_as_a_project_s_form_does(world, shared):
+def test_the_quick_form_refuses_a_reader_of_everything_in_words_that_name_no_project(world, shared):
     quick = world.as_("Quill").get("/new", params=shared)
     own = world.as_("Quill").get("/b/handbook/new")
-    assert refused_as_a_reader(quick) and refused_as_a_reader(own)
+    assert refused_as_a_reader(quick, NONE_TO_WRITE) and refused_as_a_reader(own)
     # Nothing shared is said back: not the text, the title or the link.
     assert "Quill caches" not in quick.text and "example.test/q" not in quick.text
     assert "Quill &amp; co" not in quick.text
@@ -153,7 +162,7 @@ def test_the_navigation_still_links_new_note_and_a_reader_of_everything_meets_th
     for name in WRITES:
         assert link in world.as_(name).get("/").text, name
         assert link in world.as_(name).get("/b/handbook").text, name
-    assert refused_as_a_reader(world.as_("Quill").get("/new"))
+    assert refused_as_a_reader(world.as_("Quill").get("/new"), NONE_TO_WRITE)
 
 
 def test_the_quick_form_still_offers_to_make_a_project_when_none_is_in_reach(world):
@@ -197,7 +206,7 @@ def test_a_refused_note_shows_the_form_again_with_only_the_writable_projects(wor
 def test_a_note_sent_with_no_project_chosen(world):
     brook = world.post("Brook", "/notes", text=NOTE)
     assert brook.status_code == 400 and listed(brook.text) == ["team-ops"]
-    assert refused_as_a_reader(world.post("Quill", "/notes", text=NOTE))
+    assert refused_as_a_reader(world.post("Quill", "/notes", text=NOTE), NONE_TO_WRITE)
     assert world.notes() == 0
 
 

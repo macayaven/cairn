@@ -18,10 +18,6 @@ from earlier_build import earlier_page
 GONE = "Quill sealed the kqzvtxb crate."
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a save drafted before a forget brings the note back once its project is deleted",
-)
 def test_a_save_drafted_before_a_forget_stays_stale_after_the_notes_project_is_deleted():
     """The store's contract: a save drafted before a note was forgotten never brings it back
     (CitesForgotten), and since the ninth round the same after a delete. Both hold alone

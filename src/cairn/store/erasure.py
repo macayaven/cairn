@@ -9,8 +9,8 @@ the write, and is exactly unknown.
 
 Both run in one write transaction and cost what they remove, never the whole database: the
 rows are found by their project (and a forgotten note's pages by the workspace's page
-versions, whatever their project), the project's search rows by `search_claims`, by primary
-key. What they delete is zeroed
+versions, whatever their project, and so are a deleted project's), the project's search
+rows by `search_claims`, by primary key. What they delete is zeroed
 (`PRAGMA secure_delete`, FTS5's own secure-delete), and each ends with a truncating
 checkpoint, as delete_account does, so the text leaves the files at once. Each marks a
 compaction due (cairn.store.portable.compaction_state): short index keys, such as a page's
@@ -179,10 +179,16 @@ class ErasureMethods(StoreBase):
         """Remove the project and everything it holds: its notes with their spans, its pages
         with every version, its rows in the search index and statistics, its access rule and
         its forgotten digests. Every set and every key, code and grant whose reach names it
-        loses it (one that named it alone then reaches nothing). The workspace's stored bytes
-        go down by its notes' size; the month's count of notes written does not. Recorded as
-        project.deleted (its id and name, how many notes and pages). False for a project unknown
-        or out of reach; PermissionError for anyone else who may not (see the module)."""
+        loses it (one that named it alone then reaches nothing). A page of another project of
+        the workspace that cites a span of its notes, in any version, changes as forget_note
+        changes a page that cites the note (_plan, _rewrite), in the same transaction: only a
+        database an earlier build wrote holds one (save_page refuses it), and an upgrade does
+        not rewrite it. The workspace's stored bytes go down by its notes' size; the month's
+        count of notes written does not. Recorded as project.deleted (its id and name, how many
+        notes and pages, and how many pages of other projects changed as `elsewhere` when it is
+        not zero: counted, never named, as the log's line for each). False for a project
+        unknown or out of reach; PermissionError for anyone else who may not (see the
+        module)."""
         index = self._index
         with self._write() as con:
             try:
@@ -190,6 +196,9 @@ class ErasureMethods(StoreBase):
             except KeyError:
                 return False
             self._refuse_erasure(con, maker_id)
+            gone = _passages(con, "notes.project_id", project_id)
+            plan = _plan(con, self._account_id, gone, deleted=project_id)
+            _rewrite(con, self._account_id, index, plan, self._stamp())
             notes, size = con.execute(
                 "SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(text AS BLOB))), 0) FROM notes"
                 " WHERE project_id = ?",
@@ -240,14 +249,17 @@ class ErasureMethods(StoreBase):
                 )
             self._forget_declined(con, project_id)
             self._unstore(con, size)
-            gone = DELETED_PROJECT.format(project_id)
+            moved = DELETED_PROJECT.format(project_id)
             self._forget_destination(con, name)
-            _unname(con, self._account_id, name, gone, None)
-            _unname_sources(con, self._account_id, name, gone)
+            _unname(con, self._account_id, name, moved, None)
+            _unname_sources(con, self._account_id, name, moved)
             detail = {"id": project_id, "name": name, "notes": notes, "pages": pages}
-            self._audit(con, "project.deleted", project=gone, detail=detail)
+            if plan:
+                detail["elsewhere"] = len(plan)  # pages of other projects: counted, not named
+            self._audit(con, "project.deleted", project=moved, detail=detail)
             _compaction_due(con, self._stamp())
         self._truncate_log(f"project {project_id}")
+        _log_left(plan, project_id, "delete")  # once it is committed
         return True
 
     def forget_note(self, note_id: str) -> Forgotten:
@@ -284,52 +296,19 @@ class ErasureMethods(StoreBase):
             project_id, text_sha256, size = self._note_in_reach(con, note_id)
             name, maker_id, _ = self._reached(con, project_id)
             self._refuse_erasure(con, maker_id)
-            plan = _plan(con, self._account_id, note_id)
+            plan = _plan(con, self._account_id, _passages(con, "spans.note_id", note_id))
             con.execute("DELETE FROM spans WHERE note_id = ?", (note_id,))
             con.execute("DELETE FROM notes WHERE id = ?", (note_id,))
             con.execute("DELETE FROM waiting WHERE note_id = ?", (note_id,))  # N1
             con.execute("DELETE FROM note_writers WHERE note_id = ?", (note_id,))  # A1
             con.execute("DELETE FROM slack_notes WHERE note_id = ?", (note_id,))  # K1
-            for at, _, slug, version, title, kept, _, _, body in plan:  # at: the page's project
-                if kept:
-                    cited = {i for claim in kept for i in claim.span_ids}
-                    metrics = {"claims": len(kept), "spans_cited": len(cited)}
-                    page = (
-                        at,
-                        slug,
-                        version + 1,
-                        title,
-                        body,
-                        json.dumps([claim.model_dump(mode="json") for claim in kept]),
-                        json.dumps(metrics),
-                        self._stamp(),
-                    )
-                    _write_page_version(con, self._account_id, index, page, kept)
-                    con.execute(
-                        "DELETE FROM page_versions"
-                        " WHERE project_id = ? AND slug = ? AND version <= ?",
-                        (at, slug, version),
-                    )
-                else:
-                    for table in ("page_versions", "page_keys"):  # N1: and its topic
-                        con.execute(
-                            f"DELETE FROM {table} WHERE project_id = ? AND slug = ?",
-                            (at, slug),
-                        )
-                    if _has_table(con, index):  # its rows and its project's counts
-                        ranking.index_page(con, self._account_id, index, at, slug, title, ())
+            _rewrite(con, self._account_id, index, plan, self._stamp())
             con.execute(
                 "INSERT INTO forgotten (project_id, text_sha256) VALUES (?, ?)"
                 " ON CONFLICT DO NOTHING",
                 (project_id, text_sha256),
             )
             self._unstore(con, size)
-            removed: dict[str, list[str]] = {}  # by the name of each page's project
-            for _, named, slug, _, _, kept, *_ in plan:
-                if not kept:
-                    removed.setdefault(named, []).append(slug)
-            for named, slugs in removed.items():
-                _unname(con, self._account_id, named, named, slugs)
             detail = {"note": note_id, "project": project_id, "pages": len(plan)}
             if elsewhere := sum(at != project_id for at, *_ in plan):
                 detail["elsewhere"] = elsewhere  # pages of other projects: counted, not named
@@ -339,27 +318,7 @@ class ErasureMethods(StoreBase):
             self._audit(con, "note.forgotten", project=name, detail=detail)
             _compaction_due(con, self._stamp())
         self._truncate_log(f"note {note_id}")
-        for at, _, slug, version, _, kept, _, refused, _ in plan:  # once it is committed
-            if refused and at != project_id:  # a page the one who forgets may not reach
-                store_log.warning(
-                    "forget: %d claim(s) that an import would refuse left a page of another"
-                    " project",
-                    refused,
-                )
-            elif refused and kept:
-                store_log.warning(
-                    "forget: %d claim(s) that an import would refuse left page %r at its"
-                    " version %d",
-                    refused,
-                    slug,
-                    version + 1,
-                )
-            elif refused:
-                store_log.warning(
-                    "forget: %d claim(s) that an import would refuse left a page, which was"
-                    " removed with them",
-                    refused,
-                )
+        _log_left(plan, project_id)  # once it is committed
         return _outcome(note_id, project_id, plan)
 
     def forget_preview(self, note_id: str) -> Forgotten:
@@ -369,7 +328,8 @@ class ErasureMethods(StoreBase):
         for a note unknown or out of reach. A read."""
         with self._read() as con:
             project_id, _, _ = self._note_in_reach(con, note_id)
-            return _outcome(note_id, project_id, _plan(con, self._account_id, note_id))
+            gone = _passages(con, "spans.note_id", note_id)
+            return _outcome(note_id, project_id, _plan(con, self._account_id, gone))
 
     def _note_in_reach(self, con: sqlite3.Connection, note_id: str) -> tuple[str, str, int]:
         """(project id, text digest, UTF-8 size) of a note of a project in the view's reach;
@@ -442,10 +402,14 @@ class ErasureMethods(StoreBase):
 _Planned = tuple[str, str, str, int, str, tuple[Claim, ...], dict[str, Span], int, str]
 
 
-def _plan(con: sqlite3.Connection, account_id: str, note_id: str) -> list[_Planned]:
-    """What forgetting the note does to the pages of its workspace (`account_id`), read on
-    `con`: each page of any project of it that cites one of the note's spans in any version,
-    by project and slug, with what its latest version keeps: the claims kept_claims keeps,
+def _plan(
+    con: sqlite3.Connection, account_id: str, gone: frozenset[str], deleted: str | None = None
+) -> list[_Planned]:
+    """What removing the spans `gone` (a note's, or every note's of the project `deleted`,
+    whose own pages go whole and are not planned) does to the pages of the workspace
+    (`account_id`), read on `con`: each page of any project of it that cites one of the
+    spans in any version, by project and slug, with what its latest version keeps: the
+    claims kept_claims keeps,
     less every claim the import's check of a version names (portable.version_faults: the
     claims it does not name pass together, so it is run once, on one render of the body,
     which is the body the forget writes). Each page is held to its own project's notes, as
@@ -561,17 +525,15 @@ def _plan(con: sqlite3.Connection, account_id: str, note_id: str) -> list[_Plann
     projects, never the rest of the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
 
-    gone = frozenset(
-        span_id for (span_id,) in con.execute("SELECT id FROM spans WHERE note_id = ?", (note_id,))
-    )
     pages = con.execute(
         "SELECT DISTINCT p.project_id, projects.name, p.slug FROM page_versions AS p"
-        " JOIN projects ON projects.id = p.project_id WHERE projects.account_id = ? AND EXISTS"
+        " JOIN projects ON projects.id = p.project_id"
+        " WHERE projects.account_id = ? AND p.project_id IS NOT ? AND EXISTS"
         " (SELECT 1 FROM json_each(p.claims) AS claim,"
         "  json_each(claim.value, '$.span_ids') AS cited"
         "  WHERE cited.value IN (SELECT value FROM json_each(?)))"
         " ORDER BY p.project_id, p.slug",
-        (account_id, json.dumps(sorted(gone))),
+        (account_id, deleted, json.dumps(sorted(gone))),
     ).fetchall()
     planned = []
     for project_id, name, slug in pages:
@@ -990,6 +952,86 @@ def _outcome(note_id: str, project_id: str, plan: list[_Planned]) -> Forgotten:
     removed = tuple(slug for slug, kept in own if not kept)
     elsewhere = len(plan) - len(own)
     return Forgotten(note_id=note_id, rebuilt=rebuilt, removed=removed, elsewhere=elsewhere)
+
+
+def _passages(con: sqlite3.Connection, column: str, value: str) -> frozenset[str]:
+    """The ids of the spans going: a note's (`spans.note_id`) or all of a project's notes'
+    (`notes.project_id`), by an index."""
+    rows = con.execute(
+        f"SELECT spans.id FROM spans JOIN notes ON notes.id = spans.note_id WHERE {column} = ?",
+        (value,),
+    )
+    return frozenset(span_id for (span_id,) in rows)
+
+
+def _rewrite(
+    con: sqlite3.Connection, account_id: str, index: str, plan: list[_Planned], stamp: str
+) -> None:
+    """Write what `_plan` planned, in the caller's transaction (forget_note, delete_project):
+    each page that keeps a claim continues as one new version, numbered one past its latest,
+    every earlier version deleted; a page left with no claim is removed with its topic key and
+    search rows, and its slug leaves the events of its project."""
+    for at, _, slug, version, title, kept, _, _, body in plan:  # at: the page's project
+        if kept:
+            cited = {i for claim in kept for i in claim.span_ids}
+            metrics = {"claims": len(kept), "spans_cited": len(cited)}
+            page = (
+                at,
+                slug,
+                version + 1,
+                title,
+                body,
+                json.dumps([claim.model_dump(mode="json") for claim in kept]),
+                json.dumps(metrics),
+                stamp,
+            )
+            _write_page_version(con, account_id, index, page, kept)
+            con.execute(
+                "DELETE FROM page_versions WHERE project_id = ? AND slug = ? AND version <= ?",
+                (at, slug, version),
+            )
+        else:
+            for table in ("page_versions", "page_keys"):  # N1: and its topic
+                con.execute(
+                    f"DELETE FROM {table} WHERE project_id = ? AND slug = ?",
+                    (at, slug),
+                )
+            if _has_table(con, index):  # its rows and its project's counts
+                ranking.index_page(con, account_id, index, at, slug, title, ())
+    removed: dict[str, list[str]] = {}  # by the name of each page's project
+    for _, named, slug, _, _, kept, *_ in plan:
+        if not kept:
+            removed.setdefault(named, []).append(slug)
+    for named, slugs in removed.items():
+        _unname(con, account_id, named, named, slugs)
+
+
+def _log_left(plan: list[_Planned], project_id: str, what: str = "forget") -> None:
+    """One line on the store's log for each page the claims an import would refuse left: by
+    slug and version in `project_id`, the count alone for a page of another project (the one
+    who removes may not reach it) or one removed (its slug is made from a note's title)."""
+    for at, _, slug, version, _, kept, _, refused, _ in plan:
+        if refused and at != project_id:  # a page the one who forgets may not reach
+            store_log.warning(
+                "%s: %d claim(s) that an import would refuse left a page of another project",
+                what,
+                refused,
+            )
+        elif refused and kept:
+            store_log.warning(
+                "%s: %d claim(s) that an import would refuse left page %r at its version %d",
+                what,
+                refused,
+                slug,
+                version + 1,
+            )
+        elif refused:
+            store_log.warning(
+                "%s: %d claim(s) that an import would refuse left a page, which was"
+                " removed with them",
+                what,
+                refused,
+            )
 
 
 def _held_spans(

@@ -69,10 +69,6 @@ def legacy(store: Store):
     return desk, east, note
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="deleting a project leaves its note's text in another project's earlier-build page",
-)
 def test_deleting_a_project_takes_its_notes_text_out_of_pages_of_other_projects():
     """The privacy guide: a project's notes go at once. The forget of one note now rewrites
     a page of another project that cites it; deleting the note's whole project does not:

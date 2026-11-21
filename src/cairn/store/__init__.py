@@ -114,6 +114,8 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   False for an id unknown or out of reach (the same answer). The project's name leaves the
   config of every source that names it, and a source left with no project is switched off
   (store/sources.py's docstring): a project made later under that name gets nothing from it.
+  Each page of another project of the workspace that cites a span of its notes, in any
+  version, changes as a forget of those notes changes it (below), in the same transaction.
   `view.forget_note(note_id) -> Forgotten` (note_id, rebuilt, removed: page slugs of the
   note's project; elsewhere: how many pages of other projects, never which)
   removes one note and its spans; each page of the workspace, whatever its project, any
@@ -141,7 +143,7 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   says so (KeyError when unknown) and `view.forget_preview(note_id)` says what a forget
   would rebuild and remove; both are reads. Each is one transaction with its audit event,
   project.deleted {"id", "name", "notes", "pages"} or note.forgotten {"note", "project",
-  "pages", and "elsewhere" when pages of other projects changed}, subtracts what it removed
+  "pages"}, each with "elsewhere" when pages of other projects changed, subtracts what it removed
   from `stored_bytes`, marks a compaction due (see
   Compaction state) and ends with the truncating checkpoint delete_account ends with, so the
   removed text is gone from the main file, -wal and -shm at once. Cost: both touch only the
@@ -149,8 +151,8 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   forget reads every version of the workspace's pages, in one search, to find those that
   cite the note (only a database an earlier build wrote has a page citing another project's
   note: save_page refuses one), so it grows with the workspace's page history, and deleting
-  a project grows with the project. Neither needs room under
-  a plan's caps, and a rebuilt page keeps within `versions_per_page`.
+  a project grows with the project and makes that one search for all of its spans. Neither
+  needs room under a plan's caps, and a rebuilt page keeps within `versions_per_page`.
   What the audit log keeps: every event stays, with its action, actor, time, the person's
   id, counts, kinds, codes and rule ids, and project.deleted keeps the project's id and name.
   Nothing made from a note stays: `page` (a slug, made from a title; erasure.NOTE_DERIVED,

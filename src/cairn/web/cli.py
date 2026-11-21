@@ -283,6 +283,7 @@ from cairn.store import (
     UnknownSchema,
 )
 from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER, DatabaseLinks, hard_linked
+from cairn.store.portable import COMPACT_LOCK
 from cairn.store.schema import ForeignSchema, SchemaChange, Uninitialized
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import (
@@ -2148,6 +2149,13 @@ def main(argv: list[str] | None = None) -> int:
     if (refused := cli_data.linked(db)) is not None:
         print(refused, file=sys.stderr)
         return 2
+    if args.command in ("key-create", "export"):
+        # Account for case-insensitive volumes as well as alternate paths to the parent.
+        real = os.path.realpath(db).casefold()
+        reserved = ("", "-wal", "-shm", "-journal", SERVE_LOCK, COMPACT_LOCK)
+        if os.path.realpath(args.out).casefold() in {real + suffix for suffix in reserved}:
+            print(f"{args.out} is reserved for the database or its working files", file=sys.stderr)
+            return 1
     if db is not None and (refused := cli_data.journal_refusal(db)):
         print(refused, file=sys.stderr)
         return 1

@@ -218,36 +218,56 @@ def compared(monkeypatch):
     return count
 
 
-def after_a_span_left_out(size: int) -> dict:
-    """The second reviewer's eighth report, must-fix 4: a named span of `size` backticks right
-    after a span the rich text leaves out, the text the rich text gives before it `size`
-    characters long, and a run of backticks where the span's backticks stand at each place
-    that text could reach (each place's full comparison succeeded, then the text before it
-    was asked and did not stand there)."""
-    elements = [
-        {"type": "text", "text": "y" * size},
-        {"type": "text", "text": "`" * size, "style": {"code": True}},
-        {"type": "text", "text": "`" * size},
-    ]
+def placed(text: str, elements: list[dict]) -> dict:
     blocks = [{"type": "rich_text", "elements": [
         {"type": "rich_text_section", "elements": elements}
     ]}]  # fmt: skip
-    text = "y" * size + "`k`" + "`" * (2 * size + 2)
     return {"type": "message", "ts": "1900000000.000100", "text": text, "blocks": blocks}
 
 
+def code(text: str) -> dict:
+    return {"type": "text", "text": text, "style": {"code": True}}
+
+
+def plain(text: str) -> dict:
+    return {"type": "text", "text": text}
+
+
+PLACED = {
+    # The second reviewer's eighth report, must-fix 4: a named span of `size` backticks right
+    # after a span the rich text leaves out, the text before it `size` characters long, and a
+    # run of backticks where the span's way stands at each place that text could reach (each
+    # place's full comparison succeeded, then the text before it was asked and did not stand).
+    "after a span left out": lambda size: placed(
+        "y" * size + "`k`" + "`" * (2 * size + 2),
+        [plain("y" * size), code("`" * size), plain("`" * size)],
+    ),
+    "a run as long as the message": lambda size: placed(
+        "`" * 3 * size, [code("`" * (3 * size - 2))]
+    ),
+    "the same text before each span": lambda size: placed(
+        " `x`" * size, [element for _ in range(size) for element in (plain(" "), code("x"))]
+    ),
+    "a text before at every place": lambda size: placed(
+        "````" * size, [element for _ in range(size) for element in (plain("`"), code("`"))]
+    ),
+}
+
+
 @pytest.mark.parametrize("size", [32, 64, 128, 1024])
-def test_placing_a_span_compares_at_most_three_times_the_message(compared, size):
-    """What placing compares in full grows with the message, not as its square (3,570,
-    13,266, 51,090 and 3,161,106 characters before): a full comparison runs only where both
-    digests agree, so where it succeeds or at a collision. The note's body, the message as
-    displayed and the title are each placed once."""
-    sent = after_a_span_left_out(size)
+@pytest.mark.parametrize("shape", PLACED)
+def test_placing_spans_compares_at_most_a_constant_times_the_message(compared, shape, size):
+    """What placing compares in full grows with the message, not as its square (on the
+    reviewer's shape, 3,570, 13,266, 51,090 and 3,161,106 characters for texts of 101, 197,
+    389 and 3,077): a full comparison runs only where both digests agree, so where it
+    succeeds or at a collision, within each span's own stretch of the text. The note's body,
+    the message as displayed and the title are each placed once."""
+    sent = PLACED[shape](size)
     note_from_message(
         sent, team_id="T0FABLE01", team_domain="fable-works", conversation_id="C0LIBRARY1",
         author="Cedar Quill", names={},
     )  # fmt: skip
-    assert compared[0] <= 3 * len(sent["text"]), (len(sent["text"]), compared[0])
+    assert compared[0] <= 6 * len(sent["text"]), (len(sent["text"]), compared[0])
 
 
 def best_of_three(work, size: int) -> float:

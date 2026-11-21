@@ -171,7 +171,6 @@ given, own = ({p.partition("=")[0]: p.partition("=")[2] for p in json.loads(line
 text = open("cairn.env", encoding="utf-8").read()
 skip = re.compile(r"[ \t\r]*(#.*)?(\n|\Z)")
 read = re.compile(r"([A-Za-z_]\w*)[ \t]*=[ \t]*(?:'((?:[^'\\]|\\[^\\])*)'[ \t\r]*(?:#.*)?|([^'\n].*)?)(?:\n|\Z)")
-name = re.compile(r"([A-Za-z_]\w*)[ \t]*[=:]")
 holds, unread, at = {}, [], 0
 while at < len(text):
     line = skip.match(text, at)
@@ -181,7 +180,7 @@ while at < len(text):
             holds[line[1]] = (line[3] or "").strip() if line[2] is None else line[2].replace("\\'", "'")
         else:
             line = re.compile(r".*(\n|\Z)").match(text, at)
-            unread.append(name.search(line[0]))
+            unread.append(line[0])
     at = line.end()
 for setting, value in holds.items():
     if setting in given and given[setting] != value:
@@ -189,7 +188,8 @@ for setting, value in holds.items():
               ' How to write a value: "AWS settings" or "Google Cloud settings" in'
               " infra/quick/README.md")
 unjudged = given.keys() - own.keys() - holds.keys()
-count = len(unread) + len(unjudged - {found[1] for found in unread if found})
+named = lambda n: re.compile(r"(?<![\w.-])" + re.escape(n) + r"[ \t]*[=:]").search
+count = len(unread) + sum(not any(map(named(n), unread)) for n in unjudged)
 if count:
     print(f"cairn-quick: settings check: {count} line(s) of the settings not compared"
           + (": " + ", ".join(sorted(unjudged)) if unjudged else ""))

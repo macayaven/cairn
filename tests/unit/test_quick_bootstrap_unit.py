@@ -910,6 +910,48 @@ def test_a_value_in_double_quotes_over_lines_names_a_line_too_many_and_the_scrip
     assert "a later line of it that looks like a setting can be named too" in said_there
 
 
+def judged_with_compose_deciding(vm, settings):
+    """What Compose resolves for cairn from the boot's own files with these settings, and
+    the journal of a start whose container holds exactly that."""
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    service, said = compose_service(vm, said=True)
+    assert said.strip() == ""
+    given = {name: value.replace("$$", "$") for name, value in service["environment"].items()}
+    (vm / "container-env.json").write_text(json.dumps([f"{n}={v}" for n, v in given.items()]))
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    return given, done.stderr.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("line", "given"),
+    [
+        # Compose drops what stands after a closing single quote: cairn does not get the
+        # secret as written, and a reader that stopped at the quote would see no difference.
+        ("FOO='zq7wm2'kx9", {"FOO": "zq7wm2"}),
+        ("FOO='tblp4' nvh8rj3", {"FOO": "tblp4"}),
+        # Compose takes a name with a hyphen; the check's names are letters, digits and _.
+        ("FOO-BAR=ydc5hj8", {"FOO-BAR": "ydc5hj8"}),
+        # Two backslashes before the closing quote: Compose keeps both and closes the value.
+        ("FOO='pm4wq\\\\'", {"FOO": "pm4wq\\\\"}),
+    ],
+)
+def test_a_line_the_check_is_not_sure_of_is_one_line_not_compared(vm, line, given):
+    """Four more lines Compose reads and the check does not: each is one line not compared,
+    named by the variable cairn was given, and the count is the number of lines."""
+    got, journal = judged_with_compose_deciding(vm, f"PLAIN=bt9\n{line}\n".encode())
+    assert got == {"PLAIN": "bt9", **given}
+    (name,) = given
+    assert journal == [NOT_COMPARED.format(1) + f": {name}"]
+    for form in digests(line.partition("=")[2], *given.values()) | {"zq7", "kx9", "nvh8", "ydc5"}:
+        assert form not in "\n".join(journal), form
+
+
 def test_a_setting_cairn_was_given_that_no_line_read_holds_is_counted_too(vm):
     """The other way round: what the container was given beyond its image's own variables
     came from the settings. One that no line the check read holds went unjudged, wherever

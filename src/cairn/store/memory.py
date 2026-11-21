@@ -893,8 +893,6 @@ class MemoryMethods(StoreBase):
         index = self._index
         with self._write() as con:
             self._require_project(con, project_id)
-            if _cites_another_project(con, project_id, slug, claims):
-                raise ValueError(NOT_OF_PROJECT)
             if by_model:  # the latest version, and whether the project is at "never"
                 latest, kept = con.execute(
                     "SELECT COALESCE(MAX(version), 0), EXISTS (SELECT 1 FROM settings"
@@ -914,6 +912,8 @@ class MemoryMethods(StoreBase):
                 raise StalePage(expected_version, latest)
             if not _keyed(con, project_id, slug, title, topic):
                 raise StalePage(latest if expected_version is None else expected_version, latest)
+            if _cites_another_project(con, project_id, slug, claims):  # after the version's
+                raise ValueError(NOT_OF_PROJECT)  # check: a stale writer reads the page again
             if _cites_forgotten(con, self._account_id, claims):
                 raise CitesForgotten(
                     latest if expected_version is None else expected_version, latest

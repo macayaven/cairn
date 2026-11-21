@@ -16,7 +16,7 @@ from cairn.compiler import compile_note
 from cairn.gate import lint_gate
 from cairn.llm import Reply
 from cairn.server import create_app
-from cairn.store import Claim, Store
+from cairn.store import Claim, StalePage, Store
 from earlier_build import earlier_page
 
 BASE = "https://cairn.example.test"
@@ -149,3 +149,20 @@ def test_the_latest_version_is_read_only_where_a_passage_of_another_project_is_c
         assert len([s for s in statements if "JOIN notes ON notes.id = spans.note_id" in s]) == 1
     carried = [s for s in made["carried"] if "SELECT claims FROM page_versions" in s]
     assert (len(carried), [s for s in made["ordinary"] if s in carried]) == (1, [])
+
+
+def test_a_save_read_before_a_forget_took_the_carried_claim_off_is_stale_not_refused(store):
+    """A forget holds the page to its own project's notes, so forgetting one of them takes the
+    carried claim off too. A compile that read the page before saves after it at the version
+    it read: StalePage, which it retries on the page as it stands, never the refusal (a 500
+    over REST, and a note left waiting)."""
+    _, east, cited, _ = legacy(store)
+    read = store.get_page(east.id, SLUG)
+    own = next(n for n in store.list_notes(east.id) if "Drift keeps a log." in n.text)
+    store.forget_note(own.id)
+    assert not cites(store, east.id, cited.id)
+    with pytest.raises(StalePage) as raised:
+        store.save_page(
+            east.id, SLUG, read.title, read.body, read.claims, expected_version=read.version
+        )
+    assert type(raised.value) is StalePage

@@ -160,42 +160,83 @@ def test_held_a_stable_backport_below_the_highest_leaves_github_s_latest_where_i
     assert not check(ex)[0], trace(ex)
 
 
-# --- new: Latest taken from a higher version published after the last look ----------------------
+# --- decision 1 (rl8, 1926b04a): Latest checked by the look after the publication -------------
+
+HAND = (
+    "A release published by hand, or one GitHub's listing shows only after the job's last look, "
+    "can still leave GitHub's latest on a lower version, and the job cannot see it."
+)
+LATER = ("person, before GET commits/tags", "publishes v1.3.0 by hand", 2)
 
 
-@pytest.mark.parametrize("gap", [r"person, before GET commits/tags", r"person, before GET asset"])
-def test_a_higher_version_published_after_the_last_look_loses_latest_to_this_release(gap):
-    """Another tag's run publishes v1.3.0 (and, rightly, makes it Latest) after this job's last
-    look and before its publication: between the look and the PATCH the job reads the release
-    twice, fetches three files and reads the tag, which takes seconds. Its `released` is that
-    look's, so is_latest says true and the PATCH sends make_latest=true: GitHub's Latest moves
-    to v1.2.3, below v1.3.0, and the job ends well. The README states only 'a higher version
-    published seconds before the job's last look can be missing from it'. Invariant: GitHub's
-    Latest is the highest stable version."""
-    ex = replay(
-        [(gap, "another run publishes v1.3.0", 2 if "commits" in gap else 1)],
-        existing=("v1.2.2",),
-        other_runs=("v1.3.0",),
+@pytest.mark.parametrize(
+    "gap", [LATER, ("person, before GET asset", "publishes v1.3.0 by hand", 1)]
+)
+def test_held_a_higher_version_published_after_the_last_look_stops_the_job_on_its_own_line(gap):
+    """Was: another tag's run published v1.3.0 after this job's last look and before its
+    publication; the publication said latest and the job ended well with GitHub's Latest on
+    v1.2.3. Now job `release` runs one at a time across the repository (no other tag's job
+    publishes meanwhile), and a person who does it by hand is caught by the look after the
+    publication: the job stops with the lost-latest line, the person sets v1.3.0 as Latest as
+    it says, and the re-run finds the release published and succeeds."""
+    ex = replay([gap], existing=("v1.2.2",), by_hand=("v1.3.0",))
+    assert "GitHub's listing after the publication shows v1.3.0" in ex.attempts[0].errors[0], trace(
+        ex
     )
-    assert not broken(ex, "L"), trace(ex)
+    assert [a.code for a in ex.attempts][1:] == [0, 0], trace(ex)
+    assert ex.hub.truth["releases"][ex.hub.truth["latest"]]["tag_name"] == "v1.3.0", trace(ex)
+    assert not check(ex)[0], trace(ex)
 
 
-def test_pinned_a_higher_version_missing_from_the_last_look_lets_this_release_take_latest():
-    """The stated limit: the listing one look behind another run's publication."""
+def test_held_a_higher_version_missing_from_the_look_before_the_publication_is_caught_after():
+    """The listing one look behind a person: v1.3.0, published by hand before the look that
+    follows the creation, is missing from it, so the publication says latest; the look after the
+    publication lists it and the job stops on the lost-latest line."""
     readme_says(
         "a higher version published seconds before the job's last look can be missing from it, "
         "and a backport is then said to be the latest"
     )
     ex = replay(
-        [(r"person, before GET releases page 1", "another run publishes v1.3.0", 2)],
+        [("person, before GET releases page 1", "publishes v1.3.0 by hand", 2)],
         existing=("v1.2.2",),
-        other_runs=("v1.3.0",),
+        by_hand=("v1.3.0",),
         lag=LAGS["person one behind"],
     )
-    _, notes = check(ex)
+    assert "after the publication shows v1.3.0" in ex.attempts[0].errors[0], trace(ex)
+    assert not check(ex)[0], trace(ex)
+
+
+def test_pinned_a_higher_version_the_listing_shows_only_later_leaves_latest_lower():
+    """The stated limit: v1.3.0, published by hand in the moment before the publication, is
+    missing from the look after it too (the listing nine looks behind a person); the job ends
+    well and GitHub's Latest stays on v1.2.3."""
+    readme_says(HAND)
+    ex = replay([LATER], existing=("v1.2.2",), by_hand=("v1.3.0",), lag=LAGS["person nine behind"])
     assert ex.attempts[0].code == 0 and ex.hub.truth["latest"] == 88, trace(ex)
-    assert any(n.startswith("L (stated limit)") for n in notes), trace(ex)
-    assert not broken(ex, "L"), trace(ex)
+    assert any(n.startswith("L (stated") for n in check(ex)[1]), trace(ex)
+    assert not check(ex)[0], trace(ex)
+
+
+def test_pinned_a_re_run_after_the_lost_latest_stop_succeeds_without_looking_at_latest():
+    """The stated limit (the coordinator's ruling on the tester's finding): the lost-latest line
+    says to set v1.3.0 as Latest and then re-run. A person who only re-runs gets a run that finds
+    the release published and sends no publication, so Latest is not checked: it ends well with
+    GitHub's Latest on v1.2.3, below v1.3.0. Closing it needs a read of GitHub's current Latest,
+    recorded for the next version."""
+    readme_says(
+        "a re-run of the job after this stop sends no publication and succeeds without looking "
+        "at GitHub's latest again, so re-running does not repair it"
+    )
+    ex = replay(
+        [LATER, ("after attempt 1, the person", "only re-runs")],
+        existing=("v1.2.2",),
+        by_hand=("v1.3.0",),
+    )
+    assert "after the publication shows v1.3.0" in ex.attempts[0].errors[0], trace(ex)
+    assert ex.attempts[1].code == 0 and ex.hub.truth["latest"] == 88, trace(ex)
+    violations, notes = check(ex)
+    assert any("re-running does not repair it" in n for n in notes), trace(ex)
+    assert not violations, trace(ex)
 
 
 # --- decision 6: a second release missing from the listing (pinned limits) ----------------------
@@ -237,27 +278,65 @@ def test_pinned_the_job_makes_its_draft_beside_a_person_s_draft_its_first_look_m
     assert any("6 (stated limit)" in n and "a person" in n for n in check(ex)[1]), trace(ex)
 
 
-# --- not a stated limit: a stop line that names the listing's state, not GitHub's --------------
+# --- decision 2 (rl8, 1926b04a): each line says where it read what it states (held) ------------
 
 
-def test_a_title_edited_in_the_stated_race_is_reported_on_a_draft_that_is_public():
-    """The stated race lets a title edited between the last read by id and the publication be
-    published as changed, and says the job then 'stops on a difference it sees'. The look
-    after the publication judges the listing's row, one look behind the publication and current
-    on the person's edit, and its line says 'a draft' of a release GitHub holds public. The
-    README's row: 'The line says which, and whether the release is a draft or public'. The
-    advice ('delete it ... if it is still a draft, or put back what the run wrote') stays safe.
-    Invariant 5 (every line true)."""
+def test_held_a_title_edited_in_the_stated_race_is_reported_as_public_from_the_read_by_id():
+    """Was: a title edited between the last read by id and the publication; the look after the
+    publication, its listing one look behind the publication, judged the row and the line said
+    'a draft' of a public release. Now a row that does not fit is read by its id at once, and
+    the line, written from that read, says 'public'."""
     ex = replay([(r"person, before PATCH", "edits the title")], lag=lags(publish=1))
+    assert "read by its id, the GitHub release for v1.2.3, public," in ex.attempts[0].errors[0], (
+        trace(ex)
+    )
+    assert not check(ex)[0], trace(ex)
+
+
+def test_held_a_title_put_back_while_the_listing_still_shows_it_is_said_to_be_the_listing_s():
+    """Was (switch: the listing behind across re-runs): the person puts the title back as the
+    line says and re-runs at once; the listing still shows the edit and the line said the
+    release differs. Now the row is read by its id, which shows the run's title, and the line
+    says the listing is behind."""
+    ex = replay(
+        [(r"person, before PATCH", "edits the title")],
+        persist_lag=True,
+        lag=lags(person=2),
+    )
+    lines = [a.errors[0] for a in ex.attempts if a.errors]
+    assert any("GitHub's listing shows the release for v1.2.3 without" in x for x in lines), trace(
+        ex
+    )
     assert not broken(ex, "5"), trace(ex)
 
 
-def test_a_draft_a_person_changed_in_the_first_attempt_is_said_left_by_an_earlier_attempt():
-    """A person replaces the draft's wheel with a file of the same size before the job's first
-    read of it by id. The fetch by the new asset's id gives other bytes, and the job stops on
-    'is a draft that an earlier attempt of run ... left unfinished' in the run's first attempt,
-    which made that draft itself; no upload was cut. The advice (delete it and re-run) is safe.
-    Invariant 5 (every line true); the README row gives the cause as a cut upload."""
+# --- decision 3 (rl8, 1926b04a): the draft that does not hold the run's files (held) -----------
+
+
+def test_held_a_draft_a_person_changed_in_the_first_attempt_says_what_it_holds():
+    """Was: a wheel replaced (same size) before the first read by id stopped attempt 1 on 'is a
+    draft that an earlier attempt ... left unfinished', though this attempt made the draft. Now
+    the line says, read by its id, that it is this run's draft and does not hold exactly the
+    files this run attested, and which."""
     ex = replay([(r"person, before GET releases/88$", "replaces the wheel")])
-    assert "left unfinished" in ex.attempts[0].errors[0], trace(ex)
-    assert not broken(ex, "5"), trace(ex)
+    line = ex.attempts[0].errors[0]
+    assert "is this run's draft and does not hold exactly the files this run attested" in line, (
+        trace(ex)
+    )
+    assert "earlier attempt" not in line
+    assert not check(ex)[0], trace(ex)
+
+
+# --- decision 4 (rl8, 1926b04a): a tag moved in the moment before the publication (pinned) ------
+
+
+@pytest.mark.parametrize("tag", TAGS.values())
+def test_pinned_a_tag_moved_after_its_last_read_is_published_and_the_job_stops_on_it(tag):
+    readme_says(
+        "A person who moves the tag in that moment has the release published, on the moved tag, "
+        "and the job's read of the tag after the publication then stops it with the line of a "
+        "moved tag"
+    )
+    ex = replay([(r"person, before PATCH", "moves the git tag")], tag=tag)
+    assert f"names commit {OTHER_SHA}" in ex.attempts[0].errors[0], trace(ex)
+    assert not check(ex)[0], trace(ex)

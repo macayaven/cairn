@@ -269,11 +269,13 @@ class Config:
     others: int = 0  # releases of other tags, older than the run's
     follow_advice: bool = True
     rebuild_between: bool = False  # package re-run with new bytes before the 2nd attempt
-    person_menu: str = "full"  # or "small"
+    person_menu: str = "full"  # or "small", or "core"
     gh_limit: int = 120
     annotated: bool = False  # the run's tag is an annotated tag (an object naming the commit)
     existing: tuple = ()  # stable versions published (by earlier runs) before the step starts
-    other_runs: tuple = ()  # stable versions another tag's run may publish at any gap
+    # stable versions a person may publish by hand at any gap (job `release` runs one at a time
+    # across the repository, its concurrency group, so no other tag's job publishes meanwhile)
+    by_hand: tuple = ()
 
     @property
     def candidate(self) -> bool:
@@ -402,7 +404,9 @@ class Hub:
     def person_options(self) -> list[tuple[str, object]]:
         """What a person may do now, on the releases page or to the tag."""
         options: list[tuple[str, object]] = [("nobody acts", None)]
-        small = self.config.person_menu == "small"
+        # "small" leaves out the rarer acts; "core" is "small" with the acts on the git tag
+        small = self.config.person_menu in ("small", "core")
+        tag_acts = self.config.person_menu in ("full", "core")
         for r in self.releases_for(self._truth):
             rid = r["id"]
             name = f"release {rid}"
@@ -467,31 +471,31 @@ class Hub:
                     )
                 )
         options.append(("makes a second release for the tag, a draft", "second-draft"))
-        for version in self.config.other_runs:
+        for version in self.config.by_hand:
             if not any(r["tag_name"] == version for r in self._truth["releases"].values()):
-                options.append((f"another run publishes {version}", f"other:{version}"))
+                options.append((f"publishes {version} by hand", f"other:{version}"))
         if not small:
             options.append(("makes a second release for the tag, published", "second-public"))
-            if self.tag in self._truth["tags"]:
-                # GitHub turns a published release whose tag is deleted back into a draft
-                # (assumed); a draft keeps its tag name, which is only a string
-                options.append(
-                    (
-                        "deletes the git tag",
-                        [("tag", self.tag, None)]
-                        + [
-                            ("set", r["id"], {"draft": True})
-                            for r in self.releases_for(self._truth)
-                            if not r["draft"]
-                        ],
-                    )
+        if tag_acts and self.tag in self._truth["tags"]:
+            # GitHub turns a published release whose tag is deleted back into a draft
+            # (assumed); a draft keeps its tag name, which is only a string
+            options.append(
+                (
+                    "deletes the git tag",
+                    [("tag", self.tag, None)]
+                    + [
+                        ("set", r["id"], {"draft": True})
+                        for r in self.releases_for(self._truth)
+                        if not r["draft"]
+                    ],
                 )
-                options.append(
-                    (
-                        "moves the git tag to another commit (a forced push)",
-                        ("tag", self.tag, OTHER_SHA),
-                    )
+            )
+            options.append(
+                (
+                    "moves the git tag to another commit (a forced push)",
+                    ("tag", self.tag, OTHER_SHA),
                 )
+            )
         return options
 
     def person_acts(self, label: str) -> None:
@@ -503,7 +507,8 @@ class Hub:
         before = self.snap()
         rid = None
         if isinstance(act, str) and act.startswith("other:"):
-            # another tag's run, its make_latest decided on GitHub as it is (the best it can do)
+            # a release of another tag published by hand, made Latest when it is the highest
+            # (a careful person; GitHub's own default for a release newly published is Latest)
             version = act.split(":", 1)[1]
             rid = self.next_other
             self.next_other += 1

@@ -25,13 +25,13 @@ Two kinds of relation:
   passage read alone (cairn.spans.code_read: code spans, fenced blocks with their opening
   line, indented blocks; text indented under a list item is the item's prose). The page
   alone says what is code: the facts' own inline code and code blocks are not asked. The
-  search index's own tokenizer says where the places are, on the text with those stretches
-  blanked out where they stand (`blanked`: each character of a stretch that the tokenizer
-  reads as part of a word made another such character, each it reads as a separator kept,
-  so that no word begins or ends elsewhere), and it says how it reads each character
-  (cairn.store.relating): nothing here decides what a word is. So a page titled Deploy is
-  not named by a claim whose only "deploy" stands in `deploy/compose.yaml`, or after the
-  marks that open a fence, nor one titled Audit by
+  search index's own tokenizer says where the places are, given the prose alone: each run
+  of it between two of those stretches a text of its own (`prose_runs`), so that no phrase
+  is read across a stretch and every word of a run is the word it was, where it was, a
+  word that goes on across a run's edge into a stretch made another word; and it says how
+  it reads each character (cairn.store.relating): nothing here decides what a word is. So
+  a page titled Deploy is not named by a claim whose only "deploy" stands in
+  `deploy/compose.yaml`, or after the marks that open a fence, nor one titled Audit by
   `--audit-keep`; what the facts and the parser do not read as one of those is prose, so a
   bare `deploy/notes.md` or `ada@deploy.dev` names Deploy, and so does a title in a link's
   address written in angle brackets, in a link's title, between escaped backticks, or in a
@@ -254,7 +254,9 @@ def in_word(
 def blanked(
     text: str, stretches: Iterable[tuple[int, int]], asked: str, kind: Callable[[str], int]
 ) -> str:
-    """`text` with what is not prose blanked out: of every stretch (`covered`, and what the
+    """`text` with what is not prose blanked out in place, as one text. The index is not
+    given it (it is given `prose_runs`): it is kept for the tests that check the masking it
+    did. Of every stretch (`covered`, and what the
     Markdown parser reads as code: cairn.spans.code_read), each character that the index's
     tokenizer reads as part of a word where it stands (`kind`, the tokenizer's own reading
     of each character: `in_word`) made `fill_for(asked)`, which it reads as part of a word
@@ -303,7 +305,7 @@ def _joined(stretches: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def words_in(text: str, kind: Callable[[str], int]) -> int:
-    """How many words the index's tokenizer reads in `text` (`kind`, as `blanked`)."""
+    """How many words the index's tokenizer reads in `text` (`kind`, as `prose_runs`)."""
     count, held = 0, False
     for char in text:
         read = kind(char)
@@ -313,7 +315,7 @@ def words_in(text: str, kind: Callable[[str], int]) -> int:
 
 
 def words_end(text: str, start: int, words: int, kind: Callable[[str], int]) -> int:
-    """Where the `words` words of `text` that begin at `start` end (`kind`, as `blanked`):
+    """Where the `words` words of `text` that begin at `start` end (`kind`, as `prose_runs`):
     the end of the first place of a phrase of that many words that the index matched from
     `start`, however far its marks around the matches that overlap that one reach."""
     count, held = 0, False

@@ -167,9 +167,11 @@ def test_the_two_refusals_of_save_page_by_what_a_claim_cites():
         assert attempt(other, out.id, "j", [citing(1, w.text, w)]) == "v1"
 
 
-def test_limit_a_a_note_compiled_into_an_old_cross_project_page_is_stored_and_waits():
-    """The implementer's limit (a), through Memory.note: the writer gets ValueError (over
-    REST a 500), the note is stored and waits for its page, the page is as it was."""
+def test_limit_a_is_gone_a_note_compiled_into_an_old_cross_project_page_is_saved():
+    """Was the implementer's limit (a), through Memory.note: the writer got ValueError (over
+    REST a 500) and the note waited. Since the ninth round (item 2) save_page passes a
+    citation the page's latest version carries already: the note is saved, nothing waits,
+    and the page keeps the other project's claim until its note is forgotten."""
     with closing(Store(":memory:")) as store:
         desk, east = store.create_project("desk"), store.create_project("east")
         note = filed(store, desk.id, f"# Dispatch\n\n{GONE}\n")
@@ -177,11 +179,10 @@ def test_limit_a_a_note_compiled_into_an_old_cross_project_page_is_stored_and_wa
         own = store.get_page(east.id, "minutes").claims[0]
         borrowed(store, east.id, "minutes", own, citing(9, GONE, passage(store, note)))
         before = store.get_page(east.id, "minutes")
-        with pytest.raises(ValueError, match=r"^A page can cite only passages from its own"):
-            Memory(store, lint_gate).note("east", "# Minutes\n\nWren rings the bell at two.\n")
+        Memory(store, lint_gate).note("east", "# Minutes\n\nWren rings the bell at two.\n")
         assert len(store.list_notes(east.id)) == 2
-        assert store.get_page(east.id, "minutes") == before
-        assert [w.project_id for w in store.waiting_notes()] == [east.id]
+        assert store.get_page(east.id, "minutes").version == before.version + 1
+        assert store.waiting_notes() == []
 
 
 def test_a_member_who_may_not_forget_gets_no_preview_and_reads_only_counts_after():

@@ -552,6 +552,12 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   refuse. A read, answered alike by every view (cairn.arrange asks it before a page's
   claims go to a model, since a policy tightened later does not reach notes taken before).
 - Every `save_page` writes a new version (1, 2, ...); earlier versions stay readable.
+  A claim citing a span the store holds of another project's note, one the page's latest
+  version does not cite already, raises ValueError (NOT_OF_PROJECT) and writes nothing. A
+  citation the latest version carries (only a database an earlier build wrote holds one)
+  passes, so a compile, the tidy and an arrangement write to that page as to any other,
+  until the note is forgotten or its project deleted, which both rewrite the page. The
+  latest version is read for it only where another project's span is cited.
   A page holds at most PAGE_CLAIMS_MAX (2,000) claims (H6c): `save_page` with more raises
   PageTooLong (a ValueError naming the page and the bound) and writes nothing, and
   `import_export` refuses (ValueError) an archive with a version past it. cairn.memory

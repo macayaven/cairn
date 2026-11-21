@@ -18,6 +18,7 @@ from cairn.gate import lint_gate
 from cairn.memory import RELATED_RANGE, BadRequest, Memory, NotFound
 from cairn.server import create_app
 from cairn.store import Claim, Store, relating
+from cairn.web.markdown import render
 from cairn.web.mcp import INSTRUCTIONS, TREAT_AS_INFORMATION, build_mcp, instructions
 from earlier_build import earlier_page
 
@@ -692,6 +693,26 @@ def test_a_term_and_a_title_that_hold_a_null_or_a_quote_answer_over_every_surfac
         assert [(p["page"], p["why"][0]["term"]) for p in found["related"]] == [(f"two-{n}", term)]
 
 
+def test_a_title_in_a_path_between_backticks_markdown_does_not_pair_names_the_page(env):
+    """Between two backticks of one line that Markdown does not pair, the facts read inline
+    code and so no path; the page shows the text as prose, so a title inside a path there
+    names the page. The same path anywhere else is a path, and names nothing."""
+    said = '[d](u "`") /srv/deploy/x `x'
+    assert "<code>" not in str(render(said))
+    deploy = note(env, "Deploy", "Ada ships on Fridays.")["page"]
+    unpaired = note(env, "Unpaired", said)["page"]
+    note(env, "Rooted", "Brook reads /srv/deploy/x daily.")
+    (claim,) = answer(env.client, env.key, "page", project="ops", slug=unpaired)["claims"]
+    assert claim["text"] == said  # the claim is its passage's text
+    found = answer(env.client, env.key, "related", project="ops", slug=deploy)
+    assert found["searched"]["complete"]
+    assert [
+        page["page"]
+        for page in found["related"]
+        if any(why["kind"] == "mentioned_by" for why in page["why"])
+    ] == [unpaired]
+
+
 def test_the_tools_description_says_which_terms_and_titles_relate_none():
     said = " ".join(tools()["related"].description.split())
     assert (
@@ -704,10 +725,11 @@ def test_the_tools_description_says_which_terms_and_titles_relate_none():
         f" {spans.MAX_RENDERED:,} characters, which it shows as preformatted text; text indented"
         " under a list item is the item's prose. A URL, a path, a flag or a version is what the"
         " page's facts read as one, so a bare `ledger/notes.md` still names a page Ledger, and"
-        " so does a title in a link's address written in angle brackets or in a link's title;"
-        " the facts read text between escaped backticks as code, so a title there names"
-        " nothing, though the page shows it as prose. A claim that holds a mark of the index or"
-        " a null character names none (the pages this page mentions are not listed)."
+        " so does a title in a link's address written in angle brackets, in a link's title,"
+        " between escaped backticks, or in a URL, a path, a flag or a version between two"
+        " backticks of one line that Markdown does not pair, which the facts read as inline"
+        " code and so as none of those. A claim that holds a mark of the index or a null"
+        " character names none (the pages this page mentions are not listed)."
     ) in said
     for line in (
         "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"
@@ -787,9 +809,10 @@ def test_the_contract_says_which_terms_and_which_places_of_a_title_relate_pages(
         f" {spans.MAX_RENDERED:,} characters, which it shows as preformatted text; text indented"
         " under a list item is the item's prose), and a URL, a path, a flag or a version what"
         " the page's facts read as one, so a bare `ledger/notes.md` still names a page Ledger,"
-        " as does a title in a link's address written in angle brackets or in a link's title,"
-        " while one between escaped backticks, which the facts read as code, names nothing"
-        " though the page shows it as prose (the index, given the passage's text with every"
+        " as does a title in a link's address written in angle brackets, in a link's title,"
+        " between escaped backticks, or in a URL, a path, a flag or a version between two"
+        " backticks of one line that Markdown does not pair, which the facts read as inline"
+        " code and so as none of those (the index, given the passage's text with every"
         " stretch that is no prose blanked out, says where the title stands in prose; a claim"
         " that is not its passage's text character for character, as one saved by hand or one"
         " that differs from its passage only by the blanks that end its lines, which the gate"

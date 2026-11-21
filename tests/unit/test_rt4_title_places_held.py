@@ -177,13 +177,11 @@ def fact_stretches(text: str) -> list[tuple[int, int]]:
         end_line=1 + text.count("\n"),
         text=text,
     )
-    stretches = []
-    for fact in extract_facts(span):
-        if fact.kind in relations.TERM_KINDS:
-            stretches.append((fact.start, fact.end))
-        elif fact.kind == "code_block":  # from its opening line
-            stretches.append((text.rfind("\n", 0, fact.start - 1) + 1, fact.end))
-    return stretches
+    return [
+        (fact.start, fact.end)
+        for fact in extract_facts(span)
+        if fact.kind in ("url", "path", "flag", "version")
+    ]
 
 
 def prose_places(text: str, title: str) -> list[tuple[int, int]]:
@@ -249,7 +247,8 @@ CASES = [
     (TITLE, "Read `` `Step by Step` `` today.", False),
     (TITLE, "Read ``Step ` by Step`` today.", False),
     (TITLE, "Read ` Step by Step ` today.", False),
-    (TITLE, "Read \\`Step by Step\\` today.", False),  # literal backticks; a fact's to the facts
+    # the page: <p>Read `Step by Step` today.</p>; the coordinator's ruling, 2026-11-21: the page alone says what is code  # noqa: E501
+    (TITLE, "Read \\`Step by Step\\` today.", True),
     (TITLE, "Read `Step by Step\\` today` x.", False),
     (TITLE, "```text\nStep by Step\n```", False),
     (TITLE, "```Step by Step\nx\n```", False),
@@ -601,11 +600,13 @@ SHAPES = [
     ("Read `Step by\\\nStep` today.", False),
     ("Read Step by  \nStep `x` today.", True),
     ("> > ```\n> > Step by Step\n> x", False),
-    ("> > ```\n> > x\n> Step by Step", False),
+    # the page: <blockquote><blockquote><pre><code>x</code></pre></blockquote><p>Step by Step</p></blockquote>; the coordinator's ruling, 2026-11-21: the page alone says what is code  # noqa: E501
+    ("> > ```\n> > x\n> Step by Step", True),
     ("- Item.\n\n    Step by Step `x`", True),
     ("- Item.\n\n        Step by Step", False),
     ("- Item\n\n  ```\n  Step by Step", False),
-    ("- Item\n  ```\n  x\nStep by Step `y`", False),
+    # the page: <ul><li>Item<pre><code>x</code></pre></li></ul><p>Step by Step <code>y</code></p>; the coordinator's ruling, 2026-11-21: the page alone says what is code  # noqa: E501
+    ("- Item\n  ```\n  x\nStep by Step `y`", True),
     ("- ```\n  x\n- Step by Step `y`", True),
     ("-\tStep by Step `x`", True),
     ("-\t\tStep by Step", False),

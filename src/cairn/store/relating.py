@@ -36,12 +36,12 @@ read:
   `deploy/compose.yaml` as deploy, compose and yaml. So each claim listed is read as a
   term's candidate is, with the first passage it cites; one statement says which of them
   are their passage's text (`_judged`), and each place the title stands in such a claim is
-  judged by itself. The passage's text, with every stretch that is no prose made
-  characters the title does not hold (relations.blanked: what the passage's facts read as
-  code, a path, a flag, a version or an address, relations.covered, and what the Markdown
-  parser reads as code in it, cairn.spans.code_read), is given to an index of the same
-  declaration in a database of the read's own, in memory, and the title is asked of it
-  again (`_in_prose`): the claim names the title where that index still finds it, whatever
+  judged by itself. The passage's text, with every stretch that is no prose made characters
+  the title does not hold (relations.blanked: what the passage's facts read as an address, a
+  path, a flag or a version, relations.covered, and what the Markdown parser reads as code
+  in it as the page does, cairn.spans.code_read), is given to an index of the same
+  declaration in a database of the read's own, in memory, and the title is asked of it again
+  (`_in_prose`): the claim names the title where that index still finds it, whatever
   other place overlaps that one. A title more than relations.COMMON other pages name so is
   common and relates none; CLAIMS_COMMON counts the claims that hold the title's words,
   in prose or not. The title is given to the index as a term is, itself and whole; one
@@ -503,13 +503,14 @@ def _mentioning(
     does, by row, and where in the claim's text: the first place where the title stands
     whole in prose.
 
-    A claim that holds the title's words (`naming`) names the title only where one place
-    the title stands in it lies outside every stretch of its passage that is code, a path,
-    a flag, a version or an address (relations.covered, on the facts this read holds of
-    the passage, read whole) and outside what the Markdown parser reads as code in the
-    claim alone (cairn.spans.code_read). Each place is judged by itself, whatever other
-    place overlaps it: the index is given the claim's text with those stretches blanked
-    out in place (relations.blanked) and asked the title again (`_in_prose`). Those are
+    A claim that holds the title's words (`naming`) names the title only where one place the
+    title stands in it lies outside every stretch of its passage that the facts read as an
+    address, a path, a flag or a version (relations.covered, on the facts this read holds of
+    the passage, read whole) and outside what the Markdown parser reads as code in the claim
+    alone, as the page does (cairn.spans.code_read). Each place is judged by itself,
+    whatever other place overlaps it: the index is given the claim's text with those
+    stretches blanked out in place (relations.blanked) and asked the title again
+    (`_in_prose`). Those are
     places of the passage because the claim's text is the passage's text; the statement
     says whether it is (`_judged`), character for character. Where it is not (a page saved
     by hand; a claim that differs from its passage only by the blanks that end its lines,

@@ -68,6 +68,17 @@ RUN_UPGRADE = (
     " --other-projects` counts such pages only on a database already at this version, and"
     " refuses an older one."
 )
+RUN_COMMANDS = (  # its list: test_every_command_that_opens_the_database_is_named
+    "Every command that takes `--db` but `stats`, `audit-verify` and `repair` opens the"
+    " database for writing and so upgrades an older one first, as `serve` does: `serve`,"
+    " `key-create`, `key-list`, `key-revoke`, `session-end`, every `source-` and `credential-`"
+    " command, `export`, `import`, `compact` (`--if-due` too), `plan-set`, `usage`,"
+    " `workspace-list`, `waiting`, `arrange` and `reseal`; once the upgrade has committed, its"
+    " counts are lines on that command's stderr that start `repair: workspace`. `stats`,"
+    " `audit-verify` and `repair` refuse a database of an older schema instead and change"
+    " nothing."
+)
+REFUSE_OLDER = ("stats", "audit-verify", "repair")
 RUN_ADDRESSES = (
     "An upgrade keeps the address of every page that remains, so links to it and to the claims"
     " that remain on it keep working."
@@ -105,7 +116,7 @@ GONE_SAYS = "A page can cite only passages from its own project."
 def test_the_guides_say_it():
     assert PRIVACY_NOTE in guide("privacy")
     assert PRIVACY_PROJECT in guide("privacy")
-    for said in (RUN_IMPORT, RUN_UPGRADE, RUN_STATS, RUN_REPAIR, RUN_ADDRESSES):
+    for said in (RUN_IMPORT, RUN_UPGRADE, RUN_STATS, RUN_REPAIR, RUN_ADDRESSES, RUN_COMMANDS):
         assert said in guide("run")
     for gone in (
         "keeps it until then",
@@ -202,3 +213,26 @@ def test_stats_counts_a_page_citing_a_note_its_workspace_has_forgotten_since(tmp
         one = store._account_id
     assert cli.main(["stats", "--db", str(db), "--json", "--other-projects"]) == 0
     assert json.loads(capsys.readouterr().out)["other_projects"] == {one: 1}
+
+
+def test_every_command_that_opens_the_database_is_named():
+    """RUN_COMMANDS against the parser: every command that takes --db is named, by its name or
+    by its group (`source-`, `credential-`), unless it refuses an older schema (each has its
+    line), and no command is named that is not one; a new command fails here until the
+    sentence names it."""
+    import argparse
+    import re
+
+    from cairn.web import cli_audit_verify, cli_data, cli_stats
+
+    sub = next(a for a in cli._parser()._actions if isinstance(a, argparse._SubParsersAction))
+    takes_db = {n for n, p in sub.choices.items() if "db" in {a.dest for a in p._actions}}
+    opens = takes_db - set(REFUSE_OLDER)
+    assert set(REFUSE_OLDER) <= takes_db
+    assert cli_stats.OLDER_DATABASE and cli_audit_verify.OLDER_DATABASE
+    assert cli_data.OLDER_FOR_REPAIR
+    listed = RUN_COMMANDS.split(" first, as `serve` does: ")[1].split(";")[0]
+    named = set(re.findall(r"`([a-z-]+)`", listed)) - {"--if-due"}
+    groups = {g for g in named if g.endswith("-")}
+    covered = (named - groups) | {n for n in opens if any(n.startswith(g) for g in groups)}
+    assert covered == opens, sorted(covered ^ opens)

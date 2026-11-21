@@ -23,6 +23,7 @@ from cairn.server import SignIn, create_app
 from cairn.store import PAGE_CLAIMS_MAX, Store
 from cairn.store.grants import REFRESH_TOKEN_TTL
 from cairn.web import cli
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -31,7 +32,10 @@ REDIRECT = "http://127.0.0.1:33418/callback"
 CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 ISSUER = "https://id.example.test"
 NOW = datetime(2026, 11, 10, 12, tzinfo=UTC)
-TOOLS = {"projects", "new_project", "note", "recall", "page", "evidence", "overview"}
+TOOLS = {
+    "projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph",
+    "related",  # KG1
+}  # fmt: skip
 
 
 def dump(db: Path) -> str:
@@ -170,8 +174,8 @@ def test_a_page_filled_during_the_compile_keeps_the_note_and_adds_nothing(env, m
 
 
 def test_the_search_page_counts_only_below_the_most_it_shows(env):
-    """search.html: the page asks for at most 30 hits (web/ui.py UI_HITS), so with 30 it says
-    "The first 30 claims that match" and below that it keeps the count."""
+    """search.html: the page asks for at most 30 hits (web/ui/memory_pages.py UI_HITS), so with 30
+    it says "The first 30 claims that match" and below that it keeps the count."""
     text = "# Ledger\n\n" + "".join(f"Quill line {i} holds.\n\n" for i in range(35))
     text += "# Kite\n\nThe kite flies high.\n\nThe kite is red.\n"
     assert answer(env.client, env.key, "note", project="ops", text=text)["status"] == "saved"
@@ -258,7 +262,7 @@ def test_a_private_project_with_no_maker_says_owners_only(tmp_path):
         vault = store.create_project("vault", everyone="none")  # the root store acts for no one
         assert vault.maker_id is None
         with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
-            home = client.get("/", headers={"cookie": f"cairn_session={ada.token}"})
+            home = client.get("/", headers={"cookie": f"{session_cookie()}={ada.token}"})
             assert home.status_code == 200
             row = home.text[home.text.index(">vault<") :]
             assert "Private: owners only" in row[: row.index("</li>")]
@@ -411,7 +415,9 @@ def test_a_provider_sign_in_sets_a_twelve_hour_cookie_and_keeps_no_password(tmp_
             done = client.get(f"/auth/github/callback?code=c&state={state}", follow_redirects=False)
             assert done.status_code == 200
             cookie = next(
-                c for c in done.headers.get_list("set-cookie") if c.startswith("cairn_session=")
+                c
+                for c in done.headers.get_list("set-cookie")
+                if c.startswith(f"{session_cookie('https')}=")
             )
             assert "max-age=43200" in cookie.lower()
             now[0] = NOW + timedelta(hours=12) - timedelta(seconds=1)
@@ -484,12 +490,13 @@ def test_the_composer_keeps_the_note_when_the_gate_refuses_the_page(tmp_path):
         store.close()
 
 
-# web/ui.py: keys made and revoked in the web view
+# web/ui/workspace_pages.py: keys made and revoked in the web view
 
 
 def test_a_keys_label_has_1_to_80_printable_characters_and_an_unknown_one_is_not_revoked(env):
-    """web/ui.py: "A key's label has 1 to 80 printable characters." and "no key labelled X".
-    A refused label makes no key; revoking an unknown label is 404 and revokes nothing."""
+    """web/ui/workspace_pages.py: "A key's label has 1 to 80 printable characters." and "no
+    key labelled X". A refused label makes no key; revoking an unknown label is 404 and
+    revokes nothing."""
     env.sign_in()
     before = dump(env.db)
     for label in ("", "   ", "x" * 81, "bell\x07", "tab\there"):
@@ -525,8 +532,8 @@ def people(tmp_path):
             ada=ada_view,
             brook=brook_view,
             key=key,
-            cookie={"cookie": f"cairn_session={ada.token}"},
-            brook_cookie={"cookie": f"cairn_session={brook.token}"},
+            cookie={"cookie": f"{session_cookie()}={ada.token}"},
+            brook_cookie={"cookie": f"{session_cookie()}={brook.token}"},
         )
     store.close()
 

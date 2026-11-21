@@ -11,11 +11,13 @@ import re
 import sqlite3
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import uvicorn
 from starlette.testclient import TestClient
+from test_schema_floor_unit import v30_database
 
 import cairn.store
 import cairn.store.schema
@@ -24,6 +26,7 @@ from cairn.plans import Plan, Plans, load
 from cairn.server import SignIn, create_app
 from cairn.store import AccountSummary, OverLimit, Store
 from cairn.web import cli
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 ROOT = Path(__file__).resolve().parents[2]
@@ -114,7 +117,7 @@ def _as(client: TestClient, session: str | None) -> TestClient:
     """`client` as a browser with that session, or with none."""
     client.cookies.clear()
     if session:
-        client.cookies.set("cairn_session", session)
+        client.cookies.set(session_cookie(), session)
     return client
 
 
@@ -175,7 +178,7 @@ def test_an_address_that_never_existed_answers_as_pinned(install):
 def test_no_page_links_to_a_selling_address(install):
     app, session, _, _ = install
     with TestClient(app, base_url=BASE) as client:
-        client.cookies.set("cairn_session", session)
+        client.cookies.set(session_cookie(), session)
         for path in ("/", "/workspace", "/account", "/usage", "/docs", "/docs/privacy"):
             page = client.get(path).text
             for address in ('href="/billing', 'href="/pricing', 'action="/billing'):
@@ -213,6 +216,17 @@ def test_the_usage_page_says_the_plan_and_who_sets_it(install):
     assert "This workspace is on the Free plan." in said
     assert "Whoever runs this server sets a workspace's plan." in said
     assert "3 notes a month" in said
+
+
+BILLED = "acct_aaaaaaaaaaaa"  # a workspace of the database _billed makes
+
+
+def _billed(db: Path) -> str:
+    """A database at schema step 30 holding what a build that sold plans left for one of its
+    workspaces (_billing_rows); its id. Opening it runs step 31, which drops those tables."""
+    v30_database(db)
+    _billing_rows(db, BILLED)
+    return BILLED
 
 
 def _billing_rows(db: Path, account_id: str, plan: str = "solo") -> None:
@@ -255,11 +269,10 @@ def test_a_workspaces_plan_is_the_operators_else_the_default_whatever_billing_le
     tmp_path, operator
 ):
     db = tmp_path / "cairn.db"
+    made = SimpleNamespace(id=_billed(db))
     store = Store(db)
     try:
-        made = store.create_account("acme")
         store.set_plan(made.id, operator)
-        _billing_rows(db, made.id)
         plans = Plans(
             {"free": Plan("Free", notes_per_month=1), "solo": Plan("Solo"), "team": Plan("Team")},
             "free",
@@ -270,7 +283,7 @@ def test_a_workspaces_plan_is_the_operators_else_the_default_whatever_billing_le
         assert summary.plan == operator
         # A write is held to that plan too, not to the subscription's.
         view = plans.limit(store.for_account(made.id), plans.in_force(store, made.id)[1])
-        project = view.create_project("ops")
+        project = view.create_project("billing-ops")
         view.add_note(project.id, "# One\n\nThe first note.\n")
         if operator is None:
             with pytest.raises(OverLimit):
@@ -295,36 +308,32 @@ def test_the_store_has_no_billing_and_the_schema_keeps_its_steps():
         assert not hasattr(cairn.store, name), name
     assert not (ROOT / "src/cairn/store/billing.py").exists()
     assert "subscription" not in AccountSummary.model_fields
-    assert cairn.store.SCHEMA_VERSION == 28
+    assert cairn.store.SCHEMA_VERSION == 32 and cairn.store.schema._OLDEST_BUILD == 31
     for step in (12, cairn.store.schema._SUBSCRIPTION_TIMES, cairn.store.schema._CHECKOUTS):
-        assert step in cairn.store.schema._MIGRATIONS, step
+        assert step in cairn.store.schema._MIGRATIONS, step  # history: 31 drops what they made
+    assert cairn.store.schema._OLDEST_BUILD in cairn.store.schema._MIGRATIONS
 
 
-def test_a_database_with_billing_rows_opens_and_deleting_the_workspace_erases_them(tmp_path):
+def test_a_database_with_billing_rows_opens_without_them_and_its_workspace_deletes(tmp_path):
     db = tmp_path / "cairn.db"
-    store = Store(db)
-    made = store.create_account("acme")
-    kept = store.create_account("other")
-    store.close()
-    _billing_rows(db, made.id)
-    _billing_rows(db, kept.id)
-    store = Store(db)  # opens unchanged: no step, the rows are there
+    made = _billed(db)
+    tables = ("subscriptions", "billing_messages", "checkouts")
+    assert [_count(db, t, made) for t in tables] == [1, 1, 1]
+    store = Store(db)  # step 31 drops the three tables with their rows
     try:
-        tables = ("subscriptions", "billing_messages", "checkouts")
-        assert [_count(db, t, made.id) for t in tables] == [1, 1, 1]
-        assert store.delete_account(made.id)
-        assert [_count(db, t, made.id) for t in tables] == [0, 0, 0]
-        assert [_count(db, t, kept.id) for t in tables] == [1, 1, 1]
+        with sqlite3.connect(db) as con:
+            held = {n for (n,) in con.execute("SELECT name FROM sqlite_master")}
+        assert not held & set(tables)
+        assert store.delete_account(made)
     finally:
         store.close()
 
 
 def test_an_export_leaves_what_billing_wrote_out(tmp_path):
     db = tmp_path / "cairn.db"
+    made = SimpleNamespace(id=_billed(db))
     store = Store(db)
     try:
-        made = store.create_account("acme")
-        _billing_rows(db, made.id)
         out = io.BytesIO()
         store.for_account(made.id).export(out)
         with zipfile.ZipFile(io.BytesIO(out.getvalue())) as archive:
@@ -337,10 +346,8 @@ def test_an_export_leaves_what_billing_wrote_out(tmp_path):
 
 def test_workspace_list_prints_no_subscription(tmp_path, capsys):
     db = tmp_path / "cairn.db"
-    store = Store(db)
-    made = store.create_account("acme")
-    store.close()
-    _billing_rows(db, made.id)
+    _billed(db)
+    Store(db).close()  # the upgrade, as the server's start runs it: only serve upgrades
     assert cli.main(["workspace-list", "--db", str(db)]) == 0
     printed = capsys.readouterr().out
     rows = json.loads(printed)

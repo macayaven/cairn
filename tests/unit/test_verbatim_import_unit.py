@@ -1,12 +1,18 @@
-"""T5d: whatever the verbatim gate passes, an import passes too.
+"""T5d, and review blocker 2: an import takes exactly the claims the verbatim gate passes.
 
-An import takes a claim when its text is the text of a passage it cites, white space aside
-(cairn.store.portable._page_version, which collapses white space with str.split: every Unicode
-white space character). The verbatim gate reads only space, tab, CR and LF as white space, and
-asks the claim to be every passage it cites, so it is the stricter of the two. This test calls
-the import's own check on every claim the gate passes, over generated passages that hold the
-Unicode white space where the two comparisons part: a no-break space, a line or paragraph
-separator, a form feed, a vertical tab, a next-line character, an ideographic space.
+An import took a claim when its text was the text of one passage it cites, white space aside
+(collapsed with str.split: every Unicode white space character), so a claim could cite a
+passage that says something else, or re-indent code. Now it asks what the gate asks
+(cairn.store.portable._page_version calls cairn.gate.whole): the claim is every passage it
+cites, compared as the gate compares. This test calls the import's own check on claims over
+generated passages that hold the Unicode white space where the two comparisons parted: a
+no-break space, a line or paragraph separator, a form feed, a vertical tab, a next-line
+character, an ideographic space; the import and the gate now say the same of every one.
+
+CORE5: the import also takes a claim the gate as it was before CORE5 passed
+(cairn.store.before_core5, the gate's code at 951a904d), so a version a tidy saved then
+imports unchanged; it takes nothing else, and no space but the gate's own four ever made
+two texts one for either rule.
 """
 
 import random
@@ -17,7 +23,8 @@ from cairn.compiler import CONTENT_KINDS
 from cairn.gate import _not_verbatim
 from cairn.spans import Span, chunk
 from cairn.store import Claim
-from cairn.store.portable import _collapsed, _page_version
+from cairn.store.before_core5 import whole_before_core5
+from cairn.store.portable import _page_version
 
 # Read as white space by the gate (the first four) or by str.split alone (the rest), by code
 # point so that this file shows each one.
@@ -75,16 +82,16 @@ def imported(text: str, cited: list[Span]) -> bool:
         "created_at": "2026-11-15T00:00:00+00:00",
     }
     try:
-        _page_version("archive/", line, {}, {s.id: _collapsed(s.text) for s in cited})
+        _page_version("archive/", line, {}, {s.id: s for s in cited})
     except ValueError:
         return False
     return True
 
 
 @pytest.mark.parametrize("seed", range(20))
-def test_whatever_the_gate_passes_an_import_takes(seed):
+def test_an_import_takes_what_the_gate_passes_or_passed_and_nothing_else(seed):
     rng = random.Random(seed)
-    passed = differ = 0
+    passed = refused = 0
     for _ in range(25):
         spans = [s for s in chunk("cap_000000000000", note(rng)) if s.kind in CONTENT_KINDS]
         for span in spans:
@@ -95,10 +102,10 @@ def test_whatever_the_gate_passes_an_import_takes(seed):
                 for text in claims_of(span, rng):
                     claim = Claim(id="cl_" + "0" * 16, text=text, span_ids=tuple(by_id))
                     gate = _not_verbatim(claim, by_id) is None
+                    before = whole_before_core5(claim, by_id)
                     takes = imported(text, cited)
-                    if gate:
-                        passed += 1
-                        assert takes, (text, [s.text for s in cited])
-                    elif takes:
-                        differ += 1  # the import is the looser of the two
-    assert passed > 100 and differ > 0, (passed, differ)
+                    assert takes == (gate or before), (text, [s.text for s in cited])
+                    assert before or not gate, (text, [s.text for s in cited])
+                    passed += gate
+                    refused += not gate  # what the import took before, white space aside
+    assert passed > 100 and refused > 0, (passed, refused)

@@ -18,6 +18,7 @@ from cairn.gate import lint_gate
 from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 
@@ -69,7 +70,7 @@ def test_a_batch_links_the_next_one_and_an_unreadable_continuation_the_start(tmp
         store.save_page(project.id, "first", "First synthetic page", "", [])
         store.save_page(project.id, "second", "Second synthetic page", "", [])
         with TestClient(explorer(store), base_url=BASE) as client:
-            client.cookies.set("cairn_session", store.create_session())
+            client.cookies.set(session_cookie(), store.create_session())
             response = client.get("/b/alpha/graph?limit=1")
             assert response.status_code == 200
             assert "First synthetic page" in response.text
@@ -104,7 +105,7 @@ def test_a_note_link_opens_only_its_own_projects_note(tmp_path):
             via="synthetic import",
         )
         with TestClient(explorer(store), base_url=BASE) as client:
-            client.cookies.set("cairn_session", store.create_session())
+            client.cookies.set(session_cookie(), store.create_session())
             href = f"/b/alpha/graph/notes/{note.id}"
             response = client.get("/b/alpha/graph?focus=notes")
             assert response.status_code == 200
@@ -127,7 +128,7 @@ def test_a_long_note_is_read_a_part_at_a_time(tmp_path):
         text = "".join(f"Line {i} of a synthetic log.\n" for i in range(2000))
         note, _ = store.add_note(project.id, text, source_ref="desk:long")
         with TestClient(explorer(store), base_url=BASE) as client:
-            client.cookies.set("cairn_session", store.create_session())
+            client.cookies.set(session_cookie(), store.create_session())
             href, parts = f"/b/alpha/graph/notes/{note.id}", 0
             while href:
                 part = client.get(href)
@@ -147,7 +148,7 @@ def test_the_script_is_pinned_and_allowed_on_the_graph_page_only(tmp_path):
         project = store.create_project("alpha")
         note, _ = store.add_note(project.id, "Synthetic source.\n")
         with TestClient(explorer(store), base_url=BASE) as client:
-            client.cookies.set("cairn_session", store.create_session())
+            client.cookies.set(session_cookie(), store.create_session())
             graph = client.get("/b/alpha/graph")
             assert graph.status_code == 200
             asset = client.get("/static/graph-view.js")
@@ -182,7 +183,7 @@ def test_the_explorers_files_are_served_under_both_branding_modes(tmp_path):
             sign_in = SignIn(providers=(GitHub("example-id", "example-secret"),), http=http)
             app = explorer(store, sign_in=sign_in, brand_name=brand)
             with TestClient(app, base_url=BASE) as client:
-                client.cookies.set("session" if brand else "cairn_session", store.create_session())
+                client.cookies.set(session_cookie(branded=bool(brand)), store.create_session())
                 page = client.get("/b/alpha/graph")
                 assert page.status_code == 200
                 sheets = re.findall(r'<link rel="stylesheet" href="([^"]+)"', page.text)
@@ -200,7 +201,7 @@ def test_each_request_is_one_access_log_record_named_graph(tmp_path, caplog):
         note, _ = store.add_note(project.id, "# Quill runbook\n\nQuill retries 3 times.\n")
         assert compile_note(store, note, gate=lint_gate).status in ("saved", "unchanged")
         with TestClient(explorer(store), base_url=BASE) as client:
-            client.cookies.set("cairn_session", store.create_session())
+            client.cookies.set(session_cookie(), store.create_session())
             caplog.set_level(logging.INFO, logger="cairn.access")
             for path in (
                 "/b/alpha/graph",
@@ -278,7 +279,7 @@ def test_a_stale_note_continuation_is_409_with_a_way_back(tmp_path, monkeypatch)
 
         monkeypatch.setattr(graph_routes, "graph_note_detail", changed)
         with TestClient(explorer(store), base_url=BASE) as client:
-            client.cookies.set("cairn_session", store.create_session())
+            client.cookies.set(session_cookie(), store.create_session())
             stale = client.get(f"/b/alpha/graph/notes/{note.id}?after=made-before")
             assert stale.status_code == 409
             assert '<a href="/b/alpha/graph">Start again</a>' in stale.text

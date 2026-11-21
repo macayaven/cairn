@@ -153,6 +153,7 @@ from cairn.sources import (
     withheld_via,
 )
 from cairn.store import Store
+from cookie_names import session_cookie
 
 SECRET_ENV = "CONNECTOR_C9_SECRET"
 SECRET = "c9" + "-made-up-" + "connector-" + "secret-5e1f9a"  # never a real secret
@@ -1228,7 +1229,7 @@ def test_the_project_proposed_for_a_new_source_is_its_own_name(tmp_path, capsys)
         )  # fmt: skip
         base = "http://127.0.0.1:8765"
         with TestClient(create_app(store, public_url=base), base_url=base) as client:
-            client.cookies.set("cairn_session", owner.token)
+            client.cookies.set(session_cookie(), owner.token)
             page = client.get("/sources")
         assert page.status_code == 200
         assert re.search(r"""value=["']erp-feed["']""", page.text)
@@ -1240,7 +1241,11 @@ def test_the_project_proposed_for_a_new_source_is_its_own_name(tmp_path, capsys)
 
 
 def checker(url: str, *options: str, cwd: Path, secret: str | None = SECRET):
-    environ = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    environ = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
+    }
     environ["PYTHONPATH"] = os.pathsep.join([str(SRC), environ.get("PYTHONPATH", "")])
     environ.pop(SECRET_ENV, None)
     if secret is not None:
@@ -1486,7 +1491,10 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
-def test_the_reference_connector_passes_the_checker_and_a_source_writes_its_folder(tmp_path):
+def test_the_reference_connector_passes_the_checker_and_a_source_writes_its_folder(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CAIRN_SOURCE_PRIVATE_ADDRESSES", "allow")
     folder = tmp_path / "notes"
     folder.mkdir()
     given = {}

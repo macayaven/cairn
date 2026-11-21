@@ -26,7 +26,7 @@ class Watch:
     """The statements the store's connection runs, and the bytes its rows hand back."""
 
     def __init__(self, store: Store) -> None:
-        self.con = store._con
+        self.store = store
         self.statements: list[str] = []
         self.bytes = 0
 
@@ -35,8 +35,8 @@ class Watch:
             self.bytes += sum(len(v) if isinstance(v, str) else 8 for v in row)
             return row
 
-        self.con.set_trace_callback(self._traced)
-        self.con.row_factory = rows
+        self.store._observe(trace=self._traced)
+        self.store._observe(rows=rows)
         return self
 
     def _traced(self, statement: str) -> None:
@@ -45,8 +45,8 @@ class Watch:
             self.statements.append(statement)
 
     def __exit__(self, *exc):
-        self.con.set_trace_callback(None)
-        self.con.row_factory = None
+        self.store._observe(trace=None)
+        self.store._observe(rows=None)
 
 
 @pytest.fixture

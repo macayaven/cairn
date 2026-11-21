@@ -27,6 +27,7 @@ from cairn import oauth
 from cairn.server import create_app
 from cairn.store import Store
 from cairn.store.grants import ROTATION_WINDOW, ROTATIONS
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 RESOURCE = f"{BASE}/mcp"
@@ -808,7 +809,7 @@ def test_a_tampered_or_missing_consent_request_shows_no_form(world):
     ):
         page = browser.get(bad)
         assert page.status_code == 400, bad
-        assert "decision" not in page.text and "<form" not in page.text.split("<main>")[1], bad
+        assert "decision" not in page.text and "<form" not in page.text.split("<main ")[1], bad
     assert browser.get(url).status_code == 200  # the untouched one still opens
 
 
@@ -1010,7 +1011,7 @@ def test_an_access_token_is_a_bearer_credential_for_mcp_and_nothing_else(world):
     for headers in (bearer(grant.access), {"x-api-key": grant.access}):
         assert world.raw.get("/api/projects", headers=headers).status_code == 401
     browser = world.browser()
-    browser.cookies.set("cairn_session", grant.access)
+    browser.cookies.set(session_cookie(), grant.access)
     assert browser.get("/").status_code == 303
 
 
@@ -1358,9 +1359,10 @@ def test_the_agents_page(world):
     assert 'href="/agents"' in browser.get("/workspace").text  # on the workspace page
     grant = connected(world, world.ada)
     page = browser.get("/agents")
-    (action,) = re.findall(r'action="(/agents/[^"/]+/revoke)"', page.text)
+    (action,) = re.findall(r'href="(/agents/[^"/]+/revoke)"', page.text)
     assert "unit-agent" in page.text and grant.access not in page.text
-    assert browser.get(action).status_code == 405
+    asked = browser.get(action)  # the page before it: its one form, and nothing ended
+    assert asked.status_code == 200 and f'action="{action}"' in asked.text
     cross = browser.post(action, headers={"sec-fetch-site": "cross-site"})
     assert cross.status_code == 403 and mcp(world.raw, **bearer(grant.access)).status_code == 200
     unknown = browser.post("/agents/grant_000000000000/revoke", headers=SAME_ORIGIN)
@@ -1381,7 +1383,7 @@ def test_the_agents_page(world):
 def test_setup_explains_connecting_by_url_when_it_is_possible(tmp_path, public_url, by_url):
     world = World(tmp_path, public_url)
     try:
-        text = world.browser(world.ada).get("/setup").text
+        text = world.browser(world.ada).get("/setup", follow_redirects=True).text
     finally:
         world.store.close()
     assert f"{public_url}/mcp" in text and "With only the URL" in text

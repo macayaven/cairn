@@ -16,6 +16,7 @@ from cairn.server import SignIn, create_app
 from cairn.store import Store
 from cairn.web import templating
 from cairn.web.brand import NEUTRAL, SOFTWARE, Logo, server_name
+from cookie_names import session_cookie, signin_cookie
 
 BASE = "https://kb.example.test"
 BRAND = "Knowledge Base"
@@ -424,10 +425,17 @@ def test_a_session_or_state_cookie_planted_by_a_sibling_host_is_not_read(store):
         join="personal",
     ).token  # fmt: skip
     fresh = TestClient(app_, base_url=BASE)
-    for cookie in (f"{name}={ada}; session={mal}", f"session={mal}; {name}={ada}"):
+    for cookie in (
+        f"{name}={ada}; {session_cookie(branded=True)}={mal}",
+        f"{session_cookie(branded=True)}={mal}; {name}={ada}",
+    ):
         r = fresh.get("/workspaces", headers={"cookie": cookie}, follow_redirects=False)
         assert r.status_code == 200 and "Mal Lory" not in r.text, cookie
-    alone = fresh.get("/workspaces", headers={"cookie": f"session={mal}"}, follow_redirects=False)
+    alone = fresh.get(
+        "/workspaces",
+        headers={"cookie": f"{session_cookie(branded=True)}={mal}"},
+        follow_redirects=False,
+    )
     assert alone.status_code == 303
 
     planter = TestClient(app_, base_url=BASE)
@@ -437,11 +445,13 @@ def test_a_session_or_state_cookie_planted_by_a_sibling_host_is_not_read(store):
     victim = TestClient(app_, base_url=BASE)
     back = victim.get(
         f"/auth/github/callback?code=c&state={state}",
-        headers={"cookie": f"signin={sealed}"},
+        headers={"cookie": f"{signin_cookie(branded=True)}={sealed}"},
         follow_redirects=False,
     )
     assert back.status_code == 400 and not [
-        line for line in back.headers.get_list("set-cookie") if "session=" in line
+        line
+        for line in back.headers.get_list("set-cookie")
+        if f"{session_cookie(branded=True)}=" in line
     ]
 
 

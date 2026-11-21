@@ -152,12 +152,13 @@ def test_anything_but_three_numbers_from_the_probe_gives_no_line(host, said):
     assert host.litestream_log() == []
 
 
-def test_before_the_first_database_there_is_no_line_and_nothing_is_asked(host):
+def test_before_the_first_database_the_line_says_current_and_nothing_is_asked(host):
+    # Nothing to copy is current; the line arms the silence alert on a new VM
+    # (test_host_replica_at_boot_unit.py).
     host.database(False)
     done = host.replica_check(newest=1000, changed=1000, now=1100)
     assert done.rc == 0
-    assert done.line == ""
-    assert "no database yet" in done.out
+    assert done.line == "replica: current, no database yet, nothing to copy"
     assert host.docker_runs() == []
 
 

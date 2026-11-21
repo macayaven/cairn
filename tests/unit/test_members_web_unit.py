@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 from cairn.server import create_app
 from cairn.store import Store
 from cairn.web.auth import may_manage_credentials
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 ISSUER = "https://id.example.test/pool-1"
@@ -136,7 +137,7 @@ def test_a_signed_out_join_link_comes_back_after_signing_in(env):
 
 
 def signed_in(env, view) -> None:
-    env.client.cookies.set("cairn_session", view.create_session())
+    env.client.cookies.set(session_cookie(), view.create_session())
 
 
 def test_a_taken_name_gets_one_sentence_whether_its_project_is_hidden_or_not(env):
@@ -183,7 +184,7 @@ def test_the_setup_refuses_a_name_a_hidden_project_holds_and_makes_nothing(env):
 
 
 def as_(env, view) -> dict[str, str]:
-    return {"cookie": f"cairn_session={view.create_session()}"}
+    return {"cookie": f"{session_cookie()}={view.create_session()}"}
 
 
 def send(env, who: dict[str, str], path: str, data: dict | None = None):
@@ -196,7 +197,10 @@ def test_a_member_sees_the_people_but_no_forms_and_no_invites(env):
     page = env.client.get("/members", headers=as_(env, env.cy))
     assert page.status_code == 200
     assert all(name in page.text for name in ("Ada", "Brook", "Cy"))
-    assert "zed@example.test" not in page.text and "<form" not in page.text.split("<main>")[1]
+    assert (
+        "zed@example.test" not in page.text
+        and "<form" not in page.text.split('<main id="main" tabindex="-1">')[1]
+    )
     hub = env.client.get("/workspace", headers=as_(env, env.cy)).text
     assert 'href="/members"' in hub  # on the workspace page, which the navigation links
 
@@ -208,7 +212,7 @@ def test_an_invite_is_shown_once_and_can_be_revoked(env):
     (pending,) = env.store.list_invites()
     listed = env.client.get("/members", headers=ada).text
     assert "zed@example.test" in listed
-    assert f'action="/members/invites/{pending.id}/revoke"' in listed
+    assert f'href="/members/invites/{pending.id}/revoke"' in listed
     assert send(env, as_(env, env.cy), f"/members/invites/{pending.id}/revoke").status_code == 403
     gone = send(env, ada, f"/members/invites/{pending.id}/revoke")
     assert gone.status_code == 303 and gone.headers["location"] == "/members"
@@ -247,11 +251,11 @@ def test_the_join_page_names_the_address_and_refuses_another_person(env):
         "sso", "sub-Eve", "eve@example.test", "Eve", issuer=ISSUER, join="personal"
     )
     token = env.ada.invite("zed@example.test").token
-    eve_cookie = {"cookie": f"cairn_session={eve.token}"}
+    eve_cookie = {"cookie": f"{session_cookie()}={eve.token}"}
     before = dump(env.db)
     page = env.client.get(f"/join/{token}", headers=eve_cookie)
     assert page.status_code == 200 and "zed@example.test" in page.text
-    main = page.text.split("<main>", 1)[1].split("</main>", 1)[0]
+    main = page.text.split('<main id="main" tabindex="-1">', 1)[1].split("</main>", 1)[0]
     assert f'action="/join/{token}"' not in main  # a button that could only be refused
     said = (
         "You are signed in as <strong>eve@example.test</strong>, and this invitation is for"
@@ -270,8 +274,8 @@ def test_the_person_an_invitation_is_for_gets_the_button_whatever_the_case(env):
         "sso", "sub-Zed", "Zed@Example.test", "Zed", issuer=ISSUER, join="personal"
     )
     token = env.ada.invite("zed@example.test").token
-    page = env.client.get(f"/join/{token}", headers={"cookie": f"cairn_session={zed.token}"})
-    main = page.text.split("<main>", 1)[1].split("</main>", 1)[0]
+    page = env.client.get(f"/join/{token}", headers={"cookie": f"{session_cookie()}={zed.token}"})
+    main = page.text.split('<main id="main" tabindex="-1">', 1)[1].split("</main>", 1)[0]
     assert f'action="/join/{token}"' in main and "You are signed in as" not in main
     assert 'action="/logout"' not in main
 
@@ -279,7 +283,7 @@ def test_the_person_an_invitation_is_for_gets_the_button_whatever_the_case(env):
 def test_a_session_without_a_person_cannot_join(env):
     token = env.ada.invite("zed@example.test").token
     keyed = env.store.acting_as("key", "ops", None).create_session()
-    r = send(env, {"cookie": f"cairn_session={keyed}"}, f"/join/{token}")
+    r = send(env, {"cookie": f"{session_cookie()}={keyed}"}, f"/join/{token}")
     assert r.status_code == 403
     assert env.store.find_invite(token) is not None
 
@@ -289,7 +293,7 @@ def test_listing_workspaces_writes_nothing_and_switching_keeps_the_old_session(e
         "sso", "sub-Eve", "eve@example.test", "Eve", issuer=ISSUER, join="personal"
     )
     env.store.accept_invite(env.ada.invite("eve@example.test").token, eve.user.id)
-    cookie = {"cookie": f"cairn_session={eve.token}"}
+    cookie = {"cookie": f"{session_cookie()}={eve.token}"}
     before = dump(env.db)
     places = env.client.get("/workspaces", headers=cookie)
     assert places.status_code == 200 and dump(env.db) == before
@@ -297,7 +301,7 @@ def test_listing_workspaces_writes_nothing_and_switching_keeps_the_old_session(e
     moved = send(env, cookie, f"/workspaces/{env.store.account_id}/switch")
     assert moved.status_code == 303 and moved.headers["location"] == "/"
     assert env.store.resolve_session(eve.token).account_id == eve.account_id
-    there = env.store.resolve_session(moved.cookies["cairn_session"])
+    there = env.store.resolve_session(moved.cookies[session_cookie()])
     assert (there.account_id, there.user_id) == (env.store.account_id, eve.user.id)
 
 

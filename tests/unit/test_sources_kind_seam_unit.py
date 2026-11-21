@@ -16,6 +16,7 @@ from cairn.server import create_app, main
 from cairn.sources import KINDS, NoteDraft, Pulled, SourceKind, SyncReport, run_source
 from cairn.store import Store
 from cairn.web import cli
+from cookie_names import session_cookie
 
 NOTE = "# Gauges\n\nThe north gauge reads 4 bar.\n"
 MORE = "it had more; the next run goes on"
@@ -114,7 +115,7 @@ def test_the_sources_page_proposes_the_kind_s_project(tmp_path):
         )  # fmt: skip
         store.add_source("north-gauges", "seam_own", {})
         with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
-            client.cookies.set("cairn_session", owner.token)
+            client.cookies.set(session_cookie(), owner.token)
             page = client.get("/sources").text
         (field,) = re.findall(
             r'<input type="text" id="source-north-gauges-new-project"[^>]*>', page
@@ -186,6 +187,6 @@ def test_the_sources_page_shows_the_sentence(store):
     Fake.answers = [Pulled([draft("g-1")], cursor="c1", stopped=MORE)]
     run(store)
     with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
-        client.cookies.set("cairn_session", owner.token)
+        client.cookies.set(session_cookie(), owner.token)
         page = client.get("/sources").text
     assert "it had more; the next run goes on" in page

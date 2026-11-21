@@ -51,7 +51,6 @@ def merge(store: Store) -> None:
 def steps(store: Store, query: str) -> tuple[int, dict[str, int], object]:
     """The steps of one Store.find: in all, and by statement (its first 40 characters, the
     steps of statements that begin alike added up), with what it says it searched."""
-    con = store._con
     seen = {"steps": 0}
     marks: list[tuple[int, str]] = []
 
@@ -63,13 +62,13 @@ def steps(store: Store, query: str) -> tuple[int, dict[str, int], object]:
         if not statement.lstrip().startswith("--"):  # not FTS5's own statements
             marks.append((seen["steps"], statement.lstrip()[:40]))
 
-    con.set_progress_handler(counted, PERIOD)
-    con.set_trace_callback(traced)
+    store._observe(progress=(counted, PERIOD))
+    store._observe(trace=traced)
     try:
         found = store.find(query, limit=10)
     finally:
-        con.set_progress_handler(None, 0)
-        con.set_trace_callback(None)
+        store._observe(progress=None)
+        store._observe(trace=None)
     by: dict[str, int] = {}
     for n, (start, statement) in enumerate(marks):
         end = marks[n + 1][0] if n + 1 < len(marks) else seen["steps"]

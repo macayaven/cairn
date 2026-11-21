@@ -248,6 +248,9 @@ def no_name_in(response: httpx.Response, what: str) -> None:
 # Pages
 
 
+SKIP_HREF, SKIP_TEXT = "#main", "Skip to the main content"
+
+
 class Page(HTMLParser):
     """A page's tags, its visible text in segments, its title, headings and links."""
 
@@ -264,6 +267,10 @@ class Page(HTMLParser):
         self.feed(html)
         self.close()
         self.title = " ".join(self.title.split())
+        # Every page starts with a link to its main content (shown with the keyboard's
+        # focus); `links` are the others, the ones a page offers.
+        self.skips = [a for a in self.anchors if a["href"] == SKIP_HREF]
+        self.links = [a for a in self.anchors if a["href"] != SKIP_HREF]
 
     def handle_starttag(self, tag, attrs):
         attributes = {name: value or "" for name, value in attrs}
@@ -558,7 +565,7 @@ def session_set(response: httpx.Response) -> tuple[str, str, dict]:
     found = [
         (name, value, attributes)
         for name, (value, attributes) in set_cookies(response).items()
-        if value and attributes.get("path") == "/"
+        if value and attributes.get("path") == "/" and not name.endswith("signin")
     ]
     said = response.headers.get_list("set-cookie")
     assert len(found) == 1, f"no single session cookie set: {said}"
@@ -1015,10 +1022,10 @@ def test_the_sign_in_page_shows_the_brand_and_nothing_else(make):
     assert len(images) == 1 and images[0].get("alt") == ALT
     logo = images[0]["src"]
     assert not logo.startswith("data:") and "<svg" not in r.text.lower()
-    assert [a["href"] for a in page.anchors] == ["/auth/github"]
-    assert ["".join(a["text"]).strip() for a in page.anchors] == ["Continue with GitHub"]
+    assert [a["href"] for a in page.anchors] == [SKIP_HREF, "/auth/github"]
+    assert ["".join(a["text"]).strip() for a in page.links] == ["Continue with GitHub"]
     assert not page.named("nav", "footer", "form", "input", "button", "script", "iframe")
-    assert set(page.texts) == {BRAND, "Continue with GitHub"}
+    assert set(page.texts) == {SKIP_TEXT, BRAND, "Continue with GitHub"}
     assert cairn.__version__ not in r.text
     words = " ".join(page.texts).lower()
     assert "session" not in words and "password" not in words
@@ -1039,7 +1046,7 @@ def test_the_sign_in_page_shows_the_brand_and_nothing_else(make):
     added = [text for text in shown.texts if text not in page.texts]
     assert len(added) == 1 and sentence in added[0]
     assert shown.title == BRAND and shown.h1 == [BRAND]
-    assert [a["href"] for a in shown.anchors] == ["/auth/github"]
+    assert [a["href"] for a in shown.anchors] == [SKIP_HREF, "/auth/github"]
 
 
 def test_without_a_logo_the_sign_in_page_has_the_name_and_no_image(make):
@@ -1049,7 +1056,7 @@ def test_without_a_logo_the_sign_in_page_has_the_name_and_no_image(make):
     assert page.title == BRAND and page.h1 == [BRAND]
     assert not page.named("img")
     assert not [a for a in page.named("link") if "icon" in a.get("rel", "").split()]
-    assert set(page.texts) == {BRAND, "Continue with GitHub"}
+    assert set(page.texts) == {SKIP_TEXT, BRAND, "Continue with GitHub"}
     # A logo given no text alternative says the brand name.
     untold = world.app(wall=True, brand_name=BRAND, brand_logo=world.logo())
     images = Page(fresh(untold).get(sign_in_address(fresh(untold))).text).named("img")
@@ -1063,11 +1070,11 @@ def test_with_two_providers_the_sign_in_page_has_one_link_each_and_nothing_else(
     page = Page(browser.get(sign_in_address(browser)).text)
     labels = ["Continue with Google", f"Continue with {OIDC_LABEL}"]
     assert page.title == BRAND and page.h1 == [BRAND]
-    assert [a["href"] for a in page.anchors] == ["/auth/google", "/auth/fieldid"]
-    assert ["".join(a["text"]).strip() for a in page.anchors] == labels
+    assert [a["href"] for a in page.anchors] == [SKIP_HREF, "/auth/google", "/auth/fieldid"]
+    assert ["".join(a["text"]).strip() for a in page.links] == labels
     assert [image.get("alt") for image in page.named("img")] == [ALT]
     assert not page.named("nav", "footer", "form", "input", "button", "script", "iframe")
-    assert set(page.texts) == {BRAND, *labels}
+    assert set(page.texts) == {SKIP_TEXT, BRAND, *labels}
 
 
 def test_too_many_sign_ins_from_one_address_get_the_sign_in_page_and_one_sentence(make):
@@ -1379,7 +1386,7 @@ def test_an_agent_connects_through_the_wall_from_a_browser_that_never_signed_in(
     assert urlsplit(to_sign_in).path == signin and query(to_sign_in) == {"next": consent}
     page = cold.get(to_sign_in)
     assert page.status_code == 200
-    started = cold.get(Page(page.text).anchors[0]["href"], follow_redirects=False)
+    started = cold.get(Page(page.text).links[0]["href"], follow_redirects=False)
     assert started.status_code == 302
     code = world.idp.approve(ADA_GITHUB)
     back = cold.get(
@@ -1471,7 +1478,7 @@ def test_an_agent_outlives_the_brand_being_set_or_removed(make, branded_first):
         assert projects_over_mcp(after, got["access_token"], heard) == ["core"]
 
 
-# 7. The list still decides who signs in, and nothing else
+# 7. The list decides who signs in, and is checked on every request
 
 
 def test_the_list_still_gates_sign_in_under_the_wall_and_the_brand(make):
@@ -1484,10 +1491,11 @@ def test_the_list_still_gates_sign_in_under_the_wall_and_the_brand(make):
     later = world.app(listed=(ADA,), **settings)
     again = world.browser(later)
     again.cookies.set(cookie, token)
-    home = again.get("/", follow_redirects=False)
-    assert home.status_code == 200 and "Brook Ng" in home.text  # still open, still Brook
-    stranger = fresh(later)
     before = dump(world.db)
+    home = again.get("/", follow_redirects=False)
+    assert home.status_code == 303 and "Brook Ng" not in home.text  # ended: checked per request
+    assert dump(world.db) == before  # nothing deleted
+    stranger = fresh(later)
     r = sign_in(world, stranger, BROOK_GITHUB)
     assert r.status_code == 403 and dump(world.db) == before
     assert not [c for c, (value, a) in set_cookies(r).items() if value and a.get("path") == "/"]
@@ -1793,10 +1801,10 @@ def test_without_the_settings_every_byte_is_as_today(make):
     browser = world.browser(plain)
     signed_out = snapshot(fresh(plain))
     started = browser.get("/auth/github", follow_redirects=False)
-    assert f"{NAME}_signin" in set_cookies(started)  # today's names
+    assert f"__Host-{NAME}_signin" in set_cookies(started)  # today's names, on https
     r = sign_in(world, browser, ADA_GITHUB)
     cookie, token, made = session_set(r)
-    assert cookie == f"{NAME}_session" and int(made["max-age"]) == TWELVE_HOURS
+    assert cookie == f"__Host-{NAME}_session" and int(made["max-age"]) == TWELVE_HOURS
     signed = snapshot(browser)
 
     # An app with every setting, used in the same process, changes nothing for the others.

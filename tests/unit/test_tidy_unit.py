@@ -57,14 +57,28 @@ def test_three_claims_that_repeat_fold_into_one_that_cites_all_three(store):
     assert after.claims[0].span_ids == tuple(s for claim in repeats for s in claim.span_ids)
 
 
-def test_claims_that_differ_only_in_whitespace_fold(store):
+def test_claims_that_differ_only_in_whitespace_stay_apart(store):
+    """CORE5: two claims fold only when their texts are the same."""
     project, before = page_of(
         store,
         "# Tiny\n\nIt runs  nightly.\n",
         "# Tiny\n\nIt runs nightly.\n\n- It keeps a log.\n",
     )
-    spaced, plain, log = before.claims
+    spaced, plain, _ = before.claims
     assert spaced.text != plain.text and spaced.text.split() == plain.text.split()
+    result = tidy_page(store, project.id, "tiny")
+    assert (result.status, result.merged) == ("unchanged", 0)
+    assert store.get_page(project.id, "tiny").claims == before.claims
+
+
+def test_claims_with_white_space_at_line_ends_only_fold(store):
+    project, before = page_of(
+        store,
+        "# Tiny\n\nIt runs nightly.  \n",
+        "# Tiny\n\nIt runs nightly.\n\n- It keeps a log.\n",
+    )
+    spaced, plain, log = before.claims
+    assert spaced.text != plain.text
     result = tidy_page(store, project.id, "tiny")
     assert (result.status, result.merged) == ("arranged", 1)
     after = store.get_page(project.id, "tiny")

@@ -108,6 +108,7 @@ from cairn.server import create_app, main
 from cairn.sources import KINDS, NoteDraft, Pulled, SourceKind, SyncReport, run_source, sync_all
 from cairn.store import DEFAULT_ACCOUNT_ID, Store
 from cairn.store.sources import NOT_A_SOURCE_MANAGER
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -248,7 +249,7 @@ def person(world, name: str, role: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         id=signed.user.id,
         name=name,
-        cookie={"cookie": f"cairn_session={signed.token}"},
+        cookie={"cookie": f"{session_cookie()}={signed.token}"},
         view=view.acting_as("session", name, signed.user.id),
     )
 
@@ -761,7 +762,7 @@ def test_the_sources_page_shows_each_state_and_the_forms_that_apply(world, web):
     # R4: a member reaches the page; with no account of their own, no source and no switch.
     member = web.client.get("/sources", headers=web.brook.cookie)
     assert member.status_code == 200
-    mine = member.text.partition("<main>")[2].partition("</main>")[0]
+    mine = member.text.partition('<main id="main" tabindex="-1">')[2].partition("</main>")[0]
     assert "<form" not in mine and "/integrations/" not in mine
     assert "traces" not in mine and "standup" not in mine
     assert "No account yet. Ask the person who runs this server to connect one." in mine

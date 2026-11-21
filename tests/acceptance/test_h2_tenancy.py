@@ -31,6 +31,7 @@ from starlette.testclient import TestClient
 
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 RUNBOOK = (FIXTURES / "runbook_synthetic.md").read_text(encoding="utf-8")
@@ -93,14 +94,14 @@ def refused(env, who, name: str, /, **arguments) -> str:
     return result["content"][0]["text"]
 
 
-def session_cookie(env, who) -> dict:
+def signed_in_headers(env, who) -> dict:
     """Log in with the tenant's key and return the Cookie header for its session."""
     env.client.cookies.clear()
     r = env.client.post("/login", data={"key": who.key}, follow_redirects=False)
     assert r.status_code == 303, r.text
-    token = r.cookies["cairn_session"]
+    token = r.cookies[session_cookie()]
     env.client.cookies.clear()
-    return {"cookie": f"cairn_session={token}"}
+    return {"cookie": f"{session_cookie()}={token}"}
 
 
 @pytest.fixture
@@ -184,7 +185,7 @@ def test_recall_and_search_cover_only_the_callers_account(env, seeded):
 
 
 def test_a_ui_session_belongs_to_the_account_of_its_key(env, seeded):
-    ada, brook = session_cookie(env, env.ada), session_cookie(env, env.brook)
+    ada, brook = signed_in_headers(env, env.ada), signed_in_headers(env, env.brook)
     c = env.client
     home_a, home_b = c.get("/", headers=ada), c.get("/", headers=brook)
     assert home_a.status_code == home_b.status_code == 200
@@ -228,7 +229,7 @@ def test_a_revoked_key_stops_only_its_own_account(env, seeded):
 
 
 def test_reads_never_write(env, seeded):
-    cookies = {who.name: session_cookie(env, who) for who in (env.ada, env.brook)}
+    cookies = {who.name: signed_in_headers(env, who) for who in (env.ada, env.brook)}
     before = dump(env.db)
     for who in (env.ada, env.brook):
         call(env, who, "projects")

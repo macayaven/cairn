@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "_components.html" import crumbs %}
+{% block title %}{{ project.name }} notes{% endblock %}
+{% block main %}
+{{ crumbs((("/", "Projects"), ("/b/" ~ (project.name|seg), project.name))) }}
+<h1>{{ project.name }} notes</h1>
+<p class="lede">Every note of this project, newest first, without its text: the page each is filed under, or that it is still waiting for its page.</p>
+{% if notes %}
+<div class="table-wrap">
+<table class="rows">
+  <thead><tr><th>Note</th><th>Written</th><th>Page</th>{% if erase %}<th>Action</th>{% endif %}</tr></thead>
+  <tbody>
+  {% for note, writer in notes %}
+    <tr>
+      <td data-label="Note">{{ note.title or 'Untitled note' }}<span class="hint"> {{ writer }}{% if note.via %} · via {{ note.via }}{% endif %}{% if note.source_ref %} · <span class="mono">{{ note.source_ref }}</span>{% endif %}</span></td>
+      <td data-label="Written" class="count"><time datetime="{{ note.created_at }}">{{ note.created_at|day }}</time></td>
+      <td data-label="Page">{% if note.waiting %}Waiting for its page{% elif note.page %}<a href="/b/{{ project.name|seg }}/p/{{ note.page|seg }}">{{ note.page }}</a>{% else %}On no page{% endif %}</td>
+      {% if erase %}<td data-label="Action" class="act"><a href="/b/{{ project.name|seg }}/notes/{{ note.id|seg }}/forget" aria-label="Forget {{ note.title or 'Untitled note' }}">Forget</a></td>{% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if older or before %}
+<p class="meta">{% if older %}<a href="/b/{{ project.name|seg }}/notes?before={{ older|urlencode }}">Older notes</a>{% endif %}{% if older and before %} · {% endif %}{% if before %}<a href="/b/{{ project.name|seg }}/notes">Newest notes</a>{% endif %}</p>
+{% endif %}
+{% elif before %}
+<p class="meta">No older notes. <a href="/b/{{ project.name|seg }}/notes">Newest notes</a></p>
+{% else %}
+<section class="empty-state" aria-labelledby="no-notes">
+  <h2 id="no-notes">No notes yet</h2>
+  <p>A note written in this project is listed here.</p>
+</section>
+{% endif %}
+{% endblock %}

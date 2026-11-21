@@ -3,7 +3,7 @@
 import json
 import secrets
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timedelta
 
 from cairn.store.base import StoreBase, _digest, _iso, _require_account
@@ -257,6 +257,7 @@ class GrantMethods(StoreBase):
         client_id: str,
         *,
         audience: str | None = None,
+        allowed: Callable[[str], bool] | None = None,
     ) -> TokenPair | None:
         """Replace the grant's token pair: the old access token stops working, and the old
         refresh token's digest is remembered (kind `rotated`) for REFRESH_TOKEN_TTL from now,
@@ -283,17 +284,24 @@ class GrantMethods(StoreBase):
             now = self._instant()
             _expire(con, now)
             row = con.execute(
-                "SELECT t.grant_id, t.kind FROM oauth_tokens AS t"
+                "SELECT t.grant_id, t.kind, g.user_id, u.email FROM oauth_tokens AS t"
                 " JOIN oauth_grants AS g ON g.id = t.grant_id"
+                " LEFT JOIN users AS u ON u.id = g.user_id"
                 " WHERE t.digest = ? AND t.kind IN ('refresh', 'rotated') AND g.client_id = ?"
                 f" AND t.expires_at > ? AND {_AUDIENCE.format(row='g')}",
                 (_digest(refresh_token), client_id, _iso(now), audience, audience),
             ).fetchone()
             if row is None:
                 return None
-            grant_id, kind = row
+            grant_id, kind, user_id, email = row
             if kind == "rotated":
                 self._disconnect(con, grant_id, by_agent=True, reason="refresh token replayed")
+                return None
+            if (
+                user_id is not None
+                and allowed is not None
+                and (email is None or not allowed(email))
+            ):
                 return None
             # A token rotated at r is remembered until r + REFRESH_TOKEN_TTL: those rotated in
             # the last ROTATION_WINDOW are remembered past now + TTL - WINDOW.
@@ -394,7 +402,7 @@ class GrantMethods(StoreBase):
         with self._read() as con:
             rows = con.execute(
                 "SELECT g.id, g.client_id, c.name, g.created_at, g.projects, g.access,"
-                " maker.label, m.key_id IS NOT NULL AND maker.id IS NULL"
+                " g.user_id, maker.label, m.key_id IS NOT NULL AND maker.id IS NULL"
                 " FROM oauth_grants AS g"
                 " JOIN oauth_clients AS c ON c.id = g.client_id"
                 " LEFT JOIN made_with AS m ON m.id = g.id"
@@ -416,10 +424,19 @@ class GrantMethods(StoreBase):
                     access=access,
                     made_with=made_with,
                     made_with_revoked=bool(revoked),
+                    approver_id=user_id,
                 )
-                for grant_id, client_id, name, created_at, projects, access, made_with, revoked in (
-                    rows
-                )
+                for (
+                    grant_id,
+                    client_id,
+                    name,
+                    created_at,
+                    projects,
+                    access,
+                    user_id,
+                    made_with,
+                    revoked,
+                ) in rows
             ]
 
     def revoke_grant(self, grant_id: str) -> bool:

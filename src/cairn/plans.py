@@ -232,7 +232,8 @@ def load(path: str | Path) -> Plans:
     """The plans in a YAML file (see the module's contract). ValueError names what is wrong;
     OSError when the file cannot be read."""
     try:
-        data = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=_Loader)  # a safe loader
+        text = Path(path).read_text(encoding="utf-8")
+        data = yaml.load(text, Loader=_Loader)  # nosec B506 # _Loader is a SafeLoader
     except yaml.YAMLError as error:
         raise ValueError(f"the plans file is not YAML: {error}") from None
     if not isinstance(data, dict):

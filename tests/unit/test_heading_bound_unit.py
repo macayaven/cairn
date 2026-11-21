@@ -130,8 +130,8 @@ def test_an_import_with_a_note_under_headings_past_the_bound_imports_nothing(
 # those found after, and tests/acceptance/test_h6c_disk.py's five) takes at most 30 times its
 # storage cap plus PER_NOTE bytes for each note it holds, after compact(). The first term is
 # what the caps on bytes and passages bound; the second is what every note makes whatever
-# its length (its note row, its audit event, up to eight heading spans when it has no
-# passage), which a plan's notes_per_month bounds as it grows. A heading's path is charged
+# its length (its note row, its audit event, up to eight heading spans more than its
+# passages), which a plan's notes_per_month bounds as it grows. A heading's path is charged
 # against the passages cap (charge_of), so the long-heading shapes hold 60 list items a
 # note, not 300: two notes fit.
 
@@ -215,22 +215,24 @@ SHAPES = {
 }
 
 
-def eight_letters(n: int) -> str:  # the most headings a note without passages may have
-    return f"# {n}\n" + "# a\n" * 7
+def nine_letters(n: int) -> str:
+    """The most headings a note of one passage may have (eight over its passages), over a
+    passage of one letter: a note with no passage is refused (NoPassage)."""
+    return f"# {n}\n" + "# a\n" * 8 + "a\n"
 
 
-def one_heading(n: int) -> str:  # the smallest note there is
-    return f"# {n}\n"
+def one_heading(n: int) -> str:  # the smallest note there is: a heading over one letter
+    return f"# {n}\n\na\n"
 
 
 # Each shape: its notes, the notes it goes on with once the passages cap refuses one (None:
 # it stops there), and the storage cap.
 FILLS = {
     **{name: (make, None, CAP) for name, make in SHAPES.items()},
-    "eight one-letter headings": (eight_letters, None, TINY_CAP),
-    "dense items, then eight one-letter headings": (
+    "nine one-letter headings over a letter": (nine_letters, None, TINY_CAP),
+    "dense items, then nine one-letter headings over a letter": (
         SHAPES["small dense notes, one page"],
-        eight_letters,
+        nine_letters,
         TINY_CAP,
     ),
     "one heading": (one_heading, None, TINY_CAP),

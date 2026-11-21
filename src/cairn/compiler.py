@@ -8,8 +8,26 @@ Contract (frozen by tests/acceptance/test_w1_store.py):
 - A later note with the same topic updates the page: the new version keeps every existing
   claim in order and appends claims for spans it does not cite yet. Nothing new: "unchanged".
 - The body is "# <title>" followed by the claim texts in claim order, separated by blank
-  lines. A claim whose span's heading path differs from the previous claim's is preceded by
-  "## <last heading path segment>" (skipped when that segment equals the title).
+  lines. The title is one line of heading text (heading_text: each line break and the blanks
+  around it one space, review blocker 1). A claim is preceded by the headings of its span's
+  path that differ from the previous claim's (section_headings; past level 6 the rest of the
+  path is one breadcrumb heading, should-fix 9). A claim whose text leaves a code fence open
+  as Markdown reads it (it copies a note that never closes one, or closes it deeper than
+  Markdown's limit) is followed by a line that closes it, the opener's own indentation and
+  run, so the claim after it is never read as code (review 7.2, should-fix 8); the claim's
+  text is never changed. The body so made is then read whole, once: what a claim's lines are
+  depends on what is written before it (after a list item, a passage that alone is indented
+  text may open a fence), so a fence that runs from one claim into the next claim or heading
+  gets a closer after the claim it starts in, kept only when the parser then reads no fence
+  leaving that claim (third report, must-fix 4; spans.fences_kept_in), and at most
+  spans.CLOSERS_MAX such closers in one body, so a render parses the body at most that often
+  and once more. A claim no such line closes, or one past that number, is refused
+  (gate.FENCE_LEFT_OPEN): alone, by compile_note and by every gate; where the body puts it,
+  by every gate, so no compile, tidy or arrangement saves it. render_body
+  itself never refuses: a forgotten note's page is written with it. Each gate checks that
+  the body is what this function writes of the claims (gate.unclaimed_line: equality with a
+  re-render). A read of a stored version asks body_to_read, which answers BODY_NOT_SHOWN in
+  the body's place when the renderer names such a claim (fourth report, must-fix 4).
 - Before saving, the candidate page and the spans its claims cite go through a gate. A
   failing gate saves nothing and returns status "rejected" with the gate's result. The gate's
   metrics are saved with the page version.
@@ -75,17 +93,37 @@ chooses a note's page, and nothing else does: `page_for`, which asks the store.
   (`filed`); every other outcome is recorded by the caller (cairn.memory).
 """
 
+import hashlib
 import itertools
+import json
 import re
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
-from cairn.spans import Span
+from cairn.candidate import CandidatePage, GateResult
+from cairn.gate import (
+    BREADCRUMB,
+    fence_left_open,
+    importable,
+    unclaimed_violations,
+    verbatim_gate,
+    whole,
+)
+from cairn.spans import (
+    CLOSERS_MAX,
+    FenceLeftOpen,
+    Span,
+    claim_id,
+    fence_closes,
+    fence_opener,
+    fences_kept_in,
+    open_fence_closer,
+)
 from cairn.store import Claim, Note, Page, StalePage, Store, stored_key
-from cairn.topics import topic_tag
+from cairn.topics import one_line, topic_tag
 
 CONTENT_KINDS = frozenset({"paragraph", "bullet", "code", "table", "quote"})
 SLUG_MAX = 64
@@ -93,21 +131,10 @@ SAVE_TRIES = 3  # reads of a page that keeps moving before a compile gives up
 STALE_PAGE = "compile.stale_page"  # the code of a compile that lost its page SAVE_TRIES times
 TAG_SIZES = (8, 12, 16)  # hex characters of the tag a colliding topic's slug ends with
 _ADDRESS_BATCH = 8  # slugs looked up in one read when choosing a new page's address
-
-
-class GateResult(BaseModel):
-    passed: bool
-    violations: list[str] = Field(default_factory=list)
-    metrics: dict[str, Any] = Field(default_factory=dict)
-
-
-class CandidatePage(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    slug: str
-    title: str
-    body: str
-    claims: tuple[Claim, ...]
+# A code fence, three or more backticks or tildes after any indentation and any list marker
+# (a fence may open on an item's marker line), and its info string.
+_FENCE = re.compile(r"([ \t]*)((?:[-*+]|\d{1,9}[.)])[ \t]+)?(`{3,}|~{3,})(.*)")
+_ITEM_MARK = re.compile(r"(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")  # a list item's marker
 
 
 Gate = Callable[[CandidatePage, Mapping[str, Span]], GateResult]
@@ -228,14 +255,295 @@ def lost_race(result: "CompileResult") -> bool:
     )
 
 
-def claim_id(span_id: str) -> str:
-    """ "cl_" + the span id's hex part."""
-    return "cl_" + span_id.removeprefix("sp_")
+def section_headings(
+    title: str, path: Sequence[str], previous: Sequence[str]
+) -> tuple[tuple[str, ...], list[tuple[int, str]]]:
+    """A claim's section and the headings to write before it, as (level, text), when the
+    claim shown before it had the section `previous`. The section is `path` (its heading
+    path) less a first heading that is the page's title; empty, the claim has no section.
+    Each heading is written at its depth, the first at level 2; in a section deeper than
+    levels 2 to 6 hold, its fifth heading and every one after it are one heading at level 6,
+    joined by BREADCRUMB (should-fix 9), so its whole ancestry is shown and no heading of it
+    reads as a sibling of its parent. They are written from the first that differs from
+    `previous`'s, or, when the section is `previous` cut short, its last, so no claim reads
+    as under a heading off its path."""
+    section = tuple(path[1:] if path[:1] == (title,) else path)
+    return section, _headings(_shown(section), _shown(tuple(previous)), lambda depth: depth + 2)
+
+
+def _shown(section: tuple[str, ...]) -> tuple[str, ...]:
+    """The headings a section is written as: its own while levels 2 to 6 hold them, else its
+    first four and the rest as one breadcrumb."""
+    deepest = 6 - 2  # the index of the heading written at level 6
+    if len(section) <= deepest + 1:
+        return section
+    return (*section[:deepest], BREADCRUMB.join(section[deepest:]))
+
+
+def _headings(
+    shown: tuple[str, ...], before: tuple[str, ...], level: Callable[[int], int]
+) -> list[tuple[int, str]]:
+    """The headings of `shown` to write after a claim under `before`: from the first that
+    differs, or, when `shown` is `before` cut short, its last (it is written again)."""
+    same = 0
+    while same < min(len(shown), len(before)) and shown[same] == before[same]:
+        same += 1
+    if shown and same == len(shown) < len(before):
+        same -= 1  # back up to a parent: it is written again
+    return [(level(depth), shown[depth]) for depth in range(same, len(shown))]
+
+
+def _section_headings_before_review_two(
+    title: str, path: Sequence[str], previous: Sequence[str]
+) -> tuple[tuple[str, ...], list[tuple[int, str]]]:
+    """section_headings as it was before should-fix 9: past level 6 every heading was written
+    at level 6. For the import's check alone (render_body_before_review_two)."""
+    section = tuple(path[1:] if path[:1] == (title,) else path)
+    return section, _headings(section, tuple(previous), lambda depth: min(depth + 2, 6))
+
+
+# A page's title as the body writes it: one line of heading text (review blocker 1). The one
+# rule, cairn.topics.one_line, which every other place that writes a title or a topic into
+# line-structured text (Slack, the export, the command line) calls too: a body is rendered
+# when it is read, so a title taken in, stored or imported with a line break is written by
+# it, never as given.
+heading_text = one_line
 
 
 def render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) -> str:
     """Render the extractive body. A claim's section is the heading path of its first span
-    found in `spans`; a claim with no known span counts as having no heading path."""
+    found in `spans` (section_headings); a claim with no known span counts as having no
+    heading path. The claims with no section come first, in their order; then the others in
+    their order, each under its section's headings. The title is written as heading_text.
+    One pass over `claims`, then one reading of the body (`assembled`). Never raises."""
+    return assembled(title, claims, spans)[0]
+
+
+def assembled(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> tuple[str, str | None]:
+    """The body render_body writes, and the id of the claim whose code fence runs into the
+    next claim or heading and is not closed after the claim ("-" if it is no claim's), else
+    None. Each claim is written closed as it is alone (`_closed`); then the body is read
+    whole by the Markdown parser, and a fence that starts in one block and covers the next
+    gets a closer after its block, kept only when the parser then reads no fence leaving
+    that block, and at most spans.CLOSERS_MAX of them in one body
+    (cairn.spans.fences_kept_in). A claim is named here when its closer did not close it (no
+    such page is known) or when the body holds more such fences than that; every gate
+    refuses the page (gate.unclaimed_violations)."""
+    body, place = left_to_run(title, claims, spans)
+    return body, None if place is None else claims[place - 1].id if place else "-"
+
+
+def left_to_run(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> tuple[str, int | None]:
+    """`assembled`, naming the claim by its place among `claims` (1 for the first; 0 when the
+    fence is no claim's), since two claims of a page saved past the gates may hold one id.
+    For a writer of a version that asks the import's check of it
+    (store.portable.version_faults: Refusal.FENCE_RUNS_ON): an import, and a forget, which
+    writes the body this returns. One render."""
+    blocks = _blocks(title, claims, spans, _closed, section_headings, heading_text)
+    kept, left = fences_kept_in([text for text, _ in blocks])
+    place = None
+    if left is not None:
+        owner = blocks[left][1]
+        place = next((n for n, claim in enumerate(claims, 1) if claim is owner), 0)
+    return "\n\n".join(kept) + "\n", place
+
+
+BODY_NOT_SHOWN = (  # what a read answers in the place of a body it does not show
+    "The body of this version is not shown. Its notes' Markdown cannot be put together"
+    " safely: a code fence would run from one claim into the next, and a body closes at most"
+    f" {CLOSERS_MAX} such fences. Read the claims, where each claim's text and citations are"
+    " exact. The body is shown again once a note the page cites is forgotten, which writes"
+    " the page again."
+)
+
+
+def body_to_read(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> tuple[str, bool]:
+    """What a read answers as a version's body, and whether that is BODY_NOT_SHOWN in its
+    place: the body render_body writes, unless the renderer names a fence it left to run
+    from one claim into the next (left_to_run: more of them than a body closes, or one no
+    closer closes). A version an earlier build stored can hold one: it is read, never checked
+    as an import is, and the package's gates, an import and a forget write none now. One
+    render, as render_body; never raises."""
+    body, place = left_to_run(title, claims, spans)
+    return (body, False) if place is None else (BODY_NOT_SHOWN, True)
+
+
+def render_body_before_review_four(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before the third report: each claim closed as it is
+    alone, and the body never read whole, so a fence that opens only after an earlier claim's
+    list item ran into the next claim. For the import's check alone
+    (store.portable._as_rendered), so an archive written then still imports; never shown."""
+    return _rendered(title, claims, spans, _closed, section_headings, heading_text)
+
+
+def render_body_with_fences_open(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before review 7.2, a claim that leaves a code fence
+    open left open. For the import's check alone (store.portable._as_rendered), so an
+    archive written then still imports; never shown."""
+    return _rendered(
+        title, claims, spans, lambda text: text, _section_headings_before_review_two, str
+    )
+
+
+def render_body_before_review_two(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before the second review: the title as given
+    (blocker 1), every heading past level 6 at level 6 (should-fix 9), and a fence closed by
+    any line of its run at any indentation (should-fix 8). For the import's check alone
+    (store.portable._as_rendered), so an archive written then still imports; never shown."""
+    return _rendered(
+        title, claims, spans, _closed_before_review_two, _section_headings_before_review_two, str
+    )
+
+
+def render_body_before_review_three(
+    title: str, claims: Sequence[Claim], spans: Mapping[str, Span]
+) -> str:
+    """The body as render_body wrote it before the second report: a fence closed where
+    cairn.spans' line rules, not the Markdown parser, left it open. For the import's check
+    alone (store.portable._as_rendered), so an archive written then still imports; never
+    shown."""
+    return _rendered(
+        title, claims, spans, _closed_before_review_three, section_headings, heading_text
+    )
+
+
+def _rendered(
+    title: str,
+    claims: Sequence[Claim],
+    spans: Mapping[str, Span],
+    closed: Callable[[str], str],
+    headings_of: Callable[
+        [str, Sequence[str], Sequence[str]], tuple[tuple[str, ...], list[tuple[int, str]]]
+    ],
+    written: Callable[[str], str],
+) -> str:
+    blocks = _blocks(title, claims, spans, closed, headings_of, written)
+    return "\n\n".join(text for text, _ in blocks) + "\n"
+
+
+def _blocks(
+    title: str,
+    claims: Sequence[Claim],
+    spans: Mapping[str, Span],
+    closed: Callable[[str], str],
+    headings_of: Callable[
+        [str, Sequence[str], Sequence[str]], tuple[tuple[str, ...], list[tuple[int, str]]]
+    ],
+    written: Callable[[str], str],
+) -> list[tuple[str, Claim | None]]:
+    """The blocks a body is, in its order, each with the claim it is the text of (None for
+    the title and a heading): a body is these joined by a blank line."""
+    top: list[tuple[str, Claim | None]] = [(f"# {written(title)}", None)]
+    rest: list[tuple[str, Claim | None]] = []
+    previous: tuple[str, ...] = ()
+    for claim in claims:
+        path = next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
+        section, headings = headings_of(title, path, previous)
+        if not section:
+            top.append((closed(claim.text), claim))
+            continue
+        rest.extend((f"{'#' * level} {text}", None) for level, text in headings)
+        rest.append((closed(claim.text), claim))
+        previous = section
+    return [*top, *rest]
+
+
+def _closed(text: str) -> str:
+    """`text`, and when the Markdown parser leaves a code fence of it open, a line that closes
+    it (cairn.spans.open_fence_closer: the opener's own column and run, so it closes inside a
+    list item too), so the claim after it is never read as code (review 7.2, should-fix 8).
+    The parser's line map decides, not a reading of lines and no private character: the
+    fence is open when it covers a line written after the claim. The claim's text is never
+    changed; a text that holds no backtick or tilde is not parsed. A text no closer closes
+    (FenceLeftOpen) is written as it is: compile_note refuses a note that would add one
+    (gate.FENCE_LEFT_OPEN), and every gate and the import refuse a page that holds one.
+    What the claim's lines are once other claims stand before it is `assembled`'s question."""
+    try:
+        closer = open_fence_closer(text)
+    except FenceLeftOpen:
+        return text
+    return text if closer is None else f"{text}\n{closer}"
+
+
+def _closed_before_review_three(text: str) -> str:
+    """`_closed` as it was before the second report: openers and closers read by cairn.spans'
+    rules (fence_opener, fence_closes), held to Markdown's limit by columns. For the import's
+    check alone (render_body_before_review_three)."""
+    opened: tuple[str, str, int] | None = None  # (indentation to write, run, deepest closer)
+    items: list[int] = []  # the text column of each list item a line may sit in
+    for written_line in text.split("\n"):
+        line = written_line.expandtabs(4)  # Markdown's columns
+        if opened is not None:
+            if fence_closes(line, opened[1], opened[2]):
+                opened = None
+            continue
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        while items and indent < items[-1] and _ITEM_MARK.match(line.lstrip()):
+            items.pop()  # a marker less indented starts an item of a list further out
+        container = next((column for column in reversed(items) if column <= indent), 0)
+        if indent - container > 3:
+            continue  # indented code, or text that goes on: no marker, no fence
+        found = fence_opener(line)
+        if _ITEM_MARK.match(line.lstrip()):
+            column = found[0] if found else _text_column(line)
+            items.append(column)
+            container = column
+        if found:
+            column, run = found
+            opened = (" " * column, run, container + 3)
+    return text if opened is None else f"{text}\n{opened[0]}{opened[1]}"
+
+
+def _text_column(line: str) -> int:
+    """Where a list item's text starts on its marker line: past its indentation, the marker
+    and the blanks after it."""
+    body = line.lstrip()
+    marker = _ITEM_MARK.match(body)
+    rest = body[marker.end() :] if marker else body
+    return len(line) - len(rest.lstrip())
+
+
+def _closed_before_review_two(text: str) -> str:
+    """`_closed` as it was before should-fix 8: any line of the opener's run closed it, at any
+    indentation, and a line of any indentation opened one. For the import's check alone
+    (render_body_before_review_two)."""
+    opened: tuple[str, str] | None = None  # (indentation, run)
+    for line in text.split("\n"):
+        fence = _FENCE.fullmatch(line.rstrip(" \t\r"))
+        if not fence:
+            continue
+        indent, marker, run, rest = fence.groups()
+        if opened is None:
+            if not (run[0] == "`" and "`" in rest):
+                opened = (indent + " " * len(marker or ""), run)
+        elif (
+            not marker
+            and run[0] == opened[1][0]
+            and len(run) >= len(opened[1])
+            and not rest.strip(" \t")
+        ):
+            opened = None
+    return text if opened is None else f"{text}\n{opened[0]}{opened[1]}"
+
+
+def previous_render_body(title: str, claims: Sequence[Claim], spans: Mapping[str, Span]) -> str:
+    """The body as cairn wrote it before fix H (one "##" of a path's last heading wherever
+    the path changed, nothing for a claim with no section). For the import's check alone
+    (store.portable._as_rendered), so an archive written then still imports; never shown."""
     blocks = [f"# {title}"]
     previous: tuple[str, ...] | None = None
     for claim in claims:
@@ -277,12 +585,14 @@ def extractive(title: str, spans: Sequence[Span]) -> Draft:
 
 def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResult:
     """The default gate. Violations: a claim with no span ids, a span id missing from `spans`,
-    a claim text (whitespace-collapsed) missing from the body. Metrics: {"claims": n,
-    "spans_cited": distinct cited span count}.
+    a claim text missing from the body as it is written (CORE5), and the reverse: a body that is
+    not what render_body writes of the claims and `spans` (gate.unclaimed_line, review blocker
+    1 and the second report's finding 1); and, for a page that passes those, whatever an
+    import would refuse its version for (gate.importable).
+    Metrics: {"claims": n, "spans_cited": distinct cited span count}.
 
     Each violation reads "<code>: <claim id>: <message>", like cairn.gate.lint_gate's."""
     violations = []
-    body = " ".join(page.body.split())
     for claim in page.claims:
         if not claim.span_ids:
             violations.append(
@@ -293,16 +603,55 @@ def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResul
             for span_id in claim.span_ids
             if span_id not in spans
         )
-        if " ".join(claim.text.split()) not in body:
+        if claim.text not in page.body:
             violations.append(
                 f"provenance.claim_not_in_body: {claim.id}: the claim text is not in the body"
             )
+    violations.extend(unclaimed_violations(page, spans))  # the reverse (review blocker 1)
     cited = {span_id for claim in page.claims for span_id in claim.span_ids}
-    return GateResult(
+    result = GateResult(
         passed=not violations,
         violations=violations,
         metrics={"claims": len(page.claims), "spans_cited": len(cited)},
     )
+    return importable(result, page, spans, reworded=True)
+
+
+def own_claims(store: Store, page: Page | None) -> tuple[Page | None, frozenset[str]]:
+    """The page as a writer builds on it (compile_note, arrange.tidy_page,
+    arrange.arrange_page), and the passages it left out: without each claim that cites a
+    passage the store holds of a note of another project, of its workspace or another, asked of the
+    store for the stored version the writer read (Store.passages_of_other_projects, which reads
+    the ids from that version itself and takes none from the writer), so a writer whose reach is
+    the page's project alone leaves it out as one that reaches everything does, and none is
+    refused for it. An id the page already shows is no new knowledge: the writer learns which of
+    them are another project's, never what those passages say. A page saved since the writer
+    read it is answered for the version read (none, if that version was pruned), and the save
+    then refuses the writer as stale (StalePage), as it would anyway. The writer passes them to
+    Store.save_page as `left_out`, so a page a delete or a forget removed while it drafted is
+    stale for it. The version it saves is held to its own project's notes (save_page refuses
+    any other); the earlier versions stay, as after any write, since a write is not an
+    erasure. Since schema step 32 only a program that wrote the tables directly leaves such a
+    claim (`stats --other-projects` counts its pages). Its question is not held to the
+    workspace, so on a page written behind the store's back the outcome (the claim left out
+    and the note filed, or the note refused for a passage no one holds) tells whoever wrote
+    that row whether another workspace still holds the passage; no path of the product lets a
+    writer cite a passage of its choosing, so nothing learns it without writing the tables.
+    A claim that folds a passage of the page's own project with one of another project's is
+    left out whole, its own passage with it (schema step 32 and `repair` keep that passage).
+    Filing another note, or a tidy, does not bring it back: filing the same note again, with
+    its original source reference and topic, does, since the store answers with the stored
+    note and compiles it again.
+    One read when the page cites a passage; the page itself when no claim leaves."""
+    if page is None:
+        return None, frozenset()
+    if not any(claim.span_ids for claim in page.claims):
+        return page, frozenset()
+    foreign = store.passages_of_other_projects(page.project_id, page.slug, page.version)
+    if not foreign:
+        return page, foreign
+    kept = tuple(claim for claim in page.claims if foreign.isdisjoint(claim.span_ids))
+    return page.model_copy(update={"claims": kept}), foreign
 
 
 def compile_note(
@@ -339,7 +688,7 @@ def compile_note(
     candidate: CandidatePage | None = None
     for _ in range(SAVE_TRIES):
         slug = outcome["slug"] = page_for(store, note.project_id, key, title)  # chosen anew
-        existing = store.get_page(note.project_id, slug)
+        existing, left_out = own_claims(store, store.get_page(note.project_id, slug))
         version = existing.version if existing else None
         claims = existing.claims if existing else ()
         cited = [span_id for claim in claims for span_id in claim.span_ids]
@@ -352,6 +701,8 @@ def compile_note(
         if not new_spans:
             return CompileResult(**outcome, status="unchanged", version=version, draft=stats)
         spans = store.get_spans([*cited, *(s.id for s in new_spans)])
+        if existing is not None and (again := rebuilt_folds(existing.claims, spans)) is not claims:
+            existing = existing.model_copy(update={"claims": again})  # an old fold (CORE5)
         if draft is None or drafted != [s.id for s in new_spans]:
             try:
                 draft = compose(title, new_spans)
@@ -364,6 +715,14 @@ def compile_note(
                     draft=_add_stats(stats, error.stats),
                 )
             drafted, stats = [s.id for s in new_spans], _add_stats(stats, draft.stats)
+        if left_open := fence_left_open(draft.claims):
+            return CompileResult(
+                **outcome,
+                status="rejected",
+                version=version,
+                gate=GateResult(passed=False, violations=left_open),
+                draft=stats,
+            )
         candidate = candidate_page(
             slug, title, existing, new_spans, existing_spans=spans, claims=draft.claims
         )
@@ -382,6 +741,7 @@ def compile_note(
                 expected_version=version or 0,
                 topic=key,
                 filed=note.id,
+                left_out=left_out,
             )
         except StalePage:  # the page moved, or its slug or key is another topic's now
             continue
@@ -398,9 +758,56 @@ def compile_note(
     )
 
 
-def _verbatim_gate() -> Gate:
-    from cairn.gate import verbatim_gate  # cairn.gate builds on this module
+def rebuilt_folds(claims: tuple[Claim, ...], spans: Mapping[str, Span]) -> tuple[Claim, ...]:
+    """`claims`, each claim that is not the whole of every passage it cites by today's rule
+    (gate.whole), or that folds passages under different headings, rebuilt from its passages
+    in its place: one claim for each passage `spans` holds and no other claim of the page
+    copies alone, its text the passage's, as the extractive compile writes it (CORE5: a fold
+    a tidy made before two passages were the same only when their text is). A claim with no
+    passage in `spans` is kept as it is. The same tuple when none is rebuilt. A tidy and an
+    arrangement save the rebuilt claims as the page's next version, and a note compiles onto
+    them; earlier versions are never rebuilt, and an import takes them as they are.
 
+    Ids: no id is held twice, and none of `claims` is lost but a rebuilt claim's whose every
+    passage another claim already copies alone (none of cairn's tidies made such a page).
+    The first claim rebuilt from a claim keeps that claim's id; each other takes claim_id of
+    its passage when no claim holds that id, else an id made from its place and its passage
+    (as a forgotten note's survivor takes one, store.erasure.kept_claims), drawn again in the
+    rare case that one is held too."""
+    rebuild = [
+        claim
+        for claim in claims
+        if any(i in spans for i in claim.span_ids)
+        and (
+            not whole(claim, spans)
+            or len({spans[i].heading_path for i in claim.span_ids if i in spans}) > 1
+        )
+    ]
+    if not rebuild:
+        return claims
+    again = {claim.id for claim in rebuild}
+    taken = {claim.id for claim in claims}  # every id of the version, held until its end
+    alone = {  # the passages a claim kept as it is already copies alone
+        claim.span_ids[0] for claim in claims if claim.id not in again and len(claim.span_ids) == 1
+    }
+    out: list[Claim] = []
+    for claim in claims:
+        if claim.id not in again:
+            out.append(claim)
+            continue
+        cited = [i for i in dict.fromkeys(claim.span_ids) if i in spans and i not in alone]
+        for n, span_id in enumerate(cited):
+            new, tries = claim.id if n == 0 else claim_id(span_id), 0
+            while n and new in taken:
+                key = json.dumps([len(out), span_id, tries]).encode()
+                new, tries = "cl_" + hashlib.sha256(key).hexdigest()[:16], tries + 1
+            taken.add(new)
+            alone.add(span_id)
+            out.append(Claim(id=new, text=spans[span_id].text, span_ids=(span_id,)))
+    return tuple(out)
+
+
+def _verbatim_gate() -> Gate:
     return verbatim_gate
 
 

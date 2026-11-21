@@ -25,6 +25,12 @@ Whether the bound applied changes neither count, and nothing in the query raises
 word, a 65th part and a word given a thousand times add none. The counts are those the store's
 connection reports to its trace callback and hands to its row factory, as in
 tests/acceptance/test_q1_bounded_reads.py.
+One statement more, once (SETTINGS): a search runs on one of the store's read-only
+connections (cairn.store.base.Readers), and the first time a connection uses a workspace's
+index, FTS5 loads the index's settings into it with one statement of its own, `SELECT k, v
+FROM '<index>_config'`; that connection's later searches do not run it. Each test below opens
+a new store, so its first search pays it, and the counts above are those plus SETTINGS; a
+second search on the same store (the cap's, the steps') runs exactly the counts above.
 R6: the matches a statement walks to return its rows are bounded too, at most 32 x (C + 1) =
 256,032 for the counts and as many for the likeliest walk. The rows above cannot see them,
 so they are counted in SQLite's steps: for a query of each size, a corpus three times as
@@ -42,6 +48,14 @@ from cairn.memory import searched
 from cairn.store import Claim, Store, ranking
 
 FIXED = 3  # the index's table, the account's projects, the reach's counts
+SETTINGS = 1  # FTS5 loading the index's settings into a reader that has not used it yet
+
+
+def settings_loaded(statements: list[str]) -> int:
+    """How many of `statements` are FTS5 loading an index's settings (SETTINGS)."""
+    return sum(1 for s in statements if s.startswith("SELECT k, v FROM 'main'.'claim_search_"))
+
+
 QUIET = {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}
 WORST_ROWS = 65_035 + 1  # the module docstring's rows, P = 1 project
 
@@ -63,7 +77,7 @@ def cap(monkeypatch, scored: int) -> None:
 @contextlib.contextmanager
 def watched(store: Store):
     seen = SimpleNamespace(statements=[], rows=0)
-    con, before = store._con, store._con.row_factory
+    before = store._state.observers.rows
 
     def traced(statement: str) -> None:
         text = statement.lstrip()
@@ -74,13 +88,13 @@ def watched(store: Store):
         seen.rows += 1
         return row if before is None else before(cursor, row)
 
-    con.set_trace_callback(traced)
-    con.row_factory = rows
+    store._observe(trace=traced)
+    store._observe(rows=rows)
     try:
         yield seen
     finally:
-        con.set_trace_callback(None)
-        con.row_factory = before
+        store._observe(trace=None)
+        store._observe(rows=before)
 
 
 def worst(n: int) -> list[str]:
@@ -154,8 +168,10 @@ def test_a_query_of_each_size_scores_its_bound_and_costs_what_the_bound_says(
     with watched(store) as seen:
         found = store.find(" ".join(words), limit=50)
     assert not found.searched.complete and found.searched.claims_ranked == scored
-    assert (len(seen.statements), seen.rows) == bound(distinct, parts) == AT_BOUND[parts]
-    assert len(seen.statements) <= 100 and seen.rows <= WORST_ROWS
+    assert settings_loaded(seen.statements) == SETTINGS  # the one statement more, and why
+    assert (len(seen.statements) - SETTINGS, seen.rows) == bound(distinct, parts)
+    assert bound(distinct, parts) == AT_BOUND[parts]
+    assert len(seen.statements) <= 100 + SETTINGS and seen.rows <= WORST_ROWS
     if parts == 1:  # the answer says so with the new number (cairn.memory.searched)
         said = searched(found.searched)["said"]
         # R6: the word's count stops at its bound, 8,000, so the total is not exact
@@ -173,12 +189,15 @@ def test_the_worst_search_costs_what_the_bound_says_and_the_cap_costs_nothing(st
     with watched(store) as seen:
         found = store.find(" ".join(words), limit=50)
     assert not found.searched.complete and found.searched.claims_ranked == 4
-    assert (len(seen.statements), seen.rows) == bound(32, 64, 4)
-    # Under the cap, the same query runs the same statements.
+    assert settings_loaded(seen.statements) == SETTINGS
+    assert (len(seen.statements) - SETTINGS, seen.rows) == bound(32, 64, 4)
+    # Under the cap, the same query runs the same statements (the second search: the reader
+    # holds the index's settings, so it runs the bound's statements and no more).
     cap(monkeypatch, 10)
     with watched(store) as uncapped:
         assert store.find(" ".join(words), limit=50).searched.complete
-    assert len(uncapped.statements) == len(seen.statements)
+    assert settings_loaded(uncapped.statements) == 0
+    assert len(uncapped.statements) == len(seen.statements) - SETTINGS == bound(32, 64, 4)[0]
 
 
 @pytest.mark.parametrize(
@@ -197,7 +216,8 @@ def test_nothing_after_the_bounds_raises_the_cost(store, monkeypatch, extra):
     with watched(store) as seen:
         found = store.find(" ".join(words + extra), limit=50)
     assert found.searched.words_left_out_count == len(extra)
-    assert (len(seen.statements), seen.rows) == bound(32, 64, 4)
+    assert settings_loaded(seen.statements) == SETTINGS
+    assert (len(seen.statements) - SETTINGS, seen.rows) == bound(32, 64, 4)
 
 
 def test_the_parts_bound_comes_before_the_words_bound(store, monkeypatch):
@@ -208,7 +228,8 @@ def test_the_parts_bound_comes_before_the_words_bound(store, monkeypatch):
     with watched(store) as seen:
         found = store.find(" ".join(words), limit=50)
     assert (found.searched.words_searched, found.searched.words_left_out_count) == (21, 11)
-    assert (len(seen.statements), seen.rows) == bound(21, 63, 4)
+    assert settings_loaded(seen.statements) == SETTINGS
+    assert (len(seen.statements) - SETTINGS, seen.rows) == bound(21, 63, 4)
 
 
 def test_a_query_that_matches_nothing_costs_a_statement_per_word_and_asks_for_no_claim(store):
@@ -217,7 +238,8 @@ def test_a_query_that_matches_nothing_costs_a_statement_per_word_and_asks_for_no
     with watched(store) as seen:
         found = store.find(" ".join(words))
     assert found.hits == [] and found.searched.complete
-    assert len(seen.statements) == FIXED + ranking.WORDS_MAX  # the counts, and nothing more
+    assert settings_loaded(seen.statements) == SETTINGS
+    assert len(seen.statements) == FIXED + ranking.WORDS_MAX + SETTINGS  # the counts, no more
     assert all(s.lstrip().upper().startswith("SELECT") for s in seen.statements)
     assert not [s for s in seen.statements if "highlight(" in s or ".text" in s]
 
@@ -243,7 +265,8 @@ def test_three_times_the_matches_cost_a_query_of_each_size_the_same_steps(
             merge(store)
             with watched(store) as seen:
                 store.find(" ".join(words), limit=50)
-            assert (len(seen.statements), seen.rows) == bound(distinct, parts, 4)
+            assert settings_loaded(seen.statements) == SETTINGS
+            assert (len(seen.statements) - SETTINGS, seen.rows) == bound(distinct, parts, 4)
             measured.append(steps(store, " ".join(words)))
         finally:
             store.close()

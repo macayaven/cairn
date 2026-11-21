@@ -16,6 +16,6 @@
   <label for="project-description">Description <span class="hint">optional</span></label>
   <input id="project-description" name="description" type="text" value="{{ project_form.description }}" autocomplete="off">
   <label class="option"><input type="checkbox" name="private" value="on"{% if project_form.get("private") %} checked{% endif %} aria-describedby="project-private-hint"> Private</label>
-  <p class="hint" id="project-private-hint">Only you, the people you name, and the workspace's owners reach it, along with the keys and sources that belong to whoever runs the server, such as a key made on its command line. A project for personal notes is private whether this is ticked or not; its "Who reaches it" page can open it to others.</p>
+  <p class="hint" id="project-private-hint">{{ private_reach }} A project for personal notes is private whether this is ticked or not; its "Who reaches it" page can open it to others.</p>
   <button type="submit"{% if create_quiet is defined and create_quiet %} class="quiet"{% endif %}>Create project</button>
 </form>

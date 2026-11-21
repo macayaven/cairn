@@ -306,8 +306,11 @@ def test_a_claim_must_say_what_a_span_it_cites_says(source, tmp_path):
 
 
 def test_a_claim_may_differ_from_its_span_in_whitespace_only(source, tmp_path):
+    """White space the verbatim gate reads as the same: prose wrapped elsewhere, blank lines
+    at its ends (review blocker 2: a tab that indents a line is structure, refused)."""
+
     def respace(claim):
-        claim["text"] = "  " + claim["text"].replace(" ", " \n\t ") + "\n"
+        claim["text"] = "\n" + claim["text"].replace(" ", " \n ") + "\n"
 
     target = fresh_import(tmp_path, claims_changed(exported(source), respace))
     target.close()
@@ -510,7 +513,9 @@ def test_the_command_line_import_without_plans_says_none_is_applied(source, tmp_
     db = str(tmp_path / "cli.db")
     assert main(["import", "--db", db, "--account", "acct_default", "--in", str(path)]) == 0
     err = capsys.readouterr().err.splitlines()
-    assert err == ["no plan is applied: this import caps nothing (--plans FILE holds it to one)"]
+    assert [line for line in err if not line.startswith("cairn.audit: ")] == [
+        "no plan is applied: this import caps nothing (--plans FILE holds it to one)"
+    ]  # besides the audit lines, which every command but serve writes on stderr
 
 
 @pytest.mark.parametrize(

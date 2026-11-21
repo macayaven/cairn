@@ -113,11 +113,11 @@ def test_the_read_is_one_section_of_statements_of_at_most_item_batch_digests(sto
     for n in range(0, 1200, 7):
         store.record_source_item(claim, f"row-{n}")
     seen: list[str] = []
-    store._con.set_trace_callback(seen.append)
+    store._observe(trace=seen.append)
     try:
         found = store.written_source_items(claim, [f"row-{n}" for n in range(1200)])
     finally:
-        store._con.set_trace_callback(None)
+        store._observe(trace=None)
     assert found == {f"row-{n}" for n in range(0, 1200, 7)}
     selects = [s for s in seen if "source_items" in s]
     assert len(selects) == -(-1200 // ITEM_BATCH) == 3

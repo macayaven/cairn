@@ -12,6 +12,7 @@ import pytest
 
 from cairn.store import DEFAULT_ACCOUNT_ID, Store, base
 from cairn.web.compactor import Compactor
+from wait_helpers import wait_for_event
 
 T0 = datetime(2026, 11, 11, 9, 0, tzinfo=UTC)
 
@@ -22,6 +23,11 @@ class Clock:
 
     def __call__(self) -> datetime:
         return self.now
+
+    def ticks(self) -> float:
+        """A monotonic clock that moves with this one (cairn.web.compactor measures every
+        interval on it): seconds since T0."""
+        return (self.now - T0).total_seconds()
 
 
 @pytest.fixture
@@ -79,7 +85,7 @@ def test_an_unknown_account_or_a_view_records_nothing(store):
 def test_one_is_due_after_a_deletion_once_the_interval_has_passed(store, monkeypatch):
     clock = Clock(T0)
     monkeypatch.setattr(base, "_clock", clock)  # the store records compactions by it too
-    compactor = Compactor(store, hours=24, clock=clock)
+    compactor = Compactor(store, hours=24, clock=clock, ticks=clock.ticks)
     assert not compactor.due()  # nothing deleted yet
     store.delete_account(store.create_account("Gone").id)
     assert compactor.due()  # never compacted: at once
@@ -174,13 +180,24 @@ def test_the_loop_compacts_when_one_is_due_and_a_failure_stops_no_later_run(
     compactor = Compactor(store, hours=1, clock=Clock(T0))
 
     async def until_compacted() -> None:
+        finished = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        run_once = compactor.run_once
+
+        def observed():
+            done = run_once()
+            if done:
+                loop.call_soon_threadsafe(finished.set)
+            return done
+
+        monkeypatch.setattr(compactor, "run_once", observed)
         task = asyncio.create_task(compactor.loop())
         try:
-            while store.compaction_state().deleted_at is not None:
-                await asyncio.sleep(0)
-                assert not task.done(), task.exception()
+            await wait_for_event(finished, "compaction did not finish after retrying")
         finally:
             task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
     with caplog.at_level(logging.INFO, logger="cairn.access"):
         asyncio.run(until_compacted())
@@ -244,7 +261,6 @@ def test_the_arranger_runs_beside_the_sync_and_the_compactor_and_each_stops_on_i
     compaction still runs and the arranger keeps making passes; shutdown stops each, the
     arranger through its own stop, and it makes no pass after that."""
     import threading
-    import time
 
     import httpx
     from starlette.testclient import TestClient
@@ -257,7 +273,9 @@ def test_the_arranger_runs_beside_the_sync_and_the_compactor_and_each_stops_on_i
 
     monkeypatch.setattr(compactor_module, "POLL_SECONDS", 0.0)
     store.delete_account(store.create_account("Gone").id)
-    syncing, compacted, seen, passes = threading.Event(), threading.Event(), {}, []
+    syncing, compacted = threading.Event(), threading.Event()
+    arranged, arranger_stopped = threading.Event(), threading.Event()
+    seen, passes = {}, []
 
     async def sync_forever(self, every, *, http, env):
         syncing.set()
@@ -267,7 +285,7 @@ def test_the_arranger_runs_beside_the_sync_and_the_compactor_and_each_stops_on_i
             seen["sync stopped"] = True
             raise
 
-    real_compact, real_pass = Store.compact, Arranger.run_once
+    real_compact, real_pass, real_loop = Store.compact, Arranger.run_once, Arranger.loop
 
     def compact(self):
         real_compact(self)
@@ -275,8 +293,18 @@ def test_the_arranger_runs_beside_the_sync_and_the_compactor_and_each_stops_on_i
 
     async def one_pass(self, limit=10):
         passes.append(syncing.is_set())
-        return await real_pass(self, limit)
+        result = await real_pass(self, limit)
+        if len(passes) >= 3:
+            arranged.set()
+        return result
 
+    async def track_loop(self):
+        try:
+            await real_loop(self)
+        finally:
+            arranger_stopped.set()
+
+    monkeypatch.setattr(Arranger, "loop", track_loop)
     monkeypatch.setattr(Accounts, "sync_sources", sync_forever)
     monkeypatch.setattr(Store, "compact", compact)
     monkeypatch.setattr(Arranger, "run_once", one_pass)
@@ -286,15 +314,12 @@ def test_the_arranger_runs_beside_the_sync_and_the_compactor_and_each_stops_on_i
                      arranger=arranger)  # fmt: skip
     with TestClient(app) as web:
         assert syncing.wait(5) and compacted.wait(5)
-        deadline = time.monotonic() + 5  # a hang guard on the real loops, and nothing else
-        while len(passes) < 3 and time.monotonic() < deadline:  # pass after pass, beside them
-            assert web.get("/healthz").status_code == 200
+        assert arranged.wait(5), "the arranger did not make three passes"
+        assert web.get("/healthz").status_code == 200
         assert len(passes) >= 3 and passes[-1] is True
         assert "sync stopped" not in seen and not arranger._stopping.is_set()
     assert seen["sync stopped"] and arranger._stopping.is_set()
-    made = len(passes)
-    time.sleep(0.1)  # ten of its intervals: a loop still running would have made more
-    assert len(passes) == made
+    assert arranger_stopped.is_set(), "app shutdown did not wait for the arranger loop"
 
 
 def test_a_compaction_that_cannot_finish_is_tried_again_after_the_interval_not_at_every_poll(
@@ -307,7 +332,7 @@ def test_a_compaction_that_cannot_finish_is_tried_again_after_the_interval_not_a
     recorded, so nothing is forgotten."""
     clock = Clock(T0)
     monkeypatch.setattr(base, "_clock", clock)
-    compactor = Compactor(store, hours=24, clock=clock)
+    compactor = Compactor(store, hours=24, clock=clock, ticks=clock.ticks)
     store.delete_account(store.create_account("Gone").id)
     reader = sqlite3.connect(db)  # as the replica service: a read that does not end
     try:
@@ -338,8 +363,8 @@ def test_a_restart_tries_once_again_at_once(store, db, monkeypatch):
     try:
         reader.execute("BEGIN")
         reader.execute("SELECT COUNT(*) FROM settings").fetchone()
-        first = Compactor(store, hours=24, clock=clock)
+        first = Compactor(store, hours=24, clock=clock, ticks=clock.ticks)
         assert first.run_once() is False and not first.due()
-        assert Compactor(store, hours=24, clock=clock).due()  # another process's compactor
+        assert Compactor(store, hours=24, clock=clock, ticks=clock.ticks).due()  # another process's
     finally:
         reader.close()

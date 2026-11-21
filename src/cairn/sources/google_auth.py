@@ -331,7 +331,7 @@ async def access_token(
             limit=MAX_RESPONSE_BYTES,
         )  # fmt: skip
     except Unreachable as error:
-        raise SourceError(f"cannot reach Google's token endpoint: {error}") from None
+        raise SourceError(error.sentence("cannot reach Google's token endpoint")) from None
     except TooLarge:
         raise SourceError("the token endpoint's answer is larger than this server reads") from None
     parsed = _parsed(body)

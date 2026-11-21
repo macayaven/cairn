@@ -148,6 +148,11 @@ VALID: dict[tuple[str, str], dict] = {
         "body": None,
         "status": 200,
     },
+    ("GET", "/api/projects/{project}/pages/{slug}/related"): {  # KG1
+        "query": {"limit": "5"},
+        "body": None,
+        "status": 200,
+    },
     ("GET", "/api/search"): {
         "query": {"q": "quill", "project": "alpha", "limit": "3"},
         "body": None,
@@ -176,6 +181,11 @@ VALID: dict[tuple[str, str], dict] = {
             "new_project": None,
             "days": 7,
         },
+        "status": 200,
+    },
+    ("GET", "/api/audit"): {
+        "query": {"before": "1000", "limit": "5", "action": "project", "project": "alpha"},
+        "body": None,
         "status": 200,
     },
     ("GET", "/api/credentials"): {"query": {}, "body": None, "status": 200},
@@ -227,6 +237,8 @@ CALLS: dict[str, dict] = {
     "page": {"project": "alpha", "slug": "{slug}", "version": 1, "limit": 5, "before": 2},
     "evidence": {"project": "alpha", "slug": "{slug}", "claim_id": "{claim_id}", "version": 1},
     "overview": {"project": "alpha", "limit": 10, "after": "a"},
+    "graph": {"project": "alpha", "limit": 20},  # 8.3
+    "related": {"project": "alpha", "slug": "{slug}", "limit": 5},  # KG1
 }
 
 

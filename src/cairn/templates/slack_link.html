@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% from "_components.html" import actor %}
+{# The first of two steps linking a Slack user to the signed-in person (cairn.slack.link). It
+   leads with what nobody can choose, the Slack user's id and the Slack team, and shows no
+   code. The form posts back to this very address, so the one-time value is written nowhere
+   on the page. No script. #}
+{% block title %}Link a Slack user{% endblock %}
+{% block head %}<meta name="referrer" content="no-referrer">{% endblock %}
+{% block main %}
+<section class="consent">
+  <h1>Link this Slack user to you?</h1>
+  <p class="lede">Go on only if you typed the command in Slack yourself a moment ago. If someone sent you this address, close this page.</p>
+  <dl class="facts">
+    <dt>Slack user id</dt>
+    <dd><code>{{ slack_user }}</code></dd>
+    {% if team_domain %}
+    <dt>Slack workspace</dt>
+    <dd>{{ team_domain }}.slack.com</dd>
+    {% endif %}
+    {% if slack_name != slack_user %}
+    <dt>Name in Slack</dt>
+    <dd>{{ slack_name }} <span class="hint">a name this Slack user set themself</span></dd>
+    {% endif %}
+    <dt>You</dt>
+    <dd>{% if person %}{{ actor("person", person.name) }} <span class="hint">{{ person.email }}</span>{% endif %}</dd>
+    <dt>Workspace</dt>
+    <dd>{{ workspace }}</dd>
+    <dt>This address works until</dt>
+    <dd><time datetime="{{ expires_at }}">{{ expires_at|when }}</time></dd>
+  </dl>
+  <p>Yes shows you a code. You then type it in Slack, and from then on what this Slack user does through the bot, finding and writing notes, acts as you in the workspace <strong>{{ workspace }}</strong>, with what you reach.</p>
+  <form method="post">
+    <div class="choices">
+      <button type="submit">Yes, show me the code</button>
+      <a href="/" class="quiet">No, leave it</a>
+    </div>
+  </form>
+  <p class="meta">You can undo a link at any time: send <code>unlink</code> to the bot's command in Slack.</p>
+</section>
+{% endblock %}

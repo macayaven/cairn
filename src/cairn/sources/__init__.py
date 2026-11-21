@@ -92,12 +92,16 @@ The seam
   tests/acceptance/test_c9_connector.py).
 - Withheld kinds (M2, frozen by tests/acceptance/test_m2_withheld_notes.py).
   `SourceKind.withheld` (False) says that notes of the kind are not sent to a model unless
-  the operator allows it: True for every kind that reads Google Workspace data
-  ("google_meet", "google_calendar", "google_drive", "gmail") and for "connector" (whose
-  words cannot be known), False for "langfuse", "granola", "linear" and "github".
+  the operator allows it: True for every kind in KINDS ("langfuse", "granola",
+  "google_meet", "google_calendar", "google_drive", "gmail", "linear", "github" and
+  "connector"), since the words of any source the server reads are someone else's.
   `withheld_via()` is the `via` of every withheld kind in KINDS, read when called.
   The rule is applied in one place, cairn.arrange, by a note's `via`: a note a person or
   an agent stored with a withheld kind's `via` is withheld too.
+  `HELD_VIA` is the `via` of notes held back the same way that no kind writes: Slack's
+  ("slack", cairn.slack). Slack is not a kind, so it is not in KINDS or withheld_via(); the
+  arranger holds it apart, by `via` alone, and only the operator's choice that names Slack
+  (<PREFIX>_SLACK_NOTES=send) sends it.
 - Notes that name a source (M3, tests/acceptance/test_m3_notes_that_name_a_source.py). The
   sources guide's recipes have an agent read a meeting, a mail thread, a calendar, a document
   or a to-do list with a connector of its own and write a note whose `source_ref` has a form:
@@ -112,8 +116,9 @@ The seam
   kind that is not withheld adds none. `withheld_by_ref(via, source_ref)` says whether a note
   is kept from a model by its `source_ref`: its word is one of withheld_forms() and no kind
   in KINDS writes via `via` (read when called). A note a kind wrote is
-  judged by the kind alone, as M2 has it: Granola's "meeting:granola/<id>" notes are sent
-  (decision 90). The arranger asks it in the same check, of the note it already read.
+  judged by the kind alone, as M2 has it (decision 90): Granola's "meeting:granola/<id>"
+  notes are withheld because Granola is, not by their reference. The arranger asks it in
+  the same check, of the note it already read.
 - Credentials are never in a config: a config names the environment variables of the
   process that syncs (the command line, or `serve`), and the source reads them from the
   `env` it is opened with.
@@ -229,10 +234,13 @@ the memory use cases)
   name items) and `out_of_reach` (drafts for a project the viewer does not reach, never
   shown). A source that cannot be read answers `read` False and why; one whose credential
   variable is unset fails in `open`, before any request.
-- `source_client(transport=None)` is the HTTP client sources read through: a 30 s timeout,
-  redirects never followed. Making one holds the "httpx" and "httpcore" loggers at WARNING
-  or above, so no caller's log gets httpx's request lines, which carry the query string, or
-  httpcore's DEBUG trace of a response's headers, where a provider may echo a credential.
+- `source_client(transport=None, resolve=None)` is the HTTP client sources read through: a
+  30 s timeout and redirects never followed. Each connection uses a checked IP. A
+  non-global address needs CAIRN_SOURCE_PRIVATE_ADDRESSES=allow, and link-local and
+  metadata addresses are always refused (cairn.sources.url). Making one
+  holds the "httpx" and "httpcore" loggers at WARNING or above, so no caller's log gets
+  httpx's request lines, which carry the query string, or httpcore's DEBUG trace of a
+  response's headers, where a provider may echo a credential.
   `kept_error(error)` is what a failed run keeps and prints.
 """
 
@@ -779,6 +787,14 @@ def withheld_via() -> frozenset[str]:
     return frozenset(kind.via for kind in KINDS.values() if kind.withheld)
 
 
+# The `via` of notes held back from a model that no kind in KINDS writes: Slack's
+# (cairn.slack.people.write, for a filed message, a note typed with the command and a direct
+# message alike). Slack is not a kind: it cannot be added, listed or switched on as a source.
+# Held by `via` alone, never by `source_ref`, and sent only when the operator names it
+# (<PREFIX>_SLACK_NOTES=send, cairn.web.cli_arrange): <PREFIX>_SOURCE_NOTES=send does not.
+HELD_VIA = frozenset({"slack"})
+
+
 # M3: the forms of `source_ref` the sources guide's recipes give an agent that reads a meeting,
 # a mail thread, a calendar, a document or a to-do list with a connector of its own: the word
 # before the first ":". The guide's table is held against this set
@@ -813,8 +829,8 @@ def withheld_by_ref(via: str | None, source_ref: str | None) -> bool:
     """Whether a note written via `via` is kept from a model by its `source_ref` (M3): its
     word (source_ref_word) is one of withheld_forms(), and no kind in KINDS writes via `via`.
     A note one of the server's own kinds wrote is judged by that kind alone (M2, decision 90):
-    Granola's notes carry "meeting:granola/<id>" and are sent, as they were. KINDS is read
-    now."""
+    Granola's notes carry "meeting:granola/<id>" and are withheld because Granola is, not by
+    that reference. KINDS is read now."""
     if source_ref_word(source_ref) not in withheld_forms():
         return False
     return all(kind.via != via for kind in KINDS.values())
@@ -865,6 +881,7 @@ def near_miss(source_ref: str | None) -> str | None:
 __all__ = [
     "CHOOSING",
     "HELD_CREDENTIALS",
+    "HELD_VIA",
     "ITEM_MAX",
     "KINDS",
     "OVERLAP",

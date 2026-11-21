@@ -22,6 +22,7 @@ import pytest
 
 from cairn.sources import run_source
 from cairn.store import Store
+from cookie_names import session_cookie
 
 ISSUER = "https://id.example.test/pool-r3"
 NOW = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
@@ -763,7 +764,7 @@ def test_the_sources_page_says_why_a_pair_made_before_wrote_nothing(world, made_
     )
     base = "http://127.0.0.1:8765"
     with TestClient(create_app(world.store, public_url=base), base_url=base) as client:
-        page = client.get("/sources", headers={"cookie": f"cairn_session={signed.token}"})
+        page = client.get("/sources", headers={"cookie": f"{session_cookie()}={signed.token}"})
     assert page.status_code == 200
     assert OVERLAP_ON.format("second") in html.unescape(page.text)
 
@@ -814,7 +815,10 @@ def test_the_guide_says_how_long_an_item_is_held_and_that_case_is_blind():
     words = "made from one registered account are compared"
     said = next(s for s in guide.split(". ") if words in s)
     assert "case-blind" in said and "look-back window" in said and "unwritten" in said
-    assert len(guide.encode()) < 70_000
+    # The bound that is real is docs_publisher.MAX_FILE_BYTES (128 KiB): test_docs_helper shows a
+    # sources guide past 70,000 bytes published and searched. This lower one only makes growth
+    # a choice someone states; it was raised from 70,000 for the sentence on changing the key.
+    assert len(guide.encode()) < 72_000
 
 
 def test_the_guide_says_which_second_source_the_form_refuses():

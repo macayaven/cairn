@@ -45,7 +45,9 @@ both use read_item, examine, ask and check_url)
   the run's reason once it holds neither the secret (as `holds_secret` looks) nor anything
   the note guard's "secrets" rules find; nothing else of an error's body is ever read
   beyond ERROR_BYTES, shown or kept.
-- Transport (check_url): https, or http only to 127.0.0.1 or localhost; no user or password
+- Transport (check_url): https, or http only to 127.0.0.1 or localhost; never an address
+  inside this machine's network plumbing (cairn.sources.url, the check every source shares,
+  which the source client repeats on each request's resolved addresses); no user or password
   in the address and no fragment; written as the HTTP client sends it (so the request goes
   to the config's `url` exactly); at most 2,048 characters; nothing in it that looks like a
   credential (in a host label, a path segment or a query value). Every request runs under
@@ -116,7 +118,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -132,8 +134,12 @@ from cairn.sources import (
     fit,
     holds_secret,
 )
+from cairn.sources import url as source_url
+from cairn.sources.config import check_env_name, check_projects
+from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
-from cairn.store.memory import FIELD_MAX, is_project_name
+from cairn.sources.url import URL_MAX as URL_MAX
+from cairn.store.memory import FIELD_MAX
 
 PROTOCOL = 1
 VIA = "connector"
@@ -147,11 +153,11 @@ CURSOR_MAX = 2_000  # characters
 ANSWER_MAX_BYTES = 4 * 1024 * 1024
 ERROR_SENTENCE_MAX = 200  # characters of an error answer's sentence that may be shown
 ERROR_BYTES = 64 * 1024  # of an error answer's body, read only for its sentence
-URL_MAX = 2_048
 ANSWERS_PER_RUN = 20  # answers one pull asks for at most
 PULL_BYTES = 16 * 1024 * 1024  # of answers one pull holds at most before it stops asking
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
+# http goes only to these two names of this machine (not [::1]: the rule the guide states).
+NAMED_LOOPBACK = frozenset({"127.0.0.1", "localhost"})
+_HTTP_ONLY_TO_THIS_MACHINE = "only to 127.0.0.1 or localhost (this machine)"
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})")
 CURSOR_VERSION = 1
@@ -217,59 +223,17 @@ def looks_like_a_credential(value: str) -> bool:
 
 
 def check_url(value: object) -> str:
-    """`value` as the config keeps it, unchanged, when it meets the transport rule (see the
-    module docstring); ValueError otherwise, starting "url" and never repeating the value or
-    any part of it."""
-    if not isinstance(value, str) or not value or len(value) > URL_MAX:
-        raise ValueError(f"url is the connector's address, at most {URL_MAX:,} characters")
-    try:
-        parts = urlsplit(value)
-        host, _ = parts.hostname, parts.port
-    except ValueError:
-        raise ValueError("url is not a URL") from None
-    if "@" in parts.netloc:
-        raise ValueError(
-            "url must not hold a user or password: the secret comes from the environment,"
-            " named by secret_env"
-        )
-    scheme = parts.scheme.lower()
-    if not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("url is https, or http only to 127.0.0.1 or localhost (this machine)")
-    if not host:
-        raise ValueError("url is not a URL: it names no host")
-    if parts.fragment or "#" in value:
-        raise ValueError("url has no fragment")
-    pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]
-    pieces += [piece for pair in parse_qsl(parts.query) for piece in pair]
-    if any(looks_like_a_credential(piece) for piece in pieces if piece):
-        raise ValueError(
-            "url looks like it holds a credential: the secret comes from the environment,"
-            " named by secret_env"
-        )
-    try:
-        sent = str(httpx.URL(value))
-    except (httpx.InvalidURL, ValueError):
-        raise ValueError("url is not a URL") from None
-    if sent != value:
-        raise ValueError(
-            "url is not written as it is sent: write it as the HTTP client sends it (the host"
-            " in lower case, anything else percent-encoded)"
-        )
-    return value
-
-
-def _check_projects(config: Mapping[str, Any]) -> list[str]:
-    projects = config.get("projects", [])
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError("projects names at most one project: a connector source writes into one")
-    for project in projects:
-        if isinstance(project, str) and looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
+    """The full connector endpoint, including any query it needs."""
+    return source_url.check_base_url(
+        value,
+        what="the connector",
+        comes_from="the secret comes from the environment",
+        named_by="secret_env",
+        looks_like=looks_like_a_credential,
+        full_endpoint=True,
+        loopback=NAMED_LOOPBACK,
+        http_said=_HTTP_ONLY_TO_THIS_MACHINE,
+    )
 
 
 def check_config(config: object) -> dict[str, Any]:
@@ -295,22 +259,18 @@ def check_config(config: object) -> dict[str, Any]:
     if "url" not in config:
         raise ValueError("a connector source needs url: the connector's address")
     url = check_url(config["url"])
-    if "secret_env" not in config:
-        raise ValueError(
-            "a connector source needs secret_env: the name of the environment variable that"
-            " holds the secret the connector checks"
-        )
-    secret_env = config["secret_env"]
-    if isinstance(secret_env, str) and looks_like_a_credential(secret_env):
-        raise ValueError(
-            "secret_env holds what looks like a secret: put the secret in an environment"
-            " variable of the process that syncs, and name that variable here"
-        )
-    if not isinstance(secret_env, str) or not ENV_NAME.fullmatch(secret_env):
-        raise ValueError(
+    secret_env = check_env_name(
+        config,
+        "secret_env",
+        kind="connector",
+        holds="the secret the connector checks",
+        secret="secret",
+        looks_like=looks_like_a_credential,
+        wrong=(
             "secret_env names an environment variable (capitals, digits and _, at most 128),"
             " which holds the secret: the secret itself never goes in a config"
-        )
+        ),
+    )
     default, least, most = LIMIT
     asked = config.get("limit", default)
     if isinstance(asked, bool) or not isinstance(asked, int) or not least <= asked <= most:
@@ -318,7 +278,9 @@ def check_config(config: object) -> dict[str, Any]:
     return {
         "url": url,
         "secret_env": secret_env,
-        "projects": _check_projects(config),
+        "projects": check_projects(
+            config.get("projects", []), kind="connector", looks_like=looks_like_a_credential
+        ),
         "limit": asked,
     }
 
@@ -512,7 +474,7 @@ def error_sentence(data: bytes, secrets: Sequence[str]) -> str | None:
     if not isinstance(said, str) or len(said) > ERROR_SENTENCE_MAX:
         return None
     said = " ".join(said.split())
-    if not said or holds_secret(said, tuple(secrets)) or looks_like_a_credential(said):
+    if not safe_error_text(said, secrets, looks_like=looks_like_a_credential):
         return None
     return said
 
@@ -570,35 +532,25 @@ async def ask(
             status = response.status_code
             media = response.headers.get("content-type", "").split(";")[0].strip().lower()
             if status != 200:
-                data = await _read(response, ERROR_BYTES + 1)
+                data = await read_bounded(response, ERROR_BYTES)
                 return Reply(
-                    status, media == "application/json", data, error_sentence(data, secrets)
+                    status,
+                    media == "application/json",
+                    data or b"",
+                    error_sentence(data, secrets) if data is not None else None,
                 )
-            declared = response.headers.get("content-length", "")
-            if declared.isdigit() and int(declared) > ANSWER_MAX_BYTES:
-                raise SourceError(TOO_LARGE)
-            data = await _read(response, ANSWER_MAX_BYTES + 1)
-            if len(data) > ANSWER_MAX_BYTES:
+            data = await read_bounded(response, ANSWER_MAX_BYTES)
+            if data is None:
                 raise SourceError(TOO_LARGE)
             return Reply(status, media == "application/json", data)
     except TimeoutError:
         raise Late() from None
     except httpx.HTTPError as error:
-        said = f"cannot reach the connector at its url: {type(error).__name__}"
+        said = request_failure(error, "cannot reach the connector at its url")
         raise SourceError(said) from None
 
 
 TOO_LARGE = "the connector's answer is larger than 4 MiB, the most an answer may be"
-
-
-async def _read(response: httpx.Response, most: int) -> bytes:
-    """The body, read until it ends or passes `most` bytes."""
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) >= most:
-            break
-    return bytes(body)
 
 
 def parsed(reply: Reply) -> tuple[object, Finding | None]:

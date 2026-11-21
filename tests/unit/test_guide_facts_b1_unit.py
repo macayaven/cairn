@@ -24,6 +24,7 @@ from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.store import Store
 from cairn.web import cli
+from cookie_names import session_cookie
 
 ROOT = Path(__file__).resolve().parents[2]
 RUN = files("cairn.guides").joinpath("run.md").read_text(encoding="utf-8")
@@ -379,7 +380,9 @@ def test_under_a_brand_people_signed_in_and_their_agents_are_told_the_brands_nam
     assert 'href="/docs/run"' not in client.get("/docs").text
     export = client.get("/account/export")
     assert 'filename="knowledge-base-' in export.headers["content-disposition"]
-    account = store.resolve_session(client.cookies["__Host-session"]).account_id
+    account = store.resolve_session(
+        client.cookies[session_cookie("https", branded=True)]
+    ).account_id
     view = store.for_account(account)
     view.create_project("trail")
     key = view.create_key("an-agent")
@@ -423,22 +426,24 @@ def test_under_a_brand_people_signed_in_and_their_agents_are_told_the_brands_nam
 def test_under_a_brand_the_cookies_and_the_scope_have_other_names(store):
     """The run guide says:
 
-    "Under a brand the session cookie is `__Host-session` in place of `cairn_session`, the
-    cookie that carries a sign-in to the provider and back is `__Host-signin` in place of
-    `cairn_signin`, and the OAuth scope is `memory` in place of `cairn`. The `__Host-` prefix
-    keeps other hosts under your domain from setting either cookie; when `--public-url` is
-    plain http, as on localhost, browsers refuse the prefix and the cookies are `session` and
-    `signin`. So the day you switch a brand on, or off, everyone signed in signs in once
-    more."
+    "Under a brand the session cookie is `__Host-session` in place of `__Host-cairn_session`,
+    the cookie that carries a sign-in to the provider and back is `__Host-signin` in place of
+    `__Host-cairn_signin`, and the OAuth scope is `memory` in place of `cairn`. The `__Host-`
+    prefix keeps other hosts under your domain from setting either cookie; when `--public-url`
+    is plain http, as on localhost, browsers refuse the prefix and the cookies are `session`
+    and `signin`, or `cairn_session` and `cairn_signin` without a brand. So the day you switch
+    a brand on, or off, everyone signed in signs in once more."
     """
-    says(THE_SECTION, "the session cookie is `__Host-session` in place of `cairn_session`")
-    says(THE_SECTION, "is `__Host-signin` in place of `cairn_signin`, and the OAuth scope is")
+    says(THE_SECTION, "the session cookie is `__Host-session` in place of `__Host-cairn_session`")
+    says(THE_SECTION, "is `__Host-signin` in place of `__Host-cairn_signin`, and the OAuth scope")
     says(THE_SECTION, "The `__Host-` prefix keeps other hosts under your domain from setting")
-    says(THE_SECTION, "browsers refuse the prefix and the cookies are `session` and `signin`.")
+    says(THE_SECTION, "browsers refuse the prefix and the cookies are `session` and `signin`,")
+    says(THE_SECTION, "or `cairn_session` and `cairn_signin` without a brand.")
     says(THE_SECTION, "everyone signed in signs in once more.")
     local = "http://127.0.0.1:8765"
     for settings, session, state, scope, url in (
-        ({}, "cairn_session", "cairn_signin", "cairn", BASE),
+        ({}, "__Host-cairn_session", "__Host-cairn_signin", "cairn", BASE),
+        ({}, "cairn_session", "cairn_signin", "cairn", local),
         ({"brand_name": BRAND}, "__Host-session", "__Host-signin", "memory", BASE),
         ({"brand_name": BRAND}, "session", "signin", "memory", local),
     ):
@@ -453,7 +458,7 @@ def test_under_a_brand_the_cookies_and_the_scope_have_other_names(store):
     plain = browser(app(store))
     sign_in(plain)
     branded = browser(app(store, brand_name=BRAND))
-    branded.cookies.set("cairn_session", plain.cookies["cairn_session"])
+    branded.cookies.set("__Host-cairn_session", plain.cookies["__Host-cairn_session"])
     r = branded.get("/workspace")
     assert r.status_code == 303 and r.headers["location"].startswith("/login")
 
@@ -467,7 +472,7 @@ def test_an_agent_connected_without_a_brand_keeps_working_under_one(store):
     says(THE_SECTION, "Agents keep working: cairn takes either name of the scope from an agent")
     plain = browser(app(store))
     sign_in(plain)
-    account = store.resolve_session(plain.cookies["cairn_session"]).account_id
+    account = store.resolve_session(plain.cookies[session_cookie("https")]).account_id
     registered = plain.post(
         "/register", json={"client_name": "an-agent", "redirect_uris": ["http://127.0.0.1:1/cb"]}
     ).json()
@@ -515,27 +520,29 @@ def test_a_sign_in_lasts_12_hours_or_n_days_renewed_by_use(store, clock):
     says(THE_SECTION, "used at least once every four weeks stays signed in, across restarts")
     says(THE_SECTION, "with `--session-days 1` that use never comes in time, and a sign-in lasts")
     plain = browser(app(store))
-    assert max_age(sign_in(plain), "cairn_session") == 12 * 3600
+    assert max_age(sign_in(plain), session_cookie("https")) == 12 * 3600
     clock.now += timedelta(hours=11)
-    assert "cairn_session" not in cookie_names(plain.get("/workspace"))
+    assert session_cookie("https") not in cookie_names(plain.get("/workspace"))
     clock.now += timedelta(hours=2)
     assert plain.get("/workspace").status_code == 303  # ran out, never renewed
     clock.now = START
     remembered = browser(app(store, session_days=30))
-    assert max_age(sign_in(remembered), "cairn_session") == 30 * 86_400
+    assert max_age(sign_in(remembered), session_cookie("https")) == 30 * 86_400
     clock.now += timedelta(days=1)
-    assert "cairn_session" not in cookie_names(remembered.get("/workspace"))  # not more than
+    assert session_cookie("https") not in cookie_names(
+        remembered.get("/workspace")
+    )  # not more than
     for _ in range(3):  # used every four weeks, well past the first 30; a new app is a restart
         clock.now += timedelta(weeks=4)
         again = browser(app(store, session_days=30))
-        again.cookies.set("cairn_session", remembered.cookies["cairn_session"])
+        again.cookies.set(session_cookie("https"), remembered.cookies[session_cookie("https")])
         r = again.get("/workspace")
-        assert r.status_code == 200 and max_age(r, "cairn_session") == 30 * 86_400
+        assert r.status_code == 200 and max_age(r, session_cookie("https")) == 30 * 86_400
     clock.now = START
     one_day = browser(app(store, session_days=1))
     sign_in(one_day)
     clock.now += timedelta(hours=23)
-    assert "cairn_session" not in cookie_names(one_day.get("/workspace"))  # not renewed
+    assert session_cookie("https") not in cookie_names(one_day.get("/workspace"))  # not renewed
     clock.now += timedelta(hours=1)
     assert one_day.get("/workspace").status_code == 303  # a day after the sign-in: over
 
@@ -601,7 +608,7 @@ def test_the_security_and_privacy_guides_and_the_sign_in_page_say_the_same_lengt
     ):
         client = browser(app(store, **settings))
         assert said in client.get("/login").text
-        assert max_age(sign_in(client), "cairn_session") == seconds
+        assert max_age(sign_in(client), session_cookie("https")) == seconds
 
 
 # Ending a sign-in: the run guide, deploy/README.md, docs/pre-release.md, README.md
@@ -655,7 +662,7 @@ def test_session_end_ends_the_sessions_and_leaves_keys_and_agents(
     assert "**Keys** and **Agents** pages" in said
     client = browser(app(store, session_days=30))
     sign_in(client)
-    token = client.cookies["cairn_session"]
+    token = client.cookies[session_cookie("https")]
     account = store.resolve_session(token).account_id
     key = store.for_account(account).create_key("laptop")
     db = str(tmp_path / "kb.db")  # the store fixture's file
@@ -680,23 +687,35 @@ def test_a_session_keeps_the_address_its_sign_in_was_vouched_with(store):
                           issuer="https://github.com", join="personal")  # fmt: skip
     client = browser(app(store))
     sign_in(client)  # GitHubFake gives ada@example.test for the same account, 7
-    token = client.cookies["cairn_session"]
+    token = client.cookies[session_cookie("https")]
     assert store.resolve_session(token).user_id == first.user.id
     assert store.end_person_sessions("ada@example.test") == {first.account_id: 1}
     assert store.resolve_session(token) is None
     assert store.get_user(first.user.id).email == "ada.first@example.test"
 
 
-def test_with_session_days_an_open_session_outlives_the_list():
-    """deploy/README.md and docs/pre-release.md: "With `--session-days`, an open session can
-    go on for as long as that browser is used." The list gates sign-in only (pinned by
-    tests/acceptance/test_h8_allowed_emails.py); the renewal by use is pinned by
-    test_a_sign_in_lasts_12_hours_or_n_days_renewed_by_use."""
-    sentence = (
-        "With `--session-days`, an open session can go on for as long as that browser is used."
+def test_the_list_is_checked_on_every_request_in_every_document():
+    """deploy/README.md, docs/pre-release.md and the README: the list is checked on every
+    request, not only at sign-in, so taking someone off it refuses their open sessions, keys
+    and agents, and deletes nothing (the behaviour is pinned by
+    tests/acceptance/test_h8_allowed_emails.py::test_the_list_holds_on_every_request_and_deletes_nothing
+    and tests/unit/test_allowed_every_request_unit.py). No document still says it gates
+    sign-in only, or that an open session outlives the list."""
+    sentence = "It is checked on every request, not only at sign-in"
+    refused = (
+        "their open sessions, the keys they made and the agents they approved are refused as"
+        " ended ones; nothing is deleted, so putting them back on the list restores them."
     )
-    says(section(DEPLOY, "### Only the people you name"), sentence)
-    says(section(PRE_RELEASE, "## Who can get in"), sentence)
+    for part in (
+        section(DEPLOY, "### Only the people you name"),
+        section(PRE_RELEASE, "## Who can get in"),
+        section(README, "### Sign in with GitHub, Google or your own identity provider"),
+    ):
+        says(part, sentence)
+        says(part, refused)
+        said = flat(part)
+        assert "gates sign-in" not in said and "go on working" not in said
+        assert "can go on for as long as that browser is used" not in said
 
 
 # deploy/README.md: the options with Compose

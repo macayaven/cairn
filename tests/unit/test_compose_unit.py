@@ -91,7 +91,11 @@ def test_drafted_claims_follow_the_existing_ones_and_the_gate_sees_only_offered_
 
     def compose(title, spans):
         seen["offered"] = (title, [s.id for s in spans])
-        claim = Claim(id="cl_new", text="new one and new two", span_ids=tuple(s.id for s in spans))
+        claim = Claim(
+            id="cl_00000000000000ae",
+            text="new one and new two",
+            span_ids=tuple(s.id for s in spans),
+        )
         return Draft(claims=(claim,), stats=DraftStats(composer="test", attempts=1))
 
     def gate(page, spans):
@@ -104,7 +108,10 @@ def test_drafted_claims_follow_the_existing_ones_and_the_gate_sees_only_offered_
     assert seen["gated"] == [old[0].id, *(s.id for s in new)]
     assert content(store, stranger)[0].id not in seen["gated"]
     assert (result.status, result.version, result.draft.composer) == ("saved", 2, "test")
-    assert [c.id for c in store.get_page(project.id, "t").claims] == [claim_id(old[0].id), "cl_new"]
+    assert [c.id for c in store.get_page(project.id, "t").claims] == [
+        claim_id(old[0].id),
+        "cl_00000000000000ae",
+    ]
 
 
 def test_a_compose_error_is_a_rejection_that_keeps_the_reason_and_saves_nothing(store, project):
@@ -224,7 +231,7 @@ def test_any_composer_but_the_extractive_one_meets_the_verbatim_gate_by_default(
     (fact,) = content(store, note)
 
     def rewording(title, spans):
-        claim = Claim(id="cl_x", text="The service is unsafe.", span_ids=(fact.id,))
+        claim = Claim(id="cl_00000000000000af", text="The service is unsafe.", span_ids=(fact.id,))
         return Draft(claims=(claim,), stats=DraftStats(composer="m", attempts=1))
 
     refused = compile_note(store, note, compose=rewording)

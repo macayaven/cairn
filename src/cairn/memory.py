@@ -4,9 +4,11 @@ turns a RequestError into a status. The note guard is enforced below this, in
 `Store.add_note`, the one place a note is written, so no caller can store a note it
 has not screened; `Memory.note` turns its refusal into Refused (422). A note refused for what it is
 raises Malformed (a BadRequest, 400) with a `reason` that quotes nothing of it: EmptyText
-for blank text, PastBound for a field past cairn.store.FIELD_MAX (naming the field and its
-bound), LongHeadings for headings past theirs, ManyFacts (G1) for more facts than
-cairn.store.FACTS_MAX (giving the count and the bound).
+for blank text, NoPassage for text with no passage to compile (headings, front matter and
+blank lines only: review 7.6) unless the project holds that very note, stored before the
+refusal (decision 173: it is that note, "unchanged"), PastBound for a field past
+cairn.store.FIELD_MAX (naming the field and its bound), LongHeadings for headings past theirs,
+ManyFacts (G1) for more facts than cairn.store.FACTS_MAX (giving the count and the bound).
 
 The access log: each MCP tool call and REST request runs inside `Memory.access(action)`, as
 does each page of the web view that shows memory (cairn.web.ui and the routes beside it),
@@ -14,11 +16,14 @@ which writes one INFO record on the logger "cairn.access" when it ends, with the
 `actor_kind`, `actor`, `actor_id` (the key's, grant's or person's id: names repeat),
 `action`, `project` (the name of the project the call resolved, or None) and `status`. It never
 holds a query, note text, a credential or what the caller typed as a project: only names and
-ids the store resolved. Reads are recorded only here (reads never write);
-writes are recorded here and in the workspace's audit log. Two records come from outside a
-call, with the same attributes and fixed values (`record_access`): a request to /api or
-/mcp refused before its route for want of a valid credential is ("none", None, None,
-DENIED, None, 401), never with what it presented; an MCP call whose arguments fail the
+ids the store resolved. Reads are recorded only here, unless the server audits reads
+(`serve --audit-reads`, Store.reads_audited): then a read of READ_EVENTS that ends well is
+also an event of the workspace (`access`), naming who, the kind of read, the project and
+the page, claim or note read, never a query or any text. An export is always an event
+(EXPORTED_EVENT). Writes are recorded here and in the workspace's audit log. Two records
+come from outside a call, with the same attributes and fixed values (`record_access`): a
+request to /api or /mcp refused before its route for want of a valid credential is ("none",
+None, None, DENIED, None, 401), never with what it presented; an MCP call whose arguments fail the
 tool's schema is its caller's, INVALID, no project, 400; a request over its workspace's rate
 (cairn.web.auth) is its caller's, "rate_limited", no project, 429. A log handler that raises
 does not change how a request ends.
@@ -40,8 +45,10 @@ path and no SQL. Nothing is recorded in the audit log: the write's audit row wen
 Filing (N1): `Memory.note` stores a note, then files it on the page of its topic key
 (cairn.compiler.page_for; the store says which page that is, nothing here makes an
 address). The same note sent again for another topic raises FiledOnce (409), naming its
-page; nothing is stored. A note whose page moved under it more often than the compiler
-retries is compiled once more; if it loses again, nothing is recorded, the note stays
+page only when that page's latest version cites it (Store.note_page, the Notes page's rule),
+else saying it waits (WAITS) or is on no page (NO_PAGE); nothing is stored. A note whose
+page moved under it more often than the compiler retries is compiled once more; if it
+loses again, nothing is recorded, the note stays
 waiting, and the answer is `status` WAITING with the sentence WAITS (REST 202, an MCP
 result that is not an error). `file_waiting(note_id)` files a waiting note as `note`
 does and records its outcome, for the filer `serve` runs (cairn.web.filing).
@@ -55,18 +62,26 @@ before, which stays as it was (and what `note` answers does not change):
   writers were recorded (no name). The writer is the caller's, never anything the request
   says: a note's `via` is the caller's own word and is shown as given.
 - `outside` (is_outside): a note a source's run wrote is outside text, its words written by
-  whoever can write at that source; a note with no recorded writer is outside when its
-  `via` is the `via` of a kind in cairn.sources.KINDS (read at each call); every other
-  note is not.
+  whoever can write at that source; so is a Slack message someone filed (8.5: its
+  `slack_notes` row, of how "filed", created the note), its words its author's; a note with
+  no recorded writer is outside when its `via` is the `via` of a kind in
+  cairn.sources.KINDS (read at each call); every other note is not, a note typed with the
+  Slack command among them.
 - Every hit of `recall` carries `outside` (true when any note its claim cites is outside)
   and `written_by`: one entry per note the claim cites, in the order the claim first cites
   each, at most WRITTEN_BY_MAX (3), each {"note": the note's id, "kind", "name", "via",
-  "outside"}; and `written_by_more`, the count of notes left out, only when there are more.
-  A passage the store no longer holds, or one out of the caller's reach, names nothing.
-- Every claim `page` answers carries `outside` by the same rule. The stored body is not
-  rewritten.
-- Every passage `evidence` answers carries `written_by` ({"kind", "name"} of its note's writer),
-  its note's `via` and `outside`.
+  "outside"}, and for a filed Slack message `filed_message` (SLACK_FILED: the writer filed
+  it, the words are the message's author's); and `written_by_more`, the count of notes left
+  out, only when there are more. A passage the store no longer holds, or one out of the
+  caller's reach, names nothing.
+- Every claim `page` answers carries `outside` and `written_by` (and `written_by_more`) by
+  the same rule. The stored body is not rewritten.
+- Every passage `evidence` answers carries `written_by` ({"kind", "name"} of its note's
+  writer, and `filed_message` as above), its note's `via` and `outside`.
+- When (8.1): every hit, claim and passage carries `written_at`, the `created_at` the store
+  keeps of its note (ISO 8601); for a hit or a claim citing several notes, the newest; None
+  when it cites none the caller reaches. It is read with the writers (Store.note_origins)
+  or with the note itself, so no statement is added.
 - No name holds an address: a person is named by audit.person_name, and a key, an agent and
   a source by the label or name they were given.
 
@@ -94,18 +109,76 @@ What a search left out (Q2; tests/acceptance/test_q2_search_says_what_it_left_ou
 `recall` answers, beside `hits`, `searched` (`searched`), always, so that no one infers
 that a search was complete from a field that is not there. The store works out the facts
 once (cairn.store.ranking.found); `searched` words them, and nothing else does: GET
-/api/search and the `recall` tool answer this dict, and the search page shows its `said`."""
+/api/search and the `recall` tool answer this dict, and the search page shows its `said`.
+
+Related pages (KG1; the rules are cairn.relations, the read cairn.store.relating).
+`related(project, slug, limit=5)` answers {"project", "page", "title", "version", "related",
+"searched"}: the pages of the project most related to the page, best first, at most `limit` (a
+whole number of 1 to relations.RELATED_MAX, any other refused, never cut), each as {"page",
+"title", "version", "why", "more"}. `why` holds at most relations.WHY_MAX reasons, the
+weightiest first, and `more` counts the rest. A reason is {"kind": "shares", "term",
+"term_kind", "pages", "here", "there"}: a term both pages state, as it is written (two facts
+are one term when their kind and their text are the same, capitals included: cairn.relations),
+its kind, how many pages of the project hold it (exactly: a term whose pages are not all known
+gives no reason), and the claim of this page and of the other that state it; or {"kind":
+"mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that names
+this page's title in its prose (relations.MENTIONED_BY). This version does not list the
+pages a page mentions. Each claim is
+{"claim_id", "text", "passage_ids", "outside", "written_by", "written_at"} (and
+`written_by_more`), as a hit of `recall` carries them, but for a claim longer than
+relations.TEXT_MAX characters, which is given in place of its text (`_claim_text`; `page`
+gives the claim whole): "text_cut": true and "line", the line that shows what the reason says.
+For a claim that states a shared term that is the line of the passage it cites that holds the
+term, taken where the term's fact stands and never by a search of the text; for a claim that
+mentions the page, the line that names the title in its prose, at the first place it stands
+whole outside what the passage's facts read as code, a path, a flag, a version or an address
+and outside what the Markdown parser reads as code in the passage (cairn.store.relating
+._mentioning; two lines, with their line break, when the title's words stand on two). A
+line longer than relations.LINE_MAX is given as LINE_MAX characters of it that hold the term
+or the title, with "line_cut": true. Only a long claim of which no line
+can be told (one that mentions the page as the index has it: its text is not its passage's)
+gives its first TEXT_MAX characters as "text", with "text_cut": true and no line. So a claim
+has its text whole, or "text_cut" with a line, or "text_cut" with a head: never a head beside
+a line. `passage_ids` names the first
+relations.PASSAGES_MAX passages a claim cites, and "passage_ids_more" counts the others, only
+when there are more (a claim a tidy folded from many; who wrote it is still said of every note
+it cites). So an answer's size is bounded by constants: `limit` pages of relations.WHY_MAX
+reasons, each a term of relations.TERM_MAX characters at most and two claims of TEXT_MAX
+characters of text or LINE_MAX of a line, PASSAGES_MAX passages and WRITTEN_BY_MAX writers.
+The largest answer they allow at `limit` 20 is 302,804 bytes over REST and 413,185 over MCP
+for text of one byte a character, and 1,175,804 and 1,460,785 whatever the text holds; at the
+default `limit` of 5, 76,169 and 103,915, and 295,169 and 366,715
+(tests/unit/test_related_size_unit.py builds that answer from the constants, and checks
+answers made from claims of 322,320 characters against it field by field). No answer shows a
+weight. `searched` (`related_searched`), always: `complete`, and the three things a read can
+leave out, each counted (cairn.store.relating.Left): `terms_looked_up` and
+`terms_not_looked_up`, the page's terms past the bound on terms or on the rows of the index a
+read is handed, the title then counting as one; `claims_read` and
+`claims_not_read`, the claims of other pages past the bounds on what is read;
+`pages_left_out`, the related pages past `limit`. Nothing of a relation is stored: the answer
+is worked out from the pages as they are, in one read of the store, with who wrote the notes
+its claims cite. A page that is not there is refused as `page` refuses it."""
 
 import contextlib
 import logging
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import IO, Any
 
-from cairn.compiler import CompileResult, Gate, compile_note, lost_race, page_for
+from cairn.compiler import (
+    CONTENT_KINDS,
+    CompileResult,
+    Gate,
+    body_to_read,
+    compile_note,
+    lost_race,
+    slugify,
+)
 from cairn.guard import Finding
 from cairn.kinds import GENERAL, KINDS, kind_of
 from cairn.plans import Plan, Plans, limit_sentence
+from cairn.relations import PASSAGES_MAX, RELATED_DEFAULT, RELATED_MAX, SHARES, Reason
+from cairn.sources import KINDS as SOURCE_KINDS
 from cairn.spans import Span, chunk
 from cairn.store import (
     MODELS,
@@ -121,6 +194,7 @@ from cairn.store import (
     HeadingsTooLong,
     NameTaken,
     Note,
+    NoteHead,
     NoteRefused,
     Page,
     PageTooLong,
@@ -132,11 +206,11 @@ from cairn.store import (
     User,
     note_key,
     ranking,
-    stored_key,
+    relating,
 )
 from cairn.store.access import NOT_THE_MAKER
 from cairn.store.audit import UNKNOWN_WRITER
-from cairn.store.memory import PAGE_CHARS_MAX, PAGE_CLAIMS_MAX, claim_chars
+from cairn.store.memory import PAGE_CHARS_MAX, PAGE_CLAIMS_MAX, NoteOrigin, claim_chars
 from cairn.store.models import shown_metrics
 from cairn.store.reach import REACH_MAX, reach_too_wide
 from cairn.store.usage import (
@@ -151,9 +225,11 @@ from cairn.store.usage import (
 
 MAX_HITS = 50  # the most hits `recall` gives: a `limit` of 1 to this, any other refused (Q3)
 HITS_RANGE = f"'limit' is a whole number, 1 to {MAX_HITS}"  # what a search says of any other
+RELATED_RANGE = f"'limit' is a whole number, 1 to {RELATED_MAX}"  # and `related`, of its own
 PAGES_AT_ONCE = 100  # Q1: the most pages one answer of `pages` or `overview` lists
 VERSIONS_AT_ONCE = 50  # Q1: the most version numbers one answer of `page` lists
 WRITTEN_BY_MAX = 3  # the notes a recall hit names; `written_by_more` counts the rest (A1)
+NEAREST_SHOWN = 3  # 8.6: the page names a page not found names
 ACCESS_LOGGER = "cairn.access"
 access_log = logging.getLogger(ACCESS_LOGGER)
 # The note fields the guard checks besides the text, as a person reads their names.
@@ -166,6 +242,21 @@ CHECKED_FIELDS = {
 }
 _VIOLATION_CODE = re.compile(r"[a-z_]+\.[a-z_]+")  # "provenance.missing_passages: ..." -> code
 COMPILE_ERROR = "compile.error"  # the code note.rejected records when the compile raised
+
+
+# Reads as audit events (`serve --audit-reads`; Store.reads_audited): each access-log action
+# that reads what a workspace holds, and the event it is recorded as when it ends well. An
+# export is not among them: it is always an event of its own (EXPORTED_EVENT).
+READ_EVENTS = {
+    "page": "read.page",
+    "related": "read.page",  # the pages related to a page: a read of that page, by its slug
+    "evidence": "read.evidence",
+    "recall": "read.search",
+    "graph": "read.graph",
+    "ask_forget": "read.note",  # the page that shows a note before it is forgotten
+    "notes": "read.notes",  # a part of a project's list of notes (UI and UX 8): no text
+}
+EXPORTED_EVENT = "workspace.exported"  # an export of the workspace's notes and pages
 
 
 DENIED = "denied"  # the action of a request refused before its route: no valid credential
@@ -225,6 +316,18 @@ class EmptyText(Malformed):
     """A note whose text is empty or blank."""
 
     reason = "empty text"
+
+
+class NoPassage(Malformed):
+    """A note of headings, front matter and blank lines only: nothing on it becomes a claim,
+    so nothing of it is stored (review 7.6)."""
+
+    reason = "no body text"
+
+
+NO_PASSAGE = (
+    "the note holds no body text, only headings or front matter: write the text under a heading"
+)
 
 
 class PastBound(Malformed):
@@ -315,20 +418,65 @@ WAITS = (
 )
 
 
+NO_PAGE = (
+    "No page was made from this note: it is stored, but no page holds it, so there is no page"
+    " to read."
+)
+
+
+# The key of Memory.note's answer, for a note the gate refused, that holds the page whose
+# latest version cites the note (Store.note_page), or None: read by without_missing_page.
+CITED_ON = "cited_on"
+
+
+def without_missing_page(answer: dict[str, Any]) -> dict[str, Any]:
+    """8.6: what `note` answers an agent (MCP and REST): a note that made no page (it is on
+    none: `version` None, and not WAITING for its page) has `page` None and `message`
+    NO_PAGE, so it names no page that does not open. A note the gate refused names its page
+    by the Notes page's rule (CITED_ON, Store.note_page): only a page whose latest version
+    cites it, so one refused on a topic that has a page is on none too (the second report's
+    finding 8). Any other answer as it is, CITED_ON left out. The web composer and Slack
+    read Memory.note's own answer."""
+    shown = {key: value for key, value in answer.items() if key != CITED_ON}
+    if CITED_ON in answer:
+        slug = answer[CITED_ON]
+        shown |= {"page": slug, "version": shown["version"] if slug else None}
+    if shown["version"] is not None or shown["status"] == WAITING:
+        return shown
+    return {**shown, "page": None, "message": NO_PAGE}
+
+
 class FiledOnce(Conflict):
     """A note the project holds already (the same text and source_ref) was sent again for
     another topic (N1): nothing was stored or recorded. REST answers 409, MCP a tool error,
     the composer its form again, and a source sync skips it (FILED_ELSEWHERE). The message
-    names the page the note is on and the project, never the note's text."""
+    names the project and, as `page`, the page the note is on by the Notes page's rule
+    (Store.note_page): only a page whose latest version cites it. A note that waits for its
+    page names none and says WAITS, as `note` answers one; a note on no page (its page was
+    refused it) names none and says NO_PAGE. Never the note's text; it says only what its
+    reader can do (8.2): an agent has no tool that forgets, so forgetting is a person's, on
+    the web."""
 
     reason = FILED_ELSEWHERE
 
-    def __init__(self, project: str, slug: str) -> None:
+    def __init__(self, project: str, slug: str | None, waiting: bool = False) -> None:
+        self.page = slug
+        if slug is not None:
+            where = (
+                f"Nothing was stored: this note is already in project {project!r}, filed on"
+                f" page {slug!r} under another topic. A note is filed once: to add to that"
+                " page, write a new note with that page's title as its topic."
+            )
+        else:
+            where = (
+                f"Nothing was stored: this note is already in project {project!r}, under"
+                f" another topic. {WAITS if waiting else NO_PAGE}"
+            )
         super().__init__(
-            f"Nothing was stored: this note is already in project {project!r}, filed on page"
-            f" {slug!r} under another topic. A note is filed once: to move it, forget it there"
-            " and send it again with its new topic, reworded (a text forgotten in a project"
-            " is not stored there again) or to another project."
+            f"{where} To move this one, a person who may forget notes in this project can"
+            " forget it on the web; then send it again with its new topic, reworded (a text"
+            " forgotten in a project is not stored there again), or send it to another"
+            " project."
         )
 
 
@@ -656,6 +804,10 @@ NARROW = (  # more than one project searched
     " hold it first."
 )
 RARER = "Add a rarer word to rank the claims that hold it first."  # one project searched
+NO_WORDS = (  # 8.4: a query of nothing but spaces or punctuation
+    "Nothing was searched: the query holds no words, only spaces or punctuation. Search with"
+    " words of letters or digits."
+)
 
 
 def _cut(word: str) -> str:
@@ -672,7 +824,8 @@ def searched(facts: Searched) -> dict[str, Any]:
     """Q2: what a search left out, as `recall` answers it under `searched`: the facts, each
     word left out cut to NAME_SHOWN characters (the store keeps the first WORDS_SHOWN, 5), and
     `said`, one or two sentences from those facts alone that say what was left out and what
-    to do about it, or NOTHING_LEFT_OUT. The advice follows the search: searching one project
+    to do about it, or NOTHING_LEFT_OUT; NO_WORDS for a query that held no word to search
+    (8.4: never "every word was searched"). The advice follows the search: searching one project
     is advised only to a search of more than one (NARROW), never to one that covered one
     project, named or the only one reached (RARER). The search page shows `said` as it is."""
     sentences = []
@@ -720,7 +873,7 @@ def searched(facts: Searched) -> dict[str, Any]:
         "claims_matched": facts.claims_matched,
         **stopped,
         "claims_ranked": facts.claims_ranked,
-        "said": " ".join(sentences) or NOTHING_LEFT_OUT,
+        "said": " ".join(sentences) or (NOTHING_LEFT_OUT if facts.words_searched else NO_WORDS),
     }
 
 
@@ -747,32 +900,115 @@ def _claim(claim: Claim) -> dict[str, Any]:
     return claim.shown()
 
 
+# 8.5: what a `written_by` entry of a Slack message someone filed says beside its writer.
+SLACK_FILED = (
+    "A Slack message this writer filed: its words are its author's, whom the note's heading names."
+)
+
+
 def source_via() -> frozenset[str]:
     """The `via` of every kind of source (cairn.sources.KINDS), read now: a kind added at
     run time counts."""
-    from cairn.sources import KINDS as SOURCE_KINDS  # the sources' runner imports this module
-
     return frozenset(kind.via for kind in SOURCE_KINDS.values())
 
 
-def is_outside(kind: str, via: str | None) -> bool:
-    """Whether a note is outside text (A1): a source's run wrote it; or no writer was
-    recorded for it (it was stored before) and its `via` is a source kind's."""
-    if kind == "source":
+def is_outside(kind: str, via: str | None, *, filed_message: bool = False) -> bool:
+    """Whether a note is outside text (A1): a source's run wrote it; or it is a Slack
+    message someone filed (8.5: Store.note_origins' `filed_message`), whose words are its
+    author's, as a source's are whoever wrote there; or no writer was recorded for it (it
+    was stored before) and its `via` is a source kind's. A note typed with the Slack command
+    is its writer's own."""
+    if kind == "source" or filed_message:
         return True
     return kind == UNKNOWN_WRITER and via is not None and via in source_via()
 
 
-def _written(note: str, writer: tuple[str, str | None, str | None]) -> dict[str, Any]:
+def _written(note: str, origin: NoteOrigin) -> dict[str, Any]:
     """One entry of a hit's `written_by`."""
-    kind, name, via = writer
-    return {
+    kind, name, via = origin[:3]
+    entry = {
         "note": note,
         "kind": kind,
         "name": name,
         "via": via,
-        "outside": is_outside(kind, via),
+        "outside": is_outside(kind, via, filed_message=origin.filed_message),
     }
+    return entry | _filed(origin)
+
+
+def _filed(origin: NoteOrigin) -> dict[str, str]:
+    """8.5: what a writer of a Slack message they filed is said with: SLACK_FILED."""
+    return {"filed_message": SLACK_FILED} if origin.filed_message else {}
+
+
+def _writers(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """A claim's `written_by` (A1): its first WRITTEN_BY_MAX entries, and `written_by_more`,
+    the count of the rest, only when there are more."""
+    shown: dict[str, Any] = {"written_by": entries[:WRITTEN_BY_MAX]}
+    if len(entries) > WRITTEN_BY_MAX:
+        shown["written_by_more"] = len(entries) - WRITTEN_BY_MAX
+    return shown
+
+
+def _newest(times: Iterable[str]) -> str | None:
+    """8.1: when the newest of a claim's notes was written (the store's ISO times sort as
+    times), or None when none of its notes is held."""
+    return max(times, default=None)
+
+
+def written_entries(
+    cited: Iterable[Iterable[str]], notes_of: Mapping[str, str], origins: Mapping[str, NoteOrigin]
+) -> list[list[dict[str, Any]]]:
+    """For each claim's passage ids, one `written_by` entry per note it cites, in the order it
+    first cites each (A1), from what a read gave: `notes_of`, the note of each passage it
+    holds, and `origins`, who wrote each note. A passage that is not in `notes_of`, or whose
+    note is not in `origins`, names nothing. Every entry, none cut."""
+    answers = []
+    for span_ids in cited:
+        notes = dict.fromkeys(notes_of[i] for i in span_ids if i in notes_of)
+        answers.append([_written(note, origins[note]) for note in notes if note in origins])
+    return answers
+
+
+def _held_by(reason: Reason, stated: Mapping[Any, dict[str, Any]]) -> dict[str, Any]:
+    """What a `shares` reason says beside its term: how many pages hold it, and this page's
+    claim. Nothing for a mention."""
+    if reason.kind != SHARES:
+        return {}
+    return {"pages": reason.pages, "here": stated[reason.here]}
+
+
+def _claim_text(claim: relating.Stated) -> dict[str, Any]:
+    """What `related` gives of a claim's text, one of three and never a head beside a line.
+    A claim within relations.TEXT_MAX characters: `text`, whole. A longer one: `text_cut`
+    and, in place of its text, `line`, the line that holds the term it states or names the
+    title it mentions, with `line_cut` when that line is given in part. A longer one of
+    which no line can be told (cairn.store.relating._mentioning): `text_cut` and its first
+    TEXT_MAX characters as `text`."""
+    if not claim.cut:
+        return {"text": claim.text}
+    if claim.line is None:
+        return {"text": claim.text, "text_cut": True}
+    said: dict[str, Any] = {"text_cut": True, "line": claim.line}
+    if claim.line_cut:
+        said["line_cut"] = True
+    return said
+
+
+def _passages_named(span_ids: Sequence[str]) -> dict[str, Any]:
+    """The passages a claim given by `related` cites: `passage_ids`, the first
+    relations.PASSAGES_MAX, and `passage_ids_more`, the count of the rest, only when there
+    are more (a claim a tidy folded from many; `page` names them all)."""
+    shown: dict[str, Any] = {"passage_ids": list(span_ids[:PASSAGES_MAX])}
+    if len(span_ids) > PASSAGES_MAX:
+        shown["passage_ids_more"] = len(span_ids) - PASSAGES_MAX
+    return shown
+
+
+def related_searched(left: relating.Left) -> dict[str, Any]:
+    """What a read of related pages left out, as `related` answers it under `searched`:
+    `complete`, then the counts of cairn.store.relating.Left under their own names."""
+    return {"complete": left.complete, **left._asdict()}
 
 
 def _source(span: Span, note: Note) -> dict[str, Any]:
@@ -813,6 +1049,9 @@ class Memory:
         # inside its transaction, which may be another than the one `plan` was admitted on.
         self.plans = plans
         self._touched: str | None = None  # the project the current call resolved, by name
+        # What the current call read, as its audit event's detail (READ_EVENTS): a page's
+        # slug, a claim's id, a note's id. None: nothing was read yet.
+        self._read: dict[str, str] | None = None
         # Called with (project id, slug) after a note saves a page (T4b: the app queues the
         # page for its arranger). None: nothing is called. Its failure never fails a note.
         self.saved: Callable[[str, str], None] | None = None
@@ -890,10 +1129,23 @@ class Memory:
         """One call of an MCP tool or a REST route: when it ends, one INFO record on the
         access log, with who called (the store's actor), the action, the project it resolved
         and the status it ended with (a RequestError's, 500 for anything else). The store's
-        own trouble goes on as Unavailable (503; the module's docstring)."""
-        self._touched, status = None, 200
+        own trouble goes on as Unavailable (503; the module's docstring).
+
+        With reads audited (Store.reads_audited), a call of READ_EVENTS that ends well and
+        read something is also one event of the workspace, written before the record: who,
+        the kind of read, the project it resolved, and what `_read` says it read (a graph is
+        one whatever it showed). If the event cannot be written, the call fails with it (an
+        unrecorded read is not answered)."""
+        self._touched, self._read, status = None, None, 200
         try:
             yield
+            event = READ_EVENTS.get(action)
+            if (
+                event
+                and self.store.reads_audited
+                and (self._read is not None or event == "read.graph")
+            ):
+                self.store._record_read(event, self._touched, self._read or {})
         except RequestError as error:
             status = error.status
             raise
@@ -916,6 +1168,8 @@ class Memory:
 
     def find_page(self, project: Project, slug: str, version: int | None = None) -> Page:
         page = self.store.get_page(project.id, slug, version)
+        if page is not None:
+            self._read = {"page": page.slug}  # the audit event's detail (READ_EVENTS)
         if page is None:
             if version is not None and 0 < version < min(
                 self.store.page_versions(project.id, slug), default=0
@@ -934,6 +1188,37 @@ class Memory:
             which = "page" if version is None else f"version {version} of page"
             raise NotFound(f"no {which} {slug!r} in project {project.name!r}")
         return page
+
+    def named_page(self, project: Project, slug: str, version: int | None = None) -> Page:
+        """find_page, for an agent (8.6): a latest page that is not there is NotFound with
+        the nearest of the project's page names (nearest_pages), or that it has none."""
+        try:
+            return self.find_page(project, slug, version)
+        except NotFound as missing:
+            if version is not None:
+                raise
+            raise NotFound(f"{missing}. {self.nearest_pages(project, slug)}") from None
+
+    def nearest_pages(self, project: Project, name: str) -> str:
+        """The sentence naming the NEAREST_SHOWN page names of `project` nearest to `name`,
+        a slug or a title: those whose slug sorts at or after `name` made a slug, then the
+        project's first ones; or that the project has no pages. Bounded: at most twice
+        NEAREST_SHOWN page heads, in four statements (Store.page_heads, twice at most)."""
+        key = slugify(name)  # never empty; slugs hold [a-z0-9-], all below "\x7f"
+        below = key[:-1] + chr(ord(key[-1]) - 1) + "\x7f"  # the slugs after it are key's and on
+        heads, total = self.store.page_heads(project.id, NEAREST_SHOWN, below)
+        if not total:
+            return f"Project {project.name!r} has no pages yet."
+        if len(heads) < NEAREST_SHOWN:
+            held = {head.slug for head in heads}
+            first, _ = self.store.page_heads(project.id, NEAREST_SHOWN)
+            heads += [head for head in first if head.slug not in held]
+        # slugs only: a title is a note's words, and this sentence goes onto logs too
+        shown = ", ".join(repr(head.slug) for head in heads[:NEAREST_SHOWN])
+        return (
+            "A page is named by its slug, as note, recall and overview give it; the nearest:"
+            f" {shown}."
+        )
 
     def sources(self, project: Project, span_ids: Iterable[str]) -> dict[str, tuple[Span, Note]]:
         """The known spans among `span_ids` whose note is in `project`, with that note:
@@ -1046,10 +1331,21 @@ class Memory:
         label: str | None = None,
         source_ref: str | None = None,
         via: str | None = None,
+        within: Callable[..., None] | None = None,
     ) -> dict[str, Any]:
+        """`within(con, note, created)`: run inside the store's write of the note, before it
+        commits and before the note is compiled (Store.add_note's `within`): what a caller
+        records of a note it brought is kept with the note or not at all, whatever the
+        compile does afterwards, and what it raises stores nothing and goes on to the caller."""
         target = self.project(project)
         if not text.strip():
             raise EmptyText("the note's text is empty")
+        if not any(span.kind in CONTENT_KINDS for span in chunk("", text)) and not (
+            # Decision 173: one stored before the refusal is that note, and keeps its answer.
+            # One read, on this path alone.
+            self.store.holds_note(target.id, text, source_ref)
+        ):
+            raise NoPassage(NO_PASSAGE)  # nothing stored, counted or bound to its topic
         self._room_on_page(target, text, title, topic, source_ref)  # PageFull: nothing stored
         try:
             note, created = self.store.add_note(
@@ -1060,10 +1356,11 @@ class Memory:
                 label=label,
                 source_ref=source_ref,
                 via=via,
+                **({"within": within} if within is not None else {}),
             )
             result = self._file(note, record_errors=True)
         except FiledElsewhere as elsewhere:  # N1: the same note, for another topic
-            raise FiledOnce(target.name, self._page_of(elsewhere.held)) from None
+            raise FiledOnce(target.name, *self._page_of(elsewhere.held)) from None
         except PermissionError as refused:  # a read-only connection
             raise Forbidden(str(refused)) from None
         except NoteRefused as refused:  # recorded as note.refused; nothing else stored
@@ -1092,6 +1389,8 @@ class Memory:
         }
         if lost_race(result):  # N1: stored, and waiting for serve to file it
             answer |= {"status": WAITING, "message": WAITS}
+        elif result.status == "rejected":  # its topic's page, if any, was refused it
+            answer[CITED_ON] = self._page_of(note)[0]  # the Notes page's rule, as FiledOnce
         return answer
 
     def file_waiting(self, note_id: str) -> str | None:
@@ -1149,9 +1448,12 @@ class Memory:
                 self.saved(project_id, result.slug)
         return result
 
-    def _page_of(self, held: Note) -> str:
-        """The page a stored note is on, or is filed on once it is compiled (N1)."""
-        return page_for(self.store, held.project_id, stored_key(held), held.topic or held.title)
+    def _page_of(self, held: Note) -> tuple[str | None, bool]:
+        """(the page a stored note is on, whether it waits for its page), by the Notes page's
+        rule (Store.note_page): a page only when its latest version cites the note, so a note
+        refused a place on its topic's page, or waiting for it, names none. One statement."""
+        waiting, slug = self.store.note_page(held.project_id, held.id)
+        return slug, waiting
 
     def _room_on_page(
         self,
@@ -1193,14 +1495,18 @@ class Memory:
         """For each claim's span ids, one `written_by` entry per note it cites, in the order
         it first cites each (module docstring, A1); every entry, none cut. Two reads, for
         all the claims at once."""
+        return self._written_by(claims)[0]
+
+    def _written_by(
+        self, claims: Iterable[Iterable[str]]
+    ) -> tuple[list[list[dict[str, Any]]], dict[str, Span], dict[str, NoteOrigin]]:
+        """written_by's answer, the spans it read to make it, and the origin of each note
+        they come from (when it was written: 8.1), read in the same statement."""
         cited = [list(span_ids) for span_ids in claims]
         spans = self.store.get_spans(i for span_ids in cited for i in span_ids)
-        writers = self.store.note_writers(span.source_id for span in spans.values())
-        answers = []
-        for span_ids in cited:
-            notes = dict.fromkeys(spans[i].source_id for i in span_ids if i in spans)
-            answers.append([_written(note, writers[note]) for note in notes if note in writers])
-        return answers
+        origins = self.store.note_origins(span.source_id for span in spans.values())
+        notes_of = {span_id: span.source_id for span_id, span in spans.items()}
+        return written_entries(cited, notes_of, origins), spans, origins
 
     def recall(self, query: str, project: str | None = None, limit: int = 8) -> dict[str, Any]:
         """The best hits for `query`, each with who wrote what its claim cites (A1), and what
@@ -1210,9 +1516,11 @@ class Memory:
             raise BadRequest(HITS_RANGE)
         project_ids = [self.project(project).id] if project else None
         found = self.store.find(query, project_ids, limit)
+        self._read = {}  # a search: never its words (READ_EVENTS)
         hits = found.hits
+        writers, _, origins = self._written_by(h.span_ids for h in hits)
         answers = []
-        for hit, entries in zip(hits, self.written_by(h.span_ids for h in hits), strict=True):
+        for hit, entries in zip(hits, writers, strict=True):
             answer = {
                 "project": hit.project,
                 "page": hit.slug,
@@ -1223,12 +1531,74 @@ class Memory:
                 "version": hit.version,
                 "score": hit.score,
                 "outside": any(entry["outside"] for entry in entries),
-                "written_by": entries[:WRITTEN_BY_MAX],
+                **_writers(entries),
+                "written_at": _newest(origins[entry["note"]].created_at for entry in entries),
             }
-            if len(entries) > WRITTEN_BY_MAX:
-                answer["written_by_more"] = len(entries) - WRITTEN_BY_MAX
             answers.append(answer)
         return {"hits": answers, "searched": searched(found.searched)}
+
+    def related(self, project: str, slug: str, limit: int = RELATED_DEFAULT) -> dict[str, Any]:
+        """The pages of the project most related to its page `slug`, each with why and the
+        claims it rests on, and what the read left out (the module's docstring, Related
+        pages). Every claim says who wrote what it cites (A1), from the store's one read
+        (Store.related_pages), which `written_entries` words as `_written_by` does.
+        BadRequest: a `limit` that is not a whole number of 1 to RELATED_MAX, refused rather
+        than cut. NotFound: a project unknown or out of reach, or a page that is not there,
+        with the nearest page names, as `page` says it."""
+        if type(limit) is not int or not 1 <= limit <= RELATED_MAX:
+            raise BadRequest(RELATED_RANGE)
+        target = self.project(project)
+        found = self.store.related_pages(target.id, slug, limit)
+        if found is None:  # as find_page and named_page say it of a latest page
+            raise NotFound(
+                f"no page {slug!r} in project {target.name!r}. {self.nearest_pages(target, slug)}"
+            )
+        self._read = {"page": found.slug}  # the audit event's detail (READ_EVENTS): no term
+        claims = dict.fromkeys(  # each claim given, once, whatever reasons it stands in
+            claim
+            for page in found.pages
+            for reason in page.why
+            for claim in (reason.here, reason.there)
+            if claim is not None
+        )
+        writers = written_entries((c.span_ids for c in claims), found.notes_of, found.origins)
+        stated = {
+            claim: {
+                "claim_id": claim.claim_id,
+                **_claim_text(claim),
+                **_passages_named(claim.span_ids),
+                "outside": any(entry["outside"] for entry in entries),
+                **_writers(entries),
+                "written_at": _newest(found.origins[e["note"]].created_at for e in entries),
+            }
+            for claim, entries in zip(claims, writers, strict=True)
+        }
+        return {
+            "project": target.name,
+            "page": found.slug,
+            "title": found.title,
+            "version": found.version,
+            "related": [
+                {
+                    "page": page.slug,
+                    "title": page.title,
+                    "version": page.version,
+                    "why": [
+                        {
+                            "kind": reason.kind,
+                            "term": reason.term,
+                            "term_kind": reason.term_kind,
+                            **_held_by(reason, stated),
+                            "there": stated[reason.there],
+                        }
+                        for reason in page.why
+                    ],
+                    "more": page.more,
+                }
+                for page in found.pages
+            ],
+            "searched": related_searched(found.left),
+        }
 
     def page(
         self,
@@ -1240,24 +1610,37 @@ class Memory:
         before: int | None = None,
     ) -> dict[str, Any]:
         """A page as stored, each claim marked `outside` when a note it cites is (A1), with a
-        part of its version numbers read from their end (Q1: versions_of)."""
+        part of its version numbers read from their end (Q1: versions_of). Its body is
+        rendered when read (compiler.body_to_read of its claims and the spans they cite, read
+        once with the writers), so a version stored under an earlier rendering reads as now.
+        A version an earlier build stored whose rendering would leave a code fence running
+        from one claim into the next is answered with every claim, compiler.BODY_NOT_SHOWN
+        as its body and `body_not_shown` true; no other answer has that field."""
         target = self.project(project)
-        page = self.find_page(target, slug, version)
-        writers = self.written_by(claim.span_ids for claim in page.claims)
+        page = self.named_page(target, slug, version)
+        writers, spans, origins = self._written_by(claim.span_ids for claim in page.claims)
         versions, total, _, following = self.versions_of(target, page.slug, limit, before)
+        body, not_shown = body_to_read(page.title, page.claims, spans)
         answer = {
             "project": target.name,
             "slug": page.slug,
             "title": page.title,
             "version": page.version,
             "versions": versions,
-            "body": page.body,
+            "body": body,
             "claims": [
-                {**_claim(claim), "outside": any(entry["outside"] for entry in entries)}
+                {
+                    **_claim(claim),
+                    "outside": any(entry["outside"] for entry in entries),
+                    **_writers(entries),
+                    "written_at": _newest(origins[entry["note"]].created_at for entry in entries),
+                }
                 for claim, entries in zip(page.claims, writers, strict=True)
             ],
             "metrics": shown_metrics(page.metrics),
         }
+        if not_shown:
+            answer["body_not_shown"] = True
         if len(versions) < total:  # Q1: the part leaves versions out
             answer["versions_total"] = total
             if following is not None:
@@ -1288,25 +1671,30 @@ class Memory:
         refused as `page` refuses it (find_page); a claim that version does not hold is
         NotFound, whatever another version holds."""
         target = self.project(project)
-        page = self.find_page(target, slug, version)
+        page = self.named_page(target, slug, version)
         claim = next((c for c in page.claims if c.id == claim_id), None)
         if claim is None:
             which = "page" if version is None else f"version {page.version} of page"
             raise NotFound(f"no claim {claim_id!r} on {which} {slug!r} in project {target.name!r}")
+        self._read = {"page": page.slug, "claim": claim.id}
         sources = self.sources(target, claim.span_ids)
-        writers = self.store.note_writers(note.id for _, note in sources.values())
+        origins = self.store.note_origins(note.id for _, note in sources.values())
         passages = []
         for span_id in claim.span_ids:
             if span_id not in sources:
                 continue
             span, note = sources[span_id]
-            kind, name, via = writers.get(note.id, (UNKNOWN_WRITER, None, note.via))
+            unknown = NoteOrigin(UNKNOWN_WRITER, None, note.via, note.created_at, False)
+            origin = origins.get(note.id, unknown)
+            kind, name, via = origin[:3]
             passages.append(
                 {
                     **_source(span, note),
-                    "written_by": {"kind": kind, "name": name},  # A1: who wrote its note
+                    # A1: who wrote its note; 8.5: and a Slack message's, who filed it
+                    "written_by": {"kind": kind, "name": name} | _filed(origin),
                     "via": via,
-                    "outside": is_outside(kind, via),
+                    "outside": is_outside(kind, via, filed_message=origin.filed_message),
+                    "written_at": note.created_at,  # 8.1: the row read already holds it
                 }
             )
         return {"claim": _claim(claim), "version": page.version, "passages": passages}
@@ -1341,11 +1729,14 @@ class Memory:
     def export(self, out: IO[bytes]) -> ExportSummary:
         """The workspace as a format-1 zip (Store.export) written to `out`. A connection
         limited to some projects or to reading, or a person who does not own the workspace,
-        cannot take everything: Forbidden."""
+        cannot take everything: Forbidden. An export taken is one event of the workspace,
+        EXPORTED_EVENT, whoever took it and whether reads are audited or not: who and when."""
         try:
-            return self.store.export(out)
+            summary = self.store.export(out)
         except PermissionError as refused:
             raise Forbidden(str(refused)) from None
+        self.store._record_read(EXPORTED_EVENT, None, {})
+        return summary
 
     # Erasure (H5b): a person's act, or a key's over REST; never an MCP tool.
 
@@ -1371,6 +1762,7 @@ class Memory:
         note = self.store.get_note(note_id)
         if note is None or note.project_id != project.id:
             raise NotFound(f"no note {note_id!r} in project {project.name!r}")
+        self._read = {"note": note.id}
         return note
 
     def delete_project(self, ref: str, confirm: object) -> dict[str, Any]:
@@ -1389,8 +1781,9 @@ class Memory:
         return {"deleted": True}
 
     def forget(self, ref: str, note_id: str) -> dict[str, Any]:
-        """Forget the note `note_id` of the project `ref` (Store.forget_note): the pages
-        rebuilt without it and those removed, by slug. NotFound for a project or note unknown
+        """Forget the note `note_id` of the project `ref` (Store.forget_note): the pages of
+        that project rebuilt without it and those removed, by slug, and how many pages of
+        other projects (`elsewhere`), never which. NotFound for a project or note unknown
         or out of reach, or a note of another project; Forbidden for a caller who may not."""
         note = self.note_in(self.project(ref), note_id)
         try:
@@ -1403,6 +1796,7 @@ class Memory:
             "note_id": forgotten.note_id,
             "rebuilt": list(forgotten.rebuilt),
             "removed": list(forgotten.removed),
+            "elsewhere": forgotten.elsewhere,
         }
 
     def forget_preview(self, ref: str, note_id: str) -> tuple[Project, Note, Forgotten]:
@@ -1416,6 +1810,17 @@ class Memory:
             return target, note, self.store.forget_preview(note.id)
         except KeyError:
             raise NotFound(f"no note {note_id!r}") from None
+
+    def notes_part(
+        self, ref: str, limit: int, before: str | None = None
+    ) -> tuple[Project, list[NoteHead], str | None]:
+        """The project and a part of its notes, newest first (Store.notes_part: never their
+        text), and where the next part starts. NotFound for a project unknown or out of reach.
+        With reads audited it is one read.notes event of the project, with no detail."""
+        target = self.project(ref)
+        heads, after = self.store.notes_part(target.id, limit, before)
+        self._read = {}  # the audit event's detail (READ_EVENTS): the project alone
+        return target, heads, after
 
     def overview(
         self, project: str, *, limit: int | None = None, after: str | None = None

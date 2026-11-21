@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 from cairn.compiler import compile_note
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.acme.example/pool-1"
@@ -29,7 +30,7 @@ def world(tmp_path):
     note, _ = view.add_note(project.id, NOTE)
     assert compile_note(view, note).status == "saved"
     (page,) = view.list_pages(project.id)
-    headers = {"cookie": f"cairn_session={signed.token}"}
+    headers = {"cookie": f"{session_cookie('https')}={signed.token}"}
     with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
         yield client, headers, signed.user.id, note, page
     store.close()
@@ -50,6 +51,7 @@ def test_each_web_read_of_memory_is_one_access_record(world, caplog):
         (f"/search?q={CANARY_QUERY}&project=team", "recall", "team"),
         ("/b/team/access", "project_access", "team"),
         ("/b/team/delete", "ask_delete_project", "team"),
+        ("/b/team/notes", "notes", "team"),  # UI and UX 8: the project's list of notes
         (f"/b/team/notes/{note.id}/forget", "ask_forget", "team"),
     ]
     for path, action, project in reads:

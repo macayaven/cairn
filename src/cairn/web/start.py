@@ -143,7 +143,14 @@ def _form(
     )
 
 
-def start_routes(mcp_url: str, *, oauth: bool) -> list[Route]:
+def start_routes(
+    mcp_url: str,
+    *,
+    oauth: bool,
+    app_url: str | None = None,
+    public_url: str | None = None,
+    sign_in: bool = False,
+) -> list[Route]:
     """`mcp_url`: where agents connect; `oauth`: whether they can do so with the URL alone."""
 
     def start(request: Request) -> Response:
@@ -175,6 +182,7 @@ def start_routes(mcp_url: str, *, oauth: bool) -> list[Route]:
         by: dict[str, list[Any]] = {"agents": [], "app": []}
         for project in projects:
             by[kind_of(project.kind).connects].append(project)
+        resolved_app_url = app_url if app_url is not None else mcp_url.removesuffix("/mcp")
         return _page(
             "start_connect.html",
             brand=brand_of(request),
@@ -182,9 +190,12 @@ def start_routes(mcp_url: str, *, oauth: bool) -> list[Route]:
             signed_in=True,
             agents=by["agents"],
             apps=by["app"],
-            manage=may_manage_credentials(memory),
+            manage=bool(by["app"]) and may_manage_credentials(memory),
+            app_url=resolved_app_url,
             mcp_url=mcp_url,
+            public_url=public_url,
             oauth=oauth,
+            sign_in=sign_in,
         )
 
     return [

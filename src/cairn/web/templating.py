@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import quote
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from markupsafe import Markup
 from starlette.requests import HTTPConnection
 from starlette.responses import HTMLResponse
 
@@ -86,6 +87,14 @@ def error_sentence(status: int, message: str) -> str:
     return text if text.endswith((".", "!", "?")) else text + "."
 
 
+# Who reaches a private project besides its people, said in the same words wherever one is
+# made: the new-project form and, on /start, the card of a kind made private.
+PRIVATE_REACH = (
+    "Only you, the people you name, and the workspace's owners reach it, along with the keys"
+    " and sources that belong to whoever runs the server, such as a key made on its command"
+    " line."
+)
+
 templates = Environment(
     loader=FileSystemLoader(HERE / "templates"),
     autoescape=True,
@@ -93,7 +102,11 @@ templates = Environment(
     trim_blocks=True,
     lstrip_blocks=True,
 )
-templates.globals["version"] = __version__
+# The globals a page sets for itself (cairn.web.ui.common._ui). Every other global's name is
+# no view's to hand its template: base.html and the components read them, and a view's own
+# value would stand in their place (tests/conftest.py checks every page a test renders).
+PER_PAGE = frozenset({"person", "signed_in"})
+templates.globals["version"] = __version__  # the software's, in every page's footer
 templates.globals["stylesheet"] = STYLESHEET  # base.html links it
 templates.globals["branded_stylesheet"] = BRANDED_STYLESHEET  # ... or this, under a brand
 templates.globals["software"] = SOFTWARE
@@ -106,6 +119,7 @@ templates.filters["day"] = markdown.day  # the same, day only, for tables
 templates.filters["a_role"] = lambda role: ("an " if str(role)[:1] in "aeiou" else "a ") + role
 templates.globals["reach_label"] = reach_label  # a connection's projects and sets by name
 templates.globals["access_labels"] = ACCESS_LABELS
+templates.globals["private_reach"] = Markup(PRIVATE_REACH)  # nosec B704 # our own words, as written
 templates.globals["kinds"] = KINDS  # what a project can be for (cairn.kinds), in order
 templates.globals["kind_of"] = kind_of  # a project's kind; "general" for one no longer shipped
 templates.globals["error_sentence"] = error_sentence
@@ -131,19 +145,20 @@ HELP: ContextVar[bool] = ContextVar("cairn_help", default=False)
 
 def section() -> str | None:
     """The main navigation's entry the current page belongs to, by its href: "/" for the
-    projects and everything in one, "/search", "/new" for a note being written anywhere,
-    "/workspace" for that page, every page it lists and /start (the step before its Setup,
-    /start/connect), "/workspaces" for the person's own list. None for any other page."""
+    projects, everything in one and the first run's choice of projects (/start); "/search",
+    "/new" for a note being written anywhere, "/workspace" for that page and every page it
+    lists (its Setup, /start/connect, the first run's next step, among them), "/workspaces"
+    for the person's own list. None for any other page."""
     from cairn.web.workspace import PARTS  # it renders through this module
 
     path = PATH.get()
     if path == "/new" or (path.startswith("/b/") and path.endswith("/new")):
         return "/new"
-    if path == "/" or path.startswith("/b/"):
+    if path in ("/", "/start") or path.startswith("/b/"):
         return "/"
     if path in ("/search", "/workspaces"):
         return path
-    if path in ("/workspace", "/start") or path in {part.href for part in PARTS}:
+    if path == "/workspace" or path in {part.href for part in PARTS}:
         return "/workspace"
     return None
 

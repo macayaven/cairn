@@ -473,7 +473,7 @@ def watched(store):
     """The statements run on the store's connection, transactions' own left out."""
     seen = Seen()
     quiet = {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}
-    con, before = store._con, store._con.row_factory
+    before = store._state.observers.rows
 
     def traced(statement):
         text = statement.lstrip()
@@ -485,13 +485,13 @@ def watched(store):
         seen.text += sum(len(value) for value in row if isinstance(value, (str, bytes)))
         return row if before is None else before(cursor, row)
 
-    con.set_trace_callback(traced)
-    con.row_factory = rows
+    store._observe(trace=traced)
+    store._observe(rows=rows)
     try:
         yield seen
     finally:
-        con.set_trace_callback(None)
-        con.row_factory = before
+        store._observe(trace=None)
+        store._observe(rows=before)
 
 
 def _verifications(statements):
@@ -937,11 +937,11 @@ def stepped(store):
         steps[0] += 1
         return 0
 
-    store._con.set_progress_handler(step, 1)
+    store._observe(progress=(step, 1))
     try:
         yield steps
     finally:
-        store._con.set_progress_handler(None, 1)
+        store._observe(progress=None)
 
 
 def _many_pages(made, count):

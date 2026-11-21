@@ -15,6 +15,7 @@ from cairn.server import main
 from cairn.sources import connector as c
 from cairn.sources import connector_check as check
 from cairn.sources import timing
+from wait_helpers import wait_for_event
 
 SECRET = "check-" + "made-up-" + "secret-4d2a91"
 URL = "https://feed.example.test/items"
@@ -178,15 +179,14 @@ def test_a_wrong_secret_must_be_refused_with_401_or_403_and_no_item(wrong, ok):
 
 
 def test_an_answer_past_the_deadline_fails_the_deadline_rule_alone(monkeypatch):
-    # A second of real time each: the slow answer takes five; the others, in this process,
-    # must not be judged late because a busy machine held the event loop for 50 ms.
+    # Give the immediate answers generous headroom. The stalled one must be cancelled.
     monkeypatch.setattr(check, "ANSWER_SECONDS", 1.0)
     monkeypatch.setattr(timing, "FLOOR", 1.0)
     feed = Feed()
 
     async def slow(request):  # the walk's second answer never comes in time
         if json.loads(request.content)["cursor"] == "after:4":
-            await asyncio.sleep(5)
+            await wait_for_event(asyncio.Event(), "the checker did not cancel its request")
         return feed.handle(request)
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(slow))

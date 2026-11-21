@@ -134,7 +134,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote
 
 import httpx
 
@@ -150,8 +150,10 @@ from cairn.sources import (
     fit,
     holds_secret,
 )
+from cairn.sources import url as source_url
+from cairn.sources.config import check_env_name, check_projects
+from cairn.sources.http_policy import read_bounded, request_failure
 from cairn.sources.timing import limit
-from cairn.store.memory import is_project_name
 
 SCORES_PATH = "/api/public/v3/scores"
 OBSERVATIONS_PATH = "/api/public/v2/observations"
@@ -176,8 +178,6 @@ VIA = "langfuse"
 LABEL = "langfuse"
 CONFIG_KEYS = ("base_url", "projects", "public_key_env", "secret_key_env", "score_name")
 REQUIRED_KEYS = CONFIG_KEYS[:4]
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 CURSOR_VERSION = 2  # 1: `seen` held the ids themselves; read, and written back as 2
 SCORE_ID = re.compile(r"[!-~]{1,128}")  # printable ASCII, no whitespace
 DIGEST = re.compile(r"[0-9a-f]{32}")
@@ -238,22 +238,17 @@ def check_config(config: object) -> dict[str, Any]:
         if key not in config:
             raise ValueError(f"a langfuse source needs {key}")
     checked: dict[str, Any] = {"base_url": _check_base_url(config["base_url"])}
-    projects = config["projects"]
-    if not isinstance(projects, list | tuple) or not projects:
-        raise ValueError("projects lists the names of the projects the source may write to")
-    kept: dict[str, str] = {}
-    for project in projects:
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds project names (not ids)")
-        kept.setdefault(project.casefold(), project)
-    checked["projects"] = list(kept.values())
+    checked["projects"] = check_projects(config["projects"], kind="langfuse", many=True)
     for key in ("public_key_env", "secret_key_env"):
-        if not isinstance(config[key], str) or not ENV_NAME.fullmatch(config[key]):
-            raise ValueError(
-                f"{key} names an environment variable (capitals, digits and _), which holds"
-                " the key: the key itself never goes in a config"
-            )
-        checked[key] = config[key]
+        checked[key] = check_env_name(
+            config,
+            key,
+            kind="langfuse",
+            holds="the key",
+            secret="key",
+            wrong=f"{key} names an environment variable (capitals, digits and _), which holds"
+            " the key: the key itself never goes in a config",
+        )
     if "score_name" in config:
         name = config["score_name"]
         if (
@@ -272,31 +267,15 @@ def check_config(config: object) -> dict[str, Any]:
 
 
 def _check_base_url(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 2048:
-        raise ValueError("base_url is the address of the Langfuse server")
-    try:
-        parts = urlsplit(value.strip())
-        host = parts.hostname
-    except ValueError:
-        raise ValueError("base_url is not a URL") from None
-    if "@" in parts.netloc:
-        raise ValueError(
-            "base_url must not hold a user or password: the keys come from the environment"
-        )
-    scheme = parts.scheme.lower()
-    if not host or not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("base_url is https, or http on a loopback host")
-    if parts.query or parts.fragment or "?" in value or "#" in value:
-        raise ValueError("base_url has no query or fragment")
-    # The address as a whole, and each host label and path segment on its own: a key the
-    # URL carries is caught where it sits, not only at the start of the string.
-    pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]
-    if any(_looks_like_a_credential(piece) for piece in pieces if piece):
-        raise ValueError(
-            "base_url looks like it holds a credential: the keys come from the environment,"
-            " named by public_key_env and secret_key_env"
-        )
-    return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    return source_url.check_base_url(
+        value,
+        what="the Langfuse server",
+        comes_from="the keys come from the environment",
+        named_by="public_key_env and secret_key_env",
+        holds="a credential",
+        http_said="on a loopback host",
+        looks_like=_looks_like_a_credential,
+    )
 
 
 def _looks_like_a_credential(value: str) -> bool:
@@ -370,6 +349,7 @@ KIND = SourceKind(
         "Switched on again, it goes on from where it stopped: traces marked for {product} while it"
         " was off are read too."
     ),
+    withheld=True,
 )
 
 
@@ -847,7 +827,7 @@ class LangfuseSource:
                 ):
                     status = response.status_code
                     if status == 200:
-                        body = await _bounded(response, path, self._late)
+                        body = await _read_answer(response, path, self._late)
                         self._bytes += len(body)
                         return _parsed(body, path)
                     wait = _retry_after(response.headers.get("retry-after"))
@@ -855,7 +835,7 @@ class LangfuseSource:
                 raise _Spent("its deadline, which an answer still arriving passed") from None
             except httpx.HTTPError as error:
                 raise SourceError(
-                    f"cannot reach Langfuse for GET {path}: {type(error).__name__}"
+                    request_failure(error, f"cannot reach Langfuse for GET {path}")
                 ) from None
             if status == 429 and attempt < RETRIES:
                 if (
@@ -869,22 +849,15 @@ class LangfuseSource:
         raise AssertionError("unreachable")  # pragma: no cover
 
 
-async def _bounded(
-    response: httpx.Response, path: str, late: Callable[[], bool] = lambda: False
-) -> bytes:
-    """The body, at most MAX_RESPONSE_BYTES; `late()` is asked after every chunk, so a body
-    that drips in cannot outlast the pull's deadline."""
-    declared = response.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
-        raise SourceError(f"Langfuse's answer to GET {path} is larger than this server reads")
-    body = bytearray()
-    async for part in response.aiter_bytes():
+async def _read_answer(response: httpx.Response, path: str, late: Callable[[], bool]) -> bytes:
+    def check_deadline() -> None:
         if late():
             raise _Spent("its deadline, which an answer still arriving passed")
-        body += part
-        if len(body) > MAX_RESPONSE_BYTES:
-            raise SourceError(f"Langfuse's answer to GET {path} is larger than this server reads")
-    return bytes(body)
+
+    body = await read_bounded(response, MAX_RESPONSE_BYTES, check_deadline=check_deadline)
+    if body is None:
+        raise SourceError(f"Langfuse's answer to GET {path} is larger than this server reads")
+    return body
 
 
 def _parsed(body: bytes, path: str) -> dict[str, Any]:

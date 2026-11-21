@@ -6,8 +6,13 @@ time through `read`, with the database's file sizes and the free space on its di
 (`shutil.disk_usage` of its folder, looked up each time): for the install, `schema`,
 `db_bytes`, `wal_bytes` (0 without a "-wal" file), `free_bytes`, `low_disk` (free_bytes
 under twice db_bytes, what a compaction needs) and the totals of COUNTS, `newest_note` and
-`sources`; under `workspaces`, the same counts for each workspace by its id. Counts, sizes
-and times only: no text, title, name, address, label or reason.
+`sources`; `compaction` (Privacy 1), the install's record of compaction as
+Store.compaction_state reads it: `deleted_at` (when something was first deleted since the last
+compaction that finished, None for nothing), `rewritten` (the file was rewritten since and
+only emptying its write-ahead log is left) and `compacted_at` (when the last rewrite began,
+None for never), one record for the whole install, never a workspace's; under `workspaces`,
+the same counts for each workspace by its id. Counts, sizes and times only: no text, title,
+name, address, label or reason.
 
 The line: a StatsLog logs, on the logger STATS_LOGGER (not the access log's), `stats` and a
 space, then the install's numbers without `workspaces`, and `requests`, the responses the
@@ -30,6 +35,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from cairn.store import Store
+from cairn.store.numbers import compaction_of
 
 STATS_LOGGER = "cairn.stats"
 WORD = "stats"  # the line's first word
@@ -80,6 +86,7 @@ def numbers(read: Callable[[str], list[tuple]], path: str, schema: int) -> dict[
             total["on"] += tally["on"]
             total["failed"] += tally["failed"]
     install["sources"] = dict(sorted(install["sources"].items()))
+    install["compaction"] = compaction_of(read("compaction")).model_dump()
     install["workspaces"] = per
     return install
 

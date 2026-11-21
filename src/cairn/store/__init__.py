@@ -12,9 +12,15 @@ tests/acceptance/test_t1_members.py; limits by tests/acceptance/test_h6_quotas.p
 a project and forgetting a note by tests/acceptance/test_h5b_forget.py; the sweep of what
 has run out by tests/acceptance/test_h5c_expiry.py):
 - One database file holds every account. `Store(":memory:")` works for tests. The store is
-  safe to call from several threads (one connection, `check_same_thread=False`, guarded by a
-  lock). Each call reads in one transaction (one snapshot of the file, also against another
-  connection) or writes in one.
+  safe to call from several threads. Writes go through one writer connection guarded by a
+  lock; reads run on a pool of at most base.READERS read-only connections to the same file
+  (base.Readers), so a read waits for no write, checkpoint or compaction of this process
+  (in WAL a reader and the writer do not wait for each other), and a read that finds every
+  reader in use waits for one. A database no second connection can open (in memory, or a
+  temporary one) reads on the writer under its lock instead. Each call reads in one
+  transaction (one snapshot of the file, holding every write that returned before it
+  began) or writes in one. `_observe` attaches a trace callback, a progress handler or a
+  row factory to every connection of the store, the readers included.
 - The clock (H6). `Store(path, clock=None)`: `clock` returns the current time as an aware
   datetime (a naive one is a ValueError when it is read). Every timestamp the store writes
   and every expiry it checks, in every view of it and in the schema upgrade, reads that
@@ -81,8 +87,7 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   at start with the length in force), and says how many it shortened.
 - `delete_account(id) -> bool` removes the account and everything it owns, its sets, OAuth
   grants, codes and tokens, its sources, its settings and audit log, its usage and plan,
-  its rows in the tables billing wrote (subscriptions, billing_messages, checkouts), its
-  memberships,
+  its memberships,
   invitations, project rules and removal markers included (False for an unknown id,
   ValueError for the default account), and nothing of
   any other account. A view acting for a person deletes only its own workspace, and only
@@ -109,16 +114,26 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   False for an id unknown or out of reach (the same answer). The project's name leaves the
   config of every source that names it, and a source left with no project is switched off
   (store/sources.py's docstring): a project made later under that name gets nothing from it.
-  `view.forget_note(note_id) -> Forgotten` (note_id, rebuilt, removed: page slugs)
-  removes one note and its spans; each page any version of which cites one of them gets one
+  Each page of another project of the workspace that cites a span of its notes, in any
+  version, changes as a forget of those notes changes it (below), in the same transaction.
+  `view.forget_note(note_id) -> Forgotten` (note_id, rebuilt, removed: page slugs of the
+  note's project; elsewhere: how many pages of other projects, never which)
+  removes one note and its spans; each page of the workspace, whatever its project, any
+  version of which cites one of them gets one
   new version (the next number) holding the latest version's claims that still have a span
   (a claim that cites several notes keeps the spans left, and goes when none is: see
-  erasure.kept_claims; a kept claim whose id was made from a forgotten span gets another),
+  erasure.kept_claims; a kept claim whose id was made from a forgotten span gets another,
+  and one that is its spans whole takes the text of the first span left, byte for byte, so
+  no spelling of the forgotten note stays), less every claim the import's check of a version
+  refuses (portable.version_faults: the version is written past the gates, a forget is never
+  refused, and the store's log counts those claims),
   titled with the `topic or title` of the oldest note left that its claims cite (the title
   it had may be the forgotten note's heading), its body rendered as the compiler renders
   it with that title, and every earlier
   version is deleted, since they held the note's text; a page left with no claim is deleted
-  with its index rows. It stores the note's text digest in `forgotten` (project, SHA-256 hex):
+  with its index rows. It stores the note's text digest in `forgotten` (project, SHA-256 hex;
+  a forget or a delete that changed a page of another project leaves that project a row that is no
+  digest, erasure.PASSAGES_REMOVED, so a save drafted before it is CitesForgotten too):
   add_note of the same text into that project then raises ForgottenNote (a ValueError)
   before the guard runs and writes nothing, and save_page raises CitesForgotten (a
   StalePage) for claims citing a span that a forget removed meanwhile, so a compile that
@@ -128,15 +143,21 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   named projects or read-only (`LIMITED_ERASER`), with no person the workspace itself; anyone
   else gets PermissionError (`NOT_AN_ERASER`) and nothing changes. `view.may_erase(project_id)`
   says so (KeyError when unknown) and `view.forget_preview(note_id)` says what a forget
-  would rebuild and remove; both are reads. Each is one transaction with its audit event,
-  project.deleted {"id", "name", "notes", "pages"} or note.forgotten {"note", "project",
-  "pages"}, subtracts what it removed from `stored_bytes`, marks a compaction due (see
+  would rebuild and remove, with how many pages of other projects it would change only to a
+  view that may forget the note (0 for any other); both are reads. Each is one transaction
+  with its audit event, project.deleted {"id", "name", "notes", "pages"} or note.forgotten
+  {"note", "project", "pages"}, each with "elsewhere" when pages of other projects changed,
+  subtracts what it removed from `stored_bytes`, marks a compaction due (see
   Compaction state) and ends with the truncating checkpoint delete_account ends with, so the
   removed text is gone from the main file, -wal and -shm at once. Cost: both touch only the
-  project's rows, through indexes, and never rewrite the database file; a forget reads every
-  version of the project's pages to find those that cite the note, so it grows with the
-  project's page history, and deleting a project grows with the project. Neither needs room under
-  a plan's caps, and a rebuilt page keeps within `versions_per_page`.
+  rows they remove or rewrite, through indexes, and never rewrite the database file; a
+  forget reads every version of the workspace's pages, in one search, to find those that
+  cite the note (only a program that wrote into the database directly, or an older build's
+  writer still open across the upgrade, leaves a page citing another project's note:
+  save_page refuses a new citation of one, and the upgrade to schema 32 rewrote every one an
+  earlier build left), so it grows with the workspace's page history, and deleting a project
+  grows with the project and makes that one search for all of its spans. Neither needs room
+  under a plan's caps, and a rebuilt page keeps within `versions_per_page`.
   What the audit log keeps: every event stays, with its action, actor, time, the person's
   id, counts, kinds, codes and rule ids, and project.deleted keeps the project's id and name.
   Nothing made from a note stays: `page` (a slug, made from a title; erasure.NOTE_DERIVED,
@@ -179,9 +200,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   that arrived at "never", M4). ValueError, with nothing written:
   not a zip, an unknown format or version, an archive past a bound or a name outside the
   layout, a manifest that does not match the files, a note that does not match its sha256,
-  a claim citing a span that is not of its own project's notes, a claim that is not, whitespace
-  aside, the text of a span it cites (a page cairn could not have written: the compiler's
-  claims are its spans' text), a span cited from two pages of a project (in any versions:
+  a claim citing a span that is not of its own project's notes, a claim that is not the whole
+  of every span it cites by the verbatim gate's comparison (cairn.gate.whole; a page cairn
+  could not have written: the compiler's claims are its spans' text, review blocker 2), a
+  claim citing spans of two heading paths, two claims of a version with one id, a span cited
+  from two pages of a project (in any versions:
   cairn compiles a note into one page), a version without claims, a claim whose id is
   not shaped as cairn makes one (portable.CLAIM_ID) or that cites a span twice, a version
   whose citations (its claims' span lists, added up) pass portable.CITATION_FACTOR (2)
@@ -213,22 +236,33 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   person), followed by one sentence on the Models choice; the audit detail keeps the
   counts alone. It does carry each project's Models
   choice (M4): see "A project kept from every model" below.
-- Compaction (H5). `store.compact()` rewrites the database file (VACUUM) and then truncates
-  the write-ahead log (PRAGMA wal_checkpoint(TRUNCATE)): it gives the freed space back to the
-  disk, and after it nothing of a deleted workspace, index keys included, is in the files. It
-  rewrites every workspace's data and holds the store's lock while it runs, so every other
-  call waits; it is the operator's: only the store that opened the database may run it
+- Compaction (H5). `store.compact()` checks for room (NoRoom, a CompactIncomplete, when
+  the database's disk has less than twice the database free; nothing changes), rewrites the
+  database file (VACUUM) and then truncates the write-ahead log (PRAGMA
+  wal_checkpoint(TRUNCATE)): it gives the freed space back to the disk, and after it nothing
+  of a deleted workspace, index keys included, is in the files. It rewrites every
+  workspace's data and holds the writer's lock while it runs, so every other write waits
+  (reads do not); it is the operator's: only the store that opened the database may run it
   (PermissionError on a view). CompactIncomplete (a sqlite3.OperationalError) when another
-  connection kept it from finishing; running it again then finishes it.
+  connection kept it from finishing, with `rewrote` saying whether the file was rewritten;
+  running it again then finishes it. `store.empty_log()` truncates the log alone, which is
+  what is left when a rewrite succeeded and the log was held.
 - Compaction state (H5). `compaction_state()` says when a workspace (since H5b also a project
   or a note) was first deleted since
-  the last compaction (`deleted_at`, None when none was) and when the last compaction began
-  (`compacted_at`). It is two rows of the default workspace's `settings`, "store.compact_due"
-  and "store.compacted_at", which get_setting and set_setting refuse and nothing audits:
-  delete_account, delete_project and forget_note write the first in their own transaction
-  (only for what existed, and only when not already set); compact deletes it and sets the
-  second before it rewrites the file, and restores both when it raises CompactIncomplete.
-  They survive a restart. `serve --compact-every` decides by them (cairn.web.compactor).
+  the last compaction that finished (`deleted_at`, None when none was), whether a rewrite
+  covered every deletion recorded so that only the log is left (`rewritten`), and when the
+  last rewrite began (`compacted_at`). It is two rows of the default workspace's `settings`,
+  "store.compact_due" and "store.compacted_at", which get_setting and set_setting refuse and
+  nothing audits: delete_account, delete_project and forget_note write the first in their
+  own transaction (only for what existed; its time only when not already set, and in every
+  case a generation of their own as the row's `updated_at`, base.deletion_generation);
+  compact sets the second and marks the first as rewritten (base.REWRITTEN with a value of
+  that rewrite's own) only once the rewrite has returned, under the same hold of the lock, and only
+  if the row's `updated_at` is still what it read before the rewrite (a deletion another
+  process records in between stays due), so a rewrite that failed or was killed records
+  nothing and is done again; the first goes once the log is emptied, only while it still
+  holds the mark that emptying covered. They survive a restart. `serve --compact-every`
+  decides by them (cairn.web.compactor).
 - `export`, `import_export`, `compact` and `compaction_state` are management calls (see
   Reach): a view limited to named projects, or read-only, is refused (PermissionError) and
   nothing is read or written. An archive is every project, so for a person `export` and
@@ -241,9 +275,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   look at has expired.
 - API keys, UI session tokens, authorization codes and OAuth tokens are random
   (`secrets.token_urlsafe(32)`), returned in plaintext exactly once, and stored only as
-  SHA-256 hex digests. An access token starts with ACCESS_TOKEN_PREFIX and a refresh token
-  with REFRESH_TOKEN_PREFIX; both hold a ".", which a key or session token never does, so
-  none of them can be taken for another.
+  SHA-256 hex digests. An API key made now starts with KEY_PREFIX ("cairn_"), so a scanner
+  can recognise one; a key made before has none and works as it did, since a key is found
+  by the digest of its whole value. An access token starts with ACCESS_TOKEN_PREFIX and a
+  refresh token with REFRESH_TOKEN_PREFIX; both hold a ".", which a key or session token
+  never does, so none of them can be taken for another.
 - OAuth clients belong to no account and are not scoped. `register_client(name,
   redirect_uris) -> OAuthClient` (id "client_" + 32 hex chars; ValueError for a blank name
   or one over 80 characters, for no URI or more than 10, or for a URI that is empty or over
@@ -435,30 +471,39 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   the agents they approved; managers see all.
 - A project kept from every model (M4, frozen by
   tests/acceptance/test_m4_a_project_no_model_reads.py). A project's pages may be sent to a
-  model the operator connects ("allowed", the default) or never ("never"): MODELS.
+  model the operator connects ("allowed") or never ("never"), as its people chose (MODELS),
+  or nobody decided (Privacy 4: the operator's <PREFIX>_UNDECIDED_PROJECTS says what that
+  sends).
   `view.set_project_models(project_id, models) -> str` sets it and gives the state now:
   ValueError, before anything is read, for any other value; then KeyError and
   PermissionError exactly as set_project_access has them (the same callers: the maker, an
   owner, a person at "manage", a view acting for no person), and a narrowed view is refused
   (reach.MANAGEMENT). A change is one project.models_changed event (the project by name;
   detail: `project_id` and `models`, and `user` as every person's event has it); setting the
-  state a project has writes nothing. `view.kept_from_models(project_ids) -> frozenset[str]`
-  gives the ids among them, in reach, at "never", in one statement whatever their number.
-  `view.page_for_model(project_id, slug) -> (Page, bool) | None` is get_page's latest version
-  and whether its project is at "never", read in that one statement (cairn.arrange learns it
-  at no cost of its own). It is kept with no change to the schema, as one row of the
-  workspace's settings per project at "never" (access.MODELS_PREFIX and the project's id;
-  "allowed" is no row), bounded by the workspace's projects; get_setting and set_setting
-  refuse the name. A project whose kind is private (cairn.kinds.Kind.private: "personal")
-  starts at "never", whoever makes it and however (create_project, create_projects,
-  import_export), in the write that makes it; every other project starts at "allowed".
+  state a project has writes nothing; choosing "allowed" where nobody decided is a change.
+  `view.kept_from_models(project_ids) -> frozenset[str]` gives the ids among them, in reach,
+  at "never", and `view.models_choices(project_ids) -> dict[str, str]` the choice of each
+  one whose people made one, each in one statement whatever their number.
+  `view.page_for_model(project_id, slug) -> (Page, bool, bool) | None` is get_page's latest
+  version, whether its project is at "never" and whether its people chose "allowed", read in
+  that one statement (cairn.arrange learns it at no cost of its own). It is kept with no
+  change to the schema, as one row of the workspace's settings per project whose people
+  chose (access.MODELS_PREFIX and the project's id, holding "allowed" or "never"; nobody
+  deciding is no row), bounded by the workspace's projects; every check of "never" reads the
+  value, never whether a row exists. get_setting and set_setting refuse the name. A project
+  whose kind is private (cairn.kinds.Kind.private: "personal") starts at "never", whoever
+  makes it and however (create_project, create_projects, import_export), in the write that
+  makes it; every other project starts not decided.
   delete_project removes the row in its own write, and a deleted workspace takes its
   settings with it. Projects are never renamed, and the row names the id, not the name. An
-  export carries this one setting, each project's `models` in its manifest: an import puts
-  a project the archive says is at "never" there, in its own write, and a project of a
-  private kind at "never" whatever the archive says; an archive written before says it of
-  no project, and each starts as a new one of its kind (portable.py says the notice and the
-  audit count). Existing projects are not touched: nothing was migrated.
+  export carries this one setting, each project's `models` and `models_decided` in its
+  manifest: an import puts a project the archive says is at "never" there, in its own
+  write, one its people chose "allowed" for at "allowed", and a project of a private kind at
+  "never" whatever the archive says; an archive written before says it of no project, and
+  each starts as a new one of its kind, and one that says `models` and not
+  `models_decided` brings no "allowed" (portable.py says the notices and the audit count).
+  Existing projects are not touched: nothing was migrated, so a project set back to
+  "allowed" before this build is not decided.
   The state holds at the moment of a call: `view.reserve_model_use(micros, project_id)`
   reads it in the reservation's own transaction and raises KeptFromModels, writing nothing,
   for a project at "never"; `save_page(..., by_model=True)` reads it in the statement that
@@ -512,6 +557,16 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   refuse. A read, answered alike by every view (cairn.arrange asks it before a page's
   claims go to a model, since a policy tightened later does not reach notes taken before).
 - Every `save_page` writes a new version (1, 2, ...); earlier versions stay readable.
+  A claim citing a span the store holds of another project's note, of its workspace or
+  another, raises ValueError (NOT_OF_PROJECT) and writes nothing, whatever the page cited
+  before, asked after the version's check (one statement, by the spans' primary key). A
+  compile, the tidy and an arrangement leave such a claim out of the page they read, asking
+  `passages_of_other_projects(project_id, slug, version)` for the version they read (by id,
+  never text, whatever the view reaches of those notes; the ids are read from that stored
+  version, never taken from the caller; empty for a project out of reach or a version not
+  stored), and pass what they left out as
+  `save_page(..., left_out=...)`, which CitesForgotten asks too (compiler.own_claims). Schema
+  step 32 rewrote every page an earlier build saved with such a claim.
   A page holds at most PAGE_CLAIMS_MAX (2,000) claims (H6c): `save_page` with more raises
   PageTooLong (a ValueError naming the page and the bound) and writes nothing, and
   `import_export` refuses (ValueError) an archive with a version past it. cairn.memory
@@ -575,6 +630,13 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   `save_page` keeps each project's claim and token counts (`search_projects`) and each claim's
   project and length (`search_claims`) in its own transaction, so no search counts a corpus,
   and a match in a project out of reach is dropped without its claim being read.
+- `related_pages(project_id, slug, limit=5)` is the pages of the project related to its page
+  `slug`, the best `limit` first, each with the claims the relation rests on, and what the
+  read left out (cairn.store.relating; the rules are cairn.relations), or None when there is
+  no such page in reach. Nothing of a relation is stored: it is one read of the page's
+  claims in the account's index, the passages they cite and the claims of the project's
+  other pages the index proposes, each put in the project by `search_claims` before it is
+  read, within stated bounds. A claim of another project is never read.
 - Project sets. A set is a named group of a workspace's projects: `create_set(name,
   project_ids=()) -> ProjectSet` (id "set_" + 12 hex chars, name, project_ids in the order given,
   each once, created_at). Names follow the project-name rules, may not start with "set_" either
@@ -736,11 +798,10 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   Not under it: source.synced (counts one source's run into the projects its config names,
   and is shown only with its source) and member.removed (counts keys and agents, not
   content). The log is deleted with the workspace. It is
-  bounded: a workspace keeps at most its newest AUDIT_KEEP (100,000) events, since anyone
-  who may write can make events (a refused note is one). An insert past that deletes the
-  oldest in its own transaction, AUDIT_PRUNE_BATCH at a time, so most inserts delete
-  nothing and right after one that does, the newest AUDIT_KEEP - AUDIT_PRUNE_BATCH + 1
-  remain.
+  bounded: a workspace keeps its newest AUDIT_KEEP (100,000) events, since anyone who may
+  write can make events (a refused note is one). Once AUDIT_PRUNE_BATCH more have built up,
+  an insert deletes that batch of oldest events in its own transaction, so most inserts
+  delete nothing and right after one that does, the newest AUDIT_KEEP remain.
 - Sources (C2; cairn.sources has the runner). `add_source(name, kind, config) ->
   SourceInfo` (name, kind, config, cursor, created_at, last_run_at, last_report,
   last_error, enabled, enabled_at): names follow the project-name rules and are unique per
@@ -945,17 +1006,15 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   list[AccountSummary]` (not scoped, a read; PermissionError for a view acting for a
   person, and refused on a narrowed view as management) is every workspace in creation
   order with its name, created_at, how many people belong to it and its plan in force, in
-  one read for them all: never an address. The tables billing wrote (subscriptions,
-  billing_messages, checkouts; schema steps 12, 13 and 27) stay in the database; nothing
-  reads or writes them, except that `delete_account` deletes a workspace's rows in them, and an
-  export leaves them out.
+  one read for them all: never an address. The tables billing wrote (schema steps 12, 13
+  and 27) are dropped by step 31 (schema.py's _OLDEST_BUILD step).
 - Ids: accounts "acct_" + 12 hex chars, projects "br_" + 12 hex chars, notes "cap_" + 12
   hex chars, sets "set_" + 12 hex chars. Timestamps are ISO 8601 UTC strings.
 - Schema: `PRAGMA user_version` holds SCHEMA_VERSION (2 added accounts, 3 the OAuth
   tables, 4 people, 5 reach and search statistics, 6 settings, the audit log and the key a
   session was opened with, 7 actor ids, 8 project kinds, 9 sources, 10 invitations, project
-  rules, makers and removal markers, 11 metering and plans, 12 subscriptions and the
-  provider messages seen, 13 when a subscription started and became past due, 14
+  rules, makers and removal markers, 11 metering and plans, 12 billing's two tables, 13
+  when a subscription started and became past due, 14
   model-use reservations, 15 the digests of forgotten notes, 16 each workspace's passages
   and page history, 17 the end of key sessions that cannot be tied to a live key, 18 the
   passages counter charging the headings stored with each span, 19 the MCP address each
@@ -981,8 +1040,8 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   From 10: usage by month and each workspace's plan and stored bytes are added beside the
   accounts (accounts itself is not rebuilt); every workspace is on the default plan, and
   the notes it holds are counted, their UTF-8 size in its total and each in the UTC month
-  of its `created_at`. From 11: subscriptions and the provider messages seen are added,
-  empty; every workspace stays on the plan the operator set. From 12 (schema.py's
+  of its `created_at`. From 11: billing's two tables are added, empty; every workspace
+  stays on the plan the operator set. From 12 (schema.py's
   _SUBSCRIPTION_TIMES step): each subscription gains when it started and when it became
   past due, both unknown for the rows that exist. From 13: model-use reservations are
   added, empty, and nothing that existed changes. From 14 (schema.py's _FORGOTTEN step):
@@ -1012,12 +1071,34 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   made_with and recorded_since are added, the first two empty, so every note that exists
   has no recorded writer ("unknown") and every key and grant records no key it was made
   with; recorded_since holds the moment the step ran, read from the store's clock (a new
-  database holds the moment it was made).
+  database holds the moment it was made). From 29 (schema.py's _LAST_USE step, 30):
+  sessions are rebuilt with `used_at`, every session that exists kept as it was with no use
+  recorded, so its last use reads as when it was made (`serve --idle-minutes`). From 30
+  (schema.py's _OLDEST_BUILD step, 31): the tables billing wrote are dropped, with any rows
+  in them; each audit event gains the value that chains it to the one before
+  (cairn.store.audit), filled in order for every event that exists; and oldest_build
+  records the floor, 31. From 31 (schema.py's _OWN_PASSAGES step, 32; report 8): every
+  page that cites, in any version, a passage that no note of its own project holds (another
+  project's, of its workspace or another, or one whose note another workspace forgot) is
+  rewritten as a forget rewrites a page, with its own project's notes' claims alone
+  (cairn.store.erasure.hold_to_own_projects), and the floor is raised to 32. The `repair`
+  command runs the same over a database already at 32 (Store.repair_own_projects, the
+  operator's: one write transaction, a compaction marked due when a page changed).
   Each version step
-  is one transaction, so a step that fails leaves the database as it was.
-  Opening a database whose version is higher than SCHEMA_VERSION raises SchemaTooNew and
-  leaves the file untouched. A file that is neither empty nor a v0 database (v0's tables,
-  each with exactly v0's columns) is refused the same way, with sqlite3.DatabaseError.
+  is one transaction, so a step that fails leaves the database as it was. Opened with
+  `upgrade=False` (every command of cairn's but `serve`), a database of an older version runs
+  no step: the first one's transaction reads the version under its write lock and raises
+  SchemaTooOld, naming that version and SCHEMA_VERSION, and rolls back having written
+  nothing; a busy database raises SQLite's error, as any open does.
+  From 31 on, a database records its floor (schema.py's oldest_build): the lowest schema
+  version whose cairn runs on it. A step that only adds (schema.py's _ONLY_ADDS: 29 and 30)
+  leaves it; any other raises it to itself. Opening a database whose version is higher than
+  SCHEMA_VERSION opens it as it is, with no step run and nothing written, when its floor is
+  at or below SCHEMA_VERSION: tables and columns this code does not know are left alone.
+  Otherwise, or when it records no floor, it raises SchemaTooNew, whose one sentence names
+  the database's version, its floor and SCHEMA_VERSION, and leaves the file untouched. A
+  file that is neither empty nor a v0 database (v0's tables, each with exactly v0's
+  columns) is refused untouched too, with sqlite3.DatabaseError.
   Opening one at SCHEMA_VERSION that lacks a table of the current schema raises
   UnknownSchema ("the database was not made by this version of cairn: it has schema version
   N but no table T", the first such table) before anything is written, and leaves the file
@@ -1028,7 +1109,7 @@ has run out by tests/acceptance/test_h5c_expiry.py):
 """
 
 import sqlite3
-import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -1066,10 +1147,12 @@ from cairn.store.base import (
     UNUSABLE,
     CannotWrite,
     ConnectionState,
+    Readers,
     StoreUnusable,
+    WriterLock,
     _transaction,
 )
-from cairn.store.credentials import CredentialMethods
+from cairn.store.credentials import KEY_PREFIX, CredentialMethods
 from cairn.store.erasure import ErasureMethods
 from cairn.store.expiry import ExpiryMethods
 from cairn.store.grants import (
@@ -1138,6 +1221,7 @@ from cairn.store.models import (
     Made,
     Member,
     Note,
+    NoteHead,
     OAuthClient,
     OpenInvite,
     Page,
@@ -1169,18 +1253,21 @@ from cairn.store.people import (
     ProviderChanged,
     Removed,
 )
-from cairn.store.portable import CompactIncomplete, PortableMethods
+from cairn.store.portable import CompactIncomplete, CompactionRunning, NoRoom, PortableMethods
 from cairn.store.reach import ACCESS, LIMITED, READ_ONLY, ReachMethods
 from cairn.store.reservations import Reservation, ReservationMethods
 from cairn.store.schema import (
     SCHEMA_VERSION,
     CannotOpen,
     SchemaTooNew,
+    SchemaTooOld,
     UnknownSchema,
     _refuse,
+    _runs_on,
     _upgrade,
 )
 from cairn.store.sets import SET_ID_PREFIX, SetMethods
+from cairn.store.slack import SlackMethods
 from cairn.store.sources import SOURCE_CLAIM_TTL, SourceMethods, SourceOff
 from cairn.store.usage import (
     BYTES_PER_PASSAGE,
@@ -1200,7 +1287,11 @@ from cairn.store.usage import (
 # Store.health: how long it waits for the store's lock, and for SQLite's, before it answers.
 # Docker's probe and the hosted updater's give up after 3 seconds; this answers within 2.
 HEALTH_WAIT = 1.0
-Health = Literal["ok", "busy", "unavailable"]
+# Store.health: how long one holder may keep the store's lock (the writer) before the store
+# is stuck rather than busy; while a compaction runs, the longer bound.
+STUCK_AFTER = 60.0
+COMPACT_STUCK_AFTER = 3600.0
+Health = Literal["ok", "busy", "stuck", "unavailable"]
 _HELD = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)  # another connection holds the file
 
 __all__ = [
@@ -1218,6 +1309,7 @@ __all__ = [
     "CANNOT_WRITE",
     "CLIENT_NAME_MAX",
     "CODE_TTL",
+    "COMPACT_STUCK_AFTER",
     "DEFAULT_ACCOUNT_ID",
     "DEFAULT_GUARD_POLICY",
     "DESCRIPTION_MAX",
@@ -1230,6 +1322,7 @@ __all__ = [
     "HISTORY_FACTOR",
     "INVITE_TTL",
     "JOINS",
+    "KEY_PREFIX",
     "LEVELS",
     "LIMITED",
     "LIMITS",
@@ -1258,6 +1351,7 @@ __all__ = [
     "SET_ID_PREFIX",
     "SHARE_MAX",
     "SOURCE_CLAIM_TTL",
+    "STUCK_AFTER",
     "TITLE_MAX",
     "UNUSABLE",
     "UNUSED_CLIENT_TTL",
@@ -1273,6 +1367,7 @@ __all__ = [
     "Claim",
     "CodeInfo",
     "CompactIncomplete",
+    "CompactionRunning",
     "CompactionState",
     "CredentialInfo",
     "DescriptionTooLong",
@@ -1293,7 +1388,9 @@ __all__ = [
     "Made",
     "Member",
     "NameTaken",
+    "NoRoom",
     "Note",
+    "NoteHead",
     "NoteRefused",
     "OAuthClient",
     "OpenInvite",
@@ -1312,6 +1409,7 @@ __all__ = [
     "Removed",
     "Reservation",
     "SchemaTooNew",
+    "SchemaTooOld",
     "SearchHit",
     "Searched",
     "Shared",
@@ -1344,11 +1442,11 @@ __all__ = [
 
 # Store is assembled from one class per area (accounts.py, audit.py,
 # credentials.py, erasure.py, expiry.py, grants.py, history.py, memory.py, numbers.py,
-# people.py, portable.py, sets.py, sources.py, usage.py), each built
+# people.py, portable.py, sets.py, slack.py, sources.py, usage.py), each built
 # on base.StoreBase: the connection, the lock, the clock, the account binding and the actor.
 # ReachMethods (reach.py) comes first, so that a narrowed view sees each call before the
 # area that serves it. Opening the database lives here because it runs the schema upgrade
-# (schema.py), which itself builds on base.py.
+# (the schema package, one module per step), which itself builds on base.py.
 class Store(
     ReachMethods,
     AccessMethods,
@@ -1368,11 +1466,26 @@ class Store(
     NumbersMethods,
     ReservationMethods,
     HostedMethods,
+    SlackMethods,
 ):
-    """One account's view of the SQLite database that holds every account."""
+    """One account's view of the SQLite database that holds every account.
 
-    def __init__(self, path: str | Path, clock: Callable[[], datetime] | None = None) -> None:
-        self._lock = threading.Lock()
+    Opening it brings a database of an older schema to SCHEMA_VERSION first: the library's
+    default, `Store(path)`, as before. With `upgrade=False` such a database is refused instead
+    (SchemaTooOld), from the version read under the write lock of the step that would have
+    run, before anything is written; an empty or new file is still made at this schema. Of
+    cairn's commands only `serve` upgrades, once it holds the server's lock; every other one
+    opens with `upgrade=False` (cairn.web.cli)."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        clock: Callable[[], datetime] | None = None,
+        ticks: Callable[[], float] = time.monotonic,
+        *,
+        upgrade: bool = True,
+    ) -> None:
+        self._lock = WriterLock(ticks)  # `ticks`: when its holder took it (Store.health)
         self._state = ConnectionState()  # shared with every view, as the lock is
         self._owner = True  # of the connection: views share it and never close it
         self._clock_fn = clock  # every view made from this store shares it
@@ -1389,9 +1502,10 @@ class Store(
             self._con.execute("PRAGMA secure_delete = ON")
             if self._con.execute("PRAGMA secure_delete").fetchone() != (1,):
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
-            _upgrade(self._con, self._stamp)
+            _upgrade(self._con, self._stamp, upgrade)
             if str(path) != ":memory:":
-                self._con.execute("PRAGMA journal_mode = WAL")
+                (journal,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
+                self._state.readers = _readers_for(self._con, journal)
         except sqlite3.Error as error:
             self._con.close()
             _refuse(path, error)  # CannotOpen when the file is no database or may not be written
@@ -1400,29 +1514,42 @@ class Store(
             self._con.close()
             raise
 
-    def health(self, wait: float = HEALTH_WAIT) -> Health:
+    def health(self, wait: float | None = None, stuck_after: float = STUCK_AFTER) -> Health:
         """Whether the store can serve, from one bounded read that writes nothing (what
         /healthz answers, through cairn.web.auth.Accounts):
 
-        - "ok": the read worked and the file holds the schema this code knows
-          (`PRAGMA user_version` is SCHEMA_VERSION, and the default account's row reads).
+        - "ok": the read worked and the file holds a schema this code runs on (`PRAGMA
+          user_version` is SCHEMA_VERSION, or a newer one whose floor, oldest_build, is at
+          or below it; and the default account's row reads).
         - "busy": the store is alive and held on purpose. Either this process holds the
-          store's lock for longer than `wait` seconds (compact holds it for a whole rewrite
-          of the file, and every request waits behind it), or another connection holds the
-          file past `wait` (SQLite's busy wait is held to `wait` for this read, then put
-          back). Each wait is bounded, so the call returns within about twice `wait`.
+          store's lock (the writer) for longer than `wait` seconds (HEALTH_WAIT unless given,
+          read at each call; a write holds it, and compact holds it for a whole rewrite of
+          the file, every write waiting behind it), or another connection holds the file
+          past `wait` (SQLite's busy wait is held to `wait` for this read, then put back).
+          Each wait is bounded, so the call returns within about twice `wait`.
+        - "stuck": the lock was not obtained within `wait`, and the one holding it has held
+          it for longer than `stuck_after` seconds (STUCK_AFTER, 60, unless given) or, while
+          a compaction runs (ConnectionState.compacting), for longer than
+          COMPACT_STUCK_AFTER (an hour). Measured at the lock, from when its holder took it,
+          on the store's monotonic clock (`ticks`), so short writes one after another are
+          never stuck. Reads do not need the lock and may still work: the store is stuck
+          all the same, since no write can be made. "ok" again at the first call that
+          obtains the lock. Another process holding the file is "busy", never "stuck".
         - "unavailable": the store is closed, unusable (base.StoreUnusable), the read
           failed with any other error, or the file holds another schema version.
 
         Busy is told from broken by who answers: a lock that is held means some other call
         is at work on a connection that worked when it began; a broken connection is
         reported only by a read that ran and failed, or by the store's own record that it
-        is unusable, which is read without the lock. A call that held the lock forever
-        would read as busy: the store cannot tell a long call from a stuck one."""
+        is unusable, which is read without the lock."""
+        if wait is None:
+            wait = HEALTH_WAIT
         if self._state.unusable:
             return "unavailable"
         if not self._lock.acquire(timeout=wait):
-            return "busy"
+            held = self._lock.held_for()
+            bound = COMPACT_STUCK_AFTER if self._state.compacting else stuck_after
+            return "stuck" if held is not None and held > bound else "busy"
         try:
             if self._state.unusable:
                 return "unavailable"
@@ -1445,10 +1572,20 @@ class Store(
         con.execute(f"PRAGMA busy_timeout = {max(1, int(wait * 1000))}")
         try:
             with _transaction(con, "DEFERRED"):
-                (version,) = con.execute("PRAGMA user_version").fetchone()
+                runs = _runs_on(con)  # this schema, or a newer one within its floor
                 found = con.execute(
                     "SELECT 1 FROM accounts WHERE id = ?", (DEFAULT_ACCOUNT_ID,)
                 ).fetchone()
         finally:
             con.execute(f"PRAGMA busy_timeout = {int(waited)}")
-        return "ok" if version == SCHEMA_VERSION and found else "unavailable"
+        return "ok" if runs and found else "unavailable"
+
+
+def _readers_for(con: sqlite3.Connection, journal: str) -> Readers | None:
+    """The pool of read-only connections for the database `con` opened, asked of SQLite: a
+    file in WAL has one; a temporary database (no file a second connection could open) or one
+    SQLite keeps out of WAL has none, and its reads stay on the writer (StoreBase._read)."""
+    file = next(row[2] for row in con.execute("PRAGMA database_list") if row[1] == "main")
+    if journal.lower() != "wal" or not file:
+        return None
+    return Readers(Path(file).as_uri() + "?mode=ro")

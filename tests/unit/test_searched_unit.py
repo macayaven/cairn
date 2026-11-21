@@ -198,3 +198,10 @@ def test_an_exact_count_answers_as_before_with_no_new_field():
     exact = searched(facts(claims_matched=1001, claims_ranked=1000, ranked_by="newest"))
     assert "claims_matched_exact" not in exact
     assert exact["said"].startswith("1,001 claims match, so only the newest 1,000")
+
+
+def test_underscores_alone_report_zero_searched_words_without_changing_split():
+    assert ranking.split("_ __ quill") == (["_", "__", "quill"], [])
+    assert ranking.found(["___"], []).searched.words_searched == 0
+    assert ranking.found(["_", "__"], []).searched.words_searched == 0
+    assert ranking.found(["_", "quill"], []).searched.words_searched == 2

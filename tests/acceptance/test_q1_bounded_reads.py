@@ -82,8 +82,8 @@ C. Numbers an operator can read
     file that is not a database, one it may not read, one in a folder it may not write, a
     folder, and one of a newer schema. One of an older schema is refused the same way, on
     purpose, with a sentence that says to start the server once (it holds "start" and
-    "serve"): the other commands upgrade an older database, and a command that only reads
-    must not. `--json` prints one object:
+    "serve"): only `serve` upgrades an older database, and every other command refuses one.
+    `--json` prints one object:
     - for the install: `schema` (the schema's number), `db_bytes` and `wal_bytes` (the sizes
       of the database file and of its "-wal" file, 0 when there is none), `free_bytes`
       (free space on its disk: `shutil.disk_usage(...).free` for the database's folder or
@@ -147,6 +147,7 @@ from cairn.plans import Plan, Plans
 from cairn.server import create_app, main
 from cairn.sources import KINDS as SOURCE_KINDS
 from cairn.store import SCHEMA_VERSION, Claim, Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 ISSUER = "https://id.example.test/pool-q1"
@@ -230,12 +231,12 @@ class Watch:
     trace callback) and the bytes of every value of every row (the row factory)."""
 
     def __init__(self, store: Store) -> None:
-        self.con = store._con
+        self.store = store
 
     @contextlib.contextmanager
     def __call__(self):
         seen = SimpleNamespace(statements=[], bytes=0)
-        before = self.con.row_factory
+        before = self.store._state.observers.rows
 
         def traced(statement: str) -> None:
             text = statement.lstrip()
@@ -255,13 +256,13 @@ class Watch:
                     seen.bytes += 8
             return row if before is None else before(cursor, row)
 
-        self.con.set_trace_callback(traced)
-        self.con.row_factory = rows
+        self.store._observe(trace=traced)
+        self.store._observe(rows=rows)
         try:
             yield seen
         finally:
-            self.con.set_trace_callback(None)
-            self.con.row_factory = before
+            self.store._observe(trace=None)
+            self.store._observe(rows=before)
 
 
 # A: what a read costs
@@ -311,11 +312,11 @@ def world_of(folder: Path, n: int, pad: str = "") -> SimpleNamespace:
     client.__enter__()
     opened = client.post("/login", data={"key": key}, follow_redirects=False)
     assert opened.status_code == 303
-    keyed = {"cookie": f"cairn_session={opened.cookies['cairn_session']}"}
+    keyed = {"cookie": f"{session_cookie()}={opened.cookies[session_cookie()]}"}
     client.cookies.clear()
     return SimpleNamespace(
         n=n, db=db, store=store, client=client, h={"x-api-key": key}, keyed=keyed,
-        person={"cookie": f"cairn_session={ada.token}"}, claim=claim, watch=Watch(store),
+        person={"cookie": f"{session_cookie()}={ada.token}"}, claim=claim, watch=Watch(store),
     )  # fmt: skip
 
 
@@ -527,7 +528,7 @@ def many(tmp_path):
         compile_note(store, note, provenance_gate)
     with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
         opened = client.post("/login", data={"key": key}, follow_redirects=False)
-        keyed = {"cookie": f"cairn_session={opened.cookies['cairn_session']}"}
+        keyed = {"cookie": f"{session_cookie()}={opened.cookies[session_cookie()]}"}
         client.cookies.clear()
         yield SimpleNamespace(
             store=store, client=client, h={"x-api-key": key}, keyed=keyed, atlas=atlas,
@@ -641,7 +642,7 @@ def sixty(tmp_path):
     resave(store, atlas.id, "The drift gauge read 4 bar.", "drift", 60)
     with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
         opened = client.post("/login", data={"key": key}, follow_redirects=False)
-        keyed = {"cookie": f"cairn_session={opened.cookies['cairn_session']}"}
+        keyed = {"cookie": f"{session_cookie()}={opened.cookies[session_cookie()]}"}
         client.cookies.clear()
         yield SimpleNamespace(store=store, client=client, h={"x-api-key": key}, keyed=keyed)
     store.close()
@@ -1151,7 +1152,7 @@ def test_the_history_on_the_web_says_it_shows_the_last_n(tmp_path):
         for i in range(2):
             note_by(client, key, i, topic="calm")
         opened = client.post("/login", data={"key": key}, follow_redirects=False)
-        keyed = {"cookie": f"cairn_session={opened.cookies['cairn_session']}"}
+        keyed = {"cookie": f"{session_cookie()}={opened.cookies[session_cookie()]}"}
         client.cookies.clear()
         trimmed = visible(client.get("/b/atlas/p/drift", headers=keyed).text)
         whole = visible(client.get("/b/atlas/p/calm", headers=keyed).text)
@@ -1503,6 +1504,8 @@ def newer(data: Path) -> tuple[Path, list[Path]]:
     Store(db, clock=Clock()).close()
     con = sqlite3.connect(db)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    # a step this cairn may not run on: the floor goes up with it
+    con.execute("UPDATE oldest_build SET version = ?", (SCHEMA_VERSION + 1,))
     con.commit()
     con.close()
     return db, []
@@ -1843,7 +1846,7 @@ def test_no_address_serves_the_numbers(tmp_path, disk, records):
         w.ticks.reached()
         assert stats_lines(records)  # the numbers exist, in the log
         opened = client.post("/login", data={"key": w.key}, follow_redirects=False)
-        keyed = {"cookie": f"cairn_session={opened.cookies['cairn_session']}"}
+        keyed = {"cookie": f"{session_cookie()}={opened.cookies[session_cookie()]}"}
         client.cookies.clear()
         paths = []
         for route in w.app.routes:

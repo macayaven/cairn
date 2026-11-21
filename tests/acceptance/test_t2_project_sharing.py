@@ -80,6 +80,7 @@ from starlette.testclient import TestClient
 from cairn.compiler import compile_note
 from cairn.server import create_app
 from cairn.store import DEFAULT_ACCOUNT_ID, Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.example.test/pool-1"
@@ -122,7 +123,7 @@ class World:
             id=signed.user.id,
             name=name,
             email=address(name),
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"{session_cookie('https')}={signed.token}"},
             account=signed.account_id,
             view=self.store.for_account(signed.account_id, signed.user.id),
         )

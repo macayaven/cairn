@@ -29,6 +29,12 @@ What is trusted of a provider, and nothing more
   otherwise); when both carry one they must be the same address, ignoring case (400
   otherwise). With `allowed_groups`, the person must be in one of them under `groups_claim`,
   in the ID token or else in userinfo (403 otherwise).
+- A second factor (`serve --require-mfa`): only OIDC states how a person signed in, and only
+  its ID token is read for it (`second_factor`): `amr` an array holding "mfa" (RFC 8176,
+  multiple-factor authentication), or `acr` one of SECOND_FACTOR_ACR, the OpenID Provider
+  Authentication Policy Extension's multi-factor policies. Any other value, an `amr` that is
+  not an array, and what userinfo says are not read as one. GitHub sends no ID token and
+  Google is read from userinfo, so neither states it (`states_factors` False).
 """
 
 import base64
@@ -43,7 +49,17 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from cairn.sources.url import inside
+
 PROVIDER_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+# The `acr` values that mean a second factor whatever the provider: the multi-factor
+# policies of the OpenID Provider Authentication Policy Extension 1.0.
+SECOND_FACTOR_ACR = frozenset(
+    {
+        "http://schemas.openid.net/pape/policies/2007/06/multi-factor",
+        "http://schemas.openid.net/pape/policies/2007/06/multi-factor-physical",
+    }
+)
 OIDC_SCOPE = "openid email profile"
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
 
@@ -73,6 +89,9 @@ class Profile(BaseModel):
     email: str
     name: str
     organisation: str | None = None  # a domain the provider says the account belongs to
+    # Whether the ID token shows a second factor (`second_factor`); None: the provider does
+    # not say how the person signed in.
+    second_factor: bool | None = None
 
 
 class IdentityProvider(Protocol):
@@ -80,12 +99,14 @@ class IdentityProvider(Protocol):
     page shows, `issuer` the URL of who vouches for a subject (recorded with each identity, so
     a provider replaced under the same name cannot take over its people), and
     `open_to_anyone` whether anyone can get an account at the provider (so a shared workspace
-    behind it needs an email-domain rule)."""
+    behind it needs an email-domain rule), and `states_factors` whether its profile says if
+    the person signed in with a second factor (Profile.second_factor)."""
 
     name: str
     label: str
     issuer: str
     open_to_anyone: bool
+    states_factors: bool
 
     async def authorize_url(
         self, http: httpx.AsyncClient, redirect_uri: str, state: str, nonce: str
@@ -154,6 +175,7 @@ class _OAuthProvider:
     open_to_anyone: bool
     scope: str
     sends_nonce = False
+    states_factors = False
 
     def __init__(self, client_id: str, client_secret: str) -> None:
         if not client_id.strip() or not client_secret.strip():
@@ -288,7 +310,7 @@ def _https_or_loopback(url: object, loopback: bool = True) -> bool:
         host = parts.hostname
     except ValueError:
         return False
-    if not host or "@" in parts.netloc:
+    if not host or "@" in parts.netloc or inside(host):
         return False
     return parts.scheme == "https" or (loopback and parts.scheme == "http" and host in _LOOPBACK)
 
@@ -328,6 +350,16 @@ def _verified_email(*answers: dict) -> str:
     return verified[-1]  # userinfo's when it verified it, else the ID token's
 
 
+def second_factor(claims: dict) -> bool:
+    """Whether an ID token's claims show a second factor: `amr` an array holding "mfa", or
+    `acr` one of SECOND_FACTOR_ACR. Exact values only."""
+    amr = claims.get("amr")
+    if isinstance(amr, list) and "mfa" in amr:
+        return True
+    acr = claims.get("acr")
+    return isinstance(acr, str) and acr in SECOND_FACTOR_ACR
+
+
 def _groups(value: object) -> set[str]:
     if isinstance(value, str):
         return {value}
@@ -343,6 +375,7 @@ class OIDC(_OAuthProvider):
     open_to_anyone = False
     scope = OIDC_SCOPE
     sends_nonce = True
+    states_factors = True
 
     def __init__(
         self,
@@ -413,7 +446,9 @@ class OIDC(_OAuthProvider):
             ),
             email,
         )
-        return Profile(subject=claims["sub"], email=email, name=name)
+        return Profile(
+            subject=claims["sub"], email=email, name=name, second_factor=second_factor(claims)
+        )
 
     def _id_claims(self, id_token: object, nonce: str) -> dict:
         """The ID token's claims when it is this sign-in's own; 400 otherwise."""

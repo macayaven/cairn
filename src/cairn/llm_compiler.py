@@ -155,7 +155,8 @@ def parse_claims(text: str) -> tuple[Claim, ...]:
 def _trimmed(text: str) -> str:
     """The claim's text without the blank lines before and after it, which the verbatim gate
     does not read. The rest stays as the model wrote it, indentation and white space at the end
-    of a line included: the gate reads them in code, tables and prose that holds structure."""
+    of a line included: the gate compares indentation as text and leaves out only the white
+    space at the end of a line (cairn.spans.compared_text)."""
     lines = text.split("\n")
     kept = [n for n, line in enumerate(lines) if line.strip(" \t\r")]
     return "\n".join(lines[kept[0] : kept[-1] + 1]) if kept else text.strip()

@@ -16,6 +16,7 @@ import uvicorn
 
 from cairn import oauth, server
 from cairn.store import Store
+from cookie_names import signin_cookie
 
 BASE = "https://cairn.example.test"
 CLIENT = {"client_name": "proxy-agent", "redirect_uris": ["http://127.0.0.1:33418/callback"]}
@@ -139,7 +140,7 @@ def test_the_sign_in_cookie_stays_secure_whatever_a_trusted_proxy_says(tmp_path,
                 started = await client.get("/auth/github", headers=headers)
                 assert started.status_code == 302
                 cookies = started.headers.get_list("set-cookie")
-                return next(cookie for cookie in cookies if "cairn_signin=" in cookie)
+                return next(cookie for cookie in cookies if f"{signin_cookie()}=" in cookie)
 
         return asyncio.run(run())
 

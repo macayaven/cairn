@@ -6,6 +6,7 @@ from starlette.testclient import TestClient
 
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 
 def test_api_graph_route_checks_query_scope_and_unknown_fields(tmp_path):
@@ -140,7 +141,7 @@ def test_graph_page_stylesheets_are_available_under_both_branding_modes(tmp_path
             )
             session = store.create_session()
             with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-                client.cookies.set("session" if brand else "cairn_session", session)
+                client.cookies.set(session_cookie(branded=bool(brand)), session)
                 response = client.get("/b/alpha/graph")
                 assert response.status_code == 200
                 parser = Stylesheets()

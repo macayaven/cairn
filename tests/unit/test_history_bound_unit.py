@@ -41,11 +41,11 @@ def statements(store: Store, call):
         if not statement.lstrip().startswith("--"):
             seen.append(statement.lstrip().split(None, 1)[0].upper())
 
-    store._con.set_trace_callback(traced)
+    store._observe(trace=traced)
     try:
         result = call()
     finally:
-        store._con.set_trace_callback(None)
+        store._observe(trace=None)
     return result, [s for s in seen if s not in ("BEGIN", "COMMIT")]
 
 

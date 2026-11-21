@@ -1,4 +1,4 @@
-"""The command line's data commands: export, import and compact (cairn.web.cli dispatches
+"""The command line's data commands: export, import, compact and repair (cairn.web.cli dispatches
 here). They print paths, counts, the workspace's id, the names of the note fields an import
 cut, the notice that imported projects are private, and refusals that name a file, an id, a
 project's name, a rule or a limit, and failures that name the file and the system's reason or
@@ -17,18 +17,37 @@ its owner may enter is quiet whatever its own mode: the container's /data is 070
 
 import argparse
 import os
+import sqlite3
 import stat
 import sys
 from pathlib import Path
 
+from cairn.memory import EXPORTED_EVENT
 from cairn.plans import Plans
 from cairn.plans import load as load_plans
-from cairn.store import FIELD_MAX, CannotOpen, CompactIncomplete, OverLimit, Pruned, Store
+from cairn.store import (
+    FIELD_MAX,
+    CannotOpen,
+    CompactIncomplete,
+    CompactionRunning,
+    OverLimit,
+    Pruned,
+    Store,
+)
 
-COMMANDS = ("export", "import", "compact")
+COMMANDS = ("export", "import", "compact", "repair")
 # The --db help of a command that never creates the database (it exits 1 when there is none).
 DB_EXISTS = "the SQLite file serve uses, which must exist"
 NO_PLAN = "no plan is applied: this import caps nothing (--plans FILE holds it to one)"
+# What every command but `serve`, `stats` and `audit-verify` says, on one line of stderr (exit
+# 1), when its open refuses a database of an older schema (SchemaTooOld; cairn.web.cli.main):
+# in stats' words (cli_stats.OLDER_DATABASE), with the command's name.
+OLDER_SCHEMA = (
+    "the database at {db} has an older schema (version {found}; this cairn's is {known}): start"
+    " the server once on it (serve --db) to bring it up to date, which holds every page to its"
+    " own project's notes and logs how many pages it rewrote and removed; only serve upgrades"
+    " it, and {command} changed nothing"
+)
 
 
 def add_commands(commands: argparse._SubParsersAction) -> None:
@@ -64,6 +83,19 @@ def add_commands(commands: argparse._SubParsersAction) -> None:
         allow_abbrev=False,
     )
     compact.add_argument("--db", type=Path, required=True, help=DB_EXISTS)
+    compact.add_argument(
+        "--if-due",
+        action="store_true",
+        help="only what a recorded deletion still needs: nothing without one, the write-ahead"
+        " log alone when the file was rewritten since, else the whole compaction",
+    )
+    repair = commands.add_parser(
+        "repair",
+        help="rewrite each page that cites a passage not of its own project's notes, as the"
+        " upgrade to schema 32 did: the pages stats --other-projects counts",
+        allow_abbrev=False,
+    )
+    repair.add_argument("--db", type=Path, required=True, help=DB_EXISTS)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -82,7 +114,9 @@ def run(args: argparse.Namespace) -> int:
                 print(f"cannot use those plans: {error}", file=sys.stderr)
                 return 2
         return _import(args.db, args.account, args.source, args.max_bytes, plans)
-    return _compact(args.db)
+    if args.command == "repair":
+        return _repair(args.db)
+    return _compact_if_due(args.db) if args.if_due else _compact(args.db)
 
 
 def _counts(summary) -> str:
@@ -95,7 +129,7 @@ def _export(db: Path, account: str, out: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         try:
             view = store.for_account(account)
@@ -114,6 +148,7 @@ def _export(db: Path, account: str, out: Path) -> int:
             with os.fdopen(fd, "wb") as file:
                 os.fchmod(file.fileno(), 0o600)  # exactly 0600, whatever the umask
                 summary = view.export(file)
+            view._record_read(EXPORTED_EVENT, None, {})
         except Exception as error:
             out.unlink(missing_ok=True)
             # the system's reason or the class: a message may name another path or a note
@@ -162,7 +197,7 @@ def _import(
         imported = False
         try:
             make_database(db)  # 0600 before SQLite opens it (H1)
-            store = Store(db)
+            store = Store(db, upgrade=False)
             try:
                 if plans is None:
                     print(NO_PLAN, file=sys.stderr)
@@ -289,12 +324,45 @@ def _remove_new(db: Path, directories: list[Path]) -> None:
             return
 
 
+ANOTHER_COMPACTION = 3  # compact's exit code when another compaction runs on the database
+STILL_DUE = "a deletion recorded during the run still asks for a rewrite"
+
+
 def _compact(db: Path) -> int:
+    """`compact`: prune by the record, then the whole compaction, under the lock that keeps
+    one compaction at a time on the database (Store.compacting): exit 3 and nothing changed
+    when another one runs."""
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
+    store = Store(db, upgrade=False)
+    try:
+        with store.compacting():
+            return _rewrite(store, db)
+    except CompactionRunning as error:
+        return _running(db, error)
+    finally:
+        store.close()
+
+
+def _running(db: Path, error: CompactionRunning) -> int:
+    print(
+        f"{db} was not compacted: {error}; nothing was changed, run compact again when it is done",
+        file=sys.stderr,
+    )
+    return ANOTHER_COMPACTION
+
+
+def _still_due(store: Store) -> None:
+    """One more line when the record, read as the run ends, asks for a rewrite: a deletion
+    recorded while it ran, which its rewrite did not cover."""
+    state = store.compaction_state()
+    if state.deleted_at is not None and not state.rewritten:
+        print(f"{STILL_DUE}: run compact --if-due again")
+
+
+def _rewrite(store: Store, db: Path) -> int:
     before = db.stat().st_size
-    store = Store(db)
     try:
         pruned = store.prune_by_record()  # Q1: before the file is rewritten
         store.compact()
@@ -303,10 +371,105 @@ def _compact(db: Path) -> int:
             print(_pruned(pruned), file=sys.stderr)
         print(f"{db} was not fully compacted: {error}", file=sys.stderr)
         return 1
-    finally:
-        store.close()
     print(_pruned(pruned))
     print(f"compacted {db}: {before} -> {db.stat().st_size} bytes")
+    _still_due(store)
+    return 0
+
+
+def _compact_if_due(db: Path) -> int:
+    """`compact --if-due` (the Google Cloud host's nightly run, infra/gcp/files/host.sh): what
+    the record of compaction (Store.compaction_state) says is still due, read once the lock
+    that keeps one compaction at a time is held (exit 3, nothing changed, when another one
+    runs), so a deletion the server's own compactor already rewrote for, and recorded, is
+    not rewritten again (one killed before its record is). No deletion recorded: nothing.
+    The file rewritten since the last deletion: the write-ahead log alone (Store.empty_log),
+    not finished (exit 1, as compact's line) when another connection holds it. Otherwise
+    the whole compaction, as `compact`. It exits 0 when it did what was due at its start;
+    a deletion recorded while it ran is said in one more line, for the next run."""
+    if not db.is_file():
+        print(f"no database at {db}", file=sys.stderr)
+        return 1
+    store = Store(db, upgrade=False)
+    try:
+        with store.compacting():
+            due = store.compaction_state()
+            if due.deleted_at is None:
+                print(
+                    f"nothing to compact in {db}: no deletion is recorded since the last"
+                    " compaction finished"
+                )
+                return 0
+            if not due.rewritten:
+                return _rewrite(store, db)
+            try:
+                store.empty_log()
+            except CompactIncomplete as error:
+                print(f"{db} was not fully compacted: {error}", file=sys.stderr)
+                return 1
+            print(
+                f"emptied the write-ahead log of {db}: the file was rewritten after the last"
+                " deletion, so only the log was due"
+            )
+            _still_due(store)
+            return 0
+    except CompactionRunning as error:
+        return _running(db, error)
+    finally:
+        store.close()
+
+
+def _repair(db: Path) -> int:
+    """`repair`: Store.repair_own_projects, one transaction over the whole database (the
+    command takes no workspace, as compact and stats take none), under the lock that keeps
+    one compaction at a time (exit 3, nothing changed, while one runs, as compact). A write
+    another connection holds past the store's wait leaves the database as it was (exit 1).
+    Once committed it prints the totals, then each workspace's counts by its id; it names no
+    page, project or note. With no such page: "nothing to change", exit 0, nothing written.
+    It never upgrades a database by the way: its open refuses one of an older schema (exit 1,
+    OLDER_SCHEMA, from cairn.web.cli.main), as every command's but `serve`'s does, since the
+    upgrade is the repair (schema step 32) and the server logs its counts. A database held
+    past the store's wait while it opens is busy, as one held while it repairs."""
+    if not db.is_file():
+        print(f"no database at {db}", file=sys.stderr)
+        return 1
+    store: Store | None = None
+    each: list[tuple[str, int, int]] = []
+    try:
+        store = Store(db, upgrade=False)
+        with store.compacting():
+            done = store.repair_own_projects(lambda *counts: each.append(counts))
+    except CompactionRunning as error:
+        print(
+            f"{db} was not repaired: {error}; nothing was changed, run repair again when it is"
+            " done",
+            file=sys.stderr,
+        )
+        return ANOTHER_COMPACTION
+    except sqlite3.OperationalError as error:
+        code = getattr(error, "sqlite_errorcode", None)
+        if code is None or code & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise
+        print(
+            f"{db} was not repaired: the database is busy; nothing was changed, run repair again",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if store is not None:
+            store.close()
+    if not done["workspaces"]:
+        print(
+            f"nothing to change in {db}: no page cites a passage that is not of its own"
+            " project's notes"
+        )
+        return 0
+    print(
+        f"repaired {db}: {done['rewritten']} page(s) rewritten with their own project's"
+        f" claims, {done['removed']} removed, in {done['workspaces']} workspace(s)"
+    )
+    for account, rewritten, removed in each:
+        print(f"workspace {account}: {rewritten} rewritten, {removed} removed")
     return 0
 
 

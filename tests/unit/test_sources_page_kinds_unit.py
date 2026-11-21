@@ -11,6 +11,7 @@ from starlette.testclient import TestClient
 from cairn.server import create_app
 from cairn.sources import KINDS, SourceKind
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 LANGFUSE = {
@@ -64,10 +65,10 @@ def page(tmp_path, monkeypatch):
         "sso", "o", "o@example.test", "Olive", issuer="https://id.example.test", join="default"
     )
     client = TestClient(create_app(store, public_url=BASE), base_url=BASE)
-    client.cookies.set("cairn_session", owner.token)
+    client.cookies.set(session_cookie(), owner.token)
 
     def section(name: str, token: str | None = None) -> str:
-        headers = {"cookie": f"cairn_session={token}"} if token else None
+        headers = {"cookie": f"{session_cookie()}={token}"} if token else None
         html = client.get("/sources", headers=headers).text
         found = re.search(
             rf'<section class="integration" id="source-{name}".*?</section>', html, re.S
@@ -367,7 +368,7 @@ def test_a_default_name_taken_out_of_reach_is_not_revealed_and_the_post_says_so(
     posted = page.client.post(
         "/integrations/meet/on",
         data={"new_project": "meetings"},
-        headers={"sec-fetch-site": "same-origin", "cookie": f"cairn_session={admin.token}"},
+        headers={"sec-fetch-site": "same-origin", "cookie": f"{session_cookie()}={admin.token}"},
         follow_redirects=False,
     )
     assert posted.status_code == 400 and "only an owner decides" in posted.text

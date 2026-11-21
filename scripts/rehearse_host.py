@@ -172,6 +172,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -236,12 +237,21 @@ CONTAINERS = (
     "cairn-replica-check",
 )
 # runcmd starts both; the rehearsal does not, so that every run of either is one it starts.
-TIMERS = ("cairn-update.timer", "cairn-replica-check.timer")
+TIMERS = (
+    "cairn-update.timer",
+    "cairn-replica-check.timer",
+    "cairn-compact.timer",
+    "cairn-host-check.timer",
+)
 STOP_ORDER = (
     "cairn-update.timer",
     "cairn-update.service",
     "cairn-replica-check.timer",
     "cairn-replica-check.service",
+    "cairn-compact.timer",
+    "cairn-compact.service",
+    "cairn-host-check.timer",
+    "cairn-host-check.service",
     "cairn.service",
     "caddy.service",
     "litestream.service",
@@ -460,13 +470,53 @@ def variable_defaults(tf: str, names: list[str]) -> dict[str, str]:
     return found
 
 
+def container_limit_defaults(tf: str) -> dict[str, tuple[int, int]]:
+    """container_limits' default in variables.tf: (memory in MiB, process limit) by container."""
+    block = re.search(r'variable "container_limits" \{(.*?)\n\}', tf, re.S)
+    default = block and re.search(r"^\s*default\s*=\s*\{(.*?)^\s*\}", block.group(1), re.S | re.M)
+    if not default:
+        raise Failed("variables.tf has no default for container_limits")
+    found = re.findall(
+        r"^\s*([a-z]+)\s*=\s*\{\s*memory_mb\s*=\s*(\d+),\s*pids\s*=\s*(\d+)\s*\}",
+        default.group(1),
+        re.M,
+    )
+    return {name: (int(memory), int(pids)) for name, memory, pids in found}
+
+
+def hardening_problems(name: str, config: dict[str, Any], limits: tuple[int, int]) -> list[str]:
+    """What the container NAME, by its `docker inspect` HostConfig, lacks of what host.sh
+    gives it: every capability dropped, Caddy's one back, no-new-privileges, and the memory
+    (with no swap on top) and process limits of container_limits."""
+    memory, pids = limits[0] * 1024 * 1024, limits[1]
+    added = ["NET_BIND_SERVICE"] if name == "caddy" else []
+    problems = []
+    if (config.get("CapDrop") or []) != ["ALL"]:
+        problems.append(f"{name} drops {config.get('CapDrop')}, not ['ALL']")
+    # An engine answers a capability as it was given or with CAP_ before it: one name.
+    if [cap.removeprefix("CAP_") for cap in config.get("CapAdd") or []] != added:
+        problems.append(f"{name} adds {config.get('CapAdd')}, not {added}")
+    if (config.get("SecurityOpt") or []) != ["no-new-privileges:true"]:
+        problems.append(f"{name} has security options {config.get('SecurityOpt')}")
+    if config.get("Memory") != memory:
+        problems.append(f"{name} has a memory limit of {config.get('Memory')}, not {memory}")
+    elif config.get("MemorySwap") != memory:
+        problems.append(f"{name} has memory and swap of {config.get('MemorySwap')}, not {memory}")
+    if config.get("PidsLimit") != pids:
+        problems.append(f"{name} has a process limit of {config.get('PidsLimit')}, not {pids}")
+    return problems
+
+
 def rehearsal_values(repo: Path) -> dict[str, str]:
     """What OpenTofu would pass, with the rehearsal's stand-ins and the shipped image pins."""
     gcp = repo / "infra" / "gcp"
     pins = variable_defaults(
         (gcp / "variables.tf").read_text(encoding="utf-8"), ["caddy_image", "litestream_image"]
     )
+    limits = container_limit_defaults((gcp / "variables.tf").read_text(encoding="utf-8"))
     return {
+        **{f"{name}_memory_mb": str(memory) for name, (memory, _) in limits.items()},
+        **{f"{name}_pids_limit": str(pids) for name, (_, pids) in limits.items()},
         "domain": NAME,
         "public_url": BASE,
         "acme_email": "ops@example.test",
@@ -479,7 +529,10 @@ def rehearsal_values(repo: Path) -> dict[str, str]:
         "caddy_image": pins["caddy_image"],
         "litestream_image": pins["litestream_image"],
         "data_device": DEVICE_LINK,
-        "host_sh": (gcp / "files" / "host.sh").read_text(encoding="utf-8"),
+        # main.tf's base64gzip(file(...)): the bytes differ from Go's gzip, what they hold not.
+        "host_sh": base64.b64encode(
+            gzip.compress((gcp / "files" / "host.sh").read_bytes(), mtime=0)
+        ).decode("ascii"),
         "caddyfile": (repo / "deploy" / "Caddyfile").read_text(encoding="utf-8"),
         "litestream_yml": (repo / "deploy" / "litestream.yml").read_text(encoding="utf-8"),
         "plans_yaml": "",  # cairn_plans_file's default; one check installs PLANS_TEXT instead
@@ -542,12 +595,20 @@ def write_files(rendered: str) -> list[WriteFile]:
             permissions = int(permissions, 8)
         content = entry.get("content", "")
         encoding = entry.get("encoding")
-        expect(encoding in (None, "b64"), f"{entry['path']}: encoding {encoding!r} is not b64")
-        if encoding == "b64":
+        expect(
+            encoding in (None, "b64", "gz+b64"),
+            f"{entry['path']}: encoding {encoding!r} is not b64 or gz+b64",
+        )
+        if encoding in ("b64", "gz+b64"):
             try:
                 content = base64.b64decode(content, validate=True)
             except (TypeError, ValueError) as error:
                 raise Failed(f"{entry['path']}: content is not base64: {error}") from error
+        if encoding == "gz+b64":
+            try:
+                content = gzip.decompress(content)
+            except (OSError, EOFError) as error:
+                raise Failed(f"{entry['path']}: content is not gzip: {error}") from error
         files.append(WriteFile(entry["path"], permissions, content))
     return files
 
@@ -1594,6 +1655,10 @@ class Rehearsal:
                 "{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}", name,
             ).split()  # fmt: skip
             expect(on == [network], f"the {name} container is on {on}, not [{network}]")
+            config = json.loads(out("docker", "inspect", "-f", "{{json .HostConfig}}", name))
+            limits = container_limit_defaults(read(GCP / "variables.tf"))
+            problems = hardening_problems(name, config, limits[name])
+            expect(not problems, "; ".join(problems))
         made = DB_DIR / "rehearsal.env"
         sh(
             "docker", "exec", "cairn", "python", "-m", "cairn.server", "key-create",
@@ -1623,7 +1688,9 @@ class Rehearsal:
             f" nothing; then cairn-update deployed"
             f" {self.short(first)} and it serves at {BASE} with HSTS; --trusted-proxy {trusted}"
             f" is the cairn network's subnet; cairn and Caddy on cairn, Litestream on"
-            f" cairn-backup; REST: project, note, 1 hit; MCP lists {tools} tools"
+            f" cairn-backup, all three with no capability (Caddy: NET_BIND_SERVICE back),"
+            f" no-new-privileges and the default memory and process limits;"
+            f" REST: project, note, 1 hit; MCP lists {tools} tools"
         )
 
     def restores_the_database_before_cairn_starts(self) -> str:

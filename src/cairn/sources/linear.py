@@ -10,8 +10,8 @@ The kind ("linear" in cairn.sources.KINDS)
   and then only issues finished at or after the floor: that switch-on (`since`) less
   `backfill_days`, which is 0 unless given, so that switching a source on never pours an
   unknown amount of history into a project unasked. Its notes are written via
-  "linear", with the label "linear". It is not withheld from a model: it reads the
-  workspace's own tracker, as Granola reads its own meetings.
+  "linear", with the label "linear". It is withheld from a model unless the operator allows
+  it, as every kind is (`SourceKind.withheld`).
 - The config: `key_env` (required: the name of the environment variable that holds a
   personal API key, capitals, digits and "_"), `projects` (at most one project name; none while
   it is off), `teams` (1 to TEAMS_MAX team keys, each 1 to 10 letters, digits or "_", as
@@ -168,7 +168,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -181,11 +180,13 @@ from cairn.sources import (
     SourceError,
     SourceKind,
     fit,
-    holds_secret,
     names,
 )
+from cairn.sources import url as source_url
+from cairn.sources.config import check_env_name, check_projects
+from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
-from cairn.store.memory import FIELD_MAX, is_project_name
+from cairn.store.memory import FIELD_MAX
 
 DEFAULT_BASE_URL = "https://api.linear.app/graphql"
 VIA = LABEL = "linear"
@@ -208,8 +209,6 @@ SETTLE_MINUTES = (30, 0, 1440)  # the default, the least, the most
 LOOKBACK_DAYS = (30, 1, 365)
 BACKFILL_DAYS = (0, 0, 365)
 TEAMS_MAX = 20
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 TEAM_KEY = re.compile(r"[A-Za-z0-9_]{1,10}")
 UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -251,23 +250,20 @@ def check_config(config: object) -> dict[str, Any]:
             f"a linear source does not take one of the settings given: it takes"
             f" {', '.join(SETTINGS)}"
         )
-    if "key_env" not in config:
-        raise ValueError(
-            "a linear source needs key_env: the name of the environment variable that holds"
-            " the Linear API key"
-        )
-    key_env = config["key_env"]
-    if isinstance(key_env, str) and _looks_like_a_credential(key_env):
-        raise ValueError(
-            "key_env holds what looks like a key: put the key in an environment variable of"
-            " the process that syncs, and name that variable here"
-        )
-    if not isinstance(key_env, str) or not ENV_NAME.fullmatch(key_env):
-        raise ValueError(
-            "key_env names an environment variable (capitals, digits and _, at most 128),"
-            " which holds the Linear API key: the key itself never goes in a config"
-        )
-    checked: dict[str, Any] = {"key_env": key_env, "projects": _check_projects(config)}
+    key_env = check_env_name(
+        config,
+        "key_env",
+        kind="linear",
+        holds="the Linear API key",
+        secret="key",
+        looks_like=_looks_like_a_credential,
+    )
+    checked: dict[str, Any] = {
+        "key_env": key_env,
+        "projects": check_projects(
+            config.get("projects", []), kind="linear", looks_like=_looks_like_a_credential
+        ),
+    }
     checked["base_url"] = _check_base_url(config.get("base_url", DEFAULT_BASE_URL))
     teams, linear_project = config.get("teams"), config.get("linear_project")
     if teams is not None and linear_project is not None:
@@ -292,20 +288,6 @@ def check_config(config: object) -> dict[str, Any]:
     return checked
 
 
-def _check_projects(config: Mapping[str, Any]) -> list[str]:
-    projects = config.get("projects", [])
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError("projects names at most one project: a linear source writes into one")
-    for project in projects:
-        if isinstance(project, str) and _looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
-
-
 def _check_teams(teams: object) -> list[str]:
     if not isinstance(teams, list | tuple) or not 1 <= len(teams) <= TEAMS_MAX:
         raise ValueError(f"teams is a list of 1 to {TEAMS_MAX} team keys, such as ENG")
@@ -319,29 +301,15 @@ def _check_teams(teams: object) -> list[str]:
 
 
 def _check_base_url(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 2048:
-        raise ValueError("base_url is the address of Linear's GraphQL API")
-    try:
-        parts = urlsplit(value.strip())
-        host = parts.hostname
-    except ValueError:
-        raise ValueError("base_url is not a URL") from None
-    if "@" in parts.netloc:
-        raise ValueError(
-            "base_url must not hold a user or password: the key comes from the environment"
-        )
-    scheme = parts.scheme.lower()
-    if not host or not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("base_url is https, or http on this machine")
-    if parts.query or parts.fragment or "?" in value or "#" in value:
-        raise ValueError("base_url has no query or fragment")
-    pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]
-    if any(_looks_like_a_credential(piece) for piece in pieces if piece):
-        raise ValueError(
-            "base_url looks like it holds a credential: the key comes from the environment,"
-            " named by key_env"
-        )
-    return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    return source_url.check_base_url(
+        value,
+        what="Linear's GraphQL API",
+        comes_from="the key comes from the environment",
+        named_by="key_env",
+        holds="a credential",
+        http_said="on this machine",
+        looks_like=_looks_like_a_credential,
+    )
 
 
 def describe(config: Mapping[str, Any]) -> str:
@@ -441,6 +409,7 @@ KIND = SourceKind(
     default_project=DEFAULT_PROJECT,
     settings=SETTINGS_HELP,
     switch_on_with=switch_on_with,
+    withheld=True,
 )
 
 
@@ -970,7 +939,11 @@ def said_by_linear(errors: list[Any], secrets: tuple[str, ...]) -> str:
         if not isinstance(message, str):
             continue
         line = _one_line(message)[:MESSAGE_MAX]
-        if not line or holds_secret(message, secrets) or names.holds_an_address(message):
+        if (
+            not line
+            or names.holds_an_address(message)
+            or not safe_error_text(message, secrets, looks_like=_looks_like_a_credential)
+        ):
             return ""
         return f': Linear said "{line}"'
     return ""
@@ -1179,11 +1152,16 @@ class LinearSource:
                 ) as response,
             ):
                 status = response.status_code
-                raw = await (_bounded(response, op) if status == 200 else _error_body(response))
+                most = MAX_RESPONSE_BYTES if status == 200 else MAX_ERROR_BYTES
+                raw = await read_bounded(response, most)
+                if status == 200 and raw is None:
+                    raise _TooLarge(
+                        f"Linear's answer to {op} is larger than this server reads ({most} bytes)"
+                    )
         except TimeoutError:
             raise _Spent("its deadline, which an answer still arriving passed") from None
         except httpx.HTTPError as error:
-            raise SourceError(f"cannot reach Linear for {op}: {type(error).__name__}") from None
+            raise SourceError(request_failure(error, f"cannot reach Linear for {op}")) from None
         errors = _errors_of(raw)
         kinds = _kinds(errors)
         if status in (401, 403) or kinds & AUTH_ERRORS:
@@ -1251,29 +1229,3 @@ def _connection(holder: dict[str, Any], name: str) -> tuple[list[Any], str | Non
     if more and (not isinstance(after, str) or not after):
         raise _Shape(f"its {name}' next page")
     return nodes, after if more else None
-
-
-async def _bounded(response: httpx.Response, op: str) -> bytes:
-    """A 200's body, at most MAX_RESPONSE_BYTES; _TooLarge past it."""
-    declared = response.headers.get("content-length", "")
-    too_large = _TooLarge(
-        f"Linear's answer to {op} is larger than this server reads ({MAX_RESPONSE_BYTES} bytes)"
-    )
-    if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
-        raise too_large
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) > MAX_RESPONSE_BYTES:
-            raise too_large
-    return bytes(body)
-
-
-async def _error_body(response: httpx.Response) -> bytes | None:
-    """An error's body, read only for its codes and message: None past MAX_ERROR_BYTES."""
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) > MAX_ERROR_BYTES:
-            return None
-    return bytes(body)

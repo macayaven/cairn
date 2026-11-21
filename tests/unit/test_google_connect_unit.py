@@ -45,7 +45,12 @@ from cairn.sources.runner import (
 )
 from cairn.store import Store
 from cairn.store.hosted import RECONNECT, UNOPENED
+from cairn.web.auth import HOST_ONLY
 from cairn.web.google_connect import read_switch
+from wait_helpers import wait_for_event
+
+HTTPS_FLOW_COOKIE = HOST_ONLY + gc.COOKIE
+HTTPS_SAID_COOKIE = HOST_ONLY + gc.SAID_COOKIE
 
 BASE = "https://cairn.example.test"
 CLIENT_ID = "g2-web-client.apps.example.test"
@@ -405,11 +410,11 @@ def told(response: httpx.Response) -> dict:
     assert response.headers["location"] == "/sources#google-connect"
     found = [
         value for value in response.headers.get_list("set-cookie")
-        if value.startswith(f"{gc.SAID_COOKIE}=")
+        if value.startswith(f"{HTTPS_SAID_COOKIE}=")
     ]  # fmt: skip
     assert len(found) == 1
     attributes = found[0].lower()
-    assert "path=/sources" in attributes and "httponly" in attributes
+    assert "path=/;" in attributes and "httponly" in attributes
     assert "samesite=lax" in attributes and "secure" in attributes
     sealed = found[0].split(";", 1)[0].split("=", 1)[1]
     return json.loads(cairn.store.hosted.Sealer(KEY).open(sealed, gc.OUTCOME))
@@ -442,8 +447,8 @@ def test_connect_sends_the_browser_to_googles_consent_with_exactly_these_paramet
     assert params["access_type"] == "offline" and params["prompt"] == "consent"
     assert len(params["state"]) >= 32
     cookie = started.headers["set-cookie"]
-    assert cookie.startswith("google_connect=")
-    for flag in ("httponly", "path=/integrations/google", "samesite=lax", "secure", "max-age=600"):
+    assert cookie.startswith(f"{HTTPS_FLOW_COOKIE}=")
+    for flag in ("httponly", "path=/;", "samesite=lax", "secure", "max-age=600"):
         assert flag in cookie.lower()
     drive = httpx.URL(start(ada, "google_drive").headers["location"]).params["scope"]
     assert drive == f"{DRIVE_SCOPE} openid email"
@@ -468,7 +473,7 @@ def test_success_stores_one_sealed_row_and_writes_no_source_and_no_note(world):
         world.db, "SELECT count(*) FROM notes"
     )
     assert after == before
-    assert ada.cookies.get("google_connect") is None  # the request is over
+    assert ada.cookies.get(HTTPS_FLOW_COOKIE) is None  # the request is over
 
 
 def test_the_way_back_alone_writes_nothing_and_needs_the_session(world):
@@ -498,9 +503,7 @@ def test_a_state_that_is_not_this_ones_sends_and_stores_nothing(world, monkeypat
     elif spoil == "another person":
         bob = world.person(BOB)
         sealed = started.headers["set-cookie"].split(";")[0].split("=", 1)[1]
-        bob.cookies.set(
-            "google_connect", sealed, domain="cairn.example.test", path="/integrations/google"
-        )
+        bob.cookies.set(HTTPS_FLOW_COOKIE, sealed, domain="cairn.example.test", path="/")
         client = bob
     else:
         ada.cookies.clear()
@@ -526,9 +529,7 @@ def test_the_flows_cookie_reads_as_nothing_and_opens_after_a_restart(world):
     again = TestClient(world.app, base_url=BASE)
     world.clients.append(again)
     again.cookies.update(ada.cookies)
-    again.cookies.set(
-        "google_connect", sealed, domain="cairn.example.test", path="/integrations/google"
-    )
+    again.cookies.set(HTTPS_FLOW_COOKIE, sealed, domain="cairn.example.test", path="/")
     assert "Connected." in said(again, come_back(world, again, query))
 
 
@@ -552,9 +553,7 @@ def test_a_state_is_settled_once(world):
     sealed = started.headers["set-cookie"].split(";")[0].split("=", 1)[1]
     query = world.google.consent(started.headers["location"])
     assert "Connected." in said(ada, come_back(world, ada, query))
-    ada.cookies.set(
-        "google_connect", sealed, domain="cairn.example.test", path="/integrations/google"
-    )
+    ada.cookies.set(HTTPS_FLOW_COOKIE, sealed, domain="cairn.example.test", path="/")
     before, exchanges = dump(world.db), world.google.exchanges
     response = come_back(world, ada, query)
     assert told(response)["said"] == "stale"
@@ -752,9 +751,7 @@ def test_a_request_is_bound_to_its_person_in_the_same_workspace(world):
     started = start(ada)
     query = world.google.consent(started.headers["location"])
     sealed = started.headers["set-cookie"].split(";")[0].split("=", 1)[1]
-    bob.cookies.set(
-        "google_connect", sealed, domain="cairn.example.test", path="/integrations/google"
-    )
+    bob.cookies.set(HTTPS_FLOW_COOKIE, sealed, domain="cairn.example.test", path="/")
     before = dump(world.db)
     response = come_back(world, bob, query)
     assert told(response)["said"] == "stale"
@@ -817,9 +814,9 @@ def test_switched_off_there_is_no_route_no_button_and_no_table_read(tmp_path):
         for name, world in (("off", off), ("on", on)):
             client = world.person(ADA)
             seen: list[str] = []
-            world.store._con.set_trace_callback(seen.append)
+            world.store._observe(trace=seen.append)
             page = client.get("/sources")
-            world.store._con.set_trace_callback(None)
+            world.store._observe(trace=None)
             assert page.status_code == 200 and "Connect Google" not in page.text
             assert 'id="google-connect"' not in page.text
             if world is off:  # on, the table is read: does Ada hold a connected account?
@@ -1292,26 +1289,35 @@ def test_a_failure_outside_the_pass_is_logged_and_the_loop_goes_on(world, monkey
     assert "ada@" not in caplog.text
 
 
-def test_a_drop_wakes_the_loop(world):
+def test_a_drop_wakes_the_loop(world, monkeypatch):
     _ada, _bob, bob_id, _name, token = bob_connected_in_adas_workspace(world)
     custody = world.store.google_custody
     make = lambda: source_client(httpx.MockTransport(world.google.handler))  # noqa: E731
 
+    ready, revoked = asyncio.Event(), asyncio.Event()
+    drain = gc.drain
+
     async def never(seconds):
+        ready.set()
         await asyncio.Event().wait()
 
+    async def observed(*args):
+        await drain(*args)
+        if world.google.revoked and not waiting(world):
+            revoked.set()
+
+    monkeypatch.setattr(gc, "drain", observed)
     revoker = gc.Revoker(world.store, custody, make, wait=never)
 
     async def go():
         looping = asyncio.create_task(revoker.loop())
-        while custody.waiting.wake is None:
-            await asyncio.sleep(0)
-        view = world.store.for_account(*owned(world, ADA))
-        await asyncio.to_thread(view.remove_member, bob_id)
-        async with asyncio.timeout(5):
-            while waiting(world) or not world.google.revoked:
-                await asyncio.sleep(0.01)
-        await revoker.stopped(looping)
+        try:
+            await wait_for_event(ready, "revocation loop did not start waiting")
+            view = world.store.for_account(*owned(world, ADA))
+            await asyncio.to_thread(view.remove_member, bob_id)
+            await wait_for_event(revoked, "dropping the member did not wake revocation")
+        finally:
+            await revoker.stopped(looping)
 
     asyncio.run(go())
     assert world.google.revoked == [token]
@@ -1721,16 +1727,16 @@ def test_the_page_says_only_what_happened_once_and_to_its_person(world):
         page = html.unescape(ada.get(f"/sources{crafted}").text)
         assert gc.SAID["disconnected"] not in page and gc.REFUSALS["denied"] not in page
     response = disconnect(ada, name)
-    sealed = response.cookies[gc.SAID_COOKIE]
+    sealed = response.cookies[HTTPS_SAID_COOKIE]
     first = ada.get(response.headers["location"])
     assert gc.SAID["disconnected"] in html.unescape(first.text)
     assert first.headers["cache-control"] == "no-store"
-    cleared = [v for v in first.headers.get_list("set-cookie") if v.startswith(gc.SAID_COOKIE)]
+    cleared = [v for v in first.headers.get_list("set-cookie") if v.startswith(HTTPS_SAID_COOKIE)]
     assert len(cleared) == 1 and "max-age=0" in cleared[0].lower()
     assert gc.SAID["disconnected"] not in html.unescape(ada.get("/sources").text)  # once
     bob = world.person(BOB)  # another person's outcome, carried over, is not said
     joins(world, bob, BOB, ADA, "member")
-    bob.cookies.set(gc.SAID_COOKIE, sealed, domain="cairn.example.test", path="/sources")
+    bob.cookies.set(HTTPS_SAID_COOKIE, sealed, domain="cairn.example.test", path="/")
     assert gc.SAID["disconnected"] not in html.unescape(bob.get("/sources").text)
 
 
@@ -1747,11 +1753,50 @@ def test_an_outcome_that_is_not_this_persons_now_is_not_said_and_is_cleared(worl
     sealed = cairn.store.hosted.Sealer(KEY).seal(json.dumps(outcome), associated)
     if which == "garbage":
         sealed = "not-a-sealed-value"
-    ada.cookies.set(gc.SAID_COOKIE, sealed, domain="cairn.example.test", path="/sources")
+    ada.cookies.set(HTTPS_SAID_COOKIE, sealed, domain="cairn.example.test", path="/")
     page = ada.get("/sources")
     assert (gc.SAID["disconnected"] in html.unescape(page.text)) == (which == "as_written")
-    cleared = [v for v in page.headers.get_list("set-cookie") if v.startswith(gc.SAID_COOKIE)]
+    cleared = [v for v in page.headers.get_list("set-cookie") if v.startswith(HTTPS_SAID_COOKIE)]
     assert len(cleared) == 1 and "max-age=0" in cleared[0].lower()
+
+
+def test_http_google_connect_keeps_plain_cookie_names_and_paths(tmp_path):
+    http_base = "http://localhost:8765"
+    w = World(tmp_path, offered=(ADA,))
+    try:
+        sign_in = SignIn(
+            providers=(GitHub("gh-id", "gh-secret"),),
+            http=httpx.AsyncClient(transport=httpx.MockTransport(w.github)),
+            join="personal",
+        )
+        w.app = create_app(
+            w.store,
+            public_url=http_base,
+            sign_in=sign_in,
+            source_http=lambda: source_client(httpx.MockTransport(w.google.handler)),
+            google_connect=read_switch(SWITCH_ENV, (ADA,)),
+        )
+        ada = TestClient(w.app, base_url=http_base)
+        w.clients.append(ada)
+        started_in = ada.get("/auth/github", follow_redirects=False)
+        st = httpx.URL(started_in.headers["location"]).params["state"]
+        cb = ada.get(f"/auth/github/callback?code=c&state={st}", follow_redirects=False)
+        assert cb.status_code == 200
+        flow_resp = start(ada)
+        flow_cookie = flow_resp.headers["set-cookie"]
+        assert flow_cookie.startswith(f"{gc.COOKIE}=")
+        assert "path=/integrations/google" in flow_cookie.lower()
+        assert "__Host-" not in flow_cookie
+        said_resp = come_back(w, ada, w.google.consent(flow_resp.headers["location"]))
+        said_cookie = [
+            v
+            for v in said_resp.headers.get_list("set-cookie")
+            if v.startswith(f"{gc.SAID_COOKIE}=")
+        ]
+        assert len(said_cookie) == 1 and "path=/sources" in said_cookie[0].lower()
+        assert "Connected." in html.unescape(ada.get("/sources").text)
+    finally:
+        w.close()
 
 
 def test_switched_off_the_include_adds_not_one_byte_to_the_page():
@@ -1775,7 +1820,10 @@ def test_the_security_guide_says_what_changing_the_sealing_key_does_and_in_what_
 
 def test_the_sources_guide_names_what_the_code_reads():
     guide = (Path(gc.__file__).parents[1] / "guides" / "sources.md").read_text()
-    assert len(guide.encode()) < 70_000
+    # The bound that is real is docs_publisher.MAX_FILE_BYTES (128 KiB): test_docs_helper shows a
+    # sources guide past 70,000 bytes published and searched. This lower one only makes growth
+    # a choice someone states; it was raised from 70,000 for the sentence on changing the key.
+    assert len(guide.encode()) < 72_000
     section = guide[guide.index("### A Google account connected in the browser") :]
     for fact in (
         gc.CLIENT_VARIABLE,
@@ -1798,6 +1846,15 @@ def test_the_sources_guide_names_what_the_code_reads():
         "still connected elsewhere on this server",  # the revoking rule
     ):
         assert fact in section, fact
+    said = " ".join(section.split())
+    lost = said.index("every account must be connected again.")
+    change = said.index(
+        "To change the key without anyone connecting again: put the new key in"
+        f" `{gc.KEY_VARIABLE}` and the old one in `{gc.KEY_VARIABLE}_PREVIOUS`, restart the"
+        " server, run the `reseal` command with `--google-connect`, then remove"
+        f" `{gc.KEY_VARIABLE}_PREVIOUS` and restart."
+    )
+    assert lost < change
     assert gc.KEY_BYTES == 32 and "32 random bytes" in section
     assert "takes the access away at Google" not in guide  # it does so only by the rule
 

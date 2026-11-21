@@ -21,6 +21,7 @@ from starlette.testclient import TestClient
 from cairn.server import create_app
 from cairn.sources import KINDS
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -53,7 +54,7 @@ def section(markup: str, ident: str) -> str:
 
 def main(markup: str) -> str:
     """The page's own part: what <main> holds, without the frame's sign-out form."""
-    return markup.partition("<main>")[2].partition("</main>")[0]
+    return markup.partition('<main id="main" tabindex="-1">')[2].partition("</main>")[0]
 
 
 def form_to(markup: str, action: str) -> tuple[str, str]:
@@ -74,7 +75,7 @@ def person(store: Store, name: str, role: str | None = None) -> SimpleNamespace:
         store.set_role(signed.user.id, role)
     return SimpleNamespace(
         id=signed.user.id,
-        cookie={"cookie": f"cairn_session={signed.token}"},
+        cookie={"cookie": f"{session_cookie()}={signed.token}"},
         view=store.for_account(signed.account_id, signed.user.id),
     )
 
@@ -864,3 +865,22 @@ def test_the_buttons_are_explained_only_when_there_is_a_source(world):
     assert "Choose something new" in bare  # the form is still there
     world.ada.view.add_source_from("again", "ada-mail", {"label": "to-team"}, {}, "decisions")
     assert "What each button does" in main(get(world, world.ada).text)
+
+
+def test_every_source_action_button_names_its_source(world):
+    off_block = section(main(get(world, world.ada).text), "source-ada-labelled")
+    for label in (
+        "Preview ada-labelled",
+        "Switch on ada-labelled",
+        "Remove the source ada-labelled",
+    ):
+        assert f'aria-label="{label}"' in off_block
+    world.ada.view.enable_source("ada-labelled", ["decisions"])
+    on_block = section(main(get(world, world.ada).text), "source-ada-labelled")
+    for label in (
+        "Switch off ada-labelled",
+        "Preview ada-labelled",
+        "Write ada-labelled here from now on",
+        "Remove the source ada-labelled",
+    ):
+        assert f'aria-label="{label}"' in on_block

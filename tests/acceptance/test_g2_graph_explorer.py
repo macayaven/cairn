@@ -1,12 +1,13 @@
-"""G2 acceptance tests: a project's graph you can explore, behind a switch that is off.
+"""G2 acceptance tests: a project's graph you can explore, on by default under serve
+(--no-graph-explorer turns it off).
 
 The contract goes in the docstrings of src/cairn/graph.py, src/cairn/web/graph_routes.py and
 src/cairn/web/graph_view.py; decision 134 is the graph as it is without the switch.
 
 The switch
-- `serve --graph-explorer` and `create_app(..., graph_explorer=False)`. Off unless the
-  operator gives it, and it needs nothing else switched on. `create_app` refuses anything but
-  True or False.
+- `serve` enables the explorer by default; `serve --no-graph-explorer` turns it off (and
+  `--graph-explorer` stays accepted; giving both exits 2). `create_app(..., graph_explorer=False)`
+  keeps False as the library default and refuses anything but True or False.
 
 Off (the default): nothing changes
 - GET /b/<project>/graph is the page decision 134 describes: the same template output, the
@@ -62,6 +63,7 @@ from cairn.store import Claim, Store
 from cairn.web import cli
 from cairn.web.graph_view import render_graph
 from cairn.web.templating import PATH, UI_HEADERS
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.acme.example/pool-1"
@@ -158,7 +160,7 @@ def build(tmp_path, *, explorer: bool, pages: int = 3, notes: int = 3, name: str
         return SimpleNamespace(
             name=who,
             user=signed.user,
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"{session_cookie('https')}={signed.token}"},
             view=store.for_account(signed.account_id, signed.user.id),
         )
 
@@ -210,7 +212,7 @@ def get(w, path: str, who=None):
 # The switch
 
 
-def test_the_switch_is_off_unless_given_and_takes_true_or_false_only(tmp_path, monkeypatch):
+def test_the_switch_is_on_by_default_in_serve_and_takes_true_or_false_only(tmp_path, monkeypatch):
     made = []
 
     def note(store, **settings):
@@ -219,10 +221,15 @@ def test_the_switch_is_off_unless_given_and_takes_true_or_false_only(tmp_path, m
 
     monkeypatch.setattr(cli, "create_app", note)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("serve started"))
-    for argv in ([], ["--graph-explorer"]):
+    for argv in ([], ["--graph-explorer"], ["--no-graph-explorer"]):
         with pytest.raises(SystemExit):
             server.main(["serve", "--db", str(tmp_path / "kb.db"), *argv])
-    assert made == [False, True]
+    assert made == [True, True, False]
+    with pytest.raises(SystemExit) as refused:
+        server.main(
+            ["serve", "--db", str(tmp_path / "kb.db"), "--graph-explorer", "--no-graph-explorer"]
+        )
+    assert refused.value.code == 2
     store = Store(tmp_path / "app.db")
     try:
         assert create_app(store).state.graph_explorer is False
@@ -557,7 +564,7 @@ def test_under_a_brand_the_script_is_served_by_its_exact_name_and_names_nothing(
                 assert "cairn" not in said and "macayaven" not in said, path
             for path in ("/static/Graph-View.js", "/static/graph-view.JS", "/static/cairn.css"):
                 assert client.get(path).status_code == 404, path
-            client.cookies.set("session", store.create_session())
+            client.cookies.set(session_cookie(branded=True), store.create_session())
             r = client.get("/b/ops/graph")
             assert r.status_code == 200
             (tag,) = Page(r.text).scripts
@@ -631,12 +638,12 @@ class Watch:
     """The statements the store's connection runs during a call and the rows it hands back."""
 
     def __init__(self, store: Store) -> None:
-        self.con = store._con
+        self.store = store
 
     @contextlib.contextmanager
     def __call__(self):
         seen = SimpleNamespace(statements=0, rows=0)
-        before = self.con.row_factory
+        before = self.store._state.observers.rows
 
         def traced(statement: str) -> None:
             text = statement.lstrip()
@@ -647,13 +654,13 @@ class Watch:
             seen.rows += 1
             return row if before is None else before(cursor, row)
 
-        self.con.set_trace_callback(traced)
-        self.con.row_factory = rows
+        self.store._observe(trace=traced)
+        self.store._observe(rows=rows)
         try:
             yield seen
         finally:
-            self.con.set_trace_callback(None)
-            self.con.row_factory = before
+            self.store._observe(trace=None)
+            self.store._observe(rows=before)
 
 
 def test_a_batch_a_claims_passages_and_a_note_page_cost_the_same_in_a_larger_project(

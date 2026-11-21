@@ -35,9 +35,17 @@ Secrets ("secrets" and "secrets+personal"):
   (Google), hf_ and 30 or more (Hugging Face), gsk_ and 40 or more (Groq). Only sk- needs
   a digit; the others are keys whatever their characters.
 - jwt: a JSON Web Token: three base64url parts, the first two starting "eyJ", signed.
-- cairn_credential: cairn's own OAuth access and refresh tokens. cairn's API keys and
-  session tokens have no prefix and cannot be told from other random text: only
+- cairn_credential: cairn's own OAuth access and refresh tokens.
+- server_api_key: cairn's own API keys made since keys have their prefix (KEY_PREFIX and 43
+  letters, digits, "_" and "-", capitals and small letters among them). A key made before,
+  and a session token, have no prefix and cannot be told from other random text: only
   assigned_secret catches one, when it is assigned to a secret's name.
+- credential_url: a URL with a password in its authority (scheme://user:password@host, any
+  scheme), the password not a placeholder (<password>, ***, ${VAR}, xxxx) nor the word
+  documentation writes in its place (password, pass, passwd, pwd, secret).
+- auth_header: an `Authorization: Bearer` or `Authorization: Basic` header (any case, ":" or
+  "=", quoted or not) whose value is 8 or more token characters of two kinds at least, and
+  not a placeholder or a variable's name (<token>, $TOKEN, YOUR_API_TOKEN).
 - assigned_secret: a name ending in password, passwd, passphrase, secret, token, api key,
   access key, private key or secret key (any case, "_", "-" or "." between the words),
   then ":", "=", ":=" or "=>", then a literal of 12 or more characters with no whitespace.
@@ -47,22 +55,31 @@ Secrets ("secrets" and "secrets+personal"):
   repeated), and, unquoted, variable references (a dotted name such as
   settings.db_password, an environment variable's NAME; each part a word with at most two
   digits at its end) and values without both a letter and a digit. A quoted literal needs
-  two of: lower case, upper case, digits, symbols. Any other value assigned to such a name
-  is treated as a secret, whatever it looks like (a hex digest or a UUID too).
+  two of: lower case, upper case, digits, symbols, and no whitespace; but a quoted literal
+  assigned to a name ending in password, passwd or passphrase is one whatever its
+  characters, words and spaces included. Any other value assigned to such a name is treated
+  as a secret, whatever it looks like (a hex digest or a UUID too).
 Personal data ("secrets+personal" only):
 - email_address: local@domain.tld.
 - phone_number: an international number written with "+", a country code and 7 to 14
-  more digits, single spaces, dots or dashes between them. A number without "+" is not
-  recognised.
+  more digits, single spaces, dots or dashes between them; or a North American number
+  without "+": (415) 555-0199, 415-555-0199 or 415.555.0199. Any other number without "+"
+  is not recognised.
 - us_ssn: a US Social Security number written ddd-dd-dddd, without the ranges never issued
   (000, 666 and 9xx areas, 00 groups, 0000 serials).
 - payment_card: 13 to 19 digits, together or grouped 4-4-4-4(-3) or 4-6-4/5 with one kind
   of separator, that pass the Luhn check.
 - iban: an IBAN in capitals, together or in groups of four, 15 to 34 characters, that
   passes its mod-97 check.
-It does not recognise a person's name, a postal address, a date of birth, free-text health
-or financial details, national ids other than the US SSN, phone numbers without "+", keys
-of providers not listed, or a secret that has been split, encoded or reworded. The patterns
+- date_of_birth: a date after its label (DOB, D.O.B., date of birth, birthdate): digits
+  such as 2015-03-12 or 03/12/2015, or with the month's name (12 March 2015, March 12,
+  2015).
+- medical_record_number: 4 to 15 digits, perhaps after up to three letters, after its label
+  (MRN, medical record number).
+It does not recognise a person's name, a postal address, a date of birth or a medical record
+number without its label, free-text health or financial details, national ids other than
+the US SSN, other phone numbers without "+", keys of providers not listed, or a secret that
+has been split, encoded or reworded. The patterns
 read ASCII: a secret spelled with fullwidth or look-alike (homoglyph) characters is out of
 scope. A note that passes is not thereby free of secrets or personal data.
 
@@ -84,6 +101,7 @@ from cairn.store import (
     ACCESS_TOKEN_PREFIX,
     DEFAULT_GUARD_POLICY,
     GUARD_POLICIES,
+    KEY_PREFIX,
     POLICY_KINDS,
     REFRESH_TOKEN_PREFIX,
 )
@@ -97,8 +115,9 @@ DEFAULT_POLICY = DEFAULT_GUARD_POLICY
 # are given (the brand's under a brand, B3; the software's without one).
 _SHAPES = (
     "a private key, an AWS, GitHub, Slack or model provider's key or token, a signed JSON Web"
-    " Token, a {product} access or refresh token, or a value assigned to a name like password,"
-    " token or API key"
+    " Token, a {product} API key, a {product} access or refresh token, a password in a URL, an"
+    " Authorization header with its value, or a value assigned to a name like password, token"
+    " or API key"
 )
 _PLAIN_WORDS = "A password written in plain words is not recognised."
 POLICY_SAID = {
@@ -108,8 +127,9 @@ POLICY_SAID = {
     f" {_PLAIN_WORDS} Personal data is not checked.",
     "secrets+personal": "Notes that hold a secret in a shape the guard recognises are"
     f" refused ({_SHAPES}), and so are notes that hold personal data: an email address, a"
-    " phone number written with +, a US Social Security number, a payment card number or a"
-    f" bank account number (IBAN). {_PLAIN_WORDS}",
+    " phone number written with + or in the North American way, a US Social Security number,"
+    " a payment card number, a bank account number (IBAN), and a date of birth or a medical"
+    f" record number given with its label. {_PLAIN_WORDS}",
 }
 
 
@@ -117,6 +137,28 @@ def policy_words(policy: str, product: str = SOFTWARE) -> str:
     """A policy in a sentence for people (POLICY_SAID), naming the product as `product`.
     KeyError: not a policy."""
     return POLICY_SAID[policy].format(product=product)
+
+
+# Short heading and summary for each radio choice on /workspace, so managers can compare options
+# without repeating the full _SHAPES catalogue three times under POLICY_SAID.
+POLICY_CHOICES: dict[str, tuple[str, str]] = {
+    "off": ("Off", "Nothing is checked: notes are kept whatever they hold."),
+    "secrets": (
+        "Secrets",
+        "Refuses notes that hold a secret in a recognised shape (keys, tokens, credential URLs,"
+        " auth headers and assigned secrets). Personal data is not checked.",
+    ),
+    "secrets+personal": (
+        "Secrets and personal data",
+        "Refuses secrets in a recognised shape plus emails, phone numbers, US SSNs, payment"
+        " cards, IBANs, and labelled dates of birth or medical record numbers.",
+    ),
+}
+
+
+def policy_choice(policy: str) -> tuple[str, str]:
+    """A short heading and summary for one policy radio choice on /workspace."""
+    return POLICY_CHOICES[policy]
 
 
 FINDINGS_PER_RULE = 20  # lines reported per rule: enough to refuse, bounded on any note
@@ -212,17 +254,53 @@ def _classes(value: str) -> int:
     )
 
 
+_PASSWORD_NAMES = ("password", "passwd", "passphrase")
+
+
 def _literal(match: re.Match[str]) -> bool:
-    """An assigned value that is a literal secret, not a placeholder or a reference."""
+    """An assigned value that is a literal secret, not a placeholder or a reference. A quoted
+    value assigned to a password's or a passphrase's name is one whatever its characters,
+    words and spaces included (`password = "correct horse battery staple"`)."""
     quoted = match.group("dq") if match.group("dq") is not None else match.group("sq")
     value = quoted if quoted is not None else match.group("bare")
-    if len(value) < LITERAL_MIN or any(c.isspace() for c in value) or _placeholder(value):
+    if len(value) < LITERAL_MIN or _placeholder(value.strip()):
+        return False
+    if quoted is not None and match.group().lower().startswith(_PASSWORD_NAMES):
+        return bool(value.strip())
+    if any(c.isspace() for c in value):
         return False
     if quoted is not None:
         return _classes(value) >= 2
     if _DOTTED_NAME.fullmatch(value) or _ENV_NAME.fullmatch(value):
         return False
     return any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+
+
+# The words documentation writes where a URL's password goes (postgres://user:password@host).
+_URL_TEMPLATE_WORDS = frozenset({"password", "pass", "passwd", "pwd", "secret"})
+
+
+def _url_password(match: re.Match[str]) -> bool:
+    """A URL's password that is one, not a placeholder (<password>, ***, ${VAR}, xxxx) or the
+    word documentation writes in its place (password, pass, passwd, pwd, secret)."""
+    password = match.group("pw")
+    return not _placeholder(password) and password.lower() not in _URL_TEMPLATE_WORDS
+
+
+def _header_value(match: re.Match[str]) -> bool:
+    """An Authorization header's value that looks real: not a placeholder or a variable's
+    name (YOUR_API_TOKEN), and of two kinds of character at least."""
+    value = match.group("value")
+    if _placeholder(value) or _ENV_NAME.fullmatch(value) or _DOTTED_NAME.fullmatch(value):
+        return False
+    return _classes(value) >= 2
+
+
+def _mixed_case(match: re.Match[str]) -> bool:
+    """A key holds capitals and small letters (an identifier such as cairn_some_name holds
+    no capital); a random key lacks either about once in five billion."""
+    tail = match.group()[len(KEY_PREFIX) :]
+    return any(c.isupper() for c in tail) and any(c.islower() for c in tail)
 
 
 def _compile(pattern: str, flags: int = 0) -> re.Pattern[str]:
@@ -241,9 +319,26 @@ SECRET_RULES = (
     "model_api_key",
     "jwt",
     "cairn_credential",
+    "server_api_key",
+    "credential_url",
+    "auth_header",
     "assigned_secret",
 )
-PERSONAL_RULES = ("email_address", "phone_number", "us_ssn", "payment_card", "iban")
+PERSONAL_RULES = (
+    "email_address",
+    "phone_number",
+    "us_ssn",
+    "payment_card",
+    "iban",
+    "date_of_birth",
+    "medical_record_number",
+)
+_MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]{0,6}\.?"
+_DATE = (
+    r"(?:\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}"  # 2015-03-12, 03/12/2015, 12.03.2015
+    rf"|\d{{1,2}}[ \t]{{1,4}}{_MONTH}[ \t,]{{1,4}}\d{{4}}"  # 12 March 2015
+    rf"|{_MONTH}[ \t]{{1,4}}\d{{1,2}}(?:st|nd|rd|th)?,?[ \t]{{1,4}}\d{{4}})"  # March 12, 2015
+)
 
 RULES: tuple[Rule, ...] = (
     Rule(
@@ -292,6 +387,34 @@ RULES: tuple[Rule, ...] = (
         _compile(rf"(?<![A-Za-z0-9_.-])(?:{_CAIRN_PREFIXES}){_TOKEN_TAIL}(?![A-Za-z0-9_-])"),
     ),
     Rule(
+        "server_api_key",
+        "secret",
+        _compile(
+            rf"(?<![A-Za-z0-9_.-]){re.escape(KEY_PREFIX)}[A-Za-z0-9_-]{{43}}(?![A-Za-z0-9_-])"
+        ),
+        _mixed_case,
+    ),
+    Rule(
+        "credential_url",
+        "secret",
+        _compile(
+            r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,30}://"
+            r"[^\s/?#:@]{0,128}:(?P<pw>[^\s/?#]{1,256})@[^\s/?#@]"
+        ),
+        _url_password,
+    ),
+    Rule(
+        "auth_header",
+        "secret",
+        _compile(
+            r"(?<![A-Za-z0-9_-])authorization[\"']?[ \t]{0,8}[:=][ \t]{0,8}[\"']?"
+            r"(?:bearer|basic)[ \t]{1,8}(?P<value>[A-Za-z0-9._~+/=-]{8,4096})"
+            r"(?![A-Za-z0-9._~+/=-])",
+            re.IGNORECASE,
+        ),
+        _header_value,
+    ),
+    Rule(
         "assigned_secret",
         "secret",
         _compile(
@@ -315,7 +438,11 @@ RULES: tuple[Rule, ...] = (
     Rule(
         "phone_number",
         "personal",
-        _compile(r"(?<![\w+])\+[1-9](?:[ .-]?\d){7,14}(?!\w)"),
+        _compile(
+            r"(?<![\w+])(?:\+[1-9](?:[ .-]?\d){7,14}(?!\w)"  # +1 415 555 0100, +4915112345678
+            # North American, without "+": (415) 555-0199, 415-555-0199, 415.555.0199
+            r"|(?:\(\d{3}\)[ ]?\d{3}-|\d{3}-\d{3}-|(?<![.])\d{3}\.\d{3}\.)\d{4}(?![\w-]|\.\d))"
+        ),
     ),
     Rule(
         "us_ssn",
@@ -340,6 +467,25 @@ RULES: tuple[Rule, ...] = (
         ),
         _iban,
     ),
+    Rule(
+        "date_of_birth",
+        "personal",
+        _compile(
+            rf"(?<![A-Za-z0-9_])(?:dob|d\.o\.b\.?|date[ \t]of[ \t]birth|birth[ \t]?date)"
+            rf"[ \t]{{0,4}}[:=-]?[ \t]{{0,4}}{_DATE}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ),
+    Rule(
+        "medical_record_number",
+        "personal",
+        _compile(
+            r"(?<![A-Za-z0-9_])(?:mrn|medical[ \t]record[ \t](?:number|no\.?))"
+            r"[ \t]{0,4}(?:#|no\.?)?[ \t]{0,4}[:=#]?[ \t]{0,4}(?:[A-Za-z]{1,3}-?)?\d{4,15}"
+            r"(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ),
 )
 # Each rule in a few words, for people: the web view's refusal and the audit page say these,
 # and keep the rule's name for machines (REST and MCP answers name the rule as it is).
@@ -351,12 +497,17 @@ SAID = {
     "model_api_key": "a model provider's API key",
     "jwt": "a signed JSON Web Token",
     "cairn_credential": "a {product} access or refresh token",
+    "server_api_key": "a {product} API key",
+    "credential_url": "a password in a URL",
+    "auth_header": "an Authorization header with its value",
     "assigned_secret": "a value assigned to a name like password, token or API key",
     "email_address": "an email address",
     "phone_number": "a phone number",
     "us_ssn": "a US Social Security number",
     "payment_card": "a payment card number",
     "iban": "a bank account number (IBAN)",
+    "date_of_birth": "a date of birth",
+    "medical_record_number": "a medical record number",
 }
 
 

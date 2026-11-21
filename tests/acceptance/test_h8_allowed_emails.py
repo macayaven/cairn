@@ -55,6 +55,7 @@ from cairn import server
 from cairn.identity import GitHub, Google
 from cairn.server import SignIn, create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 SECRETS = {"github": "gh-client-secret-do-not-leak", "google": "g-client-secret-do-not-leak"}
@@ -180,10 +181,10 @@ def sign_in(world, provider: str, profile: dict, *, verified=True, next_path=Non
 def refused(world, provider: str, profile: dict, *listed: str, **how) -> None:
     """A sign-in that is turned away: 403, no session, nothing written, no address shown."""
     before = dump(world.db)
-    had = world.client.cookies.get("cairn_session")
+    had = world.client.cookies.get(session_cookie("https"))
     r = sign_in(world, provider, profile, **how)
     assert r.status_code == 403, (profile["email"], r.status_code)
-    assert world.client.cookies.get("cairn_session") == had
+    assert world.client.cookies.get(session_cookie("https")) == had
     assert dump(world.db) == before
     page = r.text.lower()
     for address in (profile["email"], *listed):
@@ -191,7 +192,7 @@ def refused(world, provider: str, profile: dict, *listed: str, **how) -> None:
 
 
 def signed_in_as(world) -> str:
-    principal = world.store.resolve_session(world.client.cookies["cairn_session"])
+    principal = world.store.resolve_session(world.client.cookies[session_cookie("https")])
     assert principal is not None and principal.user_id
     return world.store.get_user(principal.user_id).email
 
@@ -231,7 +232,7 @@ def test_an_unverified_address_is_refused_listed_or_not(make):
     world = make(join="personal", allowed_emails=(ADA,))
     before = dump(world.db)
     assert sign_in(world, "github", ADA_GITHUB, verified=False).status_code == 403
-    assert "cairn_session" not in world.client.cookies and dump(world.db) == before
+    assert session_cookie("https") not in world.client.cookies and dump(world.db) == before
 
 
 def test_a_personal_google_account_on_the_list_signs_in(make):
@@ -261,30 +262,32 @@ def test_domains_and_the_list_each_admit(make):
 def test_an_invitation_does_not_open_the_gate(make):
     world = make(join="personal", allowed_emails=(ADA,))
     assert sign_in(world, "github", ADA_GITHUB).status_code == 200
-    principal = world.store.resolve_session(world.client.cookies["cairn_session"])
+    principal = world.store.resolve_session(world.client.cookies[session_cookie("https")])
     invite = world.store.for_account(principal.account_id, principal.user_id).invite(BROOK)
     browser = TestClient(world.app, base_url=BASE)  # Brook's own browser
     before = dump(world.db)
     r = sign_in(world, "github", BROOK_GITHUB, next_path=f"/join/{invite.token}", client=browser)
-    assert r.status_code == 403 and "cairn_session" not in browser.cookies
+    assert r.status_code == 403 and session_cookie("https") not in browser.cookies
     assert BROOK not in r.text and dump(world.db) == before
     found = world.store.find_invite(invite.token)
     assert found is not None and found.email == BROOK
 
 
-def test_the_list_gates_sign_in_and_nothing_else(make):
+def test_the_list_holds_on_every_request_and_deletes_nothing(make):
     world = make(join="personal", allowed_emails=(ADA, BROOK))
     assert sign_in(world, "github", BROOK_GITHUB).status_code == 200
-    session = world.client.cookies["cairn_session"]
+    session = world.client.cookies[session_cookie("https")]
+    before = dump(world.db)
     # The server starts again with a shorter list, on the same database.
     later = app_on(world.store, world.fake, join="personal", allowed_emails=(ADA,))
     with TestClient(later, base_url=BASE) as browser:
-        browser.cookies.set("cairn_session", session)
+        browser.cookies.set(session_cookie("https"), session)
         home = browser.get("/", follow_redirects=False)
-        assert home.status_code == 200 and "Brook Ng" in home.text  # still open, still Brook
+        assert "Brook Ng" not in home.text  # ended: answered as to someone signed out
+        assert dump(world.db) == before  # nothing deleted
         fresh = TestClient(later, base_url=BASE)  # signing in again is another matter
         r = sign_in(world, "github", BROOK_GITHUB, client=fresh)
-        assert r.status_code == 403 and "cairn_session" not in fresh.cookies
+        assert r.status_code == 403 and session_cookie("https") not in fresh.cookies
 
 
 @pytest.mark.parametrize(

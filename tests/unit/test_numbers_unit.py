@@ -56,13 +56,13 @@ def watched(store: Store, part: str):
         if not statement.lstrip().startswith("--") and word not in ("BEGIN", "COMMIT"):
             seen.append(statement)
 
-    store._con.set_trace_callback(traced)
-    store._con.row_factory = rows
+    store._observe(trace=traced)
+    store._observe(rows=rows)
     try:
         answer = store.numbers_part(part)
     finally:
-        store._con.set_trace_callback(None)
-        store._con.row_factory = None
+        store._observe(trace=None)
+        store._observe(rows=None)
     return answer, seen, size["bytes"]
 
 

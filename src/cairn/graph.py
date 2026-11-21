@@ -9,8 +9,8 @@ fails closed here. Pages are visited by slug, claims and citations in stored ord
 latest page version is read. A limit stops traversal, never adds dangling edges, and is
 reported as truncation. No totals for omitted material are computed.
 
-With the explorer on (G2, `serve --graph-explorer`), the graph page reads
-graph_neighbourhood and a note's page reads graph_note_detail; project_graph, which
+With the explorer on (G2, `serve`'s default unless `--no-graph-explorer` is given), the graph page
+reads graph_neighbourhood and a note's page reads graph_note_detail; project_graph, which
 /api/graph and the agent's resource read, is the same code in both states, and neither
 function calls it. Each request is one read snapshot that rechecks the project and the
 view's reach as project_graph does, and answers a project out of reach with the KeyError a
@@ -22,6 +22,16 @@ continuation: opaque, signed with a key made once per process, tied to the works
 project, the view and the search; one that does not verify is a ValueError, and one whose
 page changed since is GraphStale. An index row that is missing or names another project is
 GraphUnavailable, never a shorter answer. The tests count statements and rows, never time.
+
+The explorer's view of a page and its related pages (KG2) is not read here, and no function
+of this module reads a relation: project_graph and graph_neighbourhood answer the explicit
+evidence alone. That view's pages are what `Memory.related` answers, a bounded read of
+another kind (cairn.store.relating: 13 statements at most, 17 with its caller's and 3 in
+memory, over the claims of other pages that hold the page's terms), which does not fit in
+what a request may do above, and which answers through its own read. So the view is two
+reads, neither inside the other: project_in_reach, the check every view here makes, in a
+snapshot of its own, and then `Memory.related`, which rechecks the view's reach in the
+snapshot it reads the pages in (cairn.web.graph_routes).
 """
 
 import base64
@@ -266,8 +276,8 @@ def _project_graph(
     return {"nodes": nodes, "edges": edges, "counts": shown_counts, "truncated": truncated}
 
 
-# The explorer (G2, `serve --graph-explorer`): what follows serves only the explorer's pages.
-# project_graph above, which /api/graph and the agent's resource read, is not called by it
+# The explorer (G2, `serve`'s default unless `--no-graph-explorer`): what follows serves only the
+# explorer's pages. project_graph above, which /api/graph and the agent's resource read, is not
 # and does not call it. A page's claims are read from the search index's rows, which every
 # save of the page replaces in its own transaction, never from the page's stored JSON.
 NEIGHBOURHOOD_BYTES = 65_536
@@ -300,6 +310,17 @@ def _project_in_reach(store: Store, con: sqlite3.Connection, ref: str) -> tuple[
     ):
         raise KeyError(ref)
     return project
+
+
+def project_in_reach(store: Store, ref: str) -> tuple[str, str]:
+    """The project `ref` names (id, else name) as (id, name), in one read snapshot that reads
+    nothing else, with the checks every view of the explorer makes (_project_in_reach).
+    KeyError when it does not exist or is out of reach, the same for both; GraphUnavailable
+    for a reach past this module's bounds. For the view whose pages another read gives (the
+    module's docstring): what that read answers, it answers for a project found here."""
+    with store._read() as con:
+        project_id, name = _project_in_reach(store, con, ref)
+    return project_id, name
 
 
 class GraphStale(ValueError):

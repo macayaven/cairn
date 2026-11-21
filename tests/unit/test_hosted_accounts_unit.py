@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 from test_open_checkouts_unit import v26_database
-from test_store_unit import rows, statements, user_version
+from test_store_unit import before_step_30, rows, statements, user_version
 
 import cairn.store.schema
 from cairn.sources import holds_secret
@@ -122,7 +122,9 @@ def test_step_28_is_one_step_a_database_at_28_has_both_tables_or_does_not_open(
     assert {"credential_tokens", "google_revocations"} <= made
     halfway = tmp_path / "halfway.db"
     v27_database(halfway)
-    monkeypatch.setattr(cairn.store.schema, "_V28_GOOGLE_REVOCATIONS", "CREATE TABLE (")
+    monkeypatch.setattr(
+        cairn.store.schema.v28_credential_tokens, "_V28_GOOGLE_REVOCATIONS", "CREATE TABLE ("
+    )
     with pytest.raises(sqlite3.Error):  # the step's second table fails: nothing of it stays
         Store(halfway)
     monkeypatch.undo()
@@ -152,20 +154,26 @@ def test_a_database_at_28_without_a_column_the_code_needs_does_not_open(tmp_path
 def test_step_28_adds_the_empty_token_table_and_changes_nothing_else(tmp_path):
     db = tmp_path / "cairn.db"
     v27 = v27_database(db)
-    assert cairn.store.schema._CREDENTIAL_TOKENS == 28 == SCHEMA_VERSION
+    assert cairn.store.schema._CREDENTIAL_TOKENS == 28 and SCHEMA_VERSION >= 28
     Store(db).close()
-    assert user_version(db) == 28
+    assert user_version(db) == SCHEMA_VERSION
     assert [row[1] for row in rows(db, "PRAGMA table_info(credential_tokens)")] == COLUMNS
     assert rows(db, "SELECT COUNT(*) FROM credential_tokens") == [(0,)]
     waiting = [row[1] for row in rows(db, "PRAGMA table_info(google_revocations)")]
     assert waiting[:4] == ["id", "subject", "address", "sealed"]  # no workspace, no person
     assert rows(db, "SELECT COUNT(*) FROM google_revocations") == [(0,)]
-    before = set(v27["statements"])
-    added = [line for line in statements(db) if line not in before]
+    # Steps 29 and 30 run too: Slack's tables, and each session's last use (step 30 rebuilds
+    # sessions with `used_at` last, NULL on every session there was).
+    rebuilt = cairn.store.schema._V30_SESSIONS + ";"
+    after = [line for line in before_step_30(statements(db)) if line != rebuilt]
+    before = {line for line in v27["statements"] if not line.startswith("CREATE TABLE sessions")}
+    added = [line for line in after if line not in before]
     assert added and all(
-        "credential_tokens" in line or "google_revocations" in line for line in added
+        "credential_tokens" in line or "google_revocations" in line or "slack_" in line
+        for line in added
     ), added
-    assert before <= set(statements(db))
+    assert before <= set(after)
+    assert rebuilt in statements(db)
 
 
 def test_a_database_migrated_from_version_27_has_the_fresh_schema(tmp_path):
@@ -201,6 +209,8 @@ def test_a_database_of_a_newer_schema_is_refused_and_left_as_it_was(tmp_path):
     Store(db).close()
     with sqlite3.connect(db) as con:
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+        # a step this cairn may not run on: the floor goes up with it
+        con.execute("UPDATE oldest_build SET version = ?", (SCHEMA_VERSION + 1,))
     before = dump(db)
     with pytest.raises(SchemaTooNew):
         Store(db)

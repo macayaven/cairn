@@ -54,6 +54,7 @@ import httpx
 
 from cairn.sources import SourceError
 from cairn.sources import connector as c
+from cairn.sources.config import ENV_NAME
 from cairn.sources.runner import SOURCE_TIMEOUT, source_client
 
 COMMAND = "connector-check"
@@ -348,7 +349,7 @@ def _url(value: str) -> str:
 
 
 def _variable(value: str) -> str:
-    if not c.ENV_NAME.fullmatch(value) or c.looks_like_a_credential(value):
+    if not ENV_NAME.fullmatch(value) or c.looks_like_a_credential(value):
         raise argparse.ArgumentTypeError(
             "name the environment variable that holds the secret (capitals, digits and _),"
             " never the secret itself"

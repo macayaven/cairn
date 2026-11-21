@@ -12,7 +12,19 @@ Contract (frozen by tests/acceptance/test_t1_spans.py and test_t1_regressions.py
 
 Supported Markdown, one span kind per block. Headings, fences, list items, tables and quotes
 start on a line indented at most 3 spaces.
-- Front matter: YAML between a `---` on line 1 and the next `---` line.
+- Front matter: the lines between a `---` on line 1 and the next `---` line, when they read
+  as metadata (review 7.4): each line is a key and its value (a key is one word of letters,
+  digits, "_", "." and "-", or a quoted string, then ":" and a blank or the line's end), a
+  line that continues the value of a key above it (indented, or a list item "- "), a comment
+  ("#"), or blank, with at least one key; no lines, or blank lines only, count too. Anything
+  else is content: the first `---` is a thematic break and every line of the block, both
+  `---` lines included, is one paragraph span, so the spans after it are the spans they were
+  (same lines, same ids) when the block was read as front matter, and a page that cites them
+  still does. It is told by the lines' shape, not by parsing YAML: "Production rule: never
+  drop it." is a YAML mapping, but its key is two words, so it is prose; and metadata that
+  is not valid YAML ("title: [x") stays front matter, for the reader of front matter to
+  report. Its limit: a one-word label and its sentence ("Note: never drop it.") reads as a
+  key and its value, so it stays front matter, as before.
 - ATX headings: 1 to 6 `#`, a space or tab, then the text; a closing `#` run is dropped.
 - Fenced code, backtick or tilde: atomic, fence lines included, never split. A closing fence
   is a run of the opening character, at least as long, alone on its line, and indented at
@@ -46,10 +58,15 @@ Known limits:
 import hashlib
 import json
 import re
+from bisect import bisect_left, bisect_right
 from collections import Counter
-from collections.abc import Iterator
-from typing import Literal
+from collections.abc import Iterator, Sequence
+from itertools import pairwise
+from typing import Literal, NamedTuple
 
+from markdown_it import MarkdownIt
+from markdown_it.common.utils import MD_TRIM_CHARS
+from markdown_it.rules_inline import backtick
 from pydantic import BaseModel, ConfigDict
 
 SpanKind = Literal["frontmatter", "heading", "paragraph", "bullet", "code", "table", "quote"]
@@ -65,6 +82,9 @@ _HEADING = re.compile(r"(#{1,6})[ \t]+")
 # trying each one read the rest of the line again (G1).
 _FENCE = re.compile(r"`{3,}+(?!.*`)|~{3,}")
 _BULLET = re.compile(r"(?:[-*+]|\d{1,9}[.)])[ \t]")
+# A front-matter key at a line's start: one word, or a quoted string, then ":" and a blank or
+# the line's end.
+_META_KEY = re.compile(r"""(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|"[^"]*"|'[^']*'):(?:[ \t]|$)""")
 
 
 class Span(BaseModel):
@@ -112,8 +132,8 @@ def chunk(source_id: str, text: str) -> list[Span]:
 def _blocks(lines: list[str]) -> Iterator[tuple[SpanKind, int, int]]:
     """Yield (kind, start, end) per block, as 0-based line indexes with `end` exclusive."""
     i = _frontmatter_end(lines)
-    if i:
-        yield "frontmatter", 0, i
+    if i:  # metadata, else one paragraph of content, so every span after it is as it was
+        yield "frontmatter" if _metadata(lines[1 : i - 1]) else "paragraph", 0, i
     while i < len(lines):
         kind = _kind(lines[i])
         if kind is None:
@@ -125,12 +145,28 @@ def _blocks(lines: list[str]) -> Iterator[tuple[SpanKind, int, int]]:
 
 
 def _frontmatter_end(lines: list[str]) -> int:
-    """Index after the `---` that closes front matter opened on line 1; 0 if there is none."""
+    """Index after the `---` that closes a block opened by `---` on line 1; 0 if there is
+    none. The block is front matter when its lines read as metadata (_metadata)."""
     if lines and lines[0] == "---":
         for j in range(1, len(lines)):
             if lines[j] == "---":
                 return j + 1
     return 0
+
+
+def _metadata(lines: list[str]) -> bool:
+    """Whether lines read as metadata: every one a key and its value, a continuation of a key
+    above it (indented, or a list item), a comment or blank, with at least one key unless
+    every line is blank (see the module)."""
+    keyed = False
+    for line in lines:
+        if not line.strip() or line.startswith("#"):
+            continue
+        if _META_KEY.match(line):
+            keyed = True
+        elif not (keyed and (line[0] in " \t" or line == "-" or line.startswith("- "))):
+            return False
+    return keyed or not any(line.strip() for line in lines)
 
 
 def _kind(line: str) -> SpanKind | None:
@@ -181,7 +217,7 @@ def _item_end(lines: list[str], i: int) -> int:
             j += 1
             continue
         if j == i or _indent(line) >= column:  # item text, a nested item, or a fence kept whole
-            j = _fence_end(lines, j) if _FENCE.match(line[_content_column(line) :]) else j + 1
+            j = _fence_end(lines, j) if fence_opener(line) else j + 1
         elif j == end and _kind(line) == "paragraph":  # a lazy continuation line
             j += 1
         else:
@@ -209,20 +245,33 @@ def _fence_end(lines: list[str], i: int) -> int:
     character, at least as long as the opening run, indented at most 3 spaces more than the
     opening fence (less is fine).
     """
-    column = _content_column(lines[i])
-    fence = _FENCE.match(lines[i][column:]).group()
+    column, fence = fence_opener(lines[i]) or (0, "")
     for j in range(i + 1, len(lines)):
-        closer = lines[j].strip()
-        if (
-            len(closer) >= len(fence)
-            and set(closer) == {fence[0]}
-            and _indent(lines[j]) <= column + 3
-        ):
+        if fence_closes(lines[j], fence, column + 3):
             return j + 1
     end = len(lines)
     while not lines[end - 1].strip():
         end -= 1
     return end
+
+
+def fence_opener(line: str) -> tuple[int, str] | None:
+    """The code fence a line opens, as (column, run), or None: past the line's indentation and
+    any list marker, a run of three or more backticks with no backtick after it on the line,
+    or of three or more tildes. The one rule for openers, here and in the body the compiler
+    writes (compiler.render_body). The column counts characters, a tab as one."""
+    column = _content_column(line)
+    found = _FENCE.match(line[column:])
+    return (column, found.group()) if found else None
+
+
+def fence_closes(line: str, run: str, deepest: int) -> bool:
+    """Whether a line closes a fence opened with `run`: it holds only a run of the same
+    character, at least as long, indented `deepest` columns at most. The one rule for closers,
+    here and in the body the compiler writes: chunk gives `deepest` as the opener's column
+    plus 3 (see the module), the body as Markdown's own limit (compiler.render_body)."""
+    closer = line.strip()
+    return len(closer) >= len(run) > 0 and set(closer) == {run[0]} and _indent(line) <= deepest
 
 
 def _heading(line: str) -> tuple[int, str]:
@@ -247,3 +296,408 @@ def _span_id(source_id: str, heading_path: tuple[str, ...], text: str, occurrenc
     """Hash a JSON encoding of the fields: unlike joining with separators, it is injective."""
     key = json.dumps([source_id, heading_path, text, occurrence])
     return "sp_" + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def claim_id(span_id: str) -> str:
+    """ "cl_" + the span id's hex part."""
+    return "cl_" + span_id.removeprefix("sp_")
+
+
+# What is the same text (CORE5): two passages, a claim and a passage, two claims are the same
+# only when their text is, character for character, but for what `compared_text` leaves out.
+
+
+def compared_text(text: str) -> str:
+    """`text` as two texts are compared: each line without the spaces, tabs and carriage
+    returns at its end, and without the blank lines before the first and after the last line
+    that holds anything else. Nothing else is left out: indentation, runs of white space
+    inside a line, tabs, line breaks, no-break and every other Unicode space are text. The
+    verbatim gate (a claim is the whole of each passage it cites), the repeat key (two claims
+    fold) and the fact check (a page's facts are its claims') compare by this one function."""
+    rows = [line.rstrip(" \t\r") for line in text.split("\n")]
+    first = next((n for n, row in enumerate(rows) if row), len(rows))
+    last = next((n for n in range(len(rows), first, -1) if rows[n - 1]), first)
+    return "\n".join(rows[first:last])
+
+
+# Whether a claim leaves a code fence open, one of two put to the Markdown parser (code_read),
+# of each claim alone and then of the body (fences_kept_in): render_body closes such a fence
+# before the next claim (review 7.2).
+
+_PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
+_PARSER_LINES = re.compile(r"\r\n?|\n")  # how the parser breaks lines: CR LF, a lone CR, LF
+_KNOWN = "cairn"  # the line written after a claim's text, to see what holds it
+
+
+class FenceLeftOpen(ValueError):
+    """A claim's text leaves a code fence open that no closer written after it closes."""
+
+
+def open_fence_closer(text: str) -> str | None:
+    """The line that closes the code fence the Markdown parser leaves open at the end of
+    `text`, or None when it leaves none open; FenceLeftOpen when one is open and neither
+    closer below closes it.
+
+    The question, asked of the parser's line map and of no character of the text: a known
+    line is written after `text` and a blank line, as render_body writes the next claim,
+    indented past every column `text` reaches, so a fence in a list item counts when the next
+    block could still be the item's. The fence is open when a fence token that starts in
+    `text` covers that line. Its closer is the opener's run at the opener's column (tabs read
+    to the next stop of four), else the run at the margin; a closer is kept only when, written
+    after `text`, no fence covers the known line any more. A text with no backtick and no
+    tilde holds no fence and is not parsed."""
+    if "`" not in text and "~" not in text:
+        return None
+    lines = _PARSER_LINES.split(text)
+    fence = _covering_fence(text, len(lines), lines)
+    if fence is None:
+        return None
+    opener = lines[fence.map[0]].expandtabs(4)
+    for closer in (" " * max(opener.find(fence.markup), 0) + fence.markup, fence.markup):
+        if _covering_fence(f"{text}\n{closer}", len(lines) + 1, lines) is None:
+            return closer
+    raise FenceLeftOpen("a claim leaves a code fence open that no closer line closes")
+
+
+def _covering_fence(text: str, count: int, lines: list[str]):
+    """The fence token that starts in the first `count` lines of `text` and covers the known
+    line written after it and a blank line, or None."""
+    depth = max(len(line.expandtabs(4)) for line in lines) + 1
+    known = count + 1  # the line's index: `count` lines, then the blank one
+    for token in _PARSER.parse(f"{text}\n\n{' ' * depth}{_KNOWN}"):
+        if token.type == "fence" and token.map and token.map[0] < count <= known < token.map[1]:
+            return token
+    return None
+
+
+# The same question, asked of the body: what a claim's lines are depends on the blocks written
+# before it (a list item holds what is indented under it, across a blank line), so a passage
+# that alone is indented text may open a fence there, and a closer may read as an opener
+# (third report, must-fix 4).
+
+
+CLOSERS_MAX = 16  # the closers fences_kept_in writes in one body, so the parses of a render
+
+
+def fences_kept_in(blocks: Sequence[str]) -> tuple[list[str], int | None]:
+    """`blocks`, the title, headings and claims of a body in its order, which render_body
+    joins with a blank line: each as given, or with a line after it that closes a code fence
+    the Markdown parser, reading the whole body, opens in that block and runs into a later
+    one; and the index of the first block whose fence is left to run on, else None: the
+    line did not close it, or CLOSERS_MAX closers were written before it. That block and the
+    blocks after it are then as given.
+
+    The parser's line map decides, as in open_fence_closer: a fence leaves its block when its
+    token starts in the block and covers the first line of the next. The first such fence
+    gets a closer after its block (`_closer`) and the body is parsed again; the closer is
+    kept only when no fence that starts in that block, the closer's own line included,
+    leaves it any more. Then the next such fence, which starts in a later block. One parse
+    when no fence leaves its block and one more for each closer, each of the whole body, so
+    at most CLOSERS_MAX + 1 whatever the notes hold (a note's author cannot make a render
+    cost a parse for each claim); blocks that hold no backtick and no tilde are not parsed."""
+    blocks = list(blocks)
+    if not any("`" in block or "~" in block for block in blocks):
+        return blocks, None
+    found = _leaving_fence(blocks)
+    for _ in range(CLOSERS_MAX):
+        if found is None:
+            break
+        at, closer = found
+        closed = [*blocks[:at], f"{blocks[at]}\n{closer}", *blocks[at + 1 :]]
+        found = _leaving_fence(closed)
+        if found is not None and found[0] <= at:
+            return blocks, at
+        blocks = closed
+    return blocks, None if found is None else found[0]
+
+
+def _leaving_fence(blocks: list[str]) -> tuple[int, str] | None:
+    """The first code fence of the body `blocks` make that starts in one block and covers the
+    first line of the next, as (the index of the block it starts in, the closer to write
+    after that block); None when there is none."""
+    body = "\n\n".join(blocks) + "\n"
+    first, line = [], 0  # the line of the body each block starts on
+    for block in blocks:
+        first.append(line)
+        line += len(_PARSER_LINES.findall(f"{block}\n\n"))
+    for token in _PARSER.parse(body):
+        if token.type != "fence" or not token.map:
+            continue
+        at = bisect_right(first, token.map[0]) - 1
+        if at + 1 < len(blocks) and token.map[1] > first[at + 1]:
+            return at, _closer(_PARSER_LINES.split(body)[token.map[0]], token.markup)
+    return None
+
+
+class Following(str):
+    """A line that follows the blocks a question asks of (fences_reaching), read once: the
+    line itself, a str, with its indentation (the parser's own blanks: no other character
+    indents), how deep that reaches (tabs read to the next stop of four, as the parser reads
+    them) and its first other character, "" for a line of blanks only."""
+
+    indentation: str
+    depth: int
+    first: str
+
+
+_BLANKS = re.compile(r"[ \t]*")
+
+
+def following(line: str) -> Following:
+    """`line` read once for every question that writes it (asked_line): its indentation and
+    first other character, found without copying what follows them, so a question costs
+    what it writes, never the line's length (eighth round, finding 2)."""
+    said = Following(line)
+    blanks = _BLANKS.match(line)  # "" at least
+    width = blanks.end() if blanks else 0
+    said.indentation = line[:width]
+    said.depth = len(said.indentation.expandtabs(4))
+    said.first = line[width : width + 1]
+    return said
+
+
+def fences_reaching(before: str, blocks: Sequence[str], line: str) -> list[bool]:
+    """Of each of `blocks`, whether a code fence that starts in it takes `line` in, where
+    `line` is written after it as the first line of the next block of a body is: after a
+    blank line. `before` is the body up to the first of them, ending in its blank line; the
+    blocks follow one another as a body writes them, with no code fence running from one
+    into the next (the claims a forget asks of: the body closed or named every such fence
+    before them), each with `line` after it as `asked_line` writes it.
+
+    The parser's line map decides, as in _leaving_fence: the fence's token starts in the
+    block and its map ends past the line. One parse, of `before` and the blocks.
+
+    What an answer is worth. A line that a fence takes in is code, or the fence's closing
+    line, and the first line of the next block ends that fence and its list item as it did
+    in the body (it is not the fence's, or the fence would run into it): the lines after
+    are read as if the line were not there. A line that no fence takes is a block of its
+    own, which may change how the blocks after it are read. So the answers up to the first
+    False, that one included, are the parser's own for the body in which that block is
+    followed by a block starting with `line`; the answers after it are a guess. A caller
+    that acts on them asks again, without the lines before (store.erasure._before_it).
+
+    What an answer depends on (asked_line): whether a fence that is open after the block
+    and its blank line takes a line in is whether the line is blank or indented at least
+    as far as the fence's list item: the parser ends such a fence at the first line that
+    holds anything and is indented less, and takes any other line in, as code or as the
+    fence's closing line (tests/unit/test_fences_reaching_unit.py, a table and generated
+    blocks). So the line is written as asked_line cuts it, and the answers up to the first
+    False are the same as with it whole; the guesses after it can differ. `line` may come
+    read already (`following`), as a caller that asks again of the same line passes it."""
+    said = line if isinstance(line, Following) else following(line)  # read once, for all
+    parts, first, asked, count = [before], [], [], len(_PARSER_LINES.findall(before))
+    for block in blocks:
+        first.append(count)
+        count += len(_PARSER_LINES.findall(f"{block}\n\n"))
+        asked.append(count)  # where `line` stands after this block
+        count += 2
+        parts.append(f"{block}\n\n{asked_line(said, block)}\n\n")
+    taken = [False] * len(first)
+    for token in _PARSER.parse("".join(parts)):
+        if token.type == "fence" and token.map:
+            at = bisect_right(first, token.map[0]) - 1
+            if at >= 0 and token.map[0] < asked[at] < token.map[1]:
+                taken[at] = True
+    return taken
+
+
+def asked_line(line: str, block: str) -> str:
+    """The line fences_reaching writes after `block` to ask whether a fence of it takes
+    `line` in: `line` itself when it is no longer than the block's longest line, so a
+    question never holds more of it than of the block; else cut to what the answer depends
+    on (fences_reaching): nothing for a line of spaces and tabs only, which the parser
+    reads as blank, and for any other its indentation and its first other character. An
+    indentation deeper than any line of the block reaches (tabs read to the next stop of
+    four, as the parser reads them) is written as deep as that, in tabs and then spaces: a
+    fence's list item starts its text on a line of the block, so no deeper indentation
+    gets another answer. One character more than that indentation, whatever the line's
+    length (a closing line of either character, a quotation or list marker, a run of fence
+    characters with a letter far along: tests/unit/test_fences_reaching_unit.py).
+    Given `line` read already (`following`), it costs what the block and what it writes
+    cost, never the line's length: what it writes of the line is at most one character
+    more than the block's widest line."""
+    said = line if isinstance(line, Following) else following(line)
+    rows = _PARSER_LINES.split(block)
+    if len(said) <= max(map(len, rows)):
+        return said
+    if not said.first:
+        return ""
+    deepest = max(len(row.expandtabs(4)) for row in rows)
+    if said.depth > deepest:
+        return "\t" * (deepest // 4) + " " * (deepest % 4) + said.first
+    return said.indentation + said.first
+
+
+def _closer(opener: str, run: str) -> str:
+    """The line to write as the closer of a fence the parser opened with `run` on the line
+    `opener`: the run after what the line holds before it, its white space as written and
+    every other character there a space, so a list item's marker does not start another
+    item. Not assumed to close: fences_kept_in asks the parser."""
+    before = opener[: max(opener.find(run), 0)]
+    return "".join(char if char in " \t" else " " for char in before) + run
+
+
+# How a claim's Markdown is read, wherever it is read: the page that shows a claim
+# (cairn.web.markdown.render) and the code reader here (code_read) build their parser with
+# claim_markdown, and must agree, so that what is code is what the page shows as code
+# (tests/unit/test_spans_unit.py checks both on the same texts). CommonMark with tables and raw
+# HTML off, and these rules off: no picture (a remote one would tell its host who read the
+# page), no heading and no setext heading (a page's headings are cairn's). A claim longer than
+# MAX_RENDERED characters is not parsed at all: the page shows it whole as preformatted text.
+CLAIM_RULES_OFF = ("image", "heading", "lheading")
+MAX_RENDERED = 100_000  # characters of one claim; beyond this it is shown, not parsed
+
+
+def claim_markdown() -> MarkdownIt:
+    """A parser that reads a claim as the page that shows it does (CLAIM_RULES_OFF)."""
+    parser = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
+    return parser.enable("table").disable(list(CLAIM_RULES_OFF))
+
+
+# Where the Markdown parser reads code in a text read alone (code_read): a claim's parser,
+# told to say where it reads each code span. Its token of a block of text says which lines
+# the block stands on and the text it parsed; that of a code span says only what the span
+# holds, so the backtick rule notes where the span stood in the block's text, and the block's
+# text is placed in the lines it was read from (`_placed`). Emphasis is not read: its marks
+# are resolved after every code span is found, and never decide what is code
+# (tests/unit/test_spans_unit.py reads both ways), and reading them is most of a parse of text
+# dense with them.
+_CODE_READER = claim_markdown().disable("emphasis")
+_CELLS = ("th_open", "td_open")  # a table's cell: its bars written "\\|", read "|"
+
+
+def _each_block(state) -> None:
+    """The parser's own step that parses the text of each block, noting which block it is,
+    and where code_read keeps what the rules below note."""
+    state.env.setdefault("code", [])
+    for token in state.tokens:
+        if token.type == "inline":
+            state.env["block"] = token
+            token.children = [] if token.children is None else token.children
+            state.md.inline.parse(token.content, state.md, state.env, token.children)
+
+
+def _code_span(state, silent: bool) -> bool:
+    """The parser's own backtick rule, noting where the code of each span it reads stands in
+    the block's text, between the span's two runs, and how long a run is."""
+    start, count = state.pos, len(state.tokens)
+    if not backtick(state, silent):
+        return False
+    if not silent and len(state.tokens) > count and state.tokens[-1].type == "code_inline":
+        run = len(state.tokens[-1].markup)
+        found = (state.env["block"], start + run, state.pos - run, run)
+        state.env["code"].append(found)
+    return True
+
+
+_CODE_READER.core.ruler.at("inline", _each_block)
+_CODE_READER.inline.ruler.at("backticks", _code_span)
+
+
+class _Block(NamedTuple):
+    """A block's text as the parser parsed it, and where it stands in the text it was read
+    from: where each of its lines begins in it, where each starts in that text (None where
+    it cannot be placed: `_placed`), and where it holds a bar the text writes "\\|"."""
+
+    first: int  # the line of the text its first line was read from
+    begins: list[int]
+    starts: list[int] | None
+    bars: list[int]
+
+    def row(self, offset: int) -> int:
+        return bisect_right(self.begins, offset) - 1
+
+    def at(self, offset: int) -> int:
+        """Where the character at `offset` of the block's text stands in the text read."""
+        row = self.row(offset)
+        assert self.starts is not None
+        before = bisect_left(self.bars, offset) - bisect_left(self.bars, self.begins[row])
+        return self.starts[row] + offset - self.begins[row] + before
+
+
+def code_read(text: str) -> list[tuple[int, int]]:
+    """The stretches of `text` the Markdown parser reads as code, `text` read alone as the page
+    that shows a claim reads it (claim_markdown), as (start, end) in its characters, in the
+    order they start: each fenced or indented block of code, its lines whole (a fence's
+    opening and closing lines included); and the code of each code span, between its
+    backtick runs, the line ends it runs across included (in a link's words too). Text
+    indented under a list item is the item's prose, and the parser says so. A text longer
+    than MAX_RENDERED characters is code whole, unparsed, as the page shows it. A text with
+    no backtick, tilde, tab or four spaces in a row holds no code and is not parsed. Where a
+    block's text cannot be placed in the lines it was read from (`_placed`), or a code span
+    placed does not stand between two runs of backticks, the span covers the lines it
+    stands on: never less than its code.
+    One parse, and work in proportion to the text and its code spans."""
+    if len(text) > MAX_RENDERED:
+        return [(0, len(text))]
+    if not any(mark in text for mark in ("`", "~", "\t", "    ")):
+        return []
+    lines = _PARSER_LINES.split(text)
+    starts = [0, *(found.end() for found in _PARSER_LINES.finditer(text))]
+    env: dict = {}
+    tokens = _CODE_READER.parse(text, env)
+    read = [
+        (starts[first], starts[last - 1] + len(lines[last - 1]))
+        for token in tokens
+        if token.type in ("fence", "code_block") and token.map
+        for first, last in [token.map]
+    ]
+    blocks: dict[int, _Block] = {}
+    after: dict[int, int] = {}  # each line: where the text of the last cell placed on it ends
+    for opener, block in pairwise(tokens):
+        if block.type == "inline" and block.map:
+            blocks[id(block)] = _placed(
+                block.content, opener.type, block.map[0], lines, starts, after
+            )
+    for token, start, end, run in env["code"]:
+        block = blocks[id(token)]
+        bounds = block.starts and (block.at(start), block.at(end))
+        if not bounds or not (
+            bounds[0] <= bounds[1]
+            and text[bounds[0] - run : bounds[0]] == text[bounds[1] : bounds[1] + run] == "`" * run
+        ):
+            first, last = block.first + block.row(start), block.first + block.row(end)
+            bounds = (starts[first], starts[last] + len(lines[last]))
+        read.append(bounds)
+    return sorted(read)
+
+
+def _placed(
+    content: str,
+    kind: str,
+    first: int,
+    lines: Sequence[str],
+    starts: Sequence[int],
+    after: dict[int, int],
+) -> _Block:
+    """A block's text placed in the text it was read from, from line `first` on (`_Block`).
+    The lines of a paragraph are the ends of the lines they were read from, after their
+    indentation and the marks of their quotation or list item, the first without its blanks
+    before and the last without those after it; the parser writes a tab it reads in part as
+    spaces, which stand before the line's end. A cell's text is a piece of its one line, the
+    first such piece after the cell placed before it on that line, with each bar it reads
+    "|" written "\\|"."""
+    pieces = content.split("\n")
+    begins = [0]
+    for piece in pieces[:-1]:
+        begins.append(begins[-1] + len(piece) + 1)
+    bars = [at for at, char in enumerate(content) if char == "|"] if kind in _CELLS else []
+    placed: list[int] | None = []
+    for n, piece in enumerate(pieces):
+        line, last = lines[first + n], n == len(pieces) - 1
+        if kind not in _CELLS:
+            ends = (line.rstrip(MD_TRIM_CHARS), line.rstrip()) if last else (line,)
+            end = next((len(end) for end in ends if end.endswith(piece.lstrip(" "))), None)
+            if end is None:
+                placed = None
+                break
+            placed.append(starts[first + n] + end - len(piece))
+        else:
+            written = piece.replace("|", "\\|") if kind in _CELLS else piece
+            at = line.find(written, after.get(first + n, 0))
+            if at < 0:
+                placed = None
+                break
+            after[first + n] = at + len(written)
+            placed.append(starts[first + n] + at)
+    return _Block(first, begins, placed, bars)

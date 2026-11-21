@@ -5,9 +5,13 @@ can serve, and 503 and exactly `{"status":"unavailable"}` when it cannot: the st
 closed, unusable (a rollback failed), cannot be read or holds a schema version this code
 does not know. Nothing else is said, no path and no error. It is Accounts.serving, one
 bounded read of the store that writes nothing (Store.health): a store whose lock another
-call holds past the bound, as compact holds it on purpose, is busy and alive, so 200. The
-read runs on threads of its own (HEALTH_THREADS), so requests waiting for the store's lock
-do not hold up the answer. Docker's probe, the hosted updater and the uptime alert read it.
+call holds past the bound, as compact holds it on purpose, is busy and alive, so 200; once
+one holder has kept that lock (the writer) for longer than a minute (an hour while a
+compaction runs), the store is stuck: 503 and exactly `{"status":"stuck"}`, until the lock is
+obtained again. Reads may still work then; no write can, and a restart is what ends it. The
+read runs on threads of its own (HEALTH_THREADS), so writes waiting for the store's lock do
+not hold up the answer (every write waits for it; reads do not). Docker's probe, the hosted
+updater and the uptime alert read it.
 Like every machine address it needs no credential, behind the wall and under a brand too."""
 
 import asyncio
@@ -36,8 +40,14 @@ from cairn.compiler import Gate, provenance_gate
 from cairn.guard import Guard
 from cairn.memory import OverQuota, Refused, RequestError, unavailable
 from cairn.plans import Plans
+from cairn.slack.link import LINK_PATH, link_routes
+from cairn.slack.setup import Block as SlackBlock
+from cairn.slack.setup import Outcomes as SlackOutcomes
+from cairn.slack.setup import block as slack_block
+from cairn.slack.setup import office_of, setup_routes
 from cairn.sources.runner import MIN_SYNC_EVERY, source_client
-from cairn.store import CannotWrite, Store, StoreUnusable
+from cairn.store import CannotWrite, Principal, Store, StoreUnusable
+from cairn.store.base import AUDIT_KEEP
 from cairn.web.account import account_routes
 from cairn.web.auth import (
     BRANDED_SESSION_COOKIE,
@@ -66,22 +76,38 @@ from cairn.web.members import member_routes
 from cairn.web.public import Public
 from cairn.web.ratelimit import CredentialFailures, RateLimiter
 from cairn.web.rest import rest_routes
-from cairn.web.signin import SignIn, signin_routes
+from cairn.web.signin import STATE_COOKIE, STATE_PATH, SignIn, allowed, signin_routes
+from cairn.web.slack import (
+    Keeper,
+    OneClient,
+    Slack,
+    desk_of,
+    open_paths,
+    signature_failures,
+    slack_routes,
+)
+from cairn.web.slack import check as check_slack
 from cairn.web.stats import CountResponses, Responses, StatsLog
 from cairn.web.sweeper import Sweeper
 from cairn.web.templating import (
     BRANDED_CSS,
     BRANDED_STYLESHEET,
     HERE,
+    NO_PAGE,
     _page,
     brand_of,
+    templates,
 )
 from cairn.web.turns import COMPILES, Compiles
-from cairn.web.ui import session_routes, ui_routes
+from cairn.web.ui import _ui, session_routes, ui_routes
 from cairn.web.workspace import workspace_routes
 
 if TYPE_CHECKING:  # never at run time: without an arranger no model code is imported
     from cairn.arrange import Arranger
+
+# K1b: the Sources page's Slack block (templates/_slack.html), nothing unless the switch's
+# middleware (cairn.slack.setup.Block) says what it shows
+templates.globals["slack_block"] = slack_block
 
 MAX_BODY = 4 * 1024 * 1024  # bytes, the same cap as the MCP transport's
 # Media types cairn names itself for its static files, rather than reading them from the
@@ -184,14 +210,16 @@ async def _on_store_error(request: Request, exc: Exception) -> Response:
 HEALTH_THREADS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cairn-healthz")
 HEALTHY = {"status": "ok"}
 UNHEALTHY = {"status": "unavailable"}
+STUCK = {"status": "stuck"}
 
 
 def _healthz(accounts: Accounts) -> Callable[[Request], Any]:
     async def healthz(request: Request) -> Response:
         loop = asyncio.get_running_loop()
-        if await loop.run_in_executor(HEALTH_THREADS, accounts.serving):
+        status = await loop.run_in_executor(HEALTH_THREADS, accounts.serving)
+        if status in ("ok", "busy"):
             return JSONResponse(HEALTHY)
-        return JSONResponse(UNHEALTHY, status_code=503)
+        return JSONResponse(STUCK if status == "stuck" else UNHEALTHY, status_code=503)
 
     return healthz
 
@@ -295,6 +323,7 @@ def create_app(
     brand_logo: "str | os.PathLike[str] | Logo | None" = None,
     brand_logo_alt: str | None = None,
     session_days: int | None = None,
+    idle_minutes: int | None = None,
     file_every: float | None = None,
     compiles: int = COMPILES,
     keep_versions: int | None = None,
@@ -305,6 +334,9 @@ def create_app(
     docs_reader_env: str | None = None,
     google_connect: GoogleConnect | None = None,
     graph_explorer: bool = False,
+    slack: Slack | None = None,
+    audit_reads: bool = False,
+    audit_keep: int | None = AUDIT_KEEP,
 ) -> Starlette:
     """The store goes to `Accounts` and nowhere else: no handler is defined where it is in reach.
     `sign_in`: people sign in through identity providers instead of with an API key
@@ -347,8 +379,9 @@ def create_app(
     `brand_name`, `brand_logo` (a file's path, or a cairn.web.brand.Logo already read) and
     `brand_logo_alt`: the operator's name in place of cairn's (cairn.web.brand). `session_days`
     (a whole number from 1 to 365): a sign-in lasts that many days and use renews it
-    (auth.Sessions). Each needs `sign_in` (ValueError otherwise, as for a value that cannot be
-    used); left out, nothing changes.
+    (auth.Sessions). `idle_minutes` (a whole number from 1 to 1440): a session not used for
+    that many minutes is over (auth.Sessions.idle). Each needs `sign_in` (ValueError
+    otherwise, as for a value that cannot be used); left out, nothing changes.
     `file_every` (N1; `serve` sets it, cairn.web.filing.FILE_EVERY): the notes waiting for
     their page are filed in the background, those of the start once the app runs, then a
     look every that many seconds (cairn.web.filing); shutdown waits for the note in hand.
@@ -356,7 +389,8 @@ def create_app(
     `compiles` (G1; `serve --compiles N`, COMPILES, 2, by default): this app compiles at most
     that many notes at a time, a whole number of at least 1 (ValueError otherwise); the
     others wait their turn in arrival order, on the event loop (cairn.web.turns). Requests'
-    notes, the sources' runs and the filer all take a turn; nothing else does.
+    notes, the sources' runs, the filer and a note written from Slack all take a turn;
+    nothing else does.
     `app.state.compiles` holds the Compiles.
     `keep_versions` (Q1; `serve` passes its --keep-versions, 50 unless told otherwise): every
     save, on any view of `store`'s connection, keeps the newest that many versions of its
@@ -364,6 +398,12 @@ def create_app(
     removes none. None, the default: every version is kept. With `plans` a plan's own
     versions_per_page rules, so `keep_versions` beside them is a ValueError, as is anything
     but None or a whole number of at least 1.
+    `audit_reads` (`serve --audit-reads`; Store.reads_audited): reading a page, a note, a
+    claim's evidence, a search and a graph are each an event of the workspace's audit log
+    (cairn.memory.READ_EVENTS), each read one more write; False, the default: they are on the
+    access log alone. `audit_keep` (`serve --audit-keep`; Store.audit_keep): how many of its
+    newest events each workspace keeps, AUDIT_KEEP (100,000) unless given; None: every one.
+    Anything else for either is a ValueError.
     `docs_artifact`, `docs_release` and `docs_reader_env` configure a dedicated read-only
     documentation release (docs/documentation-helper.md): /help and the footer's Help link exist
     only when one of the three is given. `clock` also times its VERIFY_EVERY. The helper
@@ -385,14 +425,30 @@ def create_app(
     it is offered to connects a Google account on the Sources page, and the store keeps and
     uses its sealed token (cairn.store.hosted). It needs `sign_in` and `public_url`
     (ValueError otherwise). None, the default: no route, no block, no table read.
-    `graph_explorer` (G2; `serve --graph-explorer`): a project's graph page becomes the
-    explorer (cairn.web.graph_routes), the one page that loads a script, cairn's own
-    /static/graph-view.js, by a nonce and its hash; it needs nothing else. False, the
-    default: the graph page is decision 134's, with no script, and /static/graph-view.js,
-    /static/graph-view.css and /b/<project>/graph/notes/<id> are 404. True or False only
-    (ValueError otherwise); `app.state.graph_explorer` holds it."""
+    `graph_explorer` (G2; on in `serve` by default, `--no-graph-explorer` turns it off): a
+    project's graph page becomes the explorer (cairn.web.graph_routes), the one page that loads
+    a script, cairn's own /static/graph-view.js, by a nonce and its hash; it needs nothing else.
+    False, create_app's default when called without `serve`: the graph page is decision 134's,
+    with no script, and /static/graph-view.js, /static/graph-view.css and
+    /b/<project>/graph/notes/<id> are 404. True or False only (ValueError otherwise);
+    `app.state.graph_explorer` holds it.
+    `slack` (K1; `serve --slack`; cairn.web.slack): the three addresses Slack calls, open paths
+    of Auth with their own protection, the set-up and linking addresses of a signed-in
+    browser, the Sources page's block, and the loop that checks bot tokens. The store seals
+    and opens the installs' secrets with its key. Slack needs `sign_in`, an https://
+    `public_url`, and a key of 32 bytes (ValueError otherwise, with the sentence `serve`
+    says). With `slack=None`, the default, the server leaves Slack's routes, block and token
+    checks disabled. The local sweep and forgetting loop
+    (`app.state.slack_keeper`) runs in either case."""
     if type(graph_explorer) is not bool:
         raise ValueError("graph_explorer is True or False")
+    if type(audit_reads) is not bool:
+        raise ValueError("audit_reads is True or False")
+    if audit_keep is not None and (type(audit_keep) is not int or audit_keep < 1):
+        raise ValueError("--audit-keep is a whole number, 1 or more, or all")
+    if slack is not None:
+        # ValueError, serve's sentence; under a brand too, for now (UNDER_A_BRAND)
+        check_slack(slack, sign_in=sign_in, public_url=public_url, brand_name=brand_name)
     if google_connect is not None and (sign_in is None or not public_url):
         raise ValueError("--google-connect needs --sign-in and --public-url")
     if plans is not None and keep_versions is not None:
@@ -413,6 +469,7 @@ def create_app(
             ("--test-instance", test_instance),
             ("--brand-name", brand_name is not None),
             ("--session-days", session_days is not None),
+            ("--idle-minutes", idle_minutes is not None),
         ):
             if given:
                 raise ValueError(f"{option} needs --sign-in")
@@ -423,6 +480,10 @@ def create_app(
         )
     if session_days is not None and (type(session_days) is not int or not 1 <= session_days <= 365):
         raise ValueError("--session-days is a whole number from 1 to 365")
+    if idle_minutes is not None and (
+        type(idle_minutes) is not int or not 1 <= idle_minutes <= 1440
+    ):
+        raise ValueError("--idle-minutes is a whole number from 1 to 1440")
     brand = make_brand(brand_name, brand_logo, brand_logo_alt)  # ValueError naming the option
     turns = Compiles(compiles)  # ValueError naming the option
     if sync_every is not None and not sync_every >= MIN_SYNC_EVERY:
@@ -435,10 +496,13 @@ def create_app(
     issuer = oauth.issuer(public_url)  # None: OAuth is off
     secure = (public_url or "").lower().startswith("https://")
     sessions = Sessions(
-        cookie=branded_cookie(BRANDED_SESSION_COOKIE, secure) if brand else SESSION_COOKIE,
+        cookie=branded_cookie(BRANDED_SESSION_COOKIE if brand else SESSION_COOKIE, secure),
         seconds=session_days * 86_400 if session_days else SESSION_TTL,
         renews=session_days is not None,
         secure=secure,
+        # the names before the __Host- prefix, on https without a brand: cleared, never read
+        retired=((SESSION_COOKIE, "/"), (STATE_COOKIE, STATE_PATH)) if secure and not brand else (),
+        idle=idle_minutes * 60 if idle_minutes else None,
     )
     accounts = Accounts(
         store,
@@ -449,6 +513,8 @@ def create_app(
         saved=arranger.queue if arranger is not None else None,
         sessions=sessions,
         compiles=turns,
+        # who may stay signed in, on every request (ValueError as signin.check's)
+        allowed=allowed(sign_in, public_url) if sign_in else None,
     )
     if arranger is not None and guard is not None:  # what it screens a page with, too
         arranger.guard = guard
@@ -491,6 +557,18 @@ def create_app(
         test_instance=test_instance,
     )
     compactor = Compactor(store, compact_every) if compact_every else None
+    keeper = (  # K1: the sweep, the bot tokens checked with Slack, the notes due forgotten
+        Keeper(store, slack.every, http=slack.http or source_http, api=slack.api)
+        if slack is not None
+        else Keeper(store)
+    )
+    told = (  # K1b: what a Slack form came to, said once on the Sources page
+        SlackOutcomes(slack.sealer(), now, secure, lambda scope: scope.get(MEMORY))
+        if slack is not None
+        else None
+    )
+    # K1: the one client Slack's handlers send through, made at start and closed at shutdown
+    to_slack = OneClient(slack.http or source_http) if slack is not None else None
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -502,6 +580,9 @@ def create_app(
                     accounts.sync_sources(sync_every, http=http, env=os.environ)
                 )
                 running.push_async_callback(_stopped, syncing)
+            if to_slack is not None:  # K1: closed last, once every task is stopped
+                to_slack.open()
+                running.push_async_callback(to_slack.aclose)
             if compactor is not None:
                 compacting = asyncio.create_task(compactor.loop())
                 # on the way out, last pushed first: the loop is stopped, then a run ends
@@ -528,6 +609,12 @@ def create_app(
                 revoker = Revoker(store, google_connect.custody, app.state.source_http)
                 revoking = asyncio.create_task(revoker.loop())
                 running.push_async_callback(revoker.stopped, revoking)
+            keeping = asyncio.create_task(keeper.loop())
+            running.push_async_callback(asyncio.to_thread, keeper.stop)
+            running.push_async_callback(_stopped, keeping)
+            if slack is not None:
+                checking = asyncio.create_task(keeper.check_loop())
+                running.push_async_callback(_stopped, checking)
             if stats_log is not None:
                 logging_stats = asyncio.create_task(stats_log.loop())
                 # on the way out, last pushed first: the loop is stopped, then a pass that is
@@ -551,6 +638,23 @@ def create_app(
         Route("/healthz", _healthz(accounts)),
         *people,
         *session_routes(accounts, key_login=sign_in is None, failures=failures),
+        *(  # K1b: a signed-in browser's set-up and linking, through Auth as every form; none
+            # ends as a source's /integrations/<name>/off, /on, /remove or /preview does
+            [
+                *setup_routes(
+                    told, office=office_of(store), http=slack.http or source_http, api=slack.api
+                ),
+                *link_routes(
+                    told,
+                    http=slack.http or source_http,
+                    api=slack.api,
+                    page_of=_ui,
+                    no_page=NO_PAGE,
+                ),
+            ]
+            if slack is not None and told is not None
+            else []
+        ),
         *ui_routes(public_url, sign_in=sign_in is not None),
         *workspace_routes(own_guard=guard is not None),
         *erasure_routes(),
@@ -558,6 +662,22 @@ def create_app(
         *member_routes(accounts, public_url),
         *rest_routes(),
         *(google_routes(google_connect, public_url) if google_connect and public_url else []),
+        *(
+            slack_routes(
+                slack,
+                desk=desk_of(store),
+                memory_for=lambda account_id, user_id: accounts.memory(
+                    Principal(account_id=account_id, kind="session", user_id=user_id), user_id
+                ),
+                failures=signature_failures(lambda: now().timestamp()),
+                now=now,
+                public_url=public_url or "",
+                http=to_slack,
+                turn=turns.turn,
+            )
+            if slack is not None
+            else []
+        ),
         # a project's graph: GET /api/graph and GET /b/<project>/graph; with the explorer
         # on (G2), its note pages and its two files under /static/, before the Mount
         *graph_routes(explorer=graph_explorer),
@@ -587,6 +707,11 @@ def create_app(
                 if google_connect
                 else []
             ),
+            *(  # K1b: the Sources page's Slack block, and its outcome said once
+                [Middleware(SlackBlock, outcomes=told, public_url=public_url or "")]
+                if told is not None
+                else []
+            ),
             *([Middleware(HelpLink)] if docs_on else []),  # the footer's Help link
             Middleware(
                 Auth,
@@ -594,12 +719,16 @@ def create_app(
                 public_url=public_url,
                 landing=public.landing if sign_in and sign_in.join == "personal" else None,
                 limiter=limiter,
-                open_paths=frozenset({BACK_PATH} if google_connect else set()),
+                open_paths=(open_paths if slack else frozenset)(
+                    frozenset({BACK_PATH} if google_connect else set())
+                ),
                 routed=lambda scope: any(r.matches(scope)[0] is not Match.NONE for r in routes),
                 brand=brand,
                 wall=wall,
                 failures=failures,
                 draft=signed_out_draft,
+                # K1: a link clicked in Slack comes back through sign-in, as an invitation's
+                comes_back=frozenset({LINK_PATH}) if slack is not None else frozenset(),
             ),
         ],
         exception_handlers={
@@ -622,7 +751,12 @@ def create_app(
     app.state.credential_failures = failures
     app.state.stats_every = stats_every  # Q1: minutes; None when off
     app.state.graph_explorer = graph_explorer  # G2
+    app.state.slack_keeper = keeper
     if google_connect is not None:  # the key and the client, for every view made from now on
         store.google_custody = google_connect.custody
+    if slack is not None:  # K1: the installs' secrets, for every view made from now on
+        store.slack_sealer = slack.sealer()
     store.bound_history(keep_versions)  # last: an app refused above changes nothing
+    store.audit_keep = audit_keep  # how many events each workspace keeps (None: every one)
+    store.reads_audited = audit_reads  # whether a read is an event of its workspace
     return app

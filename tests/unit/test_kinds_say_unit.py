@@ -30,6 +30,7 @@ from cairn.sources import linear as lin
 from cairn.sources import run_source, source_client
 from cairn.store import Store
 from cairn.web import cli
+from cookie_names import session_cookie
 
 DAY, HOUR = timedelta(days=1), timedelta(hours=1)
 L_NOW = SINCE + 20 * DAY
@@ -46,7 +47,7 @@ def page_of(store) -> str:
         "sso", "o", "o@example.test", "Olive", issuer="https://id.example.test", join="default"
     )
     with TestClient(create_app(store, public_url=WEB), base_url=WEB) as client:
-        client.cookies.set("cairn_session", owner.token)
+        client.cookies.set(session_cookie(), owner.token)
         return client.get("/sources").text
 
 

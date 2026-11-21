@@ -66,6 +66,7 @@ from starlette.testclient import TestClient
 
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
@@ -79,6 +80,10 @@ KEYS = (
     "said",
 )
 NOTHING_LEFT_OUT = "Every word of the query was searched, and every matching claim was ranked."
+NO_WORDS = (
+    "Nothing was searched: the query holds no words, only spaces or punctuation. Search with"
+    " words of letters or digits."
+)
 EVERY_PROJECT = (
     "Search one project so that fewer claims match, or add a rarer word to rank the claims that"
     " hold it first."
@@ -106,7 +111,7 @@ class World:
         self.client.__enter__()
         opened = self.client.post("/login", data={"key": self.key}, follow_redirects=False)
         assert opened.status_code == 303
-        self.cookie = {"cookie": f"cairn_session={opened.cookies['cairn_session']}"}
+        self.cookie = {"cookie": f"{session_cookie()}={opened.cookies[session_cookie()]}"}
         self.client.cookies.clear()
 
     def close(self) -> None:
@@ -394,7 +399,9 @@ def test_a_search_under_both_bounds_says_nothing_was_left_out_and_ranks_as_befor
 )
 def test_the_field_is_always_there(world, query, params):
     searched = world.everywhere(query, **params)["searched"]
-    assert searched["complete"] is True and searched["said"] == NOTHING_LEFT_OUT
+    # 8.4: a query of no words says that nothing was searched, never "every word"
+    said = NO_WORDS if query == "?! ... --" else NOTHING_LEFT_OUT
+    assert searched["complete"] is True and searched["said"] == said
 
 
 def test_the_recall_tools_description_says_what_the_field_means(world):

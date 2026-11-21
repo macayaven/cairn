@@ -128,6 +128,28 @@ variable "deploy_tag" {
   }
 }
 
+variable "registry_keep_versions" {
+  description = "How many of the newest versions of the image cairn the registry keeps whatever their age. A deploy pushes an index and its children (two platforms and their build attestations, about five versions), so 50 is about the last ten deploys."
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.registry_keep_versions >= 10 && floor(var.registry_keep_versions) == var.registry_keep_versions
+    error_message = "registry_keep_versions must be a whole number of at least 10."
+  }
+}
+
+variable "registry_delete_after_days" {
+  description = "Age in days after which the registry deletes an image that is neither among the newest registry_keep_versions nor named by deploy_tag, tagged or not."
+  type        = number
+  default     = 14
+
+  validation {
+    condition     = var.registry_delete_after_days >= 1 && floor(var.registry_delete_after_days) == var.registry_delete_after_days
+    error_message = "registry_delete_after_days must be a whole number of days, at least 1."
+  }
+}
+
 variable "machine_type" {
   description = "Compute Engine machine type. The image is built for x86-64 and arm64; COS stable here is the x86 family."
   type        = string
@@ -137,12 +159,37 @@ variable "machine_type" {
     condition     = can(regex("^[a-z][a-z0-9]*-[a-z0-9-]+$", var.machine_type))
     error_message = "machine_type must look like e2-small."
   }
+
+  # container_limits' defaults are sized for e2-small's 2 GiB; these three have less.
+  validation {
+    condition     = !contains(["e2-micro", "f1-micro", "g1-small"], var.machine_type)
+    error_message = "machine_type must have at least the 2 GiB of e2-small: e2-micro, f1-micro and g1-small have less than the containers' memory limits (container_limits) and the host need."
+  }
+}
+
+variable "container_limits" {
+  description = "Memory (MiB, with no swap on top) and process limits of the three containers the VM runs, so that one of them cannot take the VM down. The defaults sum to 1.5 GiB and leave 512 MiB of e2-small's 2 GiB, the smallest machine machine_type takes, for the OS, Docker and the host's own short containers. Raise them with the machine. A change needs a restart of the VM (README, \"Changing the configuration\")."
+  type = object({
+    cairn      = object({ memory_mb = number, pids = number })
+    caddy      = object({ memory_mb = number, pids = number })
+    litestream = object({ memory_mb = number, pids = number })
+  })
+  default = {
+    cairn      = { memory_mb = 1024, pids = 512 }
+    caddy      = { memory_mb = 256, pids = 256 }
+    litestream = { memory_mb = 256, pids = 256 }
+  }
+
+  validation {
+    condition     = alltrue([for c in values(var.container_limits) : c.memory_mb >= 64 && floor(c.memory_mb) == c.memory_mb && c.pids >= 32 && floor(c.pids) == c.pids])
+    error_message = "container_limits: each memory_mb must be a whole number of at least 64 and each pids a whole number of at least 32."
+  }
 }
 
 variable "boot_disk_size_gb" {
-  description = "Boot disk size. It holds the OS and the pulled container images, no data."
+  description = "Boot disk size. It holds the OS, the pulled container images and their logs, no data. A change replaces the VM (README, \"The VM is broken, the data disk is fine\")."
   type        = number
-  default     = 10
+  default     = 20
 
   validation {
     condition     = var.boot_disk_size_gb >= 10 && floor(var.boot_disk_size_gb) == var.boot_disk_size_gb
@@ -314,9 +361,9 @@ variable "replica_bucket_name" {
 }
 
 variable "replica_soft_delete_days" {
-  description = "How long the bucket keeps what was deleted or overwritten in it, restorable and not deletable for good. This is what stands between a compromised VM and the loss of the replica. Cloud Storage allows 7 to 90 days."
+  description = "How long the bucket keeps what was deleted or overwritten in it, restorable and not deletable for good. This is what stands between a compromised VM and the loss of the replica, and how long a deletion outlives Litestream's own retention in the bucket (README, \"How long a deletion stays in the backups\"). Cloud Storage allows 7 to 90 days; 7 is the least."
   type        = number
-  default     = 30
+  default     = 7
 
   validation {
     condition     = var.replica_soft_delete_days >= 7 && var.replica_soft_delete_days <= 90 && floor(var.replica_soft_delete_days) == var.replica_soft_delete_days
@@ -339,4 +386,52 @@ variable "labels" {
   description = "Extra labels for resources that take them."
   type        = map(string)
   default     = {}
+}
+
+# --- a baseline a reviewer expects (README, "Bootstrap" and "Logs") --------------------------
+
+variable "data_access_audit_logs" {
+  description = "Data Access audit logs (data reads and writes) for Cloud Storage and Secret Manager in the project: who read or changed the replica's objects and who read the secret. On by default. Litestream's uploads and the replica check's listings each make an entry, billed as log volume past the free allowance."
+  type        = bool
+  default     = true
+}
+
+variable "log_retention_days" {
+  description = "How many days the project's _Default log bucket keeps logs, the containers' and the audit logs among them. 30 is Google's default; longer is billed."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.log_retention_days >= 1 && var.log_retention_days <= 3650 && floor(var.log_retention_days) == var.log_retention_days
+    error_message = "log_retention_days must be a whole number from 1 to 3650."
+  }
+}
+
+variable "os_login_2fa" {
+  description = "Ask for a second factor at every SSH connection through OS Login. On by default: a connection needs a person at a prompt, and unattended SSH (a script, a scheduled job) does not work. An operator whose Google account has no 2-Step Verification is refused SSH through IAP until they switch it on or set this variable to false; the serial console and a start-up script are the ways back in (README, \"Before the next apply on an existing deployment\")."
+  type        = bool
+  default     = true
+}
+
+variable "firewall_logging" {
+  description = "Log every connection the two firewall rules allow. Off by default: each is a billed log entry."
+  type        = bool
+  default     = false
+}
+
+variable "vpc_flow_logs" {
+  description = "VPC flow logs on the subnet, half of the flows sampled, every 5 minutes. Off by default: billed by volume."
+  type        = bool
+  default     = false
+}
+
+variable "kms_key_name" {
+  description = "A Cloud KMS key (projects/P/locations/REGION/keyRings/R/cryptoKeys/K) for an operator who must hold the keys: the data disk, the boot disk, the replica bucket and the environment secret use it. Empty: Google manages the keys, as before. The key must be in region, and Google's service agents need roles/cloudkms.cryptoKeyEncrypterDecrypter on it (README, \"Customer-managed keys\"). Set on an existing deployment, it replaces the disks and the secret: read `tofu plan` first."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.kms_key_name == "" || can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/keyRings/[A-Za-z0-9_-]+/cryptoKeys/[A-Za-z0-9_-]+$", var.kms_key_name))
+    error_message = "kms_key_name must be a key's resource name, projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY, or empty."
+  }
 }

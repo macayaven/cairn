@@ -29,7 +29,6 @@ The server
 import asyncio
 import hashlib
 import sqlite3
-import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -38,6 +37,7 @@ import uvicorn
 from cairn import server
 from cairn.server import create_app
 from cairn.store import Store
+from wait_helpers import next_loop_turn, wait_for_event
 
 ISSUER = "https://id.example.test/pool-1"
 AUDIENCE = "https://cairn.example.test/mcp"
@@ -146,35 +146,49 @@ def test_the_sweep_covers_every_workspace(world):
     assert store.resolve_session(mine) is None and store.resolve_session(theirs) is None
 
 
-def test_the_app_sweeps_in_the_background_when_asked(world):
+def test_the_app_sweeps_in_the_background_when_asked(world, monkeypatch):
     world.ada.create_session(ttl_seconds=60)
     world.now += HOUR
     app = create_app(world.store, sweep_every=0.05)
     assert app.state.sweep_every == 0.05
 
-    async def run() -> float:
-        async with app.router.lifespan_context(app):
-            started = time.monotonic()
-            while world.column("SELECT digest FROM sessions") and time.monotonic() - started < 5:
-                await asyncio.sleep(0.05)
-            return time.monotonic() - started
-
-    waited = asyncio.run(run())
-    assert world.column("SELECT digest FROM sessions") == [], f"still there after {waited:.1f} s"
-
-
-def test_without_the_option_the_app_never_sweeps(world):
-    world.ada.create_session(ttl_seconds=60)
-    world.now += HOUR
-    app = create_app(world.store)
-    assert app.state.sweep_every is None
-
     async def run() -> None:
+        swept = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        sweep = Store.sweep_expired
+
+        def observed(self):
+            removed = sweep(self)
+            if removed:
+                loop.call_soon_threadsafe(swept.set)
+            return removed
+
+        monkeypatch.setattr(Store, "sweep_expired", observed)
         async with app.router.lifespan_context(app):
-            await asyncio.sleep(0.4)
+            await wait_for_event(swept, "the background sweep did not run")
 
     asyncio.run(run())
-    assert len(world.column("SELECT digest FROM sessions")) == 1
+    assert world.column("SELECT digest FROM sessions") == []
+
+
+def test_without_the_option_the_app_never_sweeps(world, monkeypatch):
+    world.ada.create_session(ttl_seconds=60)
+    world.now += HOUR
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("a sweeper was made with sweeping turned off")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("cairn.web.app.Sweeper", unexpected)
+        app = create_app(world.store)
+        assert app.state.sweep_every is None
+
+        async def run() -> None:
+            async with app.router.lifespan_context(app):
+                await next_loop_turn()
+
+        asyncio.run(run())
+        assert len(world.column("SELECT digest FROM sessions")) == 1
     for bad in (0, -1):
         with pytest.raises(ValueError):
             create_app(world.store, sweep_every=bad)

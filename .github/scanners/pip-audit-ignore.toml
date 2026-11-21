@@ -1,0 +1,10 @@
+# Vulnerabilities that job `dependencies` of .github/workflows/ci-cd.yml lets pass, read by
+# .github/scanners/audit_policy.py. Prefer raising the pin over an entry here. Each entry:
+#
+#   [[ignore]]
+#   id = "GHSA-xxxx-xxxx-xxxx"   # pip-audit's id for it, or one of its aliases
+#   reason = "Why it does not reach cairn, in one sentence."
+#   until = 2026-12-31            # the last day it is ignored; after it the job and a test fail
+#
+# Empty: pip-audit found nothing in uv.lock or build-constraints.txt when this was written.
+ignore = []

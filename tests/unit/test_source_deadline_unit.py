@@ -15,6 +15,7 @@ import pytest
 
 from cairn.sources import KINDS, SourceError, timing
 from cairn.sources import google_api as api
+from wait_helpers import wait_for_event
 
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
 CHUNKS = 40  # of a dripped answer, one every DRIP seconds: two seconds in all
@@ -40,6 +41,7 @@ class Drip(httpx.AsyncByteStream):
     async def __aiter__(self):
         yield self.head
         for _ in range(CHUNKS):
+            # The interval is part of this slow, bounded response, not task coordination.
             await asyncio.sleep(DRIP)
             self.sent += 1
             yield b" "
@@ -82,8 +84,10 @@ def test_a_google_request_with_no_deadline_reads_the_whole_answer():
 
 def test_a_google_sign_in_that_never_answers_fails_the_pull_at_the_deadline():
     async def stalled(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(CHUNKS * DRIP)
-        raise AssertionError("the sign-in was waited for past the deadline")
+        # The application must cancel the stalled request. The guard fails the test
+        # if that cancellation never comes.
+        await wait_for_event(asyncio.Event(), "the sign-in was waited for past the deadline")
+        raise AssertionError("the sign-in unexpectedly woke up")
 
     credential = json.dumps(
         {
@@ -167,8 +171,10 @@ def test_a_langfuse_server_that_never_sends_its_headers_is_stopped_at_the_deadli
     headers never came."""
 
     async def stalled(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(CHUNKS * DRIP)
-        raise AssertionError("the answer was waited for past the deadline")
+        # The application must cancel the stalled request. The guard fails the test
+        # if that cancellation never comes.
+        await wait_for_event(asyncio.Event(), "the answer was waited for past the deadline")
+        raise AssertionError("the answer unexpectedly woke up")
 
     kind = KINDS["langfuse"]
     config = kind.check(

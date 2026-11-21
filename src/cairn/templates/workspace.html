@@ -17,8 +17,8 @@
 <form method="post" action="/workspace/guard" class="stack">
   <fieldset class="reach">
     <legend>What is refused</legend>
-    {% for value, said in policies %}
-    <label class="option said"><input type="radio" name="policy" value="{{ value }}"{% if value == policy %} checked{% endif %}> <span>{{ said }}</span></label>
+    {% for value, title, summary in policies %}
+    <label class="option said"><input type="radio" name="policy" value="{{ value }}"{% if value == policy %} checked{% endif %}> <span><strong class="option-title">{{ title }}</strong> {{ summary }}</span></label>
     {% endfor %}
   </fieldset>
   <button type="submit">Save what is refused</button>

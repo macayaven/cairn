@@ -76,3 +76,16 @@ def topic_tag(key: str, size: int = TAG_SIZE) -> str:
     """The tag of a topic key: the first `size` lower-case hex characters of the SHA-256 of
     its UTF-8 bytes. The same key gives the same tag on every install."""
     return hashlib.sha256(key.encode()).hexdigest()[:size]
+
+
+def one_line(title: str) -> str:
+    """A title, topic or name written as one line of text, wherever it is put into Markdown or
+    plain text read as lines: a page body's heading (compiler.heading_text), Slack, the
+    export, the command line (review blocker 1). A title of one line is as it is; in any
+    other, each line break (every one str.splitlines knows, as cairn.spans splits a note: CR,
+    LF, the line and paragraph separators and the rest) with the blanks around it is one
+    space, and blank lines are dropped. What is stored and keyed is never changed by it."""
+    lines = title.splitlines()
+    if lines == [title]:
+        return title
+    return " ".join(line.strip() for line in lines if line.strip())

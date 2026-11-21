@@ -3,6 +3,7 @@
 import importlib.util
 
 from cairn.store import Claim, Store
+from earlier_build import earlier_page
 
 
 def test_graph_contains_only_the_explicit_page_claim_and_note_evidence(tmp_path):
@@ -85,11 +86,11 @@ def test_many_missing_citations_cannot_force_unbounded_database_reads(tmp_path):
             [Claim(id="one", text="A claim", span_ids=tuple(f"missing-{i}" for i in range(500)))],
         )
         statements = []
-        store._con.set_trace_callback(statements.append)
+        store._observe(trace=statements.append)
         try:
             graph = project_graph(store, "alpha")
         finally:
-            store._con.set_trace_callback(None)
+            store._observe(trace=None)
         lookups = [s for s in statements if "FROM spans s JOIN notes" in s]
         assert len(lookups) <= 100
         assert graph["truncated"] is True
@@ -212,13 +213,13 @@ def test_database_work_does_not_grow_with_inaccessible_projects(tmp_path):
                 operations[0] += 1
                 return 0
 
-            store._con.set_progress_handler(count, 1)
-            store._con.set_trace_callback(statements.append)
+            store._observe(progress=(count, 1))
+            store._observe(trace=statements.append)
             try:
                 result = project_graph(view, "alpha")
             finally:
-                store._con.set_progress_handler(None, 0)
-                store._con.set_trace_callback(None)
+                store._observe(progress=None)
+                store._observe(trace=None)
             return result, len(statements), operations[0]
 
         small, small_statements, small_operations = measure()
@@ -259,7 +260,9 @@ def test_foreign_passages_and_notes_are_never_returned_even_when_cited(tmp_path)
         beta = store.create_project("beta")
         foreign, _ = store.add_note(beta.id, "Foreign secret.\n", source_ref="foreign-ref")
         passage = store.note_spans(foreign.id)[0]
-        store.save_page(alpha.id, "a", "A", "", [Claim(id="one", text="A", span_ids=(passage.id,))])
+        earlier_page(
+            store, alpha.id, "a", "A", "", [Claim(id="one", text="A", span_ids=(passage.id,))]
+        )
         graph = project_graph(store, "alpha")
         assert "Foreign secret" not in str(graph)
         assert "foreign-ref" not in str(graph)
@@ -375,13 +378,13 @@ def test_large_project_reads_the_same_bounded_number_of_rows_and_statements(tmp_
                 operations[0] += 1
                 return 0
 
-            store._con.set_progress_handler(count, 1)
-            store._con.set_trace_callback(statements.append)
+            store._observe(progress=(count, 1))
+            store._observe(trace=statements.append)
             try:
                 result = project_graph(store, "alpha")
             finally:
-                store._con.set_progress_handler(None, 0)
-                store._con.set_trace_callback(None)
+                store._observe(progress=None)
+                store._observe(trace=None)
             return result, len(statements), operations[0]
 
         small, small_statements, small_work = measure()
@@ -426,12 +429,12 @@ def test_uncompiled_notes_are_bounded_and_ordered_without_scanning_the_project(t
             operations[0] += 1
             return 0
 
-        store._con.set_progress_handler(count, 1)
+        store._observe(progress=(count, 1))
         try:
             first = project_graph(store, "alpha")
             work = operations[0]
         finally:
-            store._con.set_progress_handler(None, 0)
+            store._observe(progress=None)
         assert first == project_graph(store, "alpha")
         assert first["counts"]["note"] == 100
         assert first["counts"]["edges"] == 100

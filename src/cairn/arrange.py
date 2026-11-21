@@ -25,8 +25,11 @@ Arranging one page
   number of claims) or by its id, and may mix the two; the numbers are read as ids first, and
   every rule below then holds for both alike.
 - cairn checks that, and that the claims of each `same` list repeat one another: the same
-  heading path (the one their section shows) and the same text once runs of whitespace are
-  single spaces (`repeat_groups`, the one rule, which also lists the repeats in the request).
+  heading path (the one their section shows) and the same text, character for character but
+  for the white space at the end of a line and blank lines around it (CORE5:
+  cairn.spans.compared_text, the verbatim gate's own equality; `repeat_groups`, the one rule,
+  which also lists the repeats in the request). Two notes that say the same thing wrapped or
+  spaced otherwise stay two claims.
   A `same` list need not be one the request listed, only one that rule allows. Anything else
   is not an arrangement: a claim missing or named twice (by number, id or both), a number or
   id the page does not have (0, a negative number, one past the last claim), a `same` list of
@@ -127,12 +130,20 @@ Arranging one page
   with the page, the two versions (from_version, version), the model's name and the two
   counts, and no text. Nothing else of an arrangement is audited.
 - Withheld notes (M2). `arrange_page(..., withhold=())` takes the `via` values whose notes go to
-  no model (the worker's are cairn.sources.withheld_via(), the Google kinds', unless the
-  operator sends them: cairn.web.cli_arrange). A page holds a withheld note when one of its
+  no model (the worker's are cairn.sources.withheld_via(), every kind's since review finding
+  Privacy 4, tests/unit/test_arrange_every_source_held_unit.py, unless the operator sends
+  them: cairn.web.cli_arrange). A page holds a withheld note when one of its
   claims cites a span of a note written via one of those: one such note is
   enough, whoever wrote the rest of the page, and a claim that cites it after another note's
   span (a folded repeat) counts too. A note a person or an agent stored with such a
   `via` is judged like a source's: it errs on the side of not sending.
+- Notes held by `via` alone. `arrange_page(..., held_via=())` takes more `via` values whose
+  notes go to no model, judged in the same check of the same note and nothing else: unlike
+  `withhold`, they never turn on the `source_ref` rule below. The worker's are
+  cairn.sources.HELD_VIA, Slack's ("slack": a message filed, a note typed with the command
+  and a direct message alike), unless the operator sends them (<PREFIX>_SLACK_NOTES=send,
+  cairn.web.cli_arrange); <PREFIX>_SOURCE_NOTES=send does not send them. A page that holds
+  such a note is "withheld", as below.
 - Notes that name a source (M3, tests/acceptance/test_m3_notes_that_name_a_source.py). Wherever
   notes are withheld at all (`withhold` not empty: the worker's default, or a caller that
   withholds some `via`), a note is withheld too when its `source_ref` has one of the forms the
@@ -140,7 +151,7 @@ Arranging one page
   (cairn.sources.withheld_by_ref: "meeting:", "mail:", "calendar:", "doc:", "todo:", and
   "gmail:", "meet:", "drive:"; in any letter case, white space around the word dropped),
   whoever wrote it, over MCP, REST or the web form; a note one of the server's own kinds wrote
-  is judged by its kind alone (decision 90: Granola's are sent). The server goes by what the
+  is judged by its kind alone (every kind is withheld). The server goes by what the
   note says: an agent's text copied from a mail without such a `source_ref` is sent. Both
   questions are asked of the one note the check reads, so it reads nothing more.
 - A page that holds a withheld note, of either kind, is "withheld": no request is built and
@@ -185,6 +196,17 @@ Arranging one page
   retries its client makes on its own included (its `max_requests`, which consult no
   store): the switch stops the next call and the save, not a request already sent. A tidy (no model)
   reads none of this.
+- Projects that opt in (Privacy 4, tests/unit/test_arrange_every_source_held_unit.py).
+  `arrange_page(..., opt_in=False)`: with `opt_in`, a page is sent only when its project's
+  people chose "allowed" themselves, as view.page_for_model says in the statement that reads
+  the page (its third item; a store that reads only two says nobody chose, so nothing is
+  sent). Any other page not kept (above) is "undecided": no request is built, nothing is
+  reserved, spent, screened or audited, `version` and `previous` are the page's version, and
+  `problem` is UNDECIDED, one fixed sentence of its own. The check comes right after the kept
+  one and before the withheld notes, at no statement of its own. Without `opt_in` nothing
+  changes. The operator turns it on with <PREFIX>_UNDECIDED_PROJECTS=withhold
+  (cairn.web.cli_arrange). It holds nothing else back: the withheld notes are withheld as
+  above whatever it is.
 - An unknown page is "gone"; no model is called. A model whose name the audit event cannot hold
   (1 to 80 printable characters, cairn.store.memory.NAME_MAX) is never called ("failed"). A page
   whose claims name one id twice cannot be arranged by id: it is "invalid page", before any call
@@ -195,9 +217,17 @@ Tidying a page, with no model
   and asks no model: the plan is computed, not asked for. Its order is the page's order less
   the later claims of each group `repeat_groups` finds, put through `tree_order`; each group is
   folded into its first claim. So each heading's claims are together, in the order they had,
-  and each run of exact repeats (whitespace aside) is one claim citing every source. On a page
+  and each run of repeats (claims whose texts are the same, `repeat_groups`) is one claim
+  citing every source. On a page
   with repeats it saves the page `arrange_page` saves for a model that keeps the order it was
-  given.
+  given. First, a claim the gate does not call whole (a fold an earlier tidy made before
+  CORE5 of passages that differ by white space, or a model's under two headings) is rebuilt
+  from its passages (compiler.rebuilt_folds), and the page is saved as its next version even
+  when nothing else changes; earlier versions keep it. `arrange_page` hands such a page to
+  the tidy before any model is asked. When the rebuilt claims would be more than a page holds
+  (store.PAGE_CLAIMS_MAX: an old fold beside 1,999 other claims), the store refuses the save
+  and the tidy is "rejected" with the store's reason (the page and the bound, never a claim):
+  nothing is saved and the page keeps its version.
 - From the plan on it is arrange_page's own code (_save_plan): the folded citations, `moved`
   and `merged`, the body, `verbatim_gate` ("rejected"), the save with `expected_version`
   ("stale"), the audit event "page.arranged" and `arranged_by`, both naming TIDY ("cairn").
@@ -211,8 +241,8 @@ Tidying a page, with no model
 The worker (`Arranger`)
 - `Arranger(model, *, price, view_for, min_claims=6, capacity=10_000, max_claims=MAX_CLAIMS,
   attempts=2, every=None, clock=time.monotonic, pause_after=PAUSE_AFTER (5),
-  pause_seconds=PAUSE_SECONDS (600.0), withhold=None)`; `model` None is the worker without a
-  model, below.
+  pause_seconds=PAUSE_SECONDS (600.0), withhold=None, held_via=None, opt_in=False)`; `model`
+  None is the worker without a model, below.
   `view_for(account id)` gives the view to work
   through (the server gives one limited by the workspace's plan; KeyError: the workspace is
   gone); with `guard` set (create_app sets the app's), the view screens with that guard
@@ -240,7 +270,10 @@ The worker (`Arranger`)
 - Withheld pages (M2). With a model, the worker withholds the `via` values `withhold` names, or,
   when it is None (the default), cairn.sources.withheld_via() read as each page is
   judged, and with them the notes whose `source_ref` names a source (M3, above); `withhold=()`
-  withholds neither (`<PREFIX>_SOURCE_NOTES=send`). A page that holds
+  withholds neither (`<PREFIX>_SOURCE_NOTES=send`). Apart from both, with a model, it holds
+  back the notes whose `via` is in `held_via`, or, when it is None (the default),
+  cairn.sources.HELD_VIA (Slack's); `held_via=()` holds none (`<PREFIX>_SLACK_NOTES=send`).
+  Without a model it holds nothing. A page that holds
   a withheld note (arrange_page's "withheld", or holds_withheld for a page under
   `min_claims`, which is never sent either) is tidied instead, by tidy_page, exactly as the
   worker without a model tidies it, and is done as "withheld" with no draft, `previous` the
@@ -269,6 +302,13 @@ The worker (`Arranger`)
   and recorded, its Done carries no draft (the log line shows no tokens), and the page is
   tidied as above. Without a model
   nothing is kept: every page is tidied, as before.
+- Undecided pages (Privacy 4). With a model and `opt_in`, a page of a project nobody chose
+  "allowed" for is judged in the same read, after the kept check, and treated as a withheld
+  page is (tidied by tidy_page, remembered, no draft, the count towards a pause left as it
+  is, none of the budget spent), done as "undecided". Unlike a kept page there is no
+  exception for a version a model put in order: its tidy keeps the model's order and
+  only folds a repeat left in it. Without a
+  model `opt_in` is not read.
 - One line per page on the "cairn.access" log (action "arrange"), except "seen" and
   "small", and without a model "unchanged" too (every saved note queues its page, and a page
   read and left as it is has nothing to report): its status, project id, versions and tokens;
@@ -316,14 +356,14 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cairn.compiler import CandidatePage, DraftStats, render_body
+from cairn.compiler import CandidatePage, DraftStats, own_claims, rebuilt_folds, render_body
 from cairn.gate import verbatim_gate
 from cairn.guard import Guard
 from cairn.llm import ChatModel, LLMError, draw_tag, failure_text, new_boundary
 from cairn.llm import unwrap_reply as _unwrap
 from cairn.memory import access_log
-from cairn.spans import Span
-from cairn.store import Claim, KeptFromModels, Page, StalePage, Store
+from cairn.spans import Span, compared_text
+from cairn.store import Claim, KeptFromModels, Page, PageTooLong, StalePage, Store
 from cairn.store.memory import NAME_MAX
 
 MIN_CLAIMS = 6  # pages with fewer are not worth a call
@@ -390,15 +430,22 @@ Status = Literal[
     "gone",
     "withheld",
     "kept from models",
+    "undecided",
 ]
 # The problem of a "withheld" page: one fixed sentence, never a note's text, a title or a `via`.
 WITHHELD = "the page holds notes read from a source the operator has not allowed a model to read"
 # The problem of a page "kept from models" (M4): its project is at "never". One fixed sentence of
 # its own, never a project's name, a title or a note's text.
 KEPT = "the people of the page's project keep its pages from every model"
+# The problem of an "undecided" page (Privacy 4): the operator sends only the projects whose
+# people allowed a model themselves, and nobody in this one did. One fixed sentence of its own.
+UNDECIDED = (
+    "nobody in the page's project has allowed a model, and the operator sends only the pages of"
+    " projects whose people did"
+)
 # The outcomes of a page no model was asked about because of what it holds or where it is: the
-# worker tidies it instead (M2, M3 and M4).
-NOT_SENT = frozenset({"withheld", "kept from models"})
+# worker tidies it instead (M2, M3, M4 and Privacy 4).
+NOT_SENT = frozenset({"withheld", "kept from models", "undecided"})
 # A "guarded" page is not remembered: the policy can loosen without a new version.
 REMEMBERED = frozenset({"arranged", "unchanged", "invalid", "invalid page", "rejected", "large"})
 # The worker's count of answers in a row that could not be used: these add one, these clear
@@ -490,10 +537,12 @@ def messages(
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 
-def _repeat_key(claim: Claim, sections: Mapping[str, tuple[str, ...]]) -> tuple[Any, str]:
+def _repeat_key(claim: Claim, sections: Mapping[str, tuple[str, ...]]) -> tuple[Any, Any]:
     """The one rule for claims that repeat one another: the same heading path, and the same
-    text once runs of whitespace are single spaces. Claims repeat when their keys are equal."""
-    return tuple(sections.get(claim.id, ())), " ".join(claim.text.split())
+    text but for what cairn.spans.compared_text leaves out (white space at the end of a line,
+    blank lines around the text), the verbatim gate's own equality, so the gate accepts every
+    fold this rule allows (review 7.3). Claims repeat when their keys are equal."""
+    return tuple(sections.get(claim.id, ())), compared_text(claim.text)
 
 
 def repeat_groups(
@@ -501,7 +550,7 @@ def repeat_groups(
 ) -> list[list[int]]:
     """The groups of `claims` that repeat one another (_repeat_key), by number (1 for the
     first claim): each group in page order, the groups in the order of their first claims."""
-    groups: dict[tuple[Any, str], list[int]] = {}
+    groups: dict[tuple[Any, Any], list[int]] = {}
     for n, claim in enumerate(claims, start=1):
         groups.setdefault(_repeat_key(claim, sections), []).append(n)
     return [group for group in groups.values() if len(group) > 1]
@@ -666,6 +715,8 @@ def arrange_page(
     boundary: Callable[[], str] = new_boundary,
     clock: Callable[[], float] = time.perf_counter,
     withhold: Collection[str] = (),
+    held_via: Collection[str] = (),
+    opt_in: bool = False,
 ) -> Arranged:
     """Ask `model` to arrange the page and save what it answers as the page's next version,
     when it is an arrangement; a page that holds a note whose `via` is in `withhold`, or,
@@ -692,14 +743,19 @@ def arrange_page(
         return Arranged(status=status, version=version, previous=read, draft=draft, **more)
 
     found = view.page_for_model(project_id, slug)  # whether its project is kept: no extra read
-    page, kept = found if found else (None, False)
+    page, kept, chosen = _models_state(found)
     if page is None:
         return outcome("gone", None)
     if kept:  # its project is at "never" (M4): before anything else, whatever `withhold`
         return outcome("kept from models", page.version, problem=KEPT)
+    if opt_in and not chosen:  # Privacy 4: nobody in its project allowed a model
+        return outcome("undecided", page.version, problem=UNDECIDED)
+    page, left_out = own_claims(view, page)  # held to its own project's notes, by id
     cited = [i for claim in page.claims for i in claim.span_ids]
-    spans = view.get_spans(cited) if withhold else None
-    if withhold and holds_withheld(view, page, withhold, spans=spans):  # before anything else
+    spans = view.get_spans(cited) if withhold or held_via else None
+    if (withhold or held_via) and holds_withheld(  # before anything else
+        view, page, withhold, spans=spans, held_via=held_via
+    ):
         return outcome("withheld", page.version, problem=WITHHELD)
     if not (0 < len(model.name) <= NAME_MAX and model.name.isprintable()):
         problem = f"the model's name must be 1 to {NAME_MAX} printable characters"
@@ -714,6 +770,8 @@ def arrange_page(
         return outcome("large", page.version)
     if spans is None:
         spans = view.get_spans(cited)
+    if rebuilt_folds(page.claims, spans) is not page.claims:  # an old fold: no model needed
+        return tidy_page(view, project_id, slug)
     headings = (" > ".join(span.heading_path) for span in spans.values())
     quoted = (page.title, *(claim.text for claim in page.claims), *headings)
     if view.screen("\n\n".join(quoted)):  # everything the request quotes, sections too
@@ -789,7 +847,27 @@ def arrange_page(
     # by note sorts to the page's tree, and is the arrangement that page needs.
     if not merged and current in (answered, order):
         return outcome("unchanged", page.version)
-    return _save_plan(view, project_id, page, spans, order, same, by=model.name, outcome=outcome)
+    return _save_plan(
+        view,
+        project_id,
+        page,
+        spans,
+        order,
+        same,
+        by=model.name,
+        outcome=outcome,
+        left_out=left_out,
+    )
+
+
+def _models_state(found: tuple[Any, ...] | None) -> tuple[Page | None, bool, bool]:
+    """What view.page_for_model read, in one statement: the page (None for none), whether its
+    project is at "never", and whether its people chose "allowed" themselves. A store that
+    reads only the first two says nobody chose (Privacy 4: an opt-in then sends nothing)."""
+    if not found:
+        return None, False, False
+    page, kept, *rest = found
+    return page, bool(kept), bool(rest and rest[0])
 
 
 def _by_a_model(page: Page) -> bool:
@@ -805,6 +883,7 @@ def holds_withheld(
     withhold: Collection[str],
     *,
     spans: Mapping[str, Span] | None = None,
+    held_via: Collection[str] = (),
 ) -> bool:
     """Whether a claim of `page` cites a note whose `via` is in `withhold`, or whose
     `source_ref` names a source (cairn.sources.withheld_by_ref, M3), as the view reaches it:
@@ -814,9 +893,8 @@ def holds_withheld(
     was read) counts as withheld, and so does a known span whose note the view cannot read.
     Reads no other note, and nothing when `withhold` is empty: a caller that withholds
     nothing withholds nothing."""
-    if not withhold:
+    if not withhold and not held_via:
         return False
-    from cairn.sources import withheld_by_ref  # with something to withhold only
 
     cited = [i for claim in page.claims for i in claim.span_ids]
     if spans is None:
@@ -825,9 +903,30 @@ def holds_withheld(
         return True
     for note_id in dict.fromkeys(span.source_id for span in spans.values()):
         note = view.get_note(note_id)
-        if note is None or note.via in withhold or withheld_by_ref(note.via, note.source_ref):
+        if note is None or note.via in withhold or note.via in held_via:
+            return True
+        if withhold and _by_ref(note.via, note.source_ref):
             return True
     return False
+
+
+def _by_ref(via: str | None, source_ref: str | None) -> bool:
+    """cairn.sources.withheld_by_ref, imported only when something is withheld."""
+    from cairn.sources import withheld_by_ref
+
+    return withheld_by_ref(via, source_ref)
+
+
+def _held_via(model: ChatModel | None, held_via: Collection[str] | None) -> frozenset[str]:
+    """The `via` values the worker holds back by `via` alone: those given, else, with a
+    model, cairn.sources.HELD_VIA (Slack's); nothing without a model."""
+    if held_via is not None:
+        return frozenset(held_via)
+    if model is None:
+        return frozenset()
+    from cairn.sources import HELD_VIA  # imported with a model only
+
+    return HELD_VIA
 
 
 def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
@@ -840,13 +939,16 @@ def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
         read = page.version if page else None
         return Arranged(status=status, version=version, previous=read, draft=draft, **more)
 
-    page = view.get_page(project_id, slug)
+    page, left_out = own_claims(view, view.get_page(project_id, slug))  # its own claims
     if page is None:
         return outcome("gone", None)
     if repeated := _repeated_id(page.claims):
         problem = f"the page names claim {repeated} more than once"
         return outcome("invalid page", page.version, problem=problem)
     spans = view.get_spans([i for claim in page.claims for i in claim.span_ids])
+    claims = rebuilt_folds(page.claims, spans)  # an old fold, from its passages
+    if rebuilt := claims is not page.claims:
+        page = page.model_copy(update={"claims": claims})
     sections = {claim.id: _section_of(claim, spans) for claim in page.claims}
     same = [
         [page.claims[n - 1].id for n in group] for group in repeat_groups(page.claims, sections)
@@ -854,9 +956,11 @@ def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
     folded = {claim_id for group in same for claim_id in group[1:]}
     current = [claim.id for claim in page.claims]
     order = tree_order([claim_id for claim_id in current if claim_id not in folded], sections)
-    if not same and order == current:
+    if not same and order == current and not rebuilt:
         return outcome("unchanged", page.version)
-    return _save_plan(view, project_id, page, spans, order, same, by=TIDY, outcome=outcome)
+    return _save_plan(
+        view, project_id, page, spans, order, same, by=TIDY, outcome=outcome, left_out=left_out
+    )
 
 
 def _save_plan(
@@ -869,6 +973,7 @@ def _save_plan(
     *,
     by: str,
     outcome: Callable[..., Arranged],
+    left_out: frozenset[str] = frozenset(),
 ) -> Arranged:
     """Everything after the plan, for arrange_page and tidy_page alike: the page's claims in
     `order` (tree-kept), each group of `same` folded into its first claim, which then cites
@@ -904,9 +1009,12 @@ def _save_plan(
             event="page.arranged",
             detail=detail,
             by_model=by != TIDY,  # M4: a model's answer is not saved in a project at "never"
+            left_out=left_out,  # what own_claims left out: a page removed meanwhile is stale
         )
     except KeptFromModels:  # set to "never" while the model answered: nothing of it is saved
         return outcome("kept from models", page.version, problem=KEPT)
+    except PageTooLong as full:  # an old fold rebuilt past the claims a page holds: it stays
+        return outcome("rejected", page.version, problem=str(full))  # the page and the bound
     except StalePage as stale:
         return outcome("stale", stale.found, moved=moved, merged=merged)
     return outcome("arranged", saved.version, moved=moved, merged=merged)
@@ -981,6 +1089,8 @@ class Arranger:
         pause_after: int = PAUSE_AFTER,
         pause_seconds: float = PAUSE_SECONDS,
         withhold: Collection[str] | None = None,
+        held_via: Collection[str] | None = None,
+        opt_in: bool = False,
     ) -> None:
         if capacity < 1 or min_claims < 0 or max_claims < 1:
             raise ValueError("capacity and max_claims are at least 1, min_claims at least 0")
@@ -998,6 +1108,8 @@ class Arranger:
         self.pause_after, self.pause_seconds = pause_after, float(pause_seconds)
         self._view_for = view_for
         self._withhold = None if withhold is None else frozenset(withhold)
+        self._held_via = _held_via(model, held_via)
+        self._opt_in = bool(opt_in)
         self._min_claims, self._max_claims = min_claims, max_claims
         self._capacity, self._attempts = capacity, attempts
         self._lock = threading.Lock()  # the queue and the memories; never held across a call
@@ -1171,9 +1283,9 @@ class Arranger:
             self._out_of_budget(item)
             return Done(*item, status="no budget")
         found = view.page_for_model(item.project_id, item.slug)  # and whether it is kept
-        if found is None:
+        page, kept, chosen = _models_state(found)
+        if page is None:
             return Done(*item, status="gone")
-        page, kept = found
         with self._lock:
             seen = self._seen.get(item)
         if seen == page.version:
@@ -1186,8 +1298,10 @@ class Arranger:
             return self._left_as_ordered(item, page.version)
         elif kept:  # its project is at "never" (M4): never sent, and still worth a tidy
             judged, reason = page.version, "kept from models"
+        elif self._opt_in and not chosen:  # Privacy 4: nobody in its project allowed a model
+            judged, reason = page.version, "undecided"
         elif len(page.claims) < self._min_claims:
-            if not holds_withheld(view, page, self._withheld()):
+            if not holds_withheld(view, page, self._withheld(), held_via=self._held_via):
                 return Done(*item, status="small", previous=page.version, version=page.version)
             judged = page.version  # never sent, and still worth a tidy: it costs nothing
         else:
@@ -1200,6 +1314,8 @@ class Arranger:
                 attempts=self._attempts,
                 max_claims=self._max_claims,
                 withhold=self._withheld(),
+                held_via=self._held_via,
+                opt_in=self._opt_in,
             )
             if result.status in NOT_SENT:  # kept too: switched since the page was read
                 judged, reason = result.previous, result.status
@@ -1320,6 +1436,7 @@ __all__ = [
     "STALE_TRIES",
     "SYSTEM_PROMPT",
     "TIDY",
+    "UNDECIDED",
     "WITHHELD",
     "Arranged",
     "Arranger",

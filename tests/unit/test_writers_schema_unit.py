@@ -5,7 +5,14 @@ moment the step ran. A database built from history: test_store_unit's version 23
 from datetime import UTC, datetime
 
 import pytest
-from test_store_unit import connect, rows, statements, user_version, v23_database
+from test_store_unit import (
+    before_step_30,
+    connect,
+    rows,
+    statements,
+    user_version,
+    v23_database,
+)
 
 import cairn.store.schema
 from cairn.store import SCHEMA_VERSION, Store
@@ -35,8 +42,14 @@ def test_step_25_adds_three_empty_tables_and_the_moment_it_ran(tmp_path):
     assert rows(db, "SELECT at FROM recorded_since") == [
         (MOMENT.isoformat(timespec="microseconds"),)
     ]
-    before = set(v24["statements"])
-    added = [line for line in statements(db) if line not in before]
+    # Step 30 rebuilds sessions with each one's last use (`used_at`, last, NULL on every
+    # session there was): read the sessions as step 29 left them.
+    rebuilt = cairn.store.schema._V30_SESSIONS + ";"
+    assert rebuilt in statements(db)
+    before = {line for line in v24["statements"] if not line.startswith("CREATE TABLE sessions")}
+    added = [line for line in before_step_30(statements(db)) if line not in before]
+    added = [line for line in added if line != rebuilt]
+    assert before <= set(before_step_30(statements(db)))
     later = (
         "page_heads",
         "head_saved",
@@ -44,6 +57,7 @@ def test_step_25_adds_three_empty_tables_and_the_moment_it_ran(tmp_path):
         "checkouts",
         "credential_tokens",
         "google_revocations",
+        "slack_",
     )
     assert all(
         "note_writers" in line

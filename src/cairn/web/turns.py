@@ -4,7 +4,8 @@ A note's compile holds the processor and memory for as long as it takes, so eigh
 at once each hold their own. `Compiles` gives out N turns; a note that finds them all taken
 waits on the event loop, in arrival order, and goes on when one ends. It is taken by every way
 a note reaches a compile in the app: a REST note, the MCP `note` tool, the composer's form, a
-source's run and the filer (cairn.web.filing), each for one note at a time and in one place
+source's run, the filer (cairn.web.filing) and a note written from Slack
+(cairn.slack.people.written), each for one note at a time and in one place
 only, so a turn is never asked for twice by one note.
 
 A waiting note holds no thread, no connection to the store and no lock of the store: it is
@@ -21,7 +22,7 @@ import asyncio
 import contextlib
 import threading
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Hashable
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
@@ -116,3 +117,91 @@ def compile_turn(request: HTTPConnection) -> AbstractAsyncContextManager[Any]:
     a request no Auth admitted (nothing reaches a compile without one)."""
     compiles = request.scope.get(SCOPE_KEY)
     return compiles.turn() if isinstance(compiles, Compiles) else contextlib.nullcontext()
+
+
+Caller = Hashable
+
+
+def caller_of(memory: Any) -> Caller:
+    """Who a read of related pages is for, as its request was admitted (Auth.admit): the
+    actor the request's Memory acts as (Store.actor_id), within its workspace. That is a
+    key's id for a key, and for a session opened with a key no person made; a grant's id for
+    an agent; a person's id for every session of theirs, one opened with a key they made
+    among them; and a view with no actor id, by its kind and name."""
+    store = memory.store
+    return (store.account_id, store.actor_id or store.actor)
+
+
+class RelatedReads:
+    """One read of related pages at a time in a server process (Store.related_pages), for
+    every workspace it serves, over REST, MCP and the web view alike; and one read of each
+    caller in that line at a time.
+
+    A read takes its caller's turn first, then the process's: a caller's further reads wait
+    behind its own first, not in the process's line, so a read in that line waits behind at
+    most one read of each other caller; one still waiting behind its own caller's can see two
+    reads of another caller go first, and more when more of its caller's are ahead of it.
+    Both turns are a `Compiles(1)`: a read waits for them
+    on the event loop, holding no thread and no connection, in the order it asked, and its
+    worker thread then takes the store's own turn with nobody ahead of it. A read that waits
+    long waits; none is refused for it. Both turns are given back however the read ends (an
+    error, a cancelled request), and a caller with no read left is forgotten."""
+
+    def __init__(self) -> None:
+        self.process = Compiles(1)
+        self._lock = threading.Lock()
+        self._callers: dict[Caller, list[Any]] = {}  # caller -> [its Compiles(1), its reads]
+
+    @property
+    def n(self) -> int:
+        """Reads held at once in the process."""
+        return self.process.n
+
+    @property
+    def held(self) -> int:
+        """Reads under way now (0 or 1)."""
+        return self.process.held
+
+    @property
+    def waiting(self) -> int:
+        """Reads waiting now, in the process's line or behind their caller's own."""
+        with self._lock:
+            lines = [line for line, _ in self._callers.values()]
+        return self.process.waiting + sum(line.waiting for line in lines)
+
+    @property
+    def callers(self) -> int:
+        """Callers with a read under way or waiting."""
+        with self._lock:
+            return len(self._callers)
+
+    @contextlib.asynccontextmanager
+    async def turn(self, caller: Caller | None = None) -> AsyncIterator[None]:
+        """Hold the caller's turn and then the process's for the body of the `async with`;
+        with no caller, the process's only."""
+        if caller is None:
+            async with self.process.turn():
+                yield
+        else:
+            line = self._join(caller)
+            try:
+                async with line.turn(), self.process.turn():
+                    yield
+            finally:
+                self._leave(caller)
+
+    def _join(self, caller: Caller) -> Compiles:
+        with self._lock:
+            entry = self._callers.setdefault(caller, [Compiles(1), 0])
+            entry[1] += 1
+            return entry[0]
+
+    def _leave(self, caller: Caller) -> None:
+        with self._lock:
+            entry = self._callers[caller]
+            entry[1] -= 1
+            if entry[1] == 0:
+                del self._callers[caller]
+
+
+RELATED_READS = RelatedReads()

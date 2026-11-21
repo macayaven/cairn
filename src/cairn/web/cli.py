@@ -1,5 +1,5 @@
 """The command line: serve, key-create, key-revoke, the source commands, plan-set, usage
-and workspace-list (python -m cairn.server); export, import and compact are in
+and workspace-list (python -m cairn.server); export, import, compact and repair are in
 cairn.web.cli_data. `google-authorize` (C8), which obtains one person's Google credential for
 a Google source and opens no database, is in cairn.web.cli_google, whose docstring holds its
 contract.
@@ -121,6 +121,9 @@ cli_stats.OLDER_DATABASE, which says to start the server once. `serve --stats-ev
 (STATS_EVERY, 15; 0: off; anything that is not a number of 0 or more exits 2) logs the
 install's totals as one line on cairn.web.stats.STATS_LOGGER, written to stderr beside the
 access log, at start and then that often (create_app's `stats_every`).
+`stats --other-projects` adds the pages that cite a passage not of their own project's
+notes; `repair --db PATH` (cairn.web.cli_data) rewrites them as the upgrade to schema
+32 did, in one transaction, and prints counts only.
 
 `serve --sweep-every SECONDS` (600; 0: never; otherwise at least 1) removes, in the
 background, the rows that have run out in every workspace: sessions, invitations, OAuth codes
@@ -174,17 +177,35 @@ arranges with no model: each heading's claims together and claims that repeat fo
 no key and no budget. `serve` tidies by default (decision 76): `serve --no-tidy` runs no
 worker and loads no arranging code, and `serve --model-env` runs the model in its place.
 
-A database a newer cairn wrote (its schema version above cairn.store.SCHEMA_VERSION; the
-store raises SchemaTooNew before it reads or writes anything) stops every command with exit
-1 and one line on stderr (NEWER_DATABASE), nothing on stdout: "SchemaTooNew: the database
-has schema version <found>; this cairn knows up to <known>. Run the cairn that wrote it or a
-newer one, or restore the database from before the upgrade." The file is left as it was,
-nothing is made beside it (no key file, no export) and `serve` never starts listening.
+A database a newer cairn wrote that this one may not run on (its schema version above
+cairn.store.SCHEMA_VERSION, and the oldest build it records too; the store raises
+SchemaTooNew before it reads or writes anything) stops every command with exit 1 and one line
+on stderr (NEWER_DATABASE), nothing on stdout: "SchemaTooNew: the database has schema version
+<found> and needs a cairn of schema version <floor> or later; this cairn knows up to <known>.
+Run the cairn that wrote it or a newer one, or restore the database from before the
+upgrade." The file is left as it was, nothing is made beside it (no key file, no export) and
+`serve` never starts listening. A newer database whose oldest build is at or below
+SCHEMA_VERSION (its newer steps only added) is opened and used as any other.
 
 A database at this cairn's schema version that lacks a table of that schema (the store
 raises UnknownSchema before it writes anything) stops every command the same way, with the
 store's sentence as the line: "the database was not made by this version of cairn: it has
 schema version <version> but no table <table>".
+
+Only `serve` brings a database of an older schema to SCHEMA_VERSION, and only once it holds
+the server's lock (R1, below): its open, the store's default, comes after take_serve_lock.
+Every other command opens the store with upgrade=False, which reads the version under the
+write lock of the step that would have run and raises SchemaTooOld before anything is
+written: exit 1, one line on stderr (cli_data.OLDER_SCHEMA, which names the command and says
+to start the server once on it), nothing on stdout, nothing written (a log a killed server
+left beside the file is folded into it by SQLite as the connection closes, its rows
+unchanged). `stats` and
+`audit-verify` read with SQLite alone and refuse one in their own words. A busy database is
+SQLite's error, as before; an empty or new file is still made at this schema by the commands
+that make one. An older build's `serve` took the same lock on the same file (since the first
+public version), so a new server cannot upgrade beneath one; an older build's other
+commands take no lock, and one still open across the upgrade can still write into the
+upgraded database.
 
 A --db path the store cannot open as a cairn database (the store raises CannotOpen from
 SQLite's own refusal before it writes anything, and a folder cairn may not make for it is the
@@ -236,6 +257,7 @@ from urllib.parse import urlsplit
 import httpx
 import uvicorn
 
+from cairn import __version__
 from cairn.gate import lint_gate
 from cairn.identity import OIDC, GitHub, Google, IdentityProvider
 from cairn.memory import ACCESS_LOGGER
@@ -254,9 +276,29 @@ from cairn.sources.runner import (
     source_client,
     sync_all,
 )
-from cairn.store import JOINS, CannotOpen, SchemaTooNew, SourceInfo, Store, UnknownSchema
+from cairn.sources.url import private_addresses_allowed
+from cairn.store import (
+    JOINS,
+    SCHEMA_VERSION,
+    CannotOpen,
+    SchemaTooNew,
+    SchemaTooOld,
+    SourceInfo,
+    Store,
+    UnknownSchema,
+)
+from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
-from cairn.web import cli_arrange, cli_data, cli_google, cli_stats, google_connect
+from cairn.web import (
+    cli_arrange,
+    cli_audit_verify,
+    cli_data,
+    cli_google,
+    cli_reseal,
+    cli_stats,
+    google_connect,
+)
+from cairn.web import slack as web_slack
 from cairn.web.app import create_app
 from cairn.web.auth import SESSION_TTL
 from cairn.web.brand import make_brand
@@ -307,6 +349,7 @@ SERVE_LOCK_REFUSED = "cannot take the lock that keeps one server on {db}: {reaso
 KEEP_VERSIONS = 50
 ALL_VERSIONS = "all"  # --keep-versions all: every version
 STATS_EVERY = 15.0  # minutes between the lines `serve` logs with the install's numbers (Q1)
+GRAPH_EXPLORER_BY_DEFAULT = True  # G2: `serve` opens the explorer; --no-graph-explorer turns it off
 KEEP_VERSIONS_WITH_PLANS = (
     "--keep-versions does not go with --plans: each plan's versions_per_page says how many"
     " versions of a page it keeps"
@@ -331,9 +374,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m cairn.server",
         description="Run cairn's web service; manage its keys, sources and plans; arrange its"
-        " pages, tidied by default or with a model; export, import and compact its data.",
+        " pages, tidied by default or with a model; export, import, compact and repair its data.",
         allow_abbrev=False,  # a mistyped option fails; it is never read as a longer one
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser(
         "serve", help="run the REST API, the MCP endpoint and the UI", allow_abbrev=False
@@ -426,6 +470,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     _wall_options(serve)
     google_connect.add_options(serve)
+    web_slack.add_options(serve)
     create = commands.add_parser(
         "key-create",
         help="mint an API key into a new 0600 file",
@@ -496,6 +541,20 @@ def _parser() -> argparse.ArgumentParser:
         help=f"keep the newest N versions of each page ({KEEP_VERSIONS}; all: every version);"
         " not with --plans, where each plan says",
     )
+    serve.add_argument(  # each read an event of its workspace's audit log
+        "--audit-reads",
+        action="store_true",
+        help="record each read of a page, a note, a claim's evidence, a search and a graph"
+        " in its workspace's audit log, with who read and what (never the words searched);"
+        " each read then costs one more write",
+    )
+    serve.add_argument(
+        "--audit-keep",
+        type=_audit_keep,
+        metavar="N",
+        help=f"keep the newest N events of each workspace's audit log ({AUDIT_KEEP};"
+        " all: every event)",
+    )
     serve.add_argument(  # Q1: the install's numbers, a line in the log
         "--stats-every",
         type=_stats_minutes,
@@ -526,11 +585,18 @@ def _parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="name of the runtime environment variable holding the read-only documentation key",
     )
-    serve.add_argument(  # G2
+    graph_explorer = serve.add_mutually_exclusive_group()
+    graph_explorer.add_argument(  # G2
         "--graph-explorer",
         action="store_true",
         help="make a project's graph page the explorer, the one page that loads a script"
-        " (cairn's own, by a nonce and its hash); off: the graph page runs no script",
+        " (cairn's own, by a nonce and its hash); the default",
+    )
+    graph_explorer.add_argument(
+        "--no-graph-explorer",
+        action="store_true",
+        help="draw a project's graph page on the server alone with no script; serve shows"
+        " the explorer unless this is given",
     )
     cli_arrange.add_options(serve)
     _source_parsers(commands)
@@ -539,8 +605,10 @@ def _parser() -> argparse.ArgumentParser:
     _plan_parsers(commands)
     _waiting_parser(commands)
     cli_stats.add_command(commands)  # Q1
+    cli_audit_verify.add_command(commands)  # reads only, as stats
     cli_arrange.add_commands(commands)
     cli_google.add_command(commands)
+    cli_reseal.add_command(commands)
     connector_check.add_command(commands)
     return parser
 
@@ -581,6 +649,20 @@ def _wall_options(serve: argparse.ArgumentParser) -> None:
         " name when not given)",
     )
     serve.add_argument(
+        "--idle-minutes",
+        type=_idle_minutes,
+        metavar="N",
+        help="with --sign-in: a sign-in not used for N minutes (1 to 1440) ends, up to a minute"
+        " late, whatever its length; without it, use is not recorded and nothing ends for it",
+    )
+    serve.add_argument(
+        "--require-mfa",
+        action="store_true",
+        help="with --sign-in through oidc only: a sign-in is refused unless the provider's ID"
+        " token shows a second factor (amr holding mfa, or a multi-factor acr); github and"
+        " google do not say, so serve refuses to start with them",
+    )
+    serve.add_argument(
         "--session-days",
         type=_days,
         metavar="N",
@@ -589,6 +671,16 @@ def _wall_options(serve: argparse.ArgumentParser) -> None:
         " without it, 12 hours and no renewal. At start, a sign-in made under a longer length"
         " is cut to end at most this length from then",
     )
+
+
+def _idle_minutes(text: str) -> int:
+    try:
+        minutes = int(text)
+    except ValueError:
+        minutes = 0
+    if not 1 <= minutes <= 1440:
+        raise argparse.ArgumentTypeError("a whole number of minutes from 1 to 1440")
+    return minutes
 
 
 def _days(text: str) -> int:
@@ -609,6 +701,8 @@ def _would_do_nothing(args: argparse.Namespace) -> str | None:
             ("--test-instance", args.test_instance),
             ("--brand-name", args.brand_name is not None),
             ("--session-days", args.session_days is not None),
+            ("--require-mfa", args.require_mfa),
+            ("--idle-minutes", args.idle_minutes is not None),
         ):
             if given:
                 return f"{option} needs --sign-in: without it nobody signs in through a provider"
@@ -679,7 +773,7 @@ def _waiting(db: Path, workspace: str | None, as_json: bool) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         notes = store.waiting_notes()
         if workspace is not None:
@@ -726,7 +820,7 @@ def _plan_command(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"no database at {args.db}", file=sys.stderr)
         return 1
-    store = Store(args.db)
+    store = Store(args.db, upgrade=False)
     try:
         if args.command == "workspace-list":
             rows = [
@@ -1010,7 +1104,7 @@ def _workspace(args: argparse.Namespace) -> Store:
     there is no database or no such workspace."""
     if not args.db.is_file():
         raise KeyError(f"no database at {args.db}")
-    store = Store(args.db)
+    store = Store(args.db, upgrade=False)
     if args.workspace is None:
         return store
     try:
@@ -1274,7 +1368,7 @@ def _open_store(db: Path) -> Store:
     folder made 0700 and the file 0600 before SQLite opens it (H1)."""
     cli_data.make_folder(db)
     cli_data.make_database(db)
-    return Store(db)
+    return Store(db, upgrade=False)
 
 
 # H1: what a key made on the command line can do, said by the help of key-create and key-list.
@@ -1374,7 +1468,7 @@ def _key_list(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         projects, sets = store.list_projects(), store.list_sets()
         names = {project.id: project.name for project in projects} | {s.id: s.name for s in sets}
@@ -1417,7 +1511,7 @@ def _session_end(db: Path, email: str) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         ended = sum(store.end_person_sessions(email).values())
     finally:
@@ -1436,7 +1530,7 @@ def _key_revoke(db: Path, label: str, with_made: bool = False) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = Store(db, upgrade=False)
     try:
         made = store.made_by(label)
         revoked = store.revoke_key(label, with_made=with_made)
@@ -1586,18 +1680,21 @@ def _sign_in(args: argparse.Namespace, environ: Mapping[str, str]) -> SignIn | N
         join=args.join,
         allowed_email_domains=args.domains,
         allowed_emails=emails,
+        require_mfa=args.require_mfa,
     )
 
 
 @contextlib.contextmanager
 def _access_log_on_stderr() -> Iterator[None]:
-    """The access log on stderr, one line per call, and the line with the install's numbers
-    (Q1; cairn.web.stats.STATS_LOGGER), while the server runs; each logger is put back as it
-    was afterwards. Neither propagates: the MCP SDK configures the root logger, and its
+    """The access log on stderr, one line per call, the line with the install's numbers
+    (Q1; cairn.web.stats.STATS_LOGGER), and each audit event as it is stored (AUDIT_LOGGER,
+    "cairn.audit: {...}", one JSON object), while the server runs; each logger is put back
+    as it was afterwards. None propagates: the MCP SDK configures the root logger, and its
     handler would print each record a second time."""
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
-    loggers = [logging.getLogger(name) for name in (ACCESS_LOGGER, STATS_LOGGER)]  # Q1
+    names = (ACCESS_LOGGER, STATS_LOGGER, AUDIT_LOGGER)  # Q1; the audit trail's copy
+    loggers = [logging.getLogger(name) for name in names]
     kept = [(logger.level, logger.propagate) for logger in loggers]
     for logger in loggers:
         logger.addHandler(handler)
@@ -1610,6 +1707,27 @@ def _access_log_on_stderr() -> Iterator[None]:
             logger.removeHandler(handler)
             logger.propagate = propagate
             logger.setLevel(level)  # through setLevel, which clears logging's level cache
+
+
+@contextlib.contextmanager
+def _audit_lines_on_stderr() -> Iterator[None]:
+    """For every command but `serve`: each audit event it stores is one line on stderr,
+    "cairn.audit: {...}", as `serve` writes it (_access_log_on_stderr), once the event's write
+    has committed, so an operator who keeps the commands' output keeps those lines too.
+    stdout, which scripts read, is unchanged. The logger is put back afterwards."""
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    logger = logging.getLogger(AUDIT_LOGGER)
+    level, propagate = logger.level, logger.propagate
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = propagate
+        logger.setLevel(level)  # through setLevel, which clears logging's level cache
 
 
 @contextlib.contextmanager
@@ -1654,6 +1772,15 @@ def _at_least_one(text: str) -> int:
 
 def _keep_versions(text: str) -> int | str:
     """`serve --keep-versions`: a whole number of at least 1, or "all" (ALL_VERSIONS)."""
+    if text == ALL_VERSIONS:
+        return ALL_VERSIONS
+    if not re.fullmatch(r"[0-9]+", text) or int(text) < 1:
+        raise argparse.ArgumentTypeError("a whole number, 1 or more, or all")
+    return int(text)
+
+
+def _audit_keep(text: str) -> int | str:
+    """`serve --audit-keep`: a whole number of at least 1, or "all" (ALL_VERSIONS's word)."""
     if text == ALL_VERSIONS:
         return ALL_VERSIONS
     if not re.fullmatch(r"[0-9]+", text) or int(text) < 1:
@@ -1725,6 +1852,33 @@ def clear_text(host: str, public_url: str | None) -> str | None:
     return CLEAR_TEXT.format(host=host)
 
 
+# What `serve` says at start, one line each on stderr, without stopping.
+NO_TRUSTED_PROXY = (
+    "serve answers at an https public URL with no --trusted-proxy: every caller reaches it"
+    " from the proxy in front, so all callers share one count in the per-client limits"
+    " (sign-ins, agent registrations, refused keys); name that proxy with --trusted-proxy"
+)
+NO_OPERATOR_NOTES = (
+    "serve has no --operator-notes: the privacy guide shows people no operator, no country"
+    " where the data is kept and no contact; write them in a file and pass --operator-notes"
+)
+
+
+def no_trusted_proxy(public_url: str | None, proxies: list[str]) -> str | None:
+    """NO_TRUSTED_PROXY when `public_url` is https and no proxy is trusted; None otherwise."""
+    if (public_url or "").lower().startswith("https://") and not proxies:
+        return NO_TRUSTED_PROXY
+    return None
+
+
+def no_operator_notes(sign_in: bool, public_url: str | None, notes: str | None) -> str | None:
+    """NO_OPERATOR_NOTES when people sign in or the server has a public URL, and no operator
+    notes were given; None otherwise."""
+    if (sign_in or public_url) and notes is None:
+        return NO_OPERATOR_NOTES
+    return None
+
+
 def _serve(args: argparse.Namespace) -> int:
     if (said := cli_arrange.refused(args)) is not None:  # before anything is opened
         print(said, file=sys.stderr)
@@ -1740,15 +1894,23 @@ def _serve(args: argparse.Namespace) -> int:
     except ValueError as error:
         print(google_connect.REFUSED.format(error), file=sys.stderr)
         return 2
+    try:  # K1: read before anything is opened; names an option or the variable, never a value
+        slack = web_slack.serve_switch(args, os.environ)
+    except ValueError as error:
+        print(web_slack.REFUSED.format(error), file=sys.stderr)
+        return 2
     try:  # the logo is read here, once, before anything is opened
         brand = make_brand(args.brand_name, args.brand_logo, args.brand_logo_alt)
     except ValueError as error:  # names the option, never the file's path
         print(f"cannot use that brand: {error}", file=sys.stderr)
         return 2
-    send = False  # <PREFIX>_SOURCE_NOTES, read with a model only, before anything is opened
+    # <PREFIX>_SOURCE_NOTES, _SLACK_NOTES and _UNDECIDED_PROJECTS, with a model only
+    send = slack_send = opt_in = False
     if args.model_env is not None:
         try:
             send = cli_arrange.sends_source_notes(args.model_env)
+            slack_send = cli_arrange.sends_slack_notes(args.model_env)
+            opt_in = cli_arrange.opts_in(args.model_env)
         except ValueError as error:  # names the setting, never its value
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2
@@ -1788,13 +1950,20 @@ def _serve(args: argparse.Namespace) -> int:
         return 2
     try:
         cli_data.make_database(args.db)  # 0600 before SQLite opens it (H1)
-        store = Store(args.db)
+        store = Store(args.db)  # the one open that upgrades: the lock above is held
     except BaseException:
         lock.release()
         raise
     try:
         try:
-            arranger = cli_arrange.serve_arranger(args, store, plans, send_source_notes=send)
+            arranger = cli_arrange.serve_arranger(
+                args,
+                store,
+                plans,
+                send_source_notes=send,
+                send_slack_notes=slack_send,
+                opt_in=opt_in,
+            )
         except ValueError as error:  # a cairn.llm.LLMConfigError names the setting only
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2
@@ -1822,12 +1991,18 @@ def _serve(args: argparse.Namespace) -> int:
                 brand_logo=brand.logo if brand else None,
                 brand_logo_alt=args.brand_logo_alt,
                 session_days=args.session_days,
+                idle_minutes=args.idle_minutes,
                 file_every=FILE_EVERY,  # N1: the notes waiting for their page are filed
                 compiles=args.compiles,  # G1: notes compiled at once
                 keep_versions=_kept(args, plans),  # Q1: a page's history bound
                 stats_every=args.stats_every or None,  # Q1: the line with the numbers
                 google_connect=google,  # a Google account connected in the browser, or off
-                graph_explorer=args.graph_explorer,  # G2: the graph page you can explore
+                slack=slack,  # K1: Slack, both ways, or off
+                # G2: serve shows the graph explorer unless --no-graph-explorer turns it off
+                graph_explorer=args.graph_explorer
+                or (GRAPH_EXPLORER_BY_DEFAULT and not args.no_graph_explorer),
+                audit_reads=args.audit_reads,  # each read an event of its workspace
+                audit_keep=_audit_kept(args),  # how many events each workspace keeps
             )
         except ValueError as error:
             print(f"cannot sign in that way: {error}", file=sys.stderr)
@@ -1839,9 +2014,13 @@ def _serve(args: argparse.Namespace) -> int:
         # carry a client's `state` and the sealed authorization request there. Proxy headers
         # are read only from --trusted-proxy peers, and the list is always given, so neither
         # uvicorn's default (127.0.0.1) nor FORWARDED_ALLOW_IPS in the environment applies.
-        if (says := cli_arrange.serve_says(args, arranger, send)) is not None:
+        if (says := cli_arrange.serve_says(args, arranger, send, opt_in)) is not None:
             print(says, file=sys.stderr, flush=True)  # what the model is sent, at a glance
         if (says := clear_text(args.host, args.public_url)) is not None:  # H1
+            print(says, file=sys.stderr, flush=True)
+        if (says := no_trusted_proxy(args.public_url, proxies)) is not None:
+            print(says, file=sys.stderr, flush=True)
+        if (says := no_operator_notes(sign_in is not None, args.public_url, notes)) is not None:
             print(says, file=sys.stderr, flush=True)
         if (says := _history_at_start(store, plans, _kept(args, plans))) is not None:  # Q1
             print(says, file=sys.stderr, flush=True)
@@ -1858,6 +2037,14 @@ def _serve(args: argparse.Namespace) -> int:
         store.close()
         lock.release()
     return 0
+
+
+def _audit_kept(args: argparse.Namespace) -> int | None:
+    """How many events of its audit log each workspace keeps: AUDIT_KEEP unless
+    `--audit-keep` says; None for `--audit-keep all` (every event)."""
+    if args.audit_keep == ALL_VERSIONS:
+        return None
+    return AUDIT_KEEP if args.audit_keep is None else args.audit_keep
 
 
 def _kept(args: argparse.Namespace, plans: Plans | None) -> int | None:
@@ -1890,6 +2077,15 @@ def _history_at_start(store: Store, plans: Plans | None, keep: int | None) -> st
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command in (
+        "serve", "source-add", "source-sync", "source-preview", "credential-add",
+        connector_check.COMMAND, cli_google.COMMAND,
+    ):  # fmt: skip
+        try:
+            private_addresses_allowed(os.environ)
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 2
     if args.command == "serve":
         docs = (args.docs_artifact, args.docs_release, args.docs_reader_env)
         if any(value is not None for value in docs):
@@ -1917,9 +2113,17 @@ def main(argv: list[str] | None = None) -> int:
     if (said := cli_data.readable(db)) is not None:  # the command goes on
         print(said, file=sys.stderr, flush=True)
     try:
-        return _run(args)
+        if args.command == "serve":  # serve puts the line on stderr with its access log
+            return _run(args)
+        with _audit_lines_on_stderr():
+            return _run(args)
     except SchemaTooNew as error:  # raised by Store(...) before it reads or writes anything
         print(NEWER_DATABASE.format(refusal=error), file=sys.stderr)
+        return 1
+    except SchemaTooOld as error:  # raised by Store(..., upgrade=False) before it writes
+        found, known = error.found, SCHEMA_VERSION
+        older = cli_data.OLDER_SCHEMA
+        print(older.format(db=db, found=found, known=known, command=args.command), file=sys.stderr)
         return 1
     except UnknownSchema as error:  # raised by Store(...) before it writes anything
         print(error, file=sys.stderr)
@@ -1962,6 +2166,8 @@ def _run(args: argparse.Namespace) -> int:
         return _waiting(args.db, args.workspace, args.json)
     if args.command == cli_stats.COMMAND:  # Q1: reads only
         return cli_stats.run(args)
+    if args.command == cli_audit_verify.COMMAND:  # reads only, as stats
+        return cli_audit_verify.run(args)
     if args.command == "key-revoke":
         return _key_revoke(args.db, args.label, args.with_made)
     if args.command == "session-end":
@@ -1978,6 +2184,8 @@ def _run(args: argparse.Namespace) -> int:
         return cli_arrange.run(args)
     if args.command == cli_google.COMMAND:
         return cli_google.run(args)
+    if args.command == cli_reseal.COMMAND:
+        return cli_reseal.run(args)
     if args.command == connector_check.COMMAND:
         return connector_check.run(args)
     return _serve(args)

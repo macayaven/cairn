@@ -99,6 +99,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+import cairn.sources.runner
 from cairn.server import main
 from cairn.sources import KINDS, SourceError, run_source
 from cairn.store import Store
@@ -1294,9 +1295,18 @@ def test_the_command_line_adds_switches_on_and_syncs_without_showing_the_key(
     routed = httpx.MockTransport(fake.handler)
 
     async def through_the_stand_in(self, request):  # every request cairn sends, offline
+        assert request.url.host == "192.0.0.9"
+        # The stand-in routes on the original endpoint, just as a server uses Host.
+        request.url = request.url.copy_with(host=request.extensions["sni_hostname"])
         return await routed.handle_async_request(request)
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", through_the_stand_in)
+
+    async def a_public_address(host: str, port: int) -> list[str]:  # no lookup leaves the test
+        return ["192.0.0.9"]
+
+    # The command line's client resolves each name before a request (cairn.sources.url)
+    monkeypatch.setattr(cairn.sources.runner, "system_resolve", a_public_address)
     said: list[str] = []
 
     def cli(*argv: str) -> int:

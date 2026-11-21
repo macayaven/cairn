@@ -345,10 +345,10 @@ class SourceMethods(StoreBase):
             if new_project is not None:
                 if not decides:  # before the name is looked at: it tells nothing of others
                     raise PermissionError(OWNER_DECIDES)
-                if self._project_named(con, new_project) is not None:  # type: ignore[attr-defined]
+                if self._project_named(con, new_project) is not None:
                     raise NameTaken(new_project)
-                self._admit_projects(con, 1)  # type: ignore[attr-defined]  # OverLimit
-                self._insert_project(con, new_project, "", GENERAL, "none")  # type: ignore[attr-defined]
+                self._admit_projects(con, 1)  # OverLimit
+                self._insert_project(con, new_project, "", GENERAL, "none")
             if own:
                 self._require_managed(con, checked["projects"])
             if not decides and projects is None:  # its own projects, which the caller did not name
@@ -781,12 +781,12 @@ class SourceMethods(StoreBase):
         if new_project is not None:
             if not own and not self._decides_destinations(con):
                 raise PermissionError(OWNER_DECIDES)
-            if self._project_named(con, new_project) is not None:  # type: ignore[attr-defined]
+            if self._project_named(con, new_project) is not None:
                 raise NameTaken(new_project)
-            self._admit_projects(con, 1)  # type: ignore[attr-defined]  # OverLimit
+            self._admit_projects(con, 1)  # OverLimit
             if not make:  # its maker writes into it: nothing more to check
                 return held, kind, checked
-            self._insert_project(con, new_project, "", GENERAL, "none")  # type: ignore[attr-defined]
+            self._insert_project(con, new_project, "", GENERAL, "none")
         elif own:
             self._require_managed(con, checked["projects"])
         self._require_writable(con, checked["projects"])  # as enable_source: first
@@ -1315,7 +1315,7 @@ class SourceMethods(StoreBase):
             ).fetchone()
             if found is None or (reach is not None and found[0] not in reach):
                 raise ValueError(f"this workspace has no project named {project!r}")
-            if self._level(con, found[0]) != "write":  # type: ignore[attr-defined]
+            if self._level(con, found[0]) != "write":
                 raise PermissionError(READ_ONLY_PROJECT)  # a source writes there
 
     def _find_any(self, con: sqlite3.Connection, name: str) -> tuple | None:

@@ -56,7 +56,12 @@ EXPORT_SAYS = (
 EXPORT_OLD = (
     "A file exported before cairn carried that choice does not say it, and the import says so:"
     " each of its projects starts at **Models** as a new one of its kind does, so a project of"
-    " Personal notes is at never and the others at allowed."
+    " Personal notes is at never and the others not decided."
+)
+# Privacy 4: an archive says which projects' people chose allowed; one from before does not.
+EXPORT_ALLOWED = (
+    "A project whose people chose allowed arrives at allowed, and a file exported before cairn"
+    " said so brings none there: each of its projects not at never arrives not decided."
 )
 RUN_SAYS = (
     "Each arrives at **Models** where the file says, and a project of Personal notes at never"
@@ -65,7 +70,7 @@ RUN_SAYS = (
 RUN_OLD = (
     "A file exported before cairn carried that choice does not say it, and the import says so:"
     " each then starts at **Models** as a new project of its kind does, a project of Personal"
-    " notes at never, the others at allowed."
+    " notes at never, the others not decided."
 )
 
 
@@ -144,13 +149,13 @@ def check_names_the_private_kinds(sentence: str) -> None:
 
 def check_an_import_starts_as_a_new_project(sentence: str) -> None:
     """After an import, each project is at what a new one of its kind starts at: the private
-    kinds, named, at never; the others at allowed."""
+    kinds, named, at never; the others not decided (Privacy 4)."""
     assert SWITCH in sentence and "as a new" in sentence, sentence
     check_names_the_private_kinds(sentence)
     for kind in KINDS.values():
         if kind.private:
             assert re.search(rf"{kind.title} (is )?at {MODELS[1]}", sentence), kind.id
-    assert re.search(rf"others? at {MODELS[0]}", sentence), sentence
+    assert re.search(r"others? not decided", sentence), sentence
 
 
 def check_an_import_brings_the_choice(sentence: str) -> None:
@@ -355,6 +360,47 @@ def test_privacy_md_says_an_import_brings_the_models_choice(tmp_path):
     assert old == EXPORT_OLD
     check_an_import_starts_as_a_new_project(old)
     check_import_brings_the_choice(tmp_path)
+    allowed = sentence_with(export_part(), "chose allowed arrives")
+    assert allowed == EXPORT_ALLOWED
+    check_an_import_brings_allowed_only_when_the_file_says(tmp_path)
+
+
+def check_an_import_brings_allowed_only_when_the_file_says(tmp_path) -> None:
+    """A project its people set to allowed arrives at allowed; with the archive's
+    `models_decided` taken out (a file from before), it arrives not decided."""
+    for said in (True, False):
+        source = Store(tmp_path / f"allowed-{said}.db")
+        target = Store(tmp_path / f"allowed-into-{said}.db")
+        try:
+            project = source.create_project("chosen")
+            source.set_project_models(project.id, "allowed")
+            out = io.BytesIO()
+            source.export(out)
+            archive = out.getvalue()
+            if not said:
+                archive = _without_decided(archive)
+            target.import_export(io.BytesIO(archive))
+            brought = target.get_project("chosen")
+            expected = {brought.id: "allowed"} if said else {}
+            assert target.models_choices([brought.id]) == expected, said
+        finally:
+            source.close()
+            target.close()
+
+
+def _without_decided(archive: bytes) -> bytes:
+    source = zipfile.ZipFile(io.BytesIO(archive))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as written:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename == "export.json":
+                manifest = json.loads(data)
+                for project in manifest["projects"]:
+                    project.pop("models_decided")
+                data = json.dumps(manifest).encode()
+            written.writestr(info, data)
+    return out.getvalue()
 
 
 def test_run_md_says_an_imported_project_arrives_where_the_file_says(tmp_path):
@@ -365,6 +411,9 @@ def test_run_md_says_an_imported_project_arrives_where_the_file_says(tmp_path):
     assert old == RUN_OLD
     check_an_import_starts_as_a_new_project(old)
     check_import_brings_the_choice(tmp_path)
+    allowed = sentence_with(run_import_part(), "chose allowed arrives")
+    assert allowed == EXPORT_ALLOWED
+    check_an_import_brings_allowed_only_when_the_file_says(tmp_path)
 
 
 # sources.md: the clause below the table of forms
@@ -509,7 +558,7 @@ def test_the_checks_see_a_doctored_guide():
     with pytest.raises(AssertionError):
         check_an_import_starts_as_a_new_project(EXPORT_OLD.replace("is at never", "is at allowed"))
     with pytest.raises(AssertionError):
-        check_an_import_starts_as_a_new_project(RUN_OLD.replace("others at allowed", "others"))
+        check_an_import_starts_as_a_new_project(RUN_OLD.replace("others not decided", "others"))
     with pytest.raises(AssertionError):
         check_an_import_brings_the_choice(EXPORT_SAYS.replace(" whatever the file says", ""))
     with pytest.raises(AssertionError):

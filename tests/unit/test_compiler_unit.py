@@ -78,10 +78,12 @@ def test_body_adds_a_heading_where_the_heading_path_changes():
     assert body == "# T\n\nintro\n\n## A\n\na one\n\na two\n\n## B\n\nb one\n"
 
 
-def test_body_heads_the_first_claim_unless_its_section_is_the_title():
+def test_body_heads_the_first_claim_with_its_whole_path_less_a_leading_title():
     s = span("sp_1", ("Doc", "Setup"), "x")
-    assert render_body("Other", [claim(s)], {s.id: s}) == "# Other\n\n## Setup\n\nx\n"
-    assert render_body("Setup", [claim(s)], {s.id: s}) == "# Setup\n\nx\n"
+    assert render_body("Other", [claim(s)], {s.id: s}) == "# Other\n\n## Doc\n\n### Setup\n\nx\n"
+    assert render_body("Doc", [claim(s)], {s.id: s}) == "# Doc\n\n## Setup\n\nx\n"
+    t = span("sp_2", ("Setup",), "y")
+    assert render_body("Setup", [claim(t)], {t.id: t}) == "# Setup\n\ny\n"
 
 
 def test_body_tolerates_claims_without_known_spans_or_headings():
@@ -95,8 +97,9 @@ def test_body_tolerates_claims_without_known_spans_or_headings():
 
 
 def test_gate_passes_a_grounded_page_and_counts_distinct_cited_spans():
-    one, two = span("sp_1", ("T",), "one"), span("sp_2", ("T",), "two")
-    claims = [claim(one), Claim(id="cl_both", text="two", span_ids=(one.id, two.id))]
+    one = span("sp_0000000000000001", ("T",), "one")
+    two = span("sp_0000000000000002", ("T",), "two")
+    claims = [claim(one), Claim(id="cl_00000000000000b0", text="two", span_ids=(one.id, two.id))]
     result = provenance_gate(page_of(claims), {s.id: s for s in (one, two)})
     assert (result.passed, result.violations) == (True, [])
     assert result.metrics == {"claims": 2, "spans_cited": 2}
@@ -115,16 +118,22 @@ def test_gate_names_each_violation_by_code_and_claim():
         ["provenance.missing_passages", "cl_none"],
         ["provenance.unknown_passage", "cl_unknown"],
         ["provenance.claim_not_in_body", "cl_absent"],
+        ["provenance.unclaimed_line", "-"],  # the body is not what render_body writes of them
     ]
     assert "sp_missing" in result.violations[1]
     assert result.metrics == {"claims": 3, "spans_cited": 2}
 
 
-def test_gate_compares_claim_and_body_with_whitespace_collapsed():
+def test_gate_finds_the_claim_in_the_body_as_it_is_written():
+    """CORE5: the claim's text, as it is; its words with white space collapsed are not it."""
     wrapped = span("sp_1", ("T",), "a\n  b")
     spans = {wrapped.id: wrapped}
-    assert provenance_gate(page_of([claim(wrapped)], body="# T\n\na b\n"), spans).passed
-    assert not provenance_gate(page_of([claim(wrapped)], body="# T\n\nab\n"), spans).passed
+    written = provenance_gate(page_of([claim(wrapped)], body="# T\n\na\n  b\n"), spans)
+    collapsed = provenance_gate(page_of([claim(wrapped)], body="# T\n\na b\n"), spans)
+    assert not any("claim_not_in_body" in v for v in written.violations)
+    assert any("claim_not_in_body" in v for v in collapsed.violations)
+    # Not the body render_body writes, so the reverse check refuses it too.
+    assert not collapsed.passed
 
 
 def test_candidate_for_a_new_page_cites_each_new_span_once():

@@ -242,7 +242,7 @@ cmd_wait() {
         if [ "$healthy" = yes ] && [ "$running" = "$proven" ]; then
           fail "the VM rolled back: $digest failed its health check, or was skipped because it failed before (to retry it, remove /mnt/disks/data/deploy/failed-image on the VM), and the VM runs the earlier image $proven, healthy. The tag still names the failed digest. Status: $line"
         fi
-        fail "the VM rolled back from $digest and nothing healthy runs now. If $digest migrated the database, the earlier image refuses it (SchemaTooNew) and the way back is a restore (infra/gcp/README.md, \"Rollback\"). Status: $line"
+        fail "the VM rolled back from $digest and nothing healthy runs now. If $digest changed the schema past what the earlier image runs on, the earlier image refuses it (SchemaTooNew, naming both versions) and the way back is a restore (infra/gcp/README.md, \"Rollback\"). Status: $line"
       elif [ "$(field "$line" hold)" = yes ]; then
         fail "deployments are on hold on the VM (host.sh hold), so it will not deploy $digest. Release the hold there (infra/gcp/README.md, \"Rollback\") and re-run this job. Status: $line"
       elif [ "$pending" = "$digest" ]; then

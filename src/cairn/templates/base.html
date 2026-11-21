@@ -1,4 +1,5 @@
 <!doctype html>
+{% from "_components.html" import crumbs %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -19,6 +20,7 @@
 {% block head %}{% endblock %}
 </head>
 <body class="{% block page_class %}app{% endblock %}">
+<a class="skip-link" href="#main">Skip to the main content</a>
 <header class="masthead">
   {% if brand %}
   <a class="wordmark{% if brand.logo %} has-logo{% endif %}" href="/">{% if brand.logo %}<span class="plate"><img src="{{ brand.logo.path }}" alt=""></span>{% endif %}<span class="name">{{ brand.name }}</span></a>
@@ -47,9 +49,9 @@
   {% endif %}
   {% endblock %}
 </header>
-<main>
+<main id="main" tabindex="-1">
 {% if signed_in and section() == "/workspace" and path() != "/workspace" %}
-<p class="meta"><a href="/workspace">Workspace</a> /</p>
+{{ crumbs((("/workspace", "Workspace"),)) }}
 {% endif %}
 {% block main %}{% endblock %}
 </main>

@@ -14,6 +14,7 @@ from cairn import server
 from cairn.identity import OIDC, GitHub
 from cairn.server import SignIn, create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ADA = "ada@example.test"
@@ -184,5 +185,5 @@ def test_a_providers_groups_and_the_list_both_apply(store, email, groups, status
         sent["nonce"] = asked["nonce"]
         r = client.get(f"/auth/sso/callback?code=c&state={asked['state']}", follow_redirects=False)
     assert r.status_code == status
-    assert ("cairn_session" in client.cookies) is (status == 200)
+    assert (session_cookie("https") in client.cookies) is (status == 200)
     assert email not in r.text

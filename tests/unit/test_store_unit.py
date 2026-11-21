@@ -1186,7 +1186,7 @@ def test_indexes_delete_securely_when_this_sqlite_can(db):
 
 
 def test_an_sqlite_without_fts5_secure_delete_still_indexes_and_migrates(db, monkeypatch):
-    monkeypatch.setattr(cairn.store.schema, "_FTS5_SECURE_DELETE", False)
+    monkeypatch.setattr(cairn.store.schema.shared, "_FTS5_SECURE_DELETE", False)
     v0_database(db)
     s = Store(db)
     try:
@@ -2793,7 +2793,7 @@ def test_a_version_11_database_opens_with_an_empty_subscriptions_table_and_every
         after = before_step_24(before_step_22(statements(db)))
         assert all(line in after for line in kept_rows(kept_at_17(v11["statements"])))
         assert s.plan_in_force(V2_ADA) == "solo"  # the operator's, as before
-        assert rows(db, "SELECT COUNT(*) FROM subscriptions") == [(0,)]
+        assert "subscriptions" not in tables(db)  # step 12 made it empty; step 31 dropped it
     finally:
         s.close()
 
@@ -2850,14 +2850,21 @@ def subscribed_database(db: Path) -> dict[str, Any]:
 
 
 def test_a_database_before_subscription_times_opens_with_its_subscription_kept(db):
+    """The step keeps the subscription (run alone, as the version after it left it); opening
+    the database runs every step after it too, and step 31 drops the table with the row."""
     before = subscribed_database(db)
+    with connect(db) as con:
+        con.execute("BEGIN")
+        cairn.store.schema._MIGRATIONS[cairn.store.schema._SUBSCRIPTION_TIMES](con)
+        assert con.execute(
+            "SELECT account_id, plan, status, started, past_due_since FROM subscriptions"
+        ).fetchall() == [(V2_ADA, "team", "past_due", None, None)]
+        con.rollback()
     s = Store(db, clock=lambda: datetime(2026, 11, 12, tzinfo=UTC))
     try:
         assert user_version(db) == SCHEMA_VERSION > before["version"]
-        assert rows(
-            db, "SELECT account_id, plan, status, started, past_due_since FROM subscriptions"
-        ) == [(V2_ADA, "team", "past_due", None, None)]
-        assert s.plan_in_force(V2_ADA) == "solo"  # the operator's: nothing reads the row
+        assert "subscriptions" not in tables(db)
+        assert s.plan_in_force(V2_ADA) == "solo"  # the operator's: nothing read the row
     finally:
         s.close()
 
@@ -3583,12 +3590,57 @@ def test_a_failed_step_to_the_source_switch_leaves_the_version_20_database_as_it
 V21_SESSION = hashlib.sha256(b"token-v21").hexdigest()
 
 
+_WITH_CHAIN = re.compile(r",'[0-9a-f]{64}'\);$")  # an audit event's chain, its last column
+
+
+def before_step_31(lines: list[str]) -> list[str]:
+    """Statements of a database migrated past step 31, as step 30 left them: step 31 rebuilds
+    audit_events with each event's chain (its last column), adds oldest_build with its row,
+    and drops the tables billing kept (put back here as step 30 left them, empty: no database
+    here holds rows in them by then; the tests of steps 11 to 13 run those steps alone).
+    Anything else step 31 changed stays, and fails the comparison."""
+    schema = cairn.store.schema
+    out = []
+    for line in lines:
+        if line.startswith('INSERT INTO "audit_events"'):
+            assert _WITH_CHAIN.search(line), line
+            line = _WITH_CHAIN.sub(");", line)
+        elif line == schema._V31_AUDIT_EVENTS + ";":
+            line = schema._V7_AUDIT_EVENTS + ";"
+        elif line == schema._V31_OLDEST_BUILD + ";" or line.startswith(
+            'INSERT INTO "oldest_build"'
+        ):
+            continue
+        out.append(line)
+    retired = (
+        schema._V13_SUBSCRIPTIONS,
+        schema._V12_BILLING_MESSAGES,
+        schema._V12_BILLING_MESSAGES_BY_ACCOUNT,
+        schema._V27_CHECKOUTS,
+    )
+    return out + [statement + ";" for statement in retired if statement + ";" not in out]
+
+
+def before_step_30(lines: list[str]) -> list[str]:
+    """Statements of a database migrated past step 30, as step 29 left them: step 30 gives
+    each session its last use (its last column), NULL on every session that existed. Every
+    database here that is past step 30 is past step 31 too, whose change goes first."""
+    out = []
+    for line in before_step_31(lines):
+        if line.startswith('INSERT INTO "sessions"'):
+            assert line.endswith(",NULL);"), line
+            line = line.removesuffix(",NULL);") + ");"
+        out.append(line)
+    return out
+
+
 def before_step_22(lines: list[str]) -> list[str]:
     """Statements of a database migrated past step 22, as step 21 left them: step 22 gives
     each session a vouched address (its last column), NULL on every session that existed.
-    Anything else step 22 changed stays, and fails the comparison."""
+    Anything else step 22 changed stays, and fails the comparison. Every database here that
+    is past step 22 is past step 30 too, whose column comes last: it goes first."""
     out = []
-    for line in lines:
+    for line in before_step_30(lines):
         if line.startswith('INSERT INTO "sessions"'):
             assert line.endswith(",NULL);"), line
             line = line.removesuffix(",NULL);") + ");"
@@ -3646,7 +3698,8 @@ def test_a_version_21_database_keeps_every_session_with_no_vouched_address(db):
     s = Store(db, clock=lambda: datetime(2026, 12, 1, tzinfo=UTC))
     try:
         assert user_version(db) == SCHEMA_VERSION > cairn.store.schema._VOUCHED_EMAIL == 22
-        assert rows(db, "SELECT * FROM sessions ORDER BY rowid") == [(*r, None) for r in held]
+        # step 22's vouched address, then step 30's last use: NULL on each
+        assert rows(db, "SELECT * FROM sessions ORDER BY rowid") == [(*r, None, None) for r in held]
         inserted = [line for line in v21["statements"] if line.startswith("INSERT")]
         after = [
             line
@@ -3996,14 +4049,16 @@ def test_a_busy_begin_is_a_busy_error_and_the_store_goes_on(store, db):
 
 
 def test_a_transaction_left_open_is_rolled_back_by_the_next_call(store, alpha):
-    """Something began a transaction on the connection and left it: the next call's BEGIN
-    fails, its handler rolls the leftover back, and the call after it works."""
+    """Something began a transaction on the writer and left it: the next call that uses the
+    writer (a write: reads have connections of their own) fails at its BEGIN, its handler
+    rolls the leftover back, and the call after it works."""
     store._con.execute("BEGIN")
     store._con.execute("DELETE FROM projects")
     with pytest.raises(sqlite3.OperationalError):
-        store.list_projects()
+        store.create_project("beta")
     assert store._con.in_transaction is False
     assert [b.name for b in store.list_projects()] == ["alpha"]
+    assert store.create_project("beta").name == "beta"
 
 
 def test_a_view_made_before_the_store_broke_is_unusable_too(store):
@@ -4112,12 +4167,14 @@ def test_a_read_is_never_turned_into_cannot_write(store):
                 raise self.error
             return self._real.execute(sql, *args)
 
-    real = store._con
-    store._con = ReadFails(real, error)
+    readers = store._state.readers  # reads run on the store's read-only connections
+    real = readers.take(store._state.observers)
+    readers.give(real)
+    readers.take = lambda observers: ReadFails(real, error)
+    readers.give = lambda con: None
     with pytest.raises(sqlite3.OperationalError) as failed:
         store.list_projects()
     assert failed.value is error
-    store._con = real
 
 
 def test_health_is_ok_on_a_working_store_and_writes_nothing(store, db, alpha):

@@ -640,7 +640,9 @@ run "the_largest_plans_file_and_the_largest_logo_fit_together" {
     error_message = "the user-data is over Compute Engine's 256 KB limit for one metadata value"
   }
   assert {
-    condition     = local.user_data_bytes > 240000
+    # host.sh travels gzip-compressed (about 15 KB); the plans file and the logo are most of
+    # what is left, and without either the user-data is under 160,000 bytes.
+    condition     = local.user_data_bytes > 200000
     error_message = "the size check did not see the largest plans file and logo"
   }
 }

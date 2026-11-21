@@ -6,6 +6,7 @@ process. Fixtures are synthetic."""
 import asyncio
 import json
 import logging
+import re
 import threading
 
 import httpx
@@ -28,6 +29,7 @@ from cairn.compiler import compile_note, render_body
 from cairn.gate import lint_gate
 from cairn.llm import FakeModel, LLMError, OpenAICompatible, Reply
 from cairn.store import Claim, Limits, Store
+from wait_helpers import wait_for_event
 
 FIRST = (
     "# Drift sync\n\nDrift mirrors two buckets.\n\n## Flags\n\n"
@@ -181,34 +183,40 @@ def path_of(claim, spans):
     return next((spans[i].heading_path for i in claim.span_ids if i in spans), ())
 
 
+HEADING = re.compile(r"(#{2,6}) (.*)")
+
+
 def rendered(title, claims, spans):
-    """(claim, the heading it shows under) in body order, and the heading lines in order."""
+    """(claim, the headings it shows under) in body order, and the heading lines in order."""
     blocks = render_body(title, claims, spans).rstrip("\n").split("\n\n")[1:]
-    headings = [block[3:] for block in blocks if block.startswith("## ")]
-    under, shown, texts = None, [], [block for block in blocks if not block.startswith("## ")]
+    headings = [block for block in blocks if HEADING.fullmatch(block)]
+    above, shown, texts = [], [], [block for block in blocks if not HEADING.fullmatch(block)]
     claim_iter = iter(claims)
     for block in blocks:
-        if block.startswith("## "):
-            under = block[3:]
+        if heading := HEADING.fullmatch(block):
+            level = len(heading[1])
+            above = [*(h for h in above if h[0] < level), (level, heading[2])]
             continue
         claim = next(claim_iter)
         assert claim.text == block
-        shown.append((claim, under))
+        shown.append((claim, tuple(text for _, text in above)))
     assert len(texts) == len(claims)
     return shown, headings
 
 
 def keeps_the_tree(title, claims, spans):
     shown, headings = rendered(title, claims, spans)
+    owns = []
     for claim, under in shown:
         path = path_of(claim, spans)
-        own = path[-1] if path and path[-1] != title else None
+        own = path[1:] if path[:1] == (title,) else path
         assert under == own, (claim.text, under, path)
+        owns.append(own)
     runs = [path_of(c, spans) for c in claims]
     starts = [path for n, path in enumerate(runs) if n == 0 or runs[n - 1] != path]
     assert len(starts) == len(set(starts)), "a heading's claims are split"
-    shown_paths = [path for path in starts if path and path[-1] != title]
-    assert len(headings) == len(shown_paths)
+    nodes = {own[:depth] for own in owns for depth in range(1, len(own) + 1)}
+    assert len(headings) == len(nodes)  # each heading of the tree written once
 
 
 def sections_of(view, page):
@@ -928,21 +936,30 @@ def test_workspaces_take_turns_within_a_pass(store):
     assert len(arranger.pending()) == 5
 
 
-def test_a_background_loop_runs_until_cancelled_and_stop_waits_for_a_page(store):
+def test_a_background_loop_runs_until_cancelled_and_stop_waits_for_a_page(store, monkeypatch):
     project, before = page_of(store, FIRST, SECOND)
     model = FakeModel([reply({"order": ids_of(before)[::-1], "same": []})])
     arranger = Arranger(model, price=None, view_for=store.for_account, min_claims=1, every=0.01)
 
     async def run():
-        task = asyncio.create_task(arranger.loop())
-        arranger.queue(store.account_id, project.id, "drift-sync")
-        for _ in range(500):
-            await asyncio.sleep(0.01)
+        arranged = asyncio.Event()
+        run_once = arranger.run_once
+
+        async def observed(limit=10):
+            result = await run_once(limit)
             if store.get_page(project.id, "drift-sync").version == before.version + 1:
-                break
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+                arranged.set()
+            return result
+
+        monkeypatch.setattr(arranger, "run_once", observed)
+        task = asyncio.create_task(arranger.loop())
+        try:
+            arranger.queue(store.account_id, project.id, "drift-sync")
+            await wait_for_event(arranged, "the arranger did not write the next page version")
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
         return await asyncio.to_thread(arranger.stop, 1.0)
 
     assert asyncio.run(run()) is True

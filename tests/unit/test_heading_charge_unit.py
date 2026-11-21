@@ -186,19 +186,19 @@ def test_memory_rest_and_the_composer_refuse_it_like_long_headings(tmp_path):
         key = store.create_key("laptop")
         store.create_project("ops")
         with pytest.raises(LongHeadings) as long:
-            Memory(store, lint_gate).note("ops", outline(9, 0))
+            Memory(store, lint_gate).note("ops", outline(10, 1))
         assert long.value.status == 400 and "Part" not in str(long.value)
         app = create_app(store, public_url=BASE)
         with TestClient(app, base_url=BASE) as client:
             answer = client.post(
-                "/api/projects/ops/notes", headers={"x-api-key": key}, json={"text": outline(9, 0)}
+                "/api/projects/ops/notes", headers={"x-api-key": key}, json={"text": outline(10, 1)}
             )
             assert answer.status_code == 400 and "headings" in answer.json()["error"]
             assert "Part" not in answer.text
             client.post("/login", data={"key": key}, headers={"sec-fetch-site": "same-origin"})
             page = client.post(
                 "/b/ops/notes",
-                data={"text": outline(9, 0)},
+                data={"text": outline(10, 1)},
                 headers={"sec-fetch-site": "same-origin"},
             )
             assert page.status_code == 400 and "headings" in page.text
@@ -211,7 +211,7 @@ def test_an_import_with_a_mostly_headings_note_imports_nothing(store, tmp_path, 
     try:
         project = source.create_project("ops")
         monkeypatch.setattr(cairn.store.memory, "HEADINGS_OVER_PASSAGES", 100)
-        source.add_note(project.id, outline(9, 0))  # as an older build could
+        source.add_note(project.id, outline(10, 1))  # as an older build could
         monkeypatch.undo()
         archive = io.BytesIO()
         source.export(archive)

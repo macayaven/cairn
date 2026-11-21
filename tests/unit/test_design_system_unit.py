@@ -617,14 +617,16 @@ def test_on_a_phone_a_claims_number_sits_on_its_first_line_and_every_link_is_a_t
     cites = rule(phone, ".claim-cites a")
     assert "min-height: 44px" in cites and "line-height: 27px" in cites  # the body's line
     # The links of running text: 44px high to touch, and a link that wraps (a title in it)
-    # keeps the text's own line, not 44px a line (tests/browser/test_browser_wrapped_links.py).
+    # keeps the text's own line, not 44px a line; an inline block, so its words and the
+    # title flow as one text (tests/browser/test_browser_wrapped_links.py).
     ((targets, said),) = [
         (sel, body)
         for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", phone)
         if ".crumbs a" in sel
     ]
     assert ".sources .back a" in targets and ".source-head a" in targets
-    assert "display: inline-flex" in said and "min-height: 44px" in said
+    assert "display: inline-block" in said and "align-content: center" in said
+    assert "min-height: 44px" in said and "flex" not in said
     assert "line-height" not in said
 
 

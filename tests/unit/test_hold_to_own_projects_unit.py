@@ -11,6 +11,7 @@ hold notes and passages alone: the oracle is a scan of every table. Made-up note
 import io
 import json
 import logging
+from collections import Counter
 from contextlib import closing
 
 from test_rt1_forget_workspace_held import (
@@ -21,6 +22,7 @@ from test_rt1_forget_workspace_held import (
     passage,
     tables_holding,
 )
+from test_rt1_own_project_held import SRC, clean_and_hit
 
 from cairn.store import Store, erasure
 from cairn.web import cli
@@ -160,3 +162,76 @@ def test_stats_counts_such_pages_by_workspace_only_when_asked(tmp_path, capsys):
     each = f"workspace {first} {by[first]}; workspace {second} {by[second]}"
     assert line == [f"pages citing notes of other projects: 6; {each}"]
     assert db.read_bytes() == held
+
+
+def search_work(clean: int, hit: int, build=clean_and_hit) -> tuple[int, int]:
+    """The repair's searches alone, those that read page versions to find the next page to
+    repair (erasure._NEXT_PROJECT, _NEXT_PAGE), on `hit` pages that cite another project's
+    note among `clean` pages that cite none (test_rt1_own_project_held.clean_and_hit, all in
+    one project, or `spread`): SQLite's work in units of 100 virtual-machine steps, counted
+    not timed, and how many searches they were."""
+    with closing(build(clean, hit)) as store:
+        steps, at, asked = Counter(), [""], [0]
+
+        def tick() -> int:
+            steps[at[0]] += 1
+            return 0
+
+        def trace(statement: str) -> None:
+            at[0] = statement
+            asked[0] += "ORDER BY p.slug LIMIT 1" in statement
+
+        with store._write() as con:
+            con.set_trace_callback(trace)
+            con.set_progress_handler(tick, 100)
+            try:
+                erasure.hold_to_own_projects(con, None, store._stamp())
+            finally:
+                con.set_progress_handler(None, 0)
+                con.set_trace_callback(None)
+        searched = sum(
+            n for statement, n in steps.items() if "ORDER BY p.slug LIMIT 1" in statement
+        )
+        return searched, asked[0]
+
+
+def test_the_repair_searches_the_page_versions_once_however_many_pages_it_repairs():
+    """The tester's 40 pages among 1,500 clean ones (report: 40 full searches before): the
+    searches of the 40 pages among them cost the clean pages' one search and the 40 pages',
+    one search for the project and then one from each page repaired, by the keys."""
+    alone, once = search_work(1500, 0)
+    pages, asked = search_work(0, 40)
+    both, asked_both = search_work(1500, 40)
+    assert once == 1 and asked == asked_both == 42
+    assert both - pages <= alone + alone // 10, (alone, pages, both)
+
+
+def spread(clean: int, hit: int) -> Store:
+    """Each of `hit` pages in a project of its own of one workspace, citing a note of another
+    of its projects, and `clean` pages in one project of a second workspace."""
+    store = Store(":memory:")
+    other = store.for_account(store.create_account("Other").id)
+    desk = store.create_project("desk")
+    src = passage(store, filed(store, desk.id, f"# Src\n\n{SRC}\n"))
+    for n in range(hit):
+        own_project = store.create_project(f"p{n:04d}")
+        own = passage(store, filed(store, own_project.id, "# Own\n\nThe ledger opens.\n"))
+        borrowed(store, own_project.id, "hit", citing(1, own.text, own), citing(2, SRC, src))
+    far = other.create_project("far")
+    own = passage(other, filed(other, far.id, "# Own\n\nThe ledger opens.\n"))
+    for n in range(clean):
+        borrowed(other, far.id, f"clean-{n:05d}", citing(1, own.text, own))
+    return store
+
+
+def test_pages_spread_over_many_projects_cost_no_more_than_their_number():
+    """The projects are walked by the index from the last one searched, never from the
+    workspace's first again: 160 pages in 160 projects cost about four times 40, and a
+    workspace of clean pages beside them its one search."""
+    alone, _ = search_work(1500, 0, spread)
+    forty, _ = search_work(0, 40, spread)
+    many, asked = search_work(0, 160, spread)
+    both, _ = search_work(1500, 160, spread)
+    assert asked == 2 * 160 + 1  # each project's search, and one after its page
+    assert many <= 5 * forty, (forty, many)
+    assert both - many <= alone + alone // 10, (alone, many, both)

@@ -45,7 +45,7 @@ import hashlib
 import json
 import sqlite3
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from cairn.spans import (
     _PARSER,
@@ -299,10 +299,11 @@ class ErasureMethods(StoreBase):
         changed, how many of them were of other projects as `elsewhere` and `claims_left`,
         each when it is not zero); nothing of its text, title or source_ref. The answer, the
         preview, the log and the event count the pages of other projects and name none of
-        them or their projects: the one who forgets may not reach them. Only a database an
-        earlier build wrote holds such a page (save_page refuses a new citation of another
-        project's passage), and an upgrade does not rewrite it: it is found here, when the note is
-        forgotten. KeyError for a note unknown or out of reach; PermissionError for anyone
+        them or their projects: the one who forgets may not reach them. save_page refuses a
+        new citation of another project's passage, and the upgrade to schema 32 and the
+        `repair` command (repair_own_projects) rewrite every such page they find; one a program
+        wrote into the tables since is found here too, when the note is forgotten. KeyError
+        for a note unknown or out of reach; PermissionError for anyone
         else who may not (see the module). Needs no room under any cap of a plan."""
         index = self._index
         with self._write() as con:
@@ -349,6 +350,27 @@ class ErasureMethods(StoreBase):
             if self._erasure_refusal(con, maker_id) is not None:
                 found = found.model_copy(update={"elsewhere": 0})
             return found
+
+    def repair_own_projects(self, each: Callable[[str, int, int], None]) -> dict[str, int]:
+        """The `repair` command's write (the operator's): hold_to_own_projects over the whole
+        database, as the upgrade to schema 32 ran it, in one write transaction like a
+        forget's, with `each` called for each workspace that had any (its id, the pages
+        rewritten, the pages removed) before the commit. When a page changed, a compaction is
+        marked due and the write-ahead log truncated after the commit, as a forget does: the
+        versions it deleted held another project's text. The server's readers see each page as
+        it was before or as it is after, never between; its writers wait for it as for a
+        forget, and one that drafted on such a page before it is StalePage and reads the page
+        again. On a database with no such page it makes one search and writes nothing.
+        PermissionError on a view: only the store that opened the database repairs it."""
+        if not self._owner:
+            raise PermissionError("only the store that opened the database repairs it")
+        with self._write() as con:
+            done = hold_to_own_projects(con, None, self._stamp(), each)
+            if done["rewritten"] or done["removed"]:
+                _compaction_due(con, self._stamp())
+        if done["rewritten"] or done["removed"]:
+            self._truncate_log("pages held to their own projects' notes")
+        return done
 
     def _note_in_reach(self, con: sqlite3.Connection, note_id: str) -> tuple[str, str, int]:
         """(project id, text digest, UTF-8 size) of a note of a project in the view's reach;
@@ -1059,10 +1081,38 @@ _CITES_OUTSIDE_ITS_PROJECT = (
     "EXISTS (SELECT 1 FROM json_each(p.claims) AS claim,"
     f" json_each(claim.value, '$.span_ids') AS cited WHERE {_NOT_OF_ITS_PROJECT})"
 )
+# hold_to_own_projects' one pass. The next project of the scope (?1: a workspace, or NULL for
+# every one) after (?2, ?3), in the order of the unique index on (account_id, name), with the
+# slug of its first page, in its versions' primary key order, any version of which cites
+# outside its project; NULL for a project that has none, which the outer query passes over.
+# The projects after (?2, ?3) are those of ?2 after ?3 and then those of the workspaces after
+# ?2, each a seek on the index, merged in order (a single row value would seek on account_id
+# alone and walk the workspace's projects from its first on every search); the subquery is
+# asked of each project as the merge hands it on, and each LIMIT -1 keeps a query a
+# co-routine, so each project's versions are searched once, up to that page.
+_NEXT_PROJECT = (
+    "SELECT account_id, name, id, slug FROM (SELECT account_id, name, id,"
+    " (SELECT p.slug FROM page_versions AS p WHERE p.project_id = later.id"
+    f" AND {_CITES_OUTSIDE_ITS_PROJECT} ORDER BY p.slug LIMIT 1) AS slug"
+    " FROM (SELECT account_id, name, id FROM projects"
+    " WHERE account_id = ?2 AND name > ?3 AND (?1 IS NULL OR account_id = ?1)"
+    " UNION ALL SELECT account_id, name, id FROM projects"
+    " WHERE account_id > ?2 AND (?1 IS NULL OR account_id = ?1)"
+    " ORDER BY 1, 2 LIMIT -1) AS later LIMIT -1) WHERE slug IS NOT NULL LIMIT 1"
+)
+# The next such page of the project ?1 after the slug ?2: the search goes on from there, by
+# the primary key, so the project's versions are read once in all.
+_NEXT_PAGE = (
+    "SELECT p.slug FROM page_versions AS p WHERE p.project_id = ?1 AND p.slug > ?2"
+    f" AND {_CITES_OUTSIDE_ITS_PROJECT} ORDER BY p.slug LIMIT 1"
+)
 
 
 def hold_to_own_projects(
-    con: sqlite3.Connection, account_id: str | None, stamp: str
+    con: sqlite3.Connection,
+    account_id: str | None,
+    stamp: str,
+    each: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, int]:
     """Hold every page to its own project's notes, on `con`, in the caller's transaction:
     each page any version of which cites a passage that no note of the page's own project
@@ -1079,47 +1129,57 @@ def hold_to_own_projects(
     whose note another workspace forgot after the page cited it (a forget searches its own
     workspace alone).
 
-    The pages are found one at a time, by workspace, project name and slug, each search
-    starting after the last page found, so it holds one page and one workspace's counts
-    whatever the database holds; on a database that holds no such page it makes one search
-    and writes nothing. It writes no audit event: inside the upgrade no audit writer of this
-    build may run (a step is history), so the store's log is the record, one line for each
-    workspace that had any, written once its pages are done, counts only. Returns how many
-    `workspaces` had any, and how many pages were `rewritten` and `removed`."""
+    The pages are found one at a time, by workspace, project name and slug, in one pass over
+    the page versions however many pages it repairs: each search goes on from the last page
+    found, by the projects' unique index and the versions' primary key (_NEXT_PROJECT,
+    _NEXT_PAGE), so each version is read by the search once, and it holds one page and one
+    workspace's counts whatever the database holds; on a database that holds no such page it
+    makes one search and writes nothing. It writes no audit event: inside the upgrade no
+    audit writer of this build may run (a step is history), so the store's log is the record,
+    one line for each workspace that had any, written once its pages are done, counts only;
+    `each`, when
+    given, is called with the workspace's id and its counts rewritten and removed in place of
+    that line (the `repair` command prints them once the transaction commits). Returns how
+    many `workspaces` had any, and how many pages were `rewritten` and `removed`."""
+    said = _log_repaired if each is None else _each(each)
     done: Counter = Counter()
     tally: Counter = Counter()  # the pages of the workspace `at`, the one being repaired
-    at, after = None, ("", "", "")
-    while row := con.execute(
-        "SELECT projects.account_id, projects.name, p.project_id, p.slug FROM page_versions AS p"
-        " JOIN projects ON projects.id = p.project_id"
-        " WHERE (?1 IS NULL OR projects.account_id = ?1)"
-        " AND (projects.account_id, projects.name, p.slug) > (?2, ?3, ?4)"
-        f" AND {_CITES_OUTSIDE_ITS_PROJECT}"
-        " ORDER BY projects.account_id, projects.name, p.slug LIMIT 1",
-        (account_id, *after),
-    ).fetchone():
-        account, name, project_id, slug = row
-        after = (account, name, slug)
+    at, after = None, ("", "")
+    while found := con.execute(_NEXT_PROJECT, (account_id, *after)).fetchone():
+        account, name, project_id, slug = found
+        after = (account, name)
         if account != at:
-            _log_repaired(at, tally)
+            said(at, tally)
             done["workspaces"] += 1
             at, tally = account, Counter()
-        gone = frozenset(  # the passages its versions cite that are not of its project's
-            span_id
-            for (span_id,) in con.execute(
-                "SELECT DISTINCT cited.value FROM page_versions AS p, json_each(p.claims) AS claim,"
-                " json_each(claim.value, '$.span_ids') AS cited"
-                f" WHERE p.project_id = ? AND p.slug = ? AND {_NOT_OF_ITS_PROJECT}",
-                (project_id, slug),
+        while slug is not None:
+            gone = frozenset(  # the passages its versions cite that are not of its project's
+                span_id
+                for (span_id,) in con.execute(
+                    "SELECT DISTINCT cited.value FROM page_versions AS p,"
+                    " json_each(p.claims) AS claim, json_each(claim.value, '$.span_ids') AS cited"
+                    f" WHERE p.project_id = ? AND p.slug = ? AND {_NOT_OF_ITS_PROJECT}",
+                    (project_id, slug),
+                )
             )
-        )
-        planned = _plan_page(con, project_id, name, slug, gone)
-        _rewrite(con, account, _index_name(account), [planned], stamp, None)
-        what = "rewritten" if planned[5] else "removed"
-        tally[what] += 1
-        done[what] += 1
-    _log_repaired(at, tally)
+            planned = _plan_page(con, project_id, name, slug, gone)
+            _rewrite(con, account, _index_name(account), [planned], stamp, None)
+            what = "rewritten" if planned[5] else "removed"
+            tally[what] += 1
+            done[what] += 1
+            (slug,) = con.execute(_NEXT_PAGE, (project_id, slug)).fetchone() or (None,)
+    said(at, tally)
     return {what: done[what] for what in ("workspaces", "rewritten", "removed")}
+
+
+def _each(each: Callable[[str, int, int], None]) -> Callable[[str | None, Counter], None]:
+    """hold_to_own_projects' `each`, called as _log_repaired is."""
+
+    def said(account_id: str | None, tally: Counter) -> None:
+        if account_id is not None:
+            each(account_id, tally["rewritten"], tally["removed"])
+
+    return said
 
 
 def _log_repaired(account_id: str | None, tally: Counter) -> None:

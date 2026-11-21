@@ -91,9 +91,11 @@ DIGESTS: dict[int, str] = {
     30: "26dfa79f46e54c6e00f60480200897847cd58c7c38864c07299f92f5b85b739e",
     31: "310d03faf566751f7a5ad906da1517d171f8a95eb05f47c7594e6108b69e52bb",
     # Step 32 on an empty history: the one search (cairn.store.erasure.hold_to_own_projects).
-    # It finds a passage no note of the page's own project holds, one no longer held too
-    # (unreleased; it was 04f10fb46aee27cf9dea5f1436201230816e69c7ebe77281633e2b01077cb520).
-    32: "02927bac0d49d453549b853a3710e21a69ce1a4aba0c0195e9500c42d33c8f03",
+    # It finds a passage no note of the page's own project holds, one no longer held too, in
+    # one pass, each project sought from the last (unreleased; it was 04f10fb46aee27cf9dea5f14
+    # 36201230816e69c7ebe77281633e2b01077cb520, 02927bac0d49d453549b853a3710e21a69ce1a4aba0c01
+    # 95e9500c42d33c8f03, then e1abaf07447dfdddc81a816d842b11c5c860268e6e19c7db17d0ceaa28febbc0).
+    32: "31fb0f5c02be369fe625e58c25959d82422c2f5c2ff4a1558294d892ebbab677",
 }
 # Step 2 on an SQLite without FTS5's secure-delete.
 STEP_2_WITHOUT_SECURE_DELETE = "f021460c7a3a60b2e002d9c9d782e2382ce8e5eb25d04dcde68481ebfc4e3dc3"

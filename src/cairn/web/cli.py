@@ -1,5 +1,5 @@
 """The command line: serve, key-create, key-revoke, the source commands, plan-set, usage
-and workspace-list (python -m cairn.server); export, import and compact are in
+and workspace-list (python -m cairn.server); export, import, compact and repair are in
 cairn.web.cli_data. `google-authorize` (C8), which obtains one person's Google credential for
 a Google source and opens no database, is in cairn.web.cli_google, whose docstring holds its
 contract.
@@ -121,6 +121,9 @@ cli_stats.OLDER_DATABASE, which says to start the server once. `serve --stats-ev
 (STATS_EVERY, 15; 0: off; anything that is not a number of 0 or more exits 2) logs the
 install's totals as one line on cairn.web.stats.STATS_LOGGER, written to stderr beside the
 access log, at start and then that often (create_app's `stats_every`).
+`stats --other-projects` adds the pages that cite a passage not of their own project's
+notes; `repair --db PATH` (cairn.web.cli_data) rewrites them as the upgrade to schema
+32 did, in one transaction, and prints counts only.
 
 `serve --sweep-every SECONDS` (600; 0: never; otherwise at least 1) removes, in the
 background, the rows that have run out in every workspace: sessions, invitations, OAuth codes
@@ -347,7 +350,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m cairn.server",
         description="Run cairn's web service; manage its keys, sources and plans; arrange its"
-        " pages, tidied by default or with a model; export, import and compact its data.",
+        " pages, tidied by default or with a model; export, import, compact and repair its data.",
         allow_abbrev=False,  # a mistyped option fails; it is never read as a longer one
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

@@ -1175,7 +1175,8 @@ Bounded reads, a bounded history (Q1, frozen by tests/acceptance/test_q1_bounded
   `--other-projects`, `other_projects` too: by workspace id, how many pages cite, in any
   version, a passage that no note of their own project holds, another project's or one no
   longer held (cairn.store.erasure.count_pages_citing_other_projects, which reads every
-  page version). `serve` logs the
+  page version); `repair --db PATH` rewrites those pages as the upgrade to schema 32 did
+  (cairn.web.cli_data). `serve` logs the
   install's totals with `requests` (responses by class since the last line) as one line on
   a logger of its own, at start and every `--stats-every` minutes (create_app's
   `stats_every` and `stats_wait`); under low disk it is a WARNING with a sentence that says

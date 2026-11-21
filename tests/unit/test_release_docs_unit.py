@@ -524,13 +524,17 @@ def test_the_readme_and_the_changelog_say_what_related_pages_are():
 
 def test_the_changelog_says_a_forget_reaches_every_page_of_the_workspace():
     """The second reviewer's seventh report, must-fix 1: a page of another project that cited
-    a forgotten note kept its text. A forget now changes every page of the workspace that
-    cited the note, and a page can cite only its own project's notes (Store.save_page)."""
+    a forgotten note kept its text, and the tester found the same of a deleted project. Every
+    removal of notes now changes every page of the workspace that cited them, and a page
+    takes a new citation only of its own project's notes (Store.save_page)."""
     from cairn.store.memory import NOT_OF_PROJECT
 
     entry = next(
         line for line in read("CHANGELOG.md").splitlines() if line.startswith("- **Deleting.**")
     )
-    assert "every page of the workspace that cited it, whatever its project" in entry
-    assert "a page can cite only its own project's notes" in entry
+    assert (
+        "A forgotten note, and the notes of a deleted project, leave every page of the workspace"
+        " that cited them, whatever its project"
+    ) in entry
+    assert "a page takes a new citation only of its own project's notes" in entry
     assert NOT_OF_PROJECT == "A page can cite only passages from its own project."

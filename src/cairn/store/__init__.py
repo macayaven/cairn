@@ -131,7 +131,9 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   it had may be the forgotten note's heading), its body rendered as the compiler renders
   it with that title, and every earlier
   version is deleted, since they held the note's text; a page left with no claim is deleted
-  with its index rows. It stores the note's text digest in `forgotten` (project, SHA-256 hex):
+  with its index rows. It stores the note's text digest in `forgotten` (project, SHA-256 hex;
+  a delete that changed a page of another project leaves that project a row that is no
+  digest, erasure.PASSAGES_REMOVED, so a save drafted before it is CitesForgotten too):
   add_note of the same text into that project then raises ForgottenNote (a ValueError)
   before the guard runs and writes nothing, and save_page raises CitesForgotten (a
   StalePage) for claims citing a span that a forget removed meanwhile, so a compile that

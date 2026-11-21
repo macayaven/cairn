@@ -20,7 +20,12 @@ Forgetting keeps a SHA-256 digest of the note's text in `forgotten`, so the same
 never stored in that project again (add_note raises ForgottenNote), and a page save that
 cites a span the store no longer holds, in such a workspace, is CitesForgotten (save_page):
 a compile or arrangement that read the page before the note was forgotten never brings it
-back. The digests go with their project and their workspace and are never exported.
+back. The digests go with their project and their workspace and are never exported. A
+delete that changes or removes a page of another project leaves that project one row of
+`forgotten` that is no digest of any text (PASSAGES_REMOVED): it records only that passages
+a page of the project cited went with another project, so a page drafted before never
+brings them back. It goes with its project like the others, is never exported, and refuses
+no note, since no text has that digest.
 
 The audit log keeps that each happened, who did it and when, and nothing that names what
 is gone. delete_project moves every event of the project, project.deleted included, from the
@@ -104,6 +109,12 @@ RENDERS_HARD = 32
 # The other keys a project's events carry are counts, kinds, codes, rule ids, a model's name,
 # person ids and the project's own name and id (see the store contract's Audit log).
 NOTE_DERIVED = ("page",)
+# The row of `forgotten` a delete leaves each other project whose page it changed or removed:
+# no digest of any text (a note's is 64 hex characters), so it refuses no note. It records
+# only that passages a page of that project cited went with another project, so a save
+# drafted before the delete is CitesForgotten (memory._cites_forgotten) and never brings them
+# back. It goes with its project like the digests, and is never exported.
+PASSAGES_REMOVED = ""
 # The tables whose rows name projects in a reach (a JSON array of project and set ids, or NULL
 # for every project), and the column that holds it.
 _REACHES = (
@@ -199,6 +210,12 @@ class ErasureMethods(StoreBase):
             gone = _passages(con, "notes.project_id", project_id)
             plan = _plan(con, self._account_id, gone, deleted=project_id)
             _rewrite(con, self._account_id, index, plan, self._stamp())
+            for at in dict.fromkeys(at for at, *_ in plan):  # a page drafted before: stale
+                con.execute(
+                    "INSERT INTO forgotten (project_id, text_sha256) VALUES (?, ?)"
+                    " ON CONFLICT DO NOTHING",
+                    (at, PASSAGES_REMOVED),
+                )
             notes, size = con.execute(
                 "SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(text AS BLOB))), 0) FROM notes"
                 " WHERE project_id = ?",

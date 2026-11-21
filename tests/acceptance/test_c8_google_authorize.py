@@ -431,6 +431,7 @@ class Command:
             PYTHONUNBUFFERED="1",
             PYTHONDONTWRITEBYTECODE="1",
             C8_GUARD_LOG=str(self.watch.path),
+            CAIRN_SOURCE_PRIVATE_ADDRESSES="allow",
             HOME=str(home),
             TMPDIR=str(home),
         )

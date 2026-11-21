@@ -10,16 +10,27 @@ from cairn.store.base import (
     _ACCOUNT_SELECT,
     COMPACT_DUE,
     DEFAULT_ACCOUNT_ID,
+    RECORD_DELETION,
     StoreBase,
     _account,
     _find_account,
     _index_name,
     _insert_account,
+    deletion_generation,
 )
 from cairn.store.models import Account
 from cairn.store.people import _FORGET_MEMBERS
 
 ACCOUNT_NAME_MAX = 80
+# A workspace's Slack rows (K1): what each of its install's tables holds, then the install.
+_INSTALLS = "(SELECT id FROM slack_installs WHERE account_id = ?)"
+_SLACK_ROWS = (
+    *(
+        f"DELETE FROM {table} WHERE install_id IN {_INSTALLS}"
+        for table in ("slack_notes", "slack_people", "slack_link_offers", "slack_events")
+    ),
+    "DELETE FROM slack_installs WHERE account_id = ?",
+)
 NOT_AN_OWNER = "only an owner of a workspace can delete it"
 NOT_YOUR_WORKSPACE = "a view acting for a person deletes no workspace but its own"
 store_log = logging.getLogger("cairn.store")
@@ -70,7 +81,7 @@ class AccountMethods(StoreBase):
             account = _find_account(con, account_id)
             if account is None:
                 return False
-            dropped = self._hosted_tokens(con, account.id)  # type: ignore[attr-defined]
+            dropped = self._hosted_tokens(con, account.id)
             projects = "(SELECT id FROM projects WHERE account_id = ?)"
             for statement in (
                 f"DROP TABLE IF EXISTS {_index_name(account.id)}",
@@ -100,6 +111,7 @@ class AccountMethods(StoreBase):
                 "DELETE FROM made_with WHERE account_id = ?",  # A1
                 "DELETE FROM settings WHERE account_id = ?",
                 "DELETE FROM credential_tokens WHERE account_id = ?",  # connected Google accounts
+                *_SLACK_ROWS,  # its Slack install and all it holds (cairn.store.slack)
                 "DELETE FROM audit_events WHERE account_id = ?",
                 "DELETE FROM source_items WHERE source IN"  # before the sources they name
                 " (SELECT seq FROM sources WHERE account_id = ?)",
@@ -107,20 +119,16 @@ class AccountMethods(StoreBase):
                 "DELETE FROM usage WHERE account_id = ?",
                 "DELETE FROM account_quota WHERE account_id = ?",
                 "DELETE FROM account_disk WHERE account_id = ?",  # after its spans and pages
-                "DELETE FROM subscriptions WHERE account_id = ?",
-                "DELETE FROM billing_messages WHERE account_id = ?",
-                "DELETE FROM checkouts WHERE account_id = ?",  # R3
                 "DELETE FROM model_reservations WHERE account_id = ?",
                 *_FORGET_MEMBERS,
                 "DELETE FROM accounts WHERE id = ?",
             ):
                 con.execute(statement, (account.id,) * statement.count("?"))
             con.execute(  # a compaction is due (cairn.store.portable.compaction_state)
-                "INSERT INTO settings (account_id, name, value, updated_at) VALUES (?, ?, ?, ?)"
-                " ON CONFLICT (account_id, name) DO NOTHING",
-                (DEFAULT_ACCOUNT_ID, COMPACT_DUE, self._stamp(), self._stamp()),
+                RECORD_DELETION,
+                (DEFAULT_ACCOUNT_ID, COMPACT_DUE, self._stamp(), deletion_generation()),
             )
-        self._queue_revocations(dropped)  # type: ignore[attr-defined]  # Google, by the rule
+        self._queue_revocations(dropped)  # Google, by the rule
         self._truncate_log(f"workspace {account.id}")
         return True
 

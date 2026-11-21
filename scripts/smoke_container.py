@@ -1,7 +1,12 @@
-"""Smoke-test a cairn container image: python3 scripts/smoke_container.py IMAGE
+"""Smoke-test a cairn container image:
 
-IMAGE must already be local (build or pull it first): the script never pulls. It runs the
-image the way the README tells people to and checks it over HTTP from the host:
+    python3 scripts/smoke_container.py IMAGE [--platform linux/amd64|linux/arm64]
+
+IMAGE must already be local (build or pull it first): the script never pulls. With --platform,
+every container is started for that platform (docker run's --platform) and the first check
+asks the running container's own Python which machine it is, so a run on the host's image
+instead fails. It runs the image the way the README tells people to and checks it over HTTP
+from the host:
 health, the non-root user, auth on the API, MCP and UI, a key minted into the volume and
 copied out, a note-then-recall round trip (which proves FTS5 in the image's SQLite), MCP over
 HTTP, the Host check on /mcp, a browser-style login, data that outlives the container, an
@@ -10,7 +15,9 @@ a bind mount written as the caller's own user, an SQLite new enough to overwrite
 search index drops, that export imported into a fresh install by the run guide's own steps,
 the two typefaces and a licence served by the image as files of their real size and
 type, and the project's own licence, MIT, in the package's metadata and at /app/LICENSE, the
-same bytes as the repository's LICENSE. Standard library only, so it runs on a CI
+same bytes as the repository's LICENSE, and no package installer: the image's own Python finds no
+pip and no setuptools, no pip command is on its path, and ensurepip has no wheel to put pip
+back. Standard library only, so it runs on a CI
 runner or any host with Docker and Python 3.10 or later. Exit code 0 when every check passes.
 
 Isolation, resources and cleanup: every container is named cairn-smoke-<pid>-<n> and labelled
@@ -24,6 +31,7 @@ and is never printed.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -69,6 +77,57 @@ if pathlib.Path("/app/LICENSE").is_file():
 print(json.dumps({"expression": dist.metadata["License-Expression"],
                   "metadata": metadata, "plain": plain}))
 """
+
+# Run inside the container with `python -I`: whether pip or setuptools is installed, in the
+# application's environment (/app) or in the base interpreter's site-packages beside it (which
+# /app's python does not import from, and where the base image keeps its pip), the pip
+# commands on the path, and the wheels ensurepip would install. Prints one JSON line.
+INSTALLER_PROBE = """
+import json, pathlib, shutil, sys, sysconfig
+places = {
+    pathlib.Path(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))
+    for prefix in (sys.prefix, sys.base_prefix)
+}
+def installed(name):
+    return any(
+        (place / name).is_dir() or any(place.glob(name + "-*.dist-info")) for place in places
+    )
+bundled = pathlib.Path(sysconfig.get_paths()["stdlib"]) / "ensurepip" / "_bundled"
+print(json.dumps({
+    "pip": installed("pip"),
+    "setuptools": installed("setuptools"),
+    "commands": [found for name in ("pip", "pip3", "pip3.13") if (found := shutil.which(name))],
+    "bundled": sorted(p.name for p in bundled.glob("*.whl")) if bundled.is_dir() else [],
+}))
+"""
+
+
+def fts5_secure_delete() -> dict:
+    """Whether this Python's SQLite gives FTS5 secure-delete: cairn's own flag (the one
+    tests/unit/test_erasure_unit.py skips on) and whether an FTS5 table takes the option.
+    Runs inside the image as SECURE_DELETE_PROBE; the unit tests run it on the host too."""
+    import sqlite3
+
+    from cairn.store.schema import _FTS5_SECURE_DELETE
+
+    con = sqlite3.connect(":memory:")
+    try:
+        con.execute("CREATE VIRTUAL TABLE probe USING fts5(body)")
+        con.execute("INSERT INTO probe (probe, rank) VALUES ('secure-delete', 1)")
+        taken = True
+    except sqlite3.Error:
+        taken = False
+    finally:
+        con.close()
+    return {"sqlite": sqlite3.sqlite_version, "cairn": _FTS5_SECURE_DELETE, "fts5": taken}
+
+
+# The function's own source and one JSON line of what it returns, for `python -c`.
+SECURE_DELETE_PROBE = (
+    "import json\n"
+    + inspect.getsource(fts5_secure_delete)
+    + "print(json.dumps(fts5_secure_delete()))\n"
+)
 
 
 # Seconds a container gets to report healthy. Natively it takes a few seconds; under QEMU
@@ -120,9 +179,15 @@ def expect(condition: bool, message: str) -> None:
         raise Failed(message)
 
 
+# What Python's platform.machine() says inside a container of each platform.
+MACHINES = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}
+USAGE = "smoke_container.py IMAGE [--platform linux/amd64|linux/arm64]"
+
+
 class Smoke:
-    def __init__(self, image: str) -> None:
+    def __init__(self, image: str, platform: str | None = None) -> None:
         self.image = image
+        self.platform = platform
         self.tag = str(os.getpid())
         self.volume = f"cairn-smoke-{self.tag}"
         self.volumes = [self.volume]
@@ -141,6 +206,8 @@ class Smoke:
         args += ["-p", f"127.0.0.1::{PORT}", "-v", mount]
         if user:
             args += ["--user", user]
+        if self.platform:
+            args += ["--platform", self.platform]
         docker(*args, self.image, *command)
         first = docker("port", name, f"{PORT}/tcp").splitlines()[0]
         self.base = "http://" + first.replace("0.0.0.0", "127.0.0.1")
@@ -226,6 +293,24 @@ class Smoke:
     def starts_healthy(self) -> str:
         self.start(f"{self.volume}:/data")
         return "a named volume on /data; Docker health is healthy and /healthz is 200"
+
+    def runs_on_its_platform(self) -> str:
+        machine = docker(
+            "exec",
+            self.names[-1],
+            "python",
+            "-I",
+            "-c",
+            "import platform; print(platform.machine())",
+        )
+        if not self.platform:
+            return f"the container runs on {machine} (no platform was named)"
+        expect(
+            machine == MACHINES[self.platform],
+            f"the container runs on {machine}, not {self.platform}: the image started is not"
+            " the one named.",
+        )
+        return f"the container runs on {machine}, {self.platform}"
 
     def runs_as_non_root(self) -> str:
         uid = docker("exec", self.names[-1], "id", "-u")
@@ -363,13 +448,22 @@ class Smoke:
 
     def overwrites_what_the_index_drops(self) -> str:
         """The privacy guide says a deleted note's text is overwritten in the search index at
-        once. cairn asks FTS5 for that (secure-delete), which SQLite has from 3.42."""
-        version = docker(
-            "exec", self.names[-1], "python", "-c", "import sqlite3; print(sqlite3.sqlite_version)"
+        once. cairn asks FTS5 for that (secure-delete), which SQLite has from 3.42. The image
+        is asked with cairn's own flag, the one tests/unit/test_erasure_unit.py skips on, and
+        with an FTS5 table that must take the option."""
+        out = docker("exec", self.names[-1], "python", "-c", SECURE_DELETE_PROBE)
+        try:
+            found = json.loads(out)
+        except ValueError:
+            raise Failed(f"the secure-delete probe printed no JSON: {out[:200]!r}") from None
+        version = found.get("sqlite")
+        expect(
+            found.get("cairn") is True and found.get("fts5") is True,
+            f"The image's SQLite {version} does not give FTS5 secure-delete, so a deleted"
+            f" note's text would stay in the search index (cairn's flag: {found.get('cairn')},"
+            f" FTS5 took the option: {found.get('fts5')}).",
         )
-        numbers = tuple(int(part) for part in version.split(".")[:2])
-        expect(numbers >= (3, 42), f"the image's SQLite is {version}; secure-delete needs 3.42")
-        return f"SQLite {version} in the image: FTS5 secure-delete is there"
+        return f"SQLite {version} in the image: FTS5 takes secure-delete, as cairn's flag says"
 
     def imports_an_export_as_the_run_guide_says(self) -> str:
         """A fresh install on its own volume takes the export taken above, by the run guide's
@@ -445,6 +539,20 @@ class Smoke:
             expect(not extra, f"{where} holds another licence file: {', '.join(extra)}")
         return "License-Expression MIT; LICENSE in the metadata and at /app, same bytes"
 
+    def carries_no_installer(self) -> str:
+        """cairn installs nothing at run time; an installer in the image would carry code a
+        scan reports as the image's own (pip's vendored packages)."""
+        out = docker("exec", self.names[-1], "python", "-I", "-c", INSTALLER_PROBE)
+        try:
+            found = json.loads(out)
+        except ValueError:
+            raise Failed(f"the installer probe printed no JSON: {out[:200]!r}") from None
+        left = [name for name in ("pip", "setuptools") if found.get(name)]
+        left += found.get("commands") or []
+        left += [f"ensurepip's {name}" for name in found.get("bundled") or []]
+        expect(not left, f"the image still holds a package installer: {', '.join(left)}.")
+        return "no pip, no setuptools, no pip command and no bundled wheel"
+
     def cleanup(self) -> str:
         for name in self.names:
             docker("rm", "-f", name, check=False)
@@ -458,12 +566,18 @@ class Smoke:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2 or argv[1].startswith("-"):
-        print(__doc__.strip().splitlines()[0], file=sys.stderr)
+    args = argv[1:]
+    platform = None
+    if len(args) == 3 and args[1] == "--platform" and args[2] in MACHINES:
+        platform = args[2]
+        args = args[:1]
+    if len(args) != 1 or args[0].startswith("-"):
+        print(f"usage: {USAGE}", file=sys.stderr)
         return 2
-    smoke = Smoke(argv[1])
+    smoke = Smoke(args[0], platform)
     checks: list[Callable[[], str]] = [
         smoke.starts_healthy,
+        smoke.runs_on_its_platform,
         smoke.runs_as_non_root,
         smoke.refuses_without_credentials,
         smoke.mints_a_key_into_the_volume,
@@ -479,6 +593,7 @@ def main(argv: list[str]) -> int:
         smoke.imports_an_export_as_the_run_guide_says,
         smoke.serves_the_typefaces,
         smoke.carries_the_licence,
+        smoke.carries_no_installer,
     ]
     passed = 0
     try:

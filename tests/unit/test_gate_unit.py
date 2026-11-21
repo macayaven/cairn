@@ -6,7 +6,7 @@ compiler builds them, so these tests need no store.
 
 from pathlib import Path
 
-from cairn.compiler import CandidatePage
+from cairn.compiler import CandidatePage, render_body
 from cairn.gate import lint_gate
 from cairn.spans import Span, chunk
 from cairn.store import Claim
@@ -38,8 +38,8 @@ def baseline_body(spans: list[Span]) -> str:
 
 
 def candidate(*claims: Claim, body: str | None = None) -> CandidatePage:
-    if body is None:
-        body = f"# {TITLE}\n\n" + "\n\n".join(c.text for c in claims) + "\n"
+    if body is None:  # what the compiler writes of them: the only body a gate is given
+        body = render_body(TITLE, claims, {s.id: s for s in CONTENT})
     return CandidatePage(slug="runbook", title=TITLE, body=body, claims=claims)
 
 
@@ -94,9 +94,13 @@ def test_a_span_missing_from_the_mapping_is_unknown_and_still_counts_as_cited():
     assert (result.metrics["claims"], result.metrics["spans_cited"]) == (2, 3)
 
 
-def test_a_page_without_claims_passes_with_the_empty_denominator_defaults():
+def test_a_page_without_claims_is_refused_as_an_import_refuses_it_with_the_empty_defaults():
+    """No lint rule is broken and the metrics take the empty-denominator defaults; the page
+    is refused all the same, by the import's own check (CORE6A): an import refuses a version
+    with no claims, and before, such a version was saved and its export refused."""
     result = lint_gate(candidate(), {})
-    assert result.passed
+    assert [violation.split(":")[0] for violation in result.violations] == ["import.no_claims"]
+    assert not result.passed
     assert result.metrics == {
         "claims": 0,
         "spans_cited": 0,

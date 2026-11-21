@@ -51,10 +51,10 @@ from markdown_it.rules_core import StateCore
 from markdown_it.token import Token
 from markupsafe import Markup, escape
 
+from cairn.spans import MAX_RENDERED, claim_markdown
 from cairn.store.ranking import words
 from cairn.web.brand import Product, product_of
 
-MAX_RENDERED = 100_000  # characters of one claim; beyond this it is shown, not parsed
 _LINK_REL = "noopener noreferrer nofollow"
 _MONTHS = (
     "January",
@@ -113,8 +113,9 @@ def _cells(state: StateCore) -> None:
 
 
 def _parser() -> MarkdownIt:
-    parser = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
-    parser.enable("table").disable(["image", "heading", "lheading"])
+    # A claim is read as cairn.spans.claim_markdown reads it, wherever it is read: what is
+    # code here is what cairn.spans.code_read finds, and the two must agree.
+    parser = claim_markdown()
     parser.core.ruler.push("cairn_cells", _cells)
     parser.add_render_rule("link_open", _link_open)
     return parser
@@ -127,7 +128,7 @@ def render(text: str) -> Markup:
     """`text` as HTML that is safe to place in a page. See the module's rules."""
     if len(text) > MAX_RENDERED:
         return Markup("<pre>") + escape(text) + Markup("</pre>\n")
-    return Markup(_PARSER.render(text))
+    return Markup(_PARSER.render(text))  # nosec B704 # _PARSER has raw HTML off
 
 
 # Search matches
@@ -149,7 +150,7 @@ def mark_words(html: Markup, query: str) -> Markup:
     unescaped and escaped again, so an entity is never split."""
     wanted = {_folded(part) for word in words(query) for part in word.split("_") if part}
     if not wanted:
-        return Markup(html)
+        return Markup(html)  # nosec B704 # html is rendered Markup already
     pieces = []
     for piece in _TAG.split(str(html)):
         if not piece or piece.startswith("<"):
@@ -163,7 +164,7 @@ def mark_words(html: Markup, query: str) -> Markup:
                 at = found.end()
         out.append(escape(text[at:]))
         pieces.append("".join(out))
-    return Markup("".join(pieces))
+    return Markup("".join(pieces))  # nosec B704 # tags from html, its text escaped above
 
 
 # Guides
@@ -264,7 +265,8 @@ def guide(text: str, known: Iterable[str], product: Product | None = None) -> Gu
                 child.attrSet("href", f"/docs/{found.group(1)}{found.group(2) or ''}")
         kept.append(token)
     html = _GUIDE_PARSER.renderer.render(kept, _GUIDE_PARSER.options, {})
-    return Guide(title=title, sections=sections, html=Markup(html))
+    markup = Markup(html)  # nosec B704 # _GUIDE_PARSER has raw HTML off
+    return Guide(title=title, sections=sections, html=markup)
 
 
 def _utc(stamp: str) -> datetime | None:

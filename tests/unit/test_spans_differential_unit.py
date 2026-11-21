@@ -41,10 +41,19 @@ COUNT = {"texts": 0, "spans": 0}  # cases compared, printed by the last test
 
 def same(text: str, source_id: str = "src") -> None:
     COUNT["texts"] += 1
-    old = [s.model_dump() for s in old_spans.chunk(source_id, text)]
+    old = [_as_now(s.model_dump()) for s in old_spans.chunk(source_id, text)]
     new = [s.model_dump() for s in new_spans.chunk(source_id, text)]
     COUNT["spans"] += len(new)
     assert new == old, text[:300]
+
+
+def _as_now(span: dict) -> dict:
+    """One change since the reference, on purpose (review 7.4): a block between two `---`
+    lines at the top that does not read as metadata is a paragraph, not front matter. Its
+    lines, text and id, and every span after it, are as they were."""
+    if span["kind"] == "frontmatter" and not new_spans._metadata(span["text"].split("\n")[1:-1]):
+        return {**span, "kind": "paragraph"}
+    return span
 
 
 # The test suite's own strings, the fixtures and the gold file

@@ -8,8 +8,6 @@ waits, then releases the lock: the decision is the one the moved clock makes.
 """
 
 import sqlite3
-import threading
-import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -17,6 +15,7 @@ import pytest
 
 from cairn.store import SOURCE_CLAIM_TTL, Removed, Store
 from cairn.store.usage import Limits
+from wait_helpers import while_database_locked
 
 ISSUER = "https://id.example.test/pool-1"
 SOURCE = {
@@ -54,31 +53,14 @@ def store(db, clock):
     s.close()
 
 
-def while_the_database_is_locked(db, call, then):
-    """Start `call` on a thread while another connection holds the write lock, run `then`
-    half a second into its wait, release the lock, and return what `call` returned, or the
-    exception it raised."""
-    blocker = sqlite3.connect(db, isolation_level=None)
-    result: list[object] = []
-
-    def run() -> None:
+def while_the_database_is_locked(db, store, call, then):
+    def result():
         try:
-            result.append(call())
+            return call()
         except Exception as error:  # the call's answer, for the test to judge
-            result.append(error)
+            return error
 
-    try:
-        blocker.execute("BEGIN IMMEDIATE")
-        thread = threading.Thread(target=run)
-        thread.start()
-        time.sleep(0.5)  # the call has started and is waiting for the lock
-        then()
-        blocker.execute("COMMIT")
-        thread.join(timeout=30)
-    finally:
-        blocker.close()
-    assert len(result) == 1, "the call did not return"
-    return result[0]
+    return while_database_locked(db, store, result, then)
 
 
 def count(db, query: str, *args) -> int:
@@ -108,6 +90,7 @@ def test_an_invitation_that_expires_while_its_acceptance_waits_is_refused(store,
     invite = ada.invite("brook@example.test", ttl_seconds=60)
     answer = while_the_database_is_locked(
         db,
+        store,
         lambda: store.accept_invite(invite.token, brook.user_id),
         move(clock, timedelta(minutes=2)),
     )
@@ -123,6 +106,7 @@ def test_a_sign_in_during_which_the_invitation_expires_does_not_join_by_it(store
     ada.invite("brook@example.test", ttl_seconds=60)
     answer = while_the_database_is_locked(
         db,
+        store,
         lambda: store.sign_in(
             "sso", "sub-Brook", "brook@example.test", "Brook", issuer=ISSUER, join="default"
         ),
@@ -140,6 +124,7 @@ def test_an_invitation_made_while_its_write_waits_lasts_its_whole_life_from_the_
     ada.invite("old@example.test", ttl_seconds=60)  # expires during the wait below
     made = while_the_database_is_locked(
         db,
+        store,
         lambda: ada.invite("new@example.test", ttl_seconds=3_600),
         move(clock, timedelta(minutes=30)),
     )
@@ -159,7 +144,7 @@ def test_a_session_opened_while_its_write_waits_lasts_its_whole_life_from_the_wr
 ):
     ada = person(store, "Ada")
     token = while_the_database_is_locked(
-        db, lambda: ada.create_session(ttl_seconds=3_600), move(clock, timedelta(minutes=30))
+        db, store, lambda: ada.create_session(ttl_seconds=3_600), move(clock, timedelta(minutes=30))
     )
     clock.shift += timedelta(minutes=59)
     assert ada.check_session(token) is True  # 59 minutes after the write, not 89
@@ -171,6 +156,7 @@ def test_a_sign_in_while_its_write_waits_gets_a_session_that_lasts_from_the_writ
     person(store, "Ada")
     signed = while_the_database_is_locked(
         db,
+        store,
         lambda: store.sign_in(
             "sso",
             "sub-Cy",
@@ -199,7 +185,7 @@ def test_a_reservation_that_waits_across_the_months_end_is_charged_to_the_new_mo
     limited = store.limited(Limits(model_budget_micros=1_000))
     assert limited.reserve_model_use(1_000) is not None  # November's budget is spent
     reserved = while_the_database_is_locked(
-        db, lambda: limited.reserve_model_use(400), move(clock, timedelta(seconds=1))
+        db, store, lambda: limited.reserve_model_use(400), move(clock, timedelta(seconds=1))
     )
     assert isinstance(reserved, str)  # December's budget is untouched
     assert store.usage("2026-12").model_micros == 400
@@ -216,6 +202,7 @@ def test_a_source_claim_is_judged_and_stamped_when_its_write_happens(store, cloc
     clock.shift = timedelta(minutes=1)
     taken = while_the_database_is_locked(
         db,
+        store,
         lambda: store.claim_source("traces"),
         move(clock, SOURCE_CLAIM_TTL),  # the old claim is past its limit by the write
     )

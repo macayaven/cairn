@@ -1,9 +1,9 @@
-"""Every command of `python -m cairn.server` answers a database a newer cairn wrote (its
-`PRAGMA user_version` above SCHEMA_VERSION) with exit 1 and one line on stderr: the word
-SchemaTooNew, both versions and what to do. Nothing on stdout, no traceback, nothing written,
-and `serve` never listens. The commands are read from the parser, so one added later is
-covered as soon as it has an entry in ARGS, or is left out by name in NO_DATABASE when it
-opens no database; the store's own refusal stays as it is."""
+"""Every command of `python -m cairn.server` answers a database a newer cairn wrote and this one
+may not run on (its `PRAGMA user_version` above SCHEMA_VERSION, and its floor too) with exit 1
+and one line on stderr: the word SchemaTooNew, the versions and what to do. Nothing on
+stdout, no traceback, nothing written, and `serve` never listens. The commands are read from
+the parser, so one added later is covered as soon as it has an entry in ARGS, or is left out by
+name in NO_DATABASE when it opens no database; the store's own refusal stays as it is."""
 
 import sqlite3
 from pathlib import Path
@@ -24,16 +24,22 @@ from cairn.store import DEFAULT_ACCOUNT_ID, SCHEMA_VERSION, SchemaTooNew, Store
 from cairn.web import cli
 
 NEWER = SCHEMA_VERSION + 1
-REFUSAL = f"the database has schema version {NEWER}; this cairn knows up to {SCHEMA_VERSION}"
+REFUSAL = (
+    f"the database has schema version {NEWER} and needs a cairn of schema version {NEWER} or"
+    f" later; this cairn knows up to {SCHEMA_VERSION}"
+)
 
 
 def newer_database(directory: Path) -> Path:
-    """A database as a newer cairn leaves it: made by this one, then stamped one version up."""
+    """A database as a newer cairn leaves it after a step that changes what this one relies
+    on: made by this one, then stamped one version up, with its floor raised to it (a step
+    that only adds would leave the floor, and this cairn would run on it)."""
     db = directory / "cairn.db"
     Store(db).close()
     con = sqlite3.connect(db)
     try:
         con.execute(f"PRAGMA user_version = {NEWER}")
+        con.execute("UPDATE oldest_build SET version = ?", (NEWER,))
         con.commit()
     finally:
         con.close()
@@ -102,6 +108,7 @@ def test_every_command_refuses_a_newer_database_in_one_line(tmp_path, capsys, li
     assert line == cli.NEWER_DATABASE.format(refusal=REFUSAL)
     assert "SchemaTooNew" in line
     assert f"schema version {NEWER}" in line and f"knows up to {SCHEMA_VERSION}" in line
+    assert f"needs a cairn of schema version {NEWER} or later" in line
     assert "the cairn that wrote it or a newer one" in line
     assert "restore the database from before the upgrade" in line
     assert str(tmp_path) not in line  # no path at all, so never one twice
@@ -154,7 +161,8 @@ def flat(text: str) -> str:
 
 # The line as the docstring and the guides quote it, with the two versions as placeholders.
 QUOTED = cli.NEWER_DATABASE.format(
-    refusal="the database has schema version <found>; this cairn knows up to <known>"
+    refusal="the database has schema version <found> and needs a cairn of schema version"
+    " <floor> or later; this cairn knows up to <known>"
 )
 
 
@@ -164,6 +172,7 @@ def test_the_docstring_quotes_the_line_main_prints():
     assert "stops every command with exit 1 and one line on stderr" in doc
     assert "nothing on stdout" in doc and "`serve` never starts listening" in doc
     printed = QUOTED.replace("<found>", str(NEWER)).replace("<known>", str(SCHEMA_VERSION))
+    printed = printed.replace("<floor>", str(NEWER))
     assert printed == cli.NEWER_DATABASE.format(refusal=REFUSAL)
 
 

@@ -86,11 +86,12 @@ def test_a_rendered_copy_says_where_it_comes_from_on_its_first_line(name):
 
 @pytest.mark.parametrize("name", GUIDES)
 def test_no_rendered_copy_holds_a_marker(name):
-    """No `{{` is left but Docker's own format in the run guide's commands
-    (`docker inspect cairn --format '{{.Image}}'`), which is a command, not a marker."""
+    """No `{{` is left but Docker's own formats in the run guide's commands
+    (`docker inspect cairn --format '{{.Image}}'` and `'{{json .RepoDigests}}'`), which
+    are commands, not markers."""
     text = rendered(name)
     assert MARKER.search(text) is None
-    assert re.findall(r"\{\{(?!\.Image\}\})", text) == []
+    assert re.findall(r"\{\{(?!\.Image\}\}|json \.RepoDigests\}\})", text) == []
 
 
 def test_the_copies_are_the_servers_fill_of_the_source_and_not_a_second_one(monkeypatch):

@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 REDIRECT = "http://127.0.0.1:33418/callback"
@@ -64,7 +65,7 @@ def test_a_narrowed_key_cannot_open_a_web_session(env, reach):
     key = env.store.create_key("narrow", **reach)
     before = dump(env.db)
     r = env.client.post("/login", data={"key": key}, headers=SAME_ORIGIN, follow_redirects=False)
-    assert r.status_code == 401 and "cairn_session" not in r.headers.get("set-cookie", "")
+    assert r.status_code == 401 and session_cookie() not in r.headers.get("set-cookie", "")
     assert dump(env.db) == before
 
 
@@ -117,7 +118,7 @@ def as_member(env) -> None:
             issuer="https://github.com",
             join="default",
         )
-    env.client.cookies.set("cairn_session", signed.token)
+    env.client.cookies.set(session_cookie(), signed.token)
 
 
 def post(env, path: str, data: dict | None = None):

@@ -16,7 +16,7 @@ One rule in one place, not a rule in each connector.
 A kind says whether its notes may go to a model
 - `SourceKind.withheld: bool = False`. True for every kind that reads Google Workspace data
   (`google_meet`, `google_calendar`, `google_drive`, and `gmail`, whose `via` is "gmail"),
-  False for `langfuse` and `granola`.
+  and, since review finding Privacy 4, for `langfuse` and `granola` too: every kind.
 - `cairn.sources.withheld_via() -> frozenset[str]`: the `via` of every kind in
   `KINDS` that is withheld, read when called (a kind added to `KINDS` later counts).
 
@@ -204,17 +204,17 @@ def arrange_records(caplog) -> list[logging.LogRecord]:
 # A kind says whether its notes may go to a model
 
 
-def test_the_google_kinds_are_withheld_and_the_others_are_not(monkeypatch):
+def test_the_google_kinds_are_withheld_and_the_others_are_too(monkeypatch):
     for name in GOOGLE:
         assert KINDS[name].withheld is True, name
-    for name in NOT_GOOGLE:
-        assert KINDS[name].withheld is False, name
+    for name in NOT_GOOGLE:  # Privacy 4: every kind the server reads is withheld by default
+        assert KINDS[name].withheld is True, name
     assert SourceKind(check=dict, open=dict, via="plain").withheld is False  # the default
     withheld = sources.withheld_via()
     assert isinstance(withheld, frozenset)
     assert withheld == {kind.via for kind in KINDS.values() if kind.withheld}
     assert {via(name) for name in GOOGLE} <= withheld and "gmail" in withheld
-    assert not {via(name) for name in NOT_GOOGLE} & withheld
+    assert {via(name) for name in NOT_GOOGLE} <= withheld
 
     stand_in = SourceKind(check=dict, open=dict, via="m2-stand-in", withheld=True)
     open_one = SourceKind(check=dict, open=dict, via="m2-open")
@@ -658,7 +658,8 @@ def test_without_a_model_the_setting_is_not_read(db, endpoint, monkeypatch, caps
     tidied = ["arrange", "--db", str(path), "--account", "acct_default", "--tidy"]
     assert server.main(tidied) == 0
     printed = capsys.readouterr()
-    assert printed.err == "" and "alpha/offer-letter: " in printed.out
+    others = [line for line in printed.err.splitlines() if not line.startswith("cairn.audit: ")]
+    assert others == [] and "alpha/offer-letter: " in printed.out  # stderr: audit lines only
     assert endpoint == []
 
 

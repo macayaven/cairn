@@ -968,7 +968,7 @@ def assert_windows(found: dict, expected: datetime) -> None:
 
 def test_the_kind_starts_off_writes_into_the_github_via_and_is_not_withheld(kind):
     assert kind.starts_off is True and kind.via == "github"
-    assert kind.withheld is False and "github" not in withheld_via()
+    assert kind.withheld is True and "github" in withheld_via()  # Privacy 4: every kind
     assert kind.describe is not None
     said = kind.describe(kind.check(config()))
     assert REPO in said and TOKEN not in said and TOKEN_ENV not in said

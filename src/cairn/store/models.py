@@ -190,6 +190,7 @@ class GrantInfo(BaseModel):
     # A1: the label of the key its approval was made with, as KeyInfo's.
     made_with: str | None = None
     made_with_revoked: bool = False
+    approver_id: str | None = None
 
 
 class Made(BaseModel):
@@ -263,6 +264,9 @@ class AuditEvent(BaseModel):
     action: str  # "note.saved", "key.created", ...
     project: str | None  # the project's name when the event is about one
     detail: dict[str, Any] = Field(default_factory=dict)
+    # Its number in its workspace, 1, 2, ... in the order events were stored (the row's `n`):
+    # what `list_audit(before=...)` pages by. None only for an event made outside the store.
+    n: int | None = None
 
 
 class Project(BaseModel):
@@ -384,6 +388,26 @@ class PageHead(BaseModel):
     version: int
     claims: int
     updated_at: str
+
+
+class NoteHead(BaseModel):
+    """A note as a project's list of notes shows it (UI and UX, note 8): never its text. Who
+    wrote it by kind and name (cairn.store.audit.WRITER_KINDS, or "unknown" for a note stored
+    before writers were recorded), whether it is still waiting for its page, and the slug of
+    the page its topic is filed under once it is not, when that page cites a passage of it
+    (None otherwise: its topic has no page, or the note was refused a place on it)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    title: str
+    created_at: str
+    source_ref: str | None
+    via: str | None
+    writer: str
+    writer_name: str | None
+    waiting: bool
+    page: str | None
 
 
 class SearchHit(BaseModel):
@@ -524,24 +548,30 @@ class WaitingNote(BaseModel):
 
 
 class Forgotten(BaseModel):
-    """What forgetting one note did (H5b): its id, the slugs of the pages rebuilt without it
-    and of the pages removed because nothing else held them up, each sorted."""
+    """What forgetting one note did (H5b): its id, the slugs of the pages of its project
+    rebuilt without it and of those removed because nothing else held them up, each sorted,
+    and how many pages of other projects of the workspace it rebuilt or removed: counted,
+    never named, since the one who forgets may not reach them."""
 
     model_config = ConfigDict(frozen=True)
 
     note_id: str
     rebuilt: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
+    elsewhere: int = 0
 
 
 class CompactionState(BaseModel):
-    """When a workspace was first deleted since the last compaction (None: none since), and
-    when the last compaction began (None: never). ISO 8601 UTC."""
+    """When a workspace was first deleted since the last compaction that finished (None:
+    none since), whether a rewrite covered every deletion recorded so that only emptying
+    the write-ahead log is left (`rewritten`), and when the last rewrite began (None:
+    never). ISO 8601 UTC, wall-clock times, as stored."""
 
     model_config = ConfigDict(frozen=True)
 
     deleted_at: str | None = None
     compacted_at: str | None = None
+    rewritten: bool = False
 
 
 class AccountSummary(BaseModel):

@@ -1,14 +1,16 @@
 {% extends "base.html" %}
+{% from "_components.html" import crumbs, noted %}
 {% block title %}{{ project }} graph{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ explorer_stylesheet }}">{% endblock %}
 {% block main %}
 <div class="graph-explorer">
-<p class="crumbs"><a href="/b/{{ project|seg }}">{{ project }}</a> /</p>
+{{ crumbs((("/b/" ~ (project|seg), project),)) }}
 <h1>{{ project }} graph</h1>
 <nav class="graph-views" aria-label="Graph views">
   <a href="{{ navigation.pages_href }}"{% if navigation.focus == "project" %} aria-current="page"{% endif %}>Pages</a>
   <a href="{{ navigation.notes_href }}"{% if navigation.focus == "notes" %} aria-current="page"{% endif %}>Notes</a>
 </nav>
+{% if navigation.find %}
 <form class="search graph-search" action="{{ navigation.href }}" method="get">
   <input type="hidden" name="focus" value="{{ navigation.focus }}">
   {% if navigation.limit is not none %}<input type="hidden" name="limit" value="{{ navigation.limit }}">{% endif %}
@@ -16,13 +18,28 @@
   <input id="graph-search" type="search" name="q" value="{{ navigation.search }}">
   <button type="submit">Find</button>
 </form>
-<p>{{ counts[navigation.item] }} {{ navigation.item }}{% if counts[navigation.item] != 1 %}s{% endif %} shown.{% if navigation.next %} <a rel="next" href="{{ navigation.next }}">{% if navigation.search %}Keep looking{% else %}Next batch{% endif %}</a>{% endif %}</p>
+{% endif %}
+<p>{{ navigation.shown }} {{ navigation.item }}{% if navigation.shown != 1 %}s{% endif %} shown.{% if navigation.next %} <a rel="next" href="{{ navigation.next }}">{% if navigation.search %}Keep looking{% else %}Next batch{% endif %}</a>{% endif %}</p>
+{% if navigation.no_relations %}
+<p>This view draws no relation between its pages: open a page's related pages to see them.</p>
+{% endif %}
+{% if navigation.evidence_href %}
+{% if edges %}
+<p>Each relationship below says the first reason a page is related to the page in focus. <a href="{{ navigation.evidence_href }}">The claims every reason rests on</a> are on its related pages.</p>
+{% if navigation.left_out %}<p>{{ navigation.left_out }}</p>{% endif %}
+{% elif navigation.left_out %}
+{# An answer that is not complete: no page was found, which is not that there is none. #}
+<p>No related page was found in what was looked at. {{ navigation.left_out }} <a href="{{ navigation.evidence_href }}">Its related pages</a> say what relates two pages.</p>
+{% else %}
+<p>No page is related to the page in focus. <a href="{{ navigation.evidence_href }}">Its related pages</a> say what relates two pages.</p>
+{% endif %}
+{% endif %}
 <p class="graph-legend"><strong>Graph legend</strong>
 {% for kind, mark in [("project", "◆"), ("page", "■"), ("claim", "▲"), ("passage", "●"), ("note", "✚")] %}
   <span><span data-graph-kind="{{ kind }}" aria-hidden="true">{{ mark }}</span> {{ kind }}</span>
 {% endfor %}
 </p>
-<div data-graph-interactive data-graph-focus="{{ navigation.focus }}">
+<div data-graph-interactive data-graph-focus="{{ navigation.centre }}">
 <div hidden data-graph-controls>
   <div class="choices graph-controls" role="group" aria-label="Graph controls">
     <button type="button" data-graph-action="mode" aria-pressed="false">3D view</button>
@@ -30,7 +47,7 @@
     <button type="button" data-graph-action="out">Zoom out</button>
     <button type="button" data-graph-action="fit">Fit graph</button>
   </div>
-  <p id="graph-help" class="meta">Drag to move the drawing, or to turn it in 3D. When the drawing has focus, the arrow keys move it and + or − zoom.</p>
+  <p id="graph-help" class="meta">Drag to move the drawing, or to turn it in 3D. When the drawing has focus, the arrow keys move it and + or − zoom. Where two names would cover each other, the one farther away is left out of the drawing; every name is in the list under Graph content.</p>
 </div>
 <div class="graph-diagram" role="region" aria-label="Graph diagram" tabindex="0">
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="{{ height }}" viewBox="0 0 1400 {{ height }}" aria-hidden="true">
@@ -57,13 +74,13 @@
 <h2>Graph content</h2>
 <ul>
 {% for node in nodes %}
-<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ node.label }}</a>{% else %}{{ node.label }}{% endif %}{% if node.explore_href %} <a href="{{ node.explore_href }}" aria-label="Open the view of {{ node.kind }} {{ node.label }}">Open its view</a>{% endif %}{% if node.kind == 'note' %}; source_ref: {{ node.source_ref or '' }}; via: {{ node.via or '' }}{% endif %}</li>
+<li id="{{ node.anchor }}" data-graph-area="list" data-graph-node="{{ node.id }}">{{ node.kind }}: {% if node.href %}<a href="{{ node.href }}">{{ noted(node.label) }}</a>{% else %}{{ noted(node.label) }}{% endif %}{% if node.explore_href %} <a href="{{ node.explore_href }}" aria-label="Open the view of {{ node.kind }} {{ node.label }}">Open its view</a>{% endif %}{% if node.related_href %} <a href="{{ node.related_href }}" aria-label="Open the related pages of {{ node.label }}">Related pages</a>{% endif %}{% if node.kind == 'note' %}{% if node.source_ref %}; source_ref: {{ noted(node.source_ref) }}{% endif %}{% if node.via %}; via: {{ node.via }}{% endif %}{% endif %}</li>
 {% endfor %}
 </ul>
 <h2>Relationships</h2>
 <ul>
 {% for edge in edges %}
-<li data-graph-area="list" data-graph-edge="{{ edge.number }}"><a href="#{{ edge.source.anchor }}">{{ edge.source.kind }}: {{ edge.source.label }}</a> {{ edge.kind }} <a href="#{{ edge.target.anchor }}">{{ edge.target.kind }}: {{ edge.target.label }}</a></li>
+<li data-graph-area="list" data-graph-edge="{{ edge.number }}"{% if edge.reason %} data-graph-reason="{{ edge.reason }}" data-graph-term="{{ edge.term }}" data-graph-more="{{ edge.more }}"{% endif %}><a href="#{{ edge.source.anchor }}">{{ edge.source.kind }}: {{ noted(edge.source.label) }}</a> {{ edge.kind }}{% if edge.code %} <bdi><code>{{ edge.code }}</code></bdi> with{% endif %} <a href="#{{ edge.target.anchor }}">{{ edge.target.kind }}: {{ noted(edge.target.label) }}</a>{% if edge.more %}, and {{ edge.more }} more {{ "reason" if edge.more == 1 else "reasons" }}{% endif %}{% if edge.href %} · <a href="{{ edge.href }}" aria-label="See the claims that relate {{ edge.target.label }} to {{ edge.source.label }}">See the claims</a>{% endif %}</li>
 {% endfor %}
 </ul>
 </div>

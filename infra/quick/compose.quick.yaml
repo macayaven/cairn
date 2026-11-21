@@ -1,0 +1,22 @@
+# The replica tasks alone use the bridge that can reach the VM's metadata service.
+# systemd runs Compose after a boot and a fresh settings read. on-failure still
+# restarts a failing container while Docker stays up.
+services:
+  cairn:
+    build: !reset null
+    restart: on-failure
+  caddy:
+    restart: on-failure
+  data-init:
+    build: !reset null
+  litestream-restore:
+    networks: [backup]
+  litestream:
+    restart: on-failure
+    networks: [backup]
+
+networks:
+  backup:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-cairn-backup

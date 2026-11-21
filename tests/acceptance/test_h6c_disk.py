@@ -55,6 +55,7 @@ from starlette.testclient import TestClient
 from cairn.plans import Plan, Plans
 from cairn.server import create_app
 from cairn.store import Limits, OverLimit, Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.acme.example/pool-1"
@@ -108,7 +109,7 @@ class World:
             "sso", f"sub-{name}", email, name, issuer=ISSUER, join="default"
         )
         view = self.store.for_account(signed.account_id, signed.user.id)
-        cookie = {"cookie": f"cairn_session={signed.token}"}
+        cookie = {"cookie": f"{session_cookie('https')}={signed.token}"}
         return SimpleNamespace(id=signed.user.id, name=name, cookie=cookie, view=view)
 
     def agent(self, who: SimpleNamespace) -> dict:

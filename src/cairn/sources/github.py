@@ -12,7 +12,8 @@ The kind ("github" in cairn.sources.KINDS)
   `backfill_days`, which is 0 unless given, so that switching a source on never pours an
   unknown amount of history into a project unasked. Below, `since` means that floor; it
   moves with each switch-on. Its notes are written
-  via "github", with the label "github". It is not withheld from a model. The
+  via "github", with the label "github". It is withheld from a model unless the operator
+  allows it, as every kind is (`SourceKind.withheld`). The
   project it proposes for a source that names none is DEFAULT_PROJECT, "github", whatever the
   repository: a repository's name can be longer than a project's may be, the other kinds
   propose one project a kind, and the repository is in every note's title.
@@ -189,12 +190,14 @@ from cairn.sources import (
     SourceError,
     SourceKind,
     fit,
-    holds_secret,
     names,
 )
+from cairn.sources import url as source_url
+from cairn.sources.config import check_env_name, check_projects
 from cairn.sources.fit import cut, fenced  # noqa: F401 (the cuts this kind makes, by name)
+from cairn.sources.http_policy import read_bounded, request_failure, safe_error_text
 from cairn.sources.timing import limit
-from cairn.store.memory import FIELD_MAX, is_project_name
+from cairn.store.memory import FIELD_MAX
 from cairn.store.usage import PASSAGE_KINDS, path_bytes  # noqa: F401 (named in its guide)
 
 DEFAULT_BASE_URL = "https://api.github.com"
@@ -215,8 +218,6 @@ SETTINGS = (
 SETTLE_MINUTES = (30, 0, 1440)  # the default, the least, the most
 LOOKBACK_DAYS = (30, 1, 365)
 BACKFILL_DAYS = (0, 0, 365)
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 # GitHub's account names: letters, digits and single hyphens, not at either end, at most 39.
 OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
@@ -263,9 +264,18 @@ def check_config(config: object) -> dict[str, Any]:
             f" {', '.join(SETTINGS)}"
         )
     checked: dict[str, Any] = {
-        "token_env": _check_token_env(config),
+        "token_env": check_env_name(
+            config,
+            "token_env",
+            kind="github",
+            holds="the GitHub token",
+            secret="token",
+            looks_like=_looks_like_a_credential,
+        ),
         "repo": _check_repo(config),
-        "projects": _check_projects(config),
+        "projects": check_projects(
+            config.get("projects", []), kind="github", looks_like=_looks_like_a_credential
+        ),
         "items": _check_items(config),
     }
     comments = config.get("comments", True)
@@ -277,26 +287,6 @@ def check_config(config: object) -> dict[str, Any]:
     checked["backfill_days"] = _whole(config, "backfill_days", BACKFILL_DAYS)
     checked["base_url"] = _check_base_url(config.get("base_url", DEFAULT_BASE_URL))
     return checked
-
-
-def _check_token_env(config: Mapping[str, Any]) -> str:
-    if "token_env" not in config:
-        raise ValueError(
-            "a github source needs token_env: the name of the environment variable that holds"
-            " the GitHub token"
-        )
-    token_env = config["token_env"]
-    if isinstance(token_env, str) and _looks_like_a_credential(token_env):
-        raise ValueError(
-            "token_env holds what looks like a token: put the token in an environment variable"
-            " of the process that syncs, and name that variable here"
-        )
-    if not isinstance(token_env, str) or not ENV_NAME.fullmatch(token_env):
-        raise ValueError(
-            "token_env names an environment variable (capitals, digits and _, at most 128),"
-            " which holds the GitHub token: the token itself never goes in a config"
-        )
-    return token_env
 
 
 def _check_repo(config: Mapping[str, Any]) -> str:
@@ -322,20 +312,6 @@ def _check_repo(config: Mapping[str, Any]) -> str:
     return repo
 
 
-def _check_projects(config: Mapping[str, Any]) -> list[str]:
-    projects = config.get("projects", [])
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError("projects names at most one project: a github source writes into one")
-    for project in projects:
-        if isinstance(project, str) and _looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
-
-
 def _check_items(config: Mapping[str, Any]) -> list[str]:
     items = config.get("items", list(ITEMS))
     if (
@@ -348,29 +324,15 @@ def _check_items(config: Mapping[str, Any]) -> list[str]:
 
 
 def _check_base_url(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 2048:
-        raise ValueError("base_url is the address of GitHub's API")
-    try:
-        parts = urlsplit(value.strip())
-        host = parts.hostname
-    except ValueError:
-        raise ValueError("base_url is not a URL") from None
-    if "@" in parts.netloc:
-        raise ValueError(
-            "base_url must not hold a user or password: the token comes from the environment"
-        )
-    scheme = parts.scheme.lower()
-    if not host or not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("base_url is https, or http on this machine")
-    if parts.query or parts.fragment or "?" in value or "#" in value:
-        raise ValueError("base_url has no query or fragment")
-    pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]
-    if any(_looks_like_a_credential(piece) for piece in pieces if piece):
-        raise ValueError(
-            "base_url looks like it holds a token: the token comes from the environment, named"
-            " by token_env"
-        )
-    return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    return source_url.check_base_url(
+        value,
+        what="GitHub's API",
+        comes_from="the token comes from the environment",
+        named_by="token_env",
+        holds="a token",
+        http_said="on this machine",
+        looks_like=_looks_like_a_credential,
+    )
 
 
 def describe(config: Mapping[str, Any]) -> str:
@@ -1019,22 +981,9 @@ def shown_message(message: object, secrets: tuple[str, ...]) -> str | None:
     message = message.strip()
     if not message or len(message) > MESSAGE_MAX or any(c in message for c in "\r\n"):
         return None
-    if holds_secret(message, secrets) or _looks_like_a_credential(message):
+    if not safe_error_text(message, secrets, looks_like=_looks_like_a_credential):
         return None
     return message
-
-
-async def _bounded(response: httpx.Response, most: int) -> bytes | None:
-    """The body, or None past `most` bytes."""
-    declared = response.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > most:
-        return None
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) > most:
-            return None
-    return bytes(body)
 
 
 def _limited(status: int, headers: httpx.Headers) -> bool:
@@ -1504,7 +1453,7 @@ class GitHubSource:
             ):
                 status = response.status_code
                 if status == 200:
-                    body = await _bounded(response, MAX_RESPONSE_BYTES)
+                    body = await read_bounded(response, MAX_RESPONSE_BYTES)
                     if body is None:
                         raise SourceError(
                             f"GitHub's answer to {self._what(endpoint, number)} is larger than"
@@ -1519,12 +1468,12 @@ class GitHubSource:
                     return Reply(200, parsed, _next_page(response.headers.get("link")))
                 if _limited(status, response.headers):
                     raise _Stopped(limited=True)
-                error = await _bounded(response, MAX_ERROR_BYTES)
+                error = await read_bounded(response, MAX_ERROR_BYTES)
         except TimeoutError:
             raise _Stopped(limited=False) from None
         except httpx.HTTPError as failed:
             raise SourceError(
-                f"cannot reach GitHub for {self._what(endpoint, number)}: {type(failed).__name__}"
+                request_failure(failed, f"cannot reach GitHub for {self._what(endpoint, number)}")
             ) from None
         message = None
         try:
@@ -1595,4 +1544,5 @@ KIND = SourceKind(
     switch_on_with=switch_on_with,
     default_project=DEFAULT_PROJECT,
     settings=SETTINGS_HELP,
+    withheld=True,
 )

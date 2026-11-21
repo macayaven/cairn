@@ -5,16 +5,30 @@ import logging
 
 import pytest
 from starlette.testclient import TestClient
+from test_rt1_forget_workspace_held import borrowed, citing, passage
 
 from cairn.compiler import compile_note
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.acme.example/pool-1"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
 WEEKLY = "# Weekly\n\n- Brook owns the rollback.\n"
 HIRING = "# Hiring\n\nDee starts in March.\n"
+# What a delete and a forget do to a page of another project still citing the notes, in the
+# privacy guide's words (test_guide_facts_own_project_unit: PRIVACY_PROJECT, PRIVACY_NOTE).
+DELETE_ELSEWHERE = (
+    "A page of another project cannot cite its notes; should one still cite them, which only a"
+    " program that wrote into the database directly, or an older version's writer still open"
+    " across the upgrade, could leave, it changes as it does when a note is forgotten."
+)
+FORGET_ELSEWHERE = (
+    "1 page of other projects of this workspace cites the note, which only a program that wrote"
+    " into the database directly, or an older version's writer still open across the upgrade,"
+    " could leave. Each changes or goes in the same way. They are counted here and not named."
+)
 
 
 @pytest.fixture
@@ -30,7 +44,7 @@ def world(tmp_path):
         note, _ = view.add_note(project.id, text, source_ref="mail:1")
         assert compile_note(view, note).status == "saved"
         notes.append(note)
-    headers = {"cookie": f"cairn_session={signed.token}", **SAME_ORIGIN}
+    headers = {"cookie": f"{session_cookie('https')}={signed.token}", **SAME_ORIGIN}
     with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
         yield store, view, client, headers, notes
     store.close()
@@ -48,10 +62,20 @@ def test_the_forget_page_says_what_changes_what_goes_and_what_it_means(world):
     assert "Pages that go" in gone and 'href="/b/team/p/hiring"' in gone
 
 
+def test_the_forget_page_counts_a_page_of_another_project_still_citing_the_note(world):
+    store, view, client, headers, (_, _, hiring) = world
+    desk = view.create_project("desk")
+    borrowed(store, desk.id, "embargo", citing(1, "Dee starts in March.", passage(view, hiring)))
+    shown = client.get(f"/b/team/notes/{hiring.id}/forget", headers=headers).text
+    assert FORGET_ELSEWHERE in " ".join(shown.split())
+    assert "embargo" not in shown.lower()
+
+
 def test_the_delete_page_counts_what_goes_and_asks_again_after_another_name(world):
     store, _, client, headers, _ = world
     shown = client.get("/b/team/delete", headers=headers).text
     assert "3 notes" in shown and "2 pages" in shown and "cannot be undone" in shown
+    assert DELETE_ELSEWHERE in " ".join(shown.split())
     wrong = client.post("/b/team/delete", data={"confirm": "Team"}, headers=headers)
     assert wrong.status_code == 400 and 'role="alert"' in wrong.text
     assert 'name="confirm"' in wrong.text

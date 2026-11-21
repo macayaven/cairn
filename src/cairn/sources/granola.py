@@ -166,14 +166,16 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import unquote, urlsplit
 
 import httpx
 
 from cairn.guard import PatternGuard
 from cairn.sources import Clock, NoteDraft, Pulled, Skip, SourceError, SourceKind, fit, names
+from cairn.sources import url as source_url
+from cairn.sources.config import check_env_name, check_projects
+from cairn.sources.http_policy import read_bounded, request_failure
 from cairn.sources.timing import limit
-from cairn.store.memory import TITLE_MAX, is_project_name
+from cairn.store.memory import TITLE_MAX
 
 DEFAULT_BASE_URL = "https://public-api.granola.ai/v1"
 VIA = "granola"
@@ -230,8 +232,6 @@ SETTINGS = (
 )
 SETTLE_MINUTES = (30, 0, 1440)  # the default, the least, the most
 LOOKBACK_DAYS = (30, 1, 365)
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 SETTING_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")  # a name a refusal may repeat
 FOLDER_ID = re.compile(r"[Ff][Oo][Ll]_[a-zA-Z0-9]{14}")
 SPACE_ID = re.compile(r"[Ss][Pp][Aa]_[a-zA-Z0-9]{14}")
@@ -276,23 +276,20 @@ def check_config(config: object) -> dict[str, Any]:
             f"a granola source does not take one of the settings given: it takes"
             f" {', '.join(SETTINGS)}"
         )
-    if "key_env" not in config:
-        raise ValueError(
-            "a granola source needs key_env: the name of the environment variable that holds"
-            " the Granola API key"
-        )
-    key_env = config["key_env"]
-    if isinstance(key_env, str) and _looks_like_a_credential(key_env):
-        raise ValueError(
-            "key_env holds what looks like a key: put the key in an environment variable of"
-            " the process that syncs, and name that variable here"
-        )
-    if not isinstance(key_env, str) or not ENV_NAME.fullmatch(key_env):
-        raise ValueError(
-            "key_env names an environment variable (capitals, digits and _, at most 128),"
-            " which holds the Granola API key: the key itself never goes in a config"
-        )
-    checked: dict[str, Any] = {"key_env": key_env, "projects": _check_projects(config)}
+    key_env = check_env_name(
+        config,
+        "key_env",
+        kind="granola",
+        holds="the Granola API key",
+        secret="key",
+        looks_like=_looks_like_a_credential,
+    )
+    checked: dict[str, Any] = {
+        "key_env": key_env,
+        "projects": check_projects(
+            config.get("projects", []), kind="granola", looks_like=_looks_like_a_credential
+        ),
+    }
     checked["base_url"] = _check_base_url(config.get("base_url", DEFAULT_BASE_URL))
     given = [s for s in ("folder_id", "space_id") if config.get(s) is not None]
     if len(given) > 1:
@@ -317,44 +314,16 @@ def check_config(config: object) -> dict[str, Any]:
     return checked
 
 
-def _check_projects(config: Mapping[str, Any]) -> list[str]:
-    projects = config.get("projects", [])
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError("projects names at most one project: a granola source writes into one")
-    for project in projects:
-        if isinstance(project, str) and _looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
-
-
 def _check_base_url(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 2048:
-        raise ValueError("base_url is the address of Granola's API")
-    try:
-        parts = urlsplit(value.strip())
-        host = parts.hostname
-    except ValueError:
-        raise ValueError("base_url is not a URL") from None
-    if "@" in parts.netloc:
-        raise ValueError(
-            "base_url must not hold a user or password: the key comes from the environment"
-        )
-    scheme = parts.scheme.lower()
-    if not host or not (scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS)):
-        raise ValueError("base_url is https, or http on this machine")
-    if parts.query or parts.fragment or "?" in value or "#" in value:
-        raise ValueError("base_url has no query or fragment")
-    pieces = [value, *host.split("."), *(unquote(s) for s in parts.path.split("/"))]
-    if any(_looks_like_a_credential(piece) for piece in pieces if piece):
-        raise ValueError(
-            "base_url looks like it holds a credential: the key comes from the environment,"
-            " named by key_env"
-        )
-    return f"{scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    return source_url.check_base_url(
+        value,
+        what="Granola's API",
+        comes_from="the key comes from the environment",
+        named_by="key_env",
+        holds="a credential",
+        http_said="on this machine",
+        looks_like=_looks_like_a_credential,
+    )
 
 
 def open_source(
@@ -408,6 +377,7 @@ KIND = SourceKind(
     starts_off=True,
     describe=describe,
     default_project=DEFAULT_PROJECT,
+    withheld=True,
 )
 
 
@@ -1035,14 +1005,19 @@ class GranolaSource:
                 ):
                     status = response.status_code
                     if status == 200:
-                        return status, _json(await _bounded(response, endpoint), endpoint)
+                        body = await read_bounded(response, MAX_RESPONSE_BYTES)
+                        if body is None:
+                            raise SourceError(
+                                f"Granola's answer to {endpoint} is larger than this server reads"
+                            )
+                        return status, _json(body, endpoint)
                     code = await _error_code(response)
                     wait = retry_wait(response.headers.get("retry-after"))
             except TimeoutError:
                 raise _Spent("its deadline, which an answer still arriving passed") from None
             except httpx.HTTPError as error:
                 raise SourceError(
-                    f"cannot reach Granola for {endpoint}: {type(error).__name__}"
+                    request_failure(error, f"cannot reach Granola for {endpoint}")
                 ) from None
             if status in allow:
                 return status, code
@@ -1109,18 +1084,6 @@ def _page(body: object, items: str, endpoint: str) -> tuple[list[Any], str | Non
     return body[items], cursor if more else None
 
 
-async def _bounded(response: httpx.Response, endpoint: str) -> bytes:
-    declared = response.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
-        raise SourceError(f"Granola's answer to {endpoint} is larger than this server reads")
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) > MAX_RESPONSE_BYTES:
-            raise SourceError(f"Granola's answer to {endpoint} is larger than this server reads")
-    return bytes(body)
-
-
 def _json(body: bytes, endpoint: str) -> Any:
     try:
         return json.loads(body)
@@ -1131,11 +1094,9 @@ def _json(body: bytes, endpoint: str) -> Any:
 async def _error_code(response: httpx.Response) -> str | None:
     """The error's `code` (VALIDATION_ERROR, FORBIDDEN, ...): the only part of an error's
     body cairn reads. Its message is never read, shown or kept."""
-    body = bytearray()
-    async for part in response.aiter_bytes():
-        body += part
-        if len(body) > MAX_ERROR_BYTES:
-            return None
+    body = await read_bounded(response, MAX_ERROR_BYTES)
+    if body is None:
+        return None
     try:
         code = json.loads(body).get("code")
     except (ValueError, RecursionError, AttributeError):

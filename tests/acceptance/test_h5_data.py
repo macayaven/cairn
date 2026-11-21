@@ -356,7 +356,11 @@ def test_the_account_page_exports_the_workspace(env):
     assert "export.json" in names and f"projects/ops/pages/{SLUG}.md" in names
     by_key = env.client.get("/api/account/export", headers={"x-api-key": env.key})
     assert zipfile.ZipFile(io.BytesIO(by_key.content)).namelist() == names
-    assert dump(env.db) == before
+    # An export writes one thing: its audit event, who and when (each download is one).
+    events = [e.action for e in env.view.list_audit(2)]
+    assert events == ["workspace.exported", "workspace.exported"]
+    unaudited = [line for line in dump(env.db).splitlines() if "workspace.exported" not in line]
+    assert unaudited == before.splitlines()
 
     env.client.cookies.clear()
     assert env.client.get("/account/export", follow_redirects=False).status_code == 303

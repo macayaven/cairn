@@ -76,11 +76,14 @@ def test_the_same_note_for_another_topic_is_refused_naming_its_page(memory, stor
     assert [c.id for c in store.list_notes(store.list_projects()[0].id)] == [first["note_id"]]
 
 
-def test_a_waiting_note_sent_for_another_topic_names_the_page_it_will_be_filed_on(memory, store):
+def test_a_waiting_note_sent_for_another_topic_names_no_page_and_says_it_waits(memory, store):
+    # As the Notes page reads it: a waiting note is on no page yet (Store.note_page).
     project = store.list_projects()[0]
     store.add_note(project.id, TEXT, topic="Retry policy", source_ref="r")  # not compiled
-    with pytest.raises(FiledOnce, match="'retry-policy'"):
+    with pytest.raises(FiledOnce) as refused:
         memory.note("ops", TEXT, topic="Backoff", source_ref="r")
+    assert refused.value.page is None and WAITS in str(refused.value)
+    assert "retry-policy" not in str(refused.value)
     assert store.list_pages(project.id) == []
 
 
@@ -107,6 +110,10 @@ def test_a_note_that_keeps_losing_is_answered_waiting_and_waits(memory, store, m
     answer = memory.note("ops", TEXT, topic="Relay")
     assert answer["status"] == WAITING and answer["message"] == WAITS
     assert answer["page"] == "relay" and answer["violations"][0].startswith("compile.stale_page")
+    # Decision 178: the page's current version, which does not hold the note yet.
+    project_id = store.list_projects()[0].id
+    assert answer["version"] == store.get_page(project_id, "relay").version
+    assert store.note_page(project_id, answer["note_id"]) == (True, None)
     assert [n.note_id for n in store.waiting_notes()] == [answer["note_id"]]
     assert "note.rejected" not in [event.action for event in store.list_audit()]
 

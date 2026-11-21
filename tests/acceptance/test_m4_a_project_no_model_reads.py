@@ -100,6 +100,7 @@ from cairn.gate import lint_gate
 from cairn.llm import Reply
 from cairn.server import create_app
 from cairn.store import SCHEMA_VERSION, Limits, Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.example.test/pool-m4"
@@ -115,10 +116,11 @@ ALLOWED_SAID = (
     " their claims in order."
 )
 NEVER_SAID = (
-    "Models: never. No model is sent this project's pages, whatever their notes say or the"
-    " operator set. Pages already arranged stay as they are."
+    "Models: never. A model the operator connects is not sent this project's pages, whatever"
+    " their notes say or the operator set. Pages already arranged stay as they are."
 )
 PERSONAL_SAID = "Personal notes start this way."
+UNDECIDED_SAID = "Models: not decided. Nobody has chosen for this project"  # Privacy 4
 
 # Six claims each, the first line twice, so a tidy folds it.
 LAUNCH_ONE = (
@@ -211,7 +213,7 @@ class Watch:
     counts them."""
 
     def __init__(self, store: Store) -> None:
-        self.con = store._con
+        self.store = store
 
     def count(self, call) -> int:
         seen: list[str] = []
@@ -224,11 +226,11 @@ class Watch:
                 return
             seen.append(text)
 
-        self.con.set_trace_callback(traced)
+        self.store._observe(trace=traced)
         try:
             call()
         finally:
-            self.con.set_trace_callback(None)
+            self.store._observe(trace=None)
         return len(seen)
 
 
@@ -268,7 +270,7 @@ class World:
         return SimpleNamespace(
             id=signed.user.id,
             name=name,
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"{session_cookie('https')}={signed.token}"},
             view=self.store.for_account(signed.account_id, signed.user.id),
         )
 
@@ -637,6 +639,11 @@ def test_each_change_is_one_audit_entry_naming_who_the_project_and_the_new_state
 
 def test_the_project_s_page_says_the_state_and_offers_the_switch_to_whoever_may_change_it(world):
     form = 'action="/b/launch/models"'
+    # Privacy 4: nobody chose yet, so the page says so and offers both choices.
+    undecided = world.client.get("/b/launch", headers=world.ada.cookie)
+    assert UNDECIDED_SAID in visible(undecided.text) and ALLOWED_SAID not in visible(undecided.text)
+    assert 'name="models" value="allowed"' in undecided.text
+    world.cy.view.set_project_models(world.launch.id, "allowed")
     for who in (world.ada, world.cy, world.dee):
         shown = world.client.get("/b/launch", headers=who.cookie)
         assert shown.status_code == 200
@@ -731,7 +738,7 @@ def test_it_is_kept_in_the_settings_and_goes_with_its_project(world):
     con = sqlite3.connect(world.db)
     try:
         (version,) = con.execute("PRAGMA user_version").fetchone()
-        assert version == SCHEMA_VERSION == 28
+        assert version == SCHEMA_VERSION == 32
         named = "SELECT COUNT(*) FROM settings WHERE instr(name, ?) > 0 OR instr(value, ?) > 0"
         assert con.execute(named, (launch.id, launch.id)).fetchone() == (1,)
         assert world.cy.view.delete_project(launch.id) is True

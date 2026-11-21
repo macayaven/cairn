@@ -335,18 +335,24 @@ def test_a_narrowed_view_cannot_leave_its_workspace(store, ids, narrowing):
 # a function of the fixture's ids and of a note, span and page in "api".
 PROJECT_CALLS = {
     "list_projects": lambda d: (),
+    "writable_projects": lambda d: (),  # K1: those the person may write to
     "get_project": lambda d: (d["api"],),
     "get_note": lambda d: (d["note"],),
     "holds_note": lambda d: (d["api"], "# Retries\n\nQuill retries.\n"),
     "list_notes": lambda d: (d["api"],),
+    "notes_part": lambda d: (d["api"], 10),  # UI and UX 8: a part of the notes
+    "note_page": lambda d: (d["api"], d["note"]),  # whether a note waits, and the page citing it
     "note_spans": lambda d: (d["note"],),
     "get_spans": lambda d: ([d["span"]],),
     "spans_within": lambda d: ([d["span"]], 10_000),  # Help's narrow reads
+    "passages_of_other_projects": lambda d: (d["api"], "retries", 1),  # report 9: of a page
     "note_writers": lambda d: ([d["note"]],),  # A1: who wrote a note
+    "note_origins": lambda d: ([d["note"]],),  # 8.1, 8.5: and when, and whether from Slack
     "get_page": lambda d: (d["api"], "retries"),
     "page_claims": lambda d: (d["api"], "retries", 10_000),
     "page_for_model": lambda d: (d["api"], "retries"),  # M4: the page and its project's switch
     "kept_from_models": lambda d: ([d["api"]],),
+    "models_choices": lambda d: ([d["api"]],),  # Privacy 4: the three states
     "list_pages": lambda d: (d["api"],),
     "page_versions": lambda d: (d["api"], "retries"),
     "page_counts": lambda d: (),  # Q1: the bounded reads
@@ -360,6 +366,7 @@ PROJECT_CALLS = {
     "taken_slugs": lambda d: (d["api"], ["retries", "later"]),
     "search": lambda d: ("quill",),
     "find": lambda d: ("quill",),
+    "related_pages": lambda d: (d["api"], "retries"),  # the pages related to "retries"
     "add_note": lambda d: (d["api"], "# Later\n\nQuill again.\n"),
     "save_page": lambda d: (d["api"], "later", "Later", "", ()),
     "record_note": lambda d: (d["api"], "refused", {"rules": ["jwt"]}),
@@ -401,7 +408,10 @@ def section_hook(monkeypatch):
 
 
 def answered(result):
-    """What a call gave of a project's data: a search's hits, without what it left out."""
+    """What a call gave of a project's data: a search's hits, without what it left out; and
+    nothing for note_page's answer about a note out of reach, (False, None)."""
+    if result == (False, None):
+        return None
     return result.hits if isinstance(result, Found) else result
 
 

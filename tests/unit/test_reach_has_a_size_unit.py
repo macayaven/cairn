@@ -321,6 +321,19 @@ class ObservedConnection:
         return ObservedBlob()
 
 
+def observe_reads(store, before_blob=None) -> ObservedConnection:
+    """Every read of `store` from now on goes through one ObservedConnection over a reader of
+    its pool: reads run on the store's read-only connections (cairn.store.base.Readers), not
+    on its writer."""
+    readers = store._state.readers
+    real = readers.take(store._state.observers)
+    readers.give(real)  # back in the pool, so closing the store closes it
+    observed = ObservedConnection(real, before_blob=before_blob)
+    readers.take = lambda observers: observed
+    readers.give = lambda con: None
+    return observed
+
+
 @pytest.fixture(params=["key", "token"])
 def admission(tmp_path, request):
     """Both real admission paths, with an unrelated grant to distinguish joined rowids."""
@@ -391,8 +404,7 @@ def test_admission_records_lookup_cost_and_reads_only_scoped_bounded_blobs(admis
     """Eager text/CAST reads regress allocation; NULL must remain every project with no blob."""
     if unrestricted:
         write_reach(admission, None)
-    observed = ObservedConnection(admission.store._con)
-    admission.store._con = observed
+    observed = observe_reads(admission.store)
     result = admission.identify()
     assert result is not None
     principal, identity = result
@@ -429,8 +441,7 @@ def test_admission_records_lookup_cost_and_reads_only_scoped_bounded_blobs(admis
 def test_stored_reach_byte_and_entry_boundaries(admission, value, admitted, read):
     """A byte or entry overflow must refuse, never become the unrestricted NULL reach."""
     write_reach(admission, value)
-    observed = ObservedConnection(admission.store._con)
-    admission.store._con = observed
+    observed = observe_reads(admission.store)
     result = admission.identify()
     assert (result is not None) is admitted
     if admitted:
@@ -458,8 +469,7 @@ def test_reach_and_identity_share_a_snapshot_against_a_second_connection(admissi
                 (json.dumps([admission.other]), admission.identity),
             )
 
-    observed = ObservedConnection(admission.store._con, before_blob=change_after_metadata)
-    admission.store._con = observed
+    observed = observe_reads(admission.store, before_blob=change_after_metadata)
     result = admission.identify()
     assert result is not None
     assert (result[0].projects, result[0].access) == ((admission.project,), "read")
@@ -474,8 +484,7 @@ def test_unknown_or_revoked_credentials_open_no_reach_blob(admission):
         admission.store.revoke_key("scoped")
     else:
         admission.store.revoke_grant(admission.identity)
-    observed = ObservedConnection(admission.store._con)
-    admission.store._con = observed
+    observed = observe_reads(admission.store)
     assert admission.identify() is None
     assert observed.opens == 0
 
@@ -495,8 +504,7 @@ def test_non_admitted_tokens_open_no_grant_blob(tmp_path, refusal):
         if refusal == "wrong-audience-malformed":
             with store._write() as con:
                 con.execute("UPDATE oauth_grants SET projects = 'null'")
-        observed = ObservedConnection(store._con)
-        store._con = observed
+        observed = observe_reads(store)
         result = store.identify_token(
             pair.refresh_token if refusal == "refresh" else pair.access_token,
             audience="https://other.example.test" if refusal.startswith("wrong-audience") else BASE,

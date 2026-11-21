@@ -19,6 +19,7 @@ from cairn.store import (
     Store,
 )
 from cairn.web.sweeper import Sweeper
+from wait_helpers import wait_for_event
 
 ISSUER = "https://id.example.test/pool-1"
 AUDIENCE = "https://cairn.example.test/mcp"
@@ -241,16 +242,27 @@ def test_a_failing_sweep_is_logged_by_its_type_and_the_loop_goes_on(world, monke
     sweeper = Sweeper(world.store, 0.01)
 
     async def until_swept() -> None:
+        swept = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        run_once = sweeper.run_once
+
+        def observed():
+            removed = run_once()
+            if removed:
+                loop.call_soon_threadsafe(swept.set)
+            return removed
+
+        monkeypatch.setattr(sweeper, "run_once", observed)
         task = asyncio.create_task(sweeper.loop())
         try:
-            while world.rows("SELECT digest FROM sessions"):
-                await asyncio.sleep(0.01)
-                assert not task.done(), task.exception()
+            await wait_for_event(swept, "sweep did not remove the expired session")
         finally:
             task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
     with caplog.at_level(logging.INFO, logger="cairn.access"):
-        asyncio.run(asyncio.wait_for(until_swept(), 5))
+        asyncio.run(until_swept())
     assert calls[:2] == [0, 1]
     failed, done = [r for r in caplog.records if r.getMessage().startswith("sweep")][:2]
     assert failed.getMessage() == "sweep failed: OperationalError" and failed.status == 500

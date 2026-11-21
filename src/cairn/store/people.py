@@ -444,7 +444,7 @@ class PeopleMethods(StoreBase):
             account = (self._account_id, user_id)
             # their connected Google accounts here go with them, their sources switched off
             # (cairn.store.hosted); Google's permission is ended after this write, by the rule
-            dropped = self._drop_hosted_of(con, user_id)  # type: ignore[attr-defined]
+            dropped = self._drop_hosted_of(con, user_id)
             grants = "(SELECT id FROM oauth_grants WHERE account_id = ? AND user_id = ?)"
             keys = con.execute(
                 "DELETE FROM api_keys WHERE account_id = ? AND user_id = ?", account
@@ -459,6 +459,10 @@ class PeopleMethods(StoreBase):
                 "DELETE FROM sessions WHERE account_id = ? AND user_id = ?",
                 "DELETE FROM project_people WHERE user_id = ?2 AND project_id IN"
                 " (SELECT id FROM projects WHERE account_id = ?1)",
+                "DELETE FROM slack_people WHERE user_id = ?2 AND install_id IN"  # K1: links
+                " (SELECT id FROM slack_installs WHERE account_id = ?1)",
+                "DELETE FROM slack_link_offers WHERE user_id = ?2 AND install_id IN"  # K1: a yes
+                " (SELECT id FROM slack_installs WHERE account_id = ?1)",
                 "UPDATE projects SET maker_id = NULL WHERE account_id = ? AND maker_id = ?",
                 "DELETE FROM memberships WHERE account_id = ? AND user_id = ?",
             ):
@@ -476,7 +480,7 @@ class PeopleMethods(StoreBase):
                 con.execute("DELETE FROM users WHERE id = ?", (user_id,))
             detail = {"member": user_id, "role": held, "keys": keys, "agents": agents}
             self._audit(con, "member.removed", detail=detail)
-        self._queue_revocations(dropped)  # type: ignore[attr-defined]
+        self._queue_revocations(dropped)
         return True
 
     def _join_unless_removed(

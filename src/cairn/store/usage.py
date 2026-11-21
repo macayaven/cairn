@@ -391,7 +391,7 @@ class UsageMethods(StoreBase):
         encoded = text.encode()
         with self._read() as con:
             try:
-                self._require_project(con, project_id)  # type: ignore[attr-defined]
+                self._require_project(con, project_id)
             except (KeyError, PermissionError):
                 return  # the write says so, as it would without a cap
             held = con.execute(
@@ -423,18 +423,29 @@ class UsageMethods(StoreBase):
         the oldest first: the latest is always kept, and since a page's next version is its
         highest plus one, version numbers never start again. Without a plan (no resolver),
         the server's bound (Q1; cairn.store.history.bound_history) holds too, the lower of
-        the two; with one, the plan's alone."""
+        the two; with one, the plan's alone. For one page the statement names its slug, so
+        its versions are found by the primary key and the page's other neighbours are never
+        read (a save costs the page, not the project); for a whole project it visits each
+        page of the project."""
         keep = self._caps(con)[0].versions_per_page
         bound = self._state.keep_versions
         if bound is not None and not self._resolvers:
             keep = bound if keep is None else min(keep, bound)
         if keep is None:
             return
+        if slug is not None:
+            con.execute(
+                "DELETE FROM page_versions WHERE project_id = ?1 AND slug = ?2"
+                " AND version <= (SELECT MAX(p.version) FROM page_versions AS p"
+                " WHERE p.project_id = ?1 AND p.slug = ?2) - ?3",
+                (project_id, slug, keep),
+            )
+            return
         con.execute(
-            "DELETE FROM page_versions WHERE project_id = ?1 AND (?2 IS NULL OR slug = ?2)"
+            "DELETE FROM page_versions WHERE project_id = ?1"
             " AND version <= (SELECT MAX(p.version) FROM page_versions AS p"
-            " WHERE p.project_id = page_versions.project_id AND p.slug = page_versions.slug) - ?3",
-            (project_id, slug, keep),
+            " WHERE p.project_id = page_versions.project_id AND p.slug = page_versions.slug) - ?2",
+            (project_id, keep),
         )
 
     def _keep_history(self, con: sqlite3.Connection) -> None:

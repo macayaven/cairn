@@ -82,7 +82,9 @@ def test_an_export_says_each_projects_choice(before):
     # A build before this one reads a project by these keys alone and passes any other by:
     # the entry is what it was, with one key more.
     old = {"id", "name", "description", "kind", "created_at", "notes", "pages"}
-    assert all(set(project) == old | {"models"} for project in manifest["projects"])
+    assert all(
+        set(project) == old | {"models", "models_decided"} for project in manifest["projects"]
+    )
     said = {project["name"]: project["models"] for project in manifest["projects"]}
     assert said == {"open-plans": "allowed", "shut-plans": "never", "diary": "never"}
 
@@ -129,8 +131,8 @@ def test_an_archive_written_before_imports_as_before_and_its_notice_says_so(befo
     assert notice.startswith("Every imported project is private")  # the access sentence stays
     assert (
         "The archive does not say which projects were kept from models, so each arrived at"
-        " Models as a new project of its kind does: Personal notes at never, the others at"
-        " allowed."
+        " Models as a new project of its kind does: Personal notes at never, the others not"
+        " decided."
     ) in notice
     assert "arrived at Models never" not in notice
 

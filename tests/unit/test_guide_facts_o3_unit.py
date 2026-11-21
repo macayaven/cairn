@@ -42,22 +42,26 @@ def replica_policy() -> str:
 # infra/gcp/README.md
 
 
-def test_the_table_of_what_is_made_names_the_four_alerts():
+def test_the_table_of_what_is_made_names_the_eight_alerts():
     says(
         flat(INFRA),
         "| Monitoring | an uptime check on `https://DOMAIN/healthz` and an email alert; a second"
         " email alert when Litestream logs an error; a third when the replica check stops"
-        " saying the replica is current; a fourth when a compaction keeps not finishing"
-        " ([Alerts](#alerts)) |",
+        " saying the replica is current; a fourth when a compaction keeps not finishing;"
+        " four more on the host itself: a disk above 80 percent, a container killed for"
+        " memory, a unit restarting in a loop, and Caddy failing to obtain or renew a"
+        " certificate ([Alerts](#alerts)) |",
     )
-    assert MONITORING.count('resource "google_monitoring_alert_policy"') == 4
+    # Four policies of their own, and one block for the four host alerts (for_each).
+    assert MONITORING.count('resource "google_monitoring_alert_policy"') == 5
+    assert "for_each = local.host_alerts" in MONITORING
 
 
 def test_the_alerts_section_says_what_each_alert_means():
     said = section(INFRA, "## Alerts")
     says(
         said,
-        "All four alerts send email to `alert_email`.",
+        "All eight alerts send email to `alert_email`.",
         "**The uptime alert** fires while `https://DOMAIN/healthz` fails from more than one"
         " region for three minutes.",
         "It is also the alert for a VM that is off or cannot boot: nothing answers.",
@@ -167,12 +171,12 @@ def test_the_runbook_says_how_to_check_the_replica_is_current_and_what_proves_it
     assert 'msg="replica sync recovered"' in rehearse.RECOVERED
 
 
-def test_the_cost_table_counts_four_alert_policies_and_prices_the_log_based_one():
+def test_the_cost_table_counts_eight_alert_policies_and_prices_the_log_based_ones():
     said = section(INFRA, "## Monthly cost items")
     says(
         said,
-        "| Cloud Logging and Monitoring: container logs, one uptime check, four alert policies"
-        " (one of them log-based, two on log-based metrics), two log-based metrics | log volume"
+        "| Cloud Logging and Monitoring: container logs, one uptime check, eight alert policies"
+        " (five of them log-based, two on log-based metrics), two log-based metrics | log volume"
         " | not priced yet beyond the free allowance |",
         "The replica alert reads log lines that already arrive, so it adds no log volume.",
         "Google's pricing examples count a log-based alerting policy as one metric reference at"

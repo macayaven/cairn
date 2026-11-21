@@ -22,6 +22,9 @@ Contract (frozen by tests/acceptance/test_t2_facts.py and tests/gold/t2_facts_sy
   finds. A fact that holds the whole run reads as before, and so does normalize() (G2; see
   _whole_runs).
 - `value == span.text[start:end]`; facts are sorted by (start, end); output is deterministic.
+- `as_read` is the same characters of the span's text as extract_facts read it (an underscore
+  of emphasis by a fact as "*", one for one): the fact as it stands in its passage. A fact is
+  never read a second time, alone: there an underscore at its edge has other neighbours.
 - `norm = normalize(value)`: whitespace collapsed, case folded, thousands separators removed.
 - `lines`: for `code_block` facts, `normalize()` of each non-blank line of the block that is
   not a comment-only line (stripped text starting with "#" or "//"), in order. Code blocks
@@ -33,9 +36,9 @@ import re
 from collections.abc import Callable, Iterator
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from cairn.spans import Span
+from cairn.spans import Span, compared_text, fence_closes
 
 FactKind = Literal["code_block", "inline_code", "url", "path", "date", "version", "flag", "number"]
 
@@ -156,12 +159,43 @@ class Fact(BaseModel):
     start: int  # offset into span.text, inclusive
     end: int  # offset into span.text, exclusive
     lines: tuple[str, ...] = ()  # code_block only: normalised, non-blank, non-comment lines
+    # `value` as read in the span (see the contract); it follows from the span, so no dump
+    # holds it.
+    as_read: str = Field(exclude=True)
 
 
 def normalize(value: str) -> str:
     """Normalise text for fact matching (an underscore of emphasis next to a fact reads as
-    "*", as in extract_facts)."""
+    "*", as in extract_facts). It reads the text alone, never as Markdown. Where lint reads a
+    page's claims (cairn.lint), it compares a fact by its text as read in its passage
+    instead (Fact.as_read)."""
     return _plain(_emphasis(value))
+
+
+def as_extracted(value: str) -> str:
+    """A whole text (a passage, a claim) as lint compares it where it reads a page's claims
+    (cairn.lint): as normalize() reads it but with its white space as written, but for what
+    cairn.spans.compared_text leaves out (white space at the end of a line, blank lines
+    around the text), so `a  b.txt` and `a b.txt` are two facts. Case folded, thousands
+    separators taken out, an underscore of emphasis next to a fact read as "*". One fact of a
+    passage is not read by this: it is compared(fact.as_read)."""
+    return compared(_emphasis(value))
+
+
+def compared(as_read: str) -> str:
+    """A text already read for emphasis (a Fact's `as_read`, or one line of it) as lint
+    compares it where it reads a page's claims: what as_extracted does after reading
+    emphasis, so no underscore is read again with the fact's edges for neighbours."""
+    return _THOUSANDS_SEPARATOR.sub("", compared_text(as_read).casefold())
+
+
+def cased(as_read: str) -> str:
+    """`compared` with the text's case kept: what two terms of related pages are compared by
+    (cairn.relations), where `-L` is not `-l` and `/srv/Quill` is not `/srv/quill`. What
+    `compared` leaves out that is not case is left out here too: white space at the end of a
+    line and blank lines around the text (cairn.spans.compared_text), and the thousands
+    separators of a number (`1,250x` is `1250x`). So compared(x) is cased(x).casefold()."""
+    return _THOUSANDS_SEPARATOR.sub("", compared_text(as_read))
 
 
 def _plain(value: str) -> str:
@@ -345,13 +379,14 @@ def _fenced(text: str) -> Iterator[tuple[int, int, int, int]]:
 
 
 def _closes(line: re.Match[str], opener: re.Match[str]) -> bool:
-    """A closing fence repeats the opener's character at least as often, with no info string,
-    at the same block-quote depth, indented at most 3 more than the opener (as in spans.py)."""
-    return (
-        line["fence"].startswith(opener["fence"])
-        and not line["info"].strip()
-        and line["prefix"].count(">") == opener["prefix"].count(">")
-        and len(line["prefix"]) <= len(opener["prefix"]) + 3
+    """Whether a fence line closes the opener: cairn.spans.fence_closes, the one closer rule
+    (a run of the opener's character at least as long, alone, indented at most 3 more than
+    the opener, a character a column), read past the block-quote markers, at the same
+    block-quote depth. The markers count as indentation, one column each, as they did."""
+    return line["prefix"].count(">") == opener["prefix"].count(">") and fence_closes(
+        " " * len(line["prefix"]) + line["fence"] + line["info"],
+        opener["fence"],
+        len(opener["prefix"]) + 3,
     )
 
 
@@ -366,6 +401,7 @@ def _fact(span: Span, read: str, kind: FactKind, start: int, end: int) -> Fact:
         start=start,
         end=end,
         lines=lines,
+        as_read=as_read,
     )
 
 

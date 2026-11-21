@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.compiler import CONTENT_KINDS, CandidatePage, compile_note
+from cairn.compiler import CONTENT_KINDS, CandidatePage, compile_note, render_body
 from cairn.gate import lint_gate
 from cairn.store import Claim, Store
 
@@ -30,10 +30,10 @@ def content_spans(store, text):
     return project, note, [s for s in store.note_spans(note.id) if s.kind in CONTENT_KINDS]
 
 
-def single(claim: Claim, body: str | None = None) -> CandidatePage:
-    return CandidatePage(
-        slug="x", title="x", body=body or f"# x\n\n{claim.text}\n", claims=(claim,)
-    )
+def single(claim: Claim, body: str | None = None, spans=None) -> CandidatePage:
+    """A page of one claim; its body is what the compiler writes of it, unless one is given."""
+    written = render_body("x", (claim,), spans or {})
+    return CandidatePage(slug="x", title="x", body=body or written, claims=(claim,))
 
 
 def test_baseline_pages_pass_with_full_scores(store):
@@ -50,7 +50,7 @@ def test_a_claim_that_adds_an_ungrounded_flag_is_rejected(store):
     _, _, spans = content_spans(store, RUNBOOK)
     span = next(s for s in spans if "--quiet" in s.text)
     claim = Claim(id="cl_bad", text=span.text + " Add --force too.", span_ids=(span.id,))
-    result = lint_gate(single(claim), {span.id: span})
+    result = lint_gate(single(claim, spans={span.id: span}), {span.id: span})
     assert not result.passed
     assert result.violations == [result.violations[0]]
     assert result.violations[0].startswith("grounding.fact_not_in_cited_passages: cl_bad: ")

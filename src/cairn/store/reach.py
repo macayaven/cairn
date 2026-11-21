@@ -33,6 +33,7 @@ from cairn.store.models import (
     KeyInfo,
     Note,
     Page,
+    Project,
     ProjectSet,
     SourceInfo,
 )
@@ -156,11 +157,14 @@ MANAGEMENT = frozenset(
         "export",  # everything the workspace holds: a reach limited in any way takes nothing
         "import_export",  # makes projects
         "compact",  # the operator's: it rewrites every workspace's file (and only the root may)
+        "empty_log",  # the operator's: what a rewrite left due
+        "compacting",  # the operator's: one compaction at a time holds the database
         "compaction_state",  # the operator's: whether any workspace was deleted
         "bound_history",  # the operator's (Q1): how many versions every page keeps
         "record_history_bound",
         "pages_over",
         "prune_by_record",  # the operator's: it removes versions in every workspace
+        "repair_own_projects",  # the operator's: it rewrites pages in every workspace
         "numbers_part",  # the operator's (Q1): counts across every workspace
         "database_file",
         "sweep_expired",  # the operator's: what has run out, in every workspace
@@ -198,6 +202,40 @@ MANAGEMENT = frozenset(
         "pending_google_revocations",  # the server's: what waits to be revoked at Google
         "settle_google_revocation",  # what removing an account says with the switch off
         "hosted_document",  # a run's: the document of the account a source reads
+        # A workspace's Slack install (K1, cairn.store.slack): set up, switched and removed by
+        # its owners and admins, used by the server's handlers for a linked person
+        "make_slack_install",
+        "get_slack_install",
+        "ready_slack_install",
+        "switch_slack_install",
+        "remove_slack_install",
+        "revoke_slack_bot",
+        "slack_bot_token",
+        "record_slack_note",
+        "claim_slack_message",  # a filed message claimed before it is written, and released
+        "release_slack_claim",
+        "slack_note_for",
+        "slack_notes_to_forget",
+        "forget_slack_notes_now",
+        "link_slack_user",
+        "unlink_slack_user",
+        "slack_person",
+        "own_slack_links",  # the view's own person's links, for the Sources page
+        "set_slack_project",
+        "offer_slack_link",
+        "slack_offer",
+        "take_slack_offer",
+        "claim_slack_offer",
+        "slack_inbound",  # the server's, across workspaces (OTHER_WORKSPACES)
+        "slack_install_verified",
+        "slack_event_seen",
+        "forget_slack_event",
+        "slack_notes_due",
+        "sweep_slack",
+        "slack_team_held",  # the server's: whether another workspace holds a Slack team
+        "take_slack_checks",  # the server's: the bot tokens to check with Slack
+        "slack_token_checked",
+        "remove_gone_slack_installs",
     }
 )
 # Reads limited to the reach: an out-of-reach project, or a note, span or page in one,
@@ -207,18 +245,24 @@ MANAGEMENT = frozenset(
 LIMITED_READS = frozenset(
     {
         "list_projects",
+        "writable_projects",  # those the view's person may write to: none on a read-only view
         "get_project",
         "get_note",
         "holds_note",  # whether the project holds a note of this text (H6c)
         "list_notes",
+        "notes_part",  # a part of a project's notes, newest first, without their text
+        "note_page",  # whether a note waits, and the page that cites it (notes_part's rule)
         "note_spans",
         "get_spans",
         "spans_within",  # get_spans without the long ones (Help)
+        "passages_of_other_projects",  # which ids of a stored page are another project's
         "note_writers",  # who wrote the notes (A1): none out of reach
+        "note_origins",  # note_writers, with when and whether a filed Slack message (8.1, 8.5)
         "get_page",
         "page_claims",  # a page without its body (Help)
         "page_for_model",  # M4: the page, and whether its project goes to no model
         "kept_from_models",  # M4: which projects in reach go to no model
+        "models_choices",  # Privacy 4: which projects in reach their people decided for, and how
         "list_pages",
         "page_versions",
         "page_counts",  # Q1: the reads that cost what they return, as their neighbours
@@ -232,6 +276,7 @@ LIMITED_READS = frozenset(
         "taken_slugs",  # the addresses a new page may not take: none, out of reach
         "search",
         "find",  # Q2: search, with what it left out
+        "related_pages",  # the pages related to one page, each with its claims: one project's
         "list_keys",
         "list_grants",
         "list_sets",
@@ -244,7 +289,8 @@ LIMITED_READS = frozenset(
         "project_sharing",
         "projects_sharing",  # Q1: project_sharing for many projects in one read
         "may_erase",  # whether the view may delete the project or forget its notes (H5b)
-        "forget_preview",  # what forgetting a note would change: for whoever reaches it
+        "forget_preview",  # what forgetting a note would change: its project's pages for
+        # whoever reaches it, the count of other projects' only for one who may forget it
         "manages",  # whether the view manages the workspace: never a narrowed one
     }
 )
@@ -423,11 +469,11 @@ class ReachMethods(StoreBase):
 
     def _limited_connection(self) -> bool:
         """StoreBase._limited_connection: any narrowing, to some projects or to reading."""
-        return self._narrowed or super()._limited_connection()  # type: ignore[misc]
+        return self._narrowed or super()._limited_connection()
 
     def _bound(self) -> bool:
         """StoreBase._bound, and any narrowing: a narrowed view is held to its workspace."""
-        return super()._bound() or self._narrowed  # type: ignore[misc]
+        return super()._bound() or self._narrowed
 
     def for_account(self, account_id: str, *args: Any, **kwargs: Any) -> "Store":
         """As StoreBase.for_account, keeping every narrowing. PermissionError: a narrowed
@@ -495,6 +541,10 @@ class ReachMethods(StoreBase):
 
     def source_credentials(self, *args: Any, **kwargs: Any) -> dict[str, str | None]:
         return {} if self._narrowed else super().source_credentials(*args, **kwargs)  # type: ignore[misc]
+
+    def writable_projects(self, *args: Any, **kwargs: Any) -> list[Project]:
+        """None on a read-only view: it writes nowhere."""
+        return [] if self._read_only else super().writable_projects(*args, **kwargs)  # type: ignore[misc]
 
     def manages(self) -> bool:
         """False on any narrowed view: it manages nothing (MANAGEMENT)."""
@@ -567,17 +617,30 @@ OTHER_WORKSPACES = frozenset(
         "identify_token",
         "session_key",
         "compact",
+        "empty_log",
+        "compacting",
         "compaction_state",
         "bound_history",
         "record_history_bound",
         "pages_over",
         "prune_by_record",
+        "repair_own_projects",
         "numbers_part",
         "database_file",
         "sweep_expired",
         "renew_session",
         "end_person_sessions",
         "cap_web_sessions",
+        "slack_inbound",  # K1: the install a request to one of Slack's addresses names
+        "slack_install_verified",
+        "slack_event_seen",
+        "forget_slack_event",
+        "slack_notes_due",
+        "sweep_slack",
+        "slack_team_held",
+        "take_slack_checks",
+        "slack_token_checked",
+        "remove_gone_slack_installs",
     }
 )
 # The same kind of operation, kept by such a view when it asks about its own workspace or

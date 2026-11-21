@@ -1,0 +1,184 @@
+cd "$RUNNER_TEMP/release"
+# GitHub's listing of releases can be behind a write: measured against its API on
+# 2026-11-20, a draft made without files was absent from a listing made about a
+# second after its creation returned and present 2.6 s after it, in three of three
+# trials, while a read of the release by its id showed each write at once. So the
+# look that follows this job's own write is made again while it shows what was there
+# before that write: at most $looks looks, $apart seconds apart (10 and 3, so 27
+# seconds at the longest).
+looks=10
+apart=3
+version="${GITHUB_REF_NAME#v}"
+version="${version%-rc.*}"
+files=("cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS)
+want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+want="${want% }"
+prerelease=false
+candidate=()
+latest=()
+if [ "$CANDIDATE" = "true" ]; then
+  prerelease=true
+  candidate=(--prerelease --latest=false)
+  latest=(-f make_latest=false)
+fi
+# The release's text is the version's notes and then a mark with this run's id, an
+# HTML comment GitHub does not show and its API returns in the release's body. A re-run
+# of the job keeps the run's id; notes.md itself is attested, so it is left as it is.
+mark="<!-- cairn-ci-cd run $GITHUB_RUN_ID -->"
+{ cat notes.md; printf '\n%s\n' "$mark"; } > "$RUNNER_TEMP/body.md"
+# The release is made by separate requests, and nothing here takes one back. A look
+# lists every release of the repository, drafts included (GitHub lists drafts to a
+# token that may write, as this job's may); a listing that fails stops the job instead
+# of being taken for none. The release for this tag is this run's only if it is the
+# only one and carries this run's mark and this tag's pre-release flag; any other
+# stops the job. (1) No release: the GitHub CLI makes one as a draft, with the files.
+# Asked for a draft it publishes nothing, and its cleanup of the release it made is
+# only for a draft it meant to publish itself. It sends a file again, three times at
+# most, only after a failed connection or a 5xx, and removes a file only when given
+# the address of one already there, which a creation never gives it. So an upload
+# that fails leaves this draft, with the files that arrived, and leaves it public if
+# a person published it meanwhile. (2) This run's draft, just made or left by an
+# earlier attempt: its files are compared with the ones this run attested, names and
+# bytes (the CLI finds a draft by its tag, as it finds a release), and a draft that does
+# not hold exactly those stops the job, which says what a person does. (3) The draft
+# is published by a request of its own, to the id the look gave. That is the job's
+# one write to a release that exists, and it is safe: it sets draft to false and
+# nothing else (for a candidate it says again, as the creation did, that it is not
+# the latest), so a draft a person published meanwhile is already what it would
+# make it, one a person removed makes it fail, and the files were compared first.
+# When GitHub publishes and the reply is lost, the job fails and nothing is undone:
+# the re-run finds the release published. (4) After each write the job looks again.
+# It ends well only on a published release that holds exactly the files this run
+# attested, byte for byte, which it leaves as it is: that is all a re-run does after
+# an attempt that finished, so that a release tag's `aliases` runs. A look that does
+# not show the job's own write is made again, as the top of this step says; when the
+# last one still does not, the job stops, so it never makes a second release.
+# This step's text issues no removal of a release or of a release's file and
+# replaces no file.
+# The mark alone does not make a release this run's: a person can change the title,
+# and the notes around the mark. So each look also reads both, and the step compares
+# them with what it wrote, before it publishes a draft and again on what the look
+# after the publication shows; a release that differs stops the job, which then
+# writes nothing more. The creation sends the title only when one is given, and the
+# notes as the file holds them (cli/cli at v2.102.0,
+# pkg/cmd/release/create/create.go, 453 to 458: `if opts.Name != "" {`,
+# `params["name"] = opts.Name`, `if opts.Body != "" {`, `params["body"] = opts.Body`;
+# 193 to 198: `b, err := cmdutil.ReadFile(notesFile, opts.IO.In)`,
+# `opts.Body = string(b)`), so this step names the tag as the title itself. The title
+# must be the tag, exactly, or missing or empty: an empty title is not an edited
+# one. It is compared in the listing's own expression and never printed. The notes
+# are compared byte for byte, and nothing
+# is normalised: the listing gives them as base64, which the step decodes into a file
+# and compares with the file it wrote, so no reading here drops a line end or changes
+# a byte (a command substitution would drop the line ends at the end).
+listing() {
+  gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+    --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | [.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), (.name | . == null or . == \"\" or . == \"$GITHUB_REF_NAME\"), ((.body // \"\") | @base64), ([.assets[].name] | sort | join(\" \"))] | @tsv"
+}
+unlisted() {
+  echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
+  exit 1
+}
+refuse() {
+  echo "::error::a GitHub release for $GITHUB_REF_NAME exists and is not one this run can finish: $1; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job"
+  exit 1
+}
+unfinished() {
+  echo "::error::the GitHub release for $GITHUB_REF_NAME is a draft that an earlier attempt of run $GITHUB_RUN_ID left unfinished, which this job neither deletes nor publishes; delete it on the repository's releases page and re-run this job, which makes the release again"
+  exit 1
+}
+unread() {
+  echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing"
+  exit 1
+}
+differs() {
+  echo "::error::the GitHub release for $GITHUB_REF_NAME, $state, carries run $GITHUB_RUN_ID's mark and differs from what that run wrote in its $1; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job"
+  exit 1
+}
+# What GitHub lists for the tag now: nothing (found is empty), or this run's release.
+# The notes are the sixth field, empty only when the release has no text, and then
+# it has no mark and the job has stopped before it reads further.
+look() {
+  found="$(listing)" || unlisted
+  [ -n "$found" ] || return 0
+  count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
+  [ "$count" = 1 ] || refuse "there are $count releases for it"
+  IFS=$'\t' read -r id draft pre ours titled notes names <<< "$found"
+  [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
+  [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
+  state=public
+  [ "$draft" = false ] || state="a draft"
+}
+# Whether the names listed are some of this run's three files, not all, and no other.
+some_files() {
+  local name left=" $want " listed=()
+  [ "$names" != "$want" ] || return 1
+  IFS=' ' read -r -a listed <<< "$names"
+  for name in "${listed[@]}"; do
+    case "$left" in
+      *" $name "*) left="${left/ $name / }" ;;
+      *) return 1 ;;
+    esac
+  done
+}
+# The look after this job's own write, made again, $looks times at most, while the
+# listing still shows what was there before it: no release after the creation ($1
+# is made), this run's release still a draft after the publication (published).
+# After the creation it also waits while the listing shows this run's draft with
+# some, not all, of its three file names and no other, since the uploads take about
+# as long as the listing is behind; then the files are compared as before.
+# Nothing else is waited for: any other state stops the job inside look, at once,
+# and no release after the publication is none of the two.
+look_after() {
+  local n=1
+  look
+  while [ "$n" -lt "$looks" ]; do
+    if [ "$1" = made ]; then
+      [ -z "$found" ] || { [ "$draft" = true ] && some_files; } || break
+    else
+      { [ -n "$found" ] && [ "$draft" = true ]; } || break
+    fi
+    sleep "$apart"
+    n=$((n + 1))
+    look
+  done
+}
+# Its title against the tag, and its notes against the text this run wrote.
+same_text() {
+  local what=""
+  [ "$titled" = true ] || what=title
+  printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
+  cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md" || what="${what:+$what and }notes"
+  [ -z "$what" ] || differs "$what"
+}
+# Its files against the ones this run attested: the names listed, then the names and
+# the bytes downloaded into $2. $1 is what a difference does. A download that fails
+# is not a difference: the job stops and says so, and a re-run compares again.
+same_files() {
+  [ "$names" = "$want" ] || "$1" "its files are [$names], not [$want]"
+  gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/$2" || unread
+  names="$(ls -A "$RUNNER_TEMP/$2" | LC_ALL=C sort | tr '\n' ' ')"
+  [ "${names% }" = "$want" ] || "$1" "its files are [${names% }], not [$want]"
+  for name in "${files[@]}"; do
+    cmp -s "$name" "$RUNNER_TEMP/$2/$name" || "$1" "$name is not the file this run attested"
+  done
+}
+look
+if [ -z "$found" ]; then
+  gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
+    --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" "${files[@]}"
+  look_after made
+fi
+if [ -n "$found" ] && [ "$draft" = true ]; then
+  same_text
+  same_files unfinished draft
+  gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
+  look_after published
+fi
+if [ -z "$found" ] || [ "$draft" = true ]; then
+  echo "::error::GitHub does not list the release for $GITHUB_REF_NAME as this job has just left it; re-run this job, which starts from what is listed then"
+  exit 1
+fi
+same_text
+same_files refuse published
+echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with the title and the notes this run wrote and exactly the files this run attested."

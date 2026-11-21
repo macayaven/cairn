@@ -526,6 +526,9 @@ def test_a_newer_schema_is_refused_and_left_untouched(db):
     Store(db).close()
     con = sqlite3.connect(db)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    # a step this cairn may not run on: the floor goes up with it
+    con.execute("UPDATE oldest_build SET version = ?", (SCHEMA_VERSION + 1,))
+    con.commit()
     con.close()
     before = dump(db)
     with pytest.raises(SchemaTooNew):

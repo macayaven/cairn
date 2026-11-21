@@ -26,6 +26,7 @@ from cairn.web import cli
 from cairn.web.auth import Accounts
 from cairn.web.filing import Filer
 from cairn.web.turns import COMPILES, Compiles
+from wait_helpers import poll_until_async, wait_for_event
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -34,12 +35,10 @@ WAIT = 20.0  # seconds any one wait may take before the test fails
 
 
 async def until_async(done: Callable[[], bool], what: str) -> None:
-    """`until` on an event loop: a look each turn of the loop, a bounded number of times."""
-    for _ in range(int(WAIT / 0.001)):
-        if done():
-            return
-        await asyncio.sleep(0.001)
-    raise AssertionError(f"waited {WAIT} s for {what}")
+    async def ready():
+        return done()
+
+    await poll_until_async(ready, what, WAIT, every=0.001)
 
 
 def until(done: Callable[[], bool], what: str) -> None:
@@ -92,23 +91,28 @@ def test_turns_are_given_in_the_order_they_were_asked_and_never_more_than_n():
         turns, inside, most, order = Compiles(2), [0], [0], []
         gates = [asyncio.Event() for _ in range(6)]
 
+        asked = [asyncio.Event() for _ in range(6)]
+        finished = [asyncio.Event() for _ in range(6)]
+
         async def one(i: int) -> None:
+            asked[i].set()
             async with turns.turn():
                 inside[0] += 1
                 most[0] = max(most[0], inside[0])
                 order.append(i)
                 await gates[i].wait()
                 inside[0] -= 1
+            finished[i].set()
 
         tasks = []
         for i in range(6):
             tasks.append(asyncio.create_task(one(i)))
-            await asyncio.sleep(0)  # let it ask now: arrival order is the order of creation
+            await wait_for_event(asked[i], "the caller asked for its turn", WAIT)
         await until_async(lambda: turns.waiting == 4, "four waiting")
         assert order == [0, 1] and turns.held == 2
         for i in (1, 0, 2, 3, 4, 5):  # out of order: the next in line still goes first
             gates[i].set()
-            await asyncio.sleep(0)
+            await wait_for_event(finished[i], "the turn finished", WAIT)
         await asyncio.gather(*tasks)
         assert most[0] == 2 and turns.held == 0 and turns.waiting == 0
         return order
@@ -119,23 +123,24 @@ def test_turns_are_given_in_the_order_they_were_asked_and_never_more_than_n():
 def test_a_waiter_cancelled_gives_up_its_place_and_a_turn_handed_to_it_goes_on():
     async def scenario() -> None:
         turns = Compiles(1)
-        held = asyncio.Event()
+        held, entered = asyncio.Event(), asyncio.Event()
 
         async def holder() -> None:
             async with turns.turn():
+                entered.set()
                 await held.wait()
 
         first = asyncio.create_task(holder())
-        await asyncio.sleep(0)
+        await wait_for_event(entered, "first turn held", WAIT)
         waiter = asyncio.create_task(turns.turn().__aenter__())
-        await asyncio.sleep(0)
+        await until_async(lambda: turns.waiting == 1, "the cancelled turn queued")
         assert turns.waiting == 1
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
         assert turns.waiting == 0
         late = asyncio.create_task(holder())
-        await asyncio.sleep(0)
+        await until_async(lambda: turns.waiting == 1, "the next turn queued")
         held.set()
         await asyncio.gather(first, late)
         assert turns.held == 0
@@ -276,14 +281,15 @@ def test_a_sources_run_waits_for_a_turn(tmp_path, monkeypatch):
 
         async def scenario():
             turns = Compiles(1)
-            release = asyncio.Event()
+            release, entered = asyncio.Event(), asyncio.Event()
 
             async def holder() -> None:
                 async with turns.turn():
+                    entered.set()
                     await release.wait()
 
             held = asyncio.create_task(holder())
-            await asyncio.sleep(0)
+            await wait_for_event(entered, "the other turn held", WAIT)
             run = asyncio.create_task(
                 run_source(store, "ops-feed", http=httpx.AsyncClient(), env={}, turn=turns.turn)
             )
@@ -308,14 +314,15 @@ def test_the_filer_takes_a_turn_like_any_note(tmp_path):
         filer = Filer(Accounts(store, lint_gate), 3600, turns)
 
         async def scenario():
-            release = asyncio.Event()
+            release, entered = asyncio.Event(), asyncio.Event()
 
             async def holder() -> None:
                 async with turns.turn():
+                    entered.set()
                     await release.wait()
 
             held = asyncio.create_task(holder())
-            await asyncio.sleep(0)
+            await wait_for_event(entered, "the other turn held", WAIT)
             passing = asyncio.create_task(filer._pass(store.waiting_notes()))
             await until_async(lambda: turns.waiting == 1, "the filer's note waiting")
             assert store.list_pages(project.id) == []

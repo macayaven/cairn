@@ -18,9 +18,11 @@ class ExpiryMethods(StoreBase):
         tokens, and each grant whose refresh token has expired, with every token it holds);
         rotated refresh tokens remembered past their time (nothing reads one then); and the
         clients registered UNUSED_CLIENT_TTL (7 days) ago or earlier that never got a grant
-        and have no code waiting, as register_client removes them. Returns how many rows it
-        removed. A row whose time has not come is left as it was; with nothing to remove it
-        returns 0 and the database file does not change.
+        and have no code waiting, as register_client removes them; and Slack's one-time link
+        offers past their time and the event ids seen a day ago or more (cairn.store.slack,
+        Store.sweep_slack). Returns how many rows it removed. A row whose time has not come
+        is left as it was; with nothing to remove it returns 0 and the database file does not
+        change.
 
         The time is read once the write lock is held, so a sweep that waited for a request
         judges expiry at the moment it writes. Nothing is audited. The operator's call, like
@@ -43,4 +45,5 @@ class ExpiryMethods(StoreBase):
                 " AND id NOT IN (SELECT client_id FROM oauth_codes)",
                 (_iso(now - timedelta(seconds=UNUSED_CLIENT_TTL)),),
             )
+            self._sweep_slack(con)  # K1: cairn.store.slack
             return con.total_changes - before

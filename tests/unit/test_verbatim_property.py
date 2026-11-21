@@ -1,29 +1,23 @@
-"""A seeded property test for cairn.gate.verbatim_gate (T5c, T5d).
+"""A seeded property test for cairn.gate.verbatim_gate (T5c, T5d, CORE5).
 
 Random notes are built from a small grammar of Markdown blocks. For each, the extractive draft
 must pass the gate, and every single-character deletion, insertion or swap inside a claim must
-either be refused or leave the claim equal to its passage under the rules: for a block, the
-same lines, blank lines at the two ends aside (exactly for prose that holds structure, white
-space at the end of each line aside for code and tables); for plain prose, the same characters
-once each run of space, tab, CR and LF is one space, with every list or quote marker kept and
-still at the start of its line.
+either be refused or leave the claim equal to its passage under the rule: the same lines, each
+without the spaces, tabs and carriage returns at its end, blank lines at the two ends aside.
 """
 
 import random
-import re
 
 import pytest
 
 from cairn.compiler import CandidatePage, extractive, render_body
-from cairn.gate import LINE_KINDS, PROSE_KINDS, _not_verbatim, _structure, verbatim_gate
+from cairn.gate import _not_verbatim, verbatim_gate
 from cairn.spans import Span, chunk
 from cairn.store import Claim
 
 WORDS = ("drift", "mirrors", "two", "buckets", "safe", "run", "it", "then", "go", "now", "e.g.")
 EXTRAS = ("`a. B`", "[c. D](https://example.test/e.f)", "[g][h]", "--dry-run", "a|b", "C:\\x")
 INSERTS = "aZ .`[]()->|\\\n#*!=_<:1"
-_SPACE = re.compile(r"[ \t\r]+")
-_MARK = re.compile(r"(?:[-*+](?: |$)|> ?)")
 
 
 def sentence(rng: random.Random) -> str:
@@ -72,35 +66,16 @@ def note(rng: random.Random) -> str:
     return "# P\n\n" + "\n\n".join(block(rng) for _ in range(rng.randint(1, 4))) + "\n"
 
 
-def as_read(text: str, span: Span) -> str | tuple[str, ...]:
-    """The claim text as the rules read it for the passage it cites. A block's lines, blank
-    lines at the two ends aside: exactly for prose that holds structure, white space at the end
-    of each line aside for code and tables; otherwise the prose itself, normalized."""
-    exact = span.kind in PROSE_KINDS and _structure(span.text.split("\n")) is not None
-    if exact or span.kind in LINE_KINDS:
-        rows = [line.rstrip("\r") if exact else line.rstrip(" \t\r") for line in text.split("\n")]
-        while rows and not rows[0].strip(" \t\r"):
-            rows.pop(0)
-        while rows and not rows[-1].strip(" \t\r"):
-            rows.pop()
-        return tuple(rows)
-    return normalized(text)
-
-
-def normalized(text: str) -> str:
-    """Prose as the rules read it: each run of white space one space, the ends off, and a line
-    that opens with a list or quote marker, or follows a line that is a marker alone, still on
-    a line of its own."""
-    out = ""
-    for line in text.split("\n"):
-        line = _SPACE.sub(" ", line).strip(" ")
-        if not line:
-            continue
-        if out and (_MARK.match(line) or _MARK.fullmatch(out.rsplit("\n", 1)[-1])):
-            out += "\n" + line
-        else:
-            out += (" " if out else "") + line
-    return out
+def as_read(text: str, span: Span) -> tuple[str, ...]:
+    """The claim text as the rule reads it for any passage (CORE5): its lines, each without
+    the spaces, tabs and carriage returns at its end, and the blank lines at the two ends
+    aside. Nothing else is left out."""
+    rows = [line.rstrip(" \t\r") for line in text.split("\n")]
+    while rows and not rows[0]:
+        rows.pop(0)
+    while rows and not rows[-1]:
+        rows.pop()
+    return tuple(rows)
 
 
 def mutations(text: str, rng: random.Random, count: int):

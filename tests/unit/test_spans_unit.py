@@ -1,8 +1,13 @@
 """Unit tests for the span chunker: the inner TDD loop under tests/acceptance/test_t1_spans.py."""
 
+import re
+from html import unescape
+
 import pytest
 
-from cairn.spans import chunk
+from cairn import spans
+from cairn.spans import chunk, code_read
+from cairn.web import markdown
 
 
 def layout(text: str) -> list[tuple[str, int, int]]:
@@ -182,3 +187,175 @@ def test_identical_text_gets_distinct_ids_per_section_and_occurrence():
     same = [s for s in chunk("doc", "# A\nsame\n\nsame\n# B\nsame\n") if s.text == "same"]
     assert [s.heading_path for s in same] == [("A",), ("A",), ("B",)]
     assert len({s.id for s in same}) == 3
+
+
+# Where the Markdown parser reads code in a text read alone (code_read): each stretch as the
+# characters of the text it covers, written out here.
+
+
+def code_in(text: str) -> list[str]:
+    return [text[start:end] for start, end in code_read(text)]
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        ("Read `Step` by Step.", ["Step"]),  # a code span: its code, between its backticks
+        ("a ``x ` y`` b `z`", ["x ` y", "z"]),
+        ("Read `Step\nby Step` today.", ["Step\nby Step"]),  # across a line's end
+        ("> Read `Step\n> by Step` today.", ["Step\n> by Step"]),  # in a quote: its marks too
+        ("- Read `x`,\n      then `y`.", ["x", "y"]),  # a list item's lines
+        ("- Read the guide.\n\tStep `by` x.", ["by"]),  # a tab the parser reads as spaces
+        ("Read `x`  \n   then `y`  ", ["x", "y"]),  # blanks that end the lines
+        ("# Read `Step` by # `Step` #", ["Step", "Step"]),  # a heading
+        ("Read `x` by\n`Step` y\n===", ["x", "Step"]),  # and one underlined
+        ("| a | `b \\| c` d | `e` |\n| --- | --- | --- |", ["b \\| c", "e"]),  # table cells
+        ("| `a` | `a` |\n| --- | --- |\n| `a` | b |", ["a", "a", "a"]),
+        ("See ![`Step\nby` x](p.png) and `y`.", ["Step\nby", "y"]),  # a picture's: a link's
+        ("See [`a` b](https://x.dev) `c`.", ["a", "c"]),  # a link's words
+        ("Escaped \\`Step\\` is not code.", []),
+        ("Text <https://x.dev/`a`> b.", []),  # an address in angle brackets
+        ("Run:\n\n```sh\nquill run\n```\nThen.", ["```sh\nquill run\n```"]),  # a fenced block
+        ("> ~~~\n> quill run\n> ~~~", ["> ~~~\n> quill run\n> ~~~"]),
+        ("Run:\n\n    quill run\n    --now\n\nThen.", ["    quill run\n    --now"]),  # indented
+        ("- Read the guide.\n\n    Step by Step", []),  # indented under an item: its prose
+        ("- Read the guide.\n\n        Step by Step", ["        Step by Step"]),  # its code
+        ("Read\n    Step by Step", []),  # a paragraph's lines go on, however indented
+        ("Plain prose with no mark of code at all.", []),
+    ],
+)
+def test_the_parser_says_what_is_code_in_a_text_read_alone(text, code):
+    assert code_in(text) == code
+
+
+def test_a_code_span_the_parser_cannot_place_in_the_text_covers_its_lines(monkeypatch):
+    """Where the parser's text of a block cannot be found in the text (it never happens with
+    the blocks above), its code spans cover the lines they stand on: never less than the code."""
+    placed = spans._placed
+    monkeypatch.setattr(spans, "_placed", lambda *args: placed(*args)._replace(starts=None))
+    assert code_in("First line.\nRead `x` here.\nLast line.") == ["Read `x` here."]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "*Read `Step*` by* Step `x*` **y**",
+        "_a `b_` c_ and *`d`* and ***`e`***",
+        "*[`a*`](u)* ![*`b`*](p.png) <https://x.dev/*`c`*>",
+        "**a `b\nc**` d** e `f`",
+        "- *a* `b*`\n\n  > *`c`*\n\n      *d*",
+        "| *a* | `b *\\| c*` |\n| --- | --- |",
+    ],
+)
+def test_the_code_read_without_emphasis_is_the_web_views_code(text):
+    """The code reader leaves emphasis unread (spans._CODE_READER): the code a claim's parser
+    (spans.claim_markdown) reads in the same text, block by block and span by span, is the
+    same."""
+
+    def code(parser) -> list:
+        found = []
+        for token in parser.parse(text):
+            if token.type in ("fence", "code_block"):
+                found.append((token.type, token.map, token.content))
+            for child in token.children or ():
+                for inner in [child, *(child.children or ())]:
+                    if inner.type == "code_inline":
+                        found.append((inner.type, inner.markup, inner.content))
+        return found
+
+    assert code(spans._CODE_READER) == code(spans.claim_markdown())
+    assert code(spans.claim_markdown())
+
+
+# Whatever reads a claim reads it as the page that shows it does (spans.claim_markdown): the
+# code the code reader finds is the code the page's renderer shows (cairn.web.markdown.render),
+# in the shapes where a heading, an underline or a picture would change the reading.
+FENCES = [
+    "```Deploy\nx\n```",
+    "~~~ Deploy\nx\n~~~",  # of tildes
+    "   ```Deploy\n   x\n   ```",  # indented one to three
+    "> ```Deploy\n> x\n> ```",  # in a quotation
+    "- ```Deploy\n  x\n  ```",  # in a list item
+    "```Deploy\nx Deploy",  # unclosed
+]
+CLOSED_BY_THE_PAGE = [  # where the facts' fence runs on, and the page shows prose
+    "> ```Deploy\n> x\n\nDeploy after",  # closed at the end of its quotation
+    "- Item\n  ```\n  x\nDeploy after `y`",  # and of its list item
+    "para\n    ```\n    Deploy after",  # a fence line indented four under a paragraph
+]
+AGREED = [
+    "`Step by\n===\nStep` today.",  # a setext underline inside a code span
+    "> # `Step\n> by Step` today.",  # a heading line in a quote
+    "- # `Step\n  by Step` today.",  # and in a list item
+    '![a [b](u)](v "`") Step\nby Step ` x',  # a picture whose title opens a code span
+    "Notes\n===\n    Step by Step today.",  # indented after an underline
+    "> # Notes\n>     Step by Step today.",  # indented after a heading line
+    "# Read `Step` by Step",  # a heading line
+    "Read `x` by\nStep y\n===\n`z`",  # a setext underline under a paragraph
+    'See ![a `b` c](p.png "t `x` y") and `z`.',  # a picture: backticks in its words and title
+    "| a | `b \\| c` d |\n| --- | --- |\n| `e` | f |",  # a table
+    "<span>`x`</span> and <div>\n`y`\n</div>",  # raw HTML
+    "<div>\n\n    z\n\n</div>",
+    "See [a](<b `c` d>) and <https://x.dev/`y`> `z`.",  # addresses in angle brackets
+    "Run:\n\n```sh\nquill `run`\n```\n\n    indented `x`",  # fenced and indented blocks
+    "- Read the guide.\n\n    Step `by` Step",  # indented under a list item
+    "*a `b*` c* _d `e_`",  # emphasis around code
+    *FENCES,
+    *CLOSED_BY_THE_PAGE,
+    "para\n    ```Deploy\n    x\n    ```",  # fence lines indented four: a code span here
+]
+
+
+def page_code(text: str) -> list[str]:
+    """What the page shows as code in a claim, as written."""
+    return [unescape(code) for code in re.findall(r"<code[^>]*>(.*?)</code>", render(text), re.S)]
+
+
+def render(text: str) -> str:
+    return str(markdown.render(text))
+
+
+@pytest.mark.parametrize("text", AGREED)
+def test_the_code_read_is_the_code_the_page_shows(text):
+    tokens = []
+    for token in spans._CODE_READER.parse(text):
+        if token.type in ("fence", "code_block"):
+            tokens.append(token.content)
+        for child in token.children or ():
+            for inner in [child, *(child.children or ())]:
+                if inner.type == "code_inline":
+                    tokens.append(inner.content)
+    assert tokens == page_code(text)
+    assert len(code_read(text)) == len(tokens)  # each where it stands
+
+
+def test_the_page_and_the_code_reader_read_a_claim_with_the_same_rules():
+    """One definition of how a claim is read (spans.claim_markdown, CLAIM_RULES_OFF), which
+    both build on: the code reader leaves emphasis unread besides, and nothing else."""
+    page, reader = markdown._PARSER.get_active_rules(), spans._CODE_READER.get_active_rules()
+    assert page["block"] == reader["block"]
+    assert [rule for rule in page["inline"] if rule != "emphasis"] == reader["inline"]
+    assert set(spans.CLAIM_RULES_OFF) == {"image", "heading", "lheading"}
+    assert not set(spans.CLAIM_RULES_OFF) & {*page["block"], *page["inline"]}
+
+
+def test_a_fence_the_page_opens_is_code_from_its_opening_line_to_where_the_page_closes_it():
+    """The word after a fence's marks, which the page shows as no text at all, is code to
+    the reader; what follows a fence the page closes at the end of its quotation or list
+    item is prose, and so is a fence line indented four under a paragraph."""
+    for text in FENCES:
+        assert "Deploy" in "".join(text[slice(*at)] for at in code_read(text)), text
+    for text in CLOSED_BY_THE_PAGE:
+        code = "".join(text[slice(*at)] for at in code_read(text))
+        assert "Deploy after" not in code and "Deploy after" in render(text), text
+
+
+def test_a_text_longer_than_the_page_parses_is_code_whole():
+    """The page shows a claim longer than MAX_RENDERED characters whole, as preformatted
+    text, and parses none of it: none of it is prose."""
+    long = "Step by Step. " * (spans.MAX_RENDERED // 14 + 1)
+    assert len(long) > spans.MAX_RENDERED and render(long).startswith("<pre>")
+    assert code_read(long) == [(0, len(long))]
+    within = long[: spans.MAX_RENDERED]
+    assert code_read(within) == [] and not render(within).startswith("<pre>")
+    assert markdown.MAX_RENDERED == spans.MAX_RENDERED

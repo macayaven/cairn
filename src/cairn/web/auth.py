@@ -21,6 +21,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cairn import oauth
 from cairn.compiler import Gate
+from cairn.cookies import HOST_ONLY as HOST_ONLY
+from cairn.cookies import branded_cookie as branded_cookie
 from cairn.guard import Guard
 from cairn.identity import Profile
 from cairn.memory import DENIED, Memory, access_log, record_access, unavailable
@@ -43,9 +45,13 @@ from cairn.web.turns import SCOPE_KEY, Compiles
 
 SESSION_COOKIE = "cairn_session"
 BRANDED_SESSION_COOKIE = "session"  # its name under a brand (B1): no cookie names cairn
-HOST_ONLY = "__Host-"  # a browser takes such a cookie only Secure, at Path=/, with no Domain
 # Every name the session cookie has had: signing out ends and clears each one a browser sends.
-SESSION_COOKIES = (SESSION_COOKIE, BRANDED_SESSION_COOKIE, HOST_ONLY + BRANDED_SESSION_COOKIE)
+SESSION_COOKIES = (
+    SESSION_COOKIE,
+    BRANDED_SESSION_COOKIE,
+    HOST_ONLY + BRANDED_SESSION_COOKIE,
+    HOST_ONLY + SESSION_COOKIE,
+)
 MEMORY = "cairn.memory"  # the ASGI scope key under which Auth puts the caller's Memory
 COMPILES = SCOPE_KEY  # ... and the server's turns of compiles (G1; cairn.web.turns)
 WALLED = "cairn.walled"  # ... and whether the wall answers for the address (B1)
@@ -57,23 +63,6 @@ SHARE_PATH = "/new"  # the web app's share target (cairn.web.compose)
 JOIN_PREFIX = "/join/"  # /join/<token>: an invitation, taken after signing in
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
 RATE_LIMITED = "rate_limited"  # the action of a request refused for its workspace's rate
-
-
-def branded_cookie(name: str, secure: bool) -> str:
-    """The name of a cookie under a brand (B1): `name` with the __Host- prefix when the site
-    is https (`secure`), else `name` as it is (a browser refuses the prefix without Secure).
-
-    Why the prefix: another host under the same parent domain can set a cookie of a plain
-    name for the whole parent domain, and the browser sends it along with this server's own,
-    so a planted `session` would put a person in the planter's workspace and a planted
-    `signin` would sign them in as the planter. No host can set a __Host- cookie for another
-    host, and the server reads only the name it sets. The session cookie and the sign-in
-    state cookie (cairn.web.signin) both take their names from here.
-
-    Without a brand the names stay `cairn_session` and `cairn_signin`, with no prefix: frozen
-    tests pin them, and every byte without the settings is today's. Over plain http the
-    branded names carry no prefix either; there a planted cookie can still shadow them."""
-    return f"{HOST_ONLY}{name}" if secure else name
 
 
 @dataclass(frozen=True)
@@ -96,6 +85,13 @@ class Sessions:
     seconds: int = SESSION_TTL
     renews: bool = False
     secure: bool = False
+    # Cookies of names this server no longer reads, each with its path: a request that sends
+    # one off /api and /mcp gets it cleared in the answer (on https without a brand, the
+    # names before the __Host- prefix: cairn_session at /, cairn_signin at /auth).
+    retired: tuple[tuple[str, str], ...] = ()
+    # `serve --idle-minutes N`, in seconds: a session not used that long is over
+    # (Store.identify_session's idle_seconds); None: never.
+    idle: int | None = None
 
     def set(self, response: Response, token: str, seconds: int | None = None) -> None:
         response.set_cookie(
@@ -131,6 +127,29 @@ class Sessions:
             await send(message)
 
         return sending
+
+
+def _clearing(send: Send, retired: Sequence[tuple[str, str]]) -> Send:
+    """`send`, with each cookie of `retired` (name, path) cleared in the response, unless the
+    response sets that cookie itself."""
+    made = Response()
+    for name, path in retired:
+        made.delete_cookie(name, path=path, secure=True, httponly=True, samesite="strict")
+    cleared = [(name, value) for name, value in made.raw_headers if name == b"set-cookie"]
+
+    async def sending(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            headers = list(message.get("headers", []))
+            own = [v for n, v in headers if n.lower() == b"set-cookie"]
+            added = [
+                (name, value)
+                for name, value in cleared
+                if not any(v.startswith(value.partition(b"=")[0] + b"=") for v in own)
+            ]
+            message = {**message, "headers": [*headers, *added]}
+        await send(message)
+
+    return sending
 
 
 def _is_api(path: str) -> bool:
@@ -203,12 +222,15 @@ def _presented_key(headers: Headers) -> str:
 _PLAIN_QUERY = re.compile(r"[A-Za-z0-9._~%=&+-]+")
 
 
-def _refusal(request: HTTPConnection, issuer: str | None = None) -> Response:
+def _refusal(
+    request: HTTPConnection, issuer: str | None = None, comes_back: frozenset[str] = frozenset()
+) -> Response:
     """What a request without a valid credential gets. /api and /mcp: a JSON 401, which on
     /mcp also says where OAuth starts when it is on (`issuer`). The web UI: the way to the
     login form. Only the consent page, the share target (/new, whose query holds what was
-    shared) and an invitation (/join/<token>) are worth coming back to after signing in, so
-    only they travel along as `next`;
+    shared), an invitation (/join/<token>) and the exact paths of `comes_back` (with Slack's
+    switch on, the page a link a person clicks in Slack opens, K1) are worth coming back to
+    after signing in, so only they travel along as `next`;
     and when another site sent the browser there, the session cookie (SameSite=Strict) was
     left behind, so the page first asks the browser to come again by itself."""
     path = request.scope["path"]
@@ -225,6 +247,7 @@ def _refusal(request: HTTPConnection, issuer: str | None = None) -> Response:
         path == SHARE_PATH
         or path.startswith(JOIN_PREFIX)
         or (issuer and path == oauth.CONSENT_PATH)
+        or path in comes_back
     )
     if comes_back and request.scope["method"] in ("GET", "HEAD"):
         target = f"{path}?{query}" if query else path
@@ -294,6 +317,9 @@ class Auth:
     `open_paths`: exact paths that pass with no credential, no rate count and no
     cross-origin check, for any method; the route checks the request itself (the address
     Google sends a browser back to after connecting an account, web/google_connect.py).
+    `comes_back`: exact paths of pages a signed-out GET or HEAD comes back to after signing
+    in (_refusal), with the come-again page when another site sent the browser there; with
+    Slack's switch on, the page a one-time link clicked in Slack opens (K1). Empty: none.
 
     H1: every answer on /api and /mcp carries `Cache-Control: no-store` and no other
     Cache-Control (`_no_store`), set here, before anything answers: a refusal, a 429, the MCP
@@ -350,8 +376,10 @@ class Auth:
         wall: bool = False,
         failures: CredentialFailures | None = None,
         draft: Callable[[Request], Awaitable[Response | None]] | None = None,
+        comes_back: frozenset[str] = frozenset(),
     ) -> None:
         self.app = app
+        self.comes_back = comes_back
         self.failures = failures
         self.accounts = accounts
         self.public_origin = _origin(public_url) if public_url else None
@@ -363,6 +391,14 @@ class Auth:
         self.brand = brand
         self.wall = wall
         self.draft = draft
+
+    def _retired(self, scope: Scope) -> list[tuple[str, str]]:
+        """The cookies of retired names (Sessions.retired) the request sends."""
+        retired = self.accounts.sessions.retired
+        if not retired:
+            return []
+        sent = HTTPConnection(scope).cookies
+        return [(name, path) for name, path in retired if name in sent]
 
     def machine(self, scope: Scope) -> bool:
         """Whether the address is one machines use, which the wall leaves as it is."""
@@ -379,6 +415,8 @@ class Auth:
         path = scope["path"]
         if _is_api(path):  # H1: every answer to a machine, whatever answers it, is no-store
             send = _no_store(send)
+        elif retired := self._retired(scope):  # an old cookie name: cleared, never read
+            send = _clearing(send, retired)
         PATH.set(path)  # where the reader is, for the page that answers (templating.section)
         scope[BRAND] = self.brand  # what every page's frame names (templating.brand_of)
         walled = self.wall and not self.machine(scope)
@@ -420,7 +458,7 @@ class Auth:
                 return await kept(scope, receive, answer)
         if memory is None and walled:  # B1: the sign-in page, and nothing else
             if scope["method"] in ("GET", "HEAD"):
-                return await _refusal(request, self.issuer)(scope, receive, answer)
+                return await _refusal(request, self.issuer, self.comes_back)(scope, receive, answer)
             refused = Response("Sign in first.", 401, media_type="text/plain")
             return await refused(scope, receive, answer)
         if walled:  # admitted: answered as without the wall
@@ -439,7 +477,7 @@ class Auth:
                 return await self.app(scope, receive, send)
             if _is_api(path):  # no route ran: the record says only that one was refused
                 record_access("none", None, None, DENIED, None, 401)
-            return await _refusal(request, self.issuer)(scope, receive, send)
+            return await _refusal(request, self.issuer, self.comes_back)(scope, receive, send)
         limit = memory.plan[1].requests_per_minute if memory.plan else None
         wait = 0
         if self.limiter is not None and limit is not None:
@@ -575,8 +613,12 @@ class Accounts:
         saved: Callable[[str, str, str], None] | None = None,
         sessions: Sessions | None = None,
         compiles: Compiles | None = None,
+        allowed: Callable[[str], bool] | None = None,
     ) -> None:
         self.sessions = sessions or Sessions()  # the web session's cookie and life (B1)
+        # Who may stay signed in (cairn.web.signin.Allowed), checked on every request; None:
+        # the operator limits nobody.
+        self._allowed = allowed
         # G1: the notes this server compiles at once (cairn.web.turns), shared by every way
         # a note reaches a compile: requests, the sources' runs and the filer.
         self.compiles = compiles or Compiles()
@@ -587,34 +629,56 @@ class Accounts:
         self._plans = plans
         self._saved = saved  # (account id, project id, slug) after a request's note saves a page
 
-    def serving(self) -> bool:
-        """Whether this server can serve (/healthz): the store's bounded read worked, or
-        found the store busy at work (Store.health). False for anything else, an error
-        this does not know included: a probe is told the store cannot serve, never why."""
+    def serving(self) -> str:
+        """Whether this server can serve (/healthz), as Store.health answers: "ok" or "busy"
+        (it can), "stuck" (one holder has kept the store's writer past the bound) or
+        "unavailable" for anything else, an error this does not know included: a probe is
+        told the store cannot serve, never why."""
         try:
-            return self._store.health() != "unavailable"
+            return self._store.health()
         except Exception:
-            return False
+            return "unavailable"
 
     def principal(self, request: HTTPConnection) -> tuple[Principal, str | None] | None:
+        found = self._found(request)
+        return (found[0], found[1]) if found else None
+
+    def _found(self, request: HTTPConnection) -> tuple[Principal, str | None, str | None] | None:
         """Who the request acts for, and the actor id that tells them apart from others of
         the same name (Store.identify_*). The web UI takes the session cookie and nothing else.
         /api takes an API key and nothing else. /mcp takes an API key, or an OAuth access
         token as `Authorization: Bearer`: the token's prefix, which no key can have, says
         which of the two a bearer value is, so each is looked up once and never as the
-        other. A token presented anywhere but on /mcp is refused."""
+        other. A token presented anywhere but on /mcp is refused. Third: the address a
+        session's sign-in was vouched with, read with it when the operator limits who signs
+        in (None otherwise, and for a key or a token). With `sessions.idle`, a session not
+        used that long is no session (Store.identify_session)."""
         path = request.scope["path"]
         if not _is_api(path):
             token = request.cookies.get(self.sessions.cookie)
-            return self._store.identify_session(token) if token else None
+            if not token:
+                return None
+            asked: dict[str, Any] = {}
+            if self.sessions.idle is not None:
+                asked["idle_seconds"] = self.sessions.idle
+            if self._allowed is not None:
+                asked["vouched"] = True
+            seen = self._store.identify_session(token, **asked)
+            return (*seen, None)[:3] if seen else None  # type: ignore[return-value]
         key, bearer = request.headers.get("x-api-key", "").strip(), _bearer(request.headers)
         if not key and bearer.startswith(ACCESS_TOKEN_PREFIX):
             usable = self._tokens is not None and _is_mcp(path)
-            return self._store.identify_token(bearer, audience=self._tokens) if usable else None
-        return self._store.identify_key(key or bearer) if key or bearer else None
+            found = self._store.identify_token(bearer, audience=self._tokens) if usable else None
+        else:
+            found = self._store.identify_key(key or bearer) if key or bearer else None
+        return (*found, None) if found else None
 
     def memory(
-        self, principal: Principal, actor_id: str | None = None, key_id: str | None = None
+        self,
+        principal: Principal,
+        actor_id: str | None = None,
+        key_id: str | None = None,
+        vouched: str | None = None,
     ) -> Memory | None:
         """The principal's account, and only that, acting for the principal's person when it
         has one, narrowed to the principal's reach: a key or a grant reaches the projects and
@@ -632,7 +696,11 @@ class Accounts:
         Memory knows the plan. The plan is the one in force now (`Plans.in_force`: the
         operator's, else the default), one read. None: the account is
         gone, or the person is no longer one of its members (either can change between
-        resolving a credential and this call)."""
+        resolving a credential and this call), or the operator limits who signs in and the
+        person's address is not allowed now (`allowed`): a session is checked by the address
+        its sign-in was vouched with (`vouched`), else the person's stored address, which is
+        what a key or an agent acting for them is checked by. Nothing more is read for it:
+        the person is read here anyway, and the vouched address with the session."""
         member = {"user_id": principal.user_id} if principal.user_id else {}
         try:
             view = self._store.for_account(principal.account_id, **member)
@@ -640,6 +708,8 @@ class Accounts:
             return None
         person = view.get_user(principal.user_id) if principal.user_id else None
         if principal.user_id and person is None:
+            return None
+        if person and self._allowed is not None and not self._allowed(vouched or person.email):
             return None
         name = person.name if person and principal.kind == "session" else principal.label
         view = view.acting_as(principal.kind, name, actor_id)
@@ -659,13 +729,13 @@ class Accounts:
         return Memory(view, self._gate, person, plan, plans=self._plans)
 
     def admit(self, request: HTTPConnection) -> Memory | None:
-        found = self.principal(request)
+        found = self._found(request)
         key_id = None
         if found and found[0].kind == "session" and found[0].label and found[0].user_id:
             # A session opened with a key a person made names the person as its actor: the
             # key it was opened with is looked up, by the session's own token (A1).
             key_id = self._store.session_key(request.cookies.get(self.sessions.cookie, ""))
-        memory = self.memory(*found, key_id) if found else None
+        memory = self.memory(found[0], found[1], key_id, found[2]) if found else None
         if memory is not None and self._saved is not None:  # T4b: a saved page is queued
             memory.saved = functools.partial(self._saved, memory.store.account_id)
         return memory
@@ -778,6 +848,10 @@ class Accounts:
         data. Each is looked up on the store when it is called."""
 
         def operation(name: str) -> Any:
+            if name == "rotate_refresh_token":
+                return lambda *args, **named: self._store.rotate_refresh_token(
+                    *args, allowed=self._allowed, **named
+                )
             return lambda *args, **named: getattr(self._store, name)(*args, **named)
 
         names = [field.name for field in dataclasses.fields(oauth.Ledger)]

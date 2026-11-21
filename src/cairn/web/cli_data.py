@@ -1,4 +1,4 @@
-"""The command line's data commands: export, import and compact (cairn.web.cli dispatches
+"""The command line's data commands: export, import, compact and repair (cairn.web.cli dispatches
 here). They print paths, counts, the workspace's id, the names of the note fields an import
 cut, the notice that imported projects are private, and refusals that name a file, an id, a
 project's name, a rule or a limit, and failures that name the file and the system's reason or
@@ -11,24 +11,45 @@ SQLite makes beside it are 0600 too, whatever the umask. cairn.web.cli.main chec
 command's --db before the command runs: a symbolic link is refused, exit 2, in one line
 (LINKED_DB), with nothing made at either end of it; an existing database others on this
 machine can read (its group or everyone else may read it, and may pass every folder above
-it) is not changed and not refused, and the command says so first, once, in one line on
+it) is not changed and not refused, and a command that accepts its schema says so once on
 stderr (READABLE_DB: its mode and the chmod that makes it private). A file in a folder only
 its owner may enter is quiet whatever its own mode: the container's /data is 0700."""
 
 import argparse
 import os
+import sqlite3
 import stat
 import sys
+from collections.abc import Iterator
+from contextlib import closing, contextmanager, suppress
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from cairn.memory import EXPORTED_EVENT
 from cairn.plans import Plans
 from cairn.plans import load as load_plans
-from cairn.store import FIELD_MAX, CannotOpen, CompactIncomplete, OverLimit, Pruned, Store
+from cairn.store import (
+    FIELD_MAX,
+    CannotOpen,
+    CompactIncomplete,
+    CompactionRunning,
+    OverLimit,
+    Pruned,
+    Store,
+)
+from cairn.store.base import audit_log, hard_linked
 
-COMMANDS = ("export", "import", "compact")
+COMMANDS = ("export", "import", "compact", "repair")
 # The --db help of a command that never creates the database (it exits 1 when there is none).
 DB_EXISTS = "the SQLite file serve uses, which must exist"
 NO_PLAN = "no plan is applied: this import caps nothing (--plans FILE holds it to one)"
+# The common refusal for an older cairn schema, including both read-only commands.
+OLDER_SCHEMA = (
+    "the database at {db} has an older schema (version {found}; this cairn's is {known}): start"
+    " the server once on it (serve --db) to bring it up to date, which holds every page to its"
+    " own project's notes and logs how many pages it rewrote and removed; only serve upgrades"
+    " it, and {command} changed nothing"
+)
 
 
 def add_commands(commands: argparse._SubParsersAction) -> None:
@@ -64,6 +85,19 @@ def add_commands(commands: argparse._SubParsersAction) -> None:
         allow_abbrev=False,
     )
     compact.add_argument("--db", type=Path, required=True, help=DB_EXISTS)
+    compact.add_argument(
+        "--if-due",
+        action="store_true",
+        help="only what a recorded deletion still needs: nothing without one, the write-ahead"
+        " log alone when the file was rewritten since, else the whole compaction",
+    )
+    repair = commands.add_parser(
+        "repair",
+        help="rewrite each page that cites a passage not of its own project's notes, as the"
+        " upgrade to schema 32 did: the pages stats --other-projects counts",
+        allow_abbrev=False,
+    )
+    repair.add_argument("--db", type=Path, required=True, help=DB_EXISTS)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -82,7 +116,9 @@ def run(args: argparse.Namespace) -> int:
                 print(f"cannot use those plans: {error}", file=sys.stderr)
                 return 2
         return _import(args.db, args.account, args.source, args.max_bytes, plans)
-    return _compact(args.db)
+    if args.command == "repair":
+        return _repair(args.db)
+    return _compact_if_due(args.db) if args.if_due else _compact(args.db)
 
 
 def _counts(summary) -> str:
@@ -95,7 +131,7 @@ def _export(db: Path, account: str, out: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db)
+    store = open_existing(db)
     try:
         try:
             view = store.for_account(account)
@@ -114,6 +150,7 @@ def _export(db: Path, account: str, out: Path) -> int:
             with os.fdopen(fd, "wb") as file:
                 os.fchmod(file.fileno(), 0o600)  # exactly 0600, whatever the umask
                 summary = view.export(file)
+            view._record_read(EXPORTED_EVENT, None, {})
         except Exception as error:
             out.unlink(missing_ok=True)
             # the system's reason or the class: a message may name another path or a note
@@ -146,8 +183,7 @@ def _import(
     the import's transaction (Plans.limits_of), as a request's is: over a cap, nothing is
     imported and the error names the limit. Without, NO_PLAN goes to stderr first, once the
     database is open (a newer one is refused in one line, cairn.web.cli.main) or when the
-    archive cannot be read. A database that was not there is created, and removed again,
-    with the directories made for it, when the import does not finish."""
+    archive cannot be read. A new database stays private until the entire import is ready."""
     try:
         file = source.open("rb")
     except OSError as error:
@@ -156,14 +192,9 @@ def _import(
         print(f"cannot read {source}: {error.strerror}", file=sys.stderr)
         return 1
     with file:
-        new = not db.exists()
-        made = _missing_directories(db.parent) if new else []
-        make_folder(db)
-        imported = False
         try:
-            make_database(db)  # 0600 before SQLite opens it (H1)
-            store = Store(db)
-            try:
+            target = closing(open_existing(db)) if os.path.lexists(db) else new_store(db)
+            with target as store:
                 if plans is None:
                     print(NO_PLAN, file=sys.stderr)
                 view = store.for_account(account)
@@ -171,36 +202,39 @@ def _import(
                     plan = plans.in_force(view, account)[1]
                     view = plans.limit(view, plan)
                 summary = view.import_export(file, max_bytes)
-                imported = True
-            except KeyError:
-                print(f"no workspace {account!r} in {db}", file=sys.stderr)
-                return 1
-            except (ValueError, OverLimit) as error:  # names files, ids, counts, rules, limits
-                print(f"nothing was imported: {error}", file=sys.stderr)
-                return 1
-            finally:
-                store.close()
-        finally:
-            if new and not imported:
-                _remove_new(db, made)
+        except KeyError:
+            print(f"no workspace {account!r} in {db}", file=sys.stderr)
+            return 1
+        except (ValueError, OverLimit) as error:
+            print(NOTHING_IMPORTED.format(error=error), file=sys.stderr)
+            return 1
     print(f"imported {_counts(summary)} into {account} in {db}")
     print(f"cut {summary.fields_cut} note fields to their bounds ({', '.join(FIELD_MAX)})")
     print(summary.notice)  # who reaches what it brought: the archive carries no access rules
     return 0
 
 
-def make_folder(db: Path) -> None:
+def make_folder(db: Path) -> list[Path]:
     """The database's folder, made with its parents when missing, each one 0700 (H1): what
     the database holds is its owner's only. A folder that was there is left as it is. A
     folder cairn may not make it under is CannotOpen, as the store's own refusal is
     (cairn.web.cli.main)."""
+    made = []
     for folder in reversed(_missing_directories(db.parent)):
         try:
             os.mkdir(folder, 0o700)  # the umask can only take bits away from 0700
         except FileExistsError:
-            pass
+            continue
         except PermissionError as error:
             raise CannotOpen(db) from error
+        made.append(folder)
+    return made
+
+
+# What import says when it imported nothing; a new database it could not publish says why.
+NOTHING_IMPORTED = "nothing was imported: {error}"
+ALREADY_THERE = "{db} already exists"
+CANNOT_PUBLISH = "cannot publish {db}: {reason}"
 
 
 # H1: what the command line says of a --db that is a symbolic link (exit 2), and of an
@@ -218,7 +252,7 @@ READABLE_DB = (
 _OTHERS = ((stat.S_IRGRP, stat.S_IXGRP), (stat.S_IROTH, stat.S_IXOTH))
 
 
-def make_database(db: Path) -> None:
+def make_database(db: Path) -> bool:
     """The database file, made empty and exactly 0600 when there is none, before SQLite
     opens it, so the -wal and -shm files SQLite makes beside it take the same mode (SQLite
     gives them the database's). O_EXCL|O_NOFOLLOW: an existing file is left as it is, and a
@@ -230,18 +264,54 @@ def make_database(db: Path) -> None:
     except FileExistsError:
         if os.path.islink(db):
             raise
-        return
+        return False
     except PermissionError as error:
         raise CannotOpen(db) from error
     try:
         os.fchmod(fd, 0o600)  # exactly 0600, whatever the umask took away
     finally:
         os.close(fd)
+    return True
 
 
 def linked(db: Path | None) -> str | None:
     """LINKED_DB when `db` is a symbolic link, else None."""
-    return LINKED_DB.format(db=db) if db is not None and os.path.islink(db) else None
+    if db is None:
+        return None
+    return LINKED_DB.format(db=db) if os.path.islink(db) else hard_linked(db)
+
+
+def _companions(db: Path) -> Iterator[Path]:
+    for suffix in ("-wal", "-shm", "-journal"):
+        yield db.with_name(db.name + suffix)
+
+
+def journal_refusal(db: Path) -> str | None:
+    """Let SQLite identify a hot rollback journal without giving it permission to recover."""
+    try:
+        info = db.stat()
+        if not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
+            return f"{db} is not a regular file: --db names a SQLite database"
+        empty = info.st_size == 0
+    except FileNotFoundError:
+        empty = True
+    except (PermissionError, NotADirectoryError):
+        return None  # the command diagnoses the path
+    if empty:
+        for path in _companions(db):
+            if os.path.lexists(path):
+                return f"{path} already exists beside an empty or missing database at {db}"
+        return None
+    journal = db.with_name(db.name + "-journal")
+    if journal.is_file():
+        try:
+            with closing(sqlite3.connect(db.absolute().as_uri() + "?mode=ro", uri=True)) as probe:
+                probe.execute("PRAGMA schema_version").fetchone()
+        except sqlite3.Error as error:
+            if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_READONLY_ROLLBACK:
+                return f"{db} has a hot rollback journal: recover it with its owning program first"
+            return f"cannot check the rollback journal at {journal}: {type(error).__name__}"
+    return None
 
 
 def readable_by_others(db: Path) -> int | None:
@@ -268,6 +338,18 @@ def readable(db: Path | None) -> str | None:
     return None if found is None else READABLE_DB.format(db=db, mode=found)
 
 
+def warn_readable(db: Path) -> None:
+    if reason := readable(db):
+        print(reason, file=sys.stderr, flush=True)
+
+
+def open_existing(db: Path) -> Store:
+    """An accepted database gets its permissions notice before the command acts."""
+    store = Store(db, upgrade=False, create=False)
+    warn_readable(db)
+    return store
+
+
 def _missing_directories(directory: Path) -> list[Path]:
     """The directories mkdir(parents=True) would make for `directory`, deepest first."""
     missing = []
@@ -277,24 +359,91 @@ def _missing_directories(directory: Path) -> list[Path]:
     return missing
 
 
-def _remove_new(db: Path, directories: list[Path]) -> None:
-    """Remove a database this run created, its SQLite side files, then the directories it
-    made, deepest first; a directory something else has put a file in stays."""
-    for path in (db, *(db.with_name(db.name + end) for end in ("-wal", "-shm", "-journal"))):
-        path.unlink(missing_ok=True)
-    for directory in directories:
-        try:
-            directory.rmdir()
-        except OSError:
-            return
+@contextmanager
+def database_folder(db: Path) -> Iterator[None]:
+    made = make_folder(db)
+    try:
+        yield
+    finally:
+        for directory in reversed(made):
+            with suppress(OSError):
+                directory.rmdir()
+
+
+@contextmanager
+def new_store(db: Path) -> Iterator[Store]:
+    """Publish a complete, closed database with one exclusive link on the same filesystem.
+    Checkpoint the private journal explicitly since only the main file will be linked."""
+    events: list[str] = []
+    try:
+        with database_folder(db), TemporaryDirectory(dir=db.parent, prefix=".cairn-") as folder:
+            staged = Path(folder) / "db"
+            make_database(staged)
+            with closing(Store(staged, upgrade=False)) as store:
+                store._state.audit_line = events.append
+                yield store
+                with store._locked() as con:
+                    try:
+                        busy = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+                    except sqlite3.Error as error:
+                        raise ValueError(f"cannot checkpoint the new database for {db}") from error
+                    if busy:
+                        raise ValueError(f"cannot checkpoint the new database for {db}: busy")
+            for companion in _companions(db):
+                if os.path.lexists(companion):
+                    raise ValueError(f"{companion} already exists beside the destination")
+            try:
+                os.link(staged, db)
+            except FileExistsError:
+                raise ValueError(ALREADY_THERE.format(db=db)) from None
+            except OSError as error:
+                raise ValueError(CANNOT_PUBLISH.format(db=db, reason=error.strerror)) from error
+    except PermissionError as error:
+        raise CannotOpen(db) from error
+    for line in events:
+        with suppress(Exception):  # the database has already been published
+            audit_log.info(line)
+
+
+ANOTHER_COMPACTION = 3  # compact's exit code when another compaction runs on the database
+STILL_DUE = "a deletion recorded during the run still asks for a rewrite"
 
 
 def _compact(db: Path) -> int:
+    """`compact`: prune by the record, then the whole compaction, under the lock that keeps
+    one compaction at a time on the database (Store.compacting): exit 3 and nothing changed
+    when another one runs."""
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
+    store = open_existing(db)
+    try:
+        with store.compacting():
+            return _rewrite(store, db)
+    except CompactionRunning as error:
+        return _running(db, error)
+    finally:
+        store.close()
+
+
+def _running(db: Path, error: CompactionRunning) -> int:
+    print(
+        f"{db} was not compacted: {error}; nothing was changed, run compact again when it is done",
+        file=sys.stderr,
+    )
+    return ANOTHER_COMPACTION
+
+
+def _still_due(store: Store) -> None:
+    """One more line when the record, read as the run ends, asks for a rewrite: a deletion
+    recorded while it ran, which its rewrite did not cover."""
+    state = store.compaction_state()
+    if state.deleted_at is not None and not state.rewritten:
+        print(f"{STILL_DUE}: run compact --if-due again")
+
+
+def _rewrite(store: Store, db: Path) -> int:
     before = db.stat().st_size
-    store = Store(db)
     try:
         pruned = store.prune_by_record()  # Q1: before the file is rewritten
         store.compact()
@@ -303,10 +452,105 @@ def _compact(db: Path) -> int:
             print(_pruned(pruned), file=sys.stderr)
         print(f"{db} was not fully compacted: {error}", file=sys.stderr)
         return 1
-    finally:
-        store.close()
     print(_pruned(pruned))
     print(f"compacted {db}: {before} -> {db.stat().st_size} bytes")
+    _still_due(store)
+    return 0
+
+
+def _compact_if_due(db: Path) -> int:
+    """`compact --if-due` (the Google Cloud host's nightly run, infra/gcp/files/host.sh): what
+    the record of compaction (Store.compaction_state) says is still due, read once the lock
+    that keeps one compaction at a time is held (exit 3, nothing changed, when another one
+    runs), so a deletion the server's own compactor already rewrote for, and recorded, is
+    not rewritten again (one killed before its record is). No deletion recorded: nothing.
+    The file rewritten since the last deletion: the write-ahead log alone (Store.empty_log),
+    not finished (exit 1, as compact's line) when another connection holds it. Otherwise
+    the whole compaction, as `compact`. It exits 0 when it did what was due at its start;
+    a deletion recorded while it ran is said in one more line, for the next run."""
+    if not db.is_file():
+        print(f"no database at {db}", file=sys.stderr)
+        return 1
+    store = open_existing(db)
+    try:
+        with store.compacting():
+            due = store.compaction_state()
+            if due.deleted_at is None:
+                print(
+                    f"nothing to compact in {db}: no deletion is recorded since the last"
+                    " compaction finished"
+                )
+                return 0
+            if not due.rewritten:
+                return _rewrite(store, db)
+            try:
+                store.empty_log()
+            except CompactIncomplete as error:
+                print(f"{db} was not fully compacted: {error}", file=sys.stderr)
+                return 1
+            print(
+                f"emptied the write-ahead log of {db}: the file was rewritten after the last"
+                " deletion, so only the log was due"
+            )
+            _still_due(store)
+            return 0
+    except CompactionRunning as error:
+        return _running(db, error)
+    finally:
+        store.close()
+
+
+def _repair(db: Path) -> int:
+    """`repair`: Store.repair_own_projects, one transaction over the whole database (the
+    command takes no workspace, as compact and stats take none), under the lock that keeps
+    one compaction at a time (exit 3, nothing changed, while one runs, as compact). A write
+    another connection holds past the store's wait leaves the database as it was (exit 1).
+    Once committed it prints the totals, then each workspace's counts by its id; it names no
+    page, project or note. With no such page: "nothing to change", exit 0, nothing written.
+    It never upgrades a database by the way: its open refuses one of an older schema (exit 1,
+    OLDER_SCHEMA, from cairn.web.cli.main), as every command's but `serve`'s does, since the
+    upgrade is the repair (schema step 32) and the server logs its counts. A database held
+    past the store's wait while it opens is busy, as one held while it repairs."""
+    if not db.is_file():
+        print(f"no database at {db}", file=sys.stderr)
+        return 1
+    store: Store | None = None
+    each: list[tuple[str, int, int]] = []
+    try:
+        store = open_existing(db)
+        with store.compacting():
+            done = store.repair_own_projects(lambda *counts: each.append(counts))
+    except CompactionRunning as error:
+        print(
+            f"{db} was not repaired: {error}; nothing was changed, run repair again when it is"
+            " done",
+            file=sys.stderr,
+        )
+        return ANOTHER_COMPACTION
+    except sqlite3.OperationalError as error:
+        code = getattr(error, "sqlite_errorcode", None)
+        if code is None or code & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise
+        print(
+            f"{db} was not repaired: the database is busy; nothing was changed, run repair again",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if store is not None:
+            store.close()
+    if not done["workspaces"]:
+        print(
+            f"nothing to change in {db}: no page cites a passage that is not of its own"
+            " project's notes"
+        )
+        return 0
+    print(
+        f"repaired {db}: {done['rewritten']} page(s) rewritten with their own project's"
+        f" claims, {done['removed']} removed, in {done['workspaces']} workspace(s)"
+    )
+    for account, rewritten, removed in each:
+        print(f"workspace {account}: {rewritten} rewritten, {removed} removed")
     return 0
 
 

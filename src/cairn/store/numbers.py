@@ -10,11 +10,15 @@ stored), `pages`, `page_versions`, `waiting` (notes stored and not yet filed on 
 `keys`, `agents` (connected agents: grants with a refresh token alive at `now`),
 `newest_note` (of each project's most recently stored note, the latest time stored; the
 notes' own order, so it reads one row per project rather than every note), and `sources`
-(rows of workspace, kind, how many are on, how many's last run failed)."""
+(rows of workspace, kind, how many are on, how many's last run failed). One part is the
+install's own, not a workspace's: `compaction` (Privacy 1), the rows of the store's record of
+compaction (cairn.store.base: COMPACT_DUE and COMPACTED_AT), each as (name, value,
+updated_at), which `compaction_of` reads as Store.compaction_state does."""
 
 import sqlite3
 
-from cairn.store.base import StoreBase
+from cairn.store.base import COMPACT_DUE, COMPACTED_AT, DEFAULT_ACCOUNT_ID, StoreBase, is_rewritten
+from cairn.store.models import CompactionState
 
 _QUERIES = {
     "accounts": "SELECT id, NULL FROM accounts ORDER BY seq",
@@ -51,6 +55,10 @@ _QUERIES = {
         "SELECT account_id, kind, SUM(enabled), SUM(last_error IS NOT NULL) FROM sources"
         " GROUP BY account_id, kind ORDER BY account_id, kind"
     ),
+    "compaction": (
+        f"SELECT name, value, updated_at FROM settings WHERE account_id = '{DEFAULT_ACCOUNT_ID}'"
+        f" AND name IN ('{COMPACT_DUE}', '{COMPACTED_AT}')"
+    ),
 }
 PARTS = tuple(_QUERIES)
 
@@ -63,6 +71,18 @@ def part_rows(con: sqlite3.Connection, part: str, now: str) -> list[tuple]:
         raise ValueError(f"no such part of the numbers: {part!r}")
     query = _QUERIES[part]
     return con.execute(query, {"now": now} if ":now" in query else {}).fetchall()
+
+
+def compaction_of(rows: list[tuple]) -> CompactionState:
+    """The install's record of compaction from the rows of the part `compaction`, read as
+    Store.compaction_state reads them."""
+    found = {name: (value, updated) for name, value, updated in rows}
+    due, done = found.get(COMPACT_DUE), found.get(COMPACTED_AT)
+    return CompactionState(
+        deleted_at=due[0] if due else None,
+        compacted_at=done[0] if done else None,
+        rewritten=bool(due) and is_rewritten(due[1]),
+    )
 
 
 class NumbersMethods(StoreBase):

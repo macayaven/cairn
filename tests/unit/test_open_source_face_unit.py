@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,18 @@ FIRST = section(README, "## Run it on your computer")
 
 
 def test_the_first_section_turns_on_the_local_compose_file_and_starts_it():
+    """Two ways, the released image first (pinned to the version in pyproject.toml, pulled
+    and started without a build), then the source build; both use the local Compose file."""
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert blocks(FIRST)[0] == [
+        "git clone https://github.com/macayaven/cairn.git &&",
+        "cd cairn/deploy &&",
+        "echo 'COMPOSE_FILE=compose.local.yaml' > .env &&",
+        f"echo 'CAIRN_IMAGE=ghcr.io/macayaven/cairn:{version['version']}' >> .env &&",
+        "docker compose pull cairn &&",
+        "docker compose up -d --no-build",
+    ]
+    assert blocks(FIRST)[1] == [
         "git clone https://github.com/macayaven/cairn.git &&",
         "cd cairn/deploy &&",
         "echo 'COMPOSE_FILE=compose.local.yaml' > .env &&",
@@ -49,7 +61,7 @@ def test_the_port_the_readme_names_is_the_one_the_file_publishes():
     variable, default = re.fullmatch(r"127\.0\.0\.1:\$\{(\w+):-(\d+)\}:8765", published).groups()
     assert default == "8765" and variable == "CAIRN_PORT"
     assert "http://127.0.0.1:8765" in FIRST
-    assert f"echo '{variable}=18765' >> .env" in blocks(FIRST)[1]
+    assert f"echo '{variable}=18765' >> .env" in blocks(FIRST)[2]
 
 
 def test_the_key_commands_are_the_deploy_guides_which_the_stack_rehearsal_runs():
@@ -274,7 +286,14 @@ def test_local_upgrades_build_from_source_before_replacing_the_container():
         "docker build -t cairn:local .",
     ]
     assert commands[1][-1].endswith("cairn:local")
-    assert "docker pull" not in RUN_GUIDE and "wherever this guide writes" not in RUN_GUIDE
+    # A pull is the second way only, of a released image by its version (test_distribution_unit).
+    pulls = re.findall(r"docker pull (\S+)", RUN_GUIDE)
+    assert pulls and set(pulls) <= {
+        "ghcr.io/macayaven/cairn:0.1.0",
+        '"ghcr.io/macayaven/cairn:$VERSION"',
+    }, pulls
+    assert RUN_GUIDE.index("docker pull") > RUN_GUIDE.index("docker build -t cairn:local .")
+    assert "wherever this guide writes" not in RUN_GUIDE
 
 
 def test_a_clone_that_fails_stops_the_first_commands_before_they_touch_a_folder():

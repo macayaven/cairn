@@ -1,19 +1,27 @@
 # Every push and pull request runs the tests and lint, and validates the infrastructure and
-# deploy files in a job of their own. A draft pull request runs only those two jobs. A pull
-# request that is ready for review also builds the image and smoke-tests it on linux/amd64 and
-# linux/arm64 (the non-native platform under QEMU) with scripts/smoke_container.py, and
-# rehearses the stack and the host, as the next lines say. That is the gate a merge waits
-# for. Marking a draft ready for review starts a run. Pushes to main, v* tags and manual runs
-# run the whole gate too.
+# deploy files in a job of their own. Every one also builds the image once, for linux/amd64 and
+# linux/arm64, in job `image_build`, which may only read the repository, and scans both
+# platforms of that build. A v* tag builds nothing: image_build reads the image main's run
+# published for the tag's commit as sha-<commit>, by its digest, and every later job checks
+# and promotes that digest; a tag whose commit main has not published stops there. A draft pull request runs only those jobs and the other scans. A pull
+# request that is ready for review also smoke-tests that build on linux/amd64 and linux/arm64
+# (the non-native platform under QEMU) with scripts/smoke_container.py, and rehearses the stack
+# and the host, as the next lines say, both with the build's linux/amd64 image. That is the gate a merge waits for. Marking a draft
+# ready for review starts a run. Pushes to main, v* tags and manual runs run the whole gate too.
 # Except: a change that touches only paths no image job reads (the list is NO_IMAGE_WORK in
-# scripts/ci_changes.py: docs/, tests/, evals/, examples/, the files for contributors) builds no
-# image, so on main it publishes and deploys nothing. Job `changes` runs that script first.
+# scripts/ci_changes.py: docs/, tests/, evals/, examples/, the files for contributors) runs no
+# image check, stack or host rehearsal, so on main it publishes and deploys nothing; its image
+# is still built and scanned. Job `changes` runs that script first.
 # On main, "the change" is everything since the head of the newest run on main that
 # published an image, not only this push: a change whose run failed, was cancelled or had
 # its deploy refused is still in it, and ships with the next push.
 # When the changed paths cannot be known (a v* tag, a manual run, a first or forced push, no
 # run that published, an earlier run on main still going, a failed lookup), the whole gate
 # runs. The tests and the infrastructure checks always run.
+# Every gate run, draft pull requests included, rehearses the build a tag runs (job
+# `package_check`, the same uv build line as job `package`, uploading nothing), so a
+# constraints file that no longer resolves, or a hash that no longer matches, fails there and
+# never a tag after its image is published; `publish` needs it.
 # The shipped compose stack (Caddy, cairn, Litestream) is rehearsed on the runner with
 # scripts/rehearse_stack.py, restore from the replica included.
 # The VM's own host setup (cloud-init's files, the systemd units and infra/gcp/files/host.sh:
@@ -22,20 +30,89 @@
 # Pushes to main and v* tags then publish one multi-arch image to ghcr.io/<owner>/<repo>,
 # once every job of the gate has passed: the tests, the infrastructure checks, the image
 # check, the stack rehearsal and the host rehearsal. A failed infrastructure check stops
-# the publication too.
+# the publication too. What `publish` pushes on main is image_build's archive, checked against
+# the SHA-256 the scan and the image check checked, by the index digest they pushed (on a tag,
+# that digest is main's, already in the registry, and it is tagged there; the archive is
+# copied on a tag only when the registry does not give the digest when asked): it builds
+# nothing, checks out nothing and runs no image, and no job that may write to the registry
+# or holds an identity token builds or runs the repository's code (deploy runs its one deploy
+# script).
+# A v* tag is first checked by job `release_check` (scripts/release_check.py), and `publish`
+# needs it. It refuses, in one line, a tag pushed to a private repository (a private copy of
+# this one runs the same workflow), a tag that is not `v` and the version in pyproject.toml, a
+# version whose section of CHANGELOG.md is missing, has no entry, holds a control character
+# other than a line feed or a tab, or is dated after the day of
+# the run, a tag whose commit is not on main, a tag lower than another of its X.Y, and a
+# version that already has a GitHub release. A tag is published as X.Y.Z, a full version
+# that never moves: when the registry has it already, `publish` carries on with the same
+# digest and stops at another one. A push to main is published as main and sha-<commit>,
+# never latest, and sha-<commit> is written once, by the same rule. A tag writes no sha- tag. After a release, job `aliases`, one at a time across all runs, points latest
+# at the highest released version and each X.Y at its highest X.Y.z, deciding from the
+# releases and the registry as they are when it runs. Job `verify` smoke-tests the published image on main and on tags; in a public
+# repository it first pulls the image with no login, as the run guide does (a tag's version,
+# or on main the commit's own tag), and checks its digest.
+# On a tag, job `package` then builds the wheel and the source archive, with the build backend
+# and its dependencies pinned by hash in build-constraints.txt, in a job that may only read the
+# repository and holds no secret, and keeps them as an artifact of the run for five days. Job
+# `release`, the only job that may write to the repository, builds and installs nothing: it
+# checks that the artifact holds one wheel and one source archive of the tag's version, and
+# makes the GitHub release with them and the version's section of CHANGELOG.md. A run that
+# failed after `publish` and before the release was made is finished by re-running only its
+# failed jobs. A tag's run builds nothing, so re-running all of it promotes the same digest
+# again. `release` makes the release as a draft, compares the draft's title, notes and files
+# with the ones it holds, publishes it with a request of its own and looks again. A re-run of
+# it starts from what an earlier attempt left: this run's release published, with the same
+# title, notes and files, and it goes on, so that a release tag's `aliases` runs; this run's
+# draft with the same, and it publishes it; a release whose title, notes or files are not
+# those, and it stops and says what a person does.
+# The job's own text issues no delete, and the GitHub CLI, asked for a draft, deletes no
+# release it made.
+# `package` writes SHA256SUMS over the files it built, and the release publishes it with them.
+# Between the two, job `attest`, which holds an identity token and nothing that writes to the
+# repository, checks every file against SHA256SUMS, as `release` does, and gives the wheel, the
+# source archive, SHA256SUMS and the image's digest each a build provenance attestation.
+# A release candidate vX.Y.Z-rc.N (scripts/release_check.py says when one is taken) runs the
+# same jobs but `aliases`, attestation included. Its image, main's for its commit, is published
+# as X.Y.Z-rc.N only, never X.Y, X.Y.Z or latest, and its GitHub release is a pre-release of
+# its own, with its own files, not marked latest; the release tagged later on that commit
+# promotes the same digest and makes a second GitHub release.
+# Four scans run on every pull request and every push, drafts and changes of documents only
+# included, and `publish` needs each: the locked dependencies (pip-audit), both platforms of
+# image_build's image (Trivy), src/ (Bandit) and the whole history checked out (gitleaks,
+# redacted).
+# The quick deploy's OpenTofu definitions (infra/quick/) are checked in job `quick` when a
+# change touches them, and on every tag; `publish` needs it too.
+# Job `browser` runs the browser tests (tests/browser) in headless Chromium on every pull
+# request and every push, with no path condition, and `publish` needs it.
 # Nothing is published from a pull request or a manual run.
 # A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
-# gate runs as before, and nothing is published, verified or deployed. Unset, it publishes.
+# gate runs as before, and nothing is published, verified, released or deployed; a v* tag's
+# run stops in image_build, since main published no sha-<commit>. Unset, it publishes.
 # A push to main then deploys that image, by digest, to the hosted VM (job `deploy`), when the
-# repository is configured for it; otherwise that job is skipped. infra/gcp/README.md has the
-# settings and the first-deploy checklist.
+# repository is configured for it; otherwise that job is skipped. It runs in the environment
+# `production`; whether it waits for approval is that environment's setting, which this file
+# cannot see. infra/gcp/README.md has the
+# settings and the first-deploy checklist. A tag never deploys.
 # Where the jobs run: two repository variables, each a JSON value for runs-on, each
 # defaulting to ubuntu-latest when unset. CAIRN_GATE_RUNNER names the runner of the gate's
-# jobs; CAIRN_RELEASE_RUNNER names the runner of publish, verify and deploy, which no job of
-# a pull request uses. docs/decisions.md, decision 150, says why there are two.
+# jobs (`quick` and `browser` aside, which always run on ubuntu-latest) and of `package`,
+# which runs the build backend; CAIRN_RELEASE_RUNNER names the runner
+# of publish, verify, attest_main, attest, release, aliases and deploy, which no job of a pull
+# request uses and which runs no build. Five jobs run the GitHub CLI, gh, which GitHub's runners
+# have: release_check and image_build, on a tag, on the runner CAIRN_GATE_RUNNER names, and
+# publish, on a push to main, release and aliases, on the runner CAIRN_RELEASE_RUNNER names.
+# image_build refuses a gh before 2.102.0, which fixed how gh attestation verify matches
+# --signer-workflow and --source-ref (GHSA-wjmr-j3rp-mh2g, GHSA-4mq3-hpgx-9cx8). Job release
+# needs gh 2.102.0 or later too, on the runner CAIRN_RELEASE_RUNNER names: what gh does with a
+# draft (it makes one and takes none back, and finds one by its tag) was read in that version's
+# source and in no earlier one. Its first step refuses an earlier gh, before it fetches or
+# writes anything. docs/decisions.md, decision 150, says why there are two.
 #
 # Actions are pinned to full commit SHAs; each comment names the release the SHA was when
-# pinned (resolved with git ls-remote on 2026-11-10). Dependabot keeps them current.
+# pinned (resolved with git ls-remote on 2026-11-10; actions/attest read with gh api on
+# 2026-11-19). Dependabot keeps them current. oras 1.3.6 and its two archives' SHA-256 were read
+# from its release's checksums file, and registry:2.8.3's index digest from Docker Hub, on
+# 2026-11-19.
 name: cairn-ci-cd
 
 on:
@@ -66,6 +143,7 @@ jobs:
       actions: read
     outputs:
       image: ${{ steps.decide.outputs.image }}
+      quick: ${{ steps.decide.outputs.quick }}
     steps:
       # The whole history, so that the base of the diff is there; no token is kept.
       - name: Check out
@@ -194,9 +272,534 @@ jobs:
           PY
           python3 scripts/restore_drill.py --db-file drill.db --min-notes 1
 
+  # The build job `package` runs on a tag, rehearsed on every run with the same command line
+  # (a test holds the two equal) and the same setup: no secret, a read token the checkout keeps
+  # none of, setup-uv with no token and no cache. It uploads nothing.
+  package_check:
+    name: the release's build, rehearsed
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: false
+          github-token: ""
+      - name: Build the wheel and the source archive
+        run: >-
+          uv build --build-constraint build-constraints.txt --require-hashes
+          --out-dir "$RUNNER_TEMP/release"
+
+  # The four scans below run on every pull request and every push, drafts and changes of
+  # documents only included (scripts/ci_changes.py, ALWAYS: a secret can arrive in a
+  # document), and `publish` needs each. Each may read the repository and nothing more,
+  # holds no secret, and runs one tool at one version: the Python ones installed from a
+  # hashed requirements file under .github/scanners, the binaries checked against the
+  # SHA-256 their release lists before they are unpacked. Their ignore lists, under
+  # .github/scanners, give each entry a reason and a last day; tests/unit/test_ci_scans_unit.py
+  # fails once that day has passed.
+
+  # The locked dependencies (uv.lock, exported with its hashes: the runtime ones the image
+  # installs and the rest) and the build constraints, against PyPI's vulnerability data. A
+  # known vulnerability with a fixed version fails; one without a fix is listed in the job's
+  # summary (.github/scanners/audit_policy.py).
+  dependencies:
+    name: scan the locked dependencies (pip-audit)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: false
+          github-token: ""
+      - name: Install pip-audit
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/scan"
+          uv pip install --python "$RUNNER_TEMP/scan" --require-hashes -r .github/scanners/pip-audit.txt
+      - name: Export the locked dependencies
+        run: >-
+          uv export --frozen --format requirements.txt --all-extras --all-groups
+          --no-emit-project --no-header -o "$RUNNER_TEMP/locked.txt"
+      # pip-audit exits 1 when it finds anything; the policy decides what fails.
+      - name: Audit them
+        run: |
+          status=0
+          "$RUNNER_TEMP/scan/bin/pip-audit" --disable-pip --require-hashes --strict \
+            --progress-spinner off -r "$RUNNER_TEMP/locked.txt" -r build-constraints.txt \
+            --format json -o "$RUNNER_TEMP/audit.json" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::pip-audit could not audit the dependencies (exit $status)"
+            exit "$status"
+          fi
+          python3 .github/scanners/audit_policy.py "$RUNNER_TEMP/audit.json" \
+            .github/scanners/pip-audit-ignore.toml --summary "$GITHUB_STEP_SUMMARY"
+
+  # Bandit over src/ (tests are outside its scope) at medium severity and medium confidence
+  # or above. pyproject.toml, [tool.bandit], says which rule is off and why; a line where a
+  # rule is wrong says so with `# nosec <rule> # <reason>`.
+  static_analysis:
+    name: static analysis of src/ (Bandit)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: false
+          github-token: ""
+      - name: Install Bandit
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/scan"
+          uv pip install --python "$RUNNER_TEMP/scan" --require-hashes -r .github/scanners/bandit.txt
+      - name: Scan src/
+        run: >-
+          "$RUNNER_TEMP/scan/bin/bandit" -c pyproject.toml -r src
+          --severity-level medium --confidence-level medium
+
+  # gitleaks over the whole history the job checks out (fetch-depth: 0), with every match
+  # redacted in the log, and nothing else written. .gitleaks.toml lets the made-up keys of
+  # named tests and the vendors' examples quoted in named documents pass, each with its
+  # reason; `gitleaks:allow` comments count for nothing. A match fails the job.
+  secrets:
+    name: scan the history for secrets (gitleaks)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/"
+          case "$RUNNER_ARCH" in
+            X64) asset=gitleaks_8.30.1_linux_x64.tar.gz sum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+            ARM64) asset=gitleaks_8.30.1_linux_arm64.tar.gz sum=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 ;;
+            *) echo "::error::no gitleaks archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+      - name: Scan the history
+        run: >-
+          gitleaks git --config .gitleaks.toml --redact --ignore-gitleaks-allow
+          --exit-code 1 --no-banner --verbose .
+
+  # The one build of the image: linux/amd64 and linux/arm64, with a build provenance and a bill
+  # of materials for each (attestation manifests in the image index), written as one OCI layout
+  # archive. It runs on every change, drafts and documents included, may read the repository
+  # and nothing more, and logs in to no registry. scripts/oci_archive.py refuses an archive
+  # without both platforms and their attestations, or with an image whose config is of another
+  # platform, and gives its SHA-256, the index's digest and each platform's own manifest digest
+  # (`amd64`, `arm64`) as outputs; the archive is kept as artifact `image` of the run for five
+  # days. The scan, the image check and `publish` each check that SHA-256 and push the index's
+  # digest, so the image scanned and smoke-tested is the image published, both platforms; a job
+  # that takes one platform names it by that platform's own digest, never by the index's and a
+  # platform flag. On a v* tag it builds nothing: it reads main's image for the commit, as the
+  # steps below say, and the same script checks it.
+  image_build:
+    name: build the image (linux/amd64 and linux/arm64)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+      # On a tag, to read main's attestation of the image it promotes.
+      attestations: read
+    outputs:
+      digest: ${{ steps.archive.outputs.digest }}
+      archive: ${{ steps.archive.outputs.archive }}
+      amd64: ${{ steps.archive.outputs.amd64 }}
+      arm64: ${{ steps.archive.outputs.arm64 }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up QEMU
+        if: github.ref_type != 'tag'
+        env:
+          # The binfmt installer must run natively before emulation exists.
+          DOCKER_DEFAULT_PLATFORM: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - name: Set up Buildx
+        if: github.ref_type != 'tag'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Make the directory the archive goes in
+        run: mkdir -p "$RUNNER_TEMP/image"
+      # The export is named (buildkit's `name=`) so that buildkit gives every attestation
+      # statement each platform's image as its subject; given no name it gives none.
+      - name: Build linux/amd64 and linux/arm64
+        if: github.ref_type != 'tag'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar,name=cairn
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=image
+          cache-to: type=gha,mode=max,scope=image
+      - name: Install oras
+        if: github.ref_type == 'tag'
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      # A tag builds nothing: its image is the one main's run built, checked and published for
+      # this commit as sha-<commit> (publish writes that tag once, and only on main). The name
+      # only finds it: the proof is the attestation main's run made of that digest after it
+      # published and verified it (job attest_main), which gh checks was signed by this
+      # repository's ci-cd.yml for a run on refs/heads/main at this tag's full commit, before
+      # anything is copied. The digest is that of the bytes read, so a later write to the tag
+      # cannot change what is checked. The repository is public on a tag (release_check
+      # refuses one that is not), so the reads need no login; gh needs the run's token to ask
+      # GitHub for the attestations. It needs the gh CLI on the runner, as GitHub's hosted
+      # runners have.
+      - name: Fetch the image main's run published for this commit
+        id: main
+        if: github.ref_type == 'tag'
+        run: |
+          set -o pipefail
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          commit="sha-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          if ! oras manifest fetch "$image:$commit" > "$RUNNER_TEMP/main.json"; then
+            echo "::error::$image:$commit could not be read, so main's run has not published $GITHUB_SHA (it is still running, publishing is off, or it built another commit of that push); run this tag's workflow again once main's run for that commit has published it"
+            exit 1
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=sha256:$(sha256sum < "$RUNNER_TEMP/main.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Check that main's run attested this image for this commit
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN: ${{ steps.main.outputs.digest }}
+        run: |
+          if ! command -v gh > /dev/null; then
+            echo "::error::gh is not on this runner, so main's attestation of $MAIN cannot be checked; install GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
+          # GHSA-wjmr-j3rp-mh2g and GHSA-4mq3-hpgx-9cx8: before 2.102.0, gh matched
+          # --signer-workflow as a prefix and --source-ref without case. The version is three
+          # numbers and then a space or the end of the line: 2.102.0-rc.1 is not 2.102.0.
+          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p')"
+          IFS=. read -r major minor _ <<< "${version:-0.0.0}"
+          if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 102 ]; }; then
+            echo "::error::gh on this runner is ${version:-of a version it does not print as three plain numbers}, before 2.102.0, which fixed how gh attestation verify matches --signer-workflow and --source-ref, so it is not trusted with main's attestation; update GitHub CLI on the runner CAIRN_GATE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
+          # Off a terminal gh prints only its error. These are its words, in 2.102.0 and
+          # 2.105.0, for no attestation of the digest and for one that does not match the policy;
+          # anything else is the tool or the API.
+          if ! gh attestation verify "$RUNNER_TEMP/main.json" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci-cd.yml" \
+              --source-ref refs/heads/main --source-digest "$GITHUB_SHA" 2> "$RUNNER_TEMP/verify.err"; then
+            cat "$RUNNER_TEMP/verify.err" >&2
+            if grep -Eq 'no attestations found|verifying with issuer|expected [A-Za-z]+ to be ' "$RUNNER_TEMP/verify.err"; then
+              echo "::error::$MAIN has no attestation signed by this repository's ci-cd.yml for a run on refs/heads/main at $GITHUB_SHA, so nothing shows it is main's image of this commit; run this tag's workflow again once main's run for that commit has attested it (job attest_main), or tag a commit whose main run did"
+            else
+              echo "::error::gh attestation verify could not check $MAIN: the tool failed or GitHub's API could not be reached, as its own words above say; re-run this job"
+            fi
+            exit 1
+          fi
+      # The same step every scan runs on its runner's registry, so each pull request proves
+      # the copy a tag makes, oras's layout and the script's check of it.
+      - name: Copy the image by its digest into a fresh layout and check it
+        id: copied
+        if: github.ref_type == 'tag'
+        env:
+          SOURCE: ${{ steps.main.outputs.image }}
+          DIGEST: ${{ steps.main.outputs.digest }}
+        run: |
+          set -o pipefail
+          copied="$RUNNER_TEMP/copied"
+          rm -rf "$copied"
+          mkdir -p "$copied"
+          oras cp --to-oci-layout "$SOURCE@$DIGEST" "$copied/layout:main"
+          tar -cf "$copied/cairn.oci.tar" -C "$copied/layout" oci-layout index.json blobs
+          python3 scripts/oci_archive.py "$copied/cairn.oci.tar" --root "$DIGEST" --github-output "$GITHUB_OUTPUT"
+      - name: Hand on main's image as this run's archive
+        if: github.ref_type == 'tag'
+        run: mv "$RUNNER_TEMP/copied/cairn.oci.tar" "$RUNNER_TEMP/image/cairn.oci.tar"
+      - name: Check the archive and give its digests
+        id: archive
+        env:
+          # On a tag, main's index: the layout oras wrote lists the manifests under it too.
+          ROOT: ${{ steps.main.outputs.digest }}
+        run: python3 scripts/oci_archive.py "$RUNNER_TEMP/image/cairn.oci.tar" ${ROOT:+--root "$ROOT"} --github-output "$GITHUB_OUTPUT"
+      # A re-run of this job replaces the artifact (overwrite); its new index digest then
+      # differs from a version already published, which `publish` refuses.
+      - name: Keep it for the jobs after this one
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image/cairn.oci.tar
+          if-no-files-found: error
+          retention-days: 5
+          overwrite: true
+          compression-level: 0
+
+  # Both platforms of the build image_build made, each scanned by its own manifest digest from a
+  # registry on the runner after the archive's SHA-256 is checked: what is scanned is what
+  # `publish` pushes. Trivy reads the image from that registry (--image-src remote; --insecure
+  # for the runner's plain-HTTP registry), not from the engine: it loads a linux/amd64 image
+  # unless told otherwise and ignores --platform for an image that is one platform already, so
+  # the digest decides, and the step before it checks that digest is this leg's platform. Trivy fails the job on a HIGH or CRITICAL vulnerability that has a fixed
+  # version; the unfixed ones are listed in the job's summary and fail nothing. It runs on every
+  # change, drafts and documents included, as image_build does.
+  image_scan:
+    name: scan the image (Trivy, ${{ matrix.platform }})
+    needs: image_build
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+          - platform: linux/arm64
+            arch: arm64
+    env:
+      IMAGE: localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}
+      PLATFORM: ${{ matrix.platform }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Install oras
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      # The archive image_build made, checked against its SHA-256, pushed by its index's
+      # digest the way `publish` pushes it, to a registry on this runner (registry:2, on the
+      # engine's own platform: emulated, it died at the first push, decision 150), and read
+      # back: the index there must be that digest.
+      - name: Push the build to a registry on the runner, as publish pushes it
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          ARCHIVE: ${{ needs.image_build.outputs.archive }}
+          NATIVE: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/image"
+          printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+          mkdir layout
+          tar -xf cairn.oci.tar -C layout
+          docker run --detach --name cairn-registry --platform "$NATIVE" \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for attempt in $(seq 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
+            sleep 1
+          done
+          image=localhost:5000/cairn
+          oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
+          # Every oras verb the jobs that write use: the listing, a tag by digest, a read back.
+          oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+          grep -Fxq ci "$RUNNER_TEMP/published" || {
+            echo "::error::the registry's tags do not list ci after the push"
+            exit 1
+          }
+          oras tag --plain-http "$image@$DIGEST" rehearsed
+          for name in ci rehearsed; do
+            pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
+      # The round trip a tag run makes from GHCR, made from this registry: the index copied by
+      # its digest into a fresh layout with the same step image_build runs on a tag, checked by
+      # the same script, and its digests compared with the build's.
+      - name: Copy the image by its digest into a fresh layout and check it
+        id: copied
+        env:
+          SOURCE: localhost:5000/cairn
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+        run: |
+          set -o pipefail
+          copied="$RUNNER_TEMP/copied"
+          rm -rf "$copied"
+          mkdir -p "$copied"
+          oras cp --to-oci-layout "$SOURCE@$DIGEST" "$copied/layout:main"
+          tar -cf "$copied/cairn.oci.tar" -C "$copied/layout" oci-layout index.json blobs
+          python3 scripts/oci_archive.py "$copied/cairn.oci.tar" --root "$DIGEST" --github-output "$GITHUB_OUTPUT"
+      - name: Check that the copy is the build
+        env:
+          BUILT: ${{ needs.image_build.outputs.digest }} ${{ needs.image_build.outputs.amd64 }} ${{ needs.image_build.outputs.arm64 }}
+          COPIED: ${{ steps.copied.outputs.digest }} ${{ steps.copied.outputs.amd64 }} ${{ steps.copied.outputs.arm64 }}
+        run: |
+          if [ "$COPIED" != "$BUILT" ]; then
+            echo "::error::the copy read back from the registry is $COPIED (index, amd64, arm64), not the build's $BUILT"
+            exit 1
+          fi
+      # This leg's image, named by its own manifest digest, read from the registry: one image
+      # (not an index), whose config says it is built for this leg's platform. The registry
+      # answers for exactly that digest, whatever the runner's own platform.
+      - name: Check that this platform's image is built for it
+        run: |
+          set -o pipefail
+          oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+          import json, os, sys
+          manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+          image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+          kind = manifest.get("mediaType")
+          if kind != "application/vnd.oci.image.manifest.v1+json":
+              sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+          built_for = f"{config.get('os')}/{config.get('architecture')}"
+          if built_for != platform:
+              sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+          print(f"{image} is one image, built for {platform}")
+          CHECK
+      - name: Install trivy
+        run: |
+          base="https://github.com/aquasecurity/trivy/releases/download/v0.76.2/"
+          case "$RUNNER_ARCH" in
+            X64) asset=trivy_0.76.2_Linux-64bit.tar.gz sum=bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf ;;
+            ARM64) asset=trivy_0.76.2_Linux-ARM64.tar.gz sum=ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3 ;;
+            *) echo "::error::no trivy archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/trivy"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/trivy" trivy
+          echo "$RUNNER_TEMP/trivy" >> "$GITHUB_PATH"
+      - name: List the unfixed HIGH and CRITICAL in the summary
+        run: |
+          {
+            echo "### Image: HIGH and CRITICAL with no fixed version (listed, not failing)"
+            echo '```'
+            trivy image --image-src remote --insecure --scanners vuln --severity HIGH,CRITICAL --ignore-status fixed \
+              --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 0 --no-progress \
+              --format table "$IMAGE"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail on a HIGH or CRITICAL that has a fixed version
+        run: >-
+          trivy image --image-src remote --insecure --scanners vuln --severity HIGH,CRITICAL
+          --ignore-unfixed --ignorefile .github/scanners/trivy-ignore.yaml --exit-code 1
+          --no-progress "$IMAGE"
+
+  # The quick deploy's OpenTofu definitions (infra/quick/aws and infra/quick/gcp), with no
+  # cloud credentials: formatting, init from the committed lock files (read-only, no
+  # backend), validate, and their mocked `tofu test`. On GitHub's hosted linux/amd64 runner
+  # and not on CAIRN_GATE_RUNNER: that is where its `tofu test` has been seen to pass (the
+  # lock files hold the providers' hashes for linux and macOS on amd64 and arm64 and for
+  # Windows on amd64, so `tofu init` works on those). Its steps run when the change touches what scripts/ci_changes.py
+  # lists in QUICK_WORK, and always on a tag; the job itself always runs, so that `publish`,
+  # which needs it, is never skipped for it.
+  quick:
+    name: quick deploy definitions (OpenTofu)
+    needs: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up OpenTofu
+        if: needs.changes.outputs.quick != 'false'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.13.9"
+          tofu_wrapper: false
+      - name: Check infra/quick/aws and infra/quick/gcp
+        if: needs.changes.outputs.quick != 'false'
+        run: |
+          for dir in infra/quick/aws infra/quick/gcp; do
+            tofu -chdir="$dir" fmt -check -diff
+            tofu -chdir="$dir" init -backend=false -input=false -lockfile=readonly
+            tofu -chdir="$dir" validate -no-color
+            tofu -chdir="$dir" test -no-color
+          done
+      - name: Nothing to check
+        if: needs.changes.outputs.quick == 'false'
+        run: echo "The change touches nothing the quick deploy's definitions define or read."
+
+  # The browser tests: a page can break from a template, a style sheet, a route, a
+  # dependency or a test, so the job runs on every change, with no condition (a skipped job
+  # would skip `publish` after it). Playwright installs Chromium's system packages with its
+  # own command (--with-deps), written for GitHub's hosted image, so the job runs there and
+  # not on CAIRN_GATE_RUNNER. The checkout and uv are the `test` job's.
+  browser:
+    name: browser tests (Chromium)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Install the locked environment
+        run: uv sync --locked
+      - name: Install Chromium and its system packages
+        run: uv run python -m playwright install --with-deps --only-shell chromium
+      - name: Browser tests
+        run: uv run pytest tests/browser --run-browser
+
+  # The smoke test of each platform of the build image_build made, pulled by that platform's own
+  # manifest digest after the same check image_scan makes; the non-native platform runs under
+  # QEMU.
   image:
     name: image smoke (${{ matrix.platform }})
-    needs: [test, changes]
+    needs: [test, changes, image_build]
     if: >-
       (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
       needs.changes.outputs.image != 'false'
@@ -209,6 +812,11 @@ jobs:
             arch: amd64
           - platform: linux/arm64
             arch: arm64
+    env:
+      LOCAL: cairn:ci
+      IMAGE: localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}
+      PLATFORM: ${{ matrix.platform }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -219,36 +827,113 @@ jobs:
           (runner.arch == 'ARM64' && matrix.arch == 'amd64') ||
           (runner.arch == 'X64' && matrix.arch == 'arm64')
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - name: Fetch the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          load: true
-          tags: cairn:ci
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Install oras
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      # The archive image_build made, checked against its SHA-256, pushed by its index's
+      # digest the way `publish` pushes it, to a registry on this runner (registry:2, on the
+      # engine's own platform: emulated, it died at the first push, decision 150), and read
+      # back: the index there must be that digest.
+      - name: Push the build to a registry on the runner, as publish pushes it
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          ARCHIVE: ${{ needs.image_build.outputs.archive }}
+          NATIVE: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/image"
+          printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+          mkdir layout
+          tar -xf cairn.oci.tar -C layout
+          docker run --detach --name cairn-registry --platform "$NATIVE" \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for attempt in $(seq 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
+            sleep 1
+          done
+          image=localhost:5000/cairn
+          oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
+          # Every oras verb the jobs that write use: the listing, a tag by digest, a read back.
+          oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+          grep -Fxq ci "$RUNNER_TEMP/published" || {
+            echo "::error::the registry's tags do not list ci after the push"
+            exit 1
+          }
+          oras tag --plain-http "$image@$DIGEST" rehearsed
+          for name in ci rehearsed; do
+            pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
+      # This leg's image, named by its own manifest digest, read from the registry: one image
+      # (not an index), whose config says it is built for this leg's platform. The registry
+      # answers for exactly that digest, whatever the runner's own platform.
+      - name: Check that this platform's image is built for it
+        run: |
+          set -o pipefail
+          oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+          import json, os, sys
+          manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+          image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+          kind = manifest.get("mediaType")
+          if kind != "application/vnd.oci.image.manifest.v1+json":
+              sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+          built_for = f"{config.get('os')}/{config.get('architecture')}"
+          if built_for != platform:
+              sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+          print(f"{image} is one image, built for {platform}")
+          CHECK
+      # This leg's image, by its own digest, into the engine as LOCAL: one image, so the engine
+      # has no platform to choose.
+      - name: Pull this platform of the build
+        run: |
+          docker pull --platform "$PLATFORM" "$IMAGE"
+          docker tag "$IMAGE" "$LOCAL"
+          test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = "$ARCH"
       - name: Smoke test
         env:
           # The non-native platform starts slowly under QEMU on either runner architecture.
           CAIRN_SMOKE_HEALTH_TIMEOUT: ${{ ((runner.arch == 'ARM64' && matrix.arch == 'amd64') || (runner.arch == 'X64' && matrix.arch == 'arm64')) && '300' || '90' }}
-        run: python3 scripts/smoke_container.py cairn:ci
+        run: python3 scripts/smoke_container.py "$LOCAL" --platform "$PLATFORM"
 
   # The shipped compose files, unchanged, on the runner: Caddy in front of cairn with the
   # proxy network cairn trusts, Litestream replicating to a directory, and a lost database
   # restored from it. scripts/rehearse_stack.py says what it checks and what it cannot (a
-  # real certificate, a bucket, and the VM's own launcher).
+  # real certificate, a bucket, and the VM's own launcher). The image is image_build's
+  # linux/amd64 image, pulled by its own digest, not a build of this job's.
   stack:
     name: stack rehearsal (compose, Caddy, Litestream)
-    needs: changes
+    needs: [changes, image_build]
     if: >-
       (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
       needs.changes.outputs.image != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
     env:
       DOCKER_DEFAULT_PLATFORM: linux/amd64
+      LOCAL: cairn:ci
+      IMAGE: localhost:5000/cairn@${{ needs.image_build.outputs.amd64 }}
+      PLATFORM: linux/amd64
+      ARCH: amd64
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -260,10 +945,92 @@ jobs:
           # The binfmt installer must run natively before emulation exists.
           DOCKER_DEFAULT_PLATFORM: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - name: Build the image
-        run: docker build --platform linux/amd64 -t cairn:ci .
-      - name: Check the image platform
-        run: test "$(docker image inspect --format '{{.Architecture}}' cairn:ci)" = amd64
+      - name: Fetch the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Install oras
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      # The archive image_build made, checked against its SHA-256, pushed by its index's
+      # digest the way `publish` pushes it, to a registry on this runner (registry:2, on the
+      # engine's own platform: emulated, it died at the first push, decision 150), and read
+      # back: the index there must be that digest.
+      - name: Push the build to a registry on the runner, as publish pushes it
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          ARCHIVE: ${{ needs.image_build.outputs.archive }}
+          NATIVE: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/image"
+          printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+          mkdir layout
+          tar -xf cairn.oci.tar -C layout
+          docker run --detach --name cairn-registry --platform "$NATIVE" \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for attempt in $(seq 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
+            sleep 1
+          done
+          image=localhost:5000/cairn
+          oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
+          # Every oras verb the jobs that write use: the listing, a tag by digest, a read back.
+          oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+          grep -Fxq ci "$RUNNER_TEMP/published" || {
+            echo "::error::the registry's tags do not list ci after the push"
+            exit 1
+          }
+          oras tag --plain-http "$image@$DIGEST" rehearsed
+          for name in ci rehearsed; do
+            pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
+      # This leg's image, named by its own manifest digest, read from the registry: one image
+      # (not an index), whose config says it is built for this leg's platform. The registry
+      # answers for exactly that digest, whatever the runner's own platform.
+      - name: Check that this platform's image is built for it
+        run: |
+          set -o pipefail
+          oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+          import json, os, sys
+          manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+          image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+          kind = manifest.get("mediaType")
+          if kind != "application/vnd.oci.image.manifest.v1+json":
+              sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+          built_for = f"{config.get('os')}/{config.get('architecture')}"
+          if built_for != platform:
+              sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+          print(f"{image} is one image, built for {platform}")
+          CHECK
+      # This leg's image, by its own digest, into the engine as LOCAL: one image, so the engine
+      # has no platform to choose.
+      - name: Pull this platform of the build
+        run: |
+          docker pull --platform "$PLATFORM" "$IMAGE"
+          docker tag "$IMAGE" "$LOCAL"
+          test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = "$ARCH"
+      # The rehearsal takes the engine from here: the registry on the runner is not part of it.
+      - name: Stop the registry on the runner
+        run: docker rm --force cairn-registry
       - name: Rehearse the shipped stack
         run: python3 scripts/rehearse_stack.py cairn:ci
 
@@ -271,10 +1038,11 @@ jobs:
   # installed and its systemd units started on the runner, with a loop device for the data
   # disk and a local registry for the deploy tag. scripts/rehearse_host.py lists its
   # stand-ins and what it does not cover (Container-Optimized OS, Secret Manager, GCS,
-  # Artifact Registry, a real reboot).
+  # Artifact Registry, a real reboot). The image is image_build's linux/amd64 image, pulled by
+  # its own digest, not a build of this job's.
   host:
     name: host rehearsal (units, disk, updater)
-    needs: [test, changes]
+    needs: [test, changes, image_build]
     if: >-
       (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
       needs.changes.outputs.image != 'false'
@@ -282,6 +1050,10 @@ jobs:
     timeout-minutes: 60
     env:
       DOCKER_DEFAULT_PLATFORM: linux/amd64
+      LOCAL: cairn:ci
+      IMAGE: localhost:5000/cairn@${{ needs.image_build.outputs.amd64 }}
+      PLATFORM: linux/amd64
+      ARCH: amd64
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -303,10 +1075,92 @@ jobs:
       # environment; systemd's own environment reaches every unit started after this.
       - name: Give the units the same platform
         run: sudo systemctl set-environment "DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM"
-      - name: Build the image
-        run: docker build --platform linux/amd64 -t cairn:ci .
-      - name: Check the image platform
-        run: test "$(docker image inspect --format '{{.Architecture}}' cairn:ci)" = amd64
+      - name: Fetch the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Install oras
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      # The archive image_build made, checked against its SHA-256, pushed by its index's
+      # digest the way `publish` pushes it, to a registry on this runner (registry:2, on the
+      # engine's own platform: emulated, it died at the first push, decision 150), and read
+      # back: the index there must be that digest.
+      - name: Push the build to a registry on the runner, as publish pushes it
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          ARCHIVE: ${{ needs.image_build.outputs.archive }}
+          NATIVE: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/image"
+          printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+          mkdir layout
+          tar -xf cairn.oci.tar -C layout
+          docker run --detach --name cairn-registry --platform "$NATIVE" \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for attempt in $(seq 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
+            sleep 1
+          done
+          image=localhost:5000/cairn
+          oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
+          # Every oras verb the jobs that write use: the listing, a tag by digest, a read back.
+          oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+          grep -Fxq ci "$RUNNER_TEMP/published" || {
+            echo "::error::the registry's tags do not list ci after the push"
+            exit 1
+          }
+          oras tag --plain-http "$image@$DIGEST" rehearsed
+          for name in ci rehearsed; do
+            pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
+      # This leg's image, named by its own manifest digest, read from the registry: one image
+      # (not an index), whose config says it is built for this leg's platform. The registry
+      # answers for exactly that digest, whatever the runner's own platform.
+      - name: Check that this platform's image is built for it
+        run: |
+          set -o pipefail
+          oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+          import json, os, sys
+          manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+          image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+          kind = manifest.get("mediaType")
+          if kind != "application/vnd.oci.image.manifest.v1+json":
+              sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+          built_for = f"{config.get('os')}/{config.get('architecture')}"
+          if built_for != platform:
+              sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+          print(f"{image} is one image, built for {platform}")
+          CHECK
+      # This leg's image, by its own digest, into the engine as LOCAL: one image, so the engine
+      # has no platform to choose.
+      - name: Pull this platform of the build
+        run: |
+          docker pull --platform "$PLATFORM" "$IMAGE"
+          docker tag "$IMAGE" "$LOCAL"
+          test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = "$ARCH"
+      # The rehearsal takes the engine from here: the registry on the runner is not part of it.
+      - name: Stop the registry on the runner
+        run: docker rm --force cairn-registry
       # scripts/ci_metadata_fixture.py answers at the metadata address from a network namespace
       # of its own for the length of the rehearsal, so the block is shown by a connection
       # that succeeds before the rules and not after; it fails a run that fell back to the
@@ -314,9 +1168,85 @@ jobs:
       - name: Rehearse the VM's host setup
         run: sudo env "PATH=$PATH" "DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM" python3 scripts/ci_metadata_fixture.py -- python3 scripts/rehearse_host.py cairn:ci --on-this-throwaway-machine
 
+  # On a v* tag, refuses the tag, in one line and before anything is published, unless: the
+  # repository is public (the same workflow runs in a private copy, where a tag pushed by habit
+  # must publish and release nothing); the tag is `v` + the version in pyproject.toml, and
+  # CHANGELOG.md has a section for that version, dated no later than today (UTC), with an
+  # entry; its commit is main's head or one of its ancestors; no tag of its MAJOR.MINOR is a
+  # higher version; and it has no GitHub release yet, so a released version is published once
+  # and the digest people pulled stays the one the package page shows. scripts/release_check.py
+  # says how. `publish` needs this job. On main its one check is skipped and the job passes. It runs where
+  # `publish` would, so a change that ships nothing, or a repository that publishes nothing,
+  # skips it as it skips publish.
+  # A run that failed after `publish` and before the release was made: re-run only its failed
+  # jobs ("Re-run failed jobs"), which keeps this job's result, image_build's archive and
+  # `publish`'s digest. A tag's run builds nothing, so re-running every job promotes the same
+  # digest again, until the release exists and this job refuses the tag. If `release` finds no files from `package` (they are kept five days), re-run
+  # `package` alone: GitHub re-runs `release` after it, and nothing that publishes.
+  release_check:
+    name: the tag is the version
+    needs: changes
+    if: >-
+      github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false' &&
+      needs.changes.outputs.image != 'false'
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    # gh lists the releases with this token, which may read and nothing more.
+    permissions:
+      contents: read
+    # `candidate` is 'true' for a release candidate vX.Y.Z-rc.N. It is compared with == 'true',
+    # so an empty one means no. (`latest`, which the script also writes, no job reads: job
+    # `aliases` decides it again when it runs.)
+    outputs:
+      candidate: ${{ steps.check.outputs.candidate }}
+    steps:
+      # The whole history (fetch-depth: 0): git places the tag's commit on main and among the
+      # repository's tags. No token is kept.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check the tag
+        id: check
+        if: github.ref_type == 'tag'
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          python3 scripts/release_check.py "$GITHUB_REF_NAME"
+          --repository-private "$REPOSITORY_PRIVATE"
+          --commit "$GITHUB_SHA" --branch origin/main
+          --not-released --github-output "$GITHUB_OUTPUT"
+
+  # Promotes the build that was scanned and smoke-tested; builds nothing. It checks the
+  # archive's SHA-256 that image_build gave, pushes its OCI layout whole, by the index digest
+  # the scan and the image check pulled (oras copies the index and every manifest in it: both
+  # platforms and their attestation manifests), and reads every tag back. It checks out
+  # nothing, runs no script from the repository and no image. A tag's full version is published
+  # once, and on main so is sha-<commit>: when the registry has it already, the same digest is
+  # carried on and another digest stops the job, so a re-run never moves it. The rest of its
+  # tags (main) are added to the same digest. A tag's digest is main's, in the registry
+  # already, so a tag's run tags it there and copies no archive, unless the registry does not
+  # give the digest when asked (it is gone, or the request failed): then the archive is copied
+  # on a tag too, by the same digest, and on a tag the archive is main's image as image_build
+  # read it. `latest` and X.Y are job `aliases`'s, after the release.
   publish:
     name: publish to GHCR
-    needs: [infra, image, stack, host]
+    needs:
+      - infra
+      - image_build
+      - image
+      - stack
+      - host
+      - release_check
+      - package_check
+      - dependencies
+      - static_analysis
+      - secrets
+      - image_scan
+      - quick
+      - browser
     if: github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:
@@ -324,64 +1254,183 @@ jobs:
       packages: write
     outputs:
       # The digest of the multi-arch index just pushed: the one thing `deploy` deploys.
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.push.outputs.digest }}
+      # The amd64 image of that index, by its own digest, for `verify`'s smoke test.
+      amd64: ${{ needs.image_build.outputs.amd64 }}
     steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up QEMU
-        env:
-          # The binfmt installer must run natively before emulation exists.
-          DOCKER_DEFAULT_PLATFORM: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Install oras
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
       - name: Log in to GHCR
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Image tags and labels
+      # A v* tag gives its full version X.Y.Z; a release candidate vX.Y.Z-rc.N gives X.Y.Z-rc.N
+      # (on a pre-release the action makes the whole version of {{version}}), and nothing else:
+      # its image is main's, already sha-<commit>. A push to main gives main and sha-<commit>
+      # (the action's short SHA, 7 characters by default). Never X.Y or latest: job `aliases`
+      # moves those, once the release is made.
+      - name: Image tags
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=ref,event=branch
-            type=sha
-      - name: Build and push linux/amd64 and linux/arm64
-        id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+            type=sha,enable=${{ github.ref_type == 'branch' }}
+      # The name written once is the full version on a tag and sha-<commit> on main. If the
+      # registry has it, the same digest carries on and another stops the job; if the registry
+      # has the digest itself (main's image, on a tag; or a first attempt's push), the names
+      # are tags of it and the archive is not needed, so a retry works after the artifact has
+      # expired. Only a digest the registry does not give when asked (it lacks it, or the
+      # request failed: the step does not tell the two apart) is copied from image_build's
+      # archive, on main and on a tag alike.
+      - name: Look for this build in the registry
+        id: decide
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -o pipefail
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          names=""
+          for tag in $TAGS; do names="$names ${tag##*:}"; done
+          names="${names# }"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            first="${GITHUB_REF_NAME#v}"
+            once="a full version is published once"
+            case " $names " in
+              *" sha-"*) echo "::error::the tags asked for [$names] include a sha- tag, but a tag run writes no sha- tag: its image is main's"; exit 1 ;;
+            esac
+          else
+            first="sha-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+            once="a commit's image is published once"
+          fi
+          case " $names " in
+            *" $first "*) ;;
+            *) echo "::error::the tags asked for [$names] do not include $first"; exit 1 ;;
+          esac
+          oras repo tags "$image" > "$RUNNER_TEMP/published" || {
+            echo "::error::the tags of $image could not be listed, so $first is not pushed: $once"
+            exit 1
+          }
+          copy=true
+          if grep -Fxq "$first" "$RUNNER_TEMP/published"; then
+            have="$(oras manifest fetch "$image:$first" | sha256sum)"
+            if [ "sha256:${have%% *}" != "$DIGEST" ]; then
+              echo "::error::$image:$first is sha256:${have%% *} already, not this run's build $DIGEST: $once; to finish the run that published it, re-run only its failed jobs"
+              exit 1
+            fi
+            echo "$image:$first is this build already ($DIGEST): it is not pushed again."
+            copy=false
+          fi
+          archive=false
+          if [ "$copy" = true ] && ! oras manifest fetch "$image@$DIGEST" > /dev/null; then
+            archive=true
+          fi
+          {
+            echo "image=$image"
+            echo "names=$names"
+            echo "first=$first"
+            echo "copy=$copy"
+            echo "archive=$archive"
+          } >> "$GITHUB_OUTPUT"
+      - name: Fetch the build
+        if: steps.decide.outputs.archive == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: mode=max
-          sbom: true
-          cache-from: |
-            type=gha,scope=amd64
-            type=gha,scope=arm64
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Push the scanned build
+        id: push
+        env:
+          DIGEST: ${{ needs.image_build.outputs.digest }}
+          ARCHIVE: ${{ needs.image_build.outputs.archive }}
+          IMAGE: ${{ steps.decide.outputs.image }}
+          NAMES: ${{ steps.decide.outputs.names }}
+          FIRST: ${{ steps.decide.outputs.first }}
+          COPY: ${{ steps.decide.outputs.copy }}
+          FROM_ARCHIVE: ${{ steps.decide.outputs.archive }}
+          # To read the head of main before the main tag moves.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          if [ "$COPY" = true ] && [ "$FROM_ARCHIVE" = true ]; then
+            cd "$RUNNER_TEMP/image"
+            printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+            mkdir layout
+            tar -xf cairn.oci.tar -C layout
+            oras cp --from-oci-layout "layout@$DIGEST" "$IMAGE:$FIRST"
+          elif [ "$COPY" = true ]; then
+            oras tag "$IMAGE@$DIGEST" "$FIRST"
+          fi
+          # The branch's tag (main) moves only while this run's commit is the branch's head: a
+          # retry of an older run would otherwise move it back over a newer commit's image.
+          moved=""
+          for name in $NAMES; do
+            if [ "$name" = "$FIRST" ]; then
+              moved="$moved $name"
+            elif [ "$GITHUB_REF_TYPE" = branch ] && [ "$name" = "$GITHUB_REF_NAME" ]; then
+              if ! head="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"; then
+                echo "::error::$IMAGE:$FIRST is written, but the head of main could not be read, so $IMAGE:$name is left as it was; re-run this job to move it"
+                exit 1
+              fi
+              if [ "$head" = "$GITHUB_SHA" ]; then
+                oras tag "$IMAGE@$DIGEST" "$name"
+                moved="$moved $name"
+              else
+                echo "::notice::main is now at $head, not this run's $GITHUB_SHA, so $IMAGE:$FIRST is written and $IMAGE:$name is left to the run of the newer commit"
+              fi
+            else
+              oras tag "$IMAGE@$DIGEST" "$name"
+              moved="$moved $name"
+            fi
+          done
+          for name in $moved; do
+            pushed="$(oras manifest fetch "$IMAGE:$name" | sha256sum)"
+            if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+              echo "::error::$IMAGE:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+              exit 1
+            fi
+          done
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
-  # The image job tested a local build; `publish` built again from its cache. This runs the
-  # same smoke test on the bytes that were published, for the platform the VM runs. It runs
+  # The image job smoke-tested the build `publish` pushed, pulled from a registry on its runner.
+  # This runs the same smoke test on the bytes in GHCR, for the platform the VM runs. It runs
   # the published image and the checked-out smoke script, so it gets no OIDC token and no
-  # environment secrets: nothing here can ask for a deploy token.
+  # environment secrets: nothing here can ask for a deploy token. In a public repository it
+  # first pulls the image the way the run guide tells a reader to, with no login, so the
+  # guide's command is tested and a package nobody may pull anonymously fails the run before
+  # the release. It does so on main too, by the commit's own tag, so a tag's run, whose image
+  # is main's, pulls a digest main's run has pulled already.
   verify:
     name: smoke test of the published image (linux/amd64)
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
     permissions:
       contents: read
       packages: read
     env:
       DIGEST: ${{ needs.publish.outputs.digest }}
+      AMD64: ${{ needs.publish.outputs.amd64 }}
       DOCKER_DEFAULT_PLATFORM: linux/amd64
     steps:
       - name: Check out
@@ -400,6 +1449,46 @@ jobs:
             echo "::error::The publish job reported no image digest"
             exit 1
           fi
+          if [[ ! $AMD64 =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The publish job reported no digest for the amd64 image"
+            exit 1
+          fi
+      # The run guide's own commands, as a reader runs them: logged out, the image pulled by
+      # its tag (a release's version, or on main the commit's own `sha-` tag, which no later
+      # push moves), and the digest it prints compared with the one `publish` pushed. Only a
+      # public repository's image is pulled without a login: a private copy of this one says
+      # so and goes on.
+      - name: Pull the image as the run guide does, with no login
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if [ "$REPOSITORY_PRIVATE" != "false" ]; then
+            echo "This repository is not public: nobody pulls its image without a login."
+            exit 0
+          fi
+          repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+          else
+            tag="sha-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          fi
+          image="ghcr.io/$repository:$tag"
+          docker logout ghcr.io
+          # The pull's status on its own: the step runs as bash -e, without pipefail, and docker
+          # pull can print its digest and then fail. Then the digest this pull printed
+          # (`Digest: sha256:...`, as docker pull prints it), not the digests the engine knows
+          # the name by: it may hold another index from before.
+          if docker pull "$image" > "$RUNNER_TEMP/pull.log" 2>&1; then status=0; else status=$?; fi
+          cat "$RUNNER_TEMP/pull.log"
+          if [ "$status" != 0 ]; then
+            echo "::error::docker pull $image with no login failed (exit $status), so nobody can pull it as the run guide says now; check that the package is public on GitHub, then re-run this job"
+            exit 1
+          fi
+          pulled="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/pull.log")"
+          if [ "$pulled" != "$DIGEST" ]; then
+            echo "::error::$image, pulled with no login, is ${pulled:-no digest} by the digest the pull printed, not $DIGEST, the digest publish pushed, so the tag was moved after publish; release nothing from this run, and re-run this job once the package's page shows the tag at the digest publish pushed"
+            exit 1
+          fi
       - name: Log in to GHCR
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
@@ -410,9 +1499,743 @@ jobs:
         env:
           CAIRN_SMOKE_HEALTH_TIMEOUT: ${{ runner.arch == 'ARM64' && '300' || '90' }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}@$DIGEST"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}@$AMD64"
           docker pull --quiet --platform linux/amd64 "$image"
-          python3 scripts/smoke_container.py "$image"
+          test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
+          python3 scripts/smoke_container.py "$image" --platform linux/amd64
+
+  # On a push to main, once `publish` has pushed the image and `verify` has pulled and run it:
+  # a build provenance attestation of its digest, signed with this run's identity (this
+  # repository's ci-cd.yml, refs/heads/main, the commit). A tag's run promotes nothing that
+  # lacks one for its commit. The same two steps as attest's image attestation, with the
+  # same two permissions: it checks out nothing, runs nothing from the repository and pushes
+  # nothing to the registry (push-to-registry is off unless set), so it needs no packages
+  # permission.
+  attest_main:
+    name: build provenance of main's image
+    needs: [publish, verify]
+    if: github.event_name == 'push' && github.ref_type == 'branch'
+    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: The image's name
+        id: image
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          if [[ ! $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The publish job reported no image digest"
+            exit 1
+          fi
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Attest the image
+        env:
+          # As actions/attest-build-provenance v4.2.2, its wrapper, sets it.
+          NODE_OPTIONS: "--max-http-header-size=32768"
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ needs.publish.outputs.digest }}
+
+  # On a v* tag whose image was published and smoke-tested, builds the wheel and the source
+  # archive, here and not in `release`: a build backend or a dependency of it that turned
+  # hostile runs in a job that may only read the repository and holds no secret, on the gate's
+  # runner (decision 150: code a job runs could copy its runner's registration, and the release
+  # runner runs no build). uv builds with the versions and hashes in build-constraints.txt
+  # (--build-constraint with --require-hashes: a package not listed, or a file whose hash
+  # differs, stops the build). The checkout fetches with the job's token and keeps none;
+  # setup-uv gets an empty github-token, as uv's version is pinned, and no cache, which the
+  # gate's jobs write on that runner. upload-artifact has no token input: it reaches this run's
+  # artifacts with the runner's own runtime token. The files and the release's text are kept
+  # as an artifact of this run for five days. So is SHA256SUMS, their checksums, which `attest`
+  # and `release` each check every file against.
+  # The job holds no permission at all: the checkout of a public repository needs none, and
+  # `release_check` refuses a tag in a private one. If the checkout ever fails for want of
+  # one, give the job `contents: read` again, and nothing more.
+  package:
+    name: the wheel and the source archive
+    needs: [release_check, publish, verify]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    permissions: {}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: false
+          github-token: ""
+      - name: The release's text
+        run: |
+          mkdir "$RUNNER_TEMP/release"
+          python3 scripts/release_check.py "$GITHUB_REF_NAME" --notes > "$RUNNER_TEMP/release/notes.md"
+      - name: Build the wheel and the source archive
+        run: >-
+          uv build --build-constraint build-constraints.txt --require-hashes
+          --out-dir "$RUNNER_TEMP/release"
+      - name: Their checksums
+        run: |
+          cd "$RUNNER_TEMP/release"
+          sha256sum cairn_memory-*.whl cairn_memory-*.tar.gz notes.md > SHA256SUMS
+      # Hidden files stay out (the action's default), so the .gitignore uv writes there does too.
+      # A re-run of this job replaces the artifact (overwrite): without it the action stops
+      # when an artifact of the name exists, so the job could not be re-run within the five days.
+      - name: Keep them for the release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 5
+          overwrite: true
+
+  # A build provenance attestation, signed with this run's identity, for each file `package`
+  # built (the wheel, the source archive and SHA256SUMS) and for the image `publish` pushed, by
+  # its digest. `gh attestation verify` checks them (README.md, "Releases"). The job holds the
+  # identity token and the right to store attestations, so it checks out nothing and runs no
+  # code from the repository or from the files: it fetches the artifact, checks every file
+  # against SHA256SUMS, as `release` does, and hands them to the pinned action. The attestations
+  # stay with GitHub: nothing is pushed to the registry, so it needs no packages permission.
+  # The image's attestation is the tag run's, which promoted main's digest; the build
+  # provenance inside the image index records main's build.
+  attest:
+    name: build provenance of the files and the image
+    needs: [publish, package]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: Fetch what package built
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      # Exactly these four files, hidden ones counted: one wheel and one source archive of
+      # the tag's version (a candidate vX.Y.Z-rc.N's files carry X.Y.Z), the release's text,
+      # and SHA256SUMS, which lists the other three and nothing else, each with its checksum.
+      - name: Check the files
+        run: |
+          cd "$RUNNER_TEMP/release"
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%-rc.*}"
+          files="$(printf '%s\n' "cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" notes.md | LC_ALL=C sort)"
+          expected="$(printf '%s\n' $files SHA256SUMS | LC_ALL=C sort)"
+          found="$(ls -A | LC_ALL=C sort)"
+          if [ "$found" != "$expected" ]; then
+            echo "::error::package's artifact holds [$(printf '%s ' $found)], not one wheel, one source archive, the text and SHA256SUMS of $version"
+            exit 1
+          fi
+          if [ "$(cut -c67- SHA256SUMS | LC_ALL=C sort)" != "$files" ]; then
+            echo "::error::SHA256SUMS does not list exactly the wheel, the source archive and the text of $version"
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS || {
+            echo "::error::a file of package's artifact does not match its checksum in SHA256SUMS"
+            exit 1
+          }
+      - name: The image's name
+        id: image
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          if [[ ! $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The publish job reported no image digest"
+            exit 1
+          fi
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Attest the wheel, the source archive and SHA256SUMS
+        env:
+          # As actions/attest-build-provenance v4.2.2, its wrapper, sets it.
+          NODE_OPTIONS: "--max-http-header-size=32768"
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/*.whl
+            ${{ runner.temp }}/release/*.tar.gz
+            ${{ runner.temp }}/release/SHA256SUMS
+      - name: Attest the image
+        env:
+          # As actions/attest-build-provenance v4.2.2, its wrapper, sets it.
+          NODE_OPTIONS: "--max-http-header-size=32768"
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ needs.publish.outputs.digest }}
+
+  # A v* tag whose files `package` built and `attest` attested becomes a GitHub release: the
+  # wheel, the source archive, SHA256SUMS and the version's section of CHANGELOG.md, all from
+  # that job's artifact. The only job that may write to the repository, so it builds nothing,
+  # installs nothing and checks out nothing: its token reaches one step, the last, which makes
+  # the release. download-artifact gets no token (its github-token has no default and is needed
+  # only for another repository or run); it reaches this run's artifacts with the runner's own
+  # runtime token and checks their digest. A release candidate becomes a pre-release, never
+  # marked latest. A release for the tag that already exists is finished only when it is this
+  # run's: the tag, this run's mark, the same pre-release flag, the tag as its title (or no
+  # title), the notes this run wrote and the same files, both byte for byte; a draft with them
+  # is published, and a published one is left as it is. It needs the gh CLI on its runner, as
+  # GitHub's hosted runners have.
+  # One such job runs at a time across all runs (its concurrency group, of its own): another
+  # tag's `release` waits until this one ends, so no run of this workflow publishes a release
+  # between this job's last look and its publication, where it would make this one say it is
+  # GitHub's latest above a higher version. `queue: max` lets up to 100 wait: a job waiting is
+  # not replaced by a newer one, as GitHub does by default and as a waiting `aliases` is, which
+  # would leave its tag without a release. A re-run of this job waits as a first run does. The
+  # ones waiting start in the order they began to wait, which GitHub says is not guaranteed: a
+  # candidate and its release tagged close together run one after the other, either first, and
+  # a candidate published after its release is a pre-release, never the latest. A run re-run
+  # later keeps the workflow of its own commit, and a commit from before this group has none.
+  # That GitHub takes `queue` in a job's concurrency is read in its workflow syntax reference,
+  # not measured.
+  release:
+    name: GitHub release
+    needs: [release_check, publish, verify, package, attest]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    concurrency:
+      group: cairn-release
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: write
+    steps:
+      # What this job does with a draft was read in the GitHub CLI's source at v2.102.0 (the
+      # last step's comment quotes it) and in no earlier version, and this runner's CLI is not
+      # the one image_build checked on the gate's runner. So an earlier one is refused here,
+      # read and compared as image_build does, before anything is fetched or written (three
+      # numbers and then a space or the end of the line: a pre-release of the tool is not
+      # that release). The step is given no token: the CLI prints its version without one.
+      - name: Check the GitHub CLI
+        run: |
+          if ! command -v gh > /dev/null; then
+            echo "::error::gh is not on this runner, so the GitHub release for $GITHUB_REF_NAME cannot be made; install GitHub CLI 2.102.0 or later on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
+          version="$(gh --version | sed -n 's/^gh version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p')"
+          IFS=. read -r major minor _ <<< "${version:-0.0.0}"
+          if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 102 ]; }; then
+            echo "::error::gh on this runner is ${version:-of a version it does not print as three plain numbers}, before 2.102.0, the version in whose source this job's handling of a draft was read, so it is not trusted with the release; update GitHub CLI on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
+      - name: Fetch what package built
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      # The same check as in `attest`.
+      - name: Check the files
+        run: |
+          cd "$RUNNER_TEMP/release"
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%-rc.*}"
+          files="$(printf '%s\n' "cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" notes.md | LC_ALL=C sort)"
+          expected="$(printf '%s\n' $files SHA256SUMS | LC_ALL=C sort)"
+          found="$(ls -A | LC_ALL=C sort)"
+          if [ "$found" != "$expected" ]; then
+            echo "::error::package's artifact holds [$(printf '%s ' $found)], not one wheel, one source archive, the text and SHA256SUMS of $version"
+            exit 1
+          fi
+          if [ "$(cut -c67- SHA256SUMS | LC_ALL=C sort)" != "$files" ]; then
+            echo "::error::SHA256SUMS does not list exactly the wheel, the source archive and the text of $version"
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS || {
+            echo "::error::a file of package's artifact does not match its checksum in SHA256SUMS"
+            exit 1
+          }
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATE: ${{ needs.release_check.outputs.candidate }}
+        run: |
+          cd "$RUNNER_TEMP/release"
+          # GitHub's listing of releases can be behind a write: measured against its API on
+          # 2026-11-20, a draft made without files was absent from a listing made about a
+          # second after its creation returned and present 2.6 s after it, in three of three
+          # trials, while a read of the release by its id showed each write at once. So the
+          # look that follows this job's own write is made again while it shows what was there
+          # before that write: at most $looks looks, $apart seconds apart (10 and 3, so 27
+          # seconds at the longest).
+          looks=10
+          apart=3
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%-rc.*}"
+          files=("cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS)
+          want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+          want="${want% }"
+          prerelease=false
+          candidate=()
+          latest=()
+          said=""
+          # What this attempt has compared, for the line of a read by id that fails.
+          compared="so nothing was compared"
+          if [ "$CANDIDATE" = "true" ]; then
+            prerelease=true
+            candidate=(--prerelease --latest=false)
+            latest=(-f make_latest=false)
+          fi
+          # The release's text is the version's notes and then a mark with this run's id, an
+          # HTML comment GitHub does not show and its API returns in the release's body. A re-run
+          # of the job keeps the run's id; notes.md itself is attested, so it is left as it is.
+          mark="<!-- cairn-ci-cd run $GITHUB_RUN_ID -->"
+          { cat notes.md; printf '\n%s\n' "$mark"; } > "$RUNNER_TEMP/body.md"
+          # The tag is part of what is judged: this run built and attested the files of
+          # $GITHUB_SHA, and a release is its tag's. A person can delete the tag or move it
+          # (a forced push) while the job runs, and a draft keeps its tag name, which is only
+          # a string, so no read of the release shows it. So the tag is read first, before
+          # anything is written; as the last request before the publication; and as the last
+          # request before this step says the release is finished; each time it must name
+          # $GITHUB_SHA, or the step stops and writes nothing more. It is read with GitHub's
+          # "Get a commit", `GET /repos/{owner}/{repo}/commits/{ref}` with the ref
+          # `tags/<tag>` and the header `Accept: application/vnd.github.sha`, which "Returns
+          # the commit's SHA-1 hash" (GitHub's REST reference): the commit, for an annotated
+          # tag as for a lightweight one ("Get a reference" gives an annotated tag's own
+          # object). And the draft is made with --target $GITHUB_SHA: the CLI sends it as the
+          # release's target (create.go, 459 to 461: `if opts.Target != "" {`,
+          # `params["target_commitish"] = opts.Target`), --verify-tag or not, and the API
+          # says of `target_commitish`: "Unused if the Git tag already exists. Default: the
+          # repository's default branch." A publication whose tag a person deleted after the
+          # last read makes GitHub create the tag (seen in round 6 for a draft whose tag did
+          # not exist); with this target it is meant to land on this run's commit, not on the
+          # default branch's head. That GitHub uses the creation's target then is not
+          # measured: that one moment is the race this step cannot close. A tag a person moves
+          # in that moment is published on, and the read of the tag after the publication
+          # stops the job with its line.
+          # The release is made by separate requests, and nothing here takes one back. A look
+          # lists every release of the repository, drafts included (GitHub lists drafts to a
+          # token that may write, as this job's may); a listing that fails stops the job instead
+          # of being taken for none. The release for this tag is this run's only if it is the
+          # only one and carries this run's mark and this tag's pre-release flag; any other a
+          # look lists stops the job. A look judges its row only to stop early: two rows for
+          # the tag stop the job on the listing, which its line says, and a row that does not
+          # show this run's release as it wrote it is read by its id at once, and the job stops
+          # on what that read shows, or on the row when that read shows this run's release as
+          # it wrote it, its line saying both. A release the
+          # listing does not show yet, one a person makes while the job runs or the draft of an
+          # earlier attempt just before a re-run, is not seen, and the job can make or publish
+          # its own beside it: that is a stated limit, and the release it publishes and
+          # succeeds on is still its own, judged by its id. (1) No release: the GitHub CLI makes one as a draft, with the files.
+          # Asked for a draft it publishes nothing, and its cleanup of the release it made is
+          # only for a draft it meant to publish itself. It sends a file again, three times at
+          # most, only after a failed connection or a 5xx, and removes a file only when given
+          # the address of one already there, which a creation never gives it. So an upload
+          # that fails leaves this draft, with the files that arrived, and leaves it public if
+          # a person published it meanwhile. (2) This run's draft, just made or left by an
+          # earlier attempt: its files are compared with the ones this run attested, names and
+          # bytes, each fetched by its asset id, and a draft that does not hold exactly those
+          # stops the job, which says what a person does. (3) The draft
+          # is published by a request of its own, to the id the look gave. That is the job's
+          # one write to a release that exists, and it is safe: it sets draft to false and
+          # says whether the release is GitHub's latest, and nothing else, so a draft a person
+          # published meanwhile is already what it would make it but for which release is the
+          # latest, one a person removed makes it fail, and the files were compared first. It
+          # always says it, since GitHub's `make_latest` "Defaults to `true` for newly
+          # published releases" (GitHub's REST reference, "Update a release"), which made a
+          # stable backport, v1.2.3 published while v1.3.0 is, the repository's latest
+          # release. A candidate never is, as the creation said too; a stable version is only
+          # when it is the highest stable version among the published releases the last look
+          # listed and itself, as `stable_versions` orders them, the function job `aliases`
+          # orders versions with, word for word. The look after the publication checks it:
+          # when it lists a higher stable version and the publication said latest, the job
+          # stops with a line of its own and edits no other release (a person published the
+          # higher one by hand meanwhile, or the look before was behind; another run of this
+          # workflow cannot, since one `release` runs at a time, the job's concurrency group).
+          # The line's remedy is to set the higher version as the latest release on the
+          # releases page: a re-run of this job after this stop sends no publication and
+          # succeeds without looking at GitHub's latest again, so re-running does not repair it.
+          # When GitHub publishes and the reply is lost, the job fails and nothing is undone:
+          # the re-run finds the release published. (4) After each write the job looks again.
+          # It ends well only on a published release that holds exactly the files this run
+          # attested, byte for byte, which it leaves as it is: that is all a re-run does after
+          # an attempt that finished, so that a release tag's `aliases` runs. A look that does
+          # not show the job's own write is made again, as the top of this step says; when the
+          # last one still does not, the job stops, so it never makes a second release of
+          # its own in one attempt.
+          # This step's text issues no removal of a release or of a release's file and
+          # replaces no file.
+          # The mark alone does not make a release this run's: a person can change the title,
+          # and the notes around the mark. So each read by id also reads both, and the step
+          # compares them with what it wrote (each look too, to read by id at once); a release
+          # that, read by its id, differs stops the job, which then writes nothing more. The creation sends the title only when one is given, and the
+          # notes as the file holds them (cli/cli at v2.102.0,
+          # pkg/cmd/release/create/create.go, 453 to 458: `if opts.Name != "" {`,
+          # `params["name"] = opts.Name`, `if opts.Body != "" {`, `params["body"] = opts.Body`;
+          # 193 to 198: `b, err := cmdutil.ReadFile(notesFile, opts.IO.In)`,
+          # `opts.Body = string(b)`), so this step names the tag as the title itself. The title
+          # must be the tag, exactly, or missing or empty: an empty title is not an edited
+          # one. It is compared in the jq expression itself and never printed. The notes
+          # are compared byte for byte, and nothing
+          # is normalised: they come as base64, which the step decodes into a file
+          # and compares with the file it wrote, so no reading here drops a line end or changes
+          # a byte (a command substitution would drop the line ends at the end).
+          # What the step reads, in order, and why. (a) The tag, as the commit it names, as
+          # said above. (b) The listing, which finds the release, shows whether the tag has
+          # more than one, and lists the other tags' published releases, from which the
+          # publication says whether this release is GitHub's latest, and the look after it
+          # whether a higher one is listed; it can be behind a write, a person's as much as
+          # this job's, so its row only stops the job or sends it to a read by id at once,
+          # nothing is published or said finished on it, and a higher version published
+          # seconds before the last look can be missing from it, a backport then being said to
+          # be the latest.
+          # (c) The release, read by its id, which
+          # was measured to show each write at once: it judges the tag, the mark, the two
+          # flags, the title, the notes and the file names, and gives each file's asset id,
+          # state and size. (d) Each file, fetched by that asset id with GitHub's "Get a
+          # release asset",
+          # `GET /repos/{owner}/{repo}/releases/assets/{asset_id}` with the header `Accept:
+          # application/octet-stream`, and only once (c) shows it `uploaded` and of the size
+          # of the file this run attested: the bytes of the release that was judged, and of no
+          # other release for the tag, where the CLI's `release download` finds one by its tag.
+          # The CLI follows GitHub's redirect to the bytes, and with --allow-escape-sequences
+          # writes them as they come (pkg/cmd/api/api.go, 534 to 546: "the opt-out flag and
+          # discarded output stream verbatim"; without it, text that holds an escape character
+          # is refused). Each is compared with this run's file, byte for byte. (e) The release
+          # by its id again, which must be as (c) showed it: the same assets (ids, names,
+          # sizes, update times), title, notes and flags, so no file was replaced and nothing
+          # edited while the files were fetched. (f) The tag again. Then the publication; then
+          # (b) until the listing shows it, and (c) to (f) once more before this step says the
+          # release is finished. A look whose row shows a missing mark, another flag, another
+          # title or other notes reads the release by its id at once, in a wait too, and the
+          # job stops on what that read shows, or on the row when that read shows this run's
+          # release as it wrote it. What a person changes after the last read of the release,
+          # before the publication or before this step ends, is not seen: that moment is the
+          # stated race.
+          fields="[.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), (.name | . == null or . == \"\" or . == \"$GITHUB_REF_NAME\"), ((.body // \"\") | @base64), ([.assets[].name] | sort | join(\" \"))] | @tsv"
+          # A read by the release's id gives, after those fields, the release as one value to
+          # compare two reads by (its tag, title, notes, flags, and each asset's id, name,
+          # state, size and update time), and then a line for each asset: name, id, state, size.
+          details="([.tag_name, .name, .draft, .prerelease, .body, ([.assets[] | [.id, .name, .state, .size, .updated_at]] | sort)] | tojson | @base64), (.assets[] | [.name, .id, .state, .size] | @tsv)"
+          # The listing prints those fields for each release of this tag, and `published <tag>`
+          # for each other release that is neither a draft nor a pre-release.
+          listing() {
+            gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | if .tag_name == \"$GITHUB_REF_NAME\" then ($fields) elif .draft or .prerelease then empty else \"published \" + .tag_name end"
+          }
+          # The stable versions among the tags on stdin, without their `v`, lowest first: job
+          # `aliases` has this function too, word for word.
+          stable_versions() {
+            awk '/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { print substr($0, 2) }' | sort -t. -k1,1n -k2,2n -k3,3n
+          }
+          # Whether this tag is the highest stable version among the published releases the
+          # last look listed and itself: true or false, what the publication sends.
+          is_latest() {
+            local top
+            top="$( { printf '%s\n' "$released"; printf '%s\n' "$GITHUB_REF_NAME"; } | stable_versions | tail -n 1)"
+            if [ "v$top" = "$GITHUB_REF_NAME" ]; then echo true; else echo false; fi
+          }
+          unlisted() {
+            echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
+            exit 1
+          }
+          # The lines below that state what a release is (a draft or public, its title, its
+          # notes, its files) are written from a read of it by its id, and say so; a line that
+          # rests on what the listing shows says so, and sends a person to the releases page
+          # first, since the listing can be seconds behind a write.
+          crowded() {
+            echo "::error::GitHub's listing shows $count releases for $GITHUB_REF_NAME, and this job finishes a release only when it is its tag's only one; the listing can be seconds behind a write, so look at the repository's releases page first: when it shows more than one, delete those nobody should publish, keeping a public release of this run that holds its files, and re-run this job"
+            exit 1
+          }
+          unseen() {
+            echo "::error::GitHub's listing, at this job's last look, does not list the release for $GITHUB_REF_NAME as this job has just left it, and it can be seconds behind a write; look at the repository's releases page first, then re-run this job, which starts from what is listed then"
+            exit 1
+          }
+          refuse() {
+            echo "::error::read by its id, a GitHub release for $GITHUB_REF_NAME exists and is not one this run can finish: $1; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job"
+            exit 1
+          }
+          unfinished() {
+            echo "::error::read by its id, the GitHub release for $GITHUB_REF_NAME is this run's draft and does not hold exactly the files this run attested: $1; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again"
+            exit 1
+          }
+          unread() {
+            echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state as read by its id, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing unless the releases page shows a file of the draft missing or unfinished"
+            exit 1
+          }
+          differs() {
+            echo "::error::read by its id, the GitHub release for $GITHUB_REF_NAME, $state, carries run $GITHUB_RUN_ID's mark and differs from what that run wrote in its $1; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job"
+            exit 1
+          }
+          changed() {
+            echo "::error::the GitHub release for $GITHUB_REF_NAME, $state, changed between this job's two reads of it by its id, around the download of its files, so the files it compared may not be the ones the release holds; re-run this job, which reads and compares it again"
+            exit 1
+          }
+          drafted() {
+            echo "::error::the GitHub release for $GITHUB_REF_NAME, read by its id after this job published it, is a draft again; look at it on the repository's releases page, and re-run this job, which compares it and publishes it again if it is still this run's"
+            exit 1
+          }
+          # The row is not this run's release as it wrote it and the read by its id is: the
+          # listing was behind, an edit a person has since undone for one. The job stops on the
+          # row, writing nothing on it, and its line says what each showed.
+          behind() {
+            echo "::error::GitHub's listing shows the release for $GITHUB_REF_NAME without this run's mark, pre-release flag, title or notes, while read by its id it is $state and has all four as this run wrote them; the listing can be seconds behind a write, an edit a person has since undone included, so look at the repository's releases page first, then re-run this job, which starts from what is listed then"
+            exit 1
+          }
+          elsewhere() {
+            echo "::error::the release GitHub's listing showed for $GITHUB_REF_NAME is, read by its id, a release of another tag; look at it on the repository's releases page, and re-run this job, which starts from what is listed then"
+            exit 1
+          }
+          # The publication said this release is GitHub's latest, from the look before it, and
+          # the look after it lists a higher stable version: published meanwhile by hand, or
+          # missing from that look, the listing being behind. The job edits no other release.
+          lost_latest() {
+            local higher
+            higher="v$(printf '%s\n' "$released" | stable_versions | tail -n 1)"
+            echo "::error::the GitHub release for $GITHUB_REF_NAME, read by its id, is this run's and public, with the title and the notes this run wrote and exactly the files this run attested, and this job's publication asked GitHub to make it the repository's latest release; GitHub's listing after the publication shows $higher published, a higher stable version, so GitHub's latest release may now be $GITHUB_REF_NAME, below it: on the repository's releases page set $higher as the latest release, then re-run this job, which finds $GITHUB_REF_NAME published and changes nothing, so that job aliases runs"
+            exit 1
+          }
+          # The tag, read where git keeps it: this run's only while it names this run's commit.
+          # A read that fails is a tag that may be gone; which status GitHub gives a tag that
+          # is gone was not measured, so the line says both.
+          tagged() {
+            local at
+            if ! at="$(gh api -H 'Accept: application/vnd.github.sha' "repos/$GH_REPO/commits/tags/$GITHUB_REF_NAME" 2> "$RUNNER_TEMP/tag.err")" || ! [[ "$at" =~ ^[0-9a-f]{40}$ ]]; then
+              cat "$RUNNER_TEMP/tag.err" >&2
+              echo "::error::the tag $GITHUB_REF_NAME could not be read as a commit of the repository (it is gone, or GitHub did not answer: gh's own words, if any, are above), so this job writes nothing more for its release and does not call it finished; re-run this job if the repository's tags page shows $GITHUB_REF_NAME at this run's commit $GITHUB_SHA, and otherwise publish nothing for it"
+              exit 1
+            fi
+            if [ "$at" != "$GITHUB_SHA" ]; then
+              echo "::error::the tag $GITHUB_REF_NAME names commit $at, not this run's commit $GITHUB_SHA, whose files this run built and attested, so this job writes nothing more for its release and does not call it finished; delete this run's release for it on the repository's releases page if there is one and nobody should publish it, and re-run this job only once the tag names $GITHUB_SHA again"
+              exit 1
+            fi
+          }
+          # One release, as a read by its id gave it: this run's by its mark and its flag,
+          # with the title and the notes this run wrote, or the job stops. The notes are the
+          # sixth field, empty only when the release has no text, and then it has no mark and
+          # the job has stopped before it reads further.
+          judge() {
+            local what=""
+            IFS=$'\t' read -r id draft pre ours titled notes names <<< "$1"
+            [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
+            [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
+            state=public
+            [ "$draft" = false ] || state="a draft"
+            [ "$titled" = true ] || what=title
+            printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
+            cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md" || what="${what:+$what and }notes"
+            [ -z "$what" ] || differs "$what"
+          }
+          # Whether a look's row shows this run's release as it wrote it: the same four things,
+          # judged on the row without stopping; the row's fields are kept for the waits.
+          fits() {
+            IFS=$'\t' read -r id draft pre ours titled notes names <<< "$1"
+            [ "$ours" = true ] && [ "$pre" = "$prerelease" ] && [ "$titled" = true ] || return 1
+            printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
+            cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md"
+          }
+          # What GitHub lists for the tag now: nothing (found is empty), or one release; and
+          # the other tags' published releases ($released). A row that does not show this
+          # run's release as it wrote it is read by its id at once, and the job stops on what
+          # that read shows, or on the row when that read shows this run's release as written.
+          look() {
+            local all
+            all="$(listing)" || unlisted
+            found="$(awk '!/^published /' <<< "$all")"
+            released="$(awk '/^published / { print $2 }' <<< "$all")"
+            [ -n "$found" ] || return 0
+            count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
+            [ "$count" = 1 ] || crowded
+            fits "$found" || { fresh; behind; }
+          }
+          # The release the look found, read by its id: what it is now, whatever the listing
+          # shows, with its file names; $read_as is the whole of it, and its assets' lines are
+          # kept for the fetches. A read that fails is not a release that differs: the
+          # CLI ends the line it prints for an HTTP error with `(HTTP <status>)`
+          # (pkg/cmd/api/api.go, 553 to 557 and 685), and a 404 is a release that is not there.
+          fresh() {
+            local now
+            if ! now="$(gh api "repos/$GH_REPO/releases/$id" --jq "select(.tag_name == \"$GITHUB_REF_NAME\") | ($fields), $details" 2> "$RUNNER_TEMP/read.err")"; then
+              cat "$RUNNER_TEMP/read.err" >&2
+              if grep -q 'HTTP 404' "$RUNNER_TEMP/read.err"; then
+                echo "::error::the GitHub release for $GITHUB_REF_NAME, which GitHub's listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then"
+              else
+                echo "::error::the GitHub release for $GITHUB_REF_NAME could not be read by its id, as the lines above say, $compared; re-run this job, and delete nothing"
+              fi
+              exit 1
+            fi
+            [ -n "$now" ] || elsewhere
+            judge "$(sed -n 1p <<< "$now")"
+            read_as="$(sed -n 2p <<< "$now")"
+            sed '1,2d' <<< "$now" > "$RUNNER_TEMP/assets.tsv"
+            [ "$names" = "$want" ] || { [ "$draft" = false ] || unfinished "its files are [$names], not [$want]"; refuse "its files are [$names], not [$want]"; }
+          }
+          # Whether the names listed are some of this run's three files, not all, and no other.
+          some_files() {
+            local name left=" $want " listed=()
+            [ "$names" != "$want" ] || return 1
+            IFS=' ' read -r -a listed <<< "$names"
+            for name in "${listed[@]}"; do
+              case "$left" in
+                *" $name "*) left="${left/ $name / }" ;;
+                *) return 1 ;;
+              esac
+            done
+          }
+          # The look after this job's own write, made again, $looks times at most, while the
+          # listing still shows what was there before it: no release after the creation ($1
+          # is made), this run's release still a draft after the publication (published).
+          # After the creation it also waits while the listing shows this run's draft with
+          # some, not all, of its three file names and no other, since the uploads take about
+          # as long as the listing is behind; the read by its id then says what it holds.
+          # Nothing else is waited for: any other state stops the job inside look, at once,
+          # and no release after the publication is none of the two.
+          look_after() {
+            local n=1
+            look
+            while [ "$n" -lt "$looks" ]; do
+              if [ "$1" = made ]; then
+                [ -z "$found" ] || { [ "$draft" = true ] && some_files; } || break
+              else
+                { [ -n "$found" ] && [ "$draft" = true ]; } || break
+              fi
+              sleep "$apart"
+              n=$((n + 1))
+              look
+            done
+          }
+          # Its files against the ones this run attested, $1 being what a difference does:
+          # each fetched into $2 by the asset id the last read by id gave it, once that read
+          # shows it uploaded and of the attested file's size; then the release is read by its
+          # id again, and must be as the read before showed it. A fetch that fails is not a
+          # difference: the job stops and says so, and a re-run compares again.
+          same_files() {
+            local name row asset upload size before="$read_as"
+            mkdir -p "$RUNNER_TEMP/$2"
+            for name in "${files[@]}"; do
+              row="$(awk -F '\t' -v name="$name" '$1 == name' "$RUNNER_TEMP/assets.tsv")"
+              IFS=$'\t' read -r _ asset upload size <<< "$row"
+              { [[ "$asset" =~ ^[0-9]+$ ]] && [ "$upload" = uploaded ] && [ "$size" = "$(wc -c < "$name" | tr -d ' ')" ]; } || "$1" "$name is not the file this run attested"
+              gh api --allow-escape-sequences -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" > "$RUNNER_TEMP/$2/$name" || unread
+              cmp -s "$name" "$RUNNER_TEMP/$2/$name" || "$1" "$name is not the file this run attested"
+            done
+            compared="after its three files were fetched and each was found to be the file this run attested, so whether the release changed around their download is not known"
+            fresh
+            [ "$read_as" = "$before" ] || changed
+          }
+          tagged
+          look
+          if [ -z "$found" ]; then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --target "$GITHUB_SHA" \
+              --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" \
+              "${files[@]}"
+            look_after made
+            [ -n "$found" ] || unseen
+          fi
+          fresh
+          if [ "$draft" = true ]; then
+            same_files unfinished draft
+            [ "$prerelease" = true ] || latest=(-f "make_latest=$(is_latest)")
+            said="${latest[1]#make_latest=}"
+            tagged
+            gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
+            compared="after this job compared its draft's files with this run's and published it, so the published release's files were not compared"
+            look_after published
+            { [ -n "$found" ] && [ "$draft" = false ]; } || unseen
+            fresh
+          fi
+          same_files refuse published
+          [ "$draft" = false ] || drafted
+          tagged
+          [ "$said" != true ] || [ "$(is_latest)" = true ] || lost_latest
+          echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with the title and the notes this run wrote and exactly the files this run attested."
+
+  # Points `latest` at the highest released version and each X.Y at the highest released
+  # X.Y.z, after a release is made (a release candidate moves neither). It decides from what
+  # exists when it runs, not from the tag that started it: the versions with a GitHub release
+  # that is neither a draft nor a pre-release and whose full version is in the registry, the
+  # digest of each read from that full version's tag. So it moves every alias, not only its
+  # own tag's, and an alias already right is left alone. One such job runs at a time across
+  # all runs (its concurrency group); a newer one waiting replaces an older one waiting, which
+  # GitHub cancels, and the newer one, deciding later, covers its release too. A version's own
+  # release is made before this job, so a cancelled one leaves no version without its
+  # release. Like `publish`, it checks out nothing and runs no script from the repository.
+  aliases:
+    name: latest and X.Y
+    needs: [release_check, release]
+    if: >-
+      github.event_name == 'push' && github.ref_type == 'tag' &&
+      needs.release_check.outputs.candidate != 'true'
+    runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
+    concurrency:
+      group: cairn-release-aliases
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Install oras
+        run: |
+          base="https://github.com/oras-project/oras/releases/download/v1.3.6/"
+          case "$RUNNER_ARCH" in
+            X64) asset=oras_1.3.6_linux_amd64.tar.gz sum=66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 ;;
+            ARM64) asset=oras_1.3.6_linux_arm64.tar.gz sum=b84269e78dfc2d5329a4aab373da3200de95e6c138338cf6c66c10c0a3f248c1 ;;
+            *) echo "::error::no oras archive is pinned for a runner of $RUNNER_ARCH"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base$asset"
+          printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/oras"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/oras" oras
+          echo "$RUNNER_TEMP/oras" >> "$GITHUB_PATH"
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point latest and each X.Y at the highest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -o pipefail
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          released="$(gh release list --limit 1000 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName')"
+          if [ "$(printf '%s\n' "$released" | grep -c .)" -ge 1000 ]; then
+            echo "::error::gh listed 1000 releases, the most it asks for, so a higher one may be missing; raise this step's limit and job release_check's together on main, then run job aliases in the run of a commit that has them"
+            exit 1
+          fi
+          oras repo tags "$image" > "$RUNNER_TEMP/published"
+          # The stable versions among the tags on stdin, without their `v`, lowest first: job
+          # `release` has this function too, word for word, and says by it which release is
+          # GitHub's latest.
+          stable_versions() {
+            awk '/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { print substr($0, 2) }' | sort -t. -k1,1n -k2,2n -k3,3n
+          }
+          versions="$(printf '%s\n' "$released" | stable_versions | awk -v list="$RUNNER_TEMP/published" '
+            BEGIN { while ((getline tag < list) > 0) published[tag] = 1 }
+            $0 in published')"
+          if [ -z "$versions" ]; then
+            echo "No released version is in the registry: latest and X.Y stay where they are."
+            exit 0
+          fi
+          digest_of() {
+            local sum
+            sum="$(oras manifest fetch "$image:$1" | sha256sum)" || return 1
+            printf 'sha256:%s\n' "${sum%% *}"
+          }
+          point() {
+            local want have=""
+            want="$(digest_of "$2")"
+            if grep -Fxq "$1" "$RUNNER_TEMP/published"; then
+              have="$(digest_of "$1")"
+            fi
+            if [ "$have" = "$want" ]; then
+              echo "$1 is $2 already ($want)."
+            else
+              oras tag "$image@$want" "$1"
+              echo "$1 now names $2 ($want)."
+            fi
+          }
+          point latest "$(printf '%s\n' "$versions" | tail -n 1)"
+          for line in $(printf '%s\n' "$versions" | cut -d. -f1,2 | sort -u); do
+            point "$line" "$(printf '%s\n' "$versions" | awk -F. -v line="$line" '$1 "." $2 == line' | tail -n 1)"
+          done
 
   # Moves the hosted VM to the image `publish` just pushed, by digest, and waits until the VM
   # reports it runs that digest healthy. Pushes to main only. Skipped, not failed, unless the

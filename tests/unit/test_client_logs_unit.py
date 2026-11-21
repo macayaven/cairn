@@ -118,8 +118,11 @@ def test_a_source_s_client_keeps_an_echoed_credential_out_of_the_log(debug):
     transport = httpx.AsyncHTTPTransport()
     transport._pool = httpcore.AsyncConnectionPool(network_backend=AsyncEchoBackend())
 
+    async def resolve(host: str, port: int) -> list[str]:
+        return ["192.0.0.9"]
+
     async def call() -> httpx.Response:
-        async with source_client(transport) as client:
+        async with source_client(transport, resolve=resolve) as client:
             return await client.get(
                 "http://provider.test/v1/notes?page=2", headers={"Authorization": f"Bearer {KEY}"}
             )

@@ -728,6 +728,8 @@ def test_connector_check_holds_an_item_to_a_page_under_every_item_within_its_bou
     connector.feed = items_past_a_page(PAGE_CHARS_MAX, PAGE_CLAIMS_MAX)[:3]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(c9.SECRET_ENV, c9.SECRET)
+    # The stand-in connector is on loopback, which an operator has to allow.
+    monkeypatch.setenv("CAIRN_SOURCE_PRIVATE_ADDRESSES", "allow")
     with c9.Loopback(connector):
         argv = ["connector-check", "--url", connector.url, "--secret-env", c9.SECRET_ENV]
         code = c9.call([*argv, "--since", c9.CHECK_SINCE, "--limit", "3"])

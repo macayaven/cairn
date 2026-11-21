@@ -79,7 +79,7 @@ import secrets
 import threading
 import time
 import unicodedata
-from collections import OrderedDict, deque
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -111,7 +111,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from cairn.holding import Holding, refusing_until
 from cairn.memory import BadRequest, choose_reach
+from cairn.narrowing import narrowed
 from cairn.store import (
     CLIENT_NAME_MAX,
     REDIRECT_URI_MAX,
@@ -310,10 +312,14 @@ class RateLimit:
     """At most `limit` allowed requests per client address in any `window` seconds, counted in
     memory. One IPv6 /64 is one address (it is one subscriber), and requests without a usable
     address share one count. No more than `max_addresses` are tracked: when the table is full,
-    the address seen longest ago is forgotten and the new one admitted, so a flood from many
-    addresses neither grows the table nor shuts out an address only because the table is
-    full. The price is that a forgotten address starts a fresh count. Each call is O(1).
-    Called on the event loop only."""
+    the address forgotten is one not at its limit, the one seen longest ago of those, and the
+    new one is admitted; an address being refused is forgotten only when every address is,
+    and then the one seen longest ago. So a flood from many addresses neither grows the table,
+    nor frees the addresses it holds back, nor shuts out an address only because the table is
+    full. The price is that a forgotten address starts a fresh count. A call is a constant
+    number of steps, amortized, whatever `max_addresses` is: the address to forget is found
+    without a walk over the table (cairn.holding.Holding, Security 4). Called on the event
+    loop only."""
 
     def __init__(
         self,
@@ -324,7 +330,8 @@ class RateLimit:
     ) -> None:
         self._limit, self._window, self._max = limit, window, max_addresses
         self._clock = clock or _clock
-        self._hits: OrderedDict[str, deque[float]] = OrderedDict()  # seen longest ago first
+        self._hits: dict[str, deque[float]] = {}
+        self._holding: Holding[str] = Holding()  # which address to forget (Security 4)
 
     @property
     def tracked(self) -> int:
@@ -335,16 +342,17 @@ class RateLimit:
         hits = self._hits.get(key)
         if hits is None:
             while len(self._hits) >= self._max:
-                self._hits.popitem(last=False)
+                victim = self._holding.victim(now)
+                del self._hits[victim]
+                self._holding.drop(victim)
             hits = self._hits[key] = deque()
-        else:
-            self._hits.move_to_end(key)
         while hits and hits[0] <= now - self._window:
             hits.popleft()
-        if len(hits) >= self._limit:
-            return False
-        hits.append(now)
-        return True
+        allowed = len(hits) < self._limit
+        if allowed:
+            hits.append(now)
+        self._holding.seen(key, refusing_until(hits, self._limit, self._window))
+        return allowed
 
 
 def _network(address: str | None) -> str:
@@ -798,7 +806,12 @@ def routes(
 
     async def consent_page(request: Request) -> Response:
         view = account(request)
-        pending = requests.open(request.query_params.get("request"), "authorize")
+        sealed = request.query_params.get("request")
+        pending = requests.open(sealed, "authorize")
+        if pending is None:  # sent again by the form's filter button (cairn.narrowing)
+            pending = requests.open(sealed, "consent")
+            if pending is not None and pending.get("account") != view.account_id:
+                pending = None
         client = (
             await run_in_threadpool(ledger.get_client, pending["client_id"]) if pending else None
         )
@@ -820,6 +833,8 @@ def routes(
             projects=projects,
             sets=sets,
             names=names,
+            narrow=narrowed(projects, request.query_params, CONSENT_PATH),
+            narrow_action=CONSENT_PATH,
         )
         policy = response.headers["content-security-policy"]
         origin = origin_of(pending["redirect_uri"])

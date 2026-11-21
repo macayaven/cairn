@@ -660,7 +660,19 @@ def test_the_readme_says_what_one_run_on_a_real_project_showed_and_what_it_did_n
     said = flat(GUIDE[start : GUIDE.index("Not checked, most likely to be wrong first:")])
     assert "What that one run showed, and nothing more:" in said
     blocks = sum(len(re.findall(r'^resource "', f.read_text(), re.M)) for f in INFRA.glob("*.tf"))
-    assert blocks == 34 and "created the 28 resources besides the address reserved first" in said
+    assert "created the 28 resources besides the address reserved first" in said
+    # 34 when it ran, the replica alert and the later alerts among them; then the audit
+    # configuration and the log bucket's retention; then the host alerts (one block).
+    assert blocks == 34 + 2 + 1
+    assert (
+        "The audit configuration, the log bucket's retention and the other settings of [Audit,"
+        " keys and network](#audit-keys-and-network) came after that too, two resources more,"
+        " and have not been applied." in said
+    )
+    assert (
+        "The host alerts came after that too, one resource more (one block, four policies),"
+        " and have not been applied." in said
+    )
     assert "The replica alert was added after that run" in said
     assert "The replica check and the silence alert came after that and have not been" in said
     later = (INFRA / "monitoring.tf").read_text()
@@ -726,9 +738,10 @@ def test_the_alerts_section_says_when_the_compaction_alert_fires_and_when_it_doe
 def test_the_runbook_says_what_the_line_means_and_that_the_database_was_rewritten():
     said = flat(guide_part(COMPACT_HEADING))
     for sentence in (
-        "Each line is one compaction that rewrote the whole database file under the store's"
-        " lock, so every request waited for it, and Litestream then copied the rewritten file"
-        " again.",
+        "A line that says `(rewritten; the write-ahead log was not emptied)` is a compaction"
+        " that rewrote the whole database file under the store's lock, so every write waited"
+        " for it, and Litestream then copied the rewritten file again.",
+        "A line that says `(no rewrite: only the write-ahead log was due)` rewrote nothing:",
         "The step that did not finish is the last one, truncating the write-ahead log:"
         " Litestream reads the log for as long as it runs.",
         "Nothing is lost when it does not finish:",
@@ -778,7 +791,7 @@ def test_the_runbook_names_the_commit_that_fixed_the_retry_and_how_to_check_the_
     workflow = (REPO / ".github" / "workflows" / "ci-cd.yml").read_text(encoding="utf-8")
     assert "CAIRN_COPY_TAG: sha-${{ github.sha }}" in workflow
     compactor = (REPO / "src" / "cairn" / "web" / "compactor.py").read_text(encoding="utf-8")
-    assert "self._tried = began" in compactor
+    assert "self._began = began  # the next try waits the interval, not the next poll" in compactor
 
 
 # --- the runbook of host.sh compact -----------------------------------------------------------
@@ -825,7 +838,13 @@ def test_every_line_the_runbook_quotes_is_one_host_sh_prints(tmp_path):
             x.removeprefix("<3>").removeprefix("cairn-host: ") for x in done.text.splitlines()
         ]
         printed = [x.removeprefix("ERROR: ") for x in printed]
-    quoted = quoted_compact_lines(guide_part(AFTER_DELETION))
+    # The nightly run's own lines (`compact: nightly: ...`) are checked against what
+    # `compact-if-due` prints, in test_host_compact_nightly_unit.py.
+    quoted = [
+        x
+        for x in quoted_compact_lines(guide_part(AFTER_DELETION))
+        if not x.startswith("compact: nightly: ")
+    ]
     assert len(quoted) >= 8, quoted
     for line in quoted:
         assert any(compact_pattern(line).fullmatch(x) for x in printed), line
@@ -863,3 +882,306 @@ def test_host_shs_record_reader_shows_a_deletion_not_yet_compacted(tmp_path):
         check=True,
     ).stdout.strip()
     assert shown and shown == Store(db).compaction_state().deleted_at
+
+
+# --- numbers the guide states are numbers the definitions hold -------------------------------
+
+VARIABLES_TF = (INFRA / "variables.tf").read_text(encoding="utf-8")
+
+
+def default_of(name: str) -> str:
+    start = VARIABLES_TF.index(f'variable "{name}"')
+    block = VARIABLES_TF[start : VARIABLES_TF.index("\n}\n", start)]
+    return re.search(r"^  default\s*=\s*(.+)$", block, re.M).group(1).strip('"')
+
+
+def litestream_days() -> int:
+    import yaml
+
+    retention = yaml.safe_load((REPO / "deploy" / "litestream.yml").read_text())["snapshot"][
+        "retention"
+    ]
+    assert retention.endswith("h") and int(retention[:-1]) % 24 == 0, retention
+    return int(retention[:-1]) // 24
+
+
+def snapshot_days() -> int:
+    main = (INFRA / "main.tf").read_text(encoding="utf-8")
+    return int(re.search(r"max_retention_days\s*=\s*(\d+)", main).group(1))
+
+
+def test_every_soft_delete_period_the_guide_states_is_the_variables_default():
+    days = int(default_of("replica_soft_delete_days"))
+    assert days == 7
+    said = flat(GUIDE)
+    for sentence in (
+        f"soft delete: whatever is deleted stays restorable for {days} days)",
+        f"The bucket has soft delete set to {days} days (`replica_soft_delete_days`, the least"
+        " Cloud Storage allows):",
+        f"you have {days} days from the deletion to bring the replica back:",
+        f"Past the {days} days the files are gone,",
+        f"What you delete stays in soft delete, billed, for another {days} days.",
+        f"everything Litestream deletes is billed for {days} more days (soft delete)",
+        f"the bucket now keeps {days} days of soft-deleted files",
+    ):
+        assert sentence in said, sentence
+    # No sentence about soft delete names another period.
+    for sentence in re.split(r"(?<=[.:;|])\s", said):
+        if re.search(r"soft[ -]delet", sentence):
+            for number in re.findall(r"\b(\d+) (?:more )?days\b", sentence):
+                assert int(number) in (days, snapshot_days()), sentence
+    assert not re.search(r"\b38\b", said)
+
+
+def test_the_table_of_how_long_a_deletion_stays_in_the_backups_adds_up():
+    table = flat(guide_part("### How long a deletion stays in the backups"))
+    lite, soft, snaps = (
+        litestream_days(),
+        int(default_of("replica_soft_delete_days")),
+        snapshot_days(),
+    )
+    assert (lite, soft, snaps) == (8, 7, 14)
+    for row in (
+        f"| Litestream's files in the bucket | up to {lite} days (`retention: 192h` in"
+        " `deploy/litestream.yml`) |",
+        f"| Then soft delete in the bucket | {soft} more days (`replica_soft_delete_days`) |",
+        f"| The replica bucket in all | up to {lite + soft} days |",
+        f"| The daily disk snapshots | up to {snaps} days"
+        " (`google_compute_resource_policy.data_daily`) |",
+    ):
+        assert row in table, row
+
+
+def test_the_boot_disk_the_guide_prices_is_the_default_and_its_change_replaces_the_vm():
+    size = int(default_of("boot_disk_size_gb"))
+    said = flat(GUIDE)
+    assert f"| Boot disk, {size} GB `pd-balanced` | fixed | ${size / 10:.2f} a month |" in said
+    assert "Changing `boot_disk_size_gb` replaces the VM: the boot disk is made with it." in said
+    assert "older than three days, except the running image and the one before it" in said
+
+
+def test_the_registry_cleanup_the_guide_states_is_the_one_main_tf_makes():
+    keep, days = (
+        int(default_of("registry_keep_versions")),
+        int(default_of("registry_delete_after_days")),
+    )
+    said = flat(GUIDE)
+    assert (
+        f"The registry keeps the newest {keep} versions of the image (`registry_keep_versions`)"
+        " and whatever the deploy tag names, and deletes every other image once it is"
+        f" {days} days old (`registry_delete_after_days`)." in said
+    )
+    assert f"| Artifact Registry storage | images pushed (older than {days} days deleted" in said
+    assert "no cleanup policy is set" not in said
+
+
+def test_bootstrap_says_to_remove_the_default_network_and_the_editor_role_with_the_commands():
+    said = guide_part("## Bootstrap (once, by a person)")
+    for command in (
+        "gcloud compute firewall-rules list --filter=network=default --format='value(name)'",
+        "| xargs -r -n 1 gcloud compute firewall-rules delete --quiet",
+        "gcloud compute networks delete default --quiet",
+        'NUMBER=$(gcloud projects describe PROJECT_ID --format="value(projectNumber)")',
+        "gcloud projects remove-iam-policy-binding PROJECT_ID \\\n"
+        '  --member="serviceAccount:${NUMBER}-compute@developer.gserviceaccount.com"'
+        " --role=roles/editor",
+    ):
+        assert command in said, command
+
+
+def description_of(name: str) -> str:
+    start = VARIABLES_TF.index(f'variable "{name}"')
+    block = VARIABLES_TF[start : VARIABLES_TF.index("\n}\n", start)]
+    return re.search(r'^  description\s*=\s*"(.+)"$', block, re.M).group(1)
+
+
+# What an operator without 2-Step Verification meets, said in the variable and in the README
+REFUSED = (
+    "An operator whose Google account has no 2-Step Verification is refused SSH through IAP"
+    " until they switch it on or set"
+)
+WAYS_BACK = "the serial console and a start-up script are the ways back in"
+
+
+def test_the_guide_says_what_a_second_factor_asks_of_whoever_connects():
+    assert default_of("os_login_2fa") == "true"
+    said = flat(guide_part("## Bootstrap (once, by a person)"))
+    assert (
+        "**A second factor for SSH** is on by default (`os_login_2fa`): OS Login asks everyone"
+        " who connects for a second factor (a security key, an authenticator code or a phone"
+        " prompt) at every connection, and their Google account must have 2-Step Verification"
+        " on. A script or a scheduled job can therefore not connect by SSH. Whether to keep it"
+        " on is the operator's decision." in said
+    )
+    assert "off by default" not in said.split("**A second factor for SSH**", 1)[1][:200]
+
+
+def test_the_variable_says_who_is_refused_and_the_ways_back_in():
+    described = description_of("os_login_2fa")
+    assert REFUSED in described and WAYS_BACK in described
+    assert "set this variable to false" in described
+
+
+def test_an_existing_deployment_reviews_the_second_factor_first_before_its_next_apply():
+    part = guide_part("### Before the next apply on an existing deployment")
+    assert part.startswith("### Before the next apply on an existing deployment\n")
+    assert "\n### Before the next apply on an existing deployment\n" in guide_part(
+        "## Changing the configuration"
+    )
+    items = re.findall(r"^- (.+(?:\n  .+)*)", part, re.M)
+    assert len(items) >= 2, items
+    first = flat(items[0])
+    assert first.startswith("**`os_login_2fa` is now on by default.**"), first
+    assert REFUSED in first and "set `os_login_2fa = false`" in first and WAYS_BACK in first
+    # every variable an item names is one variables.tf declares, at the default it says
+    for item in items:
+        for name in re.findall(r"`([a-z_0-9]+) = ", item):
+            assert f'variable "{name}"' in VARIABLES_TF, name
+
+
+def test_the_guide_names_the_baselines_variables_and_their_defaults():
+    said = flat(GUIDE)
+    assert default_of("data_access_audit_logs") == "true"
+    assert default_of("log_retention_days") == "30"
+    assert default_of("firewall_logging") == "false" and default_of("vpc_flow_logs") == "false"
+    for sentence in (
+        "**Audit logs.** Data Access audit logs for Cloud Storage and Secret Manager are on"
+        " (`data_access_audit_logs`):",
+        "**Retention.** The project's `_Default` log bucket keeps logs 30 days"
+        " (`log_retention_days`, Google's own default);",
+        "Firewall rule logging (`firewall_logging`) and VPC flow logs (`vpc_flow_logs`) are"
+        " off by default, because both are billed by volume.",
+        "The subnet has Private Google Access on.",
+    ):
+        assert sentence in said, sentence
+
+
+def test_the_guide_says_the_secret_is_checked_against_its_checksum():
+    said = flat(guide_part("## Secret rotation"))
+    assert (
+        "The VM checks the data it reads against the checksum Secret Manager sends with it"
+        " (`dataCrc32c`); when they differ it writes nothing, and `cairn-env.service` fails"
+        " with one line in its journal, so cairn does not start." in said
+    )
+
+
+def test_the_customer_managed_keys_section_says_what_the_key_covers_and_its_iam():
+    said = flat(guide_part("### Customer-managed keys"))
+    for sentence in (
+        "Set `kms_key_name` to a Cloud KMS key in the same region as everything else, and the"
+        " data disk, the boot disk, the replica bucket and the environment secret use it.",
+        "Unset, Google manages the keys, as before.",
+        "`roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key for three of Google's service"
+        " agents of this project:",
+        "service-PROJECT_NUMBER@compute-system.iam.gserviceaccount.com",
+        "service-PROJECT_NUMBER@gs-project-accounts.iam.gserviceaccount.com",
+        "service-PROJECT_NUMBER@gcp-sa-secretmanager.iam.gserviceaccount.com",
+        "Not covered: the disk snapshots, the registry, the logs and the state bucket.",
+        "On an existing deployment, setting it replaces the data disk, the VM and the secret,"
+        " as far as can be read without a project: read `tofu plan` before `apply`.",
+    ):
+        assert sentence in said, sentence
+
+
+def test_what_a_regulated_customer_adds_names_what_these_definitions_do_not_do():
+    said = flat(guide_part("## What a regulated customer adds"))
+    for words in (
+        "a signed agreement with Google",
+        "organisation policies",
+        "VPC Service Controls",
+        "a locked log sink",
+        "not ready as they stand for health or education records",
+        "`--audit-reads`",
+    ):
+        assert words in said, words
+    assert "cairn's own audit page does not keep" not in said
+
+
+def test_the_status_paragraph_and_the_dated_record_agree_that_it_was_applied():
+    status = flat(GUIDE[: GUIDE.index("## What it builds")])
+    record = re.search(r"\*\*Run once on a real project\*\* \((\d{4}-\d{2}-\d{2}): ", GUIDE)
+    assert record, "no dated record of the run on a real project"
+    day = record.group(1)
+    assert f"**Status: applied once to a real project, on {day}," in status
+    for contradiction in ("not yet applied", "no apply and no boot on Google Cloud has been run"):
+        assert contradiction not in flat(GUIDE), contradiction
+    assert "[What was checked](#what-was-checked-and-what-was-not)" in status
+    assert "CI formats, validates and plans it with OpenTofu" in status
+    assert "without a cloud project" in status
+
+
+NUMBER_WORDS = {
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+}
+
+
+def test_the_count_of_systemd_units_is_the_number_cloud_init_writes():
+    unit_entry = r"^(?:\$\{brand_files\})?  - path: /etc/systemd/system/"
+    written = len(re.findall(unit_entry, TEMPLATE, re.M))
+    assert written == len(re.findall(r"path: /etc/systemd/system/", TEMPLATE))
+    [word] = re.findall(r"cloud-init writes (\w+) systemd units", GUIDE)
+    assert NUMBER_WORDS[word] == written
+
+
+def test_the_ground_paragraph_names_every_timer_cloud_init_writes():
+    timers = re.findall(r"^  - path: /etc/systemd/system/([\w-]+)\.timer$", TEMPLATE, re.M)
+    start = GUIDE.index("The others prepare the ground:")
+    paragraph = GUIDE[start : GUIDE.index("\n\n", start)]
+    for name in timers:
+        assert f"`{name}` (a timer" in paragraph, name
+
+
+def test_no_sentence_says_nothing_runs_the_compaction_by_itself():
+    assert "Nothing runs it by itself" not in GUIDE
+    start = GUIDE.index("### After a workspace is deleted")
+    section = GUIDE[start : GUIDE.index("\n## ", start)]
+    assert "cairn-compact" in section
+    assert "03:00 UTC" in section
+
+
+def test_the_silence_alert_paragraph_says_it_arms_itself_on_a_new_vm():
+    start = GUIDE.index("**The silence alert**")
+    paragraph = flat(GUIDE[start : GUIDE.index("\n\n", start)])
+    assert "stays unarmed" not in paragraph
+    assert "`replica: current, no database yet, nothing to copy`" in paragraph
+    assert "within two minutes of boot" in paragraph
+    timer_start = TEMPLATE.index("  - path: /etc/systemd/system/cairn-replica-check.timer\n")
+    assert "OnBootSec=2min" in TEMPLATE[timer_start : TEMPLATE.index("\n  - path: ", timer_start)]
+
+
+def test_the_host_alerts_price_is_four_log_based_policies_at_the_examples_price():
+    count = len(re.findall(r'^    "(\w+)" = \{$', (INFRA / "monitoring.tf").read_text(), re.M))
+    assert count == 4
+    assert "$0.35 a month" in GUIDE
+    assert f"${count * 0.35:.2f} a month together" in GUIDE
+
+
+def test_the_logs_section_says_how_to_keep_a_copy_of_the_audit_log_nobody_can_change():
+    """The audit log in the database is rewritten by a forget and pruned past --audit-keep;
+    "## Logs" says where its unchangeable copy comes from, by the logger's real name and the
+    real option, and that keeping it is the operator's step (no definition here makes it)."""
+    from cairn.store.audit import AUDIT_LOGGER
+    from cairn.web import cli
+
+    logs = GUIDE[GUIDE.index("\n## Logs\n") : GUIDE.index("\n## Alerts\n")]
+    said = " ".join(logs.split())
+    assert (
+        "The audit log has a copy the server cannot change: each event the server stores is one"
+        f" JSON line from the logger `{AUDIT_LOGGER}` in the container's output, written once"
+        " the event's write has committed. Route those lines with a Cloud Logging sink to a"
+        " Cloud Storage bucket with a locked retention policy (Bucket Lock), so that nobody, the"
+        " server included, can edit or delete them before the retention ends. The bucket keeps"
+        " what it received: an event committed just before the server's process dies has no"
+        " line there, and one a command of the command line stores, such as `key-create` or"
+        " `import`, has its line on that command's standard error, not in the container's"
+        " output. The log in the database is rewritten when a note is forgotten or a"
+        " project deleted, and pruned past `--audit-keep`." in said
+    )
+    parsed = cli._parser().parse_args(["serve", "--db", "x.db", "--audit-keep", "12"])
+    assert parsed.audit_keep == 12

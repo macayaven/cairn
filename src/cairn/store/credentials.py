@@ -1,12 +1,13 @@
 """API keys and web UI sessions."""
 
+import contextlib
 import json
 import secrets
 import sqlite3
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 
-from cairn.store.base import StoreBase, _digest, _iso, _require_account
+from cairn.store.base import CannotWrite, StoreBase, _digest, _iso, _require_account
 from cairn.store.models import KeyInfo, Made, Principal
 from cairn.store.reach import (
     TooWide,
@@ -18,7 +19,14 @@ from cairn.store.reach import (
 )
 
 NOT_A_KEY_MANAGER = "only the workspace's owners and admins make or revoke its keys"
+USE_EVERY = 60  # seconds: a session's use is recorded at most once in this long (idle)
 KEY_REVOKED = "this key was revoked: it opens no session"
+# Every key made from now on starts with this, so the note guard and anyone's secret scanner
+# can recognise one. It holds no ".", so a key is never taken for an OAuth token (grants'
+# prefixes hold one). It is the software's under any brand, as the token prefixes are
+# (cairn.web.brand). A key made before has no prefix and keeps working: a key is looked up
+# by the digest of the whole value, whatever its shape.
+KEY_PREFIX = "cairn_"
 
 
 # A1: what a key made. A row of made_with names a key, an agent's grant, or an approval no
@@ -72,7 +80,7 @@ class CredentialMethods(StoreBase):
         acts for them, and is revoked when they leave the workspace. A key made by a view
         that came with a key (`made_through`, A1: a web session opened with one) records
         that key's id, in the same write; revoke_key(..., with_made=True) takes it."""
-        key = secrets.token_urlsafe(32)
+        key = KEY_PREFIX + secrets.token_urlsafe(32)
         key_id = "key_" + secrets.token_hex(6)
         now = self._stamp()
         with self._write() as con:
@@ -173,7 +181,7 @@ class CredentialMethods(StoreBase):
                 if taken != label:
                     self._audit(con, "key.revoked", detail={"label": taken})
             for grant_id, _ in grants:
-                self._disconnect(con, grant_id, by_agent=False)  # type: ignore[attr-defined]
+                self._disconnect(con, grant_id, by_agent=False)
             if keys or grants:
                 detail = {"label": label, "keys": labels, "agents": sorted(n for _, n in grants)}
                 self._audit(con, "key.revoked_with_made", detail=detail)
@@ -482,17 +490,50 @@ class CredentialMethods(StoreBase):
             ).fetchone()
         return row[0] if row else None
 
-    def identify_session(self, token: str) -> tuple[Principal, str | None] | None:
+    def identify_session(
+        self, token: str, *, idle_seconds: int | None = None, vouched: bool = False
+    ) -> tuple[Principal, str | None] | tuple[Principal, str | None, str | None] | None:
         """resolve_session, and its actor id: the person's id, else the id of the key it was
-        opened with, else None (a session made by a bare view)."""
+        opened with, else None (a session made by a bare view). With `vouched`, also the
+        address its sign-in was vouched with (vouched_email; None when none was recorded),
+        read in the same one SELECT.
+
+        `idle_seconds` (`serve --idle-minutes`; only the store that opened the database,
+        PermissionError on a view): a session whose last use was more than that long ago,
+        plus USE_EVERY, is over, as one that ran out. Its last use is the one recorded
+        (`used_at`), else when it was made. A use is recorded here, by one guarded UPDATE
+        whose WHERE holds the rule again, only when the one recorded is USE_EVERY or more
+        old: at most one write a minute for one session, never one per request, and none
+        for a session that is over. So a session ends at most USE_EVERY after its idle time,
+        never before it. A full disk leaves the use unrecorded and the session admitted."""
+        if idle_seconds is not None and not self._owner:
+            raise PermissionError("only the store that opened the database ends idle sessions")
+        digest, now = _digest(token), self._instant()
+        last = "COALESCE(used_at, created_at)"
+        lapsed = (
+            None
+            if idle_seconds is None
+            else _iso(now - timedelta(seconds=idle_seconds + USE_EVERY))
+        )
+        due = _iso(now - timedelta(seconds=USE_EVERY))
         with self._read() as con:
             row = con.execute(
-                "SELECT account_id, user_id, label, key_id FROM sessions"
-                " WHERE digest = ? AND expires_at > ?",
-                (_digest(token), self._stamp()),
+                f"SELECT account_id, user_id, label, key_id, vouched_email, {last} <= ?"
+                " FROM sessions WHERE digest = ? AND expires_at > ?"
+                f" AND (? IS NULL OR {last} > ?)",
+                (due, digest, _iso(now), lapsed, lapsed),
             ).fetchone()
         if row is None:
             return None
-        account_id, user_id, label, key_id = row
+        account_id, user_id, label, key_id, address, use_due = row
+        if idle_seconds is not None and use_due:
+            with contextlib.suppress(CannotWrite), self._write(member=False) as con:
+                con.execute(
+                    "UPDATE sessions SET used_at = ? WHERE digest = ? AND expires_at > ?"
+                    f" AND {last} <= ? AND {last} > ?",
+                    (_iso(now), digest, _iso(now), due, lapsed),
+                )
         principal = Principal(account_id=account_id, kind="session", user_id=user_id, label=label)
+        if vouched:
+            return principal, user_id or key_id, address
         return principal, user_id or key_id

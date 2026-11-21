@@ -47,7 +47,7 @@ The service
   without the name); DELETE /api/projects/<project>/notes/<note id> answers 200 with
   `rebuilt` and `removed`. 403 and 404 as above. Writing a forgotten note again is 409 over
   REST and a tool error over MCP, each saying it was forgotten.
-- MCP keeps its seven tools: forgetting is a person's act, or a key's over REST.
+- MCP has no tool that forgets: forgetting is a person's act, or a key's over REST.
 """
 
 import io
@@ -63,12 +63,17 @@ from starlette.testclient import TestClient
 from cairn.compiler import compile_note, render_body
 from cairn.server import create_app
 from cairn.store import Store
+from cookie_names import session_cookie
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.acme.example/pool-1"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
-TOOLS = ["projects", "new_project", "note", "recall", "page", "evidence", "overview"]
+# 8.3 added `graph` and KG1 `related`, both reads: still no tool deletes or forgets
+TOOLS = [
+    "projects", "new_project", "note", "recall", "page", "evidence", "overview", "graph",
+    "related",
+]  # fmt: skip
 
 # Three notes on one topic and one on another. Each body has a word no other text has.
 FIRST = (
@@ -145,7 +150,7 @@ class World:
         return SimpleNamespace(
             id=signed.user.id,
             name=name,
-            cookie={"cookie": f"cairn_session={signed.token}"},
+            cookie={"cookie": f"{session_cookie('https')}={signed.token}"},
             view=self.store.for_account(signed.account_id, signed.user.id),
         )
 
@@ -395,7 +400,7 @@ def test_the_web_view_asks_before_it_removes(world, client):
     assert get("/b/meetings/delete", world.cy).status_code == 404
 
 
-def test_rest_deletes_and_mcp_keeps_its_seven_tools(world, client):
+def test_rest_deletes_and_mcp_has_no_tool_that_forgets(world, client):
     whole = {"x-api-key": world.ada.view.create_key("owner-script")}
     narrow = {"x-api-key": world.ada.view.create_key("one-project", projects=(world.meetings.id,))}
     note = f"/api/projects/meetings/notes/{world.first.id}"

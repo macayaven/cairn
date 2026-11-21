@@ -71,6 +71,7 @@ from starlette.testclient import TestClient
 from cairn.server import create_app, main
 from cairn.sources import KINDS, run_source, source_client
 from cairn.store import Store
+from cookie_names import session_cookie
 
 MINUTE, HOUR, DAY = timedelta(minutes=1), timedelta(hours=1), timedelta(days=1)
 WEB = "http://127.0.0.1:8765"
@@ -598,7 +599,7 @@ def page_of(store) -> str:
         "sso", "o", "o@example.test", "Olive", issuer="https://id.example.test", join="default"
     )
     with TestClient(create_app(store, public_url=WEB), base_url=WEB) as client:
-        client.cookies.set("cairn_session", owner.token)
+        client.cookies.set(session_cookie(), owner.token)
         return " ".join(client.get("/sources").text.split())
 
 

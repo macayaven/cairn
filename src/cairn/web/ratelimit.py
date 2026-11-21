@@ -6,23 +6,31 @@ first, the seconds in the window in which it made requests and how many in each,
 at most WINDOW entries whatever its plan allows. A request goes ahead when fewer than the
 plan's `requests_per_minute` were made in the window and is then counted; one refused is not
 counted, so the wait it is told is exact. At most TRACKED workspaces are kept: when one more
-comes, a workspace whose window is empty (nothing of it still counts) is dropped first, the
-least recently seen of those, and only when every one holds a live count the least recently
-seen; memory stays bounded by TRACKED x WINDOW small entries, and a new workspace is never
-refused for want of room (it does not fail closed). A workspace dropped starts again from
-nothing. A second is the unit: a request counted at 0.9 s leaves the window at 60 s. The
-time is the app's clock, never earlier than the last second a workspace was counted in, so
-a clock that steps back cannot grow it.
+comes, a workspace not at its limit (the limit it was last asked with) is dropped, the least
+recently seen of those, and only when every one is at its limit the least recently seen, so
+a workspace being refused is not forgotten while another may go; memory stays bounded by
+TRACKED x WINDOW small entries, and a new workspace is never refused for want of room (it
+does not fail closed). A workspace dropped starts again from nothing. Choosing walks no
+table: each workspace counted tells a cairn.holding.Holding when it stops being at its limit,
+so the one to drop is found in a constant number of steps, amortized, whatever TRACKED is
+(Security 4). A second is the unit: a request counted at
+0.9 s leaves the window at 60 s. The time is the app's clock, never earlier than the last
+second a workspace was counted in, so a clock that steps back cannot grow it.
+
+These counts, and CredentialFailures', live in this process's memory: they start again when
+the server restarts. A limit that must outlast a restart is a reverse proxy's or the
+cloud's, in front of the server.
 
 The limit on refused credentials per client address (H1) is CredentialFailures, below.
 """
 
 import math
 import threading
-from collections import OrderedDict, deque
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime
 
+from cairn.holding import Holding, refusing_until
 from cairn.oauth import _network as network  # the sign-in limit's rule for an address
 
 WINDOW = 60  # seconds
@@ -36,7 +44,8 @@ class RateLimiter:
         if tracked < 1:
             raise ValueError("a rate limiter tracks at least one workspace")
         self._clock, self._window, self._tracked = clock, window, tracked
-        self._seen: OrderedDict[str, deque[list[int]]] = OrderedDict()
+        self._seen: dict[str, deque[list[int]]] = {}
+        self._holding: Holding[str] = Holding()  # which workspace to drop (Security 4)
         self._lock = threading.Lock()
 
     def take(self, key: str, limit: int) -> int:
@@ -44,10 +53,13 @@ class RateLimiter:
         is then counted; else the whole seconds, at least 1, until it may."""
         second = math.floor(self._clock().timestamp())
         with self._lock:
-            seen = self._seen.pop(key, None) or deque()
-            self._seen[key] = seen  # now the most recent
-            while len(self._seen) > self._tracked:
-                del self._seen[self._victim(key, second)]
+            seen = self._seen.get(key)
+            if seen is None:
+                while len(self._seen) >= self._tracked:  # room for one more
+                    victim = self._holding.victim(second)
+                    del self._seen[victim]
+                    self._holding.drop(victim)
+                seen = self._seen[key] = deque()
             if seen:
                 second = max(second, seen[-1][0])
             while seen and seen[0][0] <= second - self._window:
@@ -58,27 +70,26 @@ class RateLimiter:
                     seen[-1][1] += 1
                 else:
                     seen.append([second, 1])
+                self._holding.seen(key, self._free_at(seen, made + 1, limit))
                 return 0
-            over = made - limit + 1  # requests that must leave the window first
-            for at, count in seen:
-                over -= count
-                if over <= 0:
-                    return max(1, at + self._window - second)
-            return self._window  # not reached: `over` is at most what the window holds
+            free = self._free_at(seen, made, limit)
+            self._holding.seen(key, free)  # now the most recent
+            return max(1, int(free - second)) if free != math.inf else self._window
 
-    def _victim(self, key: str, second: int) -> str:
-        """The workspace to forget when too many are tracked, never `key`: the least
-        recently seen one whose window is empty at `second` (it holds no live count), else
-        the least recently seen. One pass at most, under the lock."""
-        oldest = None
-        for name, seen in self._seen.items():  # least recently seen first
-            if name == key:
-                continue
-            if not seen or seen[-1][0] <= second - self._window:
-                return name
-            oldest = oldest or name
-        assert oldest is not None  # more than one is tracked, so another than `key` is
-        return oldest
+    def _free_at(self, seen: deque[list[int]], made: int, limit: int) -> float | None:
+        """The second at which a workspace that made `made` requests in the window `seen`
+        (oldest first) is no longer at `limit`: when enough of them have left the window;
+        None when it is not at its limit, math.inf for a limit below 1."""
+        if limit < 1:
+            return math.inf
+        if made < limit:
+            return None
+        over = made - limit + 1  # requests that must leave the window first
+        for at, count in seen:
+            over -= count
+            if over <= 0:
+                return at + self._window
+        return math.inf  # not reached: `over` is at most what the window holds
 
     def entries(self, key: str) -> int:
         """How many seconds of `key`'s requests are kept."""
@@ -118,8 +129,11 @@ class CredentialFailures:
     The address is the client's as the sign-in limit reads it (cairn.oauth.RateLimit's
     rule): the peer, or what a trusted proxy says (`serve --trusted-proxy`); one IPv6 /64 is
     one address, and requests without a usable address share one count. At most `addresses`
-    addresses are kept: when the table is full, the one seen longest ago is forgotten, never
-    a new one refused, and a forgotten address starts again from nothing. The time is
+    addresses are kept: when the table is full, the address forgotten is one not blocked, the
+    one seen longest ago of those; a blocked address is forgotten only when every address is,
+    and then the one seen longest ago. A new one is never refused, and a forgotten address
+    starts again from nothing. Choosing walks no table (cairn.holding.Holding): a constant
+    number of steps, amortized, whatever `addresses` is. The time is
     `clock()` in seconds (the app's clock), never earlier than the last failure counted, so a
     clock that steps back frees no address. Thread-safe."""
 
@@ -135,7 +149,8 @@ class CredentialFailures:
             raise ValueError("a failure limit needs a limit, a window and room of at least 1")
         self._clock, self._limit, self._window = clock, limit, window
         self.addresses = addresses
-        self._failures: OrderedDict[str, deque[float]] = OrderedDict()  # seen longest ago first
+        self._failures: dict[str, deque[float]] = {}
+        self._holding: Holding[str] = Holding()  # which address to forget (Security 4)
         self._lock = threading.Lock()
 
     def _now(self, failures: deque[float] | None) -> float:
@@ -162,16 +177,20 @@ class CredentialFailures:
         """Count one credential `address` presented and cairn refused."""
         key = network(address)
         with self._lock:
-            failures = self._failures.pop(key, None) or deque()
-            self._failures[key] = failures  # now the most recent
-            while len(self._failures) > self.addresses:
-                self._failures.popitem(last=False)
+            failures = self._failures.get(key)
+            if failures is None:
+                while len(self._failures) >= self.addresses:  # room for one more
+                    victim = self._holding.victim(self._clock())
+                    del self._failures[victim]
+                    self._holding.drop(victim)
+                failures = self._failures[key] = deque()
             now = self._now(failures)
             while failures and failures[0] <= now - self._window:
                 failures.popleft()
             failures.append(now)
             while len(failures) > self._limit:  # older ones no longer decide anything
                 failures.popleft()
+            self._holding.seen(key, refusing_until(failures, self._limit, self._window))
 
     def tracked(self) -> int:
         """How many client addresses' failures are kept."""

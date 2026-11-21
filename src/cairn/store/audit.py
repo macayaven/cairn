@@ -1,24 +1,47 @@
 """A workspace's settings and its audit log, and who a view acts as.
 
 The audit log holds a workspace's writes and security events, one row each, written by the
-store method that makes the write, in the same transaction (StoreBase._audit). Reads are
-never recorded here: reads never write. Each row names the view's actor, set with
-`acting_as` (a bare view acts as "system"). A row holds names, ids and counts, never note
-text, a secret or a digest.
+store method that makes the write, in the same transaction (StoreBase._audit). A read is
+recorded here only when the server is told to (`reads_audited`; cairn.memory records it,
+through `_record_read`, as the read ends), and an export and a download of this log always.
+Each row names the view's actor, set with `acting_as` (a bare view acts as "system"). A row
+holds names, ids and counts, never note text, a secret or a digest.
+
+Each row also holds `chain`, the value that chains it to the event before it in its workspace
+(base.audit_link; schema step 31). `check_trail` reads a database's trail and says, for each
+workspace, how many events it checked and whether every value follows from the one before,
+or the first event whose value does not (its number and time only). What the chain does not
+show: someone who can write the database file can rewrite the whole chain (the copy `serve`
+writes on the "cairn.audit" logger is for that; it is written after each commit, so an event
+committed just before the process dies is not on it, and a command-line command writes its
+lines on its own stderr, kept only where the operator keeps that output), and `project` and
+`detail` are outside it, since forgetting a note must be able to take a page's name out of them.
 """
 
 import copy
 import json
 import re
 import sqlite3
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from cairn.store.base import MANAGER_ROLES, StoreBase, _require_account
+from cairn.store.base import (
+    AUDIT_LOGGER,
+    AUDIT_PRUNED_ROW,
+    AUDIT_START,
+    MANAGER_ROLES,
+    StoreBase,
+    _require_account,
+    audit_link,
+)
 from cairn.store.models import AuditEvent
 
 if TYPE_CHECKING:
     from cairn.guard import Finding, Guard
     from cairn.store import Store
+
+__all__ = ["AUDIT_LOGGER", "AUDIT_START", "audit_link"]  # base.audit_log, the chain
 
 ACTOR_KINDS = ("key", "token", "session", "system")
 ACTOR_NAME_MAX = 200  # characters kept of an actor's name
@@ -105,6 +128,87 @@ def _shown_detail(
     return detail
 
 
+@dataclass(frozen=True)
+class TrailCheck:
+    """What check_trail found in one workspace: how many events it checked, and the first
+    event whose value does not follow from the one before, as (its number, its time); None
+    when the chain holds."""
+
+    account_id: str
+    checked: int
+    broken: tuple[int, str] | None
+
+
+def check_trail(con: sqlite3.Connection, account_id: str | None = None) -> list[TrailCheck]:
+    """Verify the audit trail of every workspace (or of `account_id` alone; KeyError for one
+    the database does not hold), in their creation order, on `con`: a read that writes
+    nothing, which needs no store (the command `audit-verify` opens the file read-only).
+
+    A workspace's chain starts from the value of the last event pruned (AUDIT_PRUNED_ROW),
+    or AUDIT_START when none was; with a pruned value, its oldest event must be numbered
+    one past the one pruned. Each event's value must be audit_link of the value before it
+    (the stored one, so one changed event names that event, not every one after it) and
+    its own fields; a deleted event names the event after it. One read per workspace, in
+    the order of its numbers.
+
+    All of it is one read transaction, from before the workspaces are listed until the last
+    event is read: a server that prunes meanwhile (another connection, committing between the
+    read of the pruned value and the read of the events) does not change the verdict, which
+    is that of the snapshot the check began with. It is ended (rolled back: it wrote nothing)
+    before it returns; a `con` already in a transaction keeps its own."""
+    if con.in_transaction:
+        return _check_trail(con, account_id)
+    con.execute("BEGIN")
+    try:
+        return _check_trail(con, account_id)
+    finally:
+        con.rollback()
+
+
+def _check_trail(con: sqlite3.Connection, account_id: str | None) -> list[TrailCheck]:
+    if account_id is None:
+        accounts = [a for (a,) in con.execute("SELECT id FROM accounts ORDER BY seq")]
+    elif con.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,)).fetchone():
+        accounts = [account_id]
+    else:
+        raise KeyError(account_id)
+    found = []
+    for account in accounts:
+        row = con.execute(
+            "SELECT value FROM settings WHERE account_id = ? AND name = ?",
+            (account, AUDIT_PRUNED_ROW),
+        ).fetchone()
+        pruned = json.loads(row[0]) if row else None
+        previous = pruned["chain"] if pruned else AUDIT_START
+        expected = pruned["n"] + 1 if pruned else None  # the oldest number kept
+        checked, broken = 0, None
+        for seq, n, at, kind, actor, actor_id, action, chain in con.execute(
+            "SELECT seq, n, at, actor_kind, actor, actor_id, action, chain FROM audit_events"
+            " WHERE account_id = ? ORDER BY n",
+            (account,),
+        ):
+            checked += 1
+            first = checked == 1 and expected is not None and n != expected
+            value = audit_link(previous, account, n, seq, at, kind, actor, actor_id, action)
+            if first or chain != value:
+                broken = (n, at)
+                break
+            previous = chain
+        found.append(TrailCheck(account, checked, broken))
+    return found
+
+
+class AuditPart(list[AuditEvent]):
+    """A part of the audit log, newest first (AuditMethods.list_audit): the events, and how
+    many the viewer sees that match its filters (`total`) and how many of those are newer
+    than its first event (`newer`)."""
+
+    def __init__(self, events: Iterable[AuditEvent], *, total: int, newer: int) -> None:
+        super().__init__(events)
+        self.total = total
+        self.newer = newer
+
+
 class AuditMethods(StoreBase):
     # Who the view acts as
     def acting_as(self, kind: str, name: str | None, actor_id: str | None = None) -> "Store":
@@ -185,7 +289,7 @@ class AuditMethods(StoreBase):
         ).fetchone()
         return row[0] if row else DEFAULT_GUARD_POLICY
 
-    def _screen(self, fields: dict[str, str | None]) -> list[tuple[str, "Finding"]]:
+    def _screen(self, fields: Mapping[str, str | None]) -> list[tuple[str, "Finding"]]:
         """What the view's guard finds in each field, or else the PatternGuard of the widest
         policy (add_note keeps what the workspace's policy refuses), as (field, finding)
         pairs in SCREENED_FIELDS order. Pure: no lock, no database."""
@@ -222,8 +326,27 @@ class AuditMethods(StoreBase):
         return [(name, finding) for name, finding in found if finding.kind in kinds]
 
     # The audit log
-    def list_audit(self, limit: int = 100) -> list[AuditEvent]:
-        """This workspace's events, newest first, at most `limit` (up to AUDIT_LIMIT_MAX).
+    def list_audit(
+        self,
+        limit: int = 100,
+        *,
+        before: int | None = None,
+        action: str | None = None,
+        project: str | None = None,
+        who: str | None = None,
+    ) -> "AuditPart":
+        """This workspace's events, newest first, at most `limit` (up to AUDIT_LIMIT_MAX), as an
+        AuditPart: a list that also says how many events the viewer sees that match (`total`)
+        and how many of those are newer than the first it holds (`newer`), one count each.
+        Each event carries its number in its workspace (`n`). `before`: only events numbered
+        below it (the `n` of the last event of the part before). The filters, each left out
+        when None or empty: `action`, an action ("note.saved") or a family of them, the part
+        before the dot ("note"); `project`, the project's name as the event names it, ignoring
+        case (a deleted project's events: DELETED_PROJECT); `who`, the actor's name ignoring
+        case, or its id ("system" also finds the events of no actor). A filter never widens
+        what the viewer sees, which is decided first, by the rules below, for the events, the
+        counts and every part alike.
+
         For a view acting for a person who does not reach every project (StoreBase._reach), an
         event of a project they do not reach is left out before the limit is applied (events
         name projects and page slugs, and a slug comes from a note's title); the id of such a
@@ -244,7 +367,7 @@ class AuditMethods(StoreBase):
         left out for a person who does not own the workspace, whatever they reach. An owner,
         and a view acting for no person that reaches every project, read every event."""
         if limit < 1:
-            return []
+            return AuditPart([], total=0, newer=0)
         limit = min(limit, AUDIT_LIMIT_MAX)
         with self._read() as con:
             reach = self._reach(con)
@@ -267,28 +390,51 @@ class AuditMethods(StoreBase):
                         "SELECT id FROM projects WHERE account_id = ?", (self._account_id,)
                     )
                 )
+            # Who may see what: one clause, for the events and both counts.
+            seen = "account_id = ?"
+            params: list[Any] = [self._account_id]
             if reach is None:  # an owner, or a view acting for no person: every event
-                rows = con.execute(
-                    f"SELECT {_EVENT_COLUMNS} FROM audit_events WHERE account_id = ?"
-                    " ORDER BY n DESC LIMIT ?",
-                    (self._account_id, limit),
-                ).fetchall()
                 hidden: frozenset[str] = frozenset()
             else:
-                reached = json.dumps(sorted(reach))
-                rows = con.execute(
-                    f"SELECT {_EVENT_COLUMNS} FROM audit_events WHERE account_id = ?"
+                seen += (
                     " AND (project IS NULL OR project IN (SELECT name FROM projects"
                     " WHERE account_id = ? AND id IN (SELECT value FROM json_each(?))))"
                     f" AND (action NOT LIKE 'source.%' OR {sources_seen})"
                     " AND action NOT IN (SELECT value FROM json_each(?))"
-                    " ORDER BY n DESC LIMIT ?",
-                    (self._account_id, self._account_id, reached, unseen, limit),
-                ).fetchall()
+                )
+                params += [self._account_id, json.dumps(sorted(reach)), unseen]
                 every = con.execute(
                     "SELECT id FROM projects WHERE account_id = ?", (self._account_id,)
                 ).fetchall()
                 hidden = frozenset(project_id for (project_id,) in every) - reach
+            if action:
+                seen += " AND (action = ? OR substr(action, 1, length(?) + 1) = ? || '.')"
+                params += [action, action, action]
+            if project:
+                seen += " AND project = ? COLLATE NOCASE"
+                params.append(project)
+            if who:
+                # "system", as the page names an event of no actor, finds those events
+                seen += (
+                    " AND (actor = ? COLLATE NOCASE OR actor_id = ?"
+                    " OR (actor_kind = 'system' AND actor IS NULL AND lower(?) = 'system'))"
+                )
+                params += [who, who, who]
+            older = " AND n < ?" if before is not None else ""
+            rows = con.execute(
+                f"SELECT {_EVENT_COLUMNS}, n FROM audit_events WHERE {seen}{older}"
+                " ORDER BY n DESC LIMIT ?",
+                (*params, *(() if before is None else (before,)), limit),
+            ).fetchall()
+            (total,) = con.execute(
+                f"SELECT COUNT(*) FROM audit_events WHERE {seen}", params
+            ).fetchone()
+            newer = 0
+            if rows:
+                (newer,) = con.execute(
+                    f"SELECT COUNT(*) FROM audit_events WHERE {seen} AND n > ?",
+                    (*params, rows[0][-1]),
+                ).fetchone()
             names = (
                 None  # the operator's view: every name, a deleted project's included
                 if self._user_id is None and reach is None
@@ -300,18 +446,35 @@ class AuditMethods(StoreBase):
                     if reach is None or project_id in reach
                 )
             )
-        return [
-            AuditEvent(
-                at=at,
-                actor_kind=kind,
-                actor=actor,
-                actor_id=actor_id,
-                action=action,
-                project=project,
-                detail=_shown_detail(json.loads(detail), hidden, action, names),
-            )
-            for at, kind, actor, actor_id, action, project, detail in rows
-        ]
+        return AuditPart(
+            (
+                AuditEvent(
+                    at=at,
+                    actor_kind=kind,
+                    actor=actor,
+                    actor_id=actor_id,
+                    action=action,
+                    project=project,
+                    detail=_shown_detail(json.loads(detail), hidden, action, names),
+                    n=n,
+                )
+                for at, kind, actor, actor_id, action, project, detail, n in rows
+            ),
+            total=total,
+            newer=newer,
+        )
+
+    def _record_read(
+        self, action: str, project: str | None, detail: dict[str, Any] | None = None
+    ) -> None:
+        """One event of what the view read or took (cairn.memory: READ_EVENTS, and an export
+        or a download of this log), under the view's actor, in a transaction of its own.
+        `project` is the name the read resolved, None for none. Private, so the narrowing
+        (cairn.store.reach) leaves it alone: a read-only key, or one limited to some projects,
+        is recorded as anyone else; the read itself was already held to its reach. Never a
+        query or any text of a note or page: `detail` holds ids and a page's slug only."""
+        with self._write() as con:
+            self._audit(con, action, project=project, detail=detail)
 
     def record_note(
         self, project_id: str, outcome: str, detail: dict[str, Any], filed: str | None = None
@@ -325,7 +488,7 @@ class AuditMethods(StoreBase):
         if outcome not in NOTE_OUTCOMES:
             raise ValueError(f"a recorded note outcome is one of {NOTE_OUTCOMES}, not {outcome!r}")
         with self._write() as con:
-            self._require_project(con, project_id)  # type: ignore[attr-defined]
+            self._require_project(con, project_id)
             (name,) = con.execute(
                 "SELECT name FROM projects WHERE id = ?", (project_id,)
             ).fetchone()

@@ -5,7 +5,6 @@ line (cairn.web.cli_stats). Every clock is in 2099; disk_usage is replaced."""
 import asyncio
 import json
 import logging
-import sqlite3
 from collections import namedtuple
 from datetime import UTC, datetime, timedelta
 
@@ -133,9 +132,9 @@ def test_an_older_database_is_refused_with_a_line_that_says_to_start_the_server(
     tmp_path, disk, capsys
 ):
     older = tmp_path / "older.db"
-    con = sqlite3.connect(older)
-    con.execute("CREATE TABLE projects (id TEXT)")
-    con.close()
+    from test_store_unit import empty_v0_database
+
+    empty_v0_database(older)
     assert cli.main(["stats", "--db", str(older)]) == 1
     out, err = capsys.readouterr()
     assert (

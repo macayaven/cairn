@@ -6,6 +6,7 @@ import json
 import pytest
 
 from cairn.store import Claim, Store
+from earlier_build import earlier_page
 
 
 def batches(store, project, **query):
@@ -179,7 +180,7 @@ def test_claim_evidence_never_returns_foreign_citations_even_when_explicitly_sto
             beta.id, "Private foreign passage.", source_ref="foreign-source"
         )
         sid = store.note_spans(foreign.id)[0].id
-        store.save_page(alpha.id, "a", "A", "", [Claim(id="c", text="A", span_ids=(sid,))])
+        earlier_page(store, alpha.id, "a", "A", "", [Claim(id="c", text="A", span_ids=(sid,))])
         page = graph_neighbourhood(store, "alpha", focus="page:a")
         focus = next(node["focus"] for node in page["nodes"] if node["kind"] == "claim")
         evidence = list(batches(store.narrow([alpha.id]), "alpha", focus=focus))
@@ -277,11 +278,11 @@ def test_note_batch_work_stays_bounded_as_project_grows(tmp_path):
                 operations[0] += 1
                 return 0
 
-            store._con.set_progress_handler(tick, 1)
+            store._observe(progress=(tick, 1))
             try:
                 graph_neighbourhood(store, "alpha", focus="notes", limit=1)
             finally:
-                store._con.set_progress_handler(None, 0)
+                store._observe(progress=None)
             return operations[0]
 
         small = work()

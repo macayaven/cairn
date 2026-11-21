@@ -5,16 +5,17 @@ import json
 import re
 import secrets
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 
 from cairn import facts as _facts
 from cairn.kinds import GENERAL, KINDS
+from cairn.relations import RELATED_DEFAULT, RELATED_MAX
 from cairn.spans import Span, chunk
-from cairn.store import ranking
+from cairn.store import ranking, relating
 from cairn.store.access import LEVELS, MODELS_PREFIX, KeptFromModels, _keep_from_models
 from cairn.store.audit import UNKNOWN_WRITER
 from cairn.store.base import (
@@ -29,6 +30,7 @@ from cairn.store.models import (
     Claim,
     Found,
     Note,
+    NoteHead,
     Page,
     PageHead,
     Project,
@@ -38,6 +40,39 @@ from cairn.store.models import (
 from cairn.store.schema import _create_index, _secure_index
 from cairn.store.usage import PASSAGE_KINDS, charge_of, path_bytes
 from cairn.topics import topic_key
+
+# A note's page by the Notes page's rule (notes_part, note_page), read in one statement: the
+# slug of its topic's page when the note waits no more and that page's latest version cites a
+# passage of it (a claim whose span_ids hold one of its spans), else NULL. _PAGE_OF_NOTE joins
+# the tables it reads to `notes`.
+_PAGE_OF_NOTE = (
+    " LEFT JOIN waiting ON waiting.note_id = notes.id"
+    " LEFT JOIN page_keys ON page_keys.project_id = notes.project_id"
+    "  AND page_keys.topic_key = notes.topic_key"
+)
+_CITED_PAGE = (
+    "CASE WHEN waiting.note_id IS NULL AND EXISTS (SELECT 1 FROM page_heads"
+    "  JOIN page_versions ON page_versions.project_id = page_heads.project_id"
+    "   AND page_versions.slug = page_heads.slug"
+    "   AND page_versions.version = page_heads.version,"
+    "  json_each(page_versions.claims) AS claim,"
+    "  json_each(claim.value, '$.span_ids') AS cited"
+    "  JOIN spans ON spans.id = cited.value"
+    "  WHERE page_heads.project_id = notes.project_id"
+    "   AND page_heads.slug = page_keys.slug AND spans.note_id = notes.id)"
+    "  THEN page_keys.slug END"
+)
+
+
+class NoteOrigin(NamedTuple):
+    """Who wrote a note and how it came (MemoryStore.note_origins)."""
+
+    kind: str
+    name: str | None
+    via: str | None
+    created_at: str
+    filed_message: bool  # a Slack message someone filed, which created the note
+
 
 PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 TITLE_MAX = 80
@@ -56,6 +91,8 @@ PAGE_DETAIL: dict[str, dict[str, str]] = {
     },
 }
 PAGE_EVENTS = tuple(PAGE_DETAIL)
+# Why save_page refused a claim that cites a passage of another project's note.
+NOT_OF_PROJECT = "A page can cite only passages from its own project."
 NAME_MAX = 80
 # Rows are scoped by resolving their project through the bound account and the view's reach,
 # bound as _scope gives them: the account id, then the reach twice (StoreBase._reach).
@@ -107,7 +144,7 @@ class StalePage(Exception):
 
 
 class CitesForgotten(StalePage):
-    """A page save into a project that has forgotten a note cited a span the store no longer
+    """A page save into a workspace that has forgotten a note cited a span the store no longer
     holds: it was built from a note forgotten while it was being compiled or arranged
     (store/erasure.py). Nothing was written; a writer that reads the page again finds the
     note gone. A StalePage, so every writer that retries a moved page retries this too."""
@@ -413,7 +450,7 @@ class MemoryMethods(StoreBase):
             _require_account(con, self._account_id)
             if self._project_named(con, name) is not None:
                 raise NameTaken(name)
-            self._admit_projects(con, 1)  # type: ignore[attr-defined]  # OverLimit
+            self._admit_projects(con, 1)  # OverLimit
             return self._insert_project(con, name, description, kind, everyone)
 
     def create_projects(self, wanted: Sequence[tuple[str, str]]) -> list[Project]:
@@ -443,7 +480,7 @@ class MemoryMethods(StoreBase):
                 if existing is not None and existing.kind != kind:
                     raise ProjectTaken(existing, kind)
                 found.append(existing)
-            self._admit_projects(con, found.count(None))  # type: ignore[attr-defined]
+            self._admit_projects(con, found.count(None))
             return [
                 self._insert_project(con, name, "", kind, kind_everyone(kind))
                 if existing is None
@@ -501,6 +538,19 @@ class MemoryMethods(StoreBase):
             ).fetchall()
         return [_project(row) for row in rows]
 
+    def writable_projects(self) -> list[Project]:
+        """The projects in reach the view's person may write to, sorted as list_projects: in
+        one section, the same few statements whatever the workspace or the server holds."""
+        with self._read() as con:
+            rows = con.execute(
+                f"SELECT {_PROJECT_COLUMNS} FROM projects"
+                f" WHERE account_id = ? AND {_IN_REACH.format('id')} ORDER BY name",
+                self._scope(con),
+            ).fetchall()
+            writable = self._writable(con)
+        projects = [_project(row) for row in rows]
+        return [p for p in projects if writable is None or p.id in writable]
+
     def get_project(self, ref: str) -> Project | None:
         """An id match wins over a (case-insensitive) name match."""
         with self._read() as con:
@@ -523,10 +573,16 @@ class MemoryMethods(StoreBase):
         label: str | None = None,
         source_ref: str | None = None,
         via: str | None = None,
+        within: Callable[[sqlite3.Connection, Note, bool], None] | None = None,
     ) -> tuple[Note, bool]:
         """Store a note and its spans; returns (note, created). KeyError: unknown project.
         FieldTooLong (a ValueError): a field longer than FIELD_MAX allows; nothing is stored
         or recorded.
+
+        `within(con, note, created)`: run inside the write, once the note is stored (or the
+        one the project held already is found), on its connection, before the commit; what a
+        caller writes there is kept with the note or not at all, and whatever it raises rolls
+        the whole write back and goes on to the caller. It opens no read or write of its own.
 
         The note guard is enforced here, the one place a note is written: every field
         is screened under the workspace's policy (or the view's own guard, `with_guard`),
@@ -557,15 +613,18 @@ class MemoryMethods(StoreBase):
         check_facts(spans)  # TooManyFacts, the same way (G1)
         key = topic_key(_topic_of(title, topic, spans))  # N1: made once, from what was given
         # OverLimit, cheaply, when a cap already refuses it (the write checks again).
-        self._look_before_screening(project_id, text, source_ref)  # type: ignore[attr-defined]
-        found = self._screen(fields)  # type: ignore[attr-defined]
+        self._look_before_screening(project_id, text, source_ref)
+        found = self._screen(fields)
         with self._write() as con:
             self._require_project(con, project_id)
             if _forgotten(con, project_id, hashlib.sha256(text.encode()).hexdigest()):
                 raise ForgottenNote
-            found = self._in_force(con, found)  # type: ignore[attr-defined]
+            found = self._in_force(con, found)
             if not found:
-                return self._insert_note(con, project_id, fields, self._instant(), key)
+                note, created = self._insert_note(con, project_id, fields, self._instant(), key)
+                if within is not None:
+                    within(con, note, created)
+                return note, created
             (name,) = con.execute(
                 "SELECT name FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
@@ -603,8 +662,8 @@ class MemoryMethods(StoreBase):
             return held, False
         note_id = "cap_" + secrets.token_hex(6)
         spans = chunk(note_id, text)
-        self._admit_note(con, len(encoded), at, 1, charge_of(spans))  # type: ignore[attr-defined]  # OverLimit
-        self._meter_note(con, len(encoded), at)  # type: ignore[attr-defined]
+        self._admit_note(con, len(encoded), at, 1, charge_of(spans))  # OverLimit
+        self._meter_note(con, len(encoded), at)
         note = Note(
             id=note_id,
             project_id=project_id,
@@ -617,7 +676,7 @@ class MemoryMethods(StoreBase):
             created_at=_iso(at),
             topic_key=key,
         )
-        _write_note(con, note, spans, self.writer)  # type: ignore[attr-defined]  # A1
+        _write_note(con, note, spans, self.writer)  # A1
         con.execute(
             "INSERT INTO waiting (note_id, project_id) VALUES (?, ?)", (note_id, project_id)
         )
@@ -651,15 +710,16 @@ class MemoryMethods(StoreBase):
         its name, the note's via). A note stored before writers were recorded has the
         kind audit.UNKNOWN_WRITER and no name. Unknown ids, and notes out of reach or of
         another workspace, are left out. A read."""
-        wanted = json.dumps(list(dict.fromkeys(note_ids)))
+        return {note_id: origin[:3] for note_id, origin in self.note_origins(note_ids).items()}
+
+    def note_origins(self, note_ids: Iterable[str]) -> dict[str, NoteOrigin]:
+        """note_writers' answer and, in the same one statement, when each note was written
+        (its `created_at`, as stored) and whether it is a Slack message someone filed (a
+        `slack_notes` row of how "filed" that created the note; a tie to a note the project
+        held already is not). A read."""
+        wanted = list(dict.fromkeys(note_ids))  # read before the section, as it always was
         with self._read() as con:
-            rows = con.execute(
-                "SELECT notes.id, note_writers.kind, note_writers.name, notes.via"
-                " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
-                f" WHERE notes.id IN (SELECT value FROM json_each(?)) AND {_OWN_PROJECT}",
-                (wanted, *self._scope(con)),
-            ).fetchall()
-        return {note_id: (kind or UNKNOWN_WRITER, name, via) for note_id, kind, name, via in rows}
+            return _origins(con, wanted, self._scope(con))
 
     def list_notes(self, project_id: str) -> list[Note]:
         """Oldest first."""
@@ -670,6 +730,64 @@ class MemoryMethods(StoreBase):
                 (project_id, *self._scope(con)),
             ).fetchall()
         return [_stored_note(row) for row in rows]
+
+    def notes_part(
+        self, project_id: str, limit: int, before: str | None = None
+    ) -> tuple[list[NoteHead], str | None]:
+        """At most `limit` of the project's notes stored before the note `before` (from the
+        newest when None), newest first, each as a NoteHead (never its text); and where the
+        next part starts: the last note's id when the part is full, else None (a full last
+        part's next is empty). Scoped as list_notes: nothing for a project out of reach, and
+        a `before` that is no note of the project starts nothing. One statement, which reads
+        at most `limit` rows whatever the project holds.
+
+        A note's page is its topic's page only when that page's latest version cites a
+        passage of the note (a claim whose span_ids hold one of its spans): a note refused a
+        place (a page filled before it saved, or rejected) waits no more and is on no page,
+        whatever its topic. For each row the statement reads the claims of one page version
+        at most, bounded as a page is (PAGE_CLAIMS_MAX)."""
+        with self._read() as con:
+            rows = con.execute(
+                "SELECT notes.id, notes.title, notes.created_at, notes.source_ref, notes.via,"
+                " COALESCE(note_writers.kind, ?), note_writers.name,"
+                f" waiting.note_id IS NOT NULL, {_CITED_PAGE}"
+                " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
+                f"{_PAGE_OF_NOTE} WHERE notes.project_id = ? AND notes.{_OWN_PROJECT}"
+                " AND (? IS NULL OR notes.seq <"
+                "  (SELECT seq FROM notes AS cut WHERE cut.id = ? AND cut.project_id = ?))"
+                " ORDER BY notes.seq DESC LIMIT ?",
+                (
+                    UNKNOWN_WRITER,
+                    project_id,
+                    *self._scope(con),
+                    before,
+                    before,
+                    project_id,
+                    max(0, limit),
+                ),
+            ).fetchall()
+        heads = [
+            NoteHead(
+                **dict(zip(NoteHead.model_fields, (*row[:7], bool(row[7]), row[8]), strict=True))
+            )
+            for row in rows
+        ]
+        full = limit > 0 and len(heads) == limit
+        return heads, heads[-1].id if full else None
+
+    def note_page(self, project_id: str, note_id: str) -> tuple[bool, str | None]:
+        """Where a note of the project stands, by notes_part's rule: whether it waits for its
+        page, and its page's slug when that page's latest version cites a passage of it (it
+        waits no more), else None. (False, None) for a note the project does not hold or a
+        project out of reach. One statement, which reads the claims of one page version at
+        most."""
+        with self._read() as con:
+            row = con.execute(
+                f"SELECT waiting.note_id IS NOT NULL, {_CITED_PAGE} FROM notes{_PAGE_OF_NOTE}"
+                f" WHERE notes.id = ? AND notes.project_id = ? AND notes.{_OWN_PROJECT}",
+                (note_id, project_id, *self._scope(con)),
+            ).fetchone()
+        return (bool(row[0]), row[1]) if row else (False, None)
 
     def note_spans(self, note_id: str) -> list[Span]:
         """The note's spans in document order: exactly chunk(note.id, note.text)."""
@@ -694,6 +812,34 @@ class MemoryMethods(StoreBase):
             ).fetchall()
         found = {row[0]: _span(row) for row in rows}
         return {span_id: found[span_id] for span_id in wanted if span_id in found}
+
+    def passages_of_other_projects(
+        self, project_id: str, slug: str, version: int
+    ) -> frozenset[str]:
+        """Which passages the stored version `version` of the page `slug` of the project
+        `project_id` cites that the store holds of a note that is not of that project, of its
+        workspace or another: by id alone, whatever this view reaches of that note, and never
+        its text. The ids are read from the stored page itself, never taken from the caller,
+        so an id the page shows is all it can be asked about, and that is no new knowledge;
+        whether it is another project's is all that is said (compiler.own_claims: the writers
+        leave such a claim out, asking for the version they read). Empty for a project out of
+        this view's reach and for a page or version not stored (a version pruned since the
+        writer read it: its save is then refused as stale, StalePage, before any citation is
+        asked). The lookup seeks the version, its passages and its project by their keys.
+        Resolving a signed-in member's reach first reads the workspace's projects (_scope)."""
+        with self._read() as con:
+            found = con.execute(
+                "SELECT DISTINCT spans.id FROM page_versions AS p, json_each(p.claims) AS claim,"
+                " json_each(claim.value, '$.span_ids') AS cited"
+                " JOIN spans ON spans.id = cited.value JOIN notes ON notes.id = spans.note_id"
+                " WHERE p.project_id = ?1 AND p.slug = ?2 AND p.version = ?3"
+                " AND notes.project_id != ?1"
+                " AND EXISTS (SELECT 1 FROM projects WHERE projects.id = ?1"
+                " AND projects.account_id = ?4"
+                " AND (?5 IS NULL OR ?1 IN (SELECT value FROM json_each(?6))))",
+                (project_id, slug, version, *self._scope(con)),  # _IN_REACH, numbered
+            ).fetchall()
+        return frozenset(span_id for (span_id,) in found)
 
     def spans_within(self, span_ids: Iterable[str], most: int) -> dict[str, Span]:
         """As get_spans, leaving out as well every span whose text or headings (as stored)
@@ -727,6 +873,7 @@ class MemoryMethods(StoreBase):
         topic: str | None = None,
         filed: str | None = None,
         by_model: bool = False,
+        left_out: Iterable[str] = (),
     ) -> Page:
         """Write the next version of a page and re-index it for search. KeyError: unknown project.
         The save is recorded in the same transaction as `event`, one of PAGE_EVENTS: note.saved
@@ -739,9 +886,19 @@ class MemoryMethods(StoreBase):
         page's latest version is that one, checked in the write transaction; otherwise it
         raises StalePage and writes nothing, search index and audit log included.
 
-        In a project that has forgotten a note, a save whose claims cite a span the store no
+        In a workspace that has forgotten a note, a save whose claims cite a span the store no
         longer holds raises CitesForgotten (a StalePage) and writes nothing: a page read or
-        drafted before the note was forgotten never brings its text back.
+        drafted before the note was forgotten never brings its text back, whatever its project.
+
+        A save whose claims cite a span the store holds of a note of another project, of its
+        workspace or another, raises ValueError (NOT_OF_PROJECT) and writes nothing, as the
+        import's check and the gates refuse it, whatever the page cited before. It is asked
+        after the version's check, so a stale save is StalePage. The writers leave such a claim
+        out of the page they read before they build on it (compiler.own_claims) and pass the
+        passages it cited as `left_out`, which are asked with the claims' own whether the store
+        still holds them: a page a delete or a forget removed while they drafted, and a later
+        note made again at the same version, is CitesForgotten. Schema step 32 rewrote every
+        page an earlier build saved with such a claim (cairn.store.erasure.hold_to_own_projects).
 
         Topics (N1): `topic` is the topic key the save is for (the compiler's). When the slug
         is another topic's, or the key has another page of the project, the save raises
@@ -755,7 +912,28 @@ class MemoryMethods(StoreBase):
         `by_model` (M4): the save holds what a model answered (cairn.arrange). Then, when the
         project is at "never", it raises KeptFromModels and writes nothing, the state read in
         the statement that reads the page's latest version, so it costs no statement of its
-        own; an answer that arrives after a change to "never" is never saved."""
+        own; an answer that arrives after a change to "never" is never saved.
+
+        Cost: the page's, whatever the workspace's other pages, under what `serve` runs with
+        by default as on a bare store (test_index_page_cost_unit counts SQLite's steps
+        beside 0, 1,500 and 6,000 other pages, and as many other projects): the version
+        bound prunes the page's own versions by its slug (_keep_versions), its search rows
+        go by rowid (ranking.index_page), the audit event's numbers are one seek each
+        (StoreBase._audit), the topic key and the page's head are read and written by their
+        keys, and the caps are the view's own or one read of the plan in force (that read,
+        through a plan's resolver, and a page's first save, are flat by reading, not
+        counted). Not flat: the check for a forgotten note (_cites_forgotten) asks each of
+        the workspace's projects whether it has forgotten one, so beside 0, 1,500 and 6,000
+        other projects that forgot nothing a save costs 7, 157 and 607 units of 100 steps (a
+        note's compile 9, 399 and 1,569: its reads of the page and of its topic key ask each
+        project too, _OWN_PROJECT). The stored-version lookup alone costs 0, 0 and 0 on the
+        unrestricted store. Through a signed-in member's view it costs 0, 390 and 1,560
+        units because resolving the member's reach reads the workspace's projects.
+        Under a storage cap the workspace's page versions pass,
+        _keep_history reads every older version of the workspace to find the oldest (within
+        the cap it reads one row); past `--audit-keep`, one save in AUDIT_PRUNE_BATCH
+        deletes that many events; and FTS5's own merging adds a few units as its segments
+        come and go."""
         given = _page_detail(event, detail)
         claims = tuple(claims)
         if len(claims) > PAGE_CLAIMS_MAX:
@@ -770,7 +948,7 @@ class MemoryMethods(StoreBase):
             if by_model:  # the latest version, and whether the project is at "never"
                 latest, kept = con.execute(
                     "SELECT COALESCE(MAX(version), 0), EXISTS (SELECT 1 FROM settings"
-                    "  WHERE account_id = ? AND name = ?)"
+                    "  WHERE account_id = ? AND name = ? AND value = 'never')"
                     " FROM page_versions WHERE project_id = ? AND slug = ?",
                     (self._account_id, MODELS_PREFIX + project_id, project_id, slug),
                 ).fetchone()
@@ -786,15 +964,17 @@ class MemoryMethods(StoreBase):
                 raise StalePage(expected_version, latest)
             if not _keyed(con, project_id, slug, title, topic):
                 raise StalePage(latest if expected_version is None else expected_version, latest)
-            if _cites_forgotten(con, project_id, claims):
+            if _cites_another_project(con, project_id, claims):  # after the version's check:
+                raise ValueError(NOT_OF_PROJECT)  # a stale writer reads the page again
+            if _cites_forgotten(con, self._account_id, claims, left_out):
                 raise CitesForgotten(
                     latest if expected_version is None else expected_version, latest
                 )
             version = latest + 1
             row = (project_id, slug, version, title, body, claims_json, metrics_json, self._stamp())
             _write_page_version(con, self._account_id, index, row, claims)
-            self._keep_versions(con, project_id, slug)  # type: ignore[attr-defined]  # a plan's bound
-            self._keep_history(con)  # type: ignore[attr-defined]  # the storage cap's
+            self._keep_versions(con, project_id, slug)  # a plan's bound
+            self._keep_history(con)  # the storage cap's
             (name,) = con.execute(
                 "SELECT name FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
@@ -843,19 +1023,22 @@ class MemoryMethods(StoreBase):
             None if metrics is None else json.loads(metrics),
         )
 
-    def page_for_model(self, project_id: str, slug: str) -> tuple[Page, bool] | None:
-        """The page's latest version and whether its project is at "never" (M4: its pages go to
-        no model), in the one statement that reads the page, so the arranger learns it at no
-        cost of its own; None when there is no such page in reach."""
+    def page_for_model(self, project_id: str, slug: str) -> tuple[Page, bool, bool] | None:
+        """The page's latest version, whether its project is at "never" (M4: its pages go to
+        no model) and whether its people chose "allowed" themselves (Privacy 4), in the one
+        statement that reads the page, so the arranger learns both at no cost of its own;
+        None when there is no such page in reach."""
         with self._read() as con:
             row = con.execute(
-                f"SELECT {_PAGE_COLUMNS}, EXISTS (SELECT 1 FROM settings"
+                f"SELECT {_PAGE_COLUMNS}, (SELECT value FROM settings"
                 "  WHERE settings.account_id = ? AND settings.name = ? || page_versions.project_id)"
                 " FROM page_versions WHERE project_id = ? AND slug = ?"
                 f" AND {_OWN_PROJECT} ORDER BY version DESC LIMIT 1",
                 (self._account_id, MODELS_PREFIX, project_id, slug, *self._scope(con)),
             ).fetchone()
-        return (_page(row[:-1]), bool(row[-1])) if row else None
+        if row is None:
+            return None
+        return _page(row[:-1]), row[-1] == "never", row[-1] == "allowed"
 
     def list_pages(self, project_id: str) -> list[Page]:
         """Latest versions, sorted by slug."""
@@ -1065,6 +1248,63 @@ class MemoryMethods(StoreBase):
         if not owned.fetchone() or (reach is not None and project_id not in reach):
             raise KeyError(project_id)
 
+    # Related pages
+    def related_pages(
+        self, project_id: str, slug: str, limit: int = RELATED_DEFAULT
+    ) -> relating.Related | None:
+        """The pages of the project related to its page `slug`, the best `limit` first (at most
+        relations.RELATED_MAX, whatever is asked), each with the claims the relation rests on,
+        and what the read left out (cairn.store.relating;
+        the rules are cairn.relations). None when the project has no such page, or is unknown
+        or out of reach: the same answer for all three. Nothing of a relation is stored. One
+        read: the page, the claims of the other pages, their passages and who wrote the notes
+        the claims given cite are of one moment, so a write that lands meanwhile changes
+        nothing of the answer. Terms are read from passages of the project alone; who wrote
+        a passage a claim cites is named for every passage the view reaches, as `page` names
+        it. A page read before the workspace saved any page has no index to ask, and no
+        relation.
+
+        One such read at a time, of every view of the store: a read waits for the one under
+        way before it takes a connection (ConnectionState.related_turn), so the others hold
+        none, and reads of anything else are served by the other connections meanwhile. A
+        read that waits long waits: it is never refused, and goes on when the turn is given
+        back, which it is however the read before ended."""
+        with self._state.related_turn, self._read() as con:
+            scope = self._scope(con)
+            head = con.execute(
+                "SELECT title, version FROM page_heads WHERE project_id = ? AND slug = ?"
+                f" AND {_OWN_PROJECT}",
+                (project_id, slug, *scope),
+            ).fetchone()
+            if head is None:
+                return None
+            if not _has_table(con, self._index):  # the account has not saved a page yet
+                nothing = relating.Left(0, 0, 0, 0, 0)
+                return relating.Related(slug, *head, (), nothing, {}, {})
+            most = min(max(0, limit), RELATED_MAX)  # whoever asks: no more than an answer holds
+            found = relating.related(
+                con, self._account_id, self._index, project_id, slug, *head, most
+            )
+            cited = dict.fromkeys(
+                span_id
+                for page in found.pages
+                for reason in page.why
+                for claim in (reason.here, reason.there)
+                for span_id in (claim.span_ids if claim is not None else ())
+            )
+            if not cited:  # nothing given, or nothing given cites a passage: no one to name
+                return found
+            # who wrote what the claims given cite, as `page` names it: a passage in reach
+            notes_of = dict(
+                con.execute(
+                    "SELECT spans.id, spans.note_id FROM spans"
+                    f" WHERE spans.id IN (SELECT value FROM json_each(?)) AND {_OWN_SPAN}",
+                    (json.dumps(list(cited)), *scope),
+                ).fetchall()
+            )
+            origins = _origins(con, notes_of.values(), scope) if notes_of else {}
+            return found._replace(notes_of=notes_of, origins=origins)
+
     # Search
     def search(
         self, query: str, project_ids: Sequence[str] | None = None, limit: int = 10
@@ -1096,6 +1336,27 @@ class MemoryMethods(StoreBase):
                 con, self._account_id, self._index, reach, counted, project_ids, limit
             )
             return ranking.found(counted, left_out, ranked)
+
+
+def _origins(
+    con: sqlite3.Connection, note_ids: Iterable[str], scope: tuple[str, str | None, str | None]
+) -> dict[str, NoteOrigin]:
+    """note_origins' answer, read on `con` in its caller's section: one statement. `scope` is
+    the caller's `_scope(con)`."""
+    wanted = json.dumps(list(dict.fromkeys(note_ids)))
+    rows = con.execute(
+        "SELECT notes.id, note_writers.kind, note_writers.name, notes.via,"
+        " notes.created_at,"
+        " COALESCE(slack_notes.how = 'filed' AND slack_notes.owns = 1, 0)"
+        " FROM notes LEFT JOIN note_writers ON note_writers.note_id = notes.id"
+        " LEFT JOIN slack_notes ON slack_notes.note_id = notes.id"
+        f" WHERE notes.id IN (SELECT value FROM json_each(?)) AND {_OWN_PROJECT}",
+        (wanted, *scope),
+    ).fetchall()
+    return {
+        note_id: NoteOrigin(kind or UNKNOWN_WRITER, name, via, created_at, bool(filed))
+        for note_id, kind, name, via, created_at, filed in rows
+    }
 
 
 _NOTE_FIELDS = tuple(Note.model_fields)
@@ -1158,7 +1419,9 @@ def _keyed(
 
 
 def _forgotten(con: sqlite3.Connection, project_id: str, text_sha256: str) -> bool:
-    """Whether the project has forgotten a note with this text (its SHA-256, hex)."""
+    """Whether the project has forgotten a note with this text (its SHA-256, hex). A delete's
+    row or a forget's in another project (erasure.PASSAGES_REMOVED, the empty string) is no
+    digest and never matches."""
     found = con.execute(
         "SELECT 1 FROM forgotten WHERE project_id = ? AND text_sha256 = ?",
         (project_id, text_sha256),
@@ -1166,16 +1429,47 @@ def _forgotten(con: sqlite3.Connection, project_id: str, text_sha256: str) -> bo
     return found.fetchone() is not None
 
 
-def _cites_forgotten(con: sqlite3.Connection, project_id: str, claims: Sequence[Claim]) -> bool:
-    """Whether, in a project that has forgotten a note, a claim cites a span the store does not
-    hold: one of a forgotten note. Only such a project is asked, so a project that never forgot
-    anything costs one lookup, and a save that cites spans of its own making (the tests' and
-    an operator's) is never refused there."""
+def _cites_another_project(
+    con: sqlite3.Connection, project_id: str, claims: Sequence[Claim]
+) -> bool:
+    """Whether a claim cites a span the store holds of a note of another project, of its
+    workspace or another (save_page), whatever the page cited before: since schema step 32 no
+    page holds one that save_page wrote, and the writers leave one a program wrote out first
+    (compiler.own_claims). A span it does not hold is not asked here: a save may cite spans
+    of its own making (the tests' and an operator's), and one a forget removed is
+    _cites_forgotten's. No statement for claims that cite nothing; else one, by the spans'
+    primary key."""
+    cited = list(dict.fromkeys(i for claim in claims for i in claim.span_ids))
+    if not cited:
+        return False
+    found = con.execute(
+        "SELECT 1 FROM spans JOIN notes ON notes.id = spans.note_id"
+        " WHERE spans.id IN (SELECT value FROM json_each(?)) AND notes.project_id != ? LIMIT 1",
+        (json.dumps(cited), project_id),
+    )
+    return found.fetchone() is not None
+
+
+def _cites_forgotten(
+    con: sqlite3.Connection, account_id: str, claims: Sequence[Claim], left_out: Iterable[str] = ()
+) -> bool:
+    """Whether, in a workspace that has forgotten a note (or whose forget or delete changed a
+    page of another project, erasure.PASSAGES_REMOVED), a claim cites a span the store does not
+    hold, or one of `left_out` (the passages a writer's read of the page cited and left out,
+    compiler.own_claims) is no longer held: one of a forgotten note or a deleted project. The
+    workspace is asked, not the page's project, since a forget changes every page of it that
+    cited the note (store/erasure.py).
+    Only such a workspace is asked further, so one that never forgot anything costs one
+    lookup, and a save that cites spans of its own making (the tests' and an operator's) is
+    never refused there."""
     if not con.execute(
-        "SELECT 1 FROM forgotten WHERE project_id = ? LIMIT 1", (project_id,)
+        "SELECT 1 FROM forgotten WHERE project_id IN"
+        " (SELECT id FROM projects WHERE account_id = ?) LIMIT 1",
+        (account_id,),
     ).fetchone():
         return False
-    cited = json.dumps(list(dict.fromkeys(i for claim in claims for i in claim.span_ids)))
+    ids = [*(i for claim in claims for i in claim.span_ids), *left_out]
+    cited = json.dumps(list(dict.fromkeys(ids)))
     (missing,) = con.execute(
         "SELECT COUNT(*) FROM json_each(?) WHERE value NOT IN (SELECT id FROM spans"
         " WHERE id IN (SELECT value FROM json_each(?)))",
@@ -1275,10 +1569,15 @@ def _topic_of(title: str | None, topic: str | None, spans: Sequence[Span]) -> st
     return topic or _title(title, spans, FIELD_MAX["title"])
 
 
+_RULE = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")  # a thematic break
+
+
 def _title(given: str | None, spans: Sequence[Span], cut: int = TITLE_MAX) -> str:
     """The given title, else the front matter `title`, else the first ATX heading's text, else
-    the first non-blank line outside the front matter; stripped and cut to `cut` characters
-    (TITLE_MAX, 80, for the title a note is stored with).
+    the first non-blank line outside the front matter that is not a rule (a thematic break:
+    three or more of one of `-`, `*`, `_`, alone on the line with spaces between, such as the
+    `---` opening a block read as content); stripped and cut to `cut` characters (TITLE_MAX,
+    80, for the title a note is stored with).
 
     Headings come from the spans, so a "# comment" inside a code fence is not a heading. A
     blank candidate counts as missing; when every candidate is missing the title is "".
@@ -1287,7 +1586,16 @@ def _title(given: str | None, spans: Sequence[Span], cut: int = TITLE_MAX) -> st
         given,
         _front_matter_title(spans),
         next((s.heading_path[-1] for s in spans if s.kind == "heading"), None),
-        next((s.text.splitlines()[0] for s in spans if s.kind != "frontmatter"), None),
+        next(
+            (
+                line
+                for s in spans
+                if s.kind != "frontmatter"
+                for line in s.text.splitlines()
+                if line.strip() and not _RULE.match(line)
+            ),
+            None,
+        ),
     )
     for candidate in candidates:
         if candidate and candidate.strip():
@@ -1302,7 +1610,7 @@ def _front_matter_title(spans: Sequence[Span]) -> str | None:
         return None
     yaml_text = "\n".join(spans[0].text.splitlines()[1:-1])  # between the "---" fences
     try:
-        meta = yaml.load(yaml_text, Loader=yaml.BaseLoader)  # strings only; builds no objects
+        meta = yaml.load(yaml_text, Loader=yaml.BaseLoader)  # nosec B506 # BaseLoader: strings only
     except yaml.YAMLError:
         return None
     title = meta.get("title") if isinstance(meta, dict) else None

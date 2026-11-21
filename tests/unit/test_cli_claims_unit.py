@@ -133,7 +133,7 @@ def test_the_top_description_names_what_the_commands_do_and_no_erasing():
     workspace is done in the web view."""
     described = cli._parser().description
     assert "erase" not in described
-    assert "export, import and compact" in described
+    assert "export, import, compact and repair" in described
 
 
 def test_an_example_in_a_help_line_is_called_an_example_not_put_where_a_default_goes():
@@ -210,6 +210,7 @@ def test_db_says_whether_the_command_creates_the_database(tmp_path, monkeypatch)
         ["source-list"],
         ["export", "--account", DEFAULT_ACCOUNT_ID, "--out", str(tmp_path / "x.zip")],
         ["compact"],
+        ["repair"],
         ["plan-set", "--account", DEFAULT_ACCOUNT_ID, "--default"],
         ["usage", "--account", DEFAULT_ACCOUNT_ID],
         ["workspace-list"],

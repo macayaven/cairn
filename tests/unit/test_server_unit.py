@@ -53,6 +53,7 @@ from cairn.store import (
     ranking,
 )
 from cairn.web.stats import STATS_LOGGER
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
@@ -129,6 +130,15 @@ class FakeStore:
     def note_writers(self, note_ids) -> dict:
         return {i: ("unknown", None, self.notes[i].via) for i in note_ids if i in self.notes}
 
+    def note_origins(self, note_ids) -> dict:  # 8.1: note_writers', with when and no Slack
+        from cairn.store.memory import NoteOrigin
+
+        return {
+            i: NoteOrigin("unknown", None, self.notes[i].via, self.notes[i].created_at, False)
+            for i in note_ids
+            if i in self.notes
+        }
+
     def get_setting(self, name: str, default: str | None = None) -> str | None:
         return default
 
@@ -156,6 +166,15 @@ class FakeStore:
         """M4: no project here is kept from models; the switch is tested over the real
         store."""
         return frozenset()
+
+    def models_choices(self, project_ids) -> dict[str, str]:
+        """M4: nobody here has chosen for a project (not decided)."""
+        return {}
+
+    def note_page(self, project_id: str, note_id: str) -> tuple[bool, str | None]:
+        """Where a note stands: here no page cites one and none waits, so a note whose page
+        the gate refused is on no page (the rule itself is tested over the real store)."""
+        return (False, None)
 
     def record_note(self, project_id: str, outcome: str, detail: dict, filed=None) -> None:
         if project_id not in self.projects:
@@ -221,6 +240,11 @@ class FakeStore:
 
     def list_projects(self) -> list[Project]:
         return sorted(self.projects.values(), key=lambda b: b.name.lower())
+
+    def writable_projects(self) -> list[Project]:
+        """The view acts for no person, so it writes wherever it reaches: the home page asks,
+        to offer a note. Who else writes where is tested over the real store."""
+        return self.list_projects()
 
     def get_project(self, ref: str) -> Project | None:
         return self.projects.get(ref) or self._by_name(ref)
@@ -472,9 +496,9 @@ def test_the_session_cookie_is_secure_only_behind_https(store, public_url, secur
 
 def test_logout_ends_the_session_on_the_server(env):
     r = env.client.post("/login", data={"key": env.key}, follow_redirects=False)
-    token = r.cookies["cairn_session"]
+    token = r.cookies[session_cookie()]
     env.client.post("/logout", follow_redirects=False)
-    env.client.cookies.set("cairn_session", token)
+    env.client.cookies.set(session_cookie(), token)
     assert env.client.get("/", follow_redirects=False).status_code == 303
 
 
@@ -596,6 +620,8 @@ def test_read_tools_say_they_are_read_only(env):
         "overview": True,
         "note": False,
         "new_project": False,
+        "graph": True,  # 8.3
+        "related": True,  # KG1
     }
     assert all(t["description"] for t in tools)
 
@@ -832,11 +858,12 @@ def test_the_page_view_shows_sections_and_rounded_metrics(env):
     html = env.client.get("/b/alpha/p/tools").text
     assert '<h2 class="section">Quill</h2>' in html and '<h2 class="section">Lumen</h2>' in html
     # The page's <time datetime> stamps hold microseconds, and "17:55:10.952381" holds
-    # "0.95238" too: the value is read in its own row, and the page without its stamps.
+    # "95.238" / "0.95238" too: the value is read in its own row, and the page without stamps.
     row = re.search(r'<tr data-metric="retention">(.*?)</tr>', html, re.S)
     assert row, "no retention row"
-    assert '<td data-label="Value" class="num">0.952</td>' in row.group(1)
-    assert "0.95238" not in re.sub(r'\bdatetime="[^"]*"', "", html)
+    assert '<td data-label="Value" class="num">95.2%</td>' in row.group(1)
+    stripped = re.sub(r'\bdatetime="[^"]*"', "", html)
+    assert "95.238" not in stripped and "0.95238" not in stripped
 
 
 def test_the_page_footer_says_its_checks_and_who_cites_a_source_in_words(env):
@@ -910,7 +937,7 @@ def test_setup_shows_placeholders_until_a_public_url_is_set(store):
     key = store.create_key("test")
     with serve(store) as client:
         token = client.post("/login", data={"key": key}, follow_redirects=False).cookies[
-            "cairn_session"
+            session_cookie()
         ]
         text = client.get("/setup").text
     assert "https://&lt;your-host&gt;/mcp" in text
@@ -937,7 +964,9 @@ def test_key_create_writes_a_private_env_file_and_prints_only_its_path(tmp_path,
     db, out = tmp_path / "cairn.db", tmp_path / "laptop.env"
     assert key_create(db, out) == 0
     printed = capsys.readouterr()
-    assert (printed.out, printed.err) == (f"{out}\n", "")
+    (line,) = printed.err.splitlines()  # the key's audit event, as serve writes one
+    assert printed.out == f"{out}\n"
+    assert line.startswith("cairn.audit: ") and '"action": "key.created"' in line
     assert out.stat().st_mode & 0o777 == 0o600
     name, _, key = out.read_text().strip().partition("=")
     assert name == "CAIRN_API_KEY" and len(key) >= 32
@@ -981,11 +1010,10 @@ def test_key_create_reports_what_it_cannot_create_and_leaves_no_half_made_file(
     printed = capsys.readouterr()
     assert printed.out == "" and "cannot create" in printed.err
 
-    class FailingStore(Store):
-        def create_key(self, label: str) -> str:
-            raise RuntimeError("disk full")
+    def refuse_key(self, label: str) -> str:
+        raise RuntimeError("disk full")
 
-    monkeypatch.setattr(cairn.web.cli, "Store", FailingStore)
+    monkeypatch.setattr(Store, "create_key", refuse_key)
     out = tmp_path / "k.env"
     with pytest.raises(RuntimeError):
         key_create(tmp_path / "cairn.db", out)
@@ -1344,4 +1372,6 @@ def test_no_tool_takes_the_request_context_as_an_argument(env):
             {"project", "slug", "claim_id"},
         ),
         "overview": ({"project", "limit", "after"}, {"project"}),  # Q1
+        "graph": ({"project", "limit"}, {"project"}),  # 8.3
+        "related": ({"project", "slug", "limit"}, {"project", "slug"}),  # KG1
     }

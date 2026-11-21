@@ -74,9 +74,14 @@ def listed(user: str, tag: str) -> list[list[int]]:
 # The one rule for "these claims repeat"
 
 
-def test_text_that_differs_only_in_runs_of_whitespace_repeats():
-    claims = claims_of("Drift  mirrors\ttwo buckets.", "Other.", "Drift mirrors two buckets. ")
-    assert repeat_groups(claims, under(claims, ("A",), ("A",), ("A",))) == [[1, 3]]
+def test_text_that_differs_only_in_spaces_at_its_end_repeats_and_inner_runs_do_not():
+    claims = claims_of(
+        "Drift  mirrors\ttwo buckets.",
+        "Other.",
+        "Drift mirrors two buckets. ",
+        "Drift mirrors two buckets.",
+    )
+    assert repeat_groups(claims, under(claims, ("A",), ("A",), ("A",), ("A",))) == [[3, 4]]
 
 
 def test_three_claims_that_repeat_are_one_group_in_page_order():
@@ -96,12 +101,15 @@ def test_a_page_of_one_claim_has_no_repeats():
 
 
 def test_the_check_of_an_answer_uses_the_same_rule():
-    claims = claims_of("Drift  mirrors two.", "Drift mirrors two.", "Drift mirrors two.")
+    claims = claims_of("Drift mirrors two. ", "Drift mirrors two.", "Drift mirrors two.")
     ids = [claim.id for claim in claims]
     sections = under(claims, ("A",), ("A",), ("B",))
     assert parse_arrangement(
         json.dumps({"order": [1, 3], "same": [[1, 2]]}), claims, sections=sections
     )
+    spaced = claims_of("Drift  mirrors two.", "Drift mirrors two.")
+    with pytest.raises(ValueError, match="do not have the same text"):
+        parse_arrangement(json.dumps({"order": [1], "same": [[1, 2]]}), spaced)
     with pytest.raises(ValueError, match="different headings"):
         parse_arrangement(
             json.dumps({"order": [1, 2], "same": [[1, 3]]}), claims, sections=sections

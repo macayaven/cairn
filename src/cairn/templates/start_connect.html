@@ -1,39 +1,37 @@
 {% extends "base.html" %}
-{% block title %}Connect{% endblock %}
+{% block title %}Setup{% endblock %}
 {% block main %}
 <div class="setup">
-<h1>Connect what will use your projects</h1>
+<h1>Connect agents and apps</h1>
+<p class="lede">Agents reach {{ product.name }} over MCP (streamable HTTP), and apps or headless scripts connect with an API key. This page never shows a key.</p>
 {% if not agents and not apps %}
 <section class="empty-state" aria-labelledby="no-project">
   <h2 id="no-project">This workspace has no project yet</h2>
   <p><a href="/start">Choose what you will use {{ product.name }} for</a>, and {{ product.name }} makes the projects for it.</p>
 </section>
-{% else %}
-{% if oauth %}
-<p class="lede">An agent you sign in from connects once, by URL, and reaches every project you reach in this workspace, now and later; when you approve it, you can choose fewer projects, or read only. An app that runs on its own gets a key that reaches only its own project.</p>
-{% else %}
-<p class="lede">Agents and apps connect with an API key. An app gets a key that reaches only its own project.</p>
 {% endif %}
-{% if agents %}
-<section aria-labelledby="by-agents">
-  <h2 id="by-agents">{% if oauth %}Agents you sign in from{% else %}Agents{% endif %}</h2>
+<section aria-labelledby="by-url">
+  <h2 id="by-url">With only the URL</h2>
+  {% if agents %}
+  <p>Projects used by agents you connect this way:</p>
   <ul class="project-list">
   {% for project in agents %}
     <li><a href="/b/{{ project.name|seg }}">{{ project.name }}</a> <span class="count">{{ kind_of(project.kind).title }}</span></li>
   {% endfor %}
   </ul>
+  {% endif %}
   {% if oauth %}
+  <p>An agent you sign in from connects once, by URL, and reaches every project you reach in this workspace, now and later; when you approve it, you can choose fewer projects, or read only.</p>
   {% include "_connect.html" %}
   <p>The agent reads each project's guidance from {{ product.name }}, so it knows what to write in which project.</p>
   {% else %}
-  <p>Agents reach {{ product.name }} at <code>{{ mcp_url }}</code> with an API key, because this server has no public address for them to sign in through. Make a key under <a href="/keys">Keys</a>; <a href="/setup">Setup</a> shows the rest.</p>
+  <p>This needs the address agents reach {{ product.name }} at: start the server with <code>--public-url</code> set to an <code>https://</code> origin (or <code>http://</code> on localhost). Until then agents connect with an API key, as below.</p>
   {% endif %}
 </section>
-{% endif %}
 {% if apps %}
 <section aria-labelledby="by-apps">
   <h2 id="by-apps">Apps that run on their own</h2>
-  <p>An app has no browser to approve it, so it sends a key. Each key made here reaches one project, to read and write, and nothing else. It is shown once, with the two lines the app needs in its environment.</p>
+  <p>An app has no browser to sign in from, so it sends a key. Each key made here reaches one project, to read and write, and nothing else. It is shown once, with the two lines the app needs in its environment.</p>
   {% for project in apps %}
   <div class="app-key">
     <h3><a href="/b/{{ project.name|seg }}">{{ project.name }}</a> <span class="count">{{ kind_of(project.kind).title }}</span></h3>
@@ -53,6 +51,54 @@
   {% endfor %}
 </section>
 {% endif %}
+<section aria-labelledby="by-key">
+  <h2 id="by-key">With an API key</h2>
+  {% if sign_in %}
+  <ol class="steps">
+    <li>
+      <h3>Make a key</h3>
+      <p>Under <a href="/keys">Keys</a>, give the agent's key a label. The key is shown once; keep it in the agent's environment, not in its config.</p>
+    </li>
+    <li>
+      <h3>Point the agent at the MCP endpoint</h3>
+      <pre>{{ mcp_url }}</pre>
+      <p>Send the key as <code>x-api-key: &lt;key&gt;</code> or <code>Authorization: Bearer &lt;key&gt;</code>. The REST API under <code>/api</code> takes the same headers.</p>
+    </li>
+  </ol>
+  {% else %}
+  <ol class="steps">
+    <li>
+      <h3>The MCP endpoint</h3>
+      <pre>{{ mcp_url }}</pre>
+      {% if not public_url %}
+      <p class="meta">Start the server with <code>--public-url</code> to show its real address here.</p>
+      {% endif %}
+      <p>Send the key as <code>x-api-key: &lt;key&gt;</code> or <code>Authorization: Bearer &lt;key&gt;</code>. The REST API under <code>/api</code> takes the same headers.</p>
+    </li>
+    <li>
+      <h3>Mint a key</h3>
+      <p>On the server, write a new key into a file only its owner can read (mode 0600). The command refuses to overwrite a file and prints only the file's path, never the key. You can also make one under <a href="/keys">Keys</a>.</p>
+      <pre>python -m cairn.server key-create --db PATH --label L --out FILE</pre>
+      <p>To retire every key with a label: <code>python -m cairn.server key-revoke --db PATH --label L</code></p>
+    </li>
+    <li>
+      <h3>Keep the key in an env file</h3>
+      <p>On each machine an agent runs on, keep the address and the key in a file only you can read (mode 0600), for example <code>cairn.env</code>:</p>
+      <pre>CAIRN_URL={{ app_url }}
+CAIRN_API_KEY=&lt;the key from key-create&gt;</pre>
+    </li>
+    <li>
+      <h3>Give it to the agent</h3>
+      <p>Load the file into the agent's environment and name the variable in the agent's MCP config, so the config itself holds no key. <a href="/docs/connect">The connect guide</a> has the steps for each client.</p>
+    </li>
+    <li>
+      <h3>Choose the project</h3>
+      <p>Use one project per kind of work — a code repository (named after the repo), team decisions and runbooks, memory for an AI feature, meetings, business documents, or personal notes — from <a href="/start">guided setup</a>, <a href="/">Projects</a>, or the <code>new_project</code> tool.</p>
+    </li>
+  </ol>
+  {% endif %}
+</section>
+{% if agents or apps %}
 <p class="meta done">When everything is connected, <a href="/">go to your projects</a>. For another use, <a href="/start">make more projects</a>; the ones you have stay as they are.</p>
 {% endif %}
 </div>

@@ -209,8 +209,8 @@ def test_sources_md_says_whoever_wrote_it_and_how_the_form_is_read(store):
 
 def test_sources_md_says_a_source_the_server_reads_is_judged_by_its_source(store):
     """'A note that one of the sources the server reads writes is judged by its source
-    instead.' Granola writes `meeting:granola/<id>`, and its notes are sent as decision 90 has
-    them."""
+    instead.' Granola writes `meeting:granola/<id>`: judged by its source, withheld as every
+    source the server reads is (Privacy 4), not by the form."""
     text = flat(recipes_part())
     assert (
         "A note that one of the [sources the server reads](#sources-the-server-reads) writes is"
@@ -222,7 +222,7 @@ def test_sources_md_says_a_source_the_server_reads_is_judged_by_its_source(store
     project, page = page_of(store, "meeting:granola/n-1", via=KINDS["granola"].via)
     model = FakeModel([answer(page)])
     said = arrange_page(store, project.id, page.slug, model, withhold=sources.withheld_via())
-    assert said.status == "arranged"
+    assert said.status == "withheld" and model.requests == []
 
 
 # privacy.md, the Models line

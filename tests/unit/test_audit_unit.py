@@ -328,7 +328,8 @@ def test_the_oldest_events_are_pruned_in_batches_in_the_inserts_transaction(stor
     for n in range(40):
         store.record_note(ops.id, "unchanged", {"page": f"p{n}"})
         sizes.append(count_events(db, store.account_id))
-    assert max(sizes) == 10  # never more than AUDIT_KEEP
+    assert min(sizes[9:]) == 10  # never drops below AUDIT_KEEP
+    assert max(sizes) == 13  # pruned once AUDIT_KEEP + AUDIT_PRUNE_BATCH events accumulate
     deleted = [before + 1 - after for before, after in itertools.pairwise(sizes)]
     assert max(deleted) <= 4 and deleted.count(0) > len(deleted) / 2
     newest = [e.detail["page"] for e in store.list_audit(1000)]

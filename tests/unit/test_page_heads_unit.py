@@ -65,10 +65,16 @@ def test_step_26_adds_page_heads_filled_from_every_pages_latest_version(tmp_path
     assert ("br_aaaaaaaaaaaa", "c", 2, "C#") in [row[:4] for row in held]
     before = set(v25["statements"])
     added = [line for line in statements(db) if line not in before]
-    later = ("checkouts", "credential_tokens", "google_revocations")  # 27 (R3), 28: empty
+    later = ("credential_tokens", "google_revocations", "slack_")  # 28, 29: empty
+    later += ("sessions",)  # 30: sessions rebuilt with their last use
+    later += ("audit_events", "oldest_build")  # 31: events chained, and the floor
     assert added and all(
         "page_heads" in line or any(name in line for name in later) for line in added
     ), added
+    gone = {line for line in before if line not in statements(db)}
+    retired = ("subscriptions", "billing_messages", "checkouts", "audit_events")  # 31
+    retired += ("sessions",)  # 30: rebuilt
+    assert all(any(name in line for name in retired) for line in gone), gone
 
 
 def test_a_database_migrated_from_version_25_has_the_fresh_schema(tmp_path):
@@ -167,12 +173,12 @@ def test_listing_pages_reads_the_heads_in_two_statements_without_bodies(store, d
         for _ in range(2):
             store.save_page(project.id, slug, slug.upper(), "y" * 200_000, claims(3))
     seen: list[str] = []
-    store._con.set_trace_callback(seen.append)
+    store._observe(trace=seen.append)
     try:
         heads, total = store.page_heads(project.id, 2)
         counts = store.page_counts()
     finally:
-        store._con.set_trace_callback(None)
+        store._observe(trace=None)
     assert [(h.slug, h.version, h.claims) for h in heads] == [("a", 2, 3), ("b", 2, 3)]
     assert total == 3 and counts == {project.id: 3}
     read = [s for s in seen if s.lstrip().upper().startswith("SELECT")]

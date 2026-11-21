@@ -7,6 +7,7 @@ import importlib.util
 import re
 from pathlib import Path
 
+import deploy_standins
 import pytest
 import yaml
 from deploy_standins import EXTRA_ARGS, IMAGE, NEW, PUBLIC_URL, SUBNET, Standins
@@ -197,12 +198,32 @@ def test_the_tfvars_example_shows_the_plans_file_commented_out():
 # --- host.sh run-cairn, with and without a plans file ---------------------------------------
 
 
+# config.env as cloud-init writes it carries cairn's limits (container_limits); run-cairn does
+# not start without them. Made-up values, appended to every stand-in host made here.
+CAIRN_LIMITS = 'CAIRN_MEMORY_MB="900"\nCAIRN_PIDS_LIMIT="400"\n'
+
+
+@pytest.fixture(autouse=True)
+def _cairn_limits(monkeypatch):
+    made = deploy_standins.HostReport.__init__
+
+    def with_limits(self, standins):
+        made(self, standins)
+        config = self.root / "config.env"
+        config.write_text(config.read_text(encoding="utf-8") + CAIRN_LIMITS, encoding="utf-8")
+
+    monkeypatch.setattr(deploy_standins.HostReport, "__init__", with_limits)
+
+
 def docker_run(host, mount: tuple[str, ...] = (), option: tuple[str, ...] = ()) -> list[str]:
     """What cmd_run_cairn gives `docker run`, as it did before plans files existed, with the
-    plans file's mount and option where they go."""
+    plans file's mount and option where they go, and the flags and limits of
+    tests/unit/test_host_hardening_unit.py."""
     return [
         "run", "--rm", "--name", "cairn", "--network", "cairn",
         "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+        "--memory", "900m", "--memory-swap", "900m", "--pids-limit", "400",
         "--env-file", "/run/cairn/cairn.env",
         "-v", f"{host.data}/cairn:/data", *mount,
         f"{IMAGE}@{NEW}", "serve", "--db", "/data/cairn.db", "--host", "0.0.0.0",
@@ -961,17 +982,34 @@ def compact_filter() -> list:
 
 
 class _Held:
-    """A store whose compaction meets another connection, or another failure, or none."""
+    """A store whose compaction meets another connection, or another failure, or none;
+    `only_log`: a rewrite already done, so only emptying the log is due."""
 
-    def __init__(self, error: Exception | None) -> None:
+    def __init__(self, error: Exception | None, only_log: bool = False) -> None:
         self.error = error
+        self.only_log = only_log
+
+    def compaction_state(self):
+        from cairn.store import CompactionState
+
+        return CompactionState(deleted_at="2026-11-19T09:00:00+00:00", rewritten=self.only_log)
+
+    def compacting(self):
+        """The lock that keeps one compaction at a time: no other one runs here."""
+        import contextlib
+
+        return contextlib.nullcontext()
 
     def compact(self) -> None:
         if self.error is not None:
+            if getattr(self.error, "rewrote", None):  # as a store's record: rewritten
+                self.only_log = True
             raise self.error
 
+    empty_log = compact
 
-def serve_line(error: Exception | None, capsys) -> str:
+
+def serve_line(error: Exception | None, capsys, only_log: bool = False) -> str:
     """The line `serve` writes to stderr for one compaction, by the compactor and the handler
     serve itself installs."""
     from cairn.web.cli import _access_log_on_stderr
@@ -979,7 +1017,7 @@ def serve_line(error: Exception | None, capsys) -> str:
 
     capsys.readouterr()
     with _access_log_on_stderr():
-        Compactor(_Held(error), 24).run_once()
+        Compactor(_Held(error, only_log), 24).run_once()
     (line,) = capsys.readouterr().err.splitlines()
     return line
 
@@ -1016,6 +1054,38 @@ def test_the_line_serve_writes_for_an_unfinished_compaction_is_counted(capsys):
     line = serve_line(CompactIncomplete("held"), capsys)
     assert line.startswith("cairn.access: compact not finished: another connection held the file")
     assert stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
+
+
+def test_a_rewrite_whose_log_was_held_and_a_held_log_alone_are_counted(capsys):
+    """Each still says another connection held the file; what follows says whether the file
+    was rewritten, so the runbook can tell the two apart."""
+    from cairn.store import CompactIncomplete
+
+    rewrote = CompactIncomplete("held")
+    rewrote.rewrote = True
+    line = serve_line(rewrote, capsys)
+    assert line.startswith(
+        "cairn.access: compact not finished: another connection held the file"
+        " (rewritten; the write-ahead log was not emptied) in "
+    )
+    assert stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
+    line = serve_line(CompactIncomplete("held"), capsys, only_log=True)
+    assert line.startswith(
+        "cairn.access: compact not finished: another connection held the file"
+        " (no rewrite: only the write-ahead log was due) in "
+    )
+    assert stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
+
+
+def test_a_compaction_that_did_not_start_for_want_of_room_is_not_counted(capsys):
+    from cairn.store import NoRoom
+
+    line = serve_line(NoRoom(10, 20), capsys)
+    assert line.startswith("cairn.access: compact not started: ")
+    assert not stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
+    line = serve_line(None, capsys, only_log=True)
+    assert line.startswith("cairn.access: compact done (no rewrite")
+    assert not stack.matches(compact_filter(), stack.cos_entry(line, container="cairn"))
 
 
 def test_a_finished_or_otherwise_failed_compaction_and_other_containers_are_not_counted(capsys):
@@ -1071,3 +1141,13 @@ def test_the_compaction_alerts_documentation_names_its_runbook_section():
     assert f'\\"{heading}\\" in infra/gcp/README.md' in documentation
     readme = (INFRA / "README.md").read_text(encoding="utf-8")
     assert f"\n### {heading}\n" in readme
+
+
+def test_tfvars_example_matches_shipped_disk_and_soft_delete_defaults():
+    example = (INFRA / "terraform.tfvars.example").read_text(encoding="utf-8")
+    for name in ("boot_disk_size_gb", "replica_soft_delete_days"):
+        variable_block = block(VARIABLES, f'variable "{name}"')
+        default = re.search(r"^\s*default\s*=\s*(\d+)\s*$", variable_block, re.M)
+        assert default is not None, name
+        shown = re.search(rf"^#\s*{name}\s*=\s*(\d+)\s*$", example, re.M)
+        assert shown is not None and shown.group(1) == default.group(1), (name, default, shown)

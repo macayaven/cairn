@@ -17,6 +17,7 @@ from cairn.plans import Plan, Plans
 from cairn.server import create_app, main
 from cairn.store import Store
 from cairn.web.ratelimit import RateLimiter
+from cookie_names import session_cookie
 
 BASE = "http://127.0.0.1:8765"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -208,10 +209,10 @@ def test_an_owner_sees_the_usage_page_and_a_member_does_not(env):
     ]  # fmt: skip
     owner, member = signed
     assert env.store.for_account(member.account_id, member.user.id).role() == "member"
-    env.client.cookies.set("cairn_session", owner.token)
+    env.client.cookies.set(session_cookie(), owner.token)
     page = env.client.get("/usage")
     assert page.status_code == 200 and "Tiny" in page.text
-    env.client.cookies.set("cairn_session", member.token)
+    env.client.cookies.set(session_cookie(), member.token)
     assert env.client.get("/usage").status_code == 403
 
 
@@ -526,20 +527,18 @@ def test_workspace_list_is_in_the_top_help_and_its_help_says_what_each_field_is(
         assert sentence in said, sentence
 
 
-def test_workspace_list_migrates_an_older_database_as_every_command_does(tmp_path, capsys):
+def test_workspace_list_refuses_an_older_database_as_every_command_but_serve_does(tmp_path, capsys):
+    """In one line on stderr, exit 1, the file as it was: only `serve` upgrades
+    (test_only_serve_upgrades_unit.py)."""
     from test_store_unit import empty_v0_database
-
-    from cairn.store import SCHEMA_VERSION
 
     db = tmp_path / "cairn.db"
     empty_v0_database(db)
-    rows = workspace_list(db, capsys)
-    assert [row["account"] for row in rows] == ["acct_default"]
-    con = sqlite3.connect(db)
-    try:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    finally:
-        con.close()
+    before = dump(db)
+    assert main(["workspace-list", "--db", str(db)]) == 1
+    out, err = capsys.readouterr()
+    assert out == "" and err.count("\n") == 1 and "start the server once on it" in err
+    assert "workspace-list changed nothing" in err and dump(db) == before
 
 
 def test_workspace_list_refuses_a_newer_database_as_usage_does(tmp_path, capsys):
@@ -550,6 +549,8 @@ def test_workspace_list_refuses_a_newer_database_as_usage_does(tmp_path, capsys)
     Store(db).close()
     con = sqlite3.connect(db)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    # a step this cairn may not run on: the floor goes up with it
+    con.execute("UPDATE oldest_build SET version = ?", (SCHEMA_VERSION + 1,))
     con.commit()
     con.close()
     before = dump(db)

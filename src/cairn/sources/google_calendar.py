@@ -140,9 +140,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from cairn.sources import Clock, NoteDraft, Pulled, Skip, SourceError, SourceKind, fit, names
+from cairn.sources.config import check_env_name, check_projects
 from cairn.sources.google_api import (
     EMAIL,
-    ENV_NAME,
     RETRIES,
     SETTING_NAME,
     SIGN_IN_LATE,
@@ -164,7 +164,6 @@ from cairn.sources.google_auth import (
 )
 from cairn.sources.markup import html_to_text
 from cairn.sources.timing import limit
-from cairn.store.memory import is_project_name
 
 DEFAULT_BASE_URL = "https://www.googleapis.com/calendar/v3"
 SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
@@ -221,7 +220,16 @@ def check_config(config: object) -> dict[str, Any]:
         raise ValueError(
             f"a {KIND_NAME} source does not take one of the settings given: {_what_it_takes()}"
         )
-    checked: dict[str, Any] = {"credentials_env": _check_variable(config.get("credentials_env"))}
+    checked: dict[str, Any] = {
+        "credentials_env": check_env_name(
+            config,
+            "credentials_env",
+            kind=KIND_NAME,
+            holds="the Google credential",
+            secret="credential",
+            looks_like=looks_like_a_credential,
+        )
+    }
     subject = config.get("subject")
     if subject is not None:
         if isinstance(subject, str) and looks_like_a_credential(subject):
@@ -232,29 +240,11 @@ def check_config(config: object) -> dict[str, Any]:
             )
         checked["subject"] = subject
     checked["calendar_id"] = _check_calendar_id(config.get("calendar_id", PRIMARY))
-    checked["projects"] = _check_projects(config.get("projects", []))
+    checked["projects"] = check_projects(
+        config.get("projects", []), kind="google_calendar", looks_like=looks_like_a_credential
+    )
     checked["base_url"] = check_base_url(config.get("base_url", DEFAULT_BASE_URL), API)
     return checked
-
-
-def _check_variable(variable: object) -> str:
-    if variable is None:
-        raise ValueError(
-            f"a {KIND_NAME} source needs credentials_env: the name of the environment variable"
-            " that holds the Google credential"
-        )
-    if isinstance(variable, str) and looks_like_a_credential(variable):
-        raise ValueError(
-            "credentials_env holds what looks like a credential: put the credential in an"
-            " environment variable of the process that syncs, and name that variable here"
-        )
-    if not isinstance(variable, str) or not ENV_NAME.fullmatch(variable):
-        raise ValueError(
-            "credentials_env names an environment variable (capitals, digits and _, at most"
-            " 128), which holds the Google credential: the credential itself never goes in a"
-            " config"
-        )
-    return variable
 
 
 def _check_calendar_id(value: object) -> str:
@@ -272,21 +262,6 @@ def _check_calendar_id(value: object) -> str:
             " calendar's id, which looks like an email address"
         )
     return value
-
-
-def _check_projects(projects: object) -> list[str]:
-    if not isinstance(projects, list | tuple):
-        raise ValueError("projects is a list of at most one project's name")
-    if len(projects) > 1:
-        raise ValueError(
-            f"projects names at most one project: a {KIND_NAME} source writes into one"
-        )
-    for project in projects:
-        if isinstance(project, str) and looks_like_a_credential(project):
-            raise ValueError("projects holds a value that looks like a credential")
-        if not isinstance(project, str) or not is_project_name(project):
-            raise ValueError("projects holds a project's name (not its id)")
-    return list(projects)
 
 
 def open_source(

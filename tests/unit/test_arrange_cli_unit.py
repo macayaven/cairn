@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 import uvicorn
+from test_schema_floor_unit import v30_database
 
 import cairn.arrange
 import cairn.plans
@@ -429,9 +430,13 @@ def test_arrange_needs_the_plans_when_a_workspace_has_a_plan(db, model, tmp_path
 
 
 def test_a_subscription_an_older_build_left_does_not_ask_for_plans(db, model, capsys):
-    """Nothing reads the billing tables: a row there puts no workspace on a plan."""
-    Store(db).close()
+    """Nothing read the billing tables: a row an older build left (in a database at step 30;
+    step 31 drops the tables) puts no workspace on a plan."""
+    for made in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        made.unlink(missing_ok=True)  # the fixture's database: this one is older
+    v30_database(db)
     con = sqlite3.connect(db)
+    con.execute("UPDATE account_quota SET plan = NULL")  # no plan the operator set
     con.execute(
         "INSERT INTO subscriptions (account_id, provider, plan, status, since)"
         " VALUES ('acct_default', 'till', 'solo', 'active', ?)",
@@ -439,6 +444,7 @@ def test_a_subscription_an_older_build_left_does_not_ask_for_plans(db, model, ca
     )
     con.commit()
     con.close()
+    Store(db).close()  # the upgrade, as the server's start runs it: arrange refuses an older one
     argv = ["arrange", "--db", str(db), "--account", "acct_default", "--model-env", "CAIRN_T"]
     assert cli.main(argv) == 0
     assert "--plans" not in capsys.readouterr().err
@@ -590,7 +596,8 @@ def test_arrange_tidy_makes_one_pass_with_no_model_and_prints_a_line_a_page(db, 
         "alpha/drift-sync: arranged, version 2 -> 3",
         "alpha/short: unchanged, version 1",
     ]
-    assert err == "" and model == [] and "Drift" not in out
+    others = [line for line in err.splitlines() if not line.startswith("cairn.audit: ")]
+    assert others == [] and model == [] and "Drift" not in out  # stderr: the audit lines only
     assert cli.main(argv) == 0  # tidy already: nothing more to do
     assert sorted(capsys.readouterr().out.splitlines()) == [
         "alpha/drift-sync: unchanged, version 3",

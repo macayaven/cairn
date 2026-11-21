@@ -963,11 +963,11 @@ def test_the_two_lists_cost_the_same_with_1_and_50(world, api):
 
     def cost(who: str, path: str) -> int:
         seen: list[str] = []
-        world.store._con.set_trace_callback(seen.append)
+        world.store._observe(trace=seen.append)
         try:
             assert api.call("GET", path, who).status_code == 200
         finally:
-            world.store._con.set_trace_callback(None)
+            world.store._observe(trace=None)
         return len(seen)
 
     asked = [(who, path) for who in ("olive", "cy", "operator")

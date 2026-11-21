@@ -10,6 +10,7 @@ Nothing leaves the machine: the server binds 127.0.0.1 and the clients talk to i
 import asyncio
 import base64
 import html
+import importlib.util
 import json
 import os
 import re
@@ -40,6 +41,8 @@ from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
 from pydantic import AnyUrl
 
 from cairn.store import SCHEMA_VERSION, Store
+from cookie_names import session_cookie
+from wait_helpers import poll_until, poll_until_async
 
 REDIRECT = "http://127.0.0.1:33418/callback"
 SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
@@ -67,6 +70,8 @@ def cairn(*args: str, env: dict[str, str] | None = None) -> subprocess.Completed
 class Server:
     """`python -m cairn.server serve` on a loopback port, with its output kept."""
 
+    runs = ("-m", "cairn.server")  # what runs `serve` (the Slack journey's launcher, there)
+
     def __init__(self, db: Path, *options: str, env: dict[str, str] | None = None) -> None:
         self.db = db
         self.options, self.env = options, env or {}
@@ -78,22 +83,27 @@ class Server:
         self.returncode: int | None = None
 
     def start(self) -> "Server":
-        command = [sys.executable, "-m", "cairn.server", "serve", "--db", str(self.db)]
+        command = [sys.executable, *self.runs, "serve", "--db", str(self.db)]
         command += ["--host", "127.0.0.1", "--port", str(self.port), "--public-url", self.url]
         self.process = subprocess.Popen(
             [*command, *self.options], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1", **self.env},
         )  # fmt: skip
-        deadline = time.monotonic() + 30  # a hang guard on the real process, nothing else
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                raise AssertionError(f"the server stopped at once:\n{self.process.stdout.read()}")
+
+        def ready():
+            assert self.process.poll() is None, "the server stopped before listening"
             try:
                 with socket.create_connection(("127.0.0.1", self.port), timeout=0.2):
-                    return self
+                    return True
             except OSError:
-                time.sleep(0.1)
-        raise AssertionError("the server did not start listening within 30 s")
+                return False
+
+        try:
+            poll_until(ready, "the server did not start listening", 30, every=0.1)
+        except BaseException:
+            self.stop()
+            raise
+        return self
 
     def stop(self) -> str:
         if self.process is not None:
@@ -341,8 +351,12 @@ def test_a_person_and_two_agents_share_memory_end_to_end(install):
                 await anyone.post("/api/projects", headers=worker, json={"name": "x"})
             ).status_code == 403
 
-            # Disconnecting the agent ends its access at once.
-            action = agents.text.split('action="/agents/')[1].split('"')[0]
+            # Disconnecting the agent ends its access at once: its row links a page that says
+            # what stops working, and that page's button disconnects it.
+            ask = agents.text.split('href="/agents/')[1].split('"')[0]
+            asked = await person.get(f"/agents/{ask}")
+            assert asked.status_code == 200, asked.text
+            action = asked.text.split('action="/agents/')[1].split('"')[0]
             gone = await person.post(f"/agents/{action}", headers=SAME_ORIGIN)
             assert gone.status_code == 303
             dead = await anyone.post(
@@ -701,7 +715,7 @@ def test_a_team_signs_in_through_its_identity_provider(tmp_path):
             back = await anyone.get(to_provider.headers["location"])
             turned_away = await anyone.get(back.headers["location"])
             assert turned_away.status_code == 403 and "email domains" in turned_away.text
-            assert "cairn_session" not in anyone.cookies
+            assert session_cookie() not in anyone.cookies
             assert (await anyone.get("/keys")).status_code == 303
 
             # Signing out ends the session.
@@ -850,7 +864,7 @@ def test_an_invited_colleague_joins_and_their_agent_leaves_with_them(tmp_path):
             # Removing the colleague ends their agent and their session at once.
             people = (await owner.get("/members")).text
             row = next(r for r in people.split("<tr>") if "cy@acme.example.test" in r.lower())
-            removal = re.search(r'action="(/members/[^"]+/remove)"', row).group(1)
+            removal = re.search(r'href="(/members/[^"]+/remove)"', row).group(1)
             assert (await owner.post(removal, headers=SAME_ORIGIN)).status_code == 303
             assert (await call_tool(anyone, token, "recall", query="quill")).status_code == 401
             assert (await colleague.get("/members")).status_code == 303  # to /login
@@ -908,7 +922,7 @@ def test_a_removed_colleague_comes_back_only_by_invitation(tmp_path):
             assert await sign_in(colleague, idp, brook) == "/welcome"
             people = (await owner.get("/members")).text
             row = next(r for r in people.split("<tr>") if brook["email"] in r)
-            removal = re.search(r'action="(/members/[^"]+/remove)"', row).group(1)
+            removal = re.search(r'href="(/members/[^"]+/remove)"', row).group(1)
             assert (await owner.post(removal, headers=SAME_ORIGIN)).status_code == 303
             assert (await colleague.get("/keys")).status_code == 303  # the session ended
 
@@ -1031,7 +1045,11 @@ class Langfuse:
 def test_an_operator_syncs_traces_marked_in_langfuse(install):
     server, key = install
     langfuse = Langfuse()
-    env = {"CAIRN_TEST_LF_PUBLIC": langfuse.PUBLIC, "CAIRN_TEST_LF_SECRET": langfuse.SECRET}
+    env = {
+        "CAIRN_TEST_LF_PUBLIC": langfuse.PUBLIC,
+        "CAIRN_TEST_LF_SECRET": langfuse.SECRET,
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
+    }
     config = {
         "base_url": langfuse.url,
         "projects": ["payments-api"],
@@ -1104,10 +1122,10 @@ def test_an_operator_syncs_traces_marked_in_langfuse(install):
         # page with the same "Why it was kept" line, and the default tidy would fold it in
         # the background; this test is about the sync, not the tidy.
         restarted = Server(server.db, "--sync-every", "1", "--no-tidy", env=env).start()
-        deadline = time.monotonic() + 30  # a hang guard on the real process, nothing else
-        while not (found := asyncio.run(recall(restarted.url, "payouts manual review"))):
-            assert time.monotonic() < deadline, "the background sync wrote nothing in 30 s"
-            time.sleep(0.2)
+        found = poll_until(
+            lambda: asyncio.run(recall(restarted.url, "payouts manual review")),
+            "the background sync wrote nothing", 30, every=0.2,
+        )  # fmt: skip
         assert found[0]["project"] == "payments-api"
     finally:
         output = server.stop() + (restarted.stop() if restarted else "")
@@ -1303,10 +1321,12 @@ def test_a_model_arranges_a_page_and_writes_none_of_it(tmp_path):
                 assert wrote.status_code == 201 and wrote.json()["status"] == "saved", wrote.text
             page_path = "/api/projects/ops/pages/drift-sync"
             before = (await person.get(page_path, headers=headers, params={"version": 2})).json()
-            deadline = time.monotonic() + 30  # a hang guard on the real process, nothing else
-            while (latest := (await person.get(page_path, headers=headers)).json())["version"] < 3:
-                assert time.monotonic() < deadline, "no arranged version in 30 s"
-                await asyncio.sleep(0.2)
+
+            async def arranged():
+                latest = (await person.get(page_path, headers=headers)).json()
+                return latest if latest["version"] >= 3 else None
+
+            latest = await until("no arranged version", arranged)
             assert latest["version"] == 3
             texts = [claim["text"] for claim in latest["claims"]]
             answer = [claim["text"] for claim in before["claims"]][::-1]  # the model reverses
@@ -1373,12 +1393,12 @@ def test_serve_tidies_a_page_by_default_with_no_model(tmp_path):
                 )
                 assert wrote.status_code == 201 and wrote.json()["status"] == "saved", wrote.text
             noted = wrote.json()["version"]  # the version the second note made
-            deadline = time.monotonic() + 30  # a hang guard on the real process, nothing else
-            while (latest := (await person.get(page_path, headers=headers)).json())["metrics"].get(
-                "arranged_by"
-            ) != "cairn":
-                assert time.monotonic() < deadline, "no version arranged by cairn in 30 s"
-                await asyncio.sleep(0.1)
+
+            async def arranged():
+                latest = (await person.get(page_path, headers=headers)).json()
+                return latest if latest["metrics"].get("arranged_by") == "cairn" else None
+
+            latest = await until("no version arranged by cairn", arranged)
             assert latest["version"] == noted + 1
             texts = [claim["text"] for claim in latest["claims"]]
             assert texts.count(repeated) == 1  # folded
@@ -1457,7 +1477,7 @@ def test_a_private_pre_release_admits_the_listed_and_the_operator_sets_the_plan(
             refused = await other.get(back.headers["location"])
             assert refused.status_code == 403, refused.text
             assert "oscar@example.test" not in refused.text.lower()
-            assert "cairn_session" not in other.cookies
+            assert session_cookie() not in other.cookies
 
             # The listed person signs in and gets a workspace of their own, on the free plan.
             assert await sign_in(person, idp, ada) == "/welcome"
@@ -1495,6 +1515,8 @@ def test_a_rollback_onto_a_newer_database_is_one_line_from_the_real_process(tmp_
     con = sqlite3.connect(db)
     try:
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+        # a step this cairn may not run on: the floor goes up with it
+        con.execute("UPDATE oldest_build SET version = ?", (SCHEMA_VERSION + 1,))
         con.commit()
     finally:
         con.close()
@@ -1507,7 +1529,10 @@ def test_a_rollback_onto_a_newer_database_is_one_line_from_the_real_process(tmp_
         assert "Traceback" not in result.stderr
         (line,) = result.stderr.splitlines()
         assert line.startswith("SchemaTooNew: the database has schema version ")
-        assert f"version {SCHEMA_VERSION + 1}; this cairn knows up to {SCHEMA_VERSION}." in line
+        assert (
+            f"version {SCHEMA_VERSION + 1} and needs a cairn of schema version"
+            f" {SCHEMA_VERSION + 1} or later; this cairn knows up to {SCHEMA_VERSION}."
+        ) in line
         assert db.read_bytes() == before, argv[0]
     assert sorted(path.name for path in tmp_path.iterdir()) == ["cairn.db"]
 
@@ -1673,6 +1698,7 @@ class Granola:
         self.failures = 0
         self.released = threading.Event()
         self.released.set()
+        self._requests = threading.Condition()
         stand_in = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -1688,7 +1714,9 @@ class Granola:
                 self.wfile.write(raw)
 
             def do_GET(self) -> None:
-                stand_in.heard.append((time.monotonic(), self.path))
+                with stand_in._requests:
+                    stand_in.heard.append((time.monotonic(), self.path))
+                    stand_in._requests.notify_all()
                 stand_in.asked.append(self.path)
                 if self.headers.get("authorization") != f"Bearer {stand_in.KEY}":
                     stand_in.refused += 1
@@ -1764,6 +1792,10 @@ class Granola:
         heard = list(self.heard)
         return [at for at, path in heard if urlsplit(path).path == "/v1/notes" and at > after]
 
+    def wait_for_listing(self, after: float, seconds: float) -> bool:
+        with self._requests:
+            return bool(self._requests.wait_for(lambda: self.listings(after), timeout=seconds))
+
     def fail_once(self) -> None:
         self.failures = 1
 
@@ -1789,6 +1821,7 @@ def test_a_teams_meetings_arrive_by_themselves_and_are_shared_with_a_list(tmp_pa
         "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
         "CAIRN_OIDC_CLIENT_SECRET": idp.CLIENT_SECRET,
         "CAIRN_OIDC_LABEL": "Acme SSO",
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
         key_env: granola.KEY,  # the server's environment holds the key, never cairn
     }
     options = ("--sign-in", "oidc", "--join", "default", "--allowed-email-domain", "example.test")
@@ -1809,7 +1842,12 @@ def test_a_teams_meetings_arrive_by_themselves_and_are_shared_with_a_list(tmp_pa
 
     def run(*args: str) -> subprocess.CompletedProcess:
         """The operator's command, with the key in its environment as the server has it."""
-        done = cairn(*args, "--db", str(db), env={key_env: granola.KEY})
+        done = cairn(
+            *args,
+            "--db",
+            str(db),
+            env={key_env: granola.KEY, "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow"},
+        )
         printed.extend((done.stdout, done.stderr))
         return done
 
@@ -2211,6 +2249,7 @@ def test_a_companys_calendar_is_read_by_the_server_signed_in_as_a_service_accoun
         "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
         "CAIRN_OIDC_CLIENT_SECRET": idp.CLIENT_SECRET,
         "CAIRN_OIDC_LABEL": "Acme SSO",
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
         credential_env: google.credential(),
     }
     options = ("--sign-in", "oidc", "--join", "default", "--allowed-email-domain", "example.test")
@@ -2231,7 +2270,12 @@ def test_a_companys_calendar_is_read_by_the_server_signed_in_as_a_service_accoun
 
     def run(*args: str) -> subprocess.CompletedProcess:
         """The operator's command, with the credential in its environment."""
-        done = cairn(*args, "--db", str(db), env={credential_env: google.credential()})
+        done = cairn(
+            *args,
+            "--db",
+            str(db),
+            env={credential_env: google.credential(), "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow"},
+        )
         printed.extend((done.stdout, done.stderr))
         return done
 
@@ -2415,17 +2459,7 @@ def last_run(section: str) -> datetime | None:
 
 
 async def until(what: str, check, seconds: float = 30.0):
-    """`check()` awaited every tenth of a second until it gives something true, which is
-    returned; AssertionError naming `what` once `seconds` have passed without: a hang guard
-    on the real process and nothing else, so it is generous."""
-    deadline = time.monotonic() + seconds
-    while True:
-        found = await check()
-        if found:
-            return found
-        if time.monotonic() > deadline:
-            raise AssertionError(f"{what}: not within {seconds:g} s")
-        await asyncio.sleep(0.1)
+    return await poll_until_async(check, what, seconds, every=0.1)
 
 
 def test_meetings_arrive_by_themselves_while_the_server_runs(tmp_path):
@@ -2444,6 +2478,7 @@ def test_meetings_arrive_by_themselves_while_the_server_runs(tmp_path):
         "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
         "CAIRN_OIDC_CLIENT_SECRET": idp.CLIENT_SECRET,
         "CAIRN_OIDC_LABEL": "Acme SSO",
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
         key_env: granola.KEY,  # only the server's environment holds the key: it syncs
     }
     every = 1.0  # seconds between two passes' starts: the least --sync-every takes
@@ -2461,11 +2496,8 @@ def test_meetings_arrive_by_themselves_while_the_server_runs(tmp_path):
     made_ids: dict[str, str] = {}
 
     async def quiet(seconds: float, after: float) -> None:
-        """Watch for `seconds`, a tenth at a time, failing at once if Granola is listed."""
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            assert granola.listings(after) == [], "Granola was listed while the source was off"
-            await asyncio.sleep(0.1)
+        listed = await asyncio.to_thread(granola.wait_for_listing, after, seconds)
+        assert not listed, "Granola was listed while the source was off"
 
     async def journey() -> None:
         async with httpx2.AsyncClient(base_url=url, timeout=30) as owner:
@@ -2708,7 +2740,10 @@ def test_an_install_under_its_own_name_shows_only_the_sign_in_and_remembers_it(t
 
             # The person signs in; the session cookie has its neutral name and lasts 30 days.
             assert await sign_in(person, idp, ada) == "/welcome"
-            assert "cairn_session" not in person.cookies and "session" in person.cookies
+            assert (
+                session_cookie() not in person.cookies
+                and session_cookie(branded=True) in person.cookies
+            )
             (kept,) = [c for c in person.cookies.jar if c.name == "session"]
             assert 29 * 86_400 < kept.expires - time.time() <= 30 * 86_400  # not 12 hours
             welcome = await person.get("/welcome")
@@ -2727,7 +2762,7 @@ def test_an_install_under_its_own_name_shows_only_the_sign_in_and_remembers_it(t
 
             slug, storage = await connect_by_url(url, person, "", "ada-laptop", agent)
             secrets_seen.extend([storage.tokens.access_token, storage.tokens.refresh_token])
-            secrets_seen.append(person.cookies["session"])
+            secrets_seen.append(person.cookies[session_cookie(branded=True)])
 
             # The server starts again on the same database.
             server.stop()
@@ -2757,3 +2792,318 @@ def test_an_install_under_its_own_name_shows_only_the_sign_in_and_remembers_it(t
     stored = database_text(server.db)
     for secret in [*secrets_seen, *idp.issued]:
         assert secret not in stored
+
+
+# K1: Slack, both ways, from set-up to removal
+
+LAUNCHER = Path(__file__).with_name("slack_serve.py")
+STAND_IN = Path(__file__).resolve().parents[2] / "scripts" / "slack_standin.py"
+PUBLIC = "https://cairn.example.test"
+SLACK_KEY = base64.b64encode(bytes(range(100, 132))).decode()  # made up: 32 bytes
+LINK = re.compile(re.escape(PUBLIC) + r"/integrations/slack/link\?t=([A-Za-z0-9_-]+)")
+
+
+def slack_stand_in():
+    """scripts/slack_standin.py's SlackStandIn, a colleague's stand-in for Slack, loaded as
+    its own tests load it."""
+    spec = importlib.util.spec_from_file_location("slack_standin", STAND_IN)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.SlackStandIn
+
+
+class Loopback(httpx2.AsyncBaseTransport):
+    """A browser's way to PUBLIC: a request to its host goes to the server's loopback port, as
+    a proxy that ends TLS would send it, every header kept (Host among them); any other (the
+    identity provider's) goes where it says. The browser's cookie jar sees https, so it sends
+    back the cookies a server with an https public URL marks Secure."""
+
+    def __init__(self, port: int) -> None:
+        self.port = port
+        self.inner = httpx2.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request):
+        if request.url.host == urlsplit(PUBLIC).hostname:
+            local = request.url.copy_with(scheme="http", host="127.0.0.1", port=self.port)
+            request = httpx2.Request(
+                request.method, local, headers=request.headers, stream=request.stream
+            )
+        return await self.inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
+
+
+def slack_said(message: bytes | dict) -> str:
+    """What a message of the bot says: its fallback text and each block's text."""
+    found = json.loads(message) if isinstance(message, bytes) else message
+    texts = [found.get("text", "")]
+    texts += [block["text"]["text"] for block in found.get("blocks", []) if "text" in block]
+    return "\n".join(texts)
+
+
+def slack_rows(db: Path, query: str, *args) -> list[tuple]:
+    con = sqlite3.connect(db)
+    try:
+        return con.execute(query, args).fetchall()
+    finally:
+        con.close()
+
+
+INSTALLS = "SELECT state, bot_token IS NULL, signing_secret IS NULL FROM slack_installs"
+
+
+def test_a_workspace_uses_slack_from_set_up_to_removal(tmp_path):
+    """K1 on the real server process. `serve --slack` runs through tests/system/slack_serve.py:
+    `python -m cairn.server` with Slack's Web API and reply addresses pointed at the stand-in
+    (scripts/slack_standin.py) on loopback. The server and stand-in have their own clocks,
+    advanced 10 days on restart. An owner sets the app up and
+    pastes the two secrets; the stand-in's signed challenge turns it on; a person is offered a
+    link by the slash command and confirms it signed in; they choose a project; the message
+    shortcut files a message whose author is of the team and refuses one whose author is not;
+    `find` answers with the claim and its link; a direct message is answered. An uninstall
+    from Slack's slow clock is ignored and audited. Slack revokes the bot's token with a
+    later dispatch time and the install is off; Slack uninstalls the app and the notes are due,
+    not forgotten; 10 days on they are gone. A second workspace's install takes the two
+    removal events in the other order and ends in the same state. No secret, one-time value or
+    message is in the server's output, and no secret or one-time value in the database."""
+    idp = IdentityProvider()
+    server_time = datetime(2031, 3, 4, 9, tzinfo=UTC)
+    slack_time = server_time - timedelta(seconds=30)
+    standin = slack_stand_in()(clock=lambda: slack_time.timestamp()).__enter__()
+    env = {
+        "CAIRN_OIDC_ISSUER": idp.url,
+        "CAIRN_OIDC_CLIENT_ID": idp.CLIENT_ID,
+        "CAIRN_OIDC_CLIENT_SECRET": idp.CLIENT_SECRET,
+        "CAIRN_OIDC_LABEL": "Fable Works SSO",
+        "CAIRN_SLACK_KEY": SLACK_KEY,
+        "JOURNEY_SLACK_API": standin.api_base,
+        "JOURNEY_SERVER_TIME": server_time.isoformat(),
+        # Slack is called through the client the sources use, whose addresses are checked; the
+        # stand-in is on loopback, which an operator has to allow.
+        "CAIRN_SOURCE_PRIVATE_ADDRESSES": "allow",
+    }
+    options = ("--sign-in", "oidc", "--join", "personal", "--public-url", PUBLIC, "--slack")
+    server = Server(tmp_path / "cairn.db", *options, env=env)
+    server.runs = (str(LAUNCHER),)
+    ada = {"sub": "idp-ada", "email": "ada@fable.example.test", "name": "Ada Example"}
+    brook = {"sub": "idp-brook", "email": "brook@quill.example.test", "name": "Brook Example"}
+    secrets_seen = [standin.signing_secret, standin.bot_token, SLACK_KEY, idp.CLIENT_SECRET]
+    words = [
+        "The tide turns at nine on the north pier.",
+        "The harbour office opens at eight.",
+        "The pilot boat leaves at six.",
+    ]
+
+    def address(install: str, kind: str) -> str:
+        return f"{server.url}/integrations/slack/{install}/{kind}"  # where a proxy sends Slack
+
+    def lifecycle(install: str, event: dict) -> tuple[int, bytes]:
+        return standin.send_event(address(install, "events"), event)
+
+    bot_revoked = {"type": "tokens_revoked", "tokens": {"bot": [standin.bot_user_id]}}
+
+    async def replied(method: str, count: int) -> dict:
+        """The `count`th call the server made to the stand-in by `method`, once it has."""
+
+        async def check():
+            found = [call.fields for call in standin.calls if call.method == method]
+            return found[count - 1] if len(found) >= count else None
+
+        return await until(f"call {count} to {method}", check)
+
+    async def set_up(person) -> str:
+        """The owner sets Slack up on the Sources page and pastes the two secrets; Slack's
+        signed challenge turns it on. Returns the install's id."""
+        assert ">Set up Slack</button>" in (await person.get("/sources")).text
+        made = await person.post("/integrations/slack/setup", headers=SAME_ORIGIN)
+        assert made.status_code == 303 and made.headers["location"] == "/sources#slack"
+        page = html.unescape((await person.get("/sources")).text)
+        (install,) = set(re.findall(r"/integrations/slack/(sl_[0-9a-f]{12})/events", page))
+        assert f'"request_url": "{PUBLIC}/integrations/slack/{install}/events"' in page
+        assert "https://api.slack.com/apps?new_app=1&manifest_json=" in page
+        assert "Set up started." in page and 'type="password"' in page
+        kept = await person.post(
+            "/integrations/slack/secrets", headers=SAME_ORIGIN,
+            data={"signing_secret": standin.signing_secret, "bot_token": standin.bot_token},
+        )  # fmt: skip
+        assert kept.status_code == 303
+        page = (await person.get("/sources")).text
+        assert "Ready: Slack accepted the bot token" in page
+        assert standin.signing_secret not in page and standin.bot_token not in page
+        assert standin.verify_url(address(install, "events")) == (200, b"review-challenge")
+        assert "On: Slack verified the events address" in (await person.get("/sources")).text
+        return install
+
+    async def linked(person, install: str) -> None:
+        """The slash command offers the Slack user a link; the person says yes signed in and
+        is shown a code; the same Slack user types it back with the command."""
+        status, body = standin.send_command(address(install, "commands"), text="find tide")
+        assert status == 200 and json.loads(body)["response_type"] == "ephemeral"
+        (value,) = set(LINK.findall(slack_said(body)))
+        secrets_seen.append(value)
+        shown = await person.get(f"/integrations/slack/link?t={value}")
+        assert shown.status_code == 200 and "Link this Slack user to you?" in shown.text
+        assert "Ada Review" in shown.text  # the name Slack gives the user (users.info)
+        yes = await person.post(f"/integrations/slack/link?t={value}", headers=SAME_ORIGIN)
+        assert yes.status_code == 200 and yes.headers["cache-control"] == "no-store"
+        (code,) = set(re.findall(r"<code>([A-Z0-9]{4}-[A-Z0-9]{4})</code>", yes.text))
+        secrets_seen.append(code)
+        assert f"/cairn link {code}" in html.unescape(yes.text)
+        again = await person.post(f"/integrations/slack/link?t={value}", headers=SAME_ORIGIN)
+        assert again.status_code == 404  # used up
+        status, body = standin.send_command(address(install, "commands"), text=f"link {code}")
+        assert status == 200 and slack_said(body).startswith("Linked to ")
+        page = (await person.get("/sources")).text
+        assert f"<code>{standin.user_id}</code>" in page
+
+    async def chose(person, install: str, project: str) -> None:
+        """The person makes a project and makes it their Slack project."""
+        made = await person.post(
+            "/projects", data={"name": project, "kind": "general"}, headers=SAME_ORIGIN
+        )
+        assert made.status_code in (200, 303), made.text
+        status, body = standin.send_command(address(install, "commands"), text=f"project {project}")
+        assert status == 200 and f"Slack project: {project}" in slack_said(body)
+
+    async def journey() -> None:
+        nonlocal server_time, slack_time
+        async with (
+            httpx2.AsyncClient(base_url=PUBLIC, transport=Loopback(server.port), timeout=30) as one,
+            httpx2.AsyncClient(base_url=PUBLIC, transport=Loopback(server.port), timeout=30) as two,
+        ):
+            await sign_in(one, idp, ada)
+            secrets_seen.extend(cookie.value for cookie in one.cookies.jar)
+            first = await set_up(one)
+            await linked(one, first)
+            await chose(one, first, "tides")
+
+            # The message shortcut files a message whose author is of the team...
+            message = {"type": "message", "user": standin.user_id, "ts": "1700000000.000100",
+                       "text": words[0]}  # fmt: skip
+            sent = standin.send_action(address(first, "actions"), {"message": message})
+            assert sent == (200, b"")
+            filed = await replied("response_url", 1)
+            assert filed["response_type"] == "ephemeral"
+            assert slack_said(filed).startswith("Filed: ")
+            assert f"<{PUBLIC}/b/tides/p/" in slack_said(filed)
+            # ...and refuses one whose author is not, saying why.
+            outside = {**message, "user": standin.external_user_id, "ts": "1700000000.000200"}
+            sent = standin.send_action(address(first, "actions"), {"message": outside})
+            assert sent == (200, b"")
+            refused = await replied("response_url", 2)
+            assert "author is not of this Slack workspace" in slack_said(refused)
+            assert refused["response_type"] == "ephemeral"
+
+            # `find` answers with the claim and its link, for the asker alone.
+            status, body = standin.send_command(address(first, "commands"), text="find tide")
+            assert status == 200 and json.loads(body)["response_type"] == "ephemeral"
+            found = slack_said(body)
+            assert words[0] in found and "Project: tides" in found
+            claim = re.escape(f"<{PUBLIC}/b/tides/p/") + r"[a-z0-9-]+#cl_[0-9a-z]+\|"
+            assert re.search(claim, found), found
+
+            # A direct message is answered in that conversation: a search, then a note.
+            direct = {"type": "message", "channel": "D00000001", "channel_type": "im",
+                      "user": standin.user_id, "text": "north pier",
+                      "ts": "1700000001.000100"}  # fmt: skip
+            assert standin.send_event(address(first, "events"), direct) == (200, b"")
+            answer = await replied("chat.postMessage", 1)
+            assert answer["channel"] == "D00000001" and words[0] in slack_said(answer)
+            note = {**direct, "text": f"note: {words[1]}", "ts": "1700000001.000200"}
+            assert standin.send_event(address(first, "events"), note) == (200, b"")
+            assert slack_said(await replied("chat.postMessage", 2)).startswith("Filed: ")
+            came = slack_rows(server.db, "SELECT note_id, how FROM slack_notes ORDER BY how")
+            assert [how for _, how in came] == ["filed", "typed"]
+            notes = [note_id for note_id, _ in came]
+
+            # Slack dispatches after set-up, while its clock is still behind the server's.
+            slack_time += timedelta(seconds=1)
+            assert lifecycle(first, {"type": "app_uninstalled"}) == (200, b"")
+            assert slack_rows(server.db, f"{INSTALLS} WHERE id = ?", first) == [("on", 0, 0)]
+            assert slack_rows(server.db, "SELECT COUNT(*) FROM slack_people") == [(1,)]
+            [(detail,)] = slack_rows(
+                server.db,
+                "SELECT detail FROM audit_events WHERE action = 'slack.lifecycle_ignored'",
+            )
+            assert json.loads(detail) == {
+                "install": first, "event": "app_uninstalled", "why": "at_or_before_setup",
+            }  # fmt: skip
+            slack_time += timedelta(seconds=30)
+
+            # Slack revokes the bot's token: off, the token deleted, nothing due.
+            assert lifecycle(first, bot_revoked) == (200, b"")
+            page = html.unescape((await one.get("/sources")).text)
+            assert "Off, because Slack revoked the bot's token." in page
+            assert slack_rows(server.db, f"{INSTALLS} WHERE id = ?", first) == [("off", 1, 0)]
+            assert standin.send_command(address(first, "commands"), text="find tide")[0] == 404
+            due = "SELECT COUNT(*), COUNT(forget_at) FROM slack_notes"
+            assert slack_rows(server.db, due) == [(2, 0)]
+
+            # Slack uninstalls the app: removed, both secrets and the links gone, notes due.
+            gone = lifecycle(first, {"type": "app_uninstalled"})
+            assert gone == (200, b"")
+            page = (await one.get("/sources")).text
+            assert "2 notes came through Slack: they will be forgotten on" in page
+            assert ">Forget them now</button>" in page
+            assert slack_rows(server.db, f"{INSTALLS} WHERE id = ?", first) == [("removed", 1, 1)]
+            assert slack_rows(server.db, "SELECT COUNT(*) FROM slack_people") == [(0,)]
+            assert slack_rows(server.db, due) == [(2, 2)]
+            (when,) = {at for (at,) in slack_rows(server.db, "SELECT forget_at FROM slack_notes")}
+            assert datetime.fromisoformat(when) == server_time + timedelta(days=10)
+            kept = "SELECT COUNT(*) FROM notes WHERE id IN (?, ?)"
+            assert slack_rows(server.db, kept, *notes) == [(2,)]  # due, not forgotten
+
+            # Ten days on (the store's clock, from a restart), they are gone.
+            server.stop()
+            server_time += timedelta(days=10, minutes=1)
+            slack_time += timedelta(days=10, minutes=1)
+            server.env["JOURNEY_SERVER_TIME"] = server_time.isoformat()
+            server.start()
+
+            async def forgotten():
+                return slack_rows(server.db, kept, *notes) == [(0,)]
+
+            await until("the notes that came through Slack forgotten", forgotten)
+            assert slack_rows(server.db, due) == [(0, 0)]
+            stored = database_text(server.db)
+            assert words[0] not in stored and words[1] not in stored
+
+            # A second workspace's install: Slack uninstalls first, then revokes the token.
+            await sign_in(two, idp, brook)
+            secrets_seen.extend(cookie.value for cookie in two.cookies.jar)
+            second = await set_up(two)
+            assert second != first
+            await linked(two, second)
+            await chose(two, second, "harbour")
+            status, body = standin.send_command(
+                address(second, "commands"), text=f"note {words[2]}"
+            )
+            assert status == 200 and slack_said(body).startswith("Filed: ")
+            uninstalled = lifecycle(second, {"type": "app_uninstalled"})
+            revoked = lifecycle(second, bot_revoked)
+            assert uninstalled == (200, b"") and revoked[0] == 404  # removed: no address
+            both = slack_rows(server.db, f"{INSTALLS} WHERE id IN (?, ?)", first, second)
+            assert both == [("removed", 1, 1), ("removed", 1, 1)]
+            assert slack_rows(server.db, "SELECT COUNT(*) FROM slack_people") == [(0,)]
+            assert slack_rows(server.db, due) == [(1, 1)]
+            page = (await two.get("/sources")).text
+            assert "1 note came through Slack: it will be forgotten on" in page
+
+    server.start()
+    try:
+        asyncio.run(journey())
+    finally:
+        output = server.stop()
+        standin.__exit__(None, None, None)
+        idp.close()
+
+    for secret in [*secrets_seen, *idp.issued]:
+        assert secret not in output, "a secret or a one-time value reached the server's output"
+    assert "?t=" not in output, "a one-time address reached the server's output"
+    for said in [*words, "north pier"]:
+        assert said not in output, said
+    assert output.count("200 (ignored)") == 1
+    stored = database_text(server.db)
+    for secret in [*secrets_seen, *idp.issued]:
+        assert secret not in stored, "a secret or a one-time value is in the database"

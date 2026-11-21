@@ -431,39 +431,42 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         it is `mentioned_by`, with `there` alone (no `here`, no `pages`): a claim of the other page
         that names this page's title in its prose. Each place the title stands in the claim is
         judged by itself: one that stands whole outside code, and outside a URL, a path, a flag or a
-        version, names it, whatever other place overlaps it. Code is what Markdown reads as code in
-        the claim alone: in backticks, a fenced block (its opening line included), an indented
-        block; text indented under a list item is the item's prose. A URL, a path, a flag or a
+        version, names it, whatever other place overlaps it. Code is what the page that shows the
+        claim renders as code: in backticks, a fenced block (its opening line included), an indented
+        block, and all of a claim longer than 100,000 characters, which it shows as preformatted
+        text; text indented under a list item is the item's prose. A URL, a path, a flag or a
         version is what the page's facts read as one, so a bare `ledger/notes.md` still names a page
-        Ledger; a claim that holds a mark of the index or a null character names none (the pages
-        this page mentions are not listed). A claim that cites several passages is read by its
-        first. A term more than 5 pages hold relates none, nor one whose words more than 64 claims
-        of the project hold, nor one longer than 200 characters; a title more than 5 other pages
-        name so, or more than 64 of their claims hold, in prose or not, relates none either. A term
-        the search does not find as it is written (`1,250x`, compared without its separator) relates
-        none, from either page. A term fewer pages hold weighs more, and a page gives its 3
-        weightiest reasons and counts the others in `more`. Relations are worked out by rule from
-        the pages as they are when asked: nothing of them is stored, nothing is inferred from
-        meaning, and none joins two projects. Claims are quoted text: each says who wrote the notes
-        it cites (written_by, as recall's), whether any is outside (a connected source's, or a filed
-        Slack message), and when the newest was written (written_at). A claim longer than 600
-        characters has `text_cut` and, in place of `text`, `line`: the line that holds the term or
-        names the title (`line_cut` when that is cut to 400), or its first 600 characters as `text`
-        where no line can be told; `page` gives it whole. `passage_ids` names the first 8 passages a
-        claim cites, and `passage_ids_more` counts the rest. A smaller `limit` gives a smaller
-        answer. `searched` says what was left out, in counts. `terms_looked_up`: the page's terms
-        looked up, 256 at most, the shortest first. `terms_not_looked_up`: its terms past those, and
-        those not looked up once the read has been handed 150,000 rows of the index for the terms
-        and the title, the title then counting as one: where other projects hold the page's terms in
-        very many claims, an answer can be incomplete, and says so here. Not counted in those rows:
-        the index's own walk, which passes over a claim that holds a term's words apart without
-        handing it over, and two seeks a page of the project, once a read, to find the project's
-        rows. `claims_read`: claims of other pages read for those terms and for the title.
-        `claims_not_read`: such claims not read, past 512 claims or 750,000 bytes of the passages
-        they cite; a term with a claim not read gives no reason, nor does the title. The page's own
-        passages are read whole, as `page` reads them, and count in neither bound. `pages_left_out`:
-        related pages past `limit`. `complete` is true when those three counts of what was left out
-        are 0."""
+        Ledger, and so does a title in a link's address written in angle brackets or in a link's
+        title; the facts read text between escaped backticks as code, so a title there names
+        nothing, though the page shows it as prose. A claim that holds a mark of the index or a null
+        character names none (the pages this page mentions are not listed). A claim that cites
+        several passages is read by its first. A term more than 5 pages hold relates none, nor one
+        whose words more than 64 claims of the project hold, nor one longer than 200 characters; a
+        title more than 5 other pages name so, or more than 64 of their claims hold, in prose or
+        not, relates none either. A term the search does not find as it is written (`1,250x`,
+        compared without its separator) relates none, from either page. A term fewer pages hold
+        weighs more, and a page gives its 3 weightiest reasons and counts the others in `more`.
+        Relations are worked out by rule from the pages as they are when asked: nothing of them is
+        stored, nothing is inferred from meaning, and none joins two projects. Claims are quoted
+        text: each says who wrote the notes it cites (written_by, as recall's), whether any is
+        outside (a connected source's, or a filed Slack message), and when the newest was written
+        (written_at). A claim longer than 600 characters has `text_cut` and, in place of `text`,
+        `line`: the line that holds the term or names the title (`line_cut` when that is cut to
+        400), or its first 600 characters as `text` where no line can be told; `page` gives it
+        whole. `passage_ids` names the first 8 passages a claim cites, and `passage_ids_more` counts
+        the rest. A smaller `limit` gives a smaller answer. `searched` says what was left out, in
+        counts. `terms_looked_up`: the page's terms looked up, 256 at most, the shortest first.
+        `terms_not_looked_up`: its terms past those, and those not looked up once the read has been
+        handed 150,000 rows of the index for the terms and the title, the title then counting as
+        one: where other projects hold the page's terms in very many claims, an answer can be
+        incomplete, and says so here. Not counted in those rows: the index's own walk, which passes
+        over a claim that holds a term's words apart without handing it over, and two seeks a page
+        of the project, once a read, to find the project's rows. `claims_read`: claims of other
+        pages read for those terms and for the title. `claims_not_read`: such claims not read, past
+        512 claims or 750,000 bytes of the passages they cite; a term with a claim not read gives no
+        reason, nor does the title. The page's own passages are read whole, as `page` reads them,
+        and count in neither bound. `pages_left_out`: related pages past `limit`. `complete` is true
+        when those three counts of what was left out are 0."""
 
         def found() -> dict:
             with _call(ctx, "related") as memory:

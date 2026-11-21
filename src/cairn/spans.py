@@ -66,7 +66,7 @@ from typing import Literal, NamedTuple
 
 from markdown_it import MarkdownIt
 from markdown_it.common.utils import MD_TRIM_CHARS
-from markdown_it.rules_inline import backtick, image
+from markdown_it.rules_inline import backtick
 from pydantic import BaseModel, ConfigDict
 
 SpanKind = Literal["frontmatter", "heading", "paragraph", "bullet", "code", "table", "quote"]
@@ -537,16 +537,32 @@ def _closer(opener: str, run: str) -> str:
     return "".join(char if char in " \t" else " " for char in before) + run
 
 
-# Where the Markdown parser reads code in a text read alone (code_read): the parser the web
-# view reads with (_PARSER's settings), told to say where it reads each code span. Its token
-# of a block of text says which lines the block stands on and the text it parsed; that of a
-# code span says only what the span holds, so the backtick rule notes where the span stood in
-# the block's text, and the block's text is placed in the lines it was read from (`_placed`).
-# Emphasis is not read: its marks are resolved after every code span is found, and never
-# decide what is code (tests/unit/test_spans_unit.py reads both ways), and reading them is
-# most of a parse of text dense with them.
-_CODE_READER = MarkdownIt("commonmark", {"html": False}).enable("table").disable("emphasis")
-_PARAGRAPHS = ("paragraph_open", "heading_open=", "heading_open-")  # of whole lines
+# How a claim's Markdown is read, wherever it is read: the page that shows a claim
+# (cairn.web.markdown.render) and the code reader here (code_read) build their parser with
+# claim_markdown, and must agree, so that what is code is what the page shows as code
+# (tests/unit/test_spans_unit.py checks both on the same texts). CommonMark with tables and raw
+# HTML off, and these rules off: no picture (a remote one would tell its host who read the
+# page), no heading and no setext heading (a page's headings are cairn's). A claim longer than
+# MAX_RENDERED characters is not parsed at all: the page shows it whole as preformatted text.
+CLAIM_RULES_OFF = ("image", "heading", "lheading")
+MAX_RENDERED = 100_000  # characters of one claim; beyond this it is shown, not parsed
+
+
+def claim_markdown() -> MarkdownIt:
+    """A parser that reads a claim as the page that shows it does (CLAIM_RULES_OFF)."""
+    parser = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
+    return parser.enable("table").disable(list(CLAIM_RULES_OFF))
+
+
+# Where the Markdown parser reads code in a text read alone (code_read): a claim's parser,
+# told to say where it reads each code span. Its token of a block of text says which lines
+# the block stands on and the text it parsed; that of a code span says only what the span
+# holds, so the backtick rule notes where the span stood in the block's text, and the block's
+# text is placed in the lines it was read from (`_placed`). Emphasis is not read: its marks
+# are resolved after every code span is found, and never decide what is code
+# (tests/unit/test_spans_unit.py reads both ways), and reading them is most of a parse of text
+# dense with them.
+_CODE_READER = claim_markdown().disable("emphasis")
 _CELLS = ("th_open", "td_open")  # a table's cell: its bars written "\\|", read "|"
 
 
@@ -554,7 +570,6 @@ def _each_block(state) -> None:
     """The parser's own step that parses the text of each block, noting which block it is,
     and where code_read keeps what the rules below note."""
     state.env.setdefault("code", [])
-    state.env.setdefault("bases", [0])
     for token in state.tokens:
         if token.type == "inline":
             state.env["block"] = token
@@ -569,27 +584,14 @@ def _code_span(state, silent: bool) -> bool:
     if not backtick(state, silent):
         return False
     if not silent and len(state.tokens) > count and state.tokens[-1].type == "code_inline":
-        run, base = len(state.tokens[-1].markup), state.env["bases"][-1]
-        found = (state.env["block"], base + start + run, base + state.pos - run, run)
+        run = len(state.tokens[-1].markup)
+        found = (state.env["block"], start + run, state.pos - run, run)
         state.env["code"].append(found)
     return True
 
 
-def _picture(state, silent: bool) -> bool:
-    """The parser's own rule for a picture, which parses the picture's words as a text of
-    their own: they start two characters after the rule does (`![`)."""
-    if silent:
-        return image(state, silent)
-    state.env["bases"].append(state.env["bases"][-1] + state.pos + 2)
-    try:
-        return image(state, silent)
-    finally:
-        state.env["bases"].pop()
-
-
 _CODE_READER.core.ruler.at("inline", _each_block)
 _CODE_READER.inline.ruler.at("backticks", _code_span)
-_CODE_READER.inline.ruler.at("image", _picture)
 
 
 class _Block(NamedTuple):
@@ -614,16 +616,20 @@ class _Block(NamedTuple):
 
 
 def code_read(text: str) -> list[tuple[int, int]]:
-    """The stretches of `text` the Markdown parser reads as code, `text` read alone as the web
-    view reads it, as (start, end) in its characters, in the order they start: each fenced
-    or indented block of code, its lines whole (a fence's opening and closing lines
-    included); and the code of each code span, between its backtick runs, the line ends it
-    runs across included (in a picture's words too). Text indented under a list item is the
-    item's prose, and the parser says so. A text with no backtick, tilde, tab or four spaces
-    in a row holds no code and is not parsed. Where a block's text cannot be placed in the
-    lines it was read from (`_placed`), or a code span placed does not stand between two
-    runs of backticks, the span covers the lines it stands on: never less than its code.
+    """The stretches of `text` the Markdown parser reads as code, `text` read alone as the page
+    that shows a claim reads it (claim_markdown), as (start, end) in its characters, in the
+    order they start: each fenced or indented block of code, its lines whole (a fence's
+    opening and closing lines included); and the code of each code span, between its
+    backtick runs, the line ends it runs across included (in a link's words too). Text
+    indented under a list item is the item's prose, and the parser says so. A text longer
+    than MAX_RENDERED characters is code whole, unparsed, as the page shows it. A text with
+    no backtick, tilde, tab or four spaces in a row holds no code and is not parsed. Where a
+    block's text cannot be placed in the lines it was read from (`_placed`), or a code span
+    placed does not stand between two runs of backticks, the span covers the lines it
+    stands on: never less than its code.
     One parse, and work in proportion to the text and its code spans."""
+    if len(text) > MAX_RENDERED:
+        return [(0, len(text))]
     if not any(mark in text for mark in ("`", "~", "\t", "    ")):
         return []
     lines = _PARSER_LINES.split(text)
@@ -640,8 +646,9 @@ def code_read(text: str) -> list[tuple[int, int]]:
     after: dict[int, int] = {}  # each line: where the text of the last cell placed on it ends
     for opener, block in pairwise(tokens):
         if block.type == "inline" and block.map:
-            kind = opener.type + (opener.markup if opener.type == "heading_open" else "")
-            blocks[id(block)] = _placed(block.content, kind, block.map[0], lines, starts, after)
+            blocks[id(block)] = _placed(
+                block.content, opener.type, block.map[0], lines, starts, after
+            )
     for token, start, end, run in env["code"]:
         block = blocks[id(token)]
         bounds = block.starts and (block.at(start), block.at(end))
@@ -667,9 +674,9 @@ def _placed(
     The lines of a paragraph are the ends of the lines they were read from, after their
     indentation and the marks of their quotation or list item, the first without its blanks
     before and the last without those after it; the parser writes a tab it reads in part as
-    spaces, which stand before the line's end. A heading's or a cell's text is a piece of
-    its one line, the first such piece after the cell placed before it on that line, a
-    cell's with each bar it reads "|" written "\\|"."""
+    spaces, which stand before the line's end. A cell's text is a piece of its one line, the
+    first such piece after the cell placed before it on that line, with each bar it reads
+    "|" written "\\|"."""
     pieces = content.split("\n")
     begins = [0]
     for piece in pieces[:-1]:
@@ -678,7 +685,7 @@ def _placed(
     placed: list[int] | None = []
     for n, piece in enumerate(pieces):
         line, last = lines[first + n], n == len(pieces) - 1
-        if kind in _PARAGRAPHS:
+        if kind not in _CELLS:
             ends = (line.rstrip(MD_TRIM_CHARS), line.rstrip()) if last else (line,)
             end = next((len(end) for end in ends if end.endswith(piece.lstrip(" "))), None)
             if end is None:

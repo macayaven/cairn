@@ -89,11 +89,17 @@ BYTES_MAX: they are read whole, as `page` reads them, and a page of 380,000 char
 with facts costs 0.35 s alone. Judging where a title stands in prose (`_mentioning`) reads
 with the Markdown parser each passage that a claim listed for the title is the text of,
 once however many claims are, when it holds a backtick, a tilde, a tab or four spaces in a
-row: the bytes it parses are bounded as the passages read are. Measured on the same laptop
-on 2026-11-21 under a load of about 6, the middle of three runs, 64 such passages of 11,718
-bytes each (749,952 bytes): 0.17 s dense with code spans, 0.26 s with runs of backticks,
-0.80 s with code spans, emphasis marks and links, 0.08 s with indented lines; the blanking
-and the database in memory 0.05 to 0.10 s more.
+row and is no longer than cairn.spans.MAX_RENDERED characters: the bytes it parses are
+bounded as the passages read are, and it parses them as the page that shows them does.
+Measured on the same laptop on 2026-11-21 under a load of 4 to 5, the best of three runs,
+64 such passages of 11,718 bytes each (749,952 bytes), judging in all (the parse, the
+blanking and the database in memory) beside the page's own render of the same passages
+(cairn.web.markdown.render): "![a `b` " over and over, the worst shape found, 2.55 s beside
+2.43 s (4.16 s for the parse alone before the reading was the page's); tables of 300
+columns of code spans 1.80 s beside 1.09 s; code spans with emphasis marks and links 0.64 s
+beside 1.06 s; code spans alone 0.30 s beside 0.12 s; indented lines 0.13 s beside 0.05 s.
+Judging a title costs about what rendering the passages it judges costs; a passage of
+unclosed brackets and no backtick, which the page takes 5 s to render, it does not parse.
 
 What is given is bounded too, and a claim says when it is not whole (`Stated`). A claim's
 text is read to relations.TEXT_MAX characters and no further, by a handle on the value the
@@ -104,9 +110,11 @@ read already holds it and from where the term's fact stands in it: nothing is re
 and the text is not searched a second time. Beside a claim cut that names the title goes
 the line that names it: the line of its passage at the first place the index in memory
 finds the title in prose (`_in_prose`), from the passage this read holds. A
-claim cut that mentions the page as the index has it (its text is not its passage's) has no
-place that is known to be prose: it has no line, and an answer gives its first characters. A
-claim that holds a mark of the index or a null character names no page (`_mentioning`).
+claim cut that mentions the page as the index has it (its text is not its passage's,
+character for character: saved by hand, or differing from it only by the blanks that end
+its lines) has no place that is known to be prose: it has no line, and an answer gives its
+first characters. A claim that holds a mark of the index or a null character names no page
+(`_mentioning`).
 
 Statements, T being the terms looked up, beside the four of the caller (the page's head, the
 index's table, the notes of the passages the claims given cite, and who wrote them): 2 for
@@ -503,11 +511,13 @@ def _mentioning(
     place overlaps it: the index is given the claim's text with those stretches blanked
     out in place (relations.blanked) and asked the title again (`_in_prose`). Those are
     places of the passage because the claim's text is the passage's text; the statement
-    says whether it is (`_judged`). Where it is not (a page saved by hand), and where the
-    claim cites no passage of the project, the passage says nothing of the claim: the claim
-    mentions the page as the index has it, and its place is None. A claim that holds a mark
-    of the index or a null character names no page: where the index matched in it cannot
-    be told, so whether it names the title in its prose cannot be checked.
+    says whether it is (`_judged`), character for character. Where it is not (a page saved
+    by hand; a claim that differs from its passage only by the blanks that end its lines,
+    which the gate accepts as its text), and where the claim cites no passage of the
+    project, the passage says nothing of the claim: the claim mentions the page as the
+    index has it, and its place is None. A claim that holds a mark of the index or a null
+    character names no page: where the index matched in it cannot be told, so whether it
+    names the title in its prose cannot be checked.
 
     As for a term: a title one of whose claims was not read gives no mention at all; nor
     does a title more than relations.COMMON other pages name by this rule. One statement,

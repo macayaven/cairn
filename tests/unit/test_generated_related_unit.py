@@ -206,7 +206,10 @@ def relates(kind: str, text: str) -> bool:
     return kind != "inline_code" or len(text) >= 12 or any(not c.isalpha() for c in text)
 
 
-PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
+# As the page that shows a claim reads it (cairn.web.markdown), written out here: no picture,
+# no heading, no setext heading.
+PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")
+PARSER.disable(["image", "heading", "lheading"])
 
 
 def parsed_prose(span) -> str:

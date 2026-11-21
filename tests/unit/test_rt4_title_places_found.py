@@ -71,7 +71,6 @@ def expect(env, focus: str, pages: list[str]) -> None:
     assert mentions(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, sorted(pages)))
 
 
-@pytest.mark.xfail(strict=True, reason=READER_HEADINGS)
 @pytest.mark.parametrize("claim", SHOWN_IN_CODE)
 def test_a_title_the_page_shows_only_in_code_is_no_mention(env, claim):
     assert IN_CODE.search(str(render(claim))), render(claim)  # as page.html shows the claim
@@ -80,7 +79,6 @@ def test_a_title_the_page_shows_only_in_code_is_no_mention(env, claim):
     expect(env, focus, [])
 
 
-@pytest.mark.xfail(strict=True, reason=READER_HEADINGS)
 @pytest.mark.parametrize("claim", SHOWN_IN_CODE[:1])
 def test_five_pages_in_prose_beside_one_shown_in_code_are_five_mentions(env, claim):
     focus = file(env, TITLE, "The field guide is on the shelf.")
@@ -89,7 +87,6 @@ def test_five_pages_in_prose_beside_one_shown_in_code_are_five_mentions(env, cla
     expect(env, focus, plain)  # five name it in prose; cairn counts six and gives none
 
 
-@pytest.mark.xfail(strict=True, reason=READER_HEADINGS)
 @pytest.mark.parametrize("claim", SHOWN_IN_PROSE)
 @pytest.mark.parametrize("extra", [0, 5], ids=["alone", "beside-five"])
 def test_a_title_the_page_shows_in_prose_is_a_mention_and_counts(env, claim, extra):

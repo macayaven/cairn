@@ -51,10 +51,10 @@ from markdown_it.rules_core import StateCore
 from markdown_it.token import Token
 from markupsafe import Markup, escape
 
+from cairn.spans import MAX_RENDERED, claim_markdown
 from cairn.store.ranking import words
 from cairn.web.brand import Product, product_of
 
-MAX_RENDERED = 100_000  # characters of one claim; beyond this it is shown, not parsed
 _LINK_REL = "noopener noreferrer nofollow"
 _MONTHS = (
     "January",
@@ -113,8 +113,9 @@ def _cells(state: StateCore) -> None:
 
 
 def _parser() -> MarkdownIt:
-    parser = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
-    parser.enable("table").disable(["image", "heading", "lheading"])
+    # A claim is read as cairn.spans.claim_markdown reads it, wherever it is read: what is
+    # code here is what cairn.spans.code_read finds, and the two must agree.
+    parser = claim_markdown()
     parser.core.ruler.push("cairn_cells", _cells)
     parser.add_render_rule("link_open", _link_open)
     return parser

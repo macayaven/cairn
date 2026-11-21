@@ -189,12 +189,13 @@ for setting, value in holds.items():
         print(f"cairn-quick: settings check: {setting} differs in cairn from what the secret holds."
               ' How to write a value: "AWS settings" or "Google Cloud settings" in'
               " infra/quick/README.md")
-on = lambda n: any(map(re.compile(r"\ufeff?[ \t]*(export[ \t]+)?" + re.escape(n) + r"[ \t]*[=:]").match, unread))
+on = lambda n: sum(map(bool, map(re.compile(r"\ufeff?[ \t]*(export[ \t]+)?" + re.escape(n) + r"\s*([=:]|$)").match, unread)))
 names = sorted(n for n in given if on(n) or n not in holds and given[n] != own.get(n))
-count = len(unread) + sum(not on(n) for n in names)
-if count:
-    print(f"cairn-quick: settings check: {count} line(s) of the settings not compared"
-          + (": " + ", ".join(names) if names else ""))
+lines = [*map(on, names)]
+bare = len(unread) - sum(lines)
+if unread or names:
+    print(f"cairn-quick: settings check: {len(unread) + lines.count(0)} line(s) of the settings not compared"
+          + (": " + ", ".join(names) if names else "") + (f"; {bare} unnamed" if bare else ""))
 PY
   )
   docker inspect -f '{{json .Config.Env}}' "$id" "$image" 2>/dev/null | python3 -c "$check" >&2 2>/dev/null

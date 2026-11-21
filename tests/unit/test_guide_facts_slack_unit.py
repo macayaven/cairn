@@ -1159,9 +1159,13 @@ def test_connect_code_within_a_line_stays_between_its_backticks():
         "Code within a line stays between its backticks, as many as its own code needs, and a"
         " backtick that Slack paired with no other gets a backslash; where Slack's rich text"
         " names a span right after another, that span's code is written as plain characters,"
-        " since the backticks of the two would make one run; in a message that could hold a"
-        " table, code within a line that holds a `|` is written as plain characters, backticks"
-        " and all, since a table's row is cut at its bars before its code is read.",
+        " since the backticks of the two would make one run;",
+    )
+    says(
+        *CONNECT,
+        "in a message that could hold a table, code within a line that holds a `|` is written as"
+        " plain characters, backticks and all, since a table's row is cut at its bars before its"
+        " code is read.",
     )
     code = {"type": "text", "style": {"code": True}}
     section = {"type": "rich_text_section", "elements": [
@@ -1187,6 +1191,38 @@ def test_connect_code_within_a_line_stays_between_its_backticks():
     parsed = MarkdownIt("commonmark", {"html": False}).enable("table").parse(held)
     assert [token.type for token in parsed].count("table_open") == 1
     assert not [t for block in parsed for t in block.children or [] if t.type == "link_open"]
+
+
+def test_connect_two_code_spans_that_touch_in_plain_text_are_read_as_one():
+    """connect.md: "in a message sent as plain text, two code spans that touch with nothing
+    between them, ... are read as one span, since the text alone does not say where one ends;
+    rich text, which names its spans, is read span by span;" A limit, ruled on SL8 and left so
+    plain-text messages give what they gave."""
+    says(
+        *CONNECT,
+        "in a message sent as plain text, two code spans that touch with nothing between them,"
+        " ``` `a``b` ```, are read as one span, since the text alone does not say where one"
+        " ends; rich text, which names its spans, is read span by span;",
+    )
+
+    def read(note: str) -> list[tuple[str, str]]:
+        body = as_read(note)[0]
+        children = [t for b in MarkdownIt("commonmark").parse(body) for t in b.children or []]
+        return [(t.type, t.content) for t in children if t.type in ("code_inline", "text")]
+
+    assert read(a_filed_note("`a``b`")) == [("code_inline", "a``b")]
+    code = {"type": "text", "style": {"code": True}}
+    section = {
+        "type": "rich_text_section",
+        "elements": [{**code, "text": "a"}, {**code, "text": "b"}],
+    }
+    rich = note_from_message(
+        {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": "`a``b`",
+         "blocks": [{"type": "rich_text", "elements": [section]}]},
+        team_id=TEAM, team_domain="fable-works", conversation_id="C0LIBRARY1",
+        author="Cedar Quill", names={},
+    ).text  # fmt: skip
+    assert read(rich) == [("code_inline", "a"), ("text", "b")]  # the second its plain characters
 
 
 def test_connect_every_answer_is_for_you_alone():

@@ -154,7 +154,7 @@ def impatient_reads(monkeypatch) -> None:
     real = sqlite3.connect
 
     def connect(database, *args, **kwargs):
-        if kwargs.get("uri"):
+        if kwargs.get("uri") and "mode=ro" in str(database):
             kwargs["timeout"] = 0
         return real(database, *args, **kwargs)
 

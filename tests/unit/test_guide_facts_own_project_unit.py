@@ -80,8 +80,9 @@ RUN_COMMANDS = (  # its list: test_every_command_that_opens_the_database_is_name
     " database."
 )
 RUN_ADDRESSES = (
-    "An upgrade keeps the address of every page that remains, so links to it keep working; a"
-    " link to one of its claims keeps working where the claim kept its id."
+    "An upgrade keeps the current address of every page that remains. A link pinned to a"
+    " removed version can return 404. A claim link on the current page keeps working when the"
+    " claim keeps its id."
 )
 RUN_STATS = (
     "`--other-projects` adds one count, for each workspace that has any: the pages that cite,"

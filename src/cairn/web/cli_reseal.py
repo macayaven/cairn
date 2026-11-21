@@ -22,11 +22,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from cairn.store import Store
 from cairn.store.reseal import Resealed, reseal_google, reseal_slack
 from cairn.web import google_connect
 from cairn.web import slack as web_slack
-from cairn.web.cli_data import DB_EXISTS
+from cairn.web.cli_data import DB_EXISTS, open_existing
 
 COMMAND = "reseal"
 NO_KEY_NAMED = "reseal needs --google-connect, --slack or both: the keys whose values it seals"
@@ -70,7 +69,7 @@ def run(args: argparse.Namespace) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)  # refuses a database it cannot open before anything is read
+    store = open_existing(db)  # refuses a database it cannot open before anything is read
     try:
         try:  # names a variable, never a value
             google = google_connect.read_sealer(os.environ) if args.google_connect else None

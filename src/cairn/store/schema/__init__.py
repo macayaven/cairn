@@ -9,7 +9,9 @@ import functools
 import re
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
+from typing import NamedTuple
 
 from cairn.store.base import DEFAULT_ACCOUNT_ID, _has_table, _insert_account, _transaction
 from cairn.store.models import Account
@@ -46,6 +48,7 @@ from cairn.store.schema.shared import (
     _delete_securely,
     _secure_index,
 )
+from cairn.store.schema.v01 import DDL as _FIRST_SCHEMA
 from cairn.store.schema.v02_accounts import (
     _ACCOUNTS,
     _API_KEYS_BY_LABEL,
@@ -320,6 +323,18 @@ class UnknownSchema(RuntimeError):
     first table missing."""
 
 
+class Uninitialized(UnknownSchema):
+    """An existing file has no schema."""
+
+
+class ForeignSchema(UnknownSchema, sqlite3.DatabaseError):
+    """An older version number on a file whose structure differs from cairn at that version."""
+
+
+class DamagedDatabase(UnknownSchema, sqlite3.DatabaseError):
+    """SQLite found damage while reading the database."""
+
+
 class CannotOpen(sqlite3.DatabaseError):
     """The path cannot be opened as a cairn database: SQLite may not open or create a file
     there (SQLITE_CANTOPEN), may not write it (SQLITE_READONLY), or finds that the file is not
@@ -337,10 +352,12 @@ class CannotOpen(sqlite3.DatabaseError):
 def _refuse(path: str | Path, error: sqlite3.Error) -> None:
     """Raise CannotOpen from `error` when it is SQLite's own refusal to open the file at
     `path` (by its primary result code: SQLITE_NOTADB, SQLITE_CANTOPEN, SQLITE_READONLY);
-    return for anything else, a busy or locked database and an error cairn raised among them."""
+    raise DamagedDatabase for SQLITE_CORRUPT. Other errors retain their own diagnosis."""
     code = getattr(error, "sqlite_errorcode", None)
     if code is None:
         return
+    if code & 0xFF == sqlite3.SQLITE_CORRUPT:
+        raise DamagedDatabase(f"the SQLite database at {path} is damaged") from error
     if code & 0xFF == sqlite3.SQLITE_NOTADB:
         raise CannotOpen(path, not_a_database=True) from error
     if code & 0xFF in (sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_READONLY):
@@ -350,7 +367,19 @@ def _refuse(path: str | Path, error: sqlite3.Error) -> None:
 # Schema versions
 
 
-def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str], upgrade: bool = True) -> None:
+class SchemaChange(NamedTuple):
+    before: int
+    after: int
+    floor: int | None
+
+
+def _upgrade(
+    con: sqlite3.Connection,
+    stamp: Callable[[], str],
+    upgrade: bool = True,
+    create: bool = True,
+    on_commit: Callable[[SchemaChange], None] | None = None,
+) -> None:
     """Bring the database to SCHEMA_VERSION, one transaction per step, so a step that fails
     leaves the database as it was. With `upgrade` False, an older database is refused
     (SchemaTooOld) by the first step, from the version it reads under its write lock, and
@@ -364,38 +393,66 @@ def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str], upgrade: bool = 
     `stamp`: the store's clock, as an ISO timestamp."""
     reset = _STAMP.set(stamp)
     try:
-        while _schema_version(con) < SCHEMA_VERSION:
+        while True:
             said: list[Callable[[], None]] = []
             after = _AFTER.set(said)
             try:
                 with _transaction(con):
-                    _run_step(con, upgrade)
+                    step = _run_step(con, upgrade, create)
+                    if step is None:
+                        _check_tables(con)
+                        return
+                    change = None
+                    if on_commit is not None:
+                        before, end = step
+                        floor = _recorded_floor(con, end) if end >= _OLDEST_BUILD else None
+                        change = SchemaChange(before, end, floor)
             finally:
                 _AFTER.reset(after)
+            if on_commit is not None and change is not None:
+                on_commit(change)
             for say in said:  # committed: the step's transaction is over
                 say()
-        _check_tables(con)
     finally:
         _STAMP.reset(reset)
 
 
-def _run_step(con: sqlite3.Connection, upgrade: bool = True) -> None:
+def _run_step(
+    con: sqlite3.Connection, upgrade: bool = True, create: bool = True
+) -> tuple[int, int] | None:
     """One step of _upgrade, in its transaction."""
-    # Read again under the write lock: another process may have done this step.
+    # The first version read is under the same write lock as the step it selects.
     version = _schema_version(con)
     if version == 0:
+        if not create:
+            raise Uninitialized
         _create(con)
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        return version, SCHEMA_VERSION
     elif version < SCHEMA_VERSION:
+        _check_source(con, version)
         if not upgrade:
-            if version == 1:  # v0, or a file of someone else's with a table: told apart first
-                _check_v0(con)
             raise SchemaTooOld(version)
         step = version + 1
         _MIGRATIONS[step](con)
         if step >= _OLDEST_BUILD and step not in _ONLY_ADDS:
             _record_floor(con, step)
         con.execute(f"PRAGMA user_version = {step}")
+        return version, step
+    return None
+
+
+def current_version(con: sqlite3.Connection) -> int:
+    """Classify a read-only connection in a single SQLite snapshot."""
+    with _transaction(con, "DEFERRED"):
+        version = _schema_version(con)
+        if version == 0:
+            raise Uninitialized
+        if version < SCHEMA_VERSION:
+            _check_source(con, version)
+            raise SchemaTooOld(version)
+        _check_tables(con)
+        return version
 
 
 def _floor_of(version: int) -> int:
@@ -417,8 +474,14 @@ def _recorded_floor(con: sqlite3.Connection, version: int) -> int:
     oldest_build table, or no row in it): such a database is run by its own version only."""
     if not _has_table(con, "oldest_build"):
         return version
+    if not {"one", "version"}.issubset(_fields(con, "oldest_build")):
+        raise ForeignSchema("not a cairn database: unrecognized compatibility floor")
     row = con.execute("SELECT version FROM oldest_build WHERE one = 1").fetchone()
-    return version if row is None else row[0]
+    if row is None:
+        return version
+    if type(row[0]) is not int or not 1 <= row[0] <= version:
+        raise ForeignSchema("not a cairn database: invalid compatibility floor")
+    return row[0]
 
 
 def _runs_on(con: sqlite3.Connection) -> bool:
@@ -477,6 +540,8 @@ def _schema_version(con: sqlite3.Connection) -> int:
     may run on it (its floor is at or below SCHEMA_VERSION); SchemaTooNew otherwise, in one
     sentence that names the database's version, its floor and this cairn's version."""
     (version,) = con.execute("PRAGMA user_version").fetchone()
+    if con.execute("PRAGMA application_id").fetchone() != (0,):
+        raise ForeignSchema("not a cairn database: another application owns this file")
     if version > SCHEMA_VERSION:
         floor = _recorded_floor(con, version)
         if floor > SCHEMA_VERSION:
@@ -485,8 +550,19 @@ def _schema_version(con: sqlite3.Connection) -> int:
                 f" version {floor} or later; this cairn knows up to {SCHEMA_VERSION}"
             )
         return version
-    if version == 0 and con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
-        return 1
+    if version == 0:
+        if con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
+            return 1
+        # BEGIN IMMEDIATE reserves page one even for a zero-byte file. Use the file
+        # SQLite actually opened to distinguish that reservation from an existing header.
+        filename = con.execute("PRAGMA database_list").fetchone()[2]
+        if filename:
+            try:
+                allocated = Path(filename).stat().st_size
+            except OSError as error:
+                raise CannotOpen(filename) from error
+            if allocated:
+                raise ForeignSchema("not a cairn database: allocated pages without a schema")
     return version
 
 
@@ -535,3 +611,61 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     _OLDEST_BUILD: _drop_retired,
     _OWN_PASSAGES: _hold_to_own_projects,
 }
+
+
+# Keep the historical steps themselves. Reference databases never run a caller's hooks.
+_HISTORY = tuple(_MIGRATIONS.values())
+_SEARCH_TABLE = re.compile(
+    r"claim_search_acct_(?:default|[0-9a-f]{12})(?:_(?:config|content|data|docsize|idx))?"
+)
+
+
+def _objects(con: sqlite3.Connection) -> dict[str, str]:
+    """Schema objects common to all databases of a version. Each workspace's FTS is optional."""
+    return {
+        name: kind
+        for name, kind in con.execute(
+            "SELECT name, type FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"
+        )
+        if not _SEARCH_TABLE.fullmatch(name)
+    }
+
+
+def _fields(con: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    return tuple(row[0] for row in con.execute("SELECT name FROM pragma_table_xinfo(?)", (table,)))
+
+
+@functools.cache
+def _historical_shapes() -> dict[int, tuple[dict[str, str], dict[str, tuple[str, ...]]]]:
+    """Build once, in memory, from the empty original schema and each real step in order."""
+    shapes = {}
+    stamp = _STAMP.set(lambda: "2000-01-01T00:00:00+00:00")
+    try:
+        with closing(sqlite3.connect(":memory:", isolation_level=None)) as ref:
+            ref.executescript(_FIRST_SCHEMA)
+            for version in range(1, len(_HISTORY) + 2):
+                if version > 1:
+                    with _transaction(ref):
+                        _HISTORY[version - 2](ref)
+                objects = _objects(ref)
+                fields = {t: _fields(ref, t) for t in objects if objects[t] == "table"}
+                shapes[version] = objects, fields
+    finally:
+        _STAMP.reset(stamp)
+    return shapes
+
+
+def _check_source(con: sqlite3.Connection, version: int) -> None:
+    """Recognize the complete source shape before suggesting or applying its next step."""
+    if version == 1:
+        try:
+            _check_v0(con)
+        except sqlite3.DatabaseError as error:
+            if getattr(error, "sqlite_errorcode", None) is not None:
+                raise
+            raise ForeignSchema(str(error)) from error
+    if version < 1:
+        raise ForeignSchema("not a cairn database: unknown schema version")
+    objects, fields = _historical_shapes()[version]
+    if _objects(con) != objects or any(_fields(con, t) != names for t, names in fields.items()):
+        raise ForeignSchema(f"not a cairn database of schema version {version}")

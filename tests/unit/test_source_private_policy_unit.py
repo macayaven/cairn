@@ -132,9 +132,7 @@ def test_bad_setting_stops_the_command_before_opening_the_store(
     def opened(*args, **kwargs):
         pytest.fail("opened the store with an invalid source setting")
 
-    from cairn.web import cli
-
-    monkeypatch.setattr(cli, "_open_store", opened)
+    monkeypatch.setattr(Store, "__init__", opened)
     monkeypatch.setenv(SETTING, "synthetic-invalid-setting")
     db = tmp_path / "cairn.db"
     assert main([command, "--db", str(db), *extra]) == 2

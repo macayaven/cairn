@@ -3,8 +3,8 @@ here): whether each workspace's audit trail still chains (cairn.store.audit.chec
 
 It opens the file as `stats` does (cairn.web.cli_stats): read-only, with SQLite alone, never
 through the store, so that nothing it opens can write the very values it is asked to check.
-It refuses as `stats` does, with the same lines, and an older schema with its own
-OLDER_DATABASE. Nothing is written, made, removed, or changed in mode. It runs beside a
+Its schema refusal names this command in the common upgrade advice.
+Nothing is written, made, removed, or changed in mode. It runs beside a
 serving cairn: the check is one read transaction (check_trail), so a prune the server commits
 meanwhile does not change the verdict.
 
@@ -20,18 +20,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from cairn.store import SCHEMA_VERSION, CannotOpen
+from cairn.store import CannotOpen
 from cairn.store.audit import check_trail
-from cairn.store.schema import _check_tables, _refuse, _schema_version
-from cairn.web.cli_data import DB_EXISTS
+from cairn.store.schema import ForeignSchema, _refuse, current_version
+from cairn.web.cli_data import DB_EXISTS, OLDER_SCHEMA, warn_readable
 from cairn.web.cli_stats import CANNOT_READ, _connect
 
 COMMAND = "audit-verify"
-OLDER_DATABASE = (
-    "the database at {db} has an older schema (version {found}; this cairn's is {known}): start"
-    " the server once on it (serve --db) to bring it up to date, then run audit-verify again;"
-    " it only reads, so it does not upgrade it"
-)
+OLDER_DATABASE = OLDER_SCHEMA.replace("{command}", COMMAND)
 NO_WORKSPACE = "no workspace {workspace} in the database at {db}"
 HOLDS = "workspace {workspace}: {checked} {events} checked; the chain holds"
 BROKEN = (
@@ -69,20 +65,15 @@ def run(args: argparse.Namespace) -> int:
         return 1
     try:
         try:
-            version = _schema_version(con)  # SchemaTooNew: a newer cairn it may not read
-            if version >= SCHEMA_VERSION:
-                _check_tables(con)  # UnknownSchema: this version did not make it
-            if version < SCHEMA_VERSION:
-                print(
-                    OLDER_DATABASE.format(db=db, found=version, known=SCHEMA_VERSION),
-                    file=sys.stderr,
-                )
-                return 1
+            current_version(con)
+            warn_readable(db)
             try:
                 found = check_trail(con, args.workspace)
             except KeyError:
                 print(NO_WORKSPACE.format(workspace=args.workspace, db=db), file=sys.stderr)
                 return 1
+        except ForeignSchema:
+            raise
         except sqlite3.Error as error:
             _refuse(db, error)  # CannotOpen: not a database, or one it may not read
             print(CANNOT_READ.format(db=db, reason=type(error).__name__), file=sys.stderr)

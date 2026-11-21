@@ -160,8 +160,8 @@ workspace in creation order (the default one first), each with exactly account, 
 created_at, members (how many people belong to it), plan (its plan in force by
 Store.plan_in_force's rule: the one plan-set recorded; null for the server's default), from
 one read (Store.list_account_summaries). No email address; it reads no plans file, so a plan
-name the server's file no longer lists is printed as recorded. It writes nothing beyond what
-opening the store does: an older schema is migrated, as by every command.
+name the server's file no longer lists is printed as recorded. It reads an existing database and
+refuses an older schema before listing any workspace.
 No database: exit 1, one line on stderr, none made.
 `source-sync --plans FILE` (--name or --all) holds each workspace to its plan in force now
 (the operator's, else the default), as `serve --plans` does: a draft
@@ -194,18 +194,13 @@ schema version <version> but no table <table>".
 
 Only `serve` brings a database of an older schema to SCHEMA_VERSION, and only once it holds
 the server's lock (R1, below): its open, the store's default, comes after take_serve_lock.
-Every other command opens the store with upgrade=False, which reads the version under the
-write lock of the step that would have run and raises SchemaTooOld before anything is
-written: exit 1, one line on stderr (cli_data.OLDER_SCHEMA, which names the command and says
-to start the server once on it), nothing on stdout, nothing written (a log a killed server
-left beside the file is folded into it by SQLite as the connection closes, its rows
-unchanged). `stats` and
-`audit-verify` read with SQLite alone and refuse one in their own words. A busy database is
-SQLite's error, as before; an empty or new file is still made at this schema by the commands
-that make one. An older build's `serve` took the same lock on the same file (since the first
-public version), so a new server cannot upgrade beneath one; an older build's other
-commands take no lock, and one still open across the upgrade can still write into the
-upgraded database.
+Administrative commands open an existing database at a compatible schema. An older cairn
+schema gets one shared refusal, including from the read-only commands `stats` and
+`audit-verify`. Opening it leaves its schema, durable WAL and journal mode alone.
+`key-create` and `import` can publish a new database at an unused path after their work
+succeeds. Only `serve` initializes an existing empty file. A failed start reports the last
+schema and compatibility floor its own steps committed. An older server shares the lock.
+Stop other older commands and library writers before upgrading.
 
 A --db path the store cannot open as a cairn database (the store raises CannotOpen from
 SQLite's own refusal before it writes anything, and a folder cairn may not make for it is the
@@ -287,7 +282,9 @@ from cairn.store import (
     Store,
     UnknownSchema,
 )
-from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
+from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER, DatabaseLinks, hard_linked
+from cairn.store.portable import COMPACT_LOCK
+from cairn.store.schema import ForeignSchema, SchemaChange, Uninitialized
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import (
     cli_arrange,
@@ -773,7 +770,7 @@ def _waiting(db: Path, workspace: str | None, as_json: bool) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = cli_data.open_existing(db)
     try:
         notes = store.waiting_notes()
         if workspace is not None:
@@ -820,7 +817,7 @@ def _plan_command(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"no database at {args.db}", file=sys.stderr)
         return 1
-    store = Store(args.db, upgrade=False)
+    store = cli_data.open_existing(args.db)
     try:
         if args.command == "workspace-list":
             rows = [
@@ -1104,7 +1101,7 @@ def _workspace(args: argparse.Namespace) -> Store:
     there is no database or no such workspace."""
     if not args.db.is_file():
         raise KeyError(f"no database at {args.db}")
-    store = Store(args.db, upgrade=False)
+    store = cli_data.open_existing(args.db)
     if args.workspace is None:
         return store
     try:
@@ -1346,6 +1343,8 @@ def take_serve_lock(db: Path) -> ServeLock | None:
     lock file cannot be made or opened (O_NOFOLLOW: a link planted there is refused)."""
     if str(db) == ":memory:":
         return ServeLock(None, None)
+    if reason := hard_linked(db):
+        raise DatabaseLinks(reason)
     path = serve_lock_path(db)
     flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
     while True:
@@ -1361,14 +1360,6 @@ def take_serve_lock(db: Path) -> ServeLock | None:
         if _same_file(fd, path):
             return ServeLock(path, fd)
         os.close(fd)  # the server that held it removed it between our open and our lock
-
-
-def _open_store(db: Path) -> Store:
-    """The store at `db`, creating its directory first (a fresh checkout has none), each
-    folder made 0700 and the file 0600 before SQLite opens it (H1)."""
-    cli_data.make_folder(db)
-    cli_data.make_database(db)
-    return Store(db, upgrade=False)
 
 
 # H1: what a key made on the command line can do, said by the help of key-create and key-list.
@@ -1419,10 +1410,17 @@ def _key_create(
     `projects` (names, --project) and `read_only` narrow the key (H1); a name that is no project of
     the workspace is NO_SUCH_PROJECT, exit 1, with no key and no key file made (and no
     database, when there was none: it would hold no project)."""
-    cli_data.make_folder(db)
-    if projects and not db.is_file():
+    new = not os.path.lexists(db)
+    if projects and new:
         print(NO_SUCH_PROJECT.format(name=projects[0]), file=sys.stderr)
         return 1
+    with cli_data.database_folder(db):
+        return _key_file(db, label, out, projects, read_only, new)
+
+
+def _key_file(
+    db: Path, label: str, out: Path, projects: list[str] | None, read_only: bool, new: bool
+) -> int:
     try:
         fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -1434,16 +1432,17 @@ def _key_create(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
             os.fchmod(file.fileno(), 0o600)  # exactly 0600, whatever the umask
-            store = _open_store(db)
-            try:
+            target = (
+                cli_data.new_store(db) if new else contextlib.closing(cli_data.open_existing(db))
+            )
+            with target as store:
                 reach = _reach(store, projects)
                 if reach is None and not read_only:  # the key it has always made
                     key = store.create_key(label)
                 else:
                     key = store.create_key(label, reach, "read" if read_only else "write")
-            finally:
-                store.close()
-            file.write(f"CAIRN_API_KEY={key}\n")
+                file.write(f"CAIRN_API_KEY={key}\n")
+                file.flush()  # publish the staged database only after the key was written
     except _NoSuchProject as missing:
         out.unlink(missing_ok=True)
         print(NO_SUCH_PROJECT.format(name=missing.args[0]), file=sys.stderr)
@@ -1468,7 +1467,7 @@ def _key_list(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = cli_data.open_existing(db)
     try:
         projects, sets = store.list_projects(), store.list_sets()
         names = {project.id: project.name for project in projects} | {s.id: s.name for s in sets}
@@ -1511,7 +1510,7 @@ def _session_end(db: Path, email: str) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = cli_data.open_existing(db)
     try:
         ended = sum(store.end_person_sessions(email).values())
     finally:
@@ -1530,7 +1529,7 @@ def _key_revoke(db: Path, label: str, with_made: bool = False) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = cli_data.open_existing(db)
     try:
         made = store.made_by(label)
         revoked = store.revoke_key(label, with_made=with_made)
@@ -1937,6 +1936,11 @@ def _serve(args: argparse.Namespace) -> int:
     except ValueError as error:
         print(f"cannot use those operator notes: {error}", file=sys.stderr)
         return 2
+    try:
+        model = cli_arrange.serve_model(args)
+    except ValueError as error:
+        print(f"cannot use that model: {error}", file=sys.stderr)
+        return 2
     cli_data.make_folder(args.db)  # the lock file goes beside the database
     try:
         lock = take_serve_lock(args.db)
@@ -1948,18 +1952,25 @@ def _serve(args: argparse.Namespace) -> int:
     if lock is None:
         print(ANOTHER_SERVER.format(db=args.db), file=sys.stderr)
         return 2
+    changes: list[SchemaChange] = []
+    writes: list[str] = []
+
+    def journal_changed(before: str, after: str) -> None:
+        writes.append(f"journal mode {before} -> {after}")
+
+    store = None
+    finished = False
     try:
-        cli_data.make_database(args.db)  # 0600 before SQLite opens it (H1)
-        store = Store(args.db)  # the one open that upgrades: the lock above is held
-    except BaseException:
-        lock.release()
-        raise
-    try:
+        if cli_data.make_database(args.db):
+            writes.append("created the database file")
+        store = Store(args.db, on_schema_commit=changes.append, on_journal_change=journal_changed)
+        cli_data.warn_readable(args.db)
         try:
             arranger = cli_arrange.serve_arranger(
                 args,
                 store,
                 plans,
+                model=model,
                 send_source_notes=send,
                 send_slack_notes=slack_send,
                 opt_in=opt_in,
@@ -1967,6 +1978,7 @@ def _serve(args: argparse.Namespace) -> int:
         except ValueError as error:  # a cairn.llm.LLMConfigError names the setting only
             print(f"cannot use that model: {error}", file=sys.stderr)
             return 2
+        before_app = store._con.total_changes  # create_app can commit the audit retention setting
         try:
             app = create_app(
                 store,
@@ -2009,7 +2021,13 @@ def _serve(args: argparse.Namespace) -> int:
             return 2
         # B1: a sign-in made under a longer --session-days, or before the option was
         # removed, lasts no longer than the length in force now (renewal only extends).
-        store.cap_web_sessions(args.session_days * 86_400 if args.session_days else SESSION_TTL)
+        if store._con.total_changes != before_app:
+            writes.append("recorded audit retention")
+        shortened = store.cap_web_sessions(
+            args.session_days * 86_400 if args.session_days else SESSION_TTL
+        )
+        if shortened:
+            writes.append(f"shortened {shortened} web sessions")
         # No access log: uvicorn's prints each request's query string, and the OAuth pages
         # carry a client's `state` and the sealed authorization request there. Proxy headers
         # are read only from --trusted-proxy peers, and the list is always given, so neither
@@ -2022,7 +2040,7 @@ def _serve(args: argparse.Namespace) -> int:
             print(says, file=sys.stderr, flush=True)
         if (says := no_operator_notes(sign_in is not None, args.public_url, notes)) is not None:
             print(says, file=sys.stderr, flush=True)
-        if (says := _history_at_start(store, plans, _kept(args, plans))) is not None:  # Q1
+        if (says := _history_at_start(store, plans, _kept(args, plans), writes)) is not None:  # Q1
             print(says, file=sys.stderr, flush=True)
         with _access_log_on_stderr(), _no_client_request_lines():
             uvicorn.run(
@@ -2033,9 +2051,27 @@ def _serve(args: argparse.Namespace) -> int:
                 proxy_headers=bool(proxies),
                 forwarded_allow_ips=proxies,
             )
+        finished = True
     finally:
-        store.close()
-        lock.release()
+        try:
+            if not finished and changes:
+                last = changes[-1]
+                floor = (
+                    "no recorded floor"
+                    if last.floor is None
+                    else f"compatibility floor {last.floor}"
+                )
+                print(
+                    f"serve committed schema {changes[0].before} -> {last.after} at {args.db}"
+                    f" ({floor}) before it stopped",
+                    file=sys.stderr,
+                )
+            if not finished and writes:
+                print(f"serve changed {args.db}: {', '.join(writes)}", file=sys.stderr)
+            if store is not None:
+                store.close()
+        finally:
+            lock.release()
     return 0
 
 
@@ -2055,7 +2091,9 @@ def _kept(args: argparse.Namespace, plans: Plans | None) -> int | None:
     return KEEP_VERSIONS if args.keep_versions is None else args.keep_versions
 
 
-def _history_at_start(store: Store, plans: Plans | None, keep: int | None) -> str | None:
+def _history_at_start(
+    store: Store, plans: Plans | None, keep: int | None, writes: list[str]
+) -> str | None:
     """Record in the database what this `serve` keeps of each page's history, for `compact`
     (Store.record_history_bound), and the line it says when pages hold more versions than
     it keeps; None when none does, with plans, or when it keeps every version. Nothing is
@@ -2063,9 +2101,10 @@ def _history_at_start(store: Store, plans: Plans | None, keep: int | None) -> st
     if plans is not None:
         bounds = {name: plan.versions_per_page for name, plan in plans.table.items()}
         store.record_history_bound(plans=bounds, default=plans.default)
-        return None
-    store.record_history_bound(keep)
-    over = 0 if keep is None else store.pages_over(keep)
+    else:
+        store.record_history_bound(keep)
+    writes.append("recorded the page history bound")
+    over = 0 if keep is None or plans is not None else store.pages_over(keep)
     if not over:
         return None
     pages = "1 page holds" if over == 1 else f"{over} pages hold"
@@ -2110,8 +2149,16 @@ def main(argv: list[str] | None = None) -> int:
     if (refused := cli_data.linked(db)) is not None:
         print(refused, file=sys.stderr)
         return 2
-    if (said := cli_data.readable(db)) is not None:  # the command goes on
-        print(said, file=sys.stderr, flush=True)
+    if args.command in ("key-create", "export"):
+        # Account for case-insensitive volumes as well as alternate paths to the parent.
+        real = os.path.realpath(db).casefold()
+        reserved = ("", "-wal", "-shm", "-journal", SERVE_LOCK, COMPACT_LOCK)
+        if os.path.realpath(args.out).casefold() in {real + suffix for suffix in reserved}:
+            print(f"{args.out} is reserved for the database or its working files", file=sys.stderr)
+            return 1
+    if db is not None and (refused := cli_data.journal_refusal(db)):
+        print(refused, file=sys.stderr)
+        return 1
     try:
         if args.command == "serve":  # serve puts the line on stderr with its access log
             return _run(args)
@@ -2124,6 +2171,18 @@ def main(argv: list[str] | None = None) -> int:
         found, known = error.found, SCHEMA_VERSION
         older = cli_data.OLDER_SCHEMA
         print(older.format(db=db, found=found, known=known, command=args.command), file=sys.stderr)
+        return 1
+    except DatabaseLinks as error:
+        print(error, file=sys.stderr)
+        return 2
+    except Uninitialized:
+        print(
+            f"the database at {db} is uninitialized: start serve to initialize it", file=sys.stderr
+        )
+        return 1
+    except ForeignSchema:
+        line = NOT_A_DATABASE_YET if args.command in CREATES else NOT_A_DATABASE
+        print(line.format(path=db), file=sys.stderr)
         return 1
     except UnknownSchema as error:  # raised by Store(...) before it writes anything
         print(error, file=sys.stderr)
@@ -2150,6 +2209,8 @@ def _cannot_open(command: str, error: CannotOpen) -> str | None:
         if os.access(path, os.R_OK | os.W_OK) and os.access(folder, os.W_OK | os.X_OK):
             return None
         return MAY_NOT_OPEN.format(path=path)
+    if command not in CREATES:
+        return f"no database at {path}"
     while not os.path.isdir(folder):  # the folder the database would be made under
         folder = os.path.dirname(folder)
     if os.access(folder, os.W_OK | os.X_OK):

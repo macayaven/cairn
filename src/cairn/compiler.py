@@ -631,12 +631,12 @@ def own_claims(store: Store, page: Page | None) -> tuple[Page | None, frozenset[
     Store.save_page as `left_out`, so a page a delete or a forget removed while it drafted is
     stale for it. The version it saves is held to its own project's notes (save_page refuses
     any other); the earlier versions stay, as after any write, since a write is not an
-    erasure. Since schema step 32 only a program that wrote the tables directly leaves such a
-    claim (`stats --other-projects` counts its pages). Its question is not held to the
-    workspace, so on a page written behind the store's back the outcome (the claim left out
-    and the note filed, or the note refused for a passage no one holds) tells whoever wrote
-    that row whether another workspace still holds the passage; no path of the product lets a
-    writer cite a passage of its choosing, so nothing learns it without writing the tables.
+    erasure. An older writer still open across the upgrade to schema 32, or a program that
+    wrote the tables directly, can leave a foreign claim (`stats --other-projects` counts
+    its pages). Its question is not held to the
+    workspace, so on such a page the outcome (the claim left out
+    and the note filed, or the note refused for a passage no one holds) can reveal whether
+    another workspace still holds a passage already cited on that page.
     A claim that folds a passage of the page's own project with one of another project's is
     left out whole, its own passage with it (schema step 32 and `repair` keep that passage).
     Filing another note, or a tidy, does not bring it back: filing the same note again, with

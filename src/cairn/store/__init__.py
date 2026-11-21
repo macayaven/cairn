@@ -1147,10 +1147,12 @@ from cairn.store.base import (
     UNUSABLE,
     CannotWrite,
     ConnectionState,
+    DatabaseLinks,
     Readers,
     StoreUnusable,
     WriterLock,
     _transaction,
+    hard_linked,
 )
 from cairn.store.credentials import KEY_PREFIX, CredentialMethods
 from cairn.store.erasure import ErasureMethods
@@ -1259,6 +1261,7 @@ from cairn.store.reservations import Reservation, ReservationMethods
 from cairn.store.schema import (
     SCHEMA_VERSION,
     CannotOpen,
+    SchemaChange,
     SchemaTooNew,
     SchemaTooOld,
     UnknownSchema,
@@ -1474,8 +1477,9 @@ class Store(
     default, `Store(path)`, as before. With `upgrade=False` such a database is refused instead
     (SchemaTooOld), from the version read under the write lock of the step that would have
     run, before anything is written; an empty or new file is still made at this schema. Of
-    cairn's commands only `serve` upgrades, once it holds the server's lock; every other one
-    opens with `upgrade=False` (cairn.web.cli)."""
+    cairn's commands only `serve` upgrades, while holding the server's lock. Administrative
+    writers open the public path with create=False and keep its journal mode. New imports
+    and first keys use a private staging file."""
 
     def __init__(
         self,
@@ -1484,27 +1488,48 @@ class Store(
         ticks: Callable[[], float] = time.monotonic,
         *,
         upgrade: bool = True,
+        create: bool = True,
+        on_schema_commit: Callable[[SchemaChange], None] | None = None,
+        on_journal_change: Callable[[str, str], None] | None = None,
     ) -> None:
         self._lock = WriterLock(ticks)  # `ticks`: when its holder took it (Store.health)
         self._state = ConnectionState()  # shared with every view, as the lock is
         self._owner = True  # of the connection: views share it and never close it
         self._clock_fn = clock  # every view made from this store shares it
         self._bind(DEFAULT_ACCOUNT_ID)
+        if str(path) != ":memory:" and (reason := hard_linked(path)):
+            raise DatabaseLinks(reason)
         # Autocommit mode: every write opens its own BEGIN IMMEDIATE transaction (_write).
         try:
-            self._con = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+            target = path if create else Path(path).absolute().as_uri() + "?mode=rw"
+            self._con = sqlite3.connect(
+                target, uri=not create, check_same_thread=False, isolation_level=None
+            )
         except sqlite3.Error as error:
             _refuse(path, error)  # CannotOpen when SQLite may not open or create the file
             raise
         try:
+            # A writer that stopped abruptly may have left committed frames in its WAL.
+            # Refusing its schema must not checkpoint those frames on our last close.
+            wal = Path(f"{path}-wal")
+            keep_log = str(path) != ":memory:" and wal.is_file()
+            if keep_log:
+                self._con.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
             # Freed rows and pages are zeroed: what makes a deletion an erasure (see
             # delete_account in the contract). A library that cannot is refused, not trusted.
             self._con.execute("PRAGMA secure_delete = ON")
             if self._con.execute("PRAGMA secure_delete").fetchone() != (1,):
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
-            _upgrade(self._con, self._stamp, upgrade)
+            _upgrade(self._con, self._stamp, upgrade, create, on_schema_commit)
             if str(path) != ":memory:":
-                (journal,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
+                (journal,) = self._con.execute("PRAGMA journal_mode").fetchone()
+                if (create or upgrade) and journal != "wal":
+                    (new_mode,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
+                    if new_mode != journal and on_journal_change is not None:
+                        on_journal_change(journal, new_mode)
+                    journal = new_mode
+                if keep_log and (create or upgrade):
+                    self._con.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, False)
                 self._state.readers = _readers_for(self._con, journal)
         except sqlite3.Error as error:
             self._con.close()

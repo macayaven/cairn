@@ -251,3 +251,21 @@ def test_key_create_still_makes_the_database_where_there_is_none(tmp_path, capsy
     argv = ["key-create", "--db", str(db), "--label", "ci", "--out", str(tmp_path / "key.env")]
     assert cli.main(argv) == 0
     assert user_version(db) == SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("upgrade", [False, True], ids=["a command's open", "serve's open"])
+def test_a_sqlite_file_that_is_not_cairns_is_refused_as_before_never_as_an_older_one(
+    tmp_path, upgrade
+):
+    """A file at version 0 with a table reads as v0 (version 1); one without v0's tables is no
+    cairn database, and the open that may not upgrade says so as the upgrade does, never that
+    starting the server would bring it up to date."""
+    db = tmp_path / "other.db"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE recipes (name TEXT)")
+        con.execute("INSERT INTO recipes VALUES ('soup')")
+        con.commit()
+    before = sha(db)
+    with pytest.raises(sqlite3.DatabaseError, match="not a cairn database"):
+        Store(db, upgrade=upgrade)
+    assert sha(db) == before

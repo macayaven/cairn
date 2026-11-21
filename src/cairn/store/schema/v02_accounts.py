@@ -41,13 +41,9 @@ _V2_NOTES = """CREATE TABLE notes (
 _V2_NOTES_BY_TEXT = "CREATE INDEX notes_by_text ON notes (project_id, text_sha256)"
 
 
-def _add_accounts(con: sqlite3.Connection) -> None:
-    """Schema 1 (v0) to 2: every project, key and session moves to the default account, and
-    v0's search index becomes the default account's.
-
-    SQLite cannot alter a UNIQUE constraint or add a NOT NULL column without a default, so the
-    three tables are rebuilt: the old one steps aside, the new one is created from the current
-    DDL and filled in the old insertion order."""
+def _check_v0(con: sqlite3.Connection) -> None:
+    """sqlite3.DatabaseError ("not a cairn database: ...") unless the file holds v0's tables,
+    each with exactly v0's columns: a file at version 0 with any table reads as v0."""
     for table, columns in _V0_COLUMNS.items():
         if not _has_table(con, table):
             raise sqlite3.DatabaseError(f"not a cairn database: no table {table!r}")
@@ -56,6 +52,16 @@ def _add_accounts(con: sqlite3.Connection) -> None:
             raise sqlite3.DatabaseError(
                 f"not a cairn database: table {table!r} has columns {found}, not {columns}"
             )
+
+
+def _add_accounts(con: sqlite3.Connection) -> None:
+    """Schema 1 (v0) to 2: every project, key and session moves to the default account, and
+    v0's search index becomes the default account's.
+
+    SQLite cannot alter a UNIQUE constraint or add a NOT NULL column without a default, so the
+    three tables are rebuilt: the old one steps aside, the new one is created from the current
+    DDL and filled in the old insertion order."""
+    _check_v0(con)
     con.execute(_ACCOUNTS)
     _insert_account(con, Account(id=DEFAULT_ACCOUNT_ID, name="default", created_at=_STAMP.get()()))
     for table, ddl, columns in (

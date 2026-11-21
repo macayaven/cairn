@@ -197,7 +197,9 @@ the server's lock (R1, below): its open, the store's default, comes after take_s
 Every other command opens the store with upgrade=False, which reads the version under the
 write lock of the step that would have run and raises SchemaTooOld before anything is
 written: exit 1, one line on stderr (cli_data.OLDER_SCHEMA, which names the command and says
-to start the server once on it), nothing on stdout, the file as it was. `stats` and
+to start the server once on it), nothing on stdout, nothing written (a log a killed server
+left beside the file is folded into it by SQLite as the connection closes, its rows
+unchanged). `stats` and
 `audit-verify` read with SQLite alone and refuse one in their own words. A busy database is
 SQLite's error, as before; an empty or new file is still made at this schema by the commands
 that make one. An older build's `serve` took the same lock on the same file (since the first

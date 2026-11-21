@@ -56,6 +56,7 @@ from cairn.store.schema.v02_accounts import (
     _V2_PROJECTS,
     _V2_SESSIONS,
     _add_accounts,
+    _check_v0,
 )
 from cairn.store.schema.v03_oauth import (
     _OAUTH_CLIENTS,
@@ -387,6 +388,8 @@ def _run_step(con: sqlite3.Connection, upgrade: bool = True) -> None:
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     elif version < SCHEMA_VERSION:
         if not upgrade:
+            if version == 1:  # v0, or a file of someone else's with a table: told apart first
+                _check_v0(con)
             raise SchemaTooOld(version)
         step = version + 1
         _MIGRATIONS[step](con)

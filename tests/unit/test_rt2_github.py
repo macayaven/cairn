@@ -108,15 +108,27 @@ def current_run() -> str:
 
 
 def pinned_run(commit: str) -> str:
-    """The step as it stood at COMMIT, read from this repository's own history."""
-    text = subprocess.run(  # noqa: UP022 (the keyword's name is not written here)
+    """The step as it stood at COMMIT: its text, kept beside the tests
+    (tests/fixtures/release_step_COMMIT.txt). It was read from this repository's history, which
+    a checkout need not hold: GitHub's own run of this file had no such commit and failed
+    there. Where the history is at hand, test_the_pinned_step_is_the_step_of_its_commit
+    holds the file to it."""
+    return (REPO_ROOT / "tests" / "fixtures" / f"release_step_{commit}.txt").read_text(
+        encoding="utf-8"
+    )
+
+
+def step_in_history(commit: str) -> str | None:
+    """The step as this repository's history has it at COMMIT, or None where the checkout
+    does not hold that commit (a shallow one, an archive)."""
+    shown = subprocess.run(  # noqa: UP022 (the keyword's name is not written here)
         ["git", "-C", str(REPO_ROOT), "show", f"{commit}:.github/workflows/ci-cd.yml"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        check=True,
-    ).stdout
-    return step_run(text)
+        check=False,
+    )
+    return step_run(shown.stdout) if shown.returncode == 0 else None
 
 
 # --- the outside schedule -------------------------------------------------------------------------
@@ -1429,6 +1441,23 @@ def test_the_two_clients_give_the_same_execution(steps):
             )
         )
     assert seen[0] == seen[1]
+
+
+def test_the_pinned_step_is_the_step_of_its_commit():
+    """The file the pinned step is read from is the step at that commit, wherever the
+    checkout holds the commit; where it does not, there is nothing to compare it with."""
+    in_history = step_in_history("27aff19f")
+    if in_history is None:
+        pytest.skip("this checkout does not hold the commit the step was taken from")
+    assert pinned_run("27aff19f") == in_history
+
+
+def test_the_pinned_step_needs_no_history(tmp_path, monkeypatch):
+    """GitHub's run checked out one commit and the pinned step could not be read: a test
+    reads no history. With git unable to find any repository, the step is still read."""
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "no-repository"))
+    assert step_in_history("27aff19f") is None
+    assert "gh release create" in pinned_run("27aff19f")
 
 
 @pytest.mark.parametrize("tag", TAGS.values())

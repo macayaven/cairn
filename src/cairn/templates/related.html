@@ -8,8 +8,10 @@
 {# A claim a relation rests on, quoted (memory_pages._quoted): what is shown of it as it was
    written, white space kept, never drawn as Markdown (what is shown of a claim that was cut
    can end inside a fence or a link); a claim not shown whole says so, and its link reads it
-   whole on its page; under it, who wrote the notes it cites and when. `at`: its page's
-   address; `on`: its page's title. #}
+   whole on its page; under it, who wrote the notes it cites and when: how many notes, when more than one, so
+   that the writers it names, each once, never read as fewer notes than it rests on, and how
+   many more there are whose writer it does not name. `at`: its page's address; `on`: its
+   page's title. #}
 {% macro quoted(claim, side, at, on) %}
 <li>
   <figure class="source" data-claim="{{ claim.id }}" data-side="{{ side }}" data-part="{{ claim.part }}">
@@ -21,7 +23,7 @@
     <div class="source-lines"><div class="source-line">{{ claim.text }}</div></div>
     {% endif %}
   </figure>
-  <p class="back written">{% if claim.notes %}{% for writer in claim.writers %}<span class="writer">{{ noted(writer.who) }}{% if writer.filed %}: {{ writer.filed }}{% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% if claim.notes_more %} and {{ claim.notes_more }} more {{ "note" if claim.notes_more == 1 else "notes" }}{% endif %}{% if claim.written_at %} · {{ "written" if claim.notes == 1 else "the newest written" }} <time datetime="{{ claim.written_at }}">{{ claim.written_at|when }}</time>{% endif %}{% if claim.outside %} · <span class="outside">outside text</span>{% endif %}{% else %}It cites no note in your reach.{% endif %}</p>
+  <p class="back written">{% if claim.notes %}{% if claim.notes > 1 %}{{ claim.notes }} notes: {% endif %}{% for writer in claim.writers %}<span class="writer">{{ noted(writer.who) }}{% if writer.filed %}: {{ writer.filed }}{% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% if claim.notes_more %}, and {{ claim.notes_more }} more whose {{ "writer is" if claim.notes_more == 1 else "writers are" }} not shown{% endif %}{% if claim.written_at %} · {{ "written" if claim.notes == 1 else "the newest written" }} <time datetime="{{ claim.written_at }}">{{ claim.written_at|when }}</time>{% endif %}{% if claim.outside %} · <span class="outside">outside text</span>{% endif %}{% else %}It cites no note in your reach.{% endif %}</p>
 </li>
 {% endmacro %}
 <header class="page-head">

@@ -1134,11 +1134,14 @@ def hold_to_own_projects(
     the page versions however many pages it repairs: each search goes on from the last page
     found, by the projects' unique index and the versions' primary key (_NEXT_PROJECT,
     _NEXT_PAGE), so each version is read by the search once, and it holds one page and one
-    workspace's counts whatever the database holds; on a database that holds no such page it
-    makes one search and writes nothing. It writes no audit event: inside the upgrade no
-    audit writer of this build may run (a step is history). It says nothing itself: `each`,
-    when given, is called, in the transaction, with each workspace that had any (its id and
-    its counts rewritten and removed), and the caller says them once the transaction has
+    workspace's counts whatever the database holds; on a database that holds no such page it makes
+    one search and writes nothing. Each page it removes also has its name taken out of the audit
+    events that named it (_unname), one pass over the workspace's audit events for each page
+    removed, so that part grows with the events (64 pages removed: 5,579 units of 100 SQLite
+    steps beside 512 other events, 20,324 beside 2,048). It writes no audit event: inside the
+    upgrade no audit writer of this build may run (a step is history). It says nothing itself:
+    `each`, when given, is called, in the transaction, with each workspace that had any (its id
+    and its counts rewritten and removed), and the caller says them once the transaction has
     committed (schema step 32 through the upgrade's runner, one line of the store's log each,
     _log_repaired; the `repair` command on stdout). Returns how many `workspaces` had any,
     and how many pages were `rewritten` and `removed`."""

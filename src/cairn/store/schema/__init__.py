@@ -543,6 +543,7 @@ def _schema_version(con: sqlite3.Connection) -> int:
     if con.execute("PRAGMA application_id").fetchone() != (0,):
         raise ForeignSchema("not a cairn database: another application owns this file")
     if version > SCHEMA_VERSION:
+        _not_newer_of_another_program(con, version)
         floor = _recorded_floor(con, version)
         if floor > SCHEMA_VERSION:
             raise SchemaTooNew(
@@ -653,6 +654,18 @@ def _historical_shapes() -> dict[int, tuple[dict[str, str], dict[str, tuple[str,
     finally:
         _STAMP.reset(stamp)
     return shapes
+
+
+def _not_newer_of_another_program(con: sqlite3.Connection, version: int) -> None:
+    """ForeignSchema for a file above this version that holds none of the tables this
+    version's steps make: every cairn of a later version keeps some of them (a floor recorded
+    or not), so it is no database a newer cairn wrote. A read that writes nothing."""
+    objects, _ = _historical_shapes()[SCHEMA_VERSION]
+    held = _objects(con)
+    if not any(held.get(name) == "table" for name, kind in objects.items() if kind == "table"):
+        raise ForeignSchema(
+            f"not a cairn database: schema version {version} and none of cairn's tables"
+        )
 
 
 def _check_source(con: sqlite3.Connection, version: int) -> None:

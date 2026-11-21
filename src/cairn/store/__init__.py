@@ -1105,7 +1105,10 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   SCHEMA_VERSION opens it as it is, with no step run and nothing written, when its floor is
   at or below SCHEMA_VERSION: tables and columns this code does not know are left alone.
   Otherwise, or when it records no floor, it raises SchemaTooNew, whose one sentence names
-  the database's version, its floor and SCHEMA_VERSION, and leaves the file untouched. A
+  the database's version, its floor and SCHEMA_VERSION, and leaves the file untouched.
+  A file above SCHEMA_VERSION that holds none of the tables this version's steps make is
+  no database a newer cairn wrote (every later cairn keeps some of them): it raises
+  ForeignSchema, and the file is left untouched. A
   file that is neither empty nor a v0 database (v0's tables, each with exactly v0's
   columns) is refused untouched too, with sqlite3.DatabaseError.
   Opening one at SCHEMA_VERSION that lacks a table of the current schema raises

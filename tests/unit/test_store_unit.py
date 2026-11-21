@@ -987,9 +987,18 @@ def test_a_failed_open_closes_its_connection(db, monkeypatch):
 
 
 def test_a_newer_schema_is_refused_before_a_single_byte_is_written(db):
+    """A newer cairn keeps this version's tables (here one of them, accounts); a file above
+    this version with none of them is another program's, refused as such."""
     with connect(db) as con:  # not even in WAL mode: switching it would rewrite the header
         con.execute("CREATE TABLE from_the_future (x)")
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+        con.commit()
+    before = db.read_bytes()
+    with pytest.raises(sqlite3.DatabaseError, match="none of cairn's tables"):
+        Store(db)
+    assert db.read_bytes() == before
+    with connect(db) as con:
+        con.execute("CREATE TABLE accounts (id)")
         con.commit()
     before = db.read_bytes()
     with pytest.raises(SchemaTooNew):

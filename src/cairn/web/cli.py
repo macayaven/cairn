@@ -185,7 +185,9 @@ on stderr (NEWER_DATABASE), nothing on stdout: "SchemaTooNew: the database has s
 Run the cairn that wrote it or a newer one, or restore the database from before the
 upgrade." The file is left as it was, nothing is made beside it (no key file, no export) and
 `serve` never starts listening. A newer database whose oldest build is at or below
-SCHEMA_VERSION (its newer steps only added) is opened and used as any other.
+SCHEMA_VERSION (its newer steps only added) is opened and used as any other. A file above
+SCHEMA_VERSION that holds none of cairn's tables is not a newer cairn's: the store raises
+ForeignSchema, answered "not a cairn database" (below).
 
 A database at this cairn's schema version that lacks a table of that schema (the store
 raises UnknownSchema before it writes anything) stops every command the same way, with the

@@ -121,19 +121,21 @@ weightiest first, and `more` counts the rest. A reason is {"kind": "shares", "te
 are one term when their kind and their text are the same, capitals included: cairn.relations),
 its kind, how many pages of the project hold it (exactly: a term whose pages are not all known
 gives no reason), and the claim of this page and of the other that state it; or {"kind":
-"mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that holds
-this page's title. This version does not list the pages a page mentions. Each claim is
+"mentioned_by", "term", "term_kind": "title", "there"}: a claim of the other page that names
+this page's title in its prose (relations.MENTIONED_BY). This version does not list the
+pages a page mentions. Each claim is
 {"claim_id", "text", "passage_ids", "outside", "written_by", "written_at"} (and
 `written_by_more`), as a hit of `recall` carries them, but for a claim longer than
 relations.TEXT_MAX characters, which is given in place of its text (`_claim_text`; `page`
 gives the claim whole): "text_cut": true and "line", the line that shows what the reason says.
 For a claim that states a shared term that is the line of the passage it cites that holds the
 term, taken where the term's fact stands and never by a search of the text; for a claim that
-mentions the page, the line that names the title in its prose, at the first place the index
-matched it outside code, a path, a flag, a version or an address as the passage's facts read
-them (cairn.store.relating._mentioning; two lines, with their line break, when the title's
-words stand on two). A line longer than relations.LINE_MAX is given as LINE_MAX characters of
-it that hold the term or the title, with "line_cut": true. Only a long claim of which no line
+mentions the page, the line that names the title in its prose, at the first place it stands
+whole outside what the passage's facts read as code, a path, a flag, a version or an address
+and outside what the Markdown parser reads as code in the passage (cairn.store.relating
+._mentioning; two lines, with their line break, when the title's words stand on two). A
+line longer than relations.LINE_MAX is given as LINE_MAX characters of it that hold the term
+or the title, with "line_cut": true. Only a long claim of which no line
 can be told (one that mentions the page as the index has it: its text is not its passage's)
 gives its first TEXT_MAX characters as "text", with "text_cut": true and no line. So a claim
 has its text whole, or "text_cut" with a line, or "text_cut" with a head: never a head beside

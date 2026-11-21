@@ -320,7 +320,7 @@ def compared_text(text: str) -> str:
     return "\n".join(rows[first:last])
 
 
-# Whether a claim leaves a code fence open, the one question still put to the Markdown parser,
+# Whether a claim leaves a code fence open, one of two put to the Markdown parser (code_read),
 # of each claim alone and then of the body (fences_kept_in): render_body closes such a fence
 # before the next claim (review 7.2).
 

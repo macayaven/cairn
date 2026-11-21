@@ -16,18 +16,22 @@ Two kinds of relation:
   are left out of the comparison, and nothing else is. A term is given as it is read. A
   fact is never read a second time, alone, and never read from a claim's text cut from its
   passage.
-- MENTIONED_BY: a claim of the other page names this page's title in its prose. The search
-  index says where the claim's text holds the title's words side by side
-  (cairn.store.relating), and the claim names the title only when at least one such place
-  lies outside every stretch of the passage it cites that is a url, a path, a flag, a
-  version or inline code, and outside its fenced code blocks (`covered`: the facts of
-  cairn.facts.extract_facts on the passage, each by its own start and end, and a fenced
-  block from its opening line, the word after its marks included; nothing is read a second
-  time alone). A place partly inside such a stretch is inside it (`named_at`). So a page
-  titled Deploy is not named by a claim whose only "deploy" stands in
-  `deploy/compose.yaml`, or after the marks that open a fence, nor one titled Audit by
-  `--audit-keep`; what the facts do not read as one of those is prose, so a bare
-  `deploy/notes.md` or `ada@deploy.dev` names Deploy. The places of a claim's text are
+- MENTIONED_BY: a claim of the other page names this page's title in its prose. Each place
+  the claim's text holds the title's words side by side is judged by itself, whatever
+  other place overlaps it: it names the title when it lies whole outside every stretch of
+  the passage the claim cites that is a url, a path, a flag, a version or inline code, or
+  a fenced code block (`covered`: the facts of cairn.facts.extract_facts on the passage,
+  each by its own start and end, and a fenced block from its opening line, the word after
+  its marks included; nothing is read a second time alone), and outside what the Markdown
+  parser reads as code in the passage read alone (cairn.spans.code_read: code spans,
+  fenced blocks with their opening line, indented blocks; text indented under a list item
+  is the item's prose). The search index's own tokenizer says where the places are, on
+  the text with those stretches blanked out where they stand (`blanked`;
+  cairn.store.relating), and nothing here reads the words. So a page titled Deploy is not
+  named by a claim whose only "deploy" stands in `deploy/compose.yaml`, or after the marks
+  that open a fence, nor one titled Audit by `--audit-keep`; what the facts and the parser
+  do not read as one of those is prose, so a bare `deploy/notes.md` or `ada@deploy.dev`
+  names Deploy. The places of a claim's text are
   places of its passage because the claim is the passage's text; where it is not (a page
   saved by hand; a claim that cites no passage of the project), the mention stands as the
   index has it. A claim whose text holds a mark of the index or a null character names no
@@ -49,9 +53,9 @@ page's own among them. The second is the index's count of the claims whose text 
 term's words, whatever their passages hold: 64 claims that say "dry run" make `--dry-run`
 common. Both are known whole from what is read (cairn.store.relating reads one claim more
 than CLAIMS_COMMON, and then every claim that counts), so each is the same whichever page
-asks. A title is common the same way: one that more than COMMON other pages name, or that
-more than CLAIMS_COMMON claims of other pages hold, relates none by mention (a page's own
-claims do not mention it, and do not count).
+asks. A title is common the same way: one that more than COMMON other pages name by the
+rule above, or whose words more than CLAIMS_COMMON claims of other pages hold, in prose or
+not, relates none by mention (a page's own claims do not mention it, and do not count).
 
 Which pages are the best (`best`): a shared term weighs 1 / (the pages that hold it - 1), so a
 term only the two pages hold weighs most, and a mention weighs as one term held by two
@@ -169,9 +173,10 @@ def covered(span: Span, facts: Sequence[Fact] | None = None) -> list[tuple[int, 
     too), by the fact's own start and end; and every fenced code block from the start of its
     opening line, the word after the fence's marks included, to the end of its body (a
     code block's fact is its body, which starts on the line after the opening one). What
-    the facts do not own is prose: a path written with no root (`deploy/compose.yaml`
-    outside backticks is no fact), an email address, a host with no scheme, a Windows path,
-    a block indented as code. `facts`: as `placed`."""
+    the facts do not own is prose to them: a path written with no root
+    (`deploy/compose.yaml` outside backticks is no fact), an email address, a host with no
+    scheme, a Windows path; whether a block indented is code, the Markdown parser says
+    (cairn.spans.code_read). `facts`: as `placed`."""
     text = span.text
     return [
         (opening(text, fact.start) if fact.kind == "code_block" else fact.start, fact.end)

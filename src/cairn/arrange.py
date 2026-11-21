@@ -356,7 +356,7 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cairn.compiler import CandidatePage, DraftStats, rebuilt_folds, render_body
+from cairn.compiler import CandidatePage, DraftStats, own_claims, rebuilt_folds, render_body
 from cairn.gate import verbatim_gate
 from cairn.guard import Guard
 from cairn.llm import ChatModel, LLMError, draw_tag, failure_text, new_boundary
@@ -750,6 +750,7 @@ def arrange_page(
         return outcome("kept from models", page.version, problem=KEPT)
     if opt_in and not chosen:  # Privacy 4: nobody in its project allowed a model
         return outcome("undecided", page.version, problem=UNDECIDED)
+    page, left_out = own_claims(view, page)  # held to its own project's notes, by id
     cited = [i for claim in page.claims for i in claim.span_ids]
     spans = view.get_spans(cited) if withhold or held_via else None
     if (withhold or held_via) and holds_withheld(  # before anything else
@@ -846,7 +847,17 @@ def arrange_page(
     # by note sorts to the page's tree, and is the arrangement that page needs.
     if not merged and current in (answered, order):
         return outcome("unchanged", page.version)
-    return _save_plan(view, project_id, page, spans, order, same, by=model.name, outcome=outcome)
+    return _save_plan(
+        view,
+        project_id,
+        page,
+        spans,
+        order,
+        same,
+        by=model.name,
+        outcome=outcome,
+        left_out=left_out,
+    )
 
 
 def _models_state(found: tuple[Any, ...] | None) -> tuple[Page | None, bool, bool]:
@@ -928,7 +939,7 @@ def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
         read = page.version if page else None
         return Arranged(status=status, version=version, previous=read, draft=draft, **more)
 
-    page = view.get_page(project_id, slug)
+    page, left_out = own_claims(view, view.get_page(project_id, slug))  # its own claims
     if page is None:
         return outcome("gone", None)
     if repeated := _repeated_id(page.claims):
@@ -947,7 +958,9 @@ def tidy_page(view: Store, project_id: str, slug: str) -> Arranged:
     order = tree_order([claim_id for claim_id in current if claim_id not in folded], sections)
     if not same and order == current and not rebuilt:
         return outcome("unchanged", page.version)
-    return _save_plan(view, project_id, page, spans, order, same, by=TIDY, outcome=outcome)
+    return _save_plan(
+        view, project_id, page, spans, order, same, by=TIDY, outcome=outcome, left_out=left_out
+    )
 
 
 def _save_plan(
@@ -960,6 +973,7 @@ def _save_plan(
     *,
     by: str,
     outcome: Callable[..., Arranged],
+    left_out: frozenset[str] = frozenset(),
 ) -> Arranged:
     """Everything after the plan, for arrange_page and tidy_page alike: the page's claims in
     `order` (tree-kept), each group of `same` folded into its first claim, which then cites
@@ -995,6 +1009,7 @@ def _save_plan(
             event="page.arranged",
             detail=detail,
             by_model=by != TIDY,  # M4: a model's answer is not saved in a project at "never"
+            left_out=left_out,  # what own_claims left out: a page removed meanwhile is stale
         )
     except KeptFromModels:  # set to "never" while the model answered: nothing of it is saved
         return outcome("kept from models", page.version, problem=KEPT)

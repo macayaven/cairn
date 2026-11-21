@@ -254,6 +254,7 @@ LIMITED_READS = frozenset(
         "note_spans",
         "get_spans",
         "spans_within",  # get_spans without the long ones (Help)
+        "passages_of_other_projects",  # which of a page's ids are another project's: by id
         "note_writers",  # who wrote the notes (A1): none out of reach
         "note_origins",  # note_writers, with when and whether a filed Slack message (8.1, 8.5)
         "get_page",

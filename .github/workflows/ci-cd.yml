@@ -1775,6 +1775,8 @@ jobs:
           candidate=()
           latest=()
           said=""
+          # What this attempt has compared, for the line of a read by id that fails.
+          compared="so nothing was compared"
           if [ "$CANDIDATE" = "true" ]; then
             prerelease=true
             candidate=(--prerelease --latest=false)
@@ -2053,7 +2055,7 @@ jobs:
               if grep -q 'HTTP 404' "$RUNNER_TEMP/read.err"; then
                 echo "::error::the GitHub release for $GITHUB_REF_NAME, which GitHub's listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then"
               else
-                echo "::error::the GitHub release for $GITHUB_REF_NAME could not be read by its id, as the lines above say, so nothing was compared; re-run this job, and delete nothing"
+                echo "::error::the GitHub release for $GITHUB_REF_NAME could not be read by its id, as the lines above say, $compared; re-run this job, and delete nothing"
               fi
               exit 1
             fi
@@ -2112,6 +2114,7 @@ jobs:
               gh api --allow-escape-sequences -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" > "$RUNNER_TEMP/$2/$name" || unread
               cmp -s "$name" "$RUNNER_TEMP/$2/$name" || "$1" "$name is not the file this run attested"
             done
+            compared="after its three files were fetched and each was found to be the file this run attested, so whether the release changed around their download is not known"
             fresh
             [ "$read_as" = "$before" ] || changed
           }
@@ -2131,6 +2134,7 @@ jobs:
             said="${latest[1]#make_latest=}"
             tagged
             gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
+            compared="after this job compared its draft's files with this run's and published it, so the published release's files were not compared"
             look_after published
             { [ -n "$found" ] && [ "$draft" = false ]; } || unseen
             fresh

@@ -138,7 +138,7 @@ for name in settings:
         continue
     for line in lines:
         values.add(line.strip())
-        for text in [line, *re.split("[=:]", line, 1)[1:]]:
+        for text in [line, *re.split("[=:]", line, maxsplit=1)[1:]]:
             text = text.strip().strip("'\"")
             if len(text) >= 6:
                 values.update(text[i:i + 12] for i in range(max(1, len(text) - 11)))

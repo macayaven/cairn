@@ -67,6 +67,7 @@ from cairn.store.base import (
     RECORD_DELETION,
     StoreBase,
     _has_table,
+    _index_name,
     deletion_generation,
     store_log,
 )
@@ -535,7 +536,6 @@ def _plan(
     (tests/unit/test_forget_cost_unit.py): counts from those pages, not bounds.
     It reads the workspace's page versions in one search, whatever the number of its
     projects, never the rest of the database."""
-    from cairn.compiler import left_to_run  # the compiler builds on the store
 
     pages = con.execute(
         "SELECT DISTINCT p.project_id, projects.name, p.slug FROM page_versions AS p"
@@ -547,50 +547,58 @@ def _plan(
         " ORDER BY p.project_id, p.slug",
         (account_id, deleted, json.dumps(sorted(gone))),
     ).fetchall()
-    planned = []
-    for project_id, name, slug in pages:
-        version, title, claims_json = con.execute(
-            "SELECT version, title, claims FROM page_versions"
-            " WHERE project_id = ? AND slug = ? ORDER BY version DESC LIMIT 1",
-            (project_id, slug),
-        ).fetchone()
-        claims = [Claim(**claim) for claim in json.loads(claims_json)]
-        cited = [i for claim in claims for i in claim.span_ids if i not in gone]
-        spans = _held_spans(con, project_id, cited)
-        kept, refused, body, renders = kept_claims(claims, gone, spans), 0, "", 0
-        titles = _Titles(con, kept, spans, slug)  # the title the page has as claims leave
-        while kept:  # until the claims left are a version an import takes: once, but for a
-            # fence that the claims before it open, where each time the first such claim leaves
-            title = titles.of(kept)
-            body, run_on = left_to_run(title, kept, spans)
-            if renders > RENDERS_HARD + 1:  # the end: no claim left holds a backtick or a tilde
-                break
-            faults = list(  # each claim is asked alone once: the claims do not change
-                version_faults(kept, spans, legacy=True, run_on=run_on, ask_alone=not renders)
-            )
-            named = {place for place, _ in faults if place}
-            if not named:
-                break
-            renders += 1
-            if renders > RENDERS_HARD:  # the page's class; a render after it, the end
-                takes = _fenced if renders > RENDERS_HARD + 1 else _may_open_a_fence
-                named |= {place for place, claim in enumerate(kept, 1) if takes(claim.text)}
-            elif faults == [(run_on, Refusal.FENCE_RUNS_ON)]:
-                named |= _with_it(title, kept, spans, run_on, body, renders, titles)
-            kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in named)
-            refused += len(named)
-            if renders > RENDERS_HARD:  # what the next render would name but for a fence, now
-                more = {
-                    place
-                    for place, _ in version_faults(
-                        kept, spans, legacy=True, run_on=None, ask_alone=False
-                    )
-                    if place
-                }
-                kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in more)
-                refused += len(more)
-        planned.append((project_id, name, slug, version, title, kept, spans, refused, body))
-    return planned
+    return [_plan_page(con, project_id, name, slug, gone) for project_id, name, slug in pages]
+
+
+def _plan_page(
+    con: sqlite3.Connection, project_id: str, name: str, slug: str, gone: frozenset[str]
+) -> _Planned:
+    """One page of `_plan`, by the same rule, whoever asks: the page `slug` of the project
+    `project_id` (named `name`) once the spans `gone` leave it, held to its own project's
+    notes. hold_to_own_projects asks it of a page whose other projects' passages go."""
+    from cairn.compiler import left_to_run  # the compiler builds on the store
+
+    version, title, claims_json = con.execute(
+        "SELECT version, title, claims FROM page_versions"
+        " WHERE project_id = ? AND slug = ? ORDER BY version DESC LIMIT 1",
+        (project_id, slug),
+    ).fetchone()
+    claims = [Claim(**claim) for claim in json.loads(claims_json)]
+    cited = [i for claim in claims for i in claim.span_ids if i not in gone]
+    spans = _held_spans(con, project_id, cited)
+    kept, refused, body, renders = kept_claims(claims, gone, spans), 0, "", 0
+    titles = _Titles(con, kept, spans, slug)  # the title the page has as claims leave
+    while kept:  # until the claims left are a version an import takes: once, but for a
+        # fence that the claims before it open, where each time the first such claim leaves
+        title = titles.of(kept)
+        body, run_on = left_to_run(title, kept, spans)
+        if renders > RENDERS_HARD + 1:  # the end: no claim left holds a backtick or a tilde
+            break
+        faults = list(  # each claim is asked alone once: the claims do not change
+            version_faults(kept, spans, legacy=True, run_on=run_on, ask_alone=not renders)
+        )
+        named = {place for place, _ in faults if place}
+        if not named:
+            break
+        renders += 1
+        if renders > RENDERS_HARD:  # the page's class; a render after it, the end
+            takes = _fenced if renders > RENDERS_HARD + 1 else _may_open_a_fence
+            named |= {place for place, claim in enumerate(kept, 1) if takes(claim.text)}
+        elif faults == [(run_on, Refusal.FENCE_RUNS_ON)]:
+            named |= _with_it(title, kept, spans, run_on, body, renders, titles)
+        kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in named)
+        refused += len(named)
+        if renders > RENDERS_HARD:  # what the next render would name but for a fence, now
+            more = {
+                place
+                for place, _ in version_faults(
+                    kept, spans, legacy=True, run_on=None, ask_alone=False
+                )
+                if place
+            }
+            kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in more)
+            refused += len(more)
+    return (project_id, name, slug, version, title, kept, spans, refused, body)
 
 
 def _with_it(
@@ -982,7 +990,7 @@ def _rewrite(
     index: str,
     plan: list[_Planned],
     stamp: str,
-    leaving: str,
+    leaving: str | None,
 ) -> None:
     """Write what `_plan` planned, in the caller's transaction (forget_note, delete_project):
     each page that keeps a claim continues as one new version, numbered one past its latest,
@@ -1029,6 +1037,93 @@ def _rewrite(
             removed.setdefault(named, []).append(slug)
     for named, slugs in removed.items():
         _unname(con, account_id, named, named, slugs)
+
+
+# A page version that cites a passage the store holds of a note of another project, whatever
+# workspace that project is in (`p`: the page version): hold_to_own_projects and
+# count_pages_citing_other_projects ask it, so the repair and the operator's count are one
+# search.
+_CITES_ANOTHER_PROJECT = (
+    "EXISTS (SELECT 1 FROM json_each(p.claims) AS claim,"
+    " json_each(claim.value, '$.span_ids') AS cited"
+    " JOIN spans ON spans.id = cited.value JOIN notes ON notes.id = spans.note_id"
+    " WHERE notes.project_id != p.project_id)"
+)
+
+
+def hold_to_own_projects(
+    con: sqlite3.Connection, account_id: str | None, stamp: str
+) -> dict[str, dict[str, int]]:
+    """Hold every page to its own project's notes, on `con`, in the caller's transaction:
+    each page any version of which cites a passage the store holds of a note that is not of
+    the page's own project (another project of its workspace, or another workspace's) is
+    rewritten as a forget rewrites a page (_plan_page, _rewrite), with those passages going
+    from that page alone and nothing else: one new version, numbered one past its latest,
+    of the claims its own project's notes hold up, every earlier version deleted (they held
+    the other project's text), its search rows rewritten, its project given the row
+    PASSAGES_REMOVED; a page left with no claim is removed. The other project's notes are
+    not touched. Scope: the workspace `account_id`, or the whole database (None: schema step
+    32 runs it so, once). Only a program that wrote the store's tables behind its back, or
+    called save_page directly in an earlier build, could leave such a page.
+
+    The pages are found one at a time, in the order of project and slug, each search starting
+    after the last page found, so it holds one page whatever the database holds; on a
+    database that holds no such page it makes one search and writes nothing. It writes no
+    audit event: inside the upgrade no audit writer of this build may run (a step is history),
+    so the store's log is the record, one line a workspace that had any, counts only.
+    Returns, by workspace id, how many pages were `rewritten` and `removed`."""
+    found: dict[str, Counter] = {}
+    after = ("", "")
+    while row := con.execute(
+        "SELECT p.project_id, projects.name, projects.account_id, p.slug FROM page_versions AS p"
+        " JOIN projects ON projects.id = p.project_id"
+        " WHERE (?1 IS NULL OR projects.account_id = ?1) AND (p.project_id, p.slug) > (?2, ?3)"
+        f" AND {_CITES_ANOTHER_PROJECT} ORDER BY p.project_id, p.slug LIMIT 1",
+        (account_id, *after),
+    ).fetchone():
+        project_id, name, account, slug = row
+        after = (project_id, slug)
+        gone = frozenset(  # the other projects' passages its versions cite
+            span_id
+            for (span_id,) in con.execute(
+                "SELECT DISTINCT cited.value FROM page_versions AS p, json_each(p.claims) AS claim,"
+                " json_each(claim.value, '$.span_ids') AS cited"
+                " JOIN spans ON spans.id = cited.value JOIN notes ON notes.id = spans.note_id"
+                " WHERE p.project_id = ? AND p.slug = ? AND notes.project_id != p.project_id",
+                (project_id, slug),
+            )
+        )
+        planned = _plan_page(con, project_id, name, slug, gone)
+        _rewrite(con, account, _index_name(account), [planned], stamp, None)
+        tally = found.setdefault(account, Counter())
+        tally["rewritten" if planned[5] else "removed"] += 1
+    for account, tally in found.items():
+        store_log.warning(
+            "repair: workspace %s held %d page(s) citing notes of other projects: %d rewritten"
+            " with its own notes' claims, %d removed",
+            account,
+            tally["rewritten"] + tally["removed"],
+            tally["rewritten"],
+            tally["removed"],
+        )
+    return {
+        account: {"rewritten": tally["rewritten"], "removed": tally["removed"]}
+        for account, tally in found.items()
+    }
+
+
+def count_pages_citing_other_projects(con: sqlite3.Connection) -> dict[str, int]:
+    """By workspace id, how many pages any version of which cites a passage the store holds of
+    a note of another project: hold_to_own_projects' search, counted, writing nothing (the
+    `stats --other-projects` command). One statement, over every page version."""
+    return dict(
+        con.execute(
+            "SELECT account_id, COUNT(*) FROM (SELECT DISTINCT projects.account_id,"
+            " p.project_id, p.slug FROM page_versions AS p"
+            f" JOIN projects ON projects.id = p.project_id WHERE {_CITES_ANOTHER_PROJECT})"
+            " GROUP BY account_id ORDER BY account_id"
+        ).fetchall()
+    )
 
 
 def _log_left(plan: list[_Planned], project_id: str, what: str = "forget") -> None:

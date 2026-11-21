@@ -22,6 +22,12 @@ and a command that only reads must not; starting the server once upgrades it.
 the install, then one line per workspace, by its id. Counts, sizes and times only. The
 install's record of compaction is one line of its own (`compaction:`, Privacy 1), in words an
 operator can act on, with the command that finishes the job; it names no workspace.
+
+`--other-projects` also counts, by workspace, the pages any version of which cites a note of
+another project (cairn.store.erasure.count_pages_citing_other_projects: the search the
+store's repair, hold_to_own_projects, makes, writing nothing): `other_projects` in the
+object, one line without `--json`. It reads every page version, so it is asked for, never
+paid on every call. cairn writes no such page; one there was written behind the store's back.
 """
 
 import argparse
@@ -34,6 +40,7 @@ from typing import Any
 
 from cairn.store import SCHEMA_VERSION, CannotOpen
 from cairn.store.base import _iso
+from cairn.store.erasure import count_pages_citing_other_projects
 from cairn.store.numbers import part_rows
 from cairn.store.schema import _check_tables, _refuse, _schema_version
 from cairn.web.cli_data import DB_EXISTS
@@ -57,6 +64,11 @@ def add_command(commands: Any) -> None:
     )
     stats.add_argument("--db", type=Path, required=True, help=DB_EXISTS)
     stats.add_argument("--json", action="store_true", help="print one JSON object")
+    stats.add_argument(
+        "--other-projects",
+        action="store_true",
+        help="also count the pages that cite a note of another project (reads every page version)",
+    )
 
 
 def _connect(db: Path) -> sqlite3.Connection:
@@ -102,6 +114,8 @@ def run(args: argparse.Namespace) -> int:
         now = _iso(datetime.now(UTC))
         try:
             found = numbers(lambda part: part_rows(con, part, now), str(db), version)
+            if args.other_projects:
+                found["other_projects"] = count_pages_citing_other_projects(con)
         except sqlite3.Error as error:
             _refuse(db, error)
             print(CANNOT_READ.format(db=db, reason=type(error).__name__), file=sys.stderr)
@@ -143,6 +157,10 @@ def _plain(found: dict[str, Any], db: Path) -> str:
         compaction_line(found["compaction"], db),
         _counts("install", found),
     ]
+    if "other_projects" in found:
+        by = found["other_projects"]
+        each = "".join(f"; workspace {account} {count}" for account, count in by.items())
+        lines.append(f"pages citing notes of other projects: {sum(by.values())}{each}")
     for account, mine in found["workspaces"].items():
         lines.append(_counts(f"workspace {account}", mine))
     return "\n".join(lines)

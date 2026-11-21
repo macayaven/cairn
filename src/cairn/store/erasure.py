@@ -1125,8 +1125,10 @@ def hold_to_own_projects(
     text), its search rows rewritten, its project given the row PASSAGES_REMOVED; a page
     left with no claim is removed. The other project's notes are not touched. Scope: the
     workspace `account_id`, or the whole database (None: schema step 32 runs it so, once).
-    Only a program that wrote the store's tables behind its back, or called save_page
-    directly in an earlier build, could leave such a page; a passage no longer held is one
+    An earlier build's own writers could leave such a page (its compile saved what it had
+    gated, and its save asked only whether the cited passages existed anywhere), as could a
+    program writing the tables; a database whose pages all cite their own project's notes
+    has none, and this makes one search and writes nothing. A passage no longer held is one
     whose note another workspace forgot after the page cited it (a forget searches its own
     workspace alone).
 

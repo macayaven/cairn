@@ -14,11 +14,13 @@ from contextlib import closing
 
 import pytest
 from starlette.testclient import TestClient
+from test_rt1_forget_workspace_held import borrowed, citing, passage
 
 from cairn.arrange import arrange_page, tidy_page
 from cairn.compiler import compile_note
 from cairn.gate import lint_gate
 from cairn.llm import Reply
+from cairn.memory import Memory
 from cairn.server import create_app
 from cairn.store import Claim, StalePage, Store
 from earlier_build import earlier_page
@@ -224,3 +226,28 @@ def test_the_refusal_costs_one_statement_by_the_spans_key_and_reads_no_page(stor
         asked = [s for s in statements if "JOIN notes ON notes.id = spans.note_id" in s]
         assert len(asked) == 1 and "page_versions" not in asked[0]
     assert not [s for s in made["refused"] if "SELECT claims FROM page_versions" in s]
+
+
+def test_a_fold_left_out_whole_comes_back_when_its_notes_text_is_written_again(store):
+    """Report 9, forget tester: a writer leaves out whole a claim that folds east's own
+    passage with desk's. Filing an unrelated note, or the tidy, does not bring east's passage
+    back onto the page; writing its note's text into east again does: the store answers with
+    the stored note and compiles it again (compiler.own_claims says so)."""
+    memory = Memory(store, lint_gate)
+    desk, east = store.create_project("desk"), store.create_project("east")
+    theirs = passage(store, filed(store, desk.id, "# Dispatch\n\nQuill sealed the crate.\n"))
+    local = filed(store, east.id, "# Minutes\n\nThe ledger opens at noon.\n")
+    ours = passage(store, local)
+    borrowed(store, east.id, "minutes", citing(1, ours.text, ours, theirs))
+
+    def on_page() -> bool:
+        page = store.get_page(east.id, "minutes")
+        return ours.id in {i for claim in page.claims for i in claim.span_ids}
+
+    assert memory.note("east", "# Minutes\n\nThe bell rings at two.\n")["status"] == "saved"
+    assert not on_page()
+    tidy_page(store, east.id, "minutes")
+    assert not on_page()
+    again = memory.note("east", "# Minutes\n\nThe ledger opens at noon.\n")
+    assert (again["note_id"], again["created"], again["status"]) == (local.id, False, "saved")
+    assert on_page()

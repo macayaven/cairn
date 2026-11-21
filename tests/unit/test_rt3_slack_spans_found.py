@@ -23,7 +23,6 @@ message's text, so a backtick displayed as a character is assumed sent bare; and
 rich text does not name (an element of a shape cairn does not read) is assumed displayed as
 code, as the model reads the text's backticks. Every message is made up."""
 
-import pytest
 from markdown_it import MarkdownIt
 
 from cairn.slack.text import note_from_message
@@ -62,7 +61,6 @@ def shown(text: str, elements: list[dict]) -> list[tuple[str, str]]:
     return out
 
 
-@pytest.mark.xfail(strict=True, reason="a span of backticks is placed one backtick early")
 def test_1_a_named_span_of_backticks_after_a_span_the_rich_text_leaves_out():
     """A span the rich text does not name, then right after it a named span holding one
     backtick. Slack displayed "k" as code and "`" as code (the guide allows the second as its
@@ -73,7 +71,6 @@ def test_1_a_named_span_of_backticks_after_a_span_the_rich_text_leaves_out():
     assert "".join(chars for _, chars in page) == "k`"
 
 
-@pytest.mark.xfail(strict=True, reason="backticks the rich text shows as characters are code")
 def test_2_backticks_the_rich_text_shows_as_characters_are_not_code():
     """Slack displayed "`x` or " as characters, then the code span "x". The page shows two
     code spans and no backtick."""
@@ -83,7 +80,6 @@ def test_2_backticks_the_rich_text_shows_as_characters_are_not_code():
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="a span of backticks is placed on an empty span's")
 def test_3_a_named_span_of_backticks_after_an_empty_one_stays_after_it():
     """An empty span the rich text names, whose two backticks the text holds, then a span of
     one backtick. The empty span's backticks are shown as typed (the fix's own test: "the
@@ -92,14 +88,12 @@ def test_3_a_named_span_of_backticks_after_an_empty_one_stays_after_it():
     assert shown("`````", [code(""), code("`")]) == [("text", "``"), ("code", "`")]
 
 
-@pytest.mark.xfail(strict=True, reason="a span of backticks swaps places with a literal one")
 def test_4_a_literal_backtick_before_a_named_span_of_backticks_stays_before_it():
     """Slack displayed "x`" as characters, then the code span "`". The page shows the same
     characters, but "x", the code span, and then the literal backtick."""
     assert shown("x````", [prose("x`"), code("`")]) == [("text", "x`"), ("code", "`")]
 
 
-@pytest.mark.xfail(strict=True, reason="a span of blanks after another vanishes at a line end")
 def test_5_a_span_of_blanks_right_after_another_at_a_lines_end_shows_its_blanks():
     """Slack displayed the code "a" and then a code span of two blanks. Written as plain
     characters at the end of the line, the blanks are dropped: the page shows "a" alone."""

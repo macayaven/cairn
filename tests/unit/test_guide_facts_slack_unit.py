@@ -1225,6 +1225,54 @@ def test_connect_two_code_spans_that_touch_in_plain_text_are_read_as_one():
     assert read(rich) == [("code_inline", "a"), ("text", "b")]  # the second its plain characters
 
 
+def test_connect_the_rich_text_tells_the_blanks_and_the_text_about_a_span():
+    """connect.md: "A span written as plain characters keeps the blanks that end it, ...\" and
+    "Where Slack's rich text gives the text that stands right before a span it names, ...\"
+    (The Slack tester's second attack on spans, cases 5 and 2, each in
+    test_rt3_slack_spans_found; the limit is run here.)"""
+    says(
+        *CONNECT,
+        "A span written as plain characters keeps the blanks that end it, at the end of a line"
+        " too: the last of them is written as a character reference, `&#32;` for a blank.",
+        "Where Slack's rich text gives the text that stands right before a span it names, a"
+        " backtick in that text is written as a character, and the span after it; elsewhere a"
+        " backtick Slack displayed as a character is read as code where it pairs with another,"
+        " after the last span the rich text names for instance.",
+    )
+
+    def read(text: str, elements: list[dict]) -> tuple[str, list[tuple[str, str]]]:
+        section = {"type": "rich_text_section", "elements": elements}
+        note = note_from_message(
+            {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text,
+             "blocks": [{"type": "rich_text", "elements": [section]}]},
+            team_id=TEAM, team_domain="fable-works", conversation_id="C0LIBRARY1",
+            author="Cedar Quill", names={},
+        ).text  # fmt: skip
+        body = as_read(note)[0]
+        children = [t for b in MarkdownIt("commonmark").parse(body) for t in b.children or []]
+        return body, [(t.type, t.content) for t in children if t.type in ("code_inline", "text")]
+
+    def code(text: str) -> dict:
+        return {"type": "text", "text": text, "style": {"code": True}}
+
+    def text(text: str) -> dict:
+        return {"type": "text", "text": text}
+
+    assert read("`a``  `", [code("a"), code("  ")]) == (
+        "`a` &#32;",
+        [("code_inline", "a"), ("text", "  ")],
+    )
+    assert read("`x` or `x`", [text("`x` or "), code("x")]) == (
+        "\\`x\\` or `x`",
+        [("text", "`x` or "), ("code_inline", "x")],
+    )
+    assert read("`x` or `x`", [code("x"), text(" or `x`")])[1] == [
+        ("code_inline", "x"),
+        ("text", " or "),
+        ("code_inline", "x"),
+    ]
+
+
 def test_connect_every_answer_is_for_you_alone():
     """connect.md: "Every answer is for you alone: the slash command's and the shortcut's are
     shown only to you, and the bot answers a direct message in that direct conversation.\""""

@@ -20,7 +20,10 @@ import os
 import sqlite3
 import stat
 import sys
+from collections.abc import Iterator
+from contextlib import closing, contextmanager, suppress
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from cairn.memory import EXPORTED_EVENT
 from cairn.plans import Plans
@@ -34,6 +37,7 @@ from cairn.store import (
     Pruned,
     Store,
 )
+from cairn.store.base import audit_log
 
 COMMANDS = ("export", "import", "compact", "repair")
 # The --db help of a command that never creates the database (it exits 1 when there is none).
@@ -191,14 +195,9 @@ def _import(
         print(f"cannot read {source}: {error.strerror}", file=sys.stderr)
         return 1
     with file:
-        new = not db.exists()
-        made = _missing_directories(db.parent) if new else []
-        make_folder(db)
-        imported = False
         try:
-            make_database(db)  # 0600 before SQLite opens it (H1)
-            store = Store(db, upgrade=False)
-            try:
+            target = closing(Store(db, upgrade=False)) if os.path.lexists(db) else new_store(db)
+            with target as store:
                 if plans is None:
                     print(NO_PLAN, file=sys.stderr)
                 view = store.for_account(account)
@@ -206,36 +205,33 @@ def _import(
                     plan = plans.in_force(view, account)[1]
                     view = plans.limit(view, plan)
                 summary = view.import_export(file, max_bytes)
-                imported = True
-            except KeyError:
-                print(f"no workspace {account!r} in {db}", file=sys.stderr)
-                return 1
-            except (ValueError, OverLimit) as error:  # names files, ids, counts, rules, limits
-                print(f"nothing was imported: {error}", file=sys.stderr)
-                return 1
-            finally:
-                store.close()
-        finally:
-            if new and not imported:
-                _remove_new(db, made)
+        except KeyError:
+            print(f"no workspace {account!r} in {db}", file=sys.stderr)
+            return 1
+        except (ValueError, OverLimit) as error:
+            print(f"nothing was imported: {error}", file=sys.stderr)
+            return 1
     print(f"imported {_counts(summary)} into {account} in {db}")
     print(f"cut {summary.fields_cut} note fields to their bounds ({', '.join(FIELD_MAX)})")
     print(summary.notice)  # who reaches what it brought: the archive carries no access rules
     return 0
 
 
-def make_folder(db: Path) -> None:
+def make_folder(db: Path) -> list[Path]:
     """The database's folder, made with its parents when missing, each one 0700 (H1): what
     the database holds is its owner's only. A folder that was there is left as it is. A
     folder cairn may not make it under is CannotOpen, as the store's own refusal is
     (cairn.web.cli.main)."""
+    made = []
     for folder in reversed(_missing_directories(db.parent)):
         try:
             os.mkdir(folder, 0o700)  # the umask can only take bits away from 0700
         except FileExistsError:
-            pass
+            continue
         except PermissionError as error:
             raise CannotOpen(db) from error
+        made.append(folder)
+    return made
 
 
 # H1: what the command line says of a --db that is a symbolic link (exit 2), and of an
@@ -312,16 +308,37 @@ def _missing_directories(directory: Path) -> list[Path]:
     return missing
 
 
-def _remove_new(db: Path, directories: list[Path]) -> None:
-    """Remove a database this run created, its SQLite side files, then the directories it
-    made, deepest first; a directory something else has put a file in stays."""
-    for path in (db, *(db.with_name(db.name + end) for end in ("-wal", "-shm", "-journal"))):
-        path.unlink(missing_ok=True)
-    for directory in directories:
-        try:
-            directory.rmdir()
-        except OSError:
-            return
+@contextmanager
+def new_store(db: Path) -> Iterator[Store]:
+    """Publish a complete, closed database with one exclusive link on the same filesystem.
+    SQLite only sees the private staging name. Its last close checkpoints its journal."""
+    made = make_folder(db)
+    events: list[str] = []
+    try:
+        with TemporaryDirectory(dir=db.parent, prefix=".cairn-") as folder:
+            staged = Path(folder) / "db"
+            make_database(staged)
+            with closing(Store(staged, upgrade=False)) as store:
+                store._state.audit_line = events.append
+                yield store
+            for suffix in ("-wal", "-shm", "-journal"):
+                companion = db.with_name(db.name + suffix)
+                if os.path.lexists(companion):
+                    raise ValueError(f"{companion} already exists beside the destination")
+            try:
+                os.link(staged, db)
+            except FileExistsError:
+                raise ValueError(f"{db} already exists") from None
+            except OSError as error:
+                raise ValueError(f"cannot publish {db}: {error.strerror}") from error
+    except PermissionError as error:
+        raise CannotOpen(db) from error
+    finally:
+        for directory in reversed(made):
+            with suppress(OSError):
+                directory.rmdir()  # only empty directories we actually created
+    for line in events:
+        audit_log.info(line)
 
 
 ANOTHER_COMPACTION = 3  # compact's exit code when another compaction runs on the database

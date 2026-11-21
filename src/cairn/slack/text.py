@@ -536,8 +536,9 @@ def _before(element: object) -> str | None:
     """What the message's text holds for an element of rich text, as Slack displayed it, where
     that is known (_known_code): a text element's own characters where it has no style, and
     two backticks for an empty span of code. "" where it tells nothing of the place and no
-    span the text's backticks bound ends there: a span named, a link, a mention, an emoji.
-    None where such a span may: an element styled as code of a shape not read."""
+    span the text's backticks bound ends there: a link, a mention, an emoji, styled text.
+    None where such a span may: a span named (one may stand between it and the next, where
+    the rich text leaves it out), an element styled as code of a shape not read."""
     if not isinstance(element, Mapping):
         return None
     text, style = element.get("text"), element.get("style")
@@ -546,7 +547,7 @@ def _before(element: object) -> str | None:
         return None if code else ""
     if isinstance(text, str) and not style:
         return _lines(text + ".")[:-1]  # a line feed that ends it is kept
-    return "``" if code and text == "" else ""
+    return ("``" if text == "" else None) if code else ""
 
 
 def _sent(shown: str) -> str:

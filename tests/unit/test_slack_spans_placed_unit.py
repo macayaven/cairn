@@ -31,6 +31,14 @@ def test_a_backtick_that_closes_a_span_is_not_taken_where_the_text_before_is_not
     assert page == [("text", "x "), ("code", "k"), ("text", "`")]
 
 
+def test_a_named_span_before_one_the_rich_text_leaves_out_tells_nothing_of_the_next():
+    """Case 1 one step on: the span "a" the rich text names, then "x" it leaves out, then a
+    named span of one backtick. The backtick that closes "x" is not the named span's: "x",
+    right after "a", shows its characters, and the backtick its own span."""
+    page = shown("`a``x````", [code("a"), code("`")])
+    assert page == [("code", "a"), ("text", "x"), ("code", "`")]
+
+
 def test_a_backtick_before_a_link_does_not_make_the_link_code():
     """A link stands right before the span: the rich text says no span the text bounds ends
     there, so the backtick Slack displayed as a character before the link pairs with none."""

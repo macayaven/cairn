@@ -1234,10 +1234,10 @@ def test_connect_the_rich_text_tells_the_blanks_and_the_text_about_a_span():
         *CONNECT,
         "A span written as plain characters keeps the blanks that end it, at the end of a line"
         " too: the last of them is written as a character reference, `&#32;` for a blank.",
-        "Where Slack's rich text gives the text that stands right before a span it names, that"
-        " text is written as the characters Slack displayed, a backtick in it included, and the"
-        " span after it; elsewhere a backtick Slack displayed as a character is read as code"
-        " where it pairs with another, after the last span the rich text names for instance.",
+        "Where Slack's rich text gives the text that stands right before a span it names, a"
+        " backtick in that text is written as a character, and the span after it; elsewhere a"
+        " backtick Slack displayed as a character is read as code where it pairs with another,"
+        " after the last span the rich text names for instance.",
     )
 
     def read(text: str, elements: list[dict]) -> tuple[str, list[tuple[str, str]]]:

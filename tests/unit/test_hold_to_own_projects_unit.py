@@ -11,6 +11,7 @@ hold notes and passages alone: the oracle is a scan of every table. Made-up note
 import io
 import json
 import logging
+from collections import Counter
 from contextlib import closing
 
 from test_rt1_forget_workspace_held import (
@@ -21,6 +22,7 @@ from test_rt1_forget_workspace_held import (
     passage,
     tables_holding,
 )
+from test_rt1_own_project_held import clean_and_hit
 
 from cairn.store import Store, erasure
 from cairn.web import cli
@@ -160,3 +162,44 @@ def test_stats_counts_such_pages_by_workspace_only_when_asked(tmp_path, capsys):
     each = f"workspace {first} {by[first]}; workspace {second} {by[second]}"
     assert line == [f"pages citing notes of other projects: 6; {each}"]
     assert db.read_bytes() == held
+
+
+def search_work(clean: int, hit: int) -> tuple[int, int]:
+    """The repair's searches alone, those that read page versions to find the next page to
+    repair (erasure._NEXT_PROJECT, _NEXT_PAGE), on `hit` pages that cite another project's
+    note among `clean` pages that cite none (test_rt1_own_project_held.clean_and_hit): SQLite's
+    work in units of 100 virtual-machine steps, counted not timed, and how many they were."""
+    with closing(clean_and_hit(clean, hit)) as store:
+        steps, at, asked = Counter(), [""], [0]
+
+        def tick() -> int:
+            steps[at[0]] += 1
+            return 0
+
+        def trace(statement: str) -> None:
+            at[0] = statement
+            asked[0] += "ORDER BY p.slug LIMIT 1" in statement
+
+        with store._write() as con:
+            con.set_trace_callback(trace)
+            con.set_progress_handler(tick, 100)
+            try:
+                erasure.hold_to_own_projects(con, None, store._stamp())
+            finally:
+                con.set_progress_handler(None, 0)
+                con.set_trace_callback(None)
+        searched = sum(
+            n for statement, n in steps.items() if "ORDER BY p.slug LIMIT 1" in statement
+        )
+        return searched, asked[0]
+
+
+def test_the_repair_searches_the_page_versions_once_however_many_pages_it_repairs():
+    """The tester's 40 pages among 1,500 clean ones (report: 40 full searches before): the
+    searches of the 40 pages among them cost the clean pages' one search and the 40 pages',
+    one search for the project and then one from each page repaired, by the keys."""
+    alone, once = search_work(1500, 0)
+    pages, asked = search_work(0, 40)
+    both, asked_both = search_work(1500, 40)
+    assert once == 1 and asked == asked_both == 42
+    assert both - pages <= alone + alone // 10, (alone, pages, both)

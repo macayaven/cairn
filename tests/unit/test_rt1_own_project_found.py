@@ -31,7 +31,9 @@ def work(clean: int, hit: int) -> int:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="the repair searches every page version again for each page it repairs",
+    reason="each page's rewrite reads the workspace's search rows again (ranking.index_page,"
+    " as every save of a page does); the search for the pages is one pass since 0.1.0's"
+    " fix (test_hold_to_own_projects_unit)",
 )
 def test_the_repair_reads_the_page_versions_a_bounded_number_of_times():
     """One search over the clean pages costs `alone`. Repairing 40 pages among them should

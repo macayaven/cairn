@@ -111,7 +111,7 @@ def test_on_a_database_with_no_such_page_it_says_so_and_writes_nothing(
         f"nothing to change in {db}: no page cites a passage that is not of its own"
         " project's notes\n"
     )
-    asked = [s for s in Traced.said if s.startswith("SELECT projects.account_id")]
+    asked = [s for s in Traced.said if "json_each(p.claims)" in s]
     writes = [
         s
         for s in Traced.said

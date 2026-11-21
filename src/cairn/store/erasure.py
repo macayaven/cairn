@@ -1081,6 +1081,26 @@ _CITES_OUTSIDE_ITS_PROJECT = (
     "EXISTS (SELECT 1 FROM json_each(p.claims) AS claim,"
     f" json_each(claim.value, '$.span_ids') AS cited WHERE {_NOT_OF_ITS_PROJECT})"
 )
+# hold_to_own_projects' one pass. The next project of the scope (?1: a workspace, or NULL for
+# every one) after (?2, ?3), in the order of the unique index on (account_id, name), with the
+# slug of its first page, in its versions' primary key order, any version of which cites
+# outside its project; NULL for a project that has none, which the outer query passes over.
+# LIMIT -1 keeps the inner query a co-routine (not flattened into the outer one, which would
+# ask the subquery twice), so each project's versions are searched once, up to that page.
+_NEXT_PROJECT = (
+    "SELECT account_id, name, id, slug FROM (SELECT projects.account_id, projects.name,"
+    " projects.id, (SELECT p.slug FROM page_versions AS p WHERE p.project_id = projects.id"
+    f" AND {_CITES_OUTSIDE_ITS_PROJECT} ORDER BY p.slug LIMIT 1) AS slug FROM projects"
+    " WHERE (?1 IS NULL OR projects.account_id = ?1)"
+    " AND (projects.account_id, projects.name) > (?2, ?3)"
+    " ORDER BY projects.account_id, projects.name LIMIT -1) WHERE slug IS NOT NULL LIMIT 1"
+)
+# The next such page of the project ?1 after the slug ?2: the search goes on from there, by
+# the primary key, so the project's versions are read once in all.
+_NEXT_PAGE = (
+    "SELECT p.slug FROM page_versions AS p WHERE p.project_id = ?1 AND p.slug > ?2"
+    f" AND {_CITES_OUTSIDE_ITS_PROJECT} ORDER BY p.slug LIMIT 1"
+)
 
 
 def hold_to_own_projects(
@@ -1104,48 +1124,45 @@ def hold_to_own_projects(
     whose note another workspace forgot after the page cited it (a forget searches its own
     workspace alone).
 
-    The pages are found one at a time, by workspace, project name and slug, each search
-    starting after the last page found, so it holds one page and one workspace's counts
-    whatever the database holds; on a database that holds no such page it makes one search
-    and writes nothing. It writes no audit event: inside the upgrade no audit writer of this
-    build may run (a step is history), so the store's log is the record, one line for each
-    workspace that had any, written once its pages are done, counts only; `each`, when
+    The pages are found one at a time, by workspace, project name and slug, in one pass over
+    the page versions however many pages it repairs: each search goes on from the last page
+    found, by the projects' unique index and the versions' primary key (_NEXT_PROJECT,
+    _NEXT_PAGE), so each version is read by the search once, and it holds one page and one
+    workspace's counts whatever the database holds; on a database that holds no such page it
+    makes one search and writes nothing. It writes no audit event: inside the upgrade no
+    audit writer of this build may run (a step is history), so the store's log is the record,
+    one line for each workspace that had any, written once its pages are done, counts only;
+    `each`, when
     given, is called with the workspace's id and its counts rewritten and removed in place of
     that line (the `repair` command prints them once the transaction commits). Returns how
     many `workspaces` had any, and how many pages were `rewritten` and `removed`."""
     said = _log_repaired if each is None else _each(each)
     done: Counter = Counter()
     tally: Counter = Counter()  # the pages of the workspace `at`, the one being repaired
-    at, after = None, ("", "", "")
-    while row := con.execute(
-        "SELECT projects.account_id, projects.name, p.project_id, p.slug FROM page_versions AS p"
-        " JOIN projects ON projects.id = p.project_id"
-        " WHERE (?1 IS NULL OR projects.account_id = ?1)"
-        " AND (projects.account_id, projects.name, p.slug) > (?2, ?3, ?4)"
-        f" AND {_CITES_OUTSIDE_ITS_PROJECT}"
-        " ORDER BY projects.account_id, projects.name, p.slug LIMIT 1",
-        (account_id, *after),
-    ).fetchone():
-        account, name, project_id, slug = row
-        after = (account, name, slug)
+    at, after = None, ("", "")
+    while found := con.execute(_NEXT_PROJECT, (account_id, *after)).fetchone():
+        account, name, project_id, slug = found
+        after = (account, name)
         if account != at:
             said(at, tally)
             done["workspaces"] += 1
             at, tally = account, Counter()
-        gone = frozenset(  # the passages its versions cite that are not of its project's
-            span_id
-            for (span_id,) in con.execute(
-                "SELECT DISTINCT cited.value FROM page_versions AS p, json_each(p.claims) AS claim,"
-                " json_each(claim.value, '$.span_ids') AS cited"
-                f" WHERE p.project_id = ? AND p.slug = ? AND {_NOT_OF_ITS_PROJECT}",
-                (project_id, slug),
+        while slug is not None:
+            gone = frozenset(  # the passages its versions cite that are not of its project's
+                span_id
+                for (span_id,) in con.execute(
+                    "SELECT DISTINCT cited.value FROM page_versions AS p,"
+                    " json_each(p.claims) AS claim, json_each(claim.value, '$.span_ids') AS cited"
+                    f" WHERE p.project_id = ? AND p.slug = ? AND {_NOT_OF_ITS_PROJECT}",
+                    (project_id, slug),
+                )
             )
-        )
-        planned = _plan_page(con, project_id, name, slug, gone)
-        _rewrite(con, account, _index_name(account), [planned], stamp, None)
-        what = "rewritten" if planned[5] else "removed"
-        tally[what] += 1
-        done[what] += 1
+            planned = _plan_page(con, project_id, name, slug, gone)
+            _rewrite(con, account, _index_name(account), [planned], stamp, None)
+            what = "rewritten" if planned[5] else "removed"
+            tally[what] += 1
+            done[what] += 1
+            (slug,) = con.execute(_NEXT_PAGE, (project_id, slug)).fetchone() or (None,)
     said(at, tally)
     return {what: done[what] for what in ("workspaces", "rewritten", "removed")}
 

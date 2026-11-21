@@ -853,22 +853,28 @@ def _written(
 ) -> tuple[list[int], list[str]] | None:
     """Where each block up to the one at `at`, the one `body` leaves to run on, starts in
     `body`, and what the body wrote after each block before it (the lines that close its
-    fences). None when `body` is not these blocks in order, or when the body did not write
-    all its CLOSERS_MAX closers: with one to spare the next render would close a fence, not
-    name its claim (the claim named was then one that no line closes)."""
-    from cairn.compiler import _closed  # the compiler builds on the store
-
+    fences). None when `body` is not these blocks in order. No parse: whether the body
+    wrote all its closers is `_spent`'s question, asked once there is something to ask."""
     texts = [text for text, _ in blocks[: at + 1]]
     starts = _placed(body, texts)
     if starts is None:
         return None
-    wrote = [body[starts[n] + len(texts[n]) : starts[n + 1] - 2] for n in range(at)]
+    return starts, [body[starts[n] + len(texts[n]) : starts[n + 1] - 2] for n in range(at)]
+
+
+def _spent(blocks: Sequence[tuple[str, Claim | None]], wrote: Sequence[str]) -> bool:
+    """Whether the body wrote all its CLOSERS_MAX closers, `wrote` as `_written` gives it:
+    with one to spare the next render would close a fence, not name its claim (the claim
+    named was then one that no line closes). A parse for each block the body wrote lines
+    after, so it is asked last, when there is a claim to ask about."""
+    from cairn.compiler import _closed  # the compiler builds on the store
+
     closers = sum(  # each line the body wrote, less the one a claim alone is closed by
         lines.count("\n") - (_closed(text) != text)
-        for text, lines in zip(texts, wrote, strict=False)
+        for (text, _), lines in zip(blocks, wrote, strict=False)
         if lines
     )
-    return None if closers != CLOSERS_MAX else (starts, wrote)
+    return closers == CLOSERS_MAX
 
 
 def _open_run(
@@ -878,7 +884,8 @@ def _open_run(
     fence of theirs may have reached it: (where each block up to it starts in `body`, the
     first of those claims). They follow one another with no heading and no other claim
     between, each holds a backtick or a tilde, and the body wrote nothing after any of them
-    (a claim with a closer is closed). None when there is none, or as `_written`."""
+    (a claim with a closer is closed). None when there is none, as `_written`, or when the
+    body did not write all its closers (`_spent`, asked only when there is such a claim)."""
     found = _written(body, blocks, at)
     if found is None:
         return None
@@ -886,7 +893,7 @@ def _open_run(
     run = at  # the first of the claims
     while run and blocks[run - 1][1] and not wrote[run - 1] and _fenced(blocks[run - 1][0]):
         run -= 1
-    return None if run == at else (starts, run)
+    return None if run == at or not _spent(blocks, wrote) else (starts, run)
 
 
 def _left_open(body: str, blocks: Sequence[tuple[str, Claim | None]], at: int) -> set[int]:
@@ -899,10 +906,11 @@ def _left_open(body: str, blocks: Sequence[tuple[str, Claim | None]], at: int) -
     and the claim named does not keep it (the ninth round). Not a claim whose fence closes
     in its own text, nor one the body wrote a closer after, nor one with no fence. Not asked
     of what follows them: one parse of the body as it is, whatever the title does next;
-    none as `_written`. After the claim named the section is not asked: a claim there whose
-    fence has no closing line can open a fence, and leaves by `_may_open_a_fence`; one at
-    the margin that this parse reads open is so only because what the claim named leaves
-    open runs on into it, and its own fence closes in its text."""
+    none as `_written` and `_spent`. After the claim named the section is not asked: a
+    claim there whose fence has no closing line can open a fence, and leaves by
+    `_may_open_a_fence`; one at the margin that this parse reads open is so only because
+    what the claim named leaves open runs on into it, and its own fence closes in its
+    text."""
     found = _written(body, blocks, at)
     if found is None:
         return set()
@@ -911,7 +919,7 @@ def _left_open(body: str, blocks: Sequence[tuple[str, Claim | None]], at: int) -
     while section and blocks[section - 1][1] is not None:
         section -= 1
     asked = [n for n in range(section, at) if not wrote[n] and _fenced(blocks[n][0])]
-    if not asked:
+    if not asked or not _spent(blocks, wrote):
         return set()
     stops = {  # each fence of the body, by the line it starts on: the line after its last
         token.map[0]: token.map[1]

@@ -100,26 +100,34 @@ To move to the current Ubuntu AMI, follow the backup steps in [Upgrade](#upgrade
 The settings secret starts without a version, so you can sign in with API keys from the start.
 Prepare a local `cairn.env` for the cairn container's environment. From the AWS stack directory,
 upload it without putting its value in your command line or OpenTofu state.
-Compose reads the file, and a value arrives as written only between single quotes (a single
-quote inside is written `\'`, so the value cannot end in an odd number of backslashes: the last
-would take the closing quote, Compose stops with `unterminated quoted value`, the unit fails and
-the boot passes that line on). Outside them Compose changes three kinds of value: it puts a
-variable's value in place of a `$` and the name after it, or nothing when no variable has that
-name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
-value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
-on what Compose says, as a line in the unit's journal that starts with `cairn-quick: compose:`.
-The other changes come without a word from Compose, so after every start the boot compares the
-settings in the secret with what cairn's container was given. It reads the lines written
-`NAME=value`, the value between single quotes or to the end of the line, and names each of those
-that differs, the name and nothing of its value, on a line that starts with
-`cairn-quick: settings check:`. A value in double quotes that runs over more than one line is not
-read as one value: its first line is named as differing, and a later line of it that looks like a
-setting can be named too. Compose reads more forms than that (a colon for the equals sign,
-`export` before the name, spaces before it), so every other line that is not blank or a comment
-is counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`,
-with the names cairn was given: write those as `NAME=value`. A start with neither kind of line
-shows that every setting cairn was given arrived as written; with a `not compared` line, every
-setting but those; `cairn-quick: settings check: did not run` means that nothing was compared.
+Compose reads the file, and a value arrives as written only between single quotes (a single quote
+inside is written `\'`, so the value cannot end in an odd number of backslashes: the last would take
+the closing quote, Compose stops with `unterminated quoted value`, the unit fails and the boot
+passes that line on). Outside them Compose changes four kinds of value: it puts a variable's value
+in place of a `$` and the name after it, or nothing when no variable has that name; where no quotes
+hold the value, it drops the blanks at either end, and a `#` after a space with the rest of the
+line, unless the `#` is the value's first character; and it removes double quotes around a value,
+reading `\n` and its like between them as the characters they stand for. Compose reports one of
+these, the `$` before a name no variable has, and the boot passes on what Compose says, as a line in
+the unit's journal that starts with `cairn-quick: compose:`. The other changes come without a word
+from Compose, so after every start the boot compares the settings in the secret with what cairn's
+container was given. It reads the lines written `NAME=value`, with nothing before the name and
+nothing between it and the equals sign, and takes the value as written: what stands between single
+quotes that open right after the equals sign, or else all that stands between the equals sign and
+the end of the line, blanks and double quotes included. It names each of those that differs, the
+name and nothing of its value, on a line that starts with `cairn-quick: settings check:`. A value in
+double quotes that runs over more than one line is not read as one value: its first line is named as
+differing, and a later line of it that looks like a setting can be named too. Compose reads more
+forms than that, among them a colon for the equals sign, `export` or blanks before the name, a
+hyphen in the name, blanks before the equals sign or between it and a single quote, text after a
+closing single quote, and two backslashes together between single quotes, so every other line that
+is not blank or a comment is counted on one line,
+`cairn-quick: settings check: N line(s) of the settings not compared`, with the names cairn was
+given: write those as `NAME=value`. When two lines that the check reads set one name, Compose takes
+the later, and the check compares that one. A start with no `settings check` line shows that every
+setting cairn was given arrived as written, a carriage return that ends its line aside, which
+Compose drops and the check does not count; with a `not compared` line and no other, every setting
+but those; `cairn-quick: settings check: did not run` means that nothing was compared.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -299,26 +307,34 @@ session, save the API key in your credential store, remove the temporary file on
 The settings secret starts without a version, so you can sign in with API keys from the start.
 Prepare a local `cairn.env` for the cairn container's environment. From the Google Cloud stack
 directory, upload it without putting its value in your command line or OpenTofu state.
-Compose reads the file, and a value arrives as written only between single quotes (a single
-quote inside is written `\'`, so the value cannot end in an odd number of backslashes: the last
-would take the closing quote, Compose stops with `unterminated quoted value`, the unit fails and
-the boot passes that line on). Outside them Compose changes three kinds of value: it puts a
-variable's value in place of a `$` and the name after it, or nothing when no variable has that
-name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
-value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
-on what Compose says, as a line in the unit's journal that starts with `cairn-quick: compose:`.
-The other changes come without a word from Compose, so after every start the boot compares the
-settings in the secret with what cairn's container was given. It reads the lines written
-`NAME=value`, the value between single quotes or to the end of the line, and names each of those
-that differs, the name and nothing of its value, on a line that starts with
-`cairn-quick: settings check:`. A value in double quotes that runs over more than one line is not
-read as one value: its first line is named as differing, and a later line of it that looks like a
-setting can be named too. Compose reads more forms than that (a colon for the equals sign,
-`export` before the name, spaces before it), so every other line that is not blank or a comment
-is counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`,
-with the names cairn was given: write those as `NAME=value`. A start with neither kind of line
-shows that every setting cairn was given arrived as written; with a `not compared` line, every
-setting but those; `cairn-quick: settings check: did not run` means that nothing was compared.
+Compose reads the file, and a value arrives as written only between single quotes (a single quote
+inside is written `\'`, so the value cannot end in an odd number of backslashes: the last would take
+the closing quote, Compose stops with `unterminated quoted value`, the unit fails and the boot
+passes that line on). Outside them Compose changes four kinds of value: it puts a variable's value
+in place of a `$` and the name after it, or nothing when no variable has that name; where no quotes
+hold the value, it drops the blanks at either end, and a `#` after a space with the rest of the
+line, unless the `#` is the value's first character; and it removes double quotes around a value,
+reading `\n` and its like between them as the characters they stand for. Compose reports one of
+these, the `$` before a name no variable has, and the boot passes on what Compose says, as a line in
+the unit's journal that starts with `cairn-quick: compose:`. The other changes come without a word
+from Compose, so after every start the boot compares the settings in the secret with what cairn's
+container was given. It reads the lines written `NAME=value`, with nothing before the name and
+nothing between it and the equals sign, and takes the value as written: what stands between single
+quotes that open right after the equals sign, or else all that stands between the equals sign and
+the end of the line, blanks and double quotes included. It names each of those that differs, the
+name and nothing of its value, on a line that starts with `cairn-quick: settings check:`. A value in
+double quotes that runs over more than one line is not read as one value: its first line is named as
+differing, and a later line of it that looks like a setting can be named too. Compose reads more
+forms than that, among them a colon for the equals sign, `export` or blanks before the name, a
+hyphen in the name, blanks before the equals sign or between it and a single quote, text after a
+closing single quote, and two backslashes together between single quotes, so every other line that
+is not blank or a comment is counted on one line,
+`cairn-quick: settings check: N line(s) of the settings not compared`, with the names cairn was
+given: write those as `NAME=value`. When two lines that the check reads set one name, Compose takes
+the later, and the check compares that one. A start with no `settings check` line shows that every
+setting cairn was given arrived as written, a carriage return that ends its line aside, which
+Compose drops and the check does not count; with a `not compared` line and no other, every setting
+but those; `cairn-quick: settings check: did not run` means that nothing was compared.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -372,14 +388,17 @@ sudo journalctl -b -u cairn-quick-provision.service -u cairn-quick.service -u do
 
 When the settings secret cannot be read or Compose cannot start the stack, `cairn-quick.service`
 fails, and its journal has the tool's own error on lines that start with
-`cairn-quick: settings read:` or `cairn-quick: compose:`. They never hold a setting's value: a line
-that would repeat one is left out, a syntax error in the settings file is given by its
-line number, and Compose's warning of a `$` before a name no variable has is passed on without
-that name.
-A line is left out when it holds a value of 6 to 11 characters, or 12 characters in a row of a
-settings line, its name included: so an error that names a setting with a long name is not shown,
-and the boot's own closing line (`Docker Compose up failed` or `could not read the cairn settings
-secret`) always is.
+`cairn-quick: settings read:` or `cairn-quick: compose:`. The boot filters those lines: a syntax
+error in the settings file is given by its line number, Compose's warning of a `$` before a name no
+variable has is passed on without that name, and a line that repeats enough of a setting is left
+out. A line is left out when it holds a whole line of the settings; or what follows a line's first
+`=` or `:`, without the blanks and quotes at its ends, when that is 6 to 11 characters long; or 12
+characters in a row of a settings line, its name included, the blanks and quotes at the line's ends
+aside. So an error that names a setting whose name has 12 characters or more is not shown, and the
+boot's own closing line (`Docker Compose up failed` or `could not read the cairn settings secret`)
+always is. Less than that reaches the journal when a tool's error line holds it: a name of 11
+characters or fewer, a whole value of 5 characters or fewer, a part of a value of 6 to 11, up to 11
+characters in a row of a longer one, and a value that the tool writes otherwise than the file does.
 
 After fixing a package problem, trigger an immediate retry.
 

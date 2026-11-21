@@ -661,34 +661,43 @@ COMPOSE_READS = (
     "Compose reads the file, and a value arrives as written only between single quotes (a"
     " single quote inside is written `\\'`, so the value cannot end in an odd number of"
     " backslashes: the last would take the closing quote, Compose stops with `unterminated"
-    " quoted value`, the unit fails and the boot passes that line on). Outside them Compose"
-    " changes three kinds of value:"
-    " it puts a variable's value in place of a `$` and the name after it, or nothing when no"
-    " variable has that name; it drops a `#` after a space, with the rest of the line; and it"
-    " removes quotes around the value."
+    " quoted value`, the unit fails and the boot passes that line on). Outside them"
+    " Compose changes four kinds of value: it puts a variable's value in place of a `$`"
+    " and the name after it, or nothing when no variable has that name; where no quotes"
+    " hold the value, it drops the blanks at either end, and a `#` after a space with the"
+    " rest of the line, unless the `#` is the value's first character; and it removes"
+    " double quotes around a value, reading `\\n` and its like between them as the"
+    " characters they stand for."
 )
 COMPOSE_SAYS = (
-    "Compose reports one of these, the `$` before a name no variable has, and the boot passes"
-    " on what Compose says, as a line in the unit's journal that starts with"
-    " `cairn-quick: compose:`. The other changes come without a word from Compose, so after"
-    " every start the boot compares the settings in the secret with what cairn's container was"
-    " given. It reads the lines written `NAME=value`, the value between single quotes or to"
-    " the end of the line, and names each of those that differs, the name and nothing of its"
+    "Compose reports one of these, the `$` before a name no variable has, and the boot"
+    " passes on what Compose says, as a line in the unit's journal that starts with"
+    " `cairn-quick: compose:`. The other changes come without a word from Compose, so"
+    " after every start the boot compares the settings in the secret with what cairn's"
+    " container was given. It reads the lines written `NAME=value`, with nothing before"
+    " the name and nothing between it and the equals sign, and takes the value as written:"
+    " what stands between single quotes that open right after the equals sign, or else all"
+    " that stands between the equals sign and the end of the line, blanks and double"
+    " quotes included. It names each of those that differs, the name and nothing of its"
     " value, on a line that starts with `cairn-quick: settings check:`. A value in double"
     " quotes that runs over more than one line is not read as one value: its first line is"
-    " named as differing, and a later line of it that looks like a setting can be named too."
-    " Compose reads more"
-    " forms than that (a colon for the equals sign, `export` before the name, spaces before"
-    " it), so every other line that is not blank or a comment is counted on one line,"
-    " `cairn-quick: settings check: N line(s) of the settings not compared`, with the names"
-    " cairn was given: write those as `NAME=value`. A start with neither kind of line shows"
-    " that every setting cairn was given arrived as written; with a `not compared` line, every"
-    " setting but those; `cairn-quick: settings check: did not run` means that nothing was"
-    " compared."
+    " named as differing, and a later line of it that looks like a setting can be named"
+    " too. Compose reads more forms than that, among them a colon for the equals sign,"
+    " `export` or blanks before the name, a hyphen in the name, blanks before the equals"
+    " sign or between it and a single quote, text after a closing single quote, and two"
+    " backslashes together between single quotes, so every other line that is not blank or"
+    " a comment is counted on one line, `cairn-quick: settings check: N line(s) of the"
+    " settings not compared`, with the names cairn was given: write those as `NAME=value`."
+    " When two lines that the check reads set one name, Compose takes the later, and the"
+    " check compares that one. A start with no `settings check` line shows that every"
+    " setting cairn was given arrived as written, a carriage return that ends its line"
+    " aside, which Compose drops and the check does not count; with a `not compared` line"
+    " and no other, every setting but those; `cairn-quick: settings check: did not run`"
+    " means that nothing was compared."
 )
 
 
-def test_compose_changes_three_kinds_of_setting_and_reports_one(vm):
+def test_compose_changes_four_kinds_of_setting_and_reports_one(vm):
     """What the guide tells a person about writing `cairn.env` (`COMPOSE_READS`,
     `COMPOSE_SAYS`), held to Compose itself, reading the files the boot wrote: which values
     arrive changed, and for which of them Compose says anything on standard error."""
@@ -699,6 +708,10 @@ def test_compose_changes_three_kinds_of_setting_and_reports_one(vm):
         "UNSET": "pa$word9",
         "COMMENT": "abc #def",
         "DOUBLE": '"quoted"',
+        "BLANKS": "  ab cd  ",
+        "HASHED": " #ab",  # the # is the value's first character once the blank is dropped
+        "ESCAPED": '"a\\tb\\nc"',  # a backslash and a letter, twice, in double quotes
+        "HELD": '"  pa$CAIRN_DOMAIN #x  "',  # double quotes hold blanks and a #, not a $name
     }
     settings = "".join(f"{name}={value}\n" for name, value in written.items()).encode()
     files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
@@ -716,10 +729,16 @@ def test_compose_changes_three_kinds_of_setting_and_reports_one(vm):
     assert got["UNSET"] == "pa"  # nothing in place: no variable word9
     assert got["COMMENT"] == "abc"  # dropped from the # after a space
     assert got["DOUBLE"] == "quoted"  # without its quotes
-    # One line for four changed values: the unset name. Nothing of the other three.
+    assert got["BLANKS"] == "ab cd"  # without the blanks at its ends
+    assert got["HASHED"] == "#ab"  # the blank dropped, the # and what follows it kept
+    # A tab and a line end, where the file has two characters for each.
+    assert got["ESCAPED"] == "a\tb\nc"
+    assert got["HELD"] == "  pacairn.example.net #x  "
+    # One line for all the changed values: the unset name. Nothing of the others.
     (warning,) = [line for line in said.splitlines() if line.strip()]
     assert 'The \\"word9\\" variable is not set' in warning
     assert "CAIRN_DOMAIN" not in said and "abc" not in said and "quoted" not in said
+    assert "ab cd" not in said
     guide = " ".join((QUICK / "README.md").read_text().split())
     for sentence in (COMPOSE_READS, COMPOSE_SAYS):  # under each cloud's settings, the same words
         assert guide.count(sentence) == 2, sentence
@@ -863,20 +882,20 @@ UNREAD = (
     ("  INDENTED=nvh8 #rj3", "INDENTED", "nvh8"),
     ("BACKSLASHES='ydc\\\\'", "BACKSLASHES", "ydc\\\\"),
     ("colon2:hj8$CAIRN_DOMAIN", "colon2", "hj8cairn.example.net"),
+    ('SPACED = "xz5"', "SPACED", "xz5"),
 )
-# Lines it does read, among them: an equals sign with spaces round it, and a value in double
-# quotes that goes on over a line, whose second line is no setting.
+# Lines it does read, among them a value in double quotes that goes on over a line, whose
+# second line is no setting.
 READ = (
     ('EQUALS="pm4 wq"', "EQUALS", "pm4 wq"),
-    ('SPACED = "xz5"', "SPACED", "xz5"),
     ('MULTI="lp4', "MULTI", "lp4\nINNER=rd3"),
     ('INNER=rd3"', "INNER", None),
     ("AFTER=bt9", "AFTER", "bt9"),
 )
 SETTINGS_OF_EVERY_FORM = "".join(f"{line}\n" for line, _, _ in (*UNREAD[:3], *READ, *UNREAD[3:]))
 JUDGED = [
-    *(DIFFERS.format(name) for name in ("EQUALS", "SPACED", "MULTI")),
-    NOT_COMPARED.format(6) + ": BACKSLASHES, COLON, EXPORTED, INDENTED, colon2",
+    *(DIFFERS.format(name) for name in ("EQUALS", "MULTI")),
+    NOT_COMPARED.format(7) + ": BACKSLASHES, COLON, EXPORTED, INDENTED, SPACED, colon2",
 ]
 
 
@@ -994,6 +1013,91 @@ def test_a_line_the_check_is_not_sure_of_is_one_line_not_compared(vm, line, give
         assert form not in "\n".join(journal), form
 
 
+@pytest.mark.parametrize(
+    ("line", "given", "journal"),
+    [
+        # Compose drops the blanks round a value that is not in quotes. The check compares
+        # the rest of the line as written, so a value Compose trimmed is one that differs.
+        ("PLAIN=abc  ", "abc", [DIFFERS.format("PLAIN")]),
+        ("PLAIN=  abc", "abc", [DIFFERS.format("PLAIN")]),
+        ("PLAIN=abc\t", "abc", [DIFFERS.format("PLAIN")]),
+        ("PLAIN=   ", "", [DIFFERS.format("PLAIN")]),
+        # Blanks between the equals sign and a quote, or before the equals sign: Compose
+        # takes the value, and the check does not read the form.
+        ("PLAIN=  'abc'", "abc", [NOT_COMPARED.format(1) + ": PLAIN"]),
+        ("PLAIN  =abc", "abc", [NOT_COMPARED.format(1) + ": PLAIN"]),
+        # What Compose leaves alone, or drops and the check does not count as written:
+        # blanks inside a value and inside quotes; blanks and a comment after a closing
+        # quote; a carriage return at the line's end.
+        ("PLAIN=a  b", "a  b", []),
+        ("PLAIN='  abc  '", "  abc  ", []),
+        ("PLAIN='abc'  ", "abc", []),
+        ("PLAIN='abc' # said", "abc", []),
+        ("PLAIN=abc\r", "abc", []),
+        ("PLAIN='abc'\r", "abc", []),
+        # A second carriage return at a line's end is a blank like others: Compose drops it.
+        ("PLAIN=abc\r\r", "abc", [DIFFERS.format("PLAIN")]),
+        # Two lines for one name: Compose takes the later, and the check compares that one.
+        ("PLAIN=abc  \nPLAIN=abc", "abc", []),
+        ("PLAIN=abc\nPLAIN=abc  ", "abc", [DIFFERS.format("PLAIN")]),
+    ],
+)
+def test_a_value_is_compared_as_written_blanks_and_all(vm, line, given, journal):
+    """The guide: "A start with no `settings check` line shows that every setting cairn was
+    given arrived as written". Held to Compose for the blanks it drops (round a value not in
+    quotes, between the equals sign and a quote, round the name), for the carriage returns
+    it keeps and drops, and for two lines that set one name."""
+    got, said = judged_with_compose_deciding(vm, f"{line}\nLAST=x\n".encode())
+    assert got == {"PLAIN": given, "LAST": "x"}
+    assert said == journal
+
+
+def test_a_carriage_return_inside_single_quotes_is_compared_as_the_file_has_it(vm):
+    """The check reads the file with its line ends as they are. Compose 5.5.0 keeps a
+    carriage return inside single quotes, and the start is then quiet; a Compose that
+    dropped it would have changed the value, and the check would name it. Either way the
+    journal follows what Compose gave."""
+    got, said = judged_with_compose_deciding(vm, b"PLAIN='a\r\nb'\r\nLAST=x\n")
+    assert got["PLAIN"] in ("a\r\nb", "a\nb") and got["LAST"] == "x"
+    assert said == ([] if got["PLAIN"] == "a\r\nb" else [DIFFERS.format("PLAIN")])
+
+
+@pytest.mark.parametrize(
+    ("line", "name"),
+    [
+        ("export PYTHONUNBUFFERED=0", "PYTHONUNBUFFERED"),  # another value than the image's
+        ("PATH: /app/bin:/usr/bin", "PATH"),  # the image's own value, written again
+    ],
+)
+def test_an_unread_line_for_a_variable_the_image_sets_too_is_named(vm, line, name):
+    """The check tells a setting from a variable the image brings by the image's own
+    environment. A line it does not read that sets such a name was counted and, the name
+    being the image's, not named. It is named when the container's value is not the
+    image's, and when the name stands on a line not read."""
+    got, said = judged_with_compose_deciding(vm, f"{line}\nLAST=x\n".encode())
+    assert name in got
+    assert said == [NOT_COMPARED.format(1) + f": {name}"]
+
+
+@pytest.mark.parametrize(
+    ("lines", "given", "journal"),
+    [
+        ("V=1\nexport V=1", "1", [NOT_COMPARED.format(1) + ": V"]),
+        ("export V=2\nV=1", "1", [NOT_COMPARED.format(1) + ": V"]),
+        ("V=1\nexport V=2", "2", [DIFFERS.format("V"), NOT_COMPARED.format(1) + ": V"]),
+    ],
+)
+def test_a_name_on_a_line_not_read_is_named_though_a_line_read_holds_it_too(
+    vm, lines, given, journal
+):
+    """Compose takes the later of two lines for one name. When one of the two is in a form
+    the check does not read, the line was counted and, a read line holding the name, not
+    named: a count with no name to look for. The name on a line not read is named."""
+    got, said = judged_with_compose_deciding(vm, f"{lines}\nLAST=x\n".encode())
+    assert got == {"V": given, "LAST": "x"}
+    assert said == journal
+
+
 def test_a_setting_cairn_was_given_that_no_line_read_holds_is_counted_too(vm):
     """The other way round: what the container was given beyond its image's own variables
     came from the settings. One that no line the check read holds went unjudged, wherever
@@ -1026,8 +1130,8 @@ def test_a_secret_without_settings_asks_docker_nothing_after_the_start(vm):
 
 
 def test_no_piece_of_a_setting_gets_through_whatever_the_form_of_its_line(vm):
-    """The rule for the tools' error lines, "never a setting's value, nor 12 characters in a
-    row of one", holds for every line of the settings file. A value after a colon, the
+    """The rule for the tools' error lines, a value of 6 to 11 characters or 12 characters in
+    a row of a longer one, holds for every line of the settings file. A value after a colon, the
     second line of a value that runs over lines, and a line of no form at all are values
     as much as what follows an equals sign: an error line that quotes twelve characters of
     one is left out. An error line that shares no such piece with the file still gets
@@ -1057,11 +1161,42 @@ def test_no_piece_of_a_setting_gets_through_whatever_the_form_of_its_line(vm):
 
 
 LEFT_OUT_WHEN = (
-    "A line is left out when it holds a value of 6 to 11 characters, or 12 characters in a row"
-    " of a settings line, its name included: so an error that names a setting with a long name"
-    " is not shown, and the boot's own closing line (`Docker Compose up failed` or `could not"
-    " read the cairn settings secret`) always is."
+    "A line is left out when it holds a whole line of the settings; or what follows a"
+    " line's first `=` or `:`, without the blanks and quotes at its ends, when that is 6"
+    " to 11 characters long; or 12 characters in a row of a settings line, its name"
+    " included, the blanks and quotes at the line's ends aside. So an error that names a"
+    " setting whose name has 12 characters or more is not shown, and the boot's own"
+    " closing line (`Docker Compose up failed` or `could not read the cairn settings"
+    " secret`) always is. Less than that reaches the journal when a tool's error line"
+    " holds it: a name of 11 characters or fewer, a whole value of 5 characters or fewer,"
+    " a part of a value of 6 to 11, up to 11 characters in a row of a longer one, and a"
+    " value that the tool writes otherwise than the file does."
 )
+
+
+def test_a_piece_of_a_value_under_the_filters_thresholds_reaches_the_journal(vm):
+    """What the filter does not do, so that no sentence promises it (`LEFT_OUT_WHEN`): in a
+    tool's error line, eleven characters in a row of a long value pass, and five of a value
+    of six, a whole value of five, and a value the tool writes with its quotes escaped. A
+    whole line of the settings, however short, and twelve in a row do not."""
+    settings = (
+        b"LONG=the-quick-brown-fox-jumps\nSHORT=abcdef\nPIN=12345\nA=1\n"
+        b'SPOKEN=say "hello" to them\n'
+    )
+    shown = (
+        "error: quick-brown seen",  # eleven in a row
+        "error: abcde seen",  # five of six
+        "error: 12345 seen",  # a whole value of five
+        "error: SHORT is not known",  # a name under twelve characters
+        'error: say \\"hello\\" to them',  # another form than the file's
+    )
+    left_out = ("error: quick-brown-f seen", "error: A=1 seen")  # twelve in a row; a whole line
+    config = {"STANDIN_COMPOSE_ERROR": "\n".join((*shown, *left_out))}
+    done = run(vm, mode="compose-failure", settings=settings, config=config)
+    said = done.stderr.splitlines()
+    for line in shown:
+        assert f"cairn-quick: compose: {line}" in said, line
+    assert "quick-brown-f" not in done.stderr and "A=1" not in done.stderr
 
 
 def test_an_error_that_names_a_long_named_setting_is_left_out_and_the_boots_line_stays(vm):
@@ -1087,8 +1222,11 @@ def test_an_error_that_names_a_long_named_setting_is_left_out_and_the_boots_line
     script = BOOTSTRAP.read_text()
     comment = script[: script.index("say_errors() {")].rsplit("\n\n", 1)[1]
     said_there = " ".join(line.lstrip("# ") for line in comment.splitlines())
-    assert "12 in a row of a settings line (its name included" in said_there
-    assert "6 characters of a short value" in said_there
+    assert "a line holding a whole settings line" in said_there
+    assert "a value of 6 to 11 characters" in said_there
+    assert "12 in a row of a settings line (its name included)" in said_there
+    assert said_there.endswith("Less gets through.")
+    assert "never" not in said_there
 
 
 @pytest.mark.parametrize("cloud", ["aws", "gcp"])

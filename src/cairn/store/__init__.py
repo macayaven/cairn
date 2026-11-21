@@ -1484,6 +1484,7 @@ class Store(
         ticks: Callable[[], float] = time.monotonic,
         *,
         upgrade: bool = True,
+        create: bool = True,
     ) -> None:
         self._lock = WriterLock(ticks)  # `ticks`: when its holder took it (Store.health)
         self._state = ConnectionState()  # shared with every view, as the lock is
@@ -1492,7 +1493,10 @@ class Store(
         self._bind(DEFAULT_ACCOUNT_ID)
         # Autocommit mode: every write opens its own BEGIN IMMEDIATE transaction (_write).
         try:
-            self._con = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+            target = path if create else Path(path).absolute().as_uri() + "?mode=rw"
+            self._con = sqlite3.connect(
+                target, uri=not create, check_same_thread=False, isolation_level=None
+            )
         except sqlite3.Error as error:
             _refuse(path, error)  # CannotOpen when SQLite may not open or create the file
             raise
@@ -1502,7 +1506,7 @@ class Store(
             self._con.execute("PRAGMA secure_delete = ON")
             if self._con.execute("PRAGMA secure_delete").fetchone() != (1,):
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
-            _upgrade(self._con, self._stamp, upgrade)
+            _upgrade(self._con, self._stamp, upgrade, create)
             if str(path) != ":memory:":
                 (journal,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
                 self._state.readers = _readers_for(self._con, journal)
@@ -1513,6 +1517,11 @@ class Store(
         except BaseException:
             self._con.close()
             raise
+
+    @classmethod
+    def open_existing(cls, path: Path) -> "Store":
+        """Open a compatible database. SQLite may neither create the file nor initialize it."""
+        return cls(path, upgrade=False, create=False)
 
     def health(self, wait: float | None = None, stuck_after: float = STUCK_AFTER) -> Health:
         """Whether the store can serve, from one bounded read that writes nothing (what

@@ -133,7 +133,7 @@ def _export(db: Path, account: str, out: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = Store.open_existing(db)
     try:
         try:
             view = store.for_account(account)
@@ -196,7 +196,7 @@ def _import(
         return 1
     with file:
         try:
-            target = closing(Store(db, upgrade=False)) if os.path.lexists(db) else new_store(db)
+            target = closing(Store.open_existing(db)) if os.path.lexists(db) else new_store(db)
             with target as store:
                 if plans is None:
                     print(NO_PLAN, file=sys.stderr)
@@ -249,7 +249,7 @@ READABLE_DB = (
 _OTHERS = ((stat.S_IRGRP, stat.S_IXGRP), (stat.S_IROTH, stat.S_IXOTH))
 
 
-def make_database(db: Path) -> None:
+def make_database(db: Path) -> bool:
     """The database file, made empty and exactly 0600 when there is none, before SQLite
     opens it, so the -wal and -shm files SQLite makes beside it take the same mode (SQLite
     gives them the database's). O_EXCL|O_NOFOLLOW: an existing file is left as it is, and a
@@ -261,13 +261,14 @@ def make_database(db: Path) -> None:
     except FileExistsError:
         if os.path.islink(db):
             raise
-        return
+        return False
     except PermissionError as error:
         raise CannotOpen(db) from error
     try:
         os.fchmod(fd, 0o600)  # exactly 0600, whatever the umask took away
     finally:
         os.close(fd)
+    return True
 
 
 def linked(db: Path | None) -> str | None:
@@ -352,7 +353,7 @@ def _compact(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = Store.open_existing(db)
     try:
         with store.compacting():
             return _rewrite(store, db)
@@ -407,7 +408,7 @@ def _compact_if_due(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = Store.open_existing(db)
     try:
         with store.compacting():
             due = store.compaction_state()
@@ -453,7 +454,7 @@ def _repair(db: Path) -> int:
     store: Store | None = None
     each: list[tuple[str, int, int]] = []
     try:
-        store = Store(db, upgrade=False)
+        store = Store.open_existing(db)
         with store.compacting():
             done = store.repair_own_projects(lambda *counts: each.append(counts))
     except CompactionRunning as error:

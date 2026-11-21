@@ -322,6 +322,10 @@ class UnknownSchema(RuntimeError):
     first table missing."""
 
 
+class Uninitialized(UnknownSchema):
+    """An existing file has no schema."""
+
+
 class ForeignSchema(UnknownSchema, sqlite3.DatabaseError):
     """An older version number on a file whose structure differs from cairn at that version."""
 
@@ -356,7 +360,9 @@ def _refuse(path: str | Path, error: sqlite3.Error) -> None:
 # Schema versions
 
 
-def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str], upgrade: bool = True) -> None:
+def _upgrade(
+    con: sqlite3.Connection, stamp: Callable[[], str], upgrade: bool = True, create: bool = True
+) -> None:
     """Bring the database to SCHEMA_VERSION, one transaction per step, so a step that fails
     leaves the database as it was. With `upgrade` False, an older database is refused
     (SchemaTooOld) by the first step, from the version it reads under its write lock, and
@@ -375,7 +381,7 @@ def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str], upgrade: bool = 
             after = _AFTER.set(said)
             try:
                 with _transaction(con):
-                    _run_step(con, upgrade)
+                    _run_step(con, upgrade, create)
             finally:
                 _AFTER.reset(after)
             for say in said:  # committed: the step's transaction is over
@@ -385,11 +391,13 @@ def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str], upgrade: bool = 
         _STAMP.reset(reset)
 
 
-def _run_step(con: sqlite3.Connection, upgrade: bool = True) -> None:
+def _run_step(con: sqlite3.Connection, upgrade: bool = True, create: bool = True) -> None:
     """One step of _upgrade, in its transaction."""
     # Read again under the write lock: another process may have done this step.
     version = _schema_version(con)
     if version == 0:
+        if not create:
+            raise Uninitialized
         _create(con)
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     elif version < SCHEMA_VERSION:

@@ -22,7 +22,14 @@ from typing import Any
 
 from cairn.store import SCHEMA_VERSION, CannotOpen
 from cairn.store.audit import check_trail
-from cairn.store.schema import ForeignSchema, _check_source, _check_tables, _refuse, _schema_version
+from cairn.store.schema import (
+    ForeignSchema,
+    Uninitialized,
+    _check_source,
+    _check_tables,
+    _refuse,
+    _schema_version,
+)
 from cairn.web.cli_data import DB_EXISTS
 from cairn.web.cli_stats import CANNOT_READ, _connect
 
@@ -72,7 +79,9 @@ def run(args: argparse.Namespace) -> int:
             version = _schema_version(con)  # SchemaTooNew: a newer cairn it may not read
             if version >= SCHEMA_VERSION:
                 _check_tables(con)  # UnknownSchema: this version did not make it
-            if 0 != version < SCHEMA_VERSION:
+            if version == 0:
+                raise Uninitialized
+            if version < SCHEMA_VERSION:
                 _check_source(con, version)
             if version < SCHEMA_VERSION:
                 print(

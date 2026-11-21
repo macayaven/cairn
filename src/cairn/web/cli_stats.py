@@ -44,7 +44,14 @@ from cairn.store import SCHEMA_VERSION, CannotOpen
 from cairn.store.base import _iso
 from cairn.store.erasure import count_pages_citing_other_projects
 from cairn.store.numbers import part_rows
-from cairn.store.schema import ForeignSchema, _check_source, _check_tables, _refuse, _schema_version
+from cairn.store.schema import (
+    ForeignSchema,
+    Uninitialized,
+    _check_source,
+    _check_tables,
+    _refuse,
+    _schema_version,
+)
 from cairn.web.cli_data import DB_EXISTS
 from cairn.web.stats import COUNTS, numbers
 
@@ -103,7 +110,9 @@ def run(args: argparse.Namespace) -> int:
             version = _schema_version(con)  # SchemaTooNew: a newer cairn wrote it
             if version >= SCHEMA_VERSION:  # a newer one runs here when its floor allows
                 _check_tables(con)  # UnknownSchema: this version did not make it
-            if 0 != version < SCHEMA_VERSION:
+            if version == 0:
+                raise Uninitialized
+            if version < SCHEMA_VERSION:
                 _check_source(con, version)
         except ForeignSchema:
             raise

@@ -288,7 +288,7 @@ from cairn.store import (
     UnknownSchema,
 )
 from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
-from cairn.store.schema import ForeignSchema
+from cairn.store.schema import ForeignSchema, Uninitialized
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import (
     cli_arrange,
@@ -774,7 +774,7 @@ def _waiting(db: Path, workspace: str | None, as_json: bool) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = Store.open_existing(db)
     try:
         notes = store.waiting_notes()
         if workspace is not None:
@@ -821,7 +821,7 @@ def _plan_command(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"no database at {args.db}", file=sys.stderr)
         return 1
-    store = Store(args.db, upgrade=False)
+    store = Store.open_existing(args.db)
     try:
         if args.command == "workspace-list":
             rows = [
@@ -1105,7 +1105,7 @@ def _workspace(args: argparse.Namespace) -> Store:
     there is no database or no such workspace."""
     if not args.db.is_file():
         raise KeyError(f"no database at {args.db}")
-    store = Store(args.db, upgrade=False)
+    store = Store.open_existing(args.db)
     if args.workspace is None:
         return store
     try:
@@ -1368,8 +1368,9 @@ def _open_store(db: Path) -> Store:
     """The store at `db`, creating its directory first (a fresh checkout has none), each
     folder made 0700 and the file 0600 before SQLite opens it (H1)."""
     cli_data.make_folder(db)
-    cli_data.make_database(db)
-    return Store(db, upgrade=False)
+    if cli_data.make_database(db):
+        return Store(db, upgrade=False)
+    return Store.open_existing(db)
 
 
 # H1: what a key made on the command line can do, said by the help of key-create and key-list.
@@ -1469,7 +1470,7 @@ def _key_list(db: Path) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = Store.open_existing(db)
     try:
         projects, sets = store.list_projects(), store.list_sets()
         names = {project.id: project.name for project in projects} | {s.id: s.name for s in sets}
@@ -1512,7 +1513,7 @@ def _session_end(db: Path, email: str) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = Store.open_existing(db)
     try:
         ended = sum(store.end_person_sessions(email).values())
     finally:
@@ -1531,7 +1532,7 @@ def _key_revoke(db: Path, label: str, with_made: bool = False) -> int:
     if not db.is_file():
         print(f"no database at {db}", file=sys.stderr)
         return 1
-    store = Store(db, upgrade=False)
+    store = Store.open_existing(db)
     try:
         made = store.made_by(label)
         revoked = store.revoke_key(label, with_made=with_made)
@@ -2126,6 +2127,11 @@ def main(argv: list[str] | None = None) -> int:
         older = cli_data.OLDER_SCHEMA
         print(older.format(db=db, found=found, known=known, command=args.command), file=sys.stderr)
         return 1
+    except Uninitialized:
+        print(
+            f"the database at {db} is uninitialized: start serve to initialize it", file=sys.stderr
+        )
+        return 1
     except ForeignSchema:
         line = NOT_A_DATABASE_YET if args.command in CREATES else NOT_A_DATABASE
         print(line.format(path=db), file=sys.stderr)
@@ -2155,6 +2161,8 @@ def _cannot_open(command: str, error: CannotOpen) -> str | None:
         if os.access(path, os.R_OK | os.W_OK) and os.access(folder, os.W_OK | os.X_OK):
             return None
         return MAY_NOT_OPEN.format(path=path)
+    if command not in CREATES:
+        return f"no database at {path}"
     while not os.path.isdir(folder):  # the folder the database would be made under
         folder = os.path.dirname(folder)
     if os.access(folder, os.W_OK | os.X_OK):

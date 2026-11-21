@@ -789,7 +789,7 @@ def test_the_contract_says_which_terms_and_which_places_of_a_title_relate_pages(
         " beside those that work out what the caller may reach (cairn.store.relating says"
         " which, and tests/unit/test_relating_cost_unit.py counts them); to judge where a title"
         " stands in prose it runs 3 more, in a database of its own in memory, and the Markdown"
-        " parser reads each passage it judges once.",
+        " parser reads each passage it judges at most once.",
     ):
         assert line in said, line
     assert "not a plain word" not in said

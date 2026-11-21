@@ -208,7 +208,7 @@ def test_the_contract_says_a_related_read_waits_its_turn_and_is_never_refused_fo
         " use) has one read in that line at a time, its others waiting behind it to enter: that"
         " rule governs entry to the line. So a read in the line waits behind at most one read of"
         " each other caller; one still waiting behind its own caller's can see two reads of"
-        " another caller go first." in said
+        " another caller go first, and more when more of its caller's are ahead of it." in said
     )
 
 
@@ -257,10 +257,11 @@ def test_a_callers_further_reads_wait_behind_its_own_first():
 
 def test_a_read_waiting_behind_its_own_callers_can_see_two_reads_of_another_go_first():
     """While a read is under way: Brook's first read waits in the process's line, then
-    Ada's first behind it; Ada's second waits behind Ada's first to enter the line, and
-    Brook's second behind Brook's first. Ada's second was asked before either of Brook's
-    began, and both go first: Brook's second enters the line when Brook's first ends, before
-    Ada's first has ended and let Ada's second in."""
+    Ada's first behind it; Ada's second and third wait behind Ada's first to enter the line,
+    and Brook's second and third behind Brook's first. Ada's second was asked before any of
+    Brook's began, and two of Brook's go first: Brook's second enters the line when Brook's
+    first ends, before Ada's first has ended and let Ada's second in. Ada's third, with two
+    of Ada's ahead of it, sees three of Brook's go first."""
     reads, order = RelatedReads(), []
 
     async def read(caller: str, n: int) -> None:
@@ -272,14 +273,14 @@ def test_a_read_waiting_behind_its_own_callers_can_see_two_reads_of_another_go_f
         async with reads.turn("someone else"):  # a read under way
             tasks = []
             for waiting, (caller, n) in enumerate(
-                [("brook", 1), ("ada", 1), ("ada", 2), ("brook", 2)], 1
+                [("brook", 1), ("ada", 1), ("ada", 2), ("ada", 3), ("brook", 2), ("brook", 3)], 1
             ):
                 tasks.append(asyncio.create_task(read(caller, n)))
                 await settled(reads, waiting)
         await asyncio.gather(*tasks)
 
     run(main)
-    assert order == [("brook", 1), ("ada", 1), ("brook", 2), ("ada", 2)]
+    assert order == [("brook", 1), ("ada", 1), ("brook", 2), ("ada", 2), ("brook", 3), ("ada", 3)]
     assert (reads.held, reads.waiting, reads.callers) == (0, 0, 0)
 
 

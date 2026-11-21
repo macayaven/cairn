@@ -102,7 +102,11 @@ templates = Environment(
     trim_blocks=True,
     lstrip_blocks=True,
 )
-templates.globals["version"] = __version__
+# The globals a page sets for itself (cairn.web.ui.common._ui). Every other global's name is
+# no view's to hand its template: base.html and the components read them, and a view's own
+# value would stand in their place (tests/conftest.py checks every page a test renders).
+PER_PAGE = frozenset({"person", "signed_in"})
+templates.globals["version"] = __version__  # the software's, in every page's footer
 templates.globals["stylesheet"] = STYLESHEET  # base.html links it
 templates.globals["branded_stylesheet"] = BRANDED_STYLESHEET  # ... or this, under a brand
 templates.globals["software"] = SOFTWARE

@@ -616,12 +616,16 @@ def test_on_a_phone_a_claims_number_sits_on_its_first_line_and_every_link_is_a_t
     phone = _block(css, css.index("@media (max-width: 34rem)"))
     cites = rule(phone, ".claim-cites a")
     assert "min-height: 44px" in cites and "line-height: 27px" in cites  # the body's line
-    targets = next(
-        sel
-        for sel in re.findall(r"([^{}]+)\{[^{}]*min-height: 44px; line-height: 44px", phone)
+    # The links of running text: 44px high to touch, and a link that wraps (a title in it)
+    # keeps the text's own line, not 44px a line (tests/browser/test_browser_wrapped_links.py).
+    ((targets, said),) = [
+        (sel, body)
+        for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", phone)
         if ".crumbs a" in sel
-    )
-    assert ".sources .back a" in targets
+    ]
+    assert ".sources .back a" in targets and ".source-head a" in targets
+    assert "display: inline-flex" in said and "min-height: 44px" in said
+    assert "line-height" not in said
 
 
 # Contrast, from the stylesheet's own tokens

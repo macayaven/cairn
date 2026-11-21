@@ -75,7 +75,8 @@ def test_cairn_returns_a_note_word_for_word_with_its_writer(store):
         " written and returns it word for word. It does not hold a note back for a person to"
         " check, and it does not guess which sentences are commands.",
         "**Every recalled line names its writer.** Each hit of `recall`, each claim of `page`"
-        " and each passage of `evidence` says who wrote the notes behind it: a person by name,"
+        " and of `related`, and each passage of `evidence` says who wrote the notes behind it:"
+        " a person by name,"
         " never by email address; a key by its label; an agent by the name it registered with; a"
         " source by its name; or the server's command line.",
     )

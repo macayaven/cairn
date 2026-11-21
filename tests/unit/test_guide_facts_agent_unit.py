@@ -67,8 +67,8 @@ def test_the_graph_tool_is_the_resource_for_clients_that_only_call_tools():
 def test_each_hit_claim_and_passage_names_its_writer_and_when(store):
     says(
         "security",
-        "Each hit of `recall`, each claim of `page` and each passage of `evidence` says who"
-        " wrote the notes behind it",
+        "Each hit of `recall`, each claim of `page` and of `related`, and each passage of"
+        " `evidence` says who wrote the notes behind it",
         "Each also says when its note was written (`written_at`); a hit or a claim that cites"
         " several notes, when the newest was.",
     )
@@ -82,6 +82,23 @@ def test_each_hit_claim_and_passage_names_its_writer_and_when(store):
     (passage,) = memory.evidence("ops", hit["page"], claim["id"])["passages"]
     assert [(e["kind"], e["name"]) for e in claim["written_by"]] == [("person", "Cy")]
     assert hit["written_at"] == claim["written_at"] == passage["written_at"] == note.created_at
+    # `related`: each claim a reason rests on, as `page` gives it, a source's marked outside
+    mail = store.writing_as("source", "team-mail")
+    for writer, title in ((view, "Shelf"), (mail, "Desk")):
+        held, _ = writer.add_note(project.id, f"# {title}\n\nRead `shelf.cfg` first.\n")
+        memory._file(held, record_errors=True)
+    shelf = memory.related("ops", "shelf", 20)
+    (desk,) = shelf["related"]
+    (why,) = desk["why"]
+    for side, (page, kind, name, outside) in (
+        ("here", ("shelf", "person", "Cy", False)),
+        ("there", ("desk", "source", "team-mail", True)),
+    ):
+        stated = why[side]
+        (given,) = memory.page("ops", page)["claims"]
+        assert [(e["kind"], e["name"]) for e in stated["written_by"]] == [(kind, name)]
+        assert stated["outside"] is outside and stated["written_at"] == given["written_at"]
+        assert stated["written_by"] == given["written_by"]  # filed_message as `page` gives it
 
 
 @pytest.fixture
@@ -96,9 +113,9 @@ def bench(tmp_path):
 def test_a_message_filed_from_slack_is_outside_and_a_typed_note_is_not(bench):
     says(
         "security",
-        "In what `recall`, `page` and `evidence` answer, a message filed from Slack is marked"
-        " `outside` too: its writer is the person who filed it, its `filed_message` says so,"
-        " and its words are the message's author's, whom the note's heading names. A note"
+        "In what `recall`, `page`, `related` and `evidence` answer, a message filed from Slack"
+        " is marked `outside` too: its writer is the person who filed it, its `filed_message`"
+        " says so, and its words are the message's author's, whom the note's heading names. A note"
         " typed with the Slack command is the person's own.",
     )
     handle(bench)  # Ada files Cedar's message

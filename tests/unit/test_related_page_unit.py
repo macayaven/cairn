@@ -202,6 +202,20 @@ def test_it_shows_each_related_page_and_each_reason_in_words_with_the_claims(w, 
     assert "This is not all of it" not in html and "limit=" not in html
 
 
+def test_its_footer_names_the_software_s_version_and_its_lede_the_page_s(w, world):
+    """The outside reviewer's: a page at its third version, whose related page's footer said
+    "cairn 3". The footer says the software's version, as every page's does; the page's own
+    version is said where the related pages are counted."""
+    from cairn import __version__
+
+    for n in (8, 9):
+        note(w, "Deploy", f"Run the job with `--audit-keep` set to {n}.\n")
+    r = get(w, "/b/ops/p/deploy/related")
+    footer = r.text.split('<footer class="colophon">', 1)[1].split("</footer>", 1)[0]
+    assert f"<span>cairn {__version__}</span>" in footer and __version__ != "3"
+    assert "for version 3 of Deploy, its latest." in flat(tree(main_of(r.text)).text())
+
+
 def test_it_is_what_memory_related_answers_in_order(w, world):
     note(w, "Asked", "Use `a.cfg`, `b.cfg` and `c.cfg`.\n")
     note(w, "Two", "Use `a.cfg` and `b.cfg`.\n")
@@ -282,10 +296,54 @@ def test_a_claim_of_outside_text_says_so_and_names_each_writer_once(w):
     here, there = (flat(p.text()) for p in tree(main_of(r.text)).all("p", "written"))
     assert here == "written by Ada \N{MIDDLE DOT} written 3 February 2099, 04:05 UTC"
     assert there == (
-        "from the source team-mail, written by Ada and 2 more notes \N{MIDDLE DOT} the newest"
-        " written 3 February 2099, 04:05 UTC \N{MIDDLE DOT} outside text"
+        "5 notes: from the source team-mail, written by Ada, and 2 more whose writers are not"
+        " shown \N{MIDDLE DOT} the newest written 3 February 2099, 04:05 UTC \N{MIDDLE DOT}"
+        " outside text"
     )
     assert r.text.count('<span class="outside">outside text</span>') == 1
+
+
+NEWEST = " \N{MIDDLE DOT} the newest written 3 February 2099, 04:05 UTC"
+
+
+@pytest.mark.parametrize(
+    ("writers", "said"),
+    [
+        ("A", "written by Ada \N{MIDDLE DOT} written 3 February 2099, 04:05 UTC"),
+        ("AA", "2 notes: written by Ada" + NEWEST),
+        ("AAA", "3 notes: written by Ada" + NEWEST),
+        ("AAAA", "4 notes: written by Ada, and 1 more whose writer is not shown" + NEWEST),
+        ("AAAAA", "5 notes: written by Ada, and 2 more whose writers are not shown" + NEWEST),
+        ("AB", "2 notes: written by Ada, written by Brook" + NEWEST),
+        (
+            "ABCS",
+            "4 notes: written by Ada, written by Brook, written by Cy, and 1 more whose writer"
+            " is not shown" + NEWEST,
+        ),
+    ],
+    ids=["1-by-one", "2-by-one", "3-by-one", "4-by-one", "5-by-one", "2-by-two", "4-by-four"],
+)
+def test_who_wrote_a_claim_s_notes_never_says_fewer_notes_than_it_rests_on(w, writers, said):
+    """The outside reviewer's: a claim folded from 4 notes, all Ada's, read "written by Ada
+    and 1 more note", two notes where there are four; 2 or 3 of hers read "written by Ada"
+    alone. The line says how many notes there are when there is more than one, then who
+    wrote those it names, each once, then how many more there are whose writer it does not
+    name: from 1 to 5 notes of one writer, 2 of two, 4 of four."""
+    view = {"A": w.ada.writes, "B": w.brook.writes, "C": w.cy.writes}
+    view["S"] = w.store.writing_as("agent", "scout")
+    held = [
+        view[who].add_note(w.ops.id, f"# N{n}\n\nSet `x.cfg` first.\n")[0]
+        for n, who in enumerate(writers)
+    ]
+    spans = [next(s.id for s in w.store.note_spans(h.id) if s.kind == "paragraph") for h in held]
+    folded = Claim(id="cl_folded", text="Set `x.cfg` first.", span_ids=tuple(spans))
+    w.ada.view.save_page(w.ops.id, "setup", "Setup", "", [folded])
+    note(w, "Asked", "Then read `x.cfg` again.\n")
+    html = main_of(get(w, "/b/ops/p/asked/related").text)
+    _, there = (flat(p.text()) for p in tree(html).all("p", "written"))
+    assert there == said
+    stated = int(there.split(" notes: ", 1)[0]) if " notes: " in there else 1
+    assert stated == len(writers)  # never fewer notes than the claim rests on
 
 
 def test_a_claim_whose_notes_are_out_of_reach_names_no_one(w):

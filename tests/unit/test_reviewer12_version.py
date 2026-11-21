@@ -22,8 +22,8 @@ def test_the_first_version_read_is_already_inside_the_transaction(tmp_path, monk
         if str(path) != ":memory:":
 
             def trace(statement):
-                if statement == "PRAGMA user_version":
-                    reads.append(con.in_transaction)
+                if statement in ("PRAGMA user_version", "PRAGMA application_id"):
+                    reads.append((statement, con.in_transaction))
 
             con.set_trace_callback(trace)
         return con
@@ -35,4 +35,4 @@ def test_the_first_version_read_is_already_inside_the_transaction(tmp_path, monk
     else:
         with pytest.raises(SchemaTooOld):
             Store.open_existing(db)
-    assert reads == [True]
+    assert reads == [("PRAGMA user_version", True), ("PRAGMA application_id", True)]

@@ -533,9 +533,9 @@ def _schema_version(con: sqlite3.Connection) -> int:
     version 0 with tables reads as 1. A newer version is returned as it is when this cairn
     may run on it (its floor is at or below SCHEMA_VERSION); SchemaTooNew otherwise, in one
     sentence that names the database's version, its floor and this cairn's version."""
+    (version,) = con.execute("PRAGMA user_version").fetchone()
     if con.execute("PRAGMA application_id").fetchone() != (0,):
         raise ForeignSchema("not a cairn database: another application owns this file")
-    (version,) = con.execute("PRAGMA user_version").fetchone()
     if version > SCHEMA_VERSION:
         floor = _recorded_floor(con, version)
         if floor > SCHEMA_VERSION:

@@ -149,8 +149,10 @@ def counted(bench: Bench, call) -> tuple[int, int]:
 
 def test_a_filed_note_and_its_record_cost_the_statements_pinned(bench):
     """The note and its record use the same write. The first reply adds one scoped read to
-    the former 108 statements: BEGIN, person scope, citation lookup and COMMIT. There are
-    still two write transactions."""
+    the former 108 statements: BEGIN, person scope, citation lookup and COMMIT; and the
+    page's save checks whose passages it cites, one statement by the spans' primary key
+    (save_page's refusal of another project's passage). There are still two write
+    transactions."""
     bench.link(ADA_SLACK, bench.ada, bench.library)
     claim(bench)
     ada = asker(bench)
@@ -168,7 +170,7 @@ def test_a_filed_note_and_its_record_cost_the_statements_pinned(bench):
     assert cost == (WRITE_STATEMENTS, 2)
 
 
-WRITE_STATEMENTS = 112
+WRITE_STATEMENTS = 113
 
 
 # 9. The store's `within` is general: nothing of Slack

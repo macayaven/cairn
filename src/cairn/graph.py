@@ -26,12 +26,12 @@ GraphUnavailable, never a shorter answer. The tests count statements and rows, n
 The explorer's view of a page and its related pages (KG2) is not read here, and no function
 of this module reads a relation: project_graph and graph_neighbourhood answer the explicit
 evidence alone. That view's pages are what `Memory.related` answers, a bounded read of
-another kind (cairn.store.relating: 13 statements at most, 17 with its caller's, over the
-claims of other pages that hold the page's terms), which does not fit in what a request may
-do above, and which answers through its own read. So the view is two reads, neither inside
-the other: project_in_reach, the check every view here makes, in a snapshot of its own, and
-then `Memory.related`, which rechecks the view's reach in the snapshot it reads the pages in
-(cairn.web.graph_routes).
+another kind (cairn.store.relating: 13 statements at most, 17 with its caller's and 3 in
+memory, over the claims of other pages that hold the page's terms), which does not fit in
+what a request may do above, and which answers through its own read. So the view is two
+reads, neither inside the other: project_in_reach, the check every view here makes, in a
+snapshot of its own, and then `Memory.related`, which rechecks the view's reach in the
+snapshot it reads the pages in (cairn.web.graph_routes).
 """
 
 import base64

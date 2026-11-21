@@ -29,7 +29,7 @@
 <h1>Pages related to {{ noted(title) }}</h1>
 <p class="lede">The pages of {{ project }} that state one of this page's terms or name its title, the most related first. Each relation is worked out when this page is opened, from the pages as they are, and shows the claims it rests on, quoted as they were written.</p>
 </header>
-{% set relates %}two pages are related when a claim of each states the same term (a URL, a path, a flag, a version, or code that is not a plain word), or when a claim of the other names this page's title{% endset %}
+{% set relates %}two pages are related when a claim of each states the same term (a URL, a path, a flag, a version, or code that holds a character other than a letter or is 12 or more characters long), or when a claim of the other names this page's title in its prose{% endset %}
 {% if related %}
 <p class="meta">{{ related|length }} related {{ "page" if related|length == 1 else "pages" }}, for version {{ version }} of {{ noted(title) }}, its latest.</p>
 {% elif left_out %}

@@ -399,18 +399,22 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       (KG1; cairn.memory, Related pages; the rules are cairn.relations and the read
       cairn.store.relating.) The pages of the project most related to the page, best first:
       one that states a term the page states (a url, a path, a flag, a version, or inline code
-      that is not a plain word, the same when written the same, capitals included, and given
-      as written; none that more than 5 pages hold, or whose words more than 64 claims of the
-      project hold, or that is longer than 200 characters), or whose claim names the page's
-      title in its prose: not by words inside code (in backticks, or in a fenced block, its
-      opening line included), nor inside a URL, a path, a flag or a version as the page's
-      facts read them, so a bare `ledger/notes.md` still names a page Ledger (the index says
-      where the claim's text holds the title's words, and the facts of the passage the claim
-      is the text of say which of those places are prose; a claim that is not its passage's
-      text mentions as the index has it; a claim that holds a mark of the index or a null
-      character names none; none when more than 5 other pages name it, or more than 64 of
-      their claims). A claim that cites several passages is read by its
-      first, and a term a search does not find as it is written (`1,250x`, compared without
+      that holds a character other than a letter or is 12 or more characters long, the same
+      when written the same, capitals included, and given as written; none that more than 5
+      pages hold, or whose words more than 64 claims of the project hold, or that is longer
+      than 200 characters), or whose claim names the page's title in its prose: each place
+      the title stands in the claim is judged by itself, and one that stands whole outside
+      code, and outside a URL, a path, a flag or a version, names it, whatever other place
+      overlaps it; code is what Markdown reads as code in the claim alone (in backticks, a
+      fenced block, its opening line included, an indented block; text indented under a list
+      item is the item's prose), and a URL, a path, a flag or a version what the page's
+      facts read as one, so a bare `ledger/notes.md` still names a page Ledger (the index,
+      given the passage's text with every stretch that is no prose blanked out, says where
+      the title stands in prose; a claim that is not its passage's text mentions as the
+      index has it; a claim that holds a mark of the index or a null character names none;
+      none when more than 5 other pages name it so, or more than 64 of their claims hold it,
+      in prose or not). A claim that cites several passages is read by its first, and a
+      term a search does not find as it is written (`1,250x`, compared without
       its separator) relates none, from either page. `pages` is how many pages hold the term,
       exactly: a term whose pages are not all known gives no reason. `here` and `there` are
       claims as a hit of `recall` carries one: "claim_id", "text", "passage_ids", "outside",
@@ -434,22 +438,28 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       left out, always, and counts each: the page's terms past the first 256, and those not
       looked up once the read has been handed 150,000 rows of the index for the terms and
       the title (the title then counting as one), the claims of other pages, listed for a
-      term or for the title, past the 512 claims and the 750,000 bytes of passages read, the
-      related pages past `limit`. The rows of the index a read is handed are bounded whatever
-      the workspace holds: where other projects hold a page's terms in very many claims, the
-      answer can be incomplete, and says so; each reason it gives is true and counts the pages
-      it would count with nothing left out, though an incomplete answer can hold other true
-      reasons than a complete one would show first. The page's own passages are read whole,
-      as `page` reads them. The store's read runs
-      at most 17 statements, whatever the page and the project hold (cairn.store.relating
-      says which, and tests/unit/test_relating_cost_unit.py counts them). One read of
+      term or for the title, past the 512 claims and the 750,000 bytes of the passages they
+      cite, the related pages past `limit`. The rows of the index a read is handed are
+      bounded whatever the workspace holds: where other projects hold a page's terms in very
+      many claims, the answer can be incomplete, and says so; each reason it gives is true
+      and counts the pages it would count with nothing left out, though an incomplete answer
+      can hold other true reasons than a complete one would show first. Not counted in those
+      rows: the index's own walk, which passes over a claim that holds a term's words apart
+      without handing it over, and two seeks a page of the project, once a read, to find the
+      project's rows. The page's own passages are read whole, as `page` reads them, and
+      count in neither bound. The store's read runs at most 17 statements, whatever the page
+      and the project hold, beside those that work out what the caller may reach
+      (cairn.store.relating says which, and tests/unit/test_relating_cost_unit.py counts
+      them); to judge where a title stands in prose it runs 3 more, in a database of its own
+      in memory, and the Markdown parser reads each passage it judges once. One read of
       related pages at a time in a server process, for every workspace it serves, over MCP,
       REST and the web view alike: another waits for it holding no thread and no connection
       and is answered in its turn, however long that takes; none is refused for waiting. A
       caller (a key, an agent, or a person whichever session they use) has one read in that
-      line at a time, its others waiting behind it, so a read waits behind at most one read
-      of each other caller. A read of the page for the audit log (read.page), which never
-      holds a term.
+      line at a time, its others waiting behind it to enter: that rule governs entry to the
+      line. So a read in the line waits behind at most one read of each other caller; one
+      still waiting behind its own caller's can see two reads of another caller go first. A
+      read of the page for the audit log (read.page), which never holds a term.
   Unknown projects, pages or claims are tool errors (isError true), never empty successes.
   A note the note guard refuses is a tool error naming each rule and line.
 - X1 (frozen by tests/acceptance/test_x1_unknown_fields.py): a tool takes only the arguments

@@ -232,8 +232,8 @@ def test_the_contract_says_what_the_related_view_reads_and_how_it_is_recorded(w,
         graphs.__doc__,
         "The explorer's view of a page and its related pages (KG2) is not read here, and no"
         " function of this module reads a relation",
-        "(cairn.store.relating: 13 statements at most, 17 with its caller's, over the claims of"
-        " other pages that hold the page's terms)",
+        "(cairn.store.relating: 13 statements at most, 17 with its caller's and 3 in memory,"
+        " over the claims of other pages that hold the page's terms)",
     )
     from cairn.store import relating
 

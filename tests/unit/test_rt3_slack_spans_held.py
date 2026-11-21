@@ -1,22 +1,25 @@
 """Code within a line, one step past the fix of the second reviewer's seventh report (must-fix
-3): each span between its own backticks, and a span right after another written as plain
-characters. What held on release/0.1.0 at 6fb9ee9b.
+3) and past the placing of named spans after it (_before, _known_code, _ticks, a blank that
+ends a span written as a character reference). What held on release/0.1.0 at 08747d92.
 
 The oracle is not cairn's code. A message is built from segments, each with what Slack
 displayed: a span the rich text names (a code-styled text element; the text holds it between
 backticks, its "&", "<" and ">" as entities), a span only the text's backticks bound (the
-rich text leaves it out; the display model, test_rt3_slack_model, reads it as code), prose
-Slack displayed as typed, a list's or a quotation's mark at the start of a line (a page may
-take it as structure), and a reference cairn shows as nothing. The note is read by the
-Markdown parser the page uses, whole and passage by passage (cairn.spans.chunk), and held to
-those segments: every character, each span its own code span; a span right after another
-may be its plain characters instead (the connect guide says so). Two spans only the text's
-backticks bound, side by side, are one span (the guide says so too): not generated.
+rich text gives a code-styled element of a shape cairn does not read for it; the display
+model, test_rt3_slack_model, reads it as code), prose Slack displayed as typed (backticks
+too, right before a named span), a list's or a quotation's mark at the start of a line (a
+page may take it as structure), and a link cairn shows as nothing. The rich text is one
+section, or a section a line with a quotation's own; a line feed is its own text element.
+The note is read by the Markdown parser the page uses, whole and passage by passage
+(cairn.spans.chunk), and held to those segments: every character, each span its own code
+span; a span right after another may be its plain characters instead (the connect guide
+says so). Two spans only the text's backticks bound, side by side, are one span (the guide
+says so too): not generated.
 
-Left out of the generated run, and pinned in test_rt3_slack_spans_found: a message in which
-the backticks and code of a span the rich text names stand earlier in the text than the span
-does (the closing backtick of a span the rich text leaves out, in this grammar). Which
-messages those are is told from the segments, not from cairn. Not checked here: the reply as
+The class the first attack left out (a named span's backticks and code stand earlier in the
+text than the span does) is generated: 103 of the 1,200. Those of it whose first place is a
+backtick of a span the rich text does not read (on_unread, told from the segments) may still
+differ, and are pinned in test_rt3_slack_spans_found2: 11 do. Not checked here: the reply as
 blocks.filed sends it (its title is Draft.shown, which is checked). Every message is made
 up."""
 
@@ -56,21 +59,34 @@ def sent_text(kind: str, value: str) -> str:
     return value if kind == "nothing" else enc(value)
 
 
-def build(lines: list[list[tuple[str, str]]]) -> dict:
-    """The message Slack sends: its text, and its rich text naming the "named" spans."""
-    elements: list[dict] = []
+def build(lines: list[list[tuple[str, str]]], sections: bool = False, omit: bool = False) -> dict:
+    """The message Slack sends: its text, and its rich text naming the "named" spans, a
+    reference as a link element and a span the text bounds left out. All in one section, or
+    (`sections`) each line its own, a line led by a quotation's mark a quotation of its own."""
+    blocks: list[dict] = []
     for at, line in enumerate(lines):
-        elements += [{"type": "text", "text": "\n"}] if at else []
-        for kind, value in line:
+        quoted = sections and line[:1] == [("lead", "> ")]
+        if at and not sections:
+            blocks[-1]["elements"].append({"type": "text", "text": "\n"})
+        if at == 0 or sections:
+            kind = "rich_text_quote" if quoted else "rich_text_section"
+            blocks.append({"type": kind, "elements": []})
+        for kind, value in line[1:] if quoted else line:
             if kind == "named":
-                elements.append({"type": "text", "text": value, "style": {"code": True}})
+                element = {"type": "text", "text": value, "style": {"code": True}}
             elif kind in ("prose", "lead"):
-                elements.append({"type": "text", "text": value})
+                element = {"type": "text", "text": value}
+            elif kind == "nothing":
+                element = {"type": "link", "url": "javascript:x", "text": ""}
+            elif not omit:  # a span of a shape cairn does not read: code-styled, not text
+                element = {"type": "emoji", "name": "x", "style": {"code": True}}
+            else:
+                continue
+            blocks[-1]["elements"].append(element)
     text = "\n".join("".join(sent_text(k, v) for k, v in line) for line in lines)
-    section = {"type": "rich_text_section", "elements": elements}
     return {
         "type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text,
-        "blocks": [{"type": "rich_text", "elements": [section]}],
+        "blocks": [{"type": "rich_text", "elements": blocks}],
     }  # fmt: skip
 
 
@@ -81,21 +97,36 @@ def filed(sent: dict):
     )  # fmt: skip
 
 
-def anchored(lines) -> bool:
-    """Whether each span the rich text names is the first place, after the one before, that
-    its backticks and code stand in the text (else it is a found fault, not generated)."""
+def first_places(lines) -> list[tuple[int, int, set[int]]]:
+    """For each span the rich text names: its place in the text, the first place after the
+    span named before where its backticks and code stand, and the places of the backticks
+    of the spans the rich text does not read (told from the segments, not from cairn)."""
     text = "\n".join("".join(sent_text(k, v) for k, v in line) for line in lines)
-    at = after = 0
+    out, at, after, unread = [], 0, 0, set()
     for line in lines:
         for kind, value in line:
             way = sent_text(kind, value)
+            if kind == "bound":
+                unread |= {at, at + len(way) - 1}
             if kind == "named":
-                if text.find(way, after) != at:
-                    return False
+                out.append((at, text.find(way, after), unread))
                 after = at + len(way)
             at += len(way)
         at += 1
-    return True
+    return out
+
+
+def anchored(lines) -> bool:
+    """Whether each span the rich text names is the first place, after the one before, that
+    its backticks and code stand in the text (the class the first attack left out)."""
+    return all(own == first for own, first, _ in first_places(lines))
+
+
+def on_unread(lines) -> bool:
+    """Whether a named span's backticks and code first stand on a backtick of a span the rich
+    text does not read, its own place later: the class pinned in test_rt3_slack_spans_found2
+    (where it shows a page unlike Slack's), and left out of the generated run."""
+    return any(own != first and first in unread for own, first, unread in first_places(lines))
 
 
 def expected(lines) -> list[list[tuple[str, str]]]:
@@ -172,9 +203,9 @@ def differs(want: list[tuple[str, str]], got: list[tuple[str, str]]) -> str | No
     return f"shows {shown!r} for {''.join(c for _, c in want)!r}"
 
 
-def faults(lines) -> list[str]:
+def faults(lines, sections: bool = False, omit: bool = False) -> list[str]:
     """Every way the note and each passage of it alone differ from what Slack displayed."""
-    draft = filed(build(lines))
+    draft = filed(build(lines, sections, omit))
     want, found = expected(lines), []
     rows, markup = reading(draft.text)
     if markup != ["heading_open", "link_open"]:  # the author's heading, the source link
@@ -219,6 +250,8 @@ def a_line(rng: random.Random) -> list[tuple[str, str]]:
     for _ in range(rng.randint(1, 6)):
         pick = rng.random()
         if pick < 0.45:
+            if rng.random() < 0.2:  # backticks Slack displayed as characters, right before it
+                line.append(("prose", rng.choice(["`", "x`", "``", "` "])))
             line.append(("named", rng.choice(CODES)))
         elif pick < 0.65:
             line.append(("bound", rng.choice(BOUND)))
@@ -233,15 +266,15 @@ def a_line(rng: random.Random) -> list[tuple[str, str]]:
 
 
 def legal(lines) -> bool:
-    """A message the oracle speaks for: every line displays something, no two spans the
-    text alone bounds touch (one span, as the guide says), and every named span anchored."""
+    """A message the oracle speaks for: every line displays something, and no two spans the
+    text alone bounds touch (one span, as the guide says)."""
     for line in lines:
         if not "".join(v for k, v in line if k not in ("lead", "nothing")).strip():
             return False
         spans = [k for k, _ in line if k != "nothing"]
         if any(a == b == "bound" for a, b in pairwise(spans)):
             return False
-    return anchored(lines)
+    return True
 
 
 def messages(count: int, seed: int):
@@ -260,18 +293,24 @@ def test_generated_mixed_spans_show_what_slack_displayed():
     a quotation's mark, a span right after another with a reference that shows nothing or
     blanks between. None differs, in the note or in a passage alone; no fence, heading,
     link, emphasis or table is read; the title holds."""
-    seen, orders, runs = {}, set(), set()
-    for lines in messages(1200, 20261121):
+    seen, orders, runs, placed, pinned = {}, set(), set(), 0, 0
+    for at, lines in enumerate(messages(1200, 20261121)):
         for line in lines:
             spans = [k for k, _ in line if k in ("named", "bound", "prose", "lead")]
             for a, b, c in zip(spans, [*spans[1:], ""], [*spans[2:], "", ""], strict=False):
                 orders.add((a, b, c) if c in ("named", "bound") else (a, b))
             runs |= {v for k, v in line if k == "named" and v in RUNS}
-        if found := faults(lines):
-            seen.setdefault(found[0][:40], (lines, found[0]))
+        placed += not anchored(lines)
+        if found := faults(lines, sections=at % 2 == 1):
+            if on_unread(lines):
+                pinned += 1  # the class test_rt3_slack_spans_found2 pins
+            else:
+                seen.setdefault(found[0][:40], (lines, found[0]))
     assert {("named", "bound", "named"), ("bound", "named", "bound")} <= orders
     assert {("named", "named", "named"), ("bound", "named"), ("named", "bound")} <= orders
     assert runs == set(RUNS)
+    assert placed >= 50, placed  # the class the first attack left out is in the run
+    assert pinned <= 11, pinned  # 11 of 1,200 on 08747d92: none may join them
     assert not seen, "\n".join(f"{lines!r}: {why}" for lines, why in seen.values())
 
 
@@ -283,12 +322,13 @@ def test_the_oracle_reads_as_the_display_model_where_the_model_is_sure():
     for lines in messages(800, 7):
         text = build(lines)["text"]
         shown = display(text)
-        if shown.unsure or "```" in text:
+        literal = any(k == "prose" and "`" in v for line in lines for k, v in line)
+        if shown.unsure or "```" in text or literal:  # the model reads the text alone
             continue
         sure += 1
         spans = [v for line in lines for k, v in line if k in ("named", "bound")]
         assert shown.inline_code == spans, text
-    assert sure > 80
+    assert sure > 60
 
 
 @pytest.mark.parametrize(
@@ -353,13 +393,20 @@ SHAPES = {
     "chains of three on lines": lambda n: [
         [("named", "x"), ("named", "``"), ("named", "*")] for _ in range(n // 3)
     ],
+    "a head of backticks before each span": lambda n: [
+        [x for k in range(n) for x in (("prose", "x" + "`" * (k % 3 + 1)), ("named", "`"))]
+    ],
+    "an unread span before each, by parity": lambda n: [
+        [x for k in range(n) for x in (("prose", " "), ("bound", "k"), ("named", "`"))]
+    ],
 }
 
 
 def size_of(sent: dict) -> int:
     """A message's length: its text and the characters of its rich text together."""
-    section = sent["blocks"][0]["elements"][0]["elements"]
-    return len(sent["text"]) + sum(len(element["text"]) for element in section)
+    sections = sent["blocks"][0]["elements"]
+    rich = sum(len(e.get("text", "")) for s in sections for e in s["elements"])
+    return len(sent["text"]) + rich
 
 
 @pytest.mark.parametrize("shape", SHAPES)
@@ -401,3 +448,108 @@ def test_the_found_messages_are_left_out_by_the_segments_alone():
     assert not anchored([[("bound", "k"), ("named", "`")]])
     assert not anchored([[("prose", "x"), ("bound", "x y"), ("named", "x y")]])
     assert anchored([[("named", "k"), ("named", "`")]])
+
+
+LINK = {"type": "link", "url": "https://fable.test/x", "text": "x"}
+BOLD = {"type": "text", "text": "b", "style": {"bold": True}}
+
+
+def text_of(text: str) -> dict:
+    return {"type": "text", "text": text}
+
+
+def code_of(text: str) -> dict:
+    return {"type": "text", "text": text, "style": {"code": True}}
+
+
+def page_of(text: str, *sections: list[dict], kind: str = "rich_text_section") -> list:
+    """What the page displays of the message's body: ("c", code) and ("t", text) pieces."""
+    blocks = [{"type": kind, "elements": elements} for elements in sections]
+    sent = {
+        "type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text,
+        "blocks": [{"type": "rich_text", "elements": blocks}],
+    }  # fmt: skip
+    body = filed(sent).text.split("\n\n", 1)[1].rsplit("\n\n", 1)[0]
+    rows, markup = reading(body)
+    assert not [m for m in markup if m not in ("link_open", "strong_open")], markup
+    return [piece for row in rows for piece in row if piece[1]]
+
+
+@pytest.mark.parametrize(
+    ("text", "elements", "page"),
+    [
+        ("a &lt;````", [text_of("a <`"), code_of("`")], [("t", "a <`"), ("c", "`")]),
+        ("a &gt;````", [text_of("a >`"), code_of("`")], [("t", "a >`"), ("c", "`")]),
+        ("&amp;amp;````", [text_of("&amp;`"), code_of("`")], [("t", "&amp;`"), ("c", "`")]),
+        ("a\n````", [text_of("a\n`"), code_of("`")], [("t", "a"), ("t", "`"), ("c", "`")]),
+        ("`````", [text_of("``"), code_of("`")], [("t", "``"), ("c", "`")]),
+        ("`x`x`", [text_of("`x"), code_of("x")], [("t", "`x"), ("c", "x")]),
+        ("y`y``y`", [text_of("y`y`"), code_of("y")], [("t", "y`y`"), ("c", "y")]),
+        ("x````x````", [text_of("x`"), code_of("`"), text_of("x`"), code_of("`")],
+         [("t", "x`"), ("c", "`"), ("t", "x`"), ("c", "`")]),
+        ("<https://fable.test/x|x>````", [LINK, code_of("`"), text_of("`")],
+         [("t", "x"), ("c", "`"), ("t", "`")]),
+        ("`*b*```", [text_of("`"), BOLD, code_of("`")], [("t", "`"), ("t", "b"), ("c", "`")]),
+        ("*b*````", [BOLD, code_of("`"), text_of("`")], [("t", "b"), ("c", "`"), ("t", "`")]),
+        ("``a````", [text_of("`"), code_of("a"), code_of("`")],
+         [("t", "`"), ("c", "a"), ("t", "`")]),
+    ],
+)  # fmt: skip
+def test_the_text_before_a_span_places_it(text, elements, page):
+    """The text before a span holding an entity, a line feed, backticks alone, or what stands
+    before an earlier place too; a link or bold text before a span in a run of backticks."""
+    assert page_of(text, elements) == page
+
+
+@pytest.mark.parametrize(
+    ("text", "sections", "kind", "page"),
+    [  # the parity rule where the rich text tells nothing: across lines, in a quotation
+        ("a`\n```", [[text_of("a`")], [code_of("`")]], "rich_text_section",
+         [("t", "a`"), ("c", "`")]),
+        ("```y```\n```", [[], [code_of("`")]], "rich_text_section", None),
+        ("&gt; ```", [[code_of("`")]], "rich_text_quote", [("c", "`")]),
+        ("`k`\n`a````", [[], [code_of("a"), code_of("`")]], "rich_text_section",
+         [("c", "k"), ("c", "a"), ("t", "`")]),
+    ],
+)  # fmt: skip
+def test_the_parity_rule_reads_each_line_alone(text, sections, kind, page):
+    blocks = sections
+    if text.startswith("```y"):  # a code block first, then a span on the next line
+        pre = {"type": "rich_text_preformatted", "elements": [text_of("y")]}
+        sent = {
+            "type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": text,
+            "blocks": [{"type": "rich_text", "elements": [
+                pre, {"type": "rich_text_section", "elements": [code_of("`")]}]}],
+        }  # fmt: skip
+        rows, markup = reading(filed(sent).text)
+        assert [p for row in rows[1:-1] for p in row] == [("c", "`")]
+        assert markup.count("fence") == 1
+        return
+    assert page_of(text, *blocks, kind=kind) == page
+
+
+@pytest.mark.parametrize(
+    ("code", "shows"), [(" ", " "), ("\t", "\t"), ("x ", "x "), ("  ", "  "), ("x\t", "x\t")]
+)
+def test_a_blank_that_ends_a_span_written_as_characters_is_kept(code, shows):
+    """At the end of the message, of a line, in a passage alone, and in a table's cell; the
+    title has no character reference (its code is between backticks there)."""
+    sent = "`a``" + code + "`"
+    assert page_of(sent, [code_of("a"), code_of(code)]) == [("c", "a"), ("t", shows)]
+    lines = [[("named", "a"), ("named", code)], [("prose", "b")]]
+    assert faults(lines) == []
+    assert faults(lines, sections=True) == []
+    table = [[("prose", "h | "), ("named", "a"), ("named", code)], [("prose", "--|--")]]
+    draft = filed(build(table))
+    assert "&#" not in draft.title and "&#" not in draft.shown
+    tokens = READER.parse(draft.text)
+    assert "th_open" in [t.type for t in tokens]  # a table: the guide's stated limit
+    cells = ["".join(c.content for c in t.children or []) for t in tokens if t.type == "inline"]
+    assert "a" + shows in cells, cells
+
+
+def test_a_blank_kept_at_the_title_cut_is_no_character_reference():
+    for pad in range(70, 80):
+        lines = [[("prose", "w" * pad), ("named", "a"), ("named", "  "), ("prose", " tail")]]
+        assert faults(lines) == []
+        assert "&#" not in filed(build(lines)).shown

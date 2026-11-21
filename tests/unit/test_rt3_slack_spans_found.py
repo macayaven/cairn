@@ -1,22 +1,20 @@
 """What the spans harness (test_rt3_slack_spans_held) found on release/0.1.0 at 6fb9ee9b, one
-step past the fix of the second reviewer's seventh report (must-fix 3), worst first. Each is
-pinned as failing (strict), so the file passes as committed and a fix removes the mark.
+step past the fix of the second reviewer's seventh report (must-fix 3), worst first. All five
+are fixed on 00740625 (the placing of Slack's code spans: _before, _known_code, _ticks, and the
+plain-characters branch of _render) and stay as regression tests; what the next attack found
+is in test_rt3_slack_spans_found2.
 
-Placement (tests 1, 3, 4): _known_code places a span the rich text names at the first place
-in the text where a backtick, its code and a backtick stand, after the span before. For a span
-of backticks alone that place can start one or two backticks early: on the closing backtick
-of a span the rich text does not name, on an empty span's two backticks, on a backtick Slack
-displayed as a character. With the span placed where it is (_known_code replaced by the true
-places, in a scratch run), tests 1, 3 and 4 pass. While the held harness keeps its 1,200
-messages, its grammar makes 68 placed so (it leaves them out), each a span the text bounds
-before a named one; 47 of the 68 show a page that differs from what Slack displayed.
+Placement (tests 1, 3, 4): _known_code placed a span the rich text names at the first place in
+the text where a backtick, its code and a backtick stand, after the span before; for a span of
+backticks alone that place could start one or two backticks early. It now takes the place the
+text the rich text shows right before the span stands before, and else, where a span the text
+bounds may end there, the place after an odd backtick on the line.
 
-Reading (test 2): backticks the rich text gives as its own text, displayed as characters,
-are read as code where they pair; the rich text's text is not read. Placing spans right
-does not clear it.
+Reading (test 2): backticks the rich text gives as its own text, right before a span it names,
+were read as code where they paired; they are now written as characters.
 
-Blanks (test 5): a span of blanks alone right after another, at the end of a line, is written
-as its plain characters (the guide says so), and a page shows nothing of them.
+Blanks (test 5): a span of blanks alone right after another, at the end of a line, was dropped
+by the page; the blank that ends it is now written as a character reference.
 
 What these rest on, beyond Slack's documents: Slack's page escapes only "&", "<" and ">" in a
 message's text, so a backtick displayed as a character is assumed sent bare; and a span the

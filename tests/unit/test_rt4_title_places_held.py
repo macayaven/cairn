@@ -6,16 +6,17 @@ relations.blanked, spans.code_read or anything of cairn.store.relating. It token
 and a title as FTS5's unicode61 tokenizer is documented to for the index's declaration
 (no options: categories "L* N* Co", case folded, remove_diacritics 1), finds every run of
 the title's tokens in the claim, and calls a run prose when none of its characters lies in
-code as the page renders the claim (its own markdown-it, set as the page's parser is: every
+code as the page renders the claim (cairn.web.markdown.render, page.html's `md`: every
 character of the run's words swapped for a private-use marker, the claim rendered, and each
 marker looked for inside <code> or <pre>, or a code element between two of them), nor in a
-stretch the documented rule calls a fact (cairn.facts.extract_facts: a url, a path, a flag,
-a version, inline code, a fenced block from its opening line). The facts are cairn's own
-reading: the oracle does not check them. Two tests check the oracle: its tokens against the
-index's own (fts5vocab, never highlight) and its parser against the page's renderer.
+fact the rule says names nothing (cairn.facts.extract_facts: a url, a path, a flag or a
+version; the coordinator's ruling of 2026-11-21: the page alone says what is code, so the
+facts' inline code and code blocks are not asked). The facts are cairn's own reading: the
+oracle does not check them. Two tests check the oracle: its tokens against the index's own
+(fts5vocab, never highlight) and its parser against the page's renderer.
 
-The cases one step past the fix that do not hold are in test_rt4_title_places_found.py.
-Made-up names."""
+The cases found one step past each fix, now fixed and kept as regression tests, are in
+test_rt4_title_places_found.py and test_rt4_title_places_found2.py. Made-up names."""
 
 import json
 import random
@@ -334,9 +335,9 @@ ATOMS += ["\t", "1. ", "|", "\\|", "[", "](u)", "*", "~~~", "```"]
 
 
 def test_generated_claims_are_judged_as_the_oracle_judges_them(tmp_path):
-    """Seeded: 1,500 draws of the atoms above, those that hold the title kept (no heading mark,
-    no picture: those are pinned as failing), each judged by cairn and by the oracle; the
-    oracle abstains on none here."""
+    """Seeded: 1,500 draws of the atoms above, those that hold the title kept (no heading
+    mark, no picture: those are test_rt4_title_places_found.py's), each judged by cairn and
+    by the oracle; the oracle abstains on none here."""
     rng, store, memory = random.Random(20261121), *store_at(tmp_path, "generated")
     try:
         project, verdicts = 0, {True: 0, False: 0}
@@ -673,7 +674,7 @@ PIECES += ["<https://e.x/", "<", ">", "\r\n"]
 def test_generated_claims_of_the_new_pieces_are_judged_as_the_page_shows_them(tmp_path):
     """Seeded: 1,500 draws of the pieces above, those that hold the title kept; no picture
     or heading mark (pinned, test_rt4_title_places_found.py), and no backtick in a link's
-    title or address (pinned as failing, test_rt4_title_places_found2.py)."""
+    title or address (test_rt4_title_places_found2.py's)."""
     rng, store, memory = random.Random(20261122), *store_at(tmp_path, "generated2")
     try:
         verdicts = {True: 0, False: 0}
@@ -706,3 +707,45 @@ def test_the_cutoffs_hold_for_a_title_beside_an_escaped_bar_in_a_cell(env, named
     assert {k: seen[k] for k in ("Memory", "REST")} == dict.fromkeys(
         ("Memory", "REST"), (True, expected)
     )
+
+
+# Sixth round: the ruling (the page alone says what is code) at the five-page cutoff
+
+
+@pytest.mark.parametrize(
+    ("title", "shape"),
+    [
+        (TITLE, "Group {n} reads \\`Step by Step\\` today."),
+        ("Deploy", '[d{n}](u "`") /srv/deploy/x `x'),  # a path the facts do not read: stated
+    ],
+    ids=["between-escaped-backticks", "path-between-unpaired-backticks"],
+)
+@pytest.mark.parametrize("named", [5, 6])
+def test_the_cutoffs_hold_for_titles_the_page_shows_as_prose_by_the_ruling(
+    env, title, shape, named
+):
+    focus = api.note(env, title, "The field guide is on the shelf.")["page"]
+    pages = []
+    for n in range(named):
+        text = shape.format(n=n)
+        assert bool(prose_places(text, title))  # the oracle: in prose on the page
+        pages.append(api.note(env, f"Shape {n}", text)["page"])
+    for n in range(2):  # beside them, the title only in code: never counted
+        api.note(env, f"Code {n}", f"Run `{title} {n}` here.")
+    expected = sorted(pages) if named <= relations.COMMON else []
+    assert surfaces(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
+def test_a_path_after_a_fence_a_list_item_closes_names_the_page_as_the_facts_read_it(tmp_path):
+    """The facts read the rest of the claim as the fence's body, so no path: the title in it
+    names the page, as the connect guide's general clause says (a path is what the facts
+    read as one), though its list of such places names only unpaired backticks. The page
+    shows the path as prose after the list."""
+    claim = "- Item\n  ```\n  x\nSee /srv/deploy/x today."
+    assert "<p>See /srv/deploy/x today.</p>" in str(render(claim))
+    assert fact_stretches(claim) == [] and prose_places(claim, "Deploy")
+    store, memory = store_at(tmp_path, "fence")
+    try:
+        assert names_by_cairn(memory, "Deploy", claim) is True
+    finally:
+        store.close()

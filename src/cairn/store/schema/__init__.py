@@ -331,6 +331,10 @@ class ForeignSchema(UnknownSchema, sqlite3.DatabaseError):
     """An older version number on a file whose structure differs from cairn at that version."""
 
 
+class DamagedDatabase(UnknownSchema, sqlite3.DatabaseError):
+    """SQLite found damage while reading the database."""
+
+
 class CannotOpen(sqlite3.DatabaseError):
     """The path cannot be opened as a cairn database: SQLite may not open or create a file
     there (SQLITE_CANTOPEN), may not write it (SQLITE_READONLY), or finds that the file is not
@@ -348,10 +352,12 @@ class CannotOpen(sqlite3.DatabaseError):
 def _refuse(path: str | Path, error: sqlite3.Error) -> None:
     """Raise CannotOpen from `error` when it is SQLite's own refusal to open the file at
     `path` (by its primary result code: SQLITE_NOTADB, SQLITE_CANTOPEN, SQLITE_READONLY);
-    return for anything else, a busy or locked database and an error cairn raised among them."""
+    raise DamagedDatabase for SQLITE_CORRUPT. Other errors retain their own diagnosis."""
     code = getattr(error, "sqlite_errorcode", None)
     if code is None:
         return
+    if code & 0xFF == sqlite3.SQLITE_CORRUPT:
+        raise DamagedDatabase(f"the SQLite database at {path} is damaged") from error
     if code & 0xFF == sqlite3.SQLITE_NOTADB:
         raise CannotOpen(path, not_a_database=True) from error
     if code & 0xFF in (sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_READONLY):

@@ -204,13 +204,17 @@ def fill_for(asked: str) -> str:
     return next(chr(code) for code in range(0xE000, 0xF900) if chr(code) not in asked)
 
 
-def in_word(text: str, at: int, kind: Callable[[str], int]) -> bool:
+def in_word(
+    text: str, at: int, kind: Callable[[str], int], known: tuple[int, bool] = (-1, False)
+) -> bool:
     """Whether text[at] is part of a word as the index's tokenizer reads it (`kind`): a
     character of a TOKEN is, wherever it stands; a MARK is when what it follows is; nothing
-    before the text's start is."""
-    while at >= 0 and kind(text[at]) == MARK:
+    before the text's start is. `known` is a place at or before `at` whose answer is known
+    already, and its answer: the walk back over marks stops there."""
+    stop, answer = known
+    while at > stop and kind(text[at]) == MARK:
         at -= 1
-    return at >= 0 and kind(text[at]) == TOKEN
+    return answer if at == stop else kind(text[at]) == TOKEN
 
 
 def blanked(
@@ -231,23 +235,25 @@ def blanked(
     fill = fill_for(asked)
     if kind(fill) != TOKEN:
         raise ValueError("the index's tokenizer does not read the blanking character as a word")
-    chars = list(text)
+    chars, known = list(text), (-1, False)  # the last character of the stretch before
     for start, end in _joined(stretches):
-        held, worded = in_word(text, start - 1, kind), False
+        held = before = in_word(text, start - 1, kind, known)
+        worded = False
         for at in range(start, end):
             read = kind(text[at])
             held = read == TOKEN or (read == MARK and held)
             if held:
                 chars[at], worded = fill, True
-        if not worded:
+        if not worded:  # no character of it is in a word: only the one before can be
             alone = (
                 at
                 for at in range(start, end)
-                if not in_word(text, at - 1, kind)
+                if (at > start or not before)
                 and (at + 1 == len(text) or kind(text[at + 1]) == SEPARATOR)
             )
             if (at := next(alone, None)) is not None:
                 chars[at] = fill
+        known = (end - 1, held)
     return "".join(chars)
 
 

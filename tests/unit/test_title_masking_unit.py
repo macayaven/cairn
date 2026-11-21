@@ -179,6 +179,28 @@ def test_the_kinds_of_characters_are_the_index_own(monkeypatch):
     assert opened == []
 
 
+def test_blanking_reads_each_character_a_bounded_number_of_times():
+    """However many combining marks a stretch holds, or the text between stretches, each
+    character is read a bounded number of times: a stretch of marks alone between two
+    backticks, which holds no word, and a stretch of one mark at every other character of
+    marks after a letter."""
+    asked = quoted(TITLES[0])
+    for n in (1_000, 4_000):
+        for text, stretches in (
+            ("Quill `" + "\u0301" * n + "`", [(7, 7 + n)]),
+            ("x" + "\u0301" * n, [(at, at + 1) for at in range(2, n, 2)]),
+        ):
+            kind = relating._kinds(text + asked + relations.fill_for(asked))
+            read: list[str] = []
+
+            def counted(char: str, read=read, kind=kind) -> int:
+                read.append(char)
+                return kind(char)
+
+            relations.blanked(text, stretches, asked, counted)
+            assert len(read) <= 4 * len(text), (n, len(read))
+
+
 def test_any_characters_are_read_however_many_a_text_holds_of_those_kept_for_a_program(
     monkeypatch,
 ):

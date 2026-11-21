@@ -288,7 +288,7 @@ from cairn.store import (
     UnknownSchema,
 )
 from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
-from cairn.store.schema import ForeignSchema, Uninitialized
+from cairn.store.schema import ForeignSchema, SchemaChange, Uninitialized
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import (
     cli_arrange,
@@ -1939,6 +1939,11 @@ def _serve(args: argparse.Namespace) -> int:
     except ValueError as error:
         print(f"cannot use those operator notes: {error}", file=sys.stderr)
         return 2
+    try:
+        model = cli_arrange.serve_model(args)
+    except ValueError as error:
+        print(f"cannot use that model: {error}", file=sys.stderr)
+        return 2
     cli_data.make_folder(args.db)  # the lock file goes beside the database
     try:
         lock = take_serve_lock(args.db)
@@ -1950,18 +1955,18 @@ def _serve(args: argparse.Namespace) -> int:
     if lock is None:
         print(ANOTHER_SERVER.format(db=args.db), file=sys.stderr)
         return 2
+    changes: list[SchemaChange] = []
+    store = None
+    finished = False
     try:
-        cli_data.make_database(args.db)  # 0600 before SQLite opens it (H1)
-        store = Store(args.db)  # the one open that upgrades: the lock above is held
-    except BaseException:
-        lock.release()
-        raise
-    try:
+        cli_data.make_database(args.db)
+        store = Store(args.db, on_schema_commit=changes.append)
         try:
             arranger = cli_arrange.serve_arranger(
                 args,
                 store,
                 plans,
+                model=model,
                 send_source_notes=send,
                 send_slack_notes=slack_send,
                 opt_in=opt_in,
@@ -2035,9 +2040,25 @@ def _serve(args: argparse.Namespace) -> int:
                 proxy_headers=bool(proxies),
                 forwarded_allow_ips=proxies,
             )
+        finished = True
     finally:
-        store.close()
-        lock.release()
+        try:
+            if not finished and changes:
+                last = changes[-1]
+                floor = (
+                    "no recorded floor"
+                    if last.floor is None
+                    else f"compatibility floor {last.floor}"
+                )
+                print(
+                    f"serve committed schema {changes[0].before} -> {last.after} at {args.db}"
+                    f" ({floor}) before it stopped",
+                    file=sys.stderr,
+                )
+            if store is not None:
+                store.close()
+        finally:
+            lock.release()
     return 0
 
 

@@ -375,11 +375,21 @@ def refused(args: argparse.Namespace) -> str | None:
     return None
 
 
+def serve_model(args: argparse.Namespace) -> Any:
+    """Resolve all model settings before the server opens its database."""
+    if args.model_env is not None:
+        return _model(args.model_env, args.model_deadline)
+    if args.model_price is not None:
+        raise ValueError("--model-price needs --model-env, the model it prices")
+    return None
+
+
 def serve_arranger(
     args: argparse.Namespace,
     store: Store,
     plans: Plans | None,
     *,
+    model: Any = None,
     send_source_notes: bool = False,
     send_slack_notes: bool = False,
     opt_in: bool = False,
@@ -393,9 +403,9 @@ def serve_arranger(
     default (TIDY_BY_DEFAULT, read here), the worker without a model; with --no-tidy, None,
     and nothing of cairn.arrange is imported. ValueError (a cairn.llm.LLMConfigError among
     them) says what is wrong, naming settings only."""
-    if args.model_env is None:
-        if args.model_price is not None:
-            raise ValueError("--model-price needs --model-env, the model it prices")
+    if model is None:
+        model = serve_model(args)
+    if model is None:
         if not (args.tidy or (TIDY_BY_DEFAULT and not args.no_tidy)):
             return None
         from cairn.arrange import Arranger
@@ -404,7 +414,7 @@ def serve_arranger(
     from cairn.arrange import Arranger
 
     return Arranger(
-        _model(args.model_env, args.model_deadline),
+        model,
         price=args.model_price,
         view_for=worker_views(store, plans),
         every=ARRANGE_EVERY,

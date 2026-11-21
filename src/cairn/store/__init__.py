@@ -1259,6 +1259,7 @@ from cairn.store.reservations import Reservation, ReservationMethods
 from cairn.store.schema import (
     SCHEMA_VERSION,
     CannotOpen,
+    SchemaChange,
     SchemaTooNew,
     SchemaTooOld,
     UnknownSchema,
@@ -1485,6 +1486,7 @@ class Store(
         *,
         upgrade: bool = True,
         create: bool = True,
+        on_schema_commit: Callable[[SchemaChange], None] | None = None,
     ) -> None:
         self._lock = WriterLock(ticks)  # `ticks`: when its holder took it (Store.health)
         self._state = ConnectionState()  # shared with every view, as the lock is
@@ -1506,7 +1508,7 @@ class Store(
             self._con.execute("PRAGMA secure_delete = ON")
             if self._con.execute("PRAGMA secure_delete").fetchone() != (1,):
                 raise RuntimeError("this SQLite does not zero what it deletes (secure_delete)")
-            _upgrade(self._con, self._stamp, upgrade, create)
+            _upgrade(self._con, self._stamp, upgrade, create, on_schema_commit)
             if str(path) != ":memory:":
                 (journal,) = self._con.execute("PRAGMA journal_mode = WAL").fetchone()
                 self._state.readers = _readers_for(self._con, journal)

@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
+from typing import NamedTuple
 
 from cairn.store.base import DEFAULT_ACCOUNT_ID, _has_table, _insert_account, _transaction
 from cairn.store.models import Account
@@ -360,8 +361,18 @@ def _refuse(path: str | Path, error: sqlite3.Error) -> None:
 # Schema versions
 
 
+class SchemaChange(NamedTuple):
+    before: int
+    after: int
+    floor: int | None
+
+
 def _upgrade(
-    con: sqlite3.Connection, stamp: Callable[[], str], upgrade: bool = True, create: bool = True
+    con: sqlite3.Connection,
+    stamp: Callable[[], str],
+    upgrade: bool = True,
+    create: bool = True,
+    on_commit: Callable[[SchemaChange], None] | None = None,
 ) -> None:
     """Bring the database to SCHEMA_VERSION, one transaction per step, so a step that fails
     leaves the database as it was. With `upgrade` False, an older database is refused
@@ -381,9 +392,16 @@ def _upgrade(
             after = _AFTER.set(said)
             try:
                 with _transaction(con):
-                    _run_step(con, upgrade, create)
+                    step = _run_step(con, upgrade, create)
+                    change = None
+                    if on_commit is not None and step is not None:
+                        before, end = step
+                        floor = _recorded_floor(con, end) if end >= _OLDEST_BUILD else None
+                        change = SchemaChange(before, end, floor)
             finally:
                 _AFTER.reset(after)
+            if on_commit is not None and change is not None:
+                on_commit(change)
             for say in said:  # committed: the step's transaction is over
                 say()
         _check_tables(con)
@@ -391,7 +409,9 @@ def _upgrade(
         _STAMP.reset(reset)
 
 
-def _run_step(con: sqlite3.Connection, upgrade: bool = True, create: bool = True) -> None:
+def _run_step(
+    con: sqlite3.Connection, upgrade: bool = True, create: bool = True
+) -> tuple[int, int] | None:
     """One step of _upgrade, in its transaction."""
     # Read again under the write lock: another process may have done this step.
     version = _schema_version(con)
@@ -400,6 +420,7 @@ def _run_step(con: sqlite3.Connection, upgrade: bool = True, create: bool = True
             raise Uninitialized
         _create(con)
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        return version, SCHEMA_VERSION
     elif version < SCHEMA_VERSION:
         _check_source(con, version)
         if not upgrade:
@@ -409,6 +430,8 @@ def _run_step(con: sqlite3.Connection, upgrade: bool = True, create: bool = True
         if step >= _OLDEST_BUILD and step not in _ONLY_ADDS:
             _record_floor(con, step)
         con.execute(f"PRAGMA user_version = {step}")
+        return version, step
+    return None
 
 
 def _floor_of(version: int) -> int:

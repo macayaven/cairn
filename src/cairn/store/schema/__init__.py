@@ -468,8 +468,14 @@ def _recorded_floor(con: sqlite3.Connection, version: int) -> int:
     oldest_build table, or no row in it): such a database is run by its own version only."""
     if not _has_table(con, "oldest_build"):
         return version
+    if not {"one", "version"}.issubset(_fields(con, "oldest_build")):
+        raise ForeignSchema("not a cairn database: unrecognized compatibility floor")
     row = con.execute("SELECT version FROM oldest_build WHERE one = 1").fetchone()
-    return version if row is None else row[0]
+    if row is None:
+        return version
+    if type(row[0]) is not int or not 1 <= row[0] <= version:
+        raise ForeignSchema("not a cairn database: invalid compatibility floor")
+    return row[0]
 
 
 def _runs_on(con: sqlite3.Connection) -> bool:
@@ -527,6 +533,8 @@ def _schema_version(con: sqlite3.Connection) -> int:
     version 0 with tables reads as 1. A newer version is returned as it is when this cairn
     may run on it (its floor is at or below SCHEMA_VERSION); SchemaTooNew otherwise, in one
     sentence that names the database's version, its floor and this cairn's version."""
+    if con.execute("PRAGMA application_id").fetchone() != (0,):
+        raise ForeignSchema("not a cairn database: another application owns this file")
     (version,) = con.execute("PRAGMA user_version").fetchone()
     if version > SCHEMA_VERSION:
         floor = _recorded_floor(con, version)

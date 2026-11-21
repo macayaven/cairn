@@ -59,5 +59,8 @@ def test_a_page_read_costs_the_statements_it_did(memory):
 # Measured at 653a4d2d, before the fixes, as 84, 102 and 16; each note's write then one more:
 # its save's check of whose passages it cites. The second note's three more since report 8:
 # the compile asks, in a read of its own (begin, one statement, commit), which passages the
-# page it builds on cites of another project's notes (compiler.own_claims).
-FIRST_NOTE, SECOND_NOTE, PAGE_READ = 85, 106, 16
+# page it builds on cites of another project's notes (compiler.own_claims). The first note's
+# one fewer since ranking.index_page takes a page's rows out of the index by rowid: FTS5's own
+# scan of its content table, which the delete by project and slug ran even on a page's first
+# save, is gone; cairn's own statements are the same.
+FIRST_NOTE, SECOND_NOTE, PAGE_READ = 84, 106, 16

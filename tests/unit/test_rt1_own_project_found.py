@@ -1,10 +1,9 @@
 """RT1 against the rule that a page is held to its own project's notes (schema step 32): what
-it does not yet do. Marked as failing on purpose, strictly, so the file passes as committed.
+it did not do until 0.1.0's fixes, kept as their guard.
 The builder is test_rt1_own_project_held's. Made-up notes."""
 
 from contextlib import closing
 
-import pytest
 from test_rt1_own_project_held import clean_and_hit
 
 from cairn.store import erasure
@@ -29,12 +28,6 @@ def work(clean: int, hit: int) -> int:
         return steps[0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="each page's rewrite reads the workspace's search rows again (ranking.index_page,"
-    " as every save of a page does); the search for the pages is one pass since 0.1.0's"
-    " fix (test_hold_to_own_projects_unit)",
-)
 def test_the_repair_reads_the_page_versions_a_bounded_number_of_times():
     """One search over the clean pages costs `alone`. Repairing 40 pages among them should
     cost about the 40 pages and a few such searches; it costs one search more for each page
@@ -43,8 +36,7 @@ def test_the_repair_reads_the_page_versions_a_bounded_number_of_times():
     order. Measured: 400 pages among 0, 12,000 and 48,000 clean versions took 0.24, 1.43 and
     5.82 s inside the upgrade's one transaction. Memory stays flat (held file). Only a file
     with pages written behind the store's back, or by an earlier build's direct save, pays.
-    Since the fix the search is one pass (test_hold_to_own_projects_unit: 631, 36 and 666 for
-    the searches alone); the whole repair still costs 631, 1,905 and 19,742, each page's rewrite
-    reading the workspace's search rows (ranking.index_page), which keeps this case failing."""
+    Since 0.1.0's fixes (a one-pass search, and ranking.index_page taking a page's rows out by
+    rowid) the whole repair costs 631, 1,216 and 2,253 (19,742 for both before)."""
     alone, pages, both = work(1500, 0), work(0, 40), work(1500, 40)
     assert both - pages <= 4 * alone, (alone, pages, both)

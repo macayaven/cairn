@@ -8,7 +8,7 @@
 <p class="alert" role="alert">Refused. {{ error }}</p>
 {% endif %}
 <p class="lede">Deleting this project removes its {{ notes }} {{ "note" if notes == 1 else "notes" }} and its {{ pages }} {{ "page" if pages == 1 else "pages" }}, with every earlier version of each page, its part of the search index and who reaches it.</p>
-<p>A set that holds it, and a key or connected agent limited to it, lose it: one limited to this project alone then reaches nothing. What it deletes is overwritten in the database file. Where this install keeps a continuous backup, the old text can stay in the database's log file until the operator compacts it, and in backup copies until they expire. The audit log keeps that it was deleted, by whom, and how many notes and pages went.</p>
+<p>A set that holds it, and a key or connected agent limited to it, lose it: one limited to this project alone then reaches nothing. A page of another project cannot cite its notes; should one still cite them, which only a program that wrote into the database directly could leave, it changes as it does when a note is forgotten. What it deletes is overwritten in the database file. Where this install keeps a continuous backup, the old text can stay in the database's log file until the operator compacts it, and in backup copies until they expire. The audit log keeps that it was deleted, by whom, and how many notes and pages went.</p>
 <p><strong>This cannot be undone.</strong> To keep a copy, an owner can export the workspace first from <a href="/account">Data and deletion</a>.</p>
 <section class="sheet" aria-label="Delete the project">
 <form method="post" action="/b/{{ project.name|seg }}/delete" class="stack">

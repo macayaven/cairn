@@ -55,8 +55,9 @@ RUN_UPGRADE = (
     " versions, even one that note's workspace has forgotten since, keeps one new version with"
     " its own project's claims alone, and its earlier versions go, as when that note is"
     " forgotten; a page left with no claim of its own goes."
-    " The server's log says, for each workspace that had any, how many pages were rewritten"
-    " and how many removed, and names no page."
+    " Once the upgrade has committed, the server's log says, for each workspace that had any,"
+    " how many pages were rewritten and how many removed, and names no page; when a page"
+    " changed, a compaction is marked due, as a forget marks one."
 )
 RUN_STATS = (
     "`--other-projects` adds one count, for each workspace that has any: the pages that cite,"
@@ -81,6 +82,9 @@ RUN_REPAIR = (  # its behaviour: test_repair_command_unit.py
     " `cairn.db.compact.lock` as `compact` does, so while it runs a `compact` says that another"
     " compaction is running and exits 3, and the server's own compactor logs `compact skipped:"
     " another compaction is running on this database` and tries again at the next poll."
+    " On a database of an older schema it changes nothing and exits 1, as `stats` does: start"
+    " the server once on it, whose upgrade holds every page to its own project's notes and"
+    " logs how many pages it rewrote and removed."
 )
 GONE_SAYS = "A page can cite only passages from its own project."
 

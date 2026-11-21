@@ -1136,13 +1136,13 @@ def hold_to_own_projects(
     _NEXT_PAGE), so each version is read by the search once, and it holds one page and one
     workspace's counts whatever the database holds; on a database that holds no such page it
     makes one search and writes nothing. It writes no audit event: inside the upgrade no
-    audit writer of this build may run (a step is history), so the store's log is the record,
-    one line for each workspace that had any, written once its pages are done, counts only;
-    `each`, when
-    given, is called with the workspace's id and its counts rewritten and removed in place of
-    that line (the `repair` command prints them once the transaction commits). Returns how
-    many `workspaces` had any, and how many pages were `rewritten` and `removed`."""
-    said = _log_repaired if each is None else _each(each)
+    audit writer of this build may run (a step is history). It says nothing itself: `each`,
+    when given, is called, in the transaction, with each workspace that had any (its id and
+    its counts rewritten and removed), and the caller says them once the transaction has
+    committed (schema step 32 through the upgrade's runner, one line of the store's log each,
+    _log_repaired; the `repair` command on stdout). Returns how many `workspaces` had any,
+    and how many pages were `rewritten` and `removed`."""
+    said = _each(each or (lambda *counts: None))
     done: Counter = Counter()
     tally: Counter = Counter()  # the pages of the workspace `at`, the one being repaired
     at, after = None, ("", "")
@@ -1174,7 +1174,7 @@ def hold_to_own_projects(
 
 
 def _each(each: Callable[[str, int, int], None]) -> Callable[[str | None, Counter], None]:
-    """hold_to_own_projects' `each`, called as _log_repaired is."""
+    """hold_to_own_projects' `each`, called with a workspace's tally (None: none yet)."""
 
     def said(account_id: str | None, tally: Counter) -> None:
         if account_id is not None:
@@ -1183,17 +1183,17 @@ def _each(each: Callable[[str, int, int], None]) -> Callable[[str | None, Counte
     return said
 
 
-def _log_repaired(account_id: str | None, tally: Counter) -> None:
-    """hold_to_own_projects' line for the workspace `account_id` (None: none yet)."""
-    if account_id is not None:
-        store_log.warning(
-            "repair: workspace %s held %d page(s) citing notes of other projects: %d rewritten"
-            " with its own notes' claims, %d removed",
-            account_id,
-            tally["rewritten"] + tally["removed"],
-            tally["rewritten"],
-            tally["removed"],
-        )
+def _log_repaired(account_id: str, rewritten: int, removed: int) -> None:
+    """The store's line for a workspace hold_to_own_projects repaired, said once the
+    transaction that repaired it has committed (schema step 32)."""
+    store_log.warning(
+        "repair: workspace %s held %d page(s) citing notes of other projects: %d rewritten"
+        " with its own notes' claims, %d removed",
+        account_id,
+        rewritten + removed,
+        rewritten,
+        removed,
+    )
 
 
 def count_pages_citing_other_projects(con: sqlite3.Connection) -> dict[str, int]:

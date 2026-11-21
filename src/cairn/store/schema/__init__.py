@@ -38,6 +38,7 @@ from cairn.store.schema.current import (
     _SPANS,
 )
 from cairn.store.schema.shared import (
+    _AFTER,
     _CLAIM_INDEX,
     _FTS5_SECURE_DELETE,
     _STAMP,
@@ -341,26 +342,39 @@ def _upgrade(con: sqlite3.Connection, stamp: Callable[[], str]) -> None:
     opened as it is, with no step run and nothing written, when this cairn's version is at or
     above the floor it records (oldest_build), and refused before anything is written
     otherwise (SchemaTooNew). From _OLDEST_BUILD on, a step that changes what an older build
-    relies on (not in _ONLY_ADDS) raises the floor to itself, in its own transaction.
+    relies on (not in _ONLY_ADDS) raises the floor to itself, in its own transaction. What a
+    step says (_AFTER) is said once that transaction has committed, never when it rolls back.
     `stamp`: the store's clock, as an ISO timestamp."""
     reset = _STAMP.set(stamp)
     try:
         while _schema_version(con) < SCHEMA_VERSION:
-            with _transaction(con):
-                # Read again under the write lock: another process may have done this step.
-                version = _schema_version(con)
-                if version == 0:
-                    _create(con)
-                    con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                elif version < SCHEMA_VERSION:
-                    step = version + 1
-                    _MIGRATIONS[step](con)
-                    if step >= _OLDEST_BUILD and step not in _ONLY_ADDS:
-                        _record_floor(con, step)
-                    con.execute(f"PRAGMA user_version = {step}")
+            said: list[Callable[[], None]] = []
+            after = _AFTER.set(said)
+            try:
+                with _transaction(con):
+                    _run_step(con)
+            finally:
+                _AFTER.reset(after)
+            for say in said:  # committed: the step's transaction is over
+                say()
         _check_tables(con)
     finally:
         _STAMP.reset(reset)
+
+
+def _run_step(con: sqlite3.Connection) -> None:
+    """One step of _upgrade, in its transaction."""
+    # Read again under the write lock: another process may have done this step.
+    version = _schema_version(con)
+    if version == 0:
+        _create(con)
+        con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    elif version < SCHEMA_VERSION:
+        step = version + 1
+        _MIGRATIONS[step](con)
+        if step >= _OLDEST_BUILD and step not in _ONLY_ADDS:
+            _record_floor(con, step)
+        con.execute(f"PRAGMA user_version = {step}")
 
 
 def _floor_of(version: int) -> int:

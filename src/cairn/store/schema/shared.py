@@ -18,6 +18,10 @@ _CLAIM_INDEX = """CREATE VIRTUAL TABLE {index} USING fts5 (
 # The store's clock (StoreBase._stamp) while _upgrade runs: a step takes the connection
 # alone, and the one that stamps a row (the default account's creation) reads it from here.
 _STAMP: ContextVar[Callable[[], str]] = ContextVar("cairn_store_upgrade_stamp")
+# What a step says once it has committed: each step's own list while _upgrade runs it, which
+# _upgrade calls in order after the step's transaction, floor and version included, commits,
+# and drops when it rolls back. A step never writes to the log itself.
+_AFTER: ContextVar[list[Callable[[], None]]] = ContextVar("cairn_store_upgrade_after")
 
 
 def _create_index(con: sqlite3.Connection, index: str) -> None:

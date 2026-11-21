@@ -198,6 +198,58 @@ def test_code_blocks_rich_text_names_cost_what_the_message_is_long(counted, shap
     assert spent[LARGE] <= 10 * spent[SMALL], spent
 
 
+@pytest.fixture
+def compared(monkeypatch):
+    """The characters _Hashes compares in full, one by one, wherever placing asks it to: its
+    text counts what each `startswith` on it is run over."""
+    count = [0]
+
+    class Compared(str):
+        def startswith(self, prefix, start=0, *args):
+            count[0] += min(len(prefix), max(len(self) - start, 0))
+            return super().startswith(prefix, start, *args)
+
+    class Hashes(slack_text._Hashes):
+        def __init__(self, text: str) -> None:
+            super().__init__(text)
+            self.text = Compared(self.text)
+
+    monkeypatch.setattr(slack_text, "_Hashes", Hashes)
+    return count
+
+
+def after_a_span_left_out(size: int) -> dict:
+    """The second reviewer's eighth report, must-fix 4: a named span of `size` backticks right
+    after a span the rich text leaves out, the text the rich text gives before it `size`
+    characters long, and a run of backticks where the span's backticks stand at each place
+    that text could reach (each place's full comparison succeeded, then the text before it
+    was asked and did not stand there)."""
+    elements = [
+        {"type": "text", "text": "y" * size},
+        {"type": "text", "text": "`" * size, "style": {"code": True}},
+        {"type": "text", "text": "`" * size},
+    ]
+    blocks = [{"type": "rich_text", "elements": [
+        {"type": "rich_text_section", "elements": elements}
+    ]}]  # fmt: skip
+    text = "y" * size + "`k`" + "`" * (2 * size + 2)
+    return {"type": "message", "ts": "1900000000.000100", "text": text, "blocks": blocks}
+
+
+@pytest.mark.parametrize("size", [32, 64, 128, 1024])
+def test_placing_a_span_compares_at_most_three_times_the_message(compared, size):
+    """What placing compares in full grows with the message, not as its square (3,570,
+    13,266, 51,090 and 3,161,106 characters before): a full comparison runs only where both
+    digests agree, so where it succeeds or at a collision. The note's body, the message as
+    displayed and the title are each placed once."""
+    sent = after_a_span_left_out(size)
+    note_from_message(
+        sent, team_id="T0FABLE01", team_domain="fable-works", conversation_id="C0LIBRARY1",
+        author="Cedar Quill", names={},
+    )  # fmt: skip
+    assert compared[0] <= 3 * len(sent["text"]), (len(sent["text"]), compared[0])
+
+
 def best_of_three(work, size: int) -> float:
     times = []
     for _ in range(3):

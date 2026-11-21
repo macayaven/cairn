@@ -284,7 +284,10 @@ def _companions(db: Path) -> Iterator[Path]:
 def journal_refusal(db: Path) -> str | None:
     """Let SQLite identify a hot rollback journal without giving it permission to recover."""
     try:
-        empty = db.stat().st_size == 0
+        info = db.stat()
+        if not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
+            return f"{db} is not a regular file: --db names a SQLite database"
+        empty = info.st_size == 0
     except FileNotFoundError:
         empty = True
     except (PermissionError, NotADirectoryError):

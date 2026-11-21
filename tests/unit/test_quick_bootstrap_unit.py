@@ -1007,6 +1007,37 @@ def test_a_secret_without_settings_asks_docker_nothing_after_the_start(vm):
     assert calls(vm)[-1] == COMPOSE_UP
 
 
+def test_no_piece_of_a_setting_gets_through_whatever_the_form_of_its_line(vm):
+    """The rule for the tools' error lines, "never a setting's value, nor 12 characters in a
+    row of one", holds for every line of the settings file. A value after a colon, the
+    second line of a value that runs over lines, and a line of no form at all are values
+    as much as what follows an equals sign: an error line that quotes twelve characters of
+    one is left out. An error line that shares no such piece with the file still gets
+    through, also beside many short settings: what can leave a line out is a whole line of
+    the file, a value or a line of 6 to 11 characters whole, or 12 in a row of a longer one."""
+    settings = (
+        b"COLONED: zq7wm2kx9tblp4nvh8rj3\n"
+        b'MULTI="first part of it\n'
+        b'ydc5hj8pm4wqxz5lp4rd3bt9 second"\n'
+        b"free text hq2mv7cz4nd8ft1 without form\n"
+        b"A=1\nB=no\nC=x y\nD=exit\n"
+    )
+    quoting = (
+        "error one: wm2kx9tblp4n is not valid",  # of the value after the colon
+        "error two: hj8pm4wqxz5l seen",  # of the value's second line
+        "error three: mv7cz4nd8ft1 seen",  # of the line of no form
+    )
+    config = {"STANDIN_COMPOSE_ERROR": "\n".join((*quoting, RESTORE_FAILED))}
+    done = run(vm, mode="compose-failure", settings=settings, config=config)
+    assert done.returncode != 0
+    said = done.stderr.splitlines()
+    assert f"cairn-quick: compose: {RESTORE_FAILED}" in said  # shares nothing: it gets through
+    for piece in ("wm2kx9tblp4n", "hj8pm4wqxz5l", "mv7cz4nd8ft1", "zq7wm2", "ydc5hj8", "hq2mv7"):
+        assert piece not in done.stderr, piece
+    # The file's own eight lines, which the stand-in repeats, and the three that quote it.
+    assert said.count(f"cairn-quick: compose: {LEFT_OUT}") == 8 + len(quoting)
+
+
 def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):
     """The value travels on standard output into a staged file and nowhere else. Should a
     tool also repeat it among its errors, that line is left out and the others stay."""

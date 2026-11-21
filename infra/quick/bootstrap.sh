@@ -124,7 +124,8 @@ sys.stdout.buffer.write(data)
 }
 
 # The tools' own error lines, for the journal, never a setting's value: a line repeating a
-# settings line or 6 characters of a value (12 in a row of a longer one) is left out.
+# settings line or 6 characters of a value (12 in a row of a longer one) is left out. Any
+# line of the settings is a value, and so is what follows its first = or :.
 say_errors() {
   python3 - "$@" >&2 <<'PY'
 import re, sys
@@ -137,9 +138,10 @@ for name in settings:
         continue
     for line in lines:
         values.add(line.strip())
-        text = line.partition("=")[2].strip().strip("'\"")
-        if len(text) >= 6:
-            values.update(text[i:i + 12] for i in range(max(1, len(text) - 11)))
+        for text in [line, *re.split("[=:]", line, 1)[1:]]:
+            text = text.strip().strip("'\"")
+            if len(text) >= 6:
+                values.update(text[i:i + 12] for i in range(max(1, len(text) - 11)))
 values.discard("")
 for line in open(errors, encoding="utf-8", errors="replace").read().splitlines()[-20:]:
     if line.startswith(("Traceback", " ")):

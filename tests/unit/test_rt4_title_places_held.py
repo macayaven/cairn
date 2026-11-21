@@ -2,7 +2,7 @@
 judges each place a title stands by itself, and found to hold (RT4, fourth round).
 
 The oracle here is independent of cairn's reader: it does not use SQLite's highlight,
-relations.blanked, spans.code_read or anything of cairn.store.relating. It tokenises a claim
+relations.prose_runs, spans.code_read or anything of cairn.store.relating. It tokenises a claim
 and a title as FTS5's unicode61 tokenizer is documented to for the index's declaration
 (no options: categories "L* N* Co", case folded, remove_diacritics 1, a diacritic going on
 with a word and starting none, a code point SQLite's older Unicode does not assign read as a
@@ -757,7 +757,7 @@ def test_a_path_after_a_fence_a_list_item_closes_names_the_page_as_the_facts_rea
         store.close()
 
 
-# Seventh round: masking that moves no word (relations.blanked with the index's own reading
+# Seventh round: masking that moves no word (then relations.blanked, with the index's own reading
 # of each character, relating._kinds), attacked flush against every kind of stretch
 
 NFD_CAFE = unicodedata.normalize("NFD", "Café")

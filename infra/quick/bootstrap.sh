@@ -123,9 +123,8 @@ sys.stdout.buffer.write(data)
 '
 }
 
-# The tools' own error lines, for the journal, and never a setting's value: a line that
-# repeats a settings line, or 6 characters of a value (12 in a row of a longer one), is
-# left out. Python's traceback frames are dropped; the error's own line stays.
+# The tools' own error lines, for the journal, never a setting's value: a line repeating a
+# settings line or 6 characters of a value (12 in a row of a longer one) is left out.
 say_errors() {
   python3 - "$@" >&2 <<'PY'
 import re, sys
@@ -155,6 +154,31 @@ for line in open(errors, encoding="utf-8", errors="replace").read().splitlines()
     if line.strip():
         print(f"cairn-quick: {label}: {line}")
 PY
+}
+
+# Names each setting cairn's container was given otherwise than the secret holds it: the
+# name, nothing of a value (values stay in a pipe and in memory). Between single quotes a
+# value is what stands there (a quote as \'), over one line or more; else the rest of its
+# line. A setting the container was not given is no difference.
+check_settings() {
+  local id check
+  [ -s cairn.env ] || return 0
+  id=$(docker compose ps -q cairn 2>/dev/null) && [ -n "$id" ] || return 1
+  check=$(cat <<'PY'
+import json, re, sys
+given = dict(pair.split("=", 1) for pair in json.load(sys.stdin) if "=" in pair)
+form = r"^[ \t]*(?:export[ \t]+)?(\w+)[ \t]*=[ \t]*(?:'((?:[^'\\]|\\[\s\S])*)'|(.*))"
+holds = {}
+for name, quoted, plain in re.findall(form, open("cairn.env", encoding="utf-8").read(), re.M):
+    holds[name] = quoted.replace("\\'", "'") if quoted else plain.strip()
+for name, value in holds.items():
+    if name in given and given[name] != value:
+        print(f"cairn-quick: settings check: {name} differs in cairn from what the secret holds."
+              ' How to write a value: "AWS settings" or "Google Cloud settings" in'
+              " infra/quick/README.md")
+PY
+  )
+  docker inspect -f '{{json .Config.Env}}' "$id" 2>/dev/null | python3 -c "$check" >&2 2>/dev/null
 }
 
 publish_env() {
@@ -212,10 +236,10 @@ EOF
     fi
     die 'Docker Compose up failed. Check registry access, the image, the settings file syntax and container status.'
   fi
-  # What Compose said of a start that worked. It warns of a $ before a name no variable has.
-  # A $ before a set name, a # after a space and quotes around a value it changes without a
-  # word, so no line here does not mean the settings arrived as written.
+  # What Compose said of a start that worked: it warns of a $ before a name no variable
+  # has, and changes other values without a word. check_settings names those.
   say_errors compose "$staging/errors" cairn.env || true
+  check_settings || echo 'cairn-quick: settings check: did not run' >&2
 )
 
 first_key() (

@@ -29,6 +29,18 @@ AWS_DENIED = (
 CURL_DENIED = "curl: (22) The requested URL returned error: 403"
 RESTORE_FAILED = 'service "litestream-restore" didn\'t complete successfully: exit 1'
 LEFT_OUT = "(a line that repeats part of a setting was left out)"
+CONTAINER = "0123456789ab"
+# What the boot asks Docker after a start, to compare the settings: which container, and
+# the environment it was made with.
+SETTINGS_CHECK = [
+    ["docker", "compose", "ps", "-q", "cairn"],
+    ["docker", "inspect", "-f", "{{json .Config.Env}}", CONTAINER],
+]
+DIFFERS = (
+    "cairn-quick: settings check: {} differs in cairn from what the secret holds. How to write"
+    ' a value: "AWS settings" or "Google Cloud settings" in infra/quick/README.md'
+)
+DID_NOT_RUN = "cairn-quick: settings check: did not run"
 RULE = ["!", "-i", "br-cairn-backup", "-d", "169.254.169.254", "-p"]
 STANDIN = r"""
 import json
@@ -81,6 +93,16 @@ if cmd == "docker":
             print('time="2026-11-20T00:00:00Z" level=warning msg="The \\"value\\" variable is not'
                   ' set. Defaulting to a blank string."', file=sys.stderr)
         (state / "stack-started").touch()
+    elif args == ["compose", "ps", "-q", "cairn"]:
+        if mode == "no-container":
+            sys.exit()
+        print("0123456789ab")
+    elif args[:3] == ["inspect", "-f", "{{json .Config.Env}}"]:
+        given = state / "container-env.json"
+        if args[3:] != ["0123456789ab"] or mode == "inspect-fails":
+            print(os.environ["STANDIN_SECRET"], file=sys.stderr)
+            sys.exit(1)
+        print(given.read_text() if given.exists() else '["PATH=/app/bin:/usr/bin"]')
     elif args[:3] == ["compose", "ps", "--all"]:
         print(os.environ["STANDIN_SECRET"], file=sys.stderr)
         if mode == "compose-failure-no-status":
@@ -442,7 +464,7 @@ def test_start_writes_only_the_expected_env_files_and_starts_compose(vm, cloud):
         "litestream.env": 0o600,
         "cairn.env": 0o600,
     }
-    assert calls(vm)[-1] == COMPOSE_UP
+    assert calls(vm)[-3:] == [COMPOSE_UP, *SETTINGS_CHECK]
     assert ["docker", "compose", "pull"] not in calls(vm)
     assert "$value" not in done.stdout + done.stderr
     assert TOKEN not in done.stdout + done.stderr
@@ -521,7 +543,7 @@ def test_first_boot_pulls_missing_images(vm):
     assert done.returncode == 0, done.stderr
     assert (vm / "images-cached").exists()
     assert (vm / "stack-started").exists()
-    assert calls(vm)[-1] == COMPOSE_UP
+    assert calls(vm)[-3:] == [COMPOSE_UP, *SETTINGS_CHECK]
 
 
 def test_cached_restart_does_not_contact_the_registry(vm):
@@ -614,8 +636,12 @@ COMPOSE_READS = (
 COMPOSE_SAYS = (
     "Compose reports one of these, the `$` before a name no variable has, and the boot passes"
     " on what Compose says, as a line in the unit's journal that starts with"
-    " `cairn-quick: compose:`. The other changes come without a word, so a journal with no"
-    " such line does not show that every value arrived as written."
+    " `cairn-quick: compose:`. The other changes come without a word from Compose, so after"
+    " every start the boot compares each setting in the secret with what cairn's container was"
+    " given and names each one that differs, the name and nothing of its value, on a line that"
+    " starts with `cairn-quick: settings check:`. A start without such a line shows that every"
+    " setting the container received arrived as written; `cairn-quick: settings check: did not"
+    " run` means that it could not compare."
 )
 
 
@@ -658,14 +684,132 @@ def test_compose_changes_three_kinds_of_setting_and_reports_one(vm):
 
 
 def test_the_boot_script_says_what_its_passing_on_of_warnings_cannot_show():
-    """The script's own comment at the line that passes Compose's warnings on."""
+    """The script's own comment at the line that passes Compose's warnings on, and the
+    comparison that follows it for what Compose changes without a warning."""
     script = BOOTSTRAP.read_text().splitlines()
     at = max(n for n, line in enumerate(script) if line.startswith("  say_errors compose"))
-    assert "die" not in script[at - 1]  # the call after a start that worked, not the failure's
-    comment = " ".join(line.strip().lstrip("# ") for line in script[at - 4 : at])
-    assert "It warns of a $ before a name no variable has" in comment
-    assert "without a word" in comment
-    assert "does not mean the settings arrived as written" in comment
+    comment = " ".join(line.strip().lstrip("# ") for line in script[at - 2 : at])
+    assert "it warns of a $ before a name no variable has" in comment
+    assert "changes other values without a word. check_settings names those." in comment
+    assert (
+        script[at + 1] == "  check_settings || echo 'cairn-quick: settings check: did not run' >&2"
+    )
+
+
+def digests(*values):
+    """Each value as it is and as the digests a careless check might print."""
+    import hashlib
+
+    forms = set()
+    for value in values:
+        data = value.encode()
+        forms |= {value, base64.b64encode(data).decode()}
+        forms |= {hashlib.new(kind, data).hexdigest() for kind in ("md5", "sha1", "sha256")}
+        forms |= {base64.b64encode(hashlib.sha256(data).digest()).decode()}
+    return {form for form in forms if len(form) >= 4}
+
+
+AWKWARD = 'a$CAIRN_DOMAIN #c "d" it\'s e\\f g=h\nsecond line $word9'
+
+
+def test_a_setting_that_reached_cairn_changed_is_named_and_nothing_else(vm):
+    """After a start, the boot compares each setting the secret holds with what cairn's
+    container was given and names the ones that differ: the name, never a value, a part of
+    one, its length or a digest, of that setting or another. A setting the container was
+    not given at all is no difference (the stand-in's container has no ABSENT). The start
+    has worked, and the unit's result stays."""
+    wrote = {
+        "PLAIN": "zq7 wm2, a=b and c#d",
+        "SINGLE": "'"
+        + AWKWARD.replace("'", "\\'")
+        + "'  # between single quotes, as the guide says",
+        "SET": "kx9$CAIRN_DOMAIN",
+        "COMMENT": "tblp4 #nvh8",
+        "DOUBLE": '"rj3ydc"',
+        "ABSENT": "hj8rd3 #yc",
+    }
+    settings = "".join(f"{name}={value}\n" for name, value in wrote.items()).encode()
+    given = {  # as Compose 5.5.0 was seen to give them
+        "PLAIN": wrote["PLAIN"],
+        "SINGLE": AWKWARD,
+        "SET": "kx9cairn.example.net",
+        "COMMENT": "tblp4",
+        "DOUBLE": "rj3ydc",
+    }
+    env = ["PATH=/app/bin:/usr/bin", *(f"{name}={value}" for name, value in given.items())]
+    (vm / "container-env.json").write_text(json.dumps(env))
+    done = run(vm, settings=settings)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == ""
+    assert (vm / "stack-started").exists()
+    assert done.stderr.splitlines() == [
+        DIFFERS.format(name) for name in ("SET", "COMMENT", "DOUBLE")
+    ]
+    assert calls(vm)[-3:] == [COMPOSE_UP, *SETTINGS_CHECK]
+    parts = ["zq7", "wm2", "kx9", "tblp4", "nvh8", "rj3ydc", "hj8rd3", "second line", "word9"]
+    for form in digests(*wrote.values(), *given.values()) | set(parts):
+        assert form not in done.stderr, form
+    guide = (QUICK / "README.md").read_text()
+    assert "\n### AWS settings\n" in guide and "\n### Google Cloud settings\n" in guide
+
+
+def test_composes_three_silent_changes_are_each_named_and_the_guides_way_is_not(vm):
+    """The same, with Compose itself deciding what cairn's container is given: the boot's
+    own files are read by Compose, and what it resolves for cairn is what the stand-in's
+    container holds. A `$` before a set name, a `#` after a space and quotes around a value
+    are each named. A value written between single quotes, with every awkward character and
+    a line break in it, arrives as written and is not."""
+    wrote = {
+        "PLAIN": "zq7 wm2, a=b and c#d",
+        "SINGLE": "'" + AWKWARD.replace("'", "\\'") + "'",
+        "SET": "kx9$CAIRN_DOMAIN",
+        "COMMENT": "tblp4 #nvh8",
+        "DOUBLE": '"rj3ydc"',
+    }
+    settings = "".join(f"{name}={value}\n" for name, value in wrote.items()).encode()
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    service, said = compose_service(vm, said=True)
+    assert said.strip() == ""  # Compose said nothing of any of them
+    # `config` writes a literal $ as $$, so that its output can be read again.
+    given = {name: value.replace("$$", "$") for name, value in service["environment"].items()}
+    assert given["SINGLE"] == AWKWARD and given["PLAIN"] == wrote["PLAIN"]
+    assert (given["SET"], given["COMMENT"], given["DOUBLE"]) == (
+        "kx9cairn.example.net",
+        "tblp4",
+        "rj3ydc",
+    )
+    (vm / "container-env.json").write_text(json.dumps([f"{n}={v}" for n, v in given.items()]))
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    assert done.stderr.splitlines() == [
+        DIFFERS.format(name) for name in ("SET", "COMMENT", "DOUBLE")
+    ]
+    for form in digests(*wrote.values(), *given.values()) | {"zq7", "kx9", "tblp4", "rj3ydc"}:
+        assert form not in done.stderr, form
+
+
+@pytest.mark.parametrize("mode", ["no-container", "inspect-fails"])
+def test_a_settings_check_that_cannot_run_says_so_and_changes_nothing(vm, mode):
+    """Without a container of cairn, or with Docker failing, the comparison cannot be made:
+    one line says it did not run, nothing Docker said of it is printed, and the unit's result
+    is the start's."""
+    done = run(vm, mode=mode)
+    assert done.returncode == 0, done.stderr
+    assert (vm / "stack-started").exists()
+    assert done.stderr.splitlines() == [DID_NOT_RUN]
+    assert "$value" not in done.stderr and "synthetic" not in done.stderr
+
+
+def test_a_secret_without_settings_asks_docker_nothing_after_the_start(vm):
+    done = run(vm, mode="empty")
+    assert done.returncode == 0, done.stderr
+    assert done.stderr == ""
+    assert calls(vm)[-1] == COMPOSE_UP
 
 
 def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):

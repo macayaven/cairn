@@ -395,7 +395,8 @@ def new_store(db: Path) -> Iterator[Store]:
     except PermissionError as error:
         raise CannotOpen(db) from error
     for line in events:
-        audit_log.info(line)
+        with suppress(Exception):  # the database has already been published
+            audit_log.info(line)
 
 
 ANOTHER_COMPACTION = 3  # compact's exit code when another compaction runs on the database

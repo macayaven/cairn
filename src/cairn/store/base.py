@@ -247,7 +247,7 @@ class ConnectionState:
         # The events stored by the write under way, sent to the "cairn.audit" logger once it
         # commits and dropped if it does not (StoreBase._write).
         self.audit_out: list[str] = []
-        self.audit_line: Callable[[str], None] = audit_log.info
+        self.audit_line: Callable[[str], None] | None = None
         self.reads_audited = False  # cairn.memory: whether reads are events (serve --audit-reads)
         self.readers: Readers | None = None
         self.observers = Observers()
@@ -941,9 +941,10 @@ class StoreBase:
                 raise
             lines = list(out)
             out.clear()
+            emit = self._state.audit_line or audit_log.info
             for line in lines:  # stored: each is one line on "cairn.audit"
                 with contextlib.suppress(Exception):  # the log's trouble, not the write's
-                    self._state.audit_line(line)
+                    emit(line)
 
 
 @contextmanager

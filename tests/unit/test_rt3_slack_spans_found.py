@@ -23,7 +23,6 @@ message's text, so a backtick displayed as a character is assumed sent bare; and
 rich text does not name (an element of a shape cairn does not read) is assumed displayed as
 code, as the model reads the text's backticks. Every message is made up."""
 
-import pytest
 from markdown_it import MarkdownIt
 
 from cairn.slack.text import note_from_message

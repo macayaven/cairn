@@ -729,6 +729,13 @@ def sent_with(text: str, *sections: list[dict], blocks: Collection[int] = ()) ->
 
 
 EMOJI = {"type": "emoji", "name": "x", "style": {"code": True}}
+
+
+def word(k: int) -> str:
+    """Three letters, a different three for each k under 26 ** 3."""
+    return "".join(chr(97 + k // 26**i % 26) for i in range(3))
+
+
 WORK = {  # each grows with n; the reviewer's shape first
     "after a span left out": lambda n: sent_with(
         "y" * n + "`k`" + "`" * (2 * n + 2), [text_of("y" * n), code_of("`" * n), text_of("`" * n)]
@@ -771,6 +778,55 @@ WORK = {  # each grows with n; the reviewer's shape first
         [text_of("h | x\n--|--\n")],
         *[[text_of("b")]] * n,
         blocks=range(1, n + 1),
+    ),
+    "a tilde fence open, rendered again": lambda n: sent_with(
+        "~~~\n" + "```b```\n" * n,
+        [text_of("~~~\n")],
+        *[[text_of("b")]] * n,
+        blocks=range(1, n + 1),
+    ),
+    "headings and underlines": lambda n: sent_with(
+        "# h `x`\n=\n`y`\n---\n" * n,
+        [
+            e
+            for _ in range(n)
+            for e in (
+                text_of("# h "),
+                code_of("x"),
+                text_of("\n=\n"),
+                code_of("y"),
+                text_of("\n---\n"),
+            )
+        ],
+    ),
+    "a named span found far": lambda n: sent_with(
+        "`a`" * n + "`b`", [code_of("b"), *[code_of("zz")] * n]
+    ),
+    # the same, each span its own, so that nothing kept for one way serves the next
+    "found far, each its own": lambda n: sent_with(
+        "".join(f"`{word(k + 1)}Z` `{word(k)}` " for k in range(n)),
+        [e for k in range(n) for e in (text_of(" "), code_of(word(k)))],
+    ),
+    "not held, each its own": lambda n: sent_with(
+        "`a`" * n, [code_of(word(k).upper()) for k in range(n)]
+    ),
+    "text before each, each its own": lambda n: sent_with(
+        "".join(f"x{word(k)} `{word(k)}`" for k in range(n)),
+        [e for k in range(n) for e in (text_of(f"x{word(k)} "), code_of(word(k)))],
+    ),
+    "heads and ways of lengths that vary": lambda n: sent_with(
+        "".join(
+            "y" * (k % 7 + 1) + word(k) + "`" + word(k) + "q" * (k % 5) + "`" for k in range(n)
+        ),
+        [
+            e
+            for k in range(n)
+            for e in (text_of("y" * (k % 7 + 1) + word(k)), code_of(word(k) + "q" * (k % 5)))
+        ],
+    ),
+    "a text before at every place, each its own": lambda n: sent_with(
+        "".join(f"``{word(k)}`" for k in range(n)),
+        [e for k in range(n) for e in (text_of("`"), code_of(word(k)))],
     ),
 }
 

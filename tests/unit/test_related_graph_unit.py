@@ -27,6 +27,7 @@ from test_related_page_unit import (
     main_of,
     note,
     read_alone,
+    shown,
     unisolated,
 )
 
@@ -682,3 +683,25 @@ def test_without_the_explorer_the_view_does_not_exist_and_nothing_links_it(tmp_p
                 assert page.status_code == 200 and "focus=" not in page.text, path
     finally:
         made.store.close()
+
+
+@pytest.mark.parametrize("others", [0, 5], ids=["alone", "beside-five"])
+def test_both_views_show_a_title_flush_against_a_path_as_the_answer_does(w, others):
+    """The outside reviewer's shape on the two views of related pages: `Café` written with a
+    combining accent, flush before the path `/notes`, which the facts read as a path. The
+    title stands whole in prose: alone, the page's related pages and the explorer show the
+    reader's mention; beside five other pages that name the title, it is common, and neither
+    view shows any, as the answer does (tests/unit/test_related_unit.py)."""
+    focus = note(w, "Café", "The field guide is on the shelf.\n")["page"]
+    for n in range(others):
+        note(w, f"Group {n}", f"Group {n} reads Café today.\n")
+    reader = note(w, "Reader", "Read Cafe\u0301/notes today.\n")["page"]
+    expected = [reader] if not others else []
+    listed = shown(get(w, f"/b/ops/p/{focus}/related").text)
+    assert [p["page"] for p in listed if any(r["kind"] == "mentioned_by" for r in p["why"])] == (
+        expected
+    )
+    edges = drawn(get(w, RELATED + focus).text).edges
+    assert [e["to"] for e in edges if e["reason"] == "mentioned_by"] == [
+        f"page:{slug}" for slug in expected
+    ]

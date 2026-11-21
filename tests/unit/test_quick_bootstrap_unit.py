@@ -659,16 +659,21 @@ def test_a_start_that_worked_passes_on_what_compose_warned_of(vm):
 
 
 COMPOSE_READS = (
-    "Compose reads the file, and a value arrives as written only between single quotes (a"
-    " single quote inside is written `\\'`, so the value cannot end in an odd number of"
-    " backslashes: the last would take the closing quote, Compose stops with `unterminated"
-    " quoted value`, the unit fails and the boot passes that line on). Outside them"
-    " Compose changes four kinds of value: it puts a variable's value in place of a `$`"
-    " and the name after it, or nothing when no variable has that name; where no quotes"
-    " hold the value, it drops the blanks at either end, and a `#` after a space with the"
-    " rest of the line, unless the `#` is the value's first character; and it removes"
-    " double quotes around a value, reading `\\n` and its like between them as the"
-    " characters they stand for."
+    "Compose reads the file, and takes a value as written only between single quotes. A"
+    " single quote inside is written `\\'`, so a value must not end in an odd number of"
+    " backslashes: the last takes the closing quote, and the value runs on to the next"
+    " single quote in the file, over the lines between, which then set nothing. With no"
+    " such quote, Compose stops with `unterminated quoted value`, the unit fails and the"
+    " boot passes that line on. With one, Compose reads on from what follows it: when it"
+    " cannot read that, it stops as well; when it can, it starts cairn with one setting"
+    " where two were meant. The check below then reads the same value when a comment or"
+    " nothing follows that quote on its line, and is quiet; other text there makes the"
+    " line one it counts. Outside single quotes Compose changes four kinds of value: it"
+    " puts a variable's value in place of a `$` and the name after it, or nothing when no"
+    " variable has that name; where no quotes hold the value, it drops the blanks at"
+    " either end, and a `#` after a space with the rest of the line, unless the `#` is the"
+    " value's first character; and it removes double quotes around a value, reading `\\n`"
+    " and its like between them as the characters they stand for."
 )
 COMPOSE_SAYS = (
     "Compose reports one of these, the `$` before a name no variable has, and the boot"
@@ -752,6 +757,55 @@ def test_compose_changes_four_kinds_of_setting_and_reports_one(vm):
     for sentence in (COMPOSE_READS, COMPOSE_SAYS):  # under each cloud's settings, the same words
         assert guide.count(sentence) == 2, sentence
     assert guide.count(f"{COMPOSE_READS} {COMPOSE_SAYS}") == 2
+
+
+TAKEN = chr(92) + "'"  # a backslash before the quote that was meant to close a value
+
+
+@pytest.mark.parametrize(
+    ("settings", "given"),
+    [
+        # The reviewer's case: the next line's opening quote closes the value, a # follows.
+        (f"FOO='zq7{TAKEN}\nBAR='#kx9'\nLAST=x\n", {"FOO": "zq7'\nBAR=", "LAST": "x"}),
+        # Over a line between, which sets nothing; nothing follows the quote on its line.
+        (
+            f"FOO='zq7{TAKEN}\nMID=tbl\nBAR='\nLAST=x\n",
+            {"FOO": "zq7'\nMID=tbl\nBAR=", "LAST": "x"},
+        ),
+    ],
+)
+def test_a_backslash_before_the_closing_quote_carries_the_value_to_the_next_quote(
+    vm, settings, given
+):
+    """The guide (`COMPOSE_READS`), held to Compose: the backslash takes the closing quote,
+    and the value runs on to the next single quote in the file, over the lines between,
+    which set nothing. When a comment or nothing follows that quote, Compose says nothing
+    and starts cairn with one setting where two were meant; the check read the same value
+    and is quiet too."""
+    got, said = judged_with_compose_deciding(vm, settings.encode())
+    assert got == given
+    assert said == []
+
+
+def test_text_after_the_quote_a_carried_value_ran_to_is_counted_or_stops_compose(vm):
+    """The two other ends of a value a backslash carried on (`COMPOSE_READS`). Text Compose
+    can read after the quote: cairn starts, and the check counts the lines. Text it cannot:
+    Compose stops, and the boot's line is Compose's without what Compose quotes of the file."""
+    got, said = judged_with_compose_deciding(
+        vm, f"FOO='zq7{TAKEN}\nBAR='BAZ=tbl\nLAST=x\n".encode()
+    )
+    assert got == {"FOO": "zq7'\nBAR=", "BAZ": "tbl", "LAST": "x"}
+    assert said == [NOT_COMPARED.format(3) + ": BAZ, FOO; 1 unnamed"]
+    settings = f"FOO='zq7{TAKEN}\nBAR='kx9'\nLAST=x\n".encode()
+    (vm / "deploy" / "cairn.env").write_bytes(settings)
+    refusal = compose_service(vm, refused=True).strip()
+    assert "cairn.env: line 2: unexpected character" in refusal and "kx9" in refusal
+    done = run(
+        vm, mode="compose-failure", settings=settings, config={"STANDIN_COMPOSE_ERROR": refusal}
+    )
+    assert done.returncode != 0
+    assert "cairn-quick: compose: the settings file, line 2: unexpected character" in done.stderr
+    assert "kx9" not in done.stderr and "zq7" not in done.stderr
 
 
 @pytest.mark.parametrize("backslashes", [1, 3])

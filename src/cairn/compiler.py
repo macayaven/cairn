@@ -629,8 +629,12 @@ def own_claims(store: Store, page: Page | None) -> tuple[Page | None, frozenset[
     stale for it. The version it saves is held to its own project's notes (save_page refuses
     any other); the earlier versions stay, as after any write, since a write is not an
     erasure. Since schema step 32 only a program that wrote the tables directly leaves such a
-    claim (`stats --other-projects` counts its pages). One read when the page cites a
-    passage; the page itself when no claim leaves."""
+    claim (`stats --other-projects` counts its pages). Its question is not held to the
+    workspace, so on a page written behind the store's back the outcome (the claim left out
+    and the note filed, or the note refused for a passage no one holds) tells whoever wrote
+    that row whether another workspace still holds the passage; no path of the product lets a
+    writer cite a passage of its choosing, so nothing learns it without writing the tables.
+    One read when the page cites a passage; the page itself when no claim leaves."""
     if page is None:
         return None, frozenset()
     cited = [span_id for claim in page.claims for span_id in claim.span_ids]

@@ -56,7 +56,7 @@ RUN_UPGRADE = (
     " its own project's claims alone, and its earlier versions go, as when that note is"
     " forgotten; a page left with no claim of its own goes."
     " The server's log says, for each workspace that had any, how many pages were rewritten"
-    " and how many removed, and names none."
+    " and how many removed, and names no page."
 )
 RUN_STATS = (
     "`--other-projects` adds one count, for each workspace that has any: the pages that cite,"

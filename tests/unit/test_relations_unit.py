@@ -2,6 +2,8 @@
 are terms that relate pages, the order a page's terms are looked up in, what a reason weighs,
 and which related pages are the best. Made-up names; nothing is stored or searched here."""
 
+import sqlite3
+from contextlib import closing
 from fractions import Fraction
 
 import pytest
@@ -376,34 +378,23 @@ def test_the_stretches_that_are_no_prose_are_the_facts_own_and_the_code_blocks()
     assert [empty[slice(*at)] for at in relations.covered(passage(empty))] == ["```deploy\n"]
 
 
-NAMED = [
-    # (the places a title was matched at, the stretches, the first place in the prose)
-    ([(10, 16)], [], (10, 16)),
-    ([(10, 16)], [(20, 30)], (10, 16)),
-    ([(10, 16)], [(10, 16)], None),  # the stretch itself
-    ([(10, 16)], [(0, 40)], None),  # inside a longer one
-    ([(10, 16)], [(15, 30)], None),  # partly inside: its last character
-    ([(10, 16)], [(0, 11)], None),  # its first
-    ([(10, 16)], [(12, 13)], None),  # around a stretch: a title of two words, code between
-    ([(10, 16)], [(0, 10), (16, 30)], (10, 16)),  # touching on both sides is outside
-    ([(10, 16), (40, 46)], [(0, 20)], (40, 46)),  # the first place that is outside
-    ([(10, 16), (40, 46)], [(0, 20), (38, 50)], None),
-    ([(10, 16), (40, 46), (70, 76)], [(0, 20), (38, 50), (90, 99)], (70, 76)),
-    ([], [(0, 20)], None),
-]
-
-
-@pytest.mark.parametrize(("places", "stretches", "first"), NAMED)
-def test_a_title_is_named_at_the_first_place_that_shares_no_character_with_a_stretch(
-    places, stretches, first
-):
-    assert relations.named_at(places, stretches) == first
-
-
-def test_many_places_and_many_stretches_are_walked_once():
-    """Both in the order they stand: a passage of thousands of facts, a title matched in
-    hundreds of places, each inside one of them but the last."""
-    stretches = [(10 * n, 10 * n + 6) for n in range(5_000)]
-    places = [(10 * n + 2, 10 * n + 4) for n in range(0, 5_000, 7)] + [(60_000, 60_005)]
-    assert relations.named_at(places, stretches) == (60_000, 60_005)
-    assert relations.named_at(places[:-1], stretches) is None
+def test_what_is_not_prose_is_blanked_in_place_by_a_character_the_title_does_not_hold():
+    """Each character of a stretch is made one of private use that the phrase asked does not
+    hold, which the index reads as part of a word: the text keeps its length, each stretch
+    is a word that is no word of the title, and the words on its two sides are not side by
+    side. FTS5's own reading of the text says so: its tokens, from an index of it alone."""
+    text = "Run `quill` ledger; open quill `--x` ledger."
+    blanked = relations.blanked(text, [(5, 10), (32, 35)], 'text : "Quill ledger"')
+    assert len(blanked) == len(text)
+    assert (blanked[5:10], blanked[32:35]) == ("\ue000" * 5, "\ue000" * 3)
+    assert blanked[:5] + blanked[10:32] + blanked[35:] == text[:5] + text[10:32] + text[35:]
+    with closing(sqlite3.connect(":memory:")) as con:
+        con.execute("CREATE VIRTUAL TABLE t USING fts5 (text)")
+        con.execute("CREATE VIRTUAL TABLE tokens USING fts5vocab (t, instance)")
+        con.execute("INSERT INTO t (rowid, text) VALUES (1, ?)", (blanked,))
+        words = [term for (term,) in con.execute("SELECT term FROM tokens ORDER BY offset")]
+    assert words == ["run", "\ue000" * 5, "ledger", "open", "quill", "\ue000" * 3, "ledger"]
+    # a word partly in a stretch is another word; and a phrase that holds the first character
+    # of private use is given the next one it does not hold
+    assert relations.blanked("quill1.2.3", [(5, 10)], "quill") == "quill" + "\ue000" * 5
+    assert set(relations.blanked("ab", [(0, 2)], "\ue000 \ue001")) == {"\ue002"}

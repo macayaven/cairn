@@ -2,7 +2,8 @@
 
 import pytest
 
-from cairn.spans import chunk
+from cairn import spans
+from cairn.spans import chunk, code_read
 
 
 def layout(text: str) -> list[tuple[str, int, int]]:
@@ -182,3 +183,80 @@ def test_identical_text_gets_distinct_ids_per_section_and_occurrence():
     same = [s for s in chunk("doc", "# A\nsame\n\nsame\n# B\nsame\n") if s.text == "same"]
     assert [s.heading_path for s in same] == [("A",), ("A",), ("B",)]
     assert len({s.id for s in same}) == 3
+
+
+# Where the Markdown parser reads code in a text read alone (code_read): each stretch as the
+# characters of the text it covers, written out here.
+
+
+def code_in(text: str) -> list[str]:
+    return [text[start:end] for start, end in code_read(text)]
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        ("Read `Step` by Step.", ["Step"]),  # a code span: its code, between its backticks
+        ("a ``x ` y`` b `z`", ["x ` y", "z"]),
+        ("Read `Step\nby Step` today.", ["Step\nby Step"]),  # across a line's end
+        ("> Read `Step\n> by Step` today.", ["Step\n> by Step"]),  # in a quote: its marks too
+        ("- Read `x`,\n      then `y`.", ["x", "y"]),  # a list item's lines
+        ("- Read the guide.\n\tStep `by` x.", ["by"]),  # a tab the parser reads as spaces
+        ("Read `x`  \n   then `y`  ", ["x", "y"]),  # blanks that end the lines
+        ("# Read `Step` by # `Step` #", ["Step", "Step"]),  # a heading
+        ("Read `x` by\n`Step` y\n===", ["x", "Step"]),  # and one underlined
+        ("| a | `b \\| c` d | `e` |\n| --- | --- | --- |", ["b \\| c", "e"]),  # table cells
+        ("| `a` | `a` |\n| --- | --- |\n| `a` | b |", ["a", "a", "a"]),
+        ("See ![`Step\nby` x](p.png) and `y`.", ["Step\nby", "y"]),  # a picture's words
+        ("See [`a` b](https://x.dev) `c`.", ["a", "c"]),  # a link's words
+        ("Escaped \\`Step\\` is not code.", []),
+        ("Text <https://x.dev/`a`> b.", []),  # an address in angle brackets
+        ("Run:\n\n```sh\nquill run\n```\nThen.", ["```sh\nquill run\n```"]),  # a fenced block
+        ("> ~~~\n> quill run\n> ~~~", ["> ~~~\n> quill run\n> ~~~"]),
+        ("Run:\n\n    quill run\n    --now\n\nThen.", ["    quill run\n    --now"]),  # indented
+        ("- Read the guide.\n\n    Step by Step", []),  # indented under an item: its prose
+        ("- Read the guide.\n\n        Step by Step", ["        Step by Step"]),  # its code
+        ("Read\n    Step by Step", []),  # a paragraph's lines go on, however indented
+        ("Plain prose with no mark of code at all.", []),
+    ],
+)
+def test_the_parser_says_what_is_code_in_a_text_read_alone(text, code):
+    assert code_in(text) == code
+
+
+def test_a_code_span_the_parser_cannot_place_in_the_text_covers_its_lines(monkeypatch):
+    """Where the parser's text of a block cannot be found in the text (it never happens with
+    the blocks above), its code spans cover the lines they stand on: never less than the code."""
+    placed = spans._placed
+    monkeypatch.setattr(spans, "_placed", lambda *args: placed(*args)._replace(starts=None))
+    assert code_in("First line.\nRead `x` here.\nLast line.") == ["Read `x` here."]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "*Read `Step*` by* Step `x*` **y**",
+        "_a `b_` c_ and *`d`* and ***`e`***",
+        "*[`a*`](u)* ![*`b`*](p.png) <https://x.dev/*`c`*>",
+        "**a `b\nc**` d** e `f`",
+        "- *a* `b*`\n\n  > *`c`*\n\n      *d*",
+        "| *a* | `b *\\| c*` |\n| --- | --- |",
+    ],
+)
+def test_the_code_read_without_emphasis_is_the_web_views_code(text):
+    """The code reader leaves emphasis unread (spans._CODE_READER): the code the web view's
+    parser reads in the same text, block by block and span by span, is the same."""
+
+    def code(parser) -> list:
+        found = []
+        for token in parser.parse(text):
+            if token.type in ("fence", "code_block"):
+                found.append((token.type, token.map, token.content))
+            for child in token.children or ():
+                for inner in [child, *(child.children or ())]:
+                    if inner.type == "code_inline":
+                        found.append((inner.type, inner.markup, inner.content))
+        return found
+
+    assert code(spans._CODE_READER) == code(spans._PARSER)
+    assert code(spans._PARSER)

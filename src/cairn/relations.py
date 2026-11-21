@@ -84,7 +84,7 @@ most 692), against a read of every term: of the 212 places in the pages' best 8,
 the shortest first keeps 211 and the longest first 207.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import Any, NamedTuple
 
@@ -186,22 +186,20 @@ def opening(text: str, body: int) -> int:
     return text.rfind("\n", 0, body - 1) + 1 if body > 0 else 0
 
 
-def named_at(
-    places: Sequence[tuple[int, int]], stretches: Sequence[tuple[int, int]]
-) -> tuple[int, int] | None:
-    """Where a claim names a title in its prose: the first of `places`, where the index
-    matched the title's words in the claim's text, that shares no character with any of
-    `stretches` (`covered`, of the passage the claim is the text of). A place partly inside
-    a stretch is inside it, and one that only touches a stretch is outside. None when every
-    place is inside one: the claim holds the title's words only in code, a path, a flag, a
-    version or an address, and does not name the page. Both in the order they stand."""
-    at = 0
-    for start, end in places:
-        while at < len(stretches) and stretches[at][1] <= start:
-            at += 1  # the stretches that end before this place: before every later one too
-        if at == len(stretches) or end <= stretches[at][0]:
-            return start, end
-    return None
+def blanked(text: str, stretches: Iterable[tuple[int, int]], asked: str) -> str:
+    """`text` with every character of `stretches` (`covered`, and what the Markdown parser
+    reads as code: cairn.spans.code_read) made one character that `asked`, the phrase a
+    title is asked as, does not hold: one of private use, which the index's tokenizer reads
+    as part of a word, as it does a letter. Each character stays where it stood, so a place
+    in the one text is a place in the other; and each stretch is one word or more that is
+    no word of the title, so the words on its two sides are not side by side, and a word
+    that stands in it only in part is another word. Where the index then finds the title,
+    each of its words stands whole in prose."""
+    fill = next(chr(code) for code in range(0xE000, 0xF900) if chr(code) not in asked)
+    chars = list(text)
+    for start, end in stretches:
+        chars[start:end] = fill * (end - start)
+    return "".join(chars)
 
 
 def looked_up_before(term: Term) -> tuple[int, str, str]:

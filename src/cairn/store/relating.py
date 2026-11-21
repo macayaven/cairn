@@ -152,8 +152,8 @@ from typing import Any, NamedTuple
 
 from cairn import relations
 from cairn.relations import MENTIONED_BY, SHARES, TITLE, Reason, Term
-from cairn.spans import Span
-from cairn.store import ranking
+from cairn.spans import Span, code_read
+from cairn.store import ranking, schema
 
 TERMS_MAX = 256  # terms of a page that are looked up; it counts the rest
 CLAIMS_MAX = 512  # claims of other pages read in all; it counts the rest
@@ -475,73 +475,107 @@ def _mentioning(
     facts: Mapping[str, Sequence[relations.Fact]],
 ) -> dict[str, tuple[int, tuple[int, int] | None]]:
     """Each other page that names the title in the prose of a claim: its first claim that
-    does, by row, and where in the claim's text (relations.named_at).
+    does, by row, and where in the claim's text: the first place where the title stands
+    whole in prose.
 
-    A claim that holds the title's words (`naming`) names the title only when a place where
-    the index matched them lies outside every stretch of its passage that is code, a path, a
-    flag, a version or an address (relations.covered, on the facts this read holds of the
-    passage, read whole). The places are the index's (`_marked`), and they are places of the
-    passage because the claim's text is the passage's text; the statement says whether it
-    is. Where it is not (a page saved by hand), and where the claim cites no passage of the
-    project, the places of the one say nothing of the other: the claim mentions the page as
-    the index has it, and its place is None. A claim that holds a mark of the index or a null
-    character names no page: its places cannot be told, so whether it names the title in its
-    prose cannot be checked.
+    A claim that holds the title's words (`naming`) names the title only where one place
+    the title stands in it lies outside every stretch of its passage that is code, a path,
+    a flag, a version or an address (relations.covered, on the facts this read holds of
+    the passage, read whole) and outside what the Markdown parser reads as code in the
+    claim alone (cairn.spans.code_read). Each place is judged by itself, whatever other
+    place overlaps it: the index is given the claim's text with those stretches blanked
+    out in place (relations.blanked) and asked the title again (`_in_prose`). Those are
+    places of the passage because the claim's text is the passage's text; the statement
+    says whether it is (`_judged`). Where it is not (a page saved by hand), and where the
+    claim cites no passage of the project, the passage says nothing of the claim: the claim
+    mentions the page as the index has it, and its place is None. A claim that holds a mark
+    of the index or a null character names no page: where the index matched in it cannot
+    be told, so whether it names the title in its prose cannot be checked.
 
     As for a term: a title one of whose claims was not read gives no mention at all; nor
-    does a title more than relations.COMMON other pages name. One statement, none for no
-    claim read."""
+    does a title more than relations.COMMON other pages name by this rule. One statement,
+    none for no claim read; and `_in_prose`'s, for the claims that are their passage's."""
     asked = [
         (row, cited[0] if (cited := candidates[row]) and cited[0] in spans else None)
         for row, _ in naming
         if row in read
     ]
-    marks = _marked(con, index, named, asked) if named and asked else {}
+    judged = _judged(con, index, asked) if named and asked else {}
     if any(row not in read for row, _ in naming):  # a claim not read: no mention at all
         return {}
+    texts = {}  # each claim that is its passage's text, with what is not prose blanked out
+    for row, its_passage in judged.items():
+        if its_passage and named:
+            span = spans[candidates[row][0]]
+            stretches = [*relations.covered(span, facts[span.id]), *code_read(span.text)]
+            texts[row] = relations.blanked(span.text, stretches, named)
+    places = _in_prose(named, texts) if named and texts else {}
     names: dict[str, tuple[int, tuple[int, int] | None]] = {}
     for row, at in naming:
         if at in names:
             continue
-        if row not in marks:  # the index's word stands
+        if row not in judged:  # the index's word stands
             names[at] = (row, None)
-        elif marks[row] and (
-            place := relations.named_at(
-                _places(marks[row]),
-                relations.covered(spans[candidates[row][0]], facts[candidates[row][0]]),
-            )
-        ):
-            names[at] = (row, place)
+        elif row in places:
+            names[at] = (row, places[row])
     return {} if len(names) > relations.COMMON else names
 
 
-def _marked(
-    con: sqlite3.Connection, index: str, named: str, asked: Sequence[tuple[int, str | None]]
-) -> dict[int, str]:
+def _judged(
+    con: sqlite3.Connection, index: str, asked: Sequence[tuple[int, str | None]]
+) -> dict[int, bool]:
     """For each (claim's row, its first passage's id when this read holds it, else None) of
-    `asked`: "" for a claim whose text holds a mark or a null character (SQLite's reading of
-    a text stops there), whose places cannot be told; else, for a claim whose text is its
-    passage's text, character for character, the text with MARKS around every place the
-    index matched `named` in it, the match that listed the claim, on the text column
-    (FTS5's highlight()); and nothing for any other claim. The statement decides all three
-    without handing a text back, so a claim reworded from its passage, of any length, costs
-    nothing. What is handed back is the passage's text once more, with two marks a match:
-    the index's work, not a reading of facts, and not counted in BYTES_MAX, which counts the
-    passage once (`_within`). One statement."""
+    `asked`: False for a claim whose text holds a mark or a null character (SQLite's reading
+    of a text stops there), whose places cannot be told; True for a claim whose text is its
+    passage's text, character for character; and nothing for any other claim. The
+    statement decides all three and hands back no text, so a claim reworded from its
+    passage, of any length, costs nothing. One statement."""
     return {
-        row: marks
-        for row, marks in con.execute(
-            f"SELECT {index}.rowid, CASE WHEN instr({index}.text, ?3) + instr({index}.text, ?4)"
-            f" + instr(CAST({index}.text AS BLOB), X'00') > 0 THEN ''"
-            f" WHEN {index}.text = spans.text THEN highlight({index}, 5, ?3, ?4) END"
+        row: bool(its_passage)
+        for row, its_passage in con.execute(
+            f"SELECT {index}.rowid, CASE WHEN instr({index}.text, ?2) + instr({index}.text, ?3)"
+            f" + instr(CAST({index}.text AS BLOB), X'00') > 0 THEN 0"
+            f" WHEN {index}.text = spans.text THEN 1 END"
             f" FROM json_each(?1) AS wanted"
             f" CROSS JOIN {index} ON {index}.rowid = json_extract(wanted.value, '$[0]')"
-            f" LEFT JOIN spans ON spans.id = json_extract(wanted.value, '$[1]')"
-            f" WHERE {index} MATCH ?2",
-            (json.dumps([list(pair) for pair in asked]), named, *MARKS),
+            f" LEFT JOIN spans ON spans.id = json_extract(wanted.value, '$[1]')",
+            (json.dumps([list(pair) for pair in asked]), *MARKS),
         )
-        if marks is not None
+        if its_passage is not None
     }
+
+
+def _scratch() -> sqlite3.Connection:
+    """A database of the read's own, in memory, closed when `_in_prose` is done with it; each
+    statement its own transaction."""
+    return sqlite3.connect(":memory:", isolation_level=None)
+
+
+def _in_prose(named: str, texts: Mapping[int, str]) -> dict[int, tuple[int, int]]:
+    """For each claim of `texts` (its row: its text with what is not prose blanked out,
+    relations.blanked) in which the index's own tokenizer finds the title asked (`named`),
+    the first place it does, in the claim's characters: an index of the same declaration as
+    the account's, in a database of the read's own in memory, is given every text and asked
+    the title as the account's index is. Three statements in that database, whatever the
+    texts: it is made, given the texts, asked. Its marks around overlapping matches make
+    one stretch, which starts where the first match does; each match of it stands whole in
+    prose. Nothing of it is kept: the database is closed when this returns. A claim's text
+    holds no mark of the index (`_judged`)."""
+    with contextlib.closing(_scratch()) as scratch:
+        scratch.execute(schema._CLAIM_INDEX.format(index="prose"))
+        scratch.execute(
+            "INSERT INTO prose (rowid, text) SELECT json_extract(value, '$[0]'),"
+            " json_extract(value, '$[1]') FROM json_each(?1)",
+            (json.dumps(list(texts.items())),),
+        )
+        return {
+            row: places[0]
+            for row, marks in scratch.execute(
+                "SELECT rowid, highlight(prose, 5, ?2, ?3) FROM prose WHERE prose MATCH ?1",
+                (named, *MARKS),
+            ).fetchall()
+            if (places := _places(marks))
+        }
 
 
 def _places(marks: str) -> list[tuple[int, int]]:

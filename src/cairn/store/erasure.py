@@ -1009,27 +1009,25 @@ def _rewrite(
 def _log_left(plan: list[_Planned], project_id: str, what: str = "forget") -> None:
     """One line on the store's log for each page the claims an import would refuse left: by
     slug and version in `project_id`, the count alone for a page of another project (the one
-    who removes may not reach it) or one removed (its slug is made from a note's title)."""
+    who removes may not reach it) or one removed (its slug is made from a note's title). The
+    count is each line's first argument, `what` ("forget" or "delete") part of its text."""
     for at, _, slug, version, _, kept, _, refused, _ in plan:
         if refused and at != project_id:  # a page the one who forgets may not reach
             store_log.warning(
-                "%s: %d claim(s) that an import would refuse left a page of another project",
-                what,
+                what + ": %d claim(s) that an import would refuse left a page of another project",
                 refused,
             )
         elif refused and kept:
             store_log.warning(
-                "%s: %d claim(s) that an import would refuse left page %r at its version %d",
-                what,
+                what + ": %d claim(s) that an import would refuse left page %r at its version %d",
                 refused,
                 slug,
                 version + 1,
             )
         elif refused:
             store_log.warning(
-                "%s: %d claim(s) that an import would refuse left a page, which was"
+                what + ": %d claim(s) that an import would refuse left a page, which was"
                 " removed with them",
-                what,
                 refused,
             )
 

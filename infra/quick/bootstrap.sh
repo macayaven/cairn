@@ -159,8 +159,8 @@ PY
 }
 
 # Compares the secret's settings with cairn's container's and prints names, never a value.
-# Reads NAME=value, in single quotes (a quote as \', over lines too) or to line end, and
-# counts the rest. A value in double quotes over lines is not read: its first line is named
+# Reads NAME=value as written, in single quotes (a quote as \', over lines too) or to line end,
+# and counts the rest. A value in double quotes over lines is not read: its first line is named
 # as differing, and a later line of it that looks like a setting can be named too.
 check_settings() {
   local id image check
@@ -170,16 +170,16 @@ check_settings() {
   check=$(cat <<'PY'
 import json, re, sys
 given, own = ({p.partition("=")[0]: p.partition("=")[2] for p in json.loads(line)} for line in sys.stdin)
-text = open("cairn.env", encoding="utf-8").read()
+text = open("cairn.env", encoding="utf-8", newline="").read()
 skip = re.compile(r"[ \t\r]*(#.*)?(\n|\Z)")
-read = re.compile(r"([A-Za-z_]\w*)[ \t]*=[ \t]*(?:'((?:[^'\\]|\\[^\\])*)'[ \t\r]*(?:#.*)?|([^'\n].*)?)(?:\n|\Z)")
+read = re.compile(r"([A-Za-z_]\w*)=(?:'((?:[^'\\]|\\[^\\])*)'[ \t]*(?:#.*)?|((?![ \t]*').*?))\r?(?:\n|\Z)")
 holds, unread, at = {}, [], 0
 while at < len(text):
     line = skip.match(text, at)
     if not line:
         line = read.match(text, at)
         if line:
-            holds[line[1]] = (line[3] or "").strip() if line[2] is None else line[2].replace("\\'", "'")
+            holds[line[1]] = line[3] if line[2] is None else line[2].replace("\\'", "'")
         else:
             line = re.compile(r".*(\n|\Z)").match(text, at)
             unread.append(line[0])
@@ -189,12 +189,12 @@ for setting, value in holds.items():
         print(f"cairn-quick: settings check: {setting} differs in cairn from what the secret holds."
               ' How to write a value: "AWS settings" or "Google Cloud settings" in'
               " infra/quick/README.md")
-unjudged = given.keys() - own.keys() - holds.keys()
-named = lambda n: re.compile(r"(?<![\w.-])" + re.escape(n) + r"[ \t]*[=:]").search
-count = len(unread) + sum(not any(map(named(n), unread)) for n in unjudged)
+on = lambda n: any(map(re.compile(r"\ufeff?[ \t]*(export[ \t]+)?" + re.escape(n) + r"[ \t]*[=:]").match, unread))
+names = sorted(n for n in given if on(n) or n not in holds and given[n] != own.get(n))
+count = len(unread) + sum(not on(n) for n in names)
 if count:
     print(f"cairn-quick: settings check: {count} line(s) of the settings not compared"
-          + (": " + ", ".join(sorted(unjudged)) if unjudged else ""))
+          + (": " + ", ".join(names) if names else ""))
 PY
   )
   docker inspect -f '{{json .Config.Env}}' "$id" "$image" 2>/dev/null | python3 -c "$check" >&2 2>/dev/null

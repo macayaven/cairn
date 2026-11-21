@@ -202,6 +202,20 @@ def test_it_shows_each_related_page_and_each_reason_in_words_with_the_claims(w, 
     assert "This is not all of it" not in html and "limit=" not in html
 
 
+def test_its_footer_names_the_software_s_version_and_its_lede_the_page_s(w, world):
+    """The outside reviewer's: a page at its third version, whose related page's footer said
+    "cairn 3". The footer says the software's version, as every page's does; the page's own
+    version is said where the related pages are counted."""
+    from cairn import __version__
+
+    for n in (8, 9):
+        note(w, "Deploy", f"Run the job with `--audit-keep` set to {n}.\n")
+    r = get(w, "/b/ops/p/deploy/related")
+    footer = r.text.split('<footer class="colophon">', 1)[1].split("</footer>", 1)[0]
+    assert f"<span>cairn {__version__}</span>" in footer and __version__ != "3"
+    assert "for version 3 of Deploy, its latest." in flat(tree(main_of(r.text)).text())
+
+
 def test_it_is_what_memory_related_answers_in_order(w, world):
     note(w, "Asked", "Use `a.cfg`, `b.cfg` and `c.cfg`.\n")
     note(w, "Two", "Use `a.cfg` and `b.cfg`.\n")

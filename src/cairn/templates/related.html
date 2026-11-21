@@ -31,7 +31,7 @@
 </header>
 {% set relates %}two pages are related when a claim of each states the same term (a URL, a path, a flag, a version, or code that holds a character other than a letter or is 12 or more characters long), or when a claim of the other names this page's title in its prose{% endset %}
 {% if related %}
-<p class="meta">{{ related|length }} related {{ "page" if related|length == 1 else "pages" }}, for version {{ version }} of {{ noted(title) }}, its latest.</p>
+<p class="meta">{{ related|length }} related {{ "page" if related|length == 1 else "pages" }}, for version {{ page_version }} of {{ noted(title) }}, its latest.</p>
 {% elif left_out %}
 {# An answer that is not complete: no page was found, which is not that there is none. #}
 <p class="empty">No page related to {{ noted(title) }} was found in what was looked at: {{ relates }}.</p>

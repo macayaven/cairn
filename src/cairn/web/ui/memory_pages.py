@@ -311,7 +311,7 @@ def related_view(answer: Mapping[str, Any], limit: int) -> dict[str, Any]:
         "project": project,
         "slug": slug,
         "title": answer["title"],
-        "version": answer["version"],
+        "page_version": answer["version"],  # not `version`: the footer's, a global
         "related": related,
         "left_out": related_left_out(answer["searched"]),
         "more_href": related_href(project, slug, limit=RELATED_MAX)

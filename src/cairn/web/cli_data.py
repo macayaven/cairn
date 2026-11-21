@@ -37,7 +37,7 @@ from cairn.store import (
     Pruned,
     Store,
 )
-from cairn.store.base import audit_log
+from cairn.store.base import audit_log, hard_linked
 
 COMMANDS = ("export", "import", "compact", "repair")
 # The --db help of a command that never creates the database (it exits 1 when there is none).
@@ -273,7 +273,9 @@ def make_database(db: Path) -> bool:
 
 def linked(db: Path | None) -> str | None:
     """LINKED_DB when `db` is a symbolic link, else None."""
-    return LINKED_DB.format(db=db) if db is not None and os.path.islink(db) else None
+    if db is None:
+        return None
+    return LINKED_DB.format(db=db) if os.path.islink(db) else hard_linked(db)
 
 
 def readable_by_others(db: Path) -> int | None:

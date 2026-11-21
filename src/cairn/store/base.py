@@ -31,13 +31,16 @@ import copy
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import sqlite3
+import stat
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cairn.store.models import Account
@@ -55,6 +58,21 @@ store_log = logging.getLogger("cairn.store")
 # fields as its row but its sequence: an operator sends this logger to a store nobody can edit.
 AUDIT_LOGGER = "cairn.audit"
 audit_log = logging.getLogger(AUDIT_LOGGER)
+
+
+class DatabaseLinks(ValueError):
+    """A database with several names cannot share a single journal and advisory lock."""
+
+
+def hard_linked(path: str | Path) -> str | None:
+    try:
+        info = os.stat(path)
+    except (FileNotFoundError, PermissionError, NotADirectoryError):
+        return None
+    if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+        return f"{path} has multiple hard links: use one database name for its locks and journal"
+    return None
+
 
 UNUSABLE = (
     "the store cannot be used: a transaction failed and could not be rolled back, so its"

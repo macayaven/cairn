@@ -287,7 +287,7 @@ from cairn.store import (
     Store,
     UnknownSchema,
 )
-from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER
+from cairn.store.base import AUDIT_KEEP, AUDIT_LOGGER, DatabaseLinks, hard_linked
 from cairn.store.schema import ForeignSchema, SchemaChange, Uninitialized
 from cairn.store.sources import FORMER_MEMBER, HOSTED_LEFT
 from cairn.web import (
@@ -1347,6 +1347,8 @@ def take_serve_lock(db: Path) -> ServeLock | None:
     lock file cannot be made or opened (O_NOFOLLOW: a link planted there is refused)."""
     if str(db) == ":memory:":
         return ServeLock(None, None)
+    if reason := hard_linked(db):
+        raise DatabaseLinks(reason)
     path = serve_lock_path(db)
     flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
     while True:
@@ -2148,6 +2150,9 @@ def main(argv: list[str] | None = None) -> int:
         older = cli_data.OLDER_SCHEMA
         print(older.format(db=db, found=found, known=known, command=args.command), file=sys.stderr)
         return 1
+    except DatabaseLinks as error:
+        print(error, file=sys.stderr)
+        return 2
     except Uninitialized:
         print(
             f"the database at {db} is uninitialized: start serve to initialize it", file=sys.stderr

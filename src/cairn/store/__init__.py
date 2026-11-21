@@ -1147,10 +1147,12 @@ from cairn.store.base import (
     UNUSABLE,
     CannotWrite,
     ConnectionState,
+    DatabaseLinks,
     Readers,
     StoreUnusable,
     WriterLock,
     _transaction,
+    hard_linked,
 )
 from cairn.store.credentials import KEY_PREFIX, CredentialMethods
 from cairn.store.erasure import ErasureMethods
@@ -1493,6 +1495,8 @@ class Store(
         self._owner = True  # of the connection: views share it and never close it
         self._clock_fn = clock  # every view made from this store shares it
         self._bind(DEFAULT_ACCOUNT_ID)
+        if str(path) != ":memory:" and (reason := hard_linked(path)):
+            raise DatabaseLinks(reason)
         # Autocommit mode: every write opens its own BEGIN IMMEDIATE transaction (_write).
         try:
             target = path if create else Path(path).absolute().as_uri() + "?mode=rw"

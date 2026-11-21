@@ -218,8 +218,10 @@ read or write PATH; run cairn as the file's owner, or let cairn's user own the f
 folder"; "PATH is a folder; --db names a file"; "cairn may not create the database under
 FOLDER; run cairn as the folder's owner, or let cairn's user own the folder". The commands
 that need a database still answer a folder or a missing file with "no database at PATH".
-Nothing is written, made or removed, and `serve` never starts listening. A busy database, a
-refusal nothing on disk explains, or an error once it is open, surfaces as before.
+Nothing is written, made or removed, and `serve` never starts listening. A database another
+process held past SQLite's wait (SQLITE_BUSY or SQLITE_LOCKED) stops a command with exit 1
+and one line (BUSY), nothing on stdout; `stats` and `audit-verify` say it in their own line.
+A refusal nothing on disk explains, or another error once it is open, surfaces as before.
 
 One `serve` per database (R1). What one server keeps in memory (rate limits, the arranging
 queue, the sign-in limits) is right only while it is the only server on its
@@ -249,6 +251,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -332,6 +335,11 @@ CREATES = ("serve", "key-create", "import")
 # path once and nothing from inside the file.
 NOT_A_DATABASE = "the file at {path} is not a cairn database; --db names the database file"
 NOT_A_DATABASE_YET = NOT_A_DATABASE + ", or a path where none exists yet"
+# SQLite's wait for another process's lock ran out (SQLITE_BUSY or SQLITE_LOCKED).
+BUSY = (
+    "the database at {db} is busy: another process held it past SQLite's wait; {command}"
+    " stopped there, run it again"
+)
 MAY_NOT_OPEN = (
     "cairn may not read or write {path}; run cairn as the file's owner, or let cairn's user"
     " own the file and its folder"
@@ -2198,6 +2206,12 @@ def main(argv: list[str] | None = None) -> int:
         if said is None:  # nothing on disk explains it: no line would be true
             raise
         print(said, file=sys.stderr)
+        return 1
+    except sqlite3.OperationalError as error:
+        code = getattr(error, "sqlite_errorcode", None)
+        if code is None or code & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise
+        print(BUSY.format(db=db, command=args.command), file=sys.stderr)
         return 1
 
 

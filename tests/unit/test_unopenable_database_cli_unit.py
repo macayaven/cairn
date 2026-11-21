@@ -280,13 +280,11 @@ def test_a_busy_database_is_not_one_it_cannot_open(tmp_path, monkeypatch, capsys
             Store(db)
         assert not isinstance(busy.value, CannotOpen)
         argv = ["usage", "--db", str(db), "--account", DEFAULT_ACCOUNT_ID]
-        with pytest.raises(sqlite3.OperationalError, match="database is locked") as busy:
-            cli.main(argv)
-        assert not isinstance(busy.value, CannotOpen)
+        assert cli.main(argv) == 1  # SQLite's busy error, said in one line of its own
     finally:
         holder.execute("ROLLBACK")
         holder.close()
-    assert capsys.readouterr().err == ""
+    assert capsys.readouterr().err == cli.BUSY.format(db=db, command="usage") + "\n"
 
 
 def cannot_open_error() -> sqlite3.OperationalError:
@@ -365,9 +363,10 @@ def test_the_docstring_quotes_each_line_main_prints():
     assert "stops every command with exit 1 and one line on stderr, nothing on stdout" in doc
     assert 'still answer a folder or a missing file with "no database at PATH"' in doc
     assert "Nothing is written, made or removed, and `serve` never starts listening" in doc
+    assert "held past SQLite's wait (SQLITE_BUSY or SQLITE_LOCKED)" in doc
+    assert "and one line (BUSY), nothing on stdout" in doc
     assert (
-        "A busy database, a refusal nothing on disk explains, or an error once it is open,"
-        " surfaces as before."
+        "A refusal nothing on disk explains, or another error once it is open, surfaces as before."
     ) in doc
 
 

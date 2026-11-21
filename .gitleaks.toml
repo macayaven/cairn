@@ -24,6 +24,11 @@ paths = [
 ]
 
 [[allowlists]]
+description = "Made-up settings the quick boot's tests feed to the script that must keep every piece of them off the journal"
+targetRules = ["generic-api-key"]
+paths = ['''^tests/unit/test_quick_bootstrap_unit\.py$''']
+
+[[allowlists]]
 description = "The opening line of a private key block, which the guard's tests must recognise"
 targetRules = ["private-key"]
 paths = ['''^tests/unit/test_guard_unit\.py$''']

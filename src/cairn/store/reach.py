@@ -288,7 +288,8 @@ LIMITED_READS = frozenset(
         "project_sharing",
         "projects_sharing",  # Q1: project_sharing for many projects in one read
         "may_erase",  # whether the view may delete the project or forget its notes (H5b)
-        "forget_preview",  # what forgetting a note would change: for whoever reaches it
+        "forget_preview",  # what forgetting a note would change: its project's pages for
+        # whoever reaches it, the count of other projects' only for one who may forget it
         "manages",  # whether the view manages the workspace: never a narrowed one
     }
 )

@@ -335,14 +335,20 @@ class ErasureMethods(StoreBase):
         return _outcome(note_id, project_id, plan)
 
     def forget_preview(self, note_id: str) -> Forgotten:
-        """What forget_note would do now, by the same rule, writing nothing: the pages it
-        would rebuild and those it would remove, and how many of other projects. For anyone
-        who reaches the note (whether they may forget it is may_erase's question); KeyError
-        for a note unknown or out of reach. A read."""
+        """What forget_note would do now, by the same rule, writing nothing: the pages of the
+        note's project it would rebuild and those it would remove, for anyone who reaches the
+        note, and how many pages of other projects it would change, only for a view that may
+        forget it (_erasure_refusal, as Memory.forget_preview asks may_erase first): anyone
+        else is told 0 (report 8), since the count says something of projects they may not
+        reach before any erasure. KeyError for a note unknown or out of reach. A read."""
         with self._read() as con:
             project_id, _, _ = self._note_in_reach(con, note_id)
             gone = _passages(con, "spans.note_id", note_id)
-            return _outcome(note_id, project_id, _plan(con, self._account_id, gone))
+            found = _outcome(note_id, project_id, _plan(con, self._account_id, gone))
+            _, maker_id, _ = self._reached(con, project_id)
+            if self._erasure_refusal(con, maker_id) is not None:
+                found = found.model_copy(update={"elsewhere": 0})
+            return found
 
     def _note_in_reach(self, con: sqlite3.Connection, note_id: str) -> tuple[str, str, int]:
         """(project id, text digest, UTF-8 size) of a note of a project in the view's reach;

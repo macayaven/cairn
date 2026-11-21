@@ -1,9 +1,12 @@
-"""RT1, one step past the forget across projects: what the fix did not reach.
+"""RT1, one step past the forget across projects: what the eighth round's fix did not reach.
 
 A page of another project that cites a note can exist only in a database an earlier build
-wrote (tests/earlier_build.py writes one; save_page refuses it now). The forget now finds
-such a page wherever it is. These are the neighbours it does not cover, each marked as
-failing on purpose, strictly, so the file passes as committed. Made-up notes."""
+wrote (tests/earlier_build.py writes one; save_page refuses a new such citation). The forget
+found such a page wherever it was; these were its neighbours. The first was found failing
+and is fixed since the ninth round (a delete changes such pages as a forget does: erasure's
+one rule). The second is a stated limit (src/cairn/guides/run.md), kept as a passing test
+of what the import says. What the ninth round left: test_rt1_forget_workspace_found2.py.
+Made-up notes."""
 
 import io
 from contextlib import closing
@@ -70,10 +73,10 @@ def legacy(store: Store):
 
 
 def test_deleting_a_project_takes_its_notes_text_out_of_pages_of_other_projects():
-    """The privacy guide: a project's notes go at once. The forget of one note now rewrites
-    a page of another project that cites it; deleting the note's whole project does not:
-    east's page keeps the sentence in its body, its claims, its search rows and a fresh
-    export (seen: page_versions and the index's tables, export True, search hits)."""
+    """The privacy guide: a project's notes go at once. Found on the eighth round's fix:
+    deleting the note's whole project left east's page with the sentence in its body, its
+    claims, its search rows and a fresh export. Fixed: the delete rewrites the page as a
+    forget does, and no table holds the text."""
     with closing(Store(":memory:")) as store:
         desk, east, _ = legacy(store)
         assert Memory(store, lint_gate).delete_project("desk", "desk") == {"deleted": True}

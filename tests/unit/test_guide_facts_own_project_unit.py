@@ -16,7 +16,7 @@ from test_store_unit import connect, rows
 import cairn.store.schema as schema
 from cairn.gate import lint_gate
 from cairn.memory import Memory
-from cairn.store import Store
+from cairn.store import Claim, Store
 from cairn.web import cli
 
 
@@ -60,12 +60,14 @@ RUN_UPGRADE = (
 )
 RUN_STATS = (
     "`--other-projects` adds one count, for each workspace that has any: the pages that cite,"
-    " in any of their versions, a note of another project, even one that note's workspace has"
-    " forgotten since (`other_projects` with `--json`)."
+    " in any of their versions, a passage that is not of their own project's notes, such as one"
+    " of another project's note, even a note its workspace has forgotten since (`other_projects`"
+    " with `--json`)."
     " It reads every page version, so it runs only when asked. cairn writes no such page, and"
     " the upgrade that brought the database to this version rewrote every one an earlier"
-    " version left, so a number above zero means that a program wrote into the database's"
-    " tables directly."
+    " version left, so a number above zero means that a program other than cairn made the page:"
+    " by writing into the database's tables, or by calling cairn's own code with passages the"
+    " database does not hold."
 )
 GONE_SAYS = "A page can cite only passages from its own project."
 
@@ -134,6 +136,19 @@ def test_stats_counts_only_when_asked(tmp_path, capsys):
     db = tmp_path / "cairn.db"
     with closing(Store(db)) as store:
         old_page(store)
+        one = store._account_id
+    assert cli.main(["stats", "--db", str(db), "--json", "--other-projects"]) == 0
+    assert json.loads(capsys.readouterr().out)["other_projects"] == {one: 1}
+
+
+def test_stats_counts_a_page_saved_through_the_store_citing_a_passage_it_never_held(
+    tmp_path, capsys
+):
+    db = tmp_path / "cairn.db"
+    with closing(Store(db)) as store:
+        east = store.create_project("east")
+        made_up = Claim(id="cl_" + "1" * 16, text="A line.", span_ids=("sp_" + "0" * 16,))
+        assert store.save_page(east.id, "made", "Made", "", [made_up]).version == 1
         one = store._account_id
     assert cli.main(["stats", "--db", str(db), "--json", "--other-projects"]) == 0
     assert json.loads(capsys.readouterr().out)["other_projects"] == {one: 1}

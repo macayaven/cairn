@@ -28,7 +28,8 @@ that no note of the page's own project holds, another project's or one no longer
 (cairn.store.erasure.count_pages_citing_other_projects: the search the
 store's repair, hold_to_own_projects, makes, writing nothing): `other_projects` in the
 object, one line without `--json`. It reads every page version, so it is asked for, never
-paid on every call. cairn writes no such page; one there was written behind the store's back.
+paid on every call. cairn's writers make no such page; one there was written behind the
+store's back, or saved through Store.save_page citing passages the store does not hold.
 """
 
 import argparse

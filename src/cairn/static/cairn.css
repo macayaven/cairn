@@ -817,8 +817,11 @@ details.kind ul { padding-left: 1.2rem; }
   .facts dd { margin-bottom: var(--space-2); }
   /* The links of running text, 44px high to touch. A title, a name or a heading in one
      (a crumb, a hit's place, "Open this claim on" a page, a guide's section) can wrap:
-     each of its lines keeps the text's own height, the box never under 44px. */
-  .crumbs a, .meta a, .hit-where a, .source-head a, .sources .back a, .parts a, .toc a, .project-foot a { display: inline-flex; align-items: center; min-height: 44px; }
+     each of its lines keeps the text's own height, the box never under 44px. An inline
+     block, not a flex box: its words and a title in it (a <bdi>) flow as one text, the
+     space between them kept; an engine without align-content on a block sets the text
+     at the box's top. */
+  .crumbs a, .meta a, .hit-where a, .source-head a, .sources .back a, .parts a, .toc a, .project-foot a { display: inline-block; align-content: center; min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: no-preference) {

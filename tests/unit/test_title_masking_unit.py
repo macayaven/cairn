@@ -1,11 +1,12 @@
-"""What is not prose is blanked out of a passage without moving where any of the index's
-words begins or ends (relations.blanked, with the index's own reading of each character,
-cairn.store.relating._kinds). Checked against FTS5 alone: the words of a text and the
+"""The index is given a passage's prose alone, each run of it between two stretches that are
+no prose a row of its own (relations.prose_runs, with the index's own reading of each
+character, cairn.store.relating._kinds), so no phrase is read across a stretch and every word
+of a run is the word it was. Checked against FTS5 alone: the words of a text and the
 characters each stands on are what an index of the claims' declaration reports (fts5vocab,
 instance, and highlight), never a reading of the characters written here. Seeded, made-up
 texts: facts flush before and after a title's words with no blank between, in NFC and NFD,
 with combining marks, digits, CJK, an apostrophe, a hyphen, an underscore, and characters of
-private use beside the one that blanks."""
+private use beside the fill."""
 
 import random
 import sqlite3
@@ -21,7 +22,7 @@ from cairn.store.schema.shared import _CLAIM_INDEX
 OPEN, CLOSE = "\ufdd0", "\ufdd1"
 TITLES = ["Café", "Café Noir"]
 PIECES = ["Café", "Cafe\u0301", "Noir", "Café Noir", "Cafe\u0301 Noir", " ", "  ", "\n"]
-PIECES += ["/notes", "/srv/x", "--draft", "-v"]
+PIECES += ["/notes", "/srv/x", "--draft", "-v", "/_", "/_\u0301"]
 PIECES += ["v1.2.3", "1.2.3", "https://e.x/a", "`", "``", "`x`", "'", "-", "_", "日本", "語"]
 PIECES += ["42", "\u0301", "\u0301\u0301", "\u0303", "\ue000", "\ue001", "\uf8ff", ".", "/"]
 PIECES += ["~", "@", "+", ":", "é", "e", "\u00ad", "\u200b", "\U0001d400", "x", "N\u0303"]
@@ -31,6 +32,10 @@ def passage(text: str) -> Span:
     end = 1 + text.count("\n")
     return Span(id="sp", source_id="n", kind="paragraph", heading_path=(), start_line=1,
                 end_line=end, text=text)  # fmt: skip
+
+
+def stretches_of(text: str) -> list[tuple[int, int]]:
+    return [*relations.covered(passage(text)), *code_read(text)]
 
 
 def words(texts: list[str]) -> list[list[tuple[int, int, str]]]:
@@ -82,7 +87,7 @@ def named(texts: list[str], title: str) -> list[list[tuple[int, int]]]:
 def joined(stretches) -> list[tuple[int, int]]:
     """The stretches, those that overlap or touch made one."""
     out: list[tuple[int, int]] = []
-    for start, end in sorted(stretches):
+    for start, end in sorted(s for s in stretches if s[0] < s[1]):
         if out and start <= out[-1][1]:
             out[-1] = (out[-1][0], max(out[-1][1], end))
         else:
@@ -94,6 +99,21 @@ def apart(start: int, end: int, stretches) -> bool:
     return all(end <= s or e <= start for s, e in stretches)
 
 
+def standing(said: list[tuple[int, int, str]], title: str, stretches) -> list[tuple[int, int]]:
+    """Where the title stands whole in prose, read here from the index's words of the text:
+    its words side by side, from the first's start to the last's end, and no character of a
+    stretch from there to there."""
+    (asked,) = words([title])
+    terms, size = [word for _, _, word in asked], len(asked)
+    found = []
+    for n in range(len(said) - size + 1):
+        if [word for _, _, word in said[n : n + size]] == terms:
+            place = (said[n][0], said[n + size - 1][1])
+            if apart(*place, stretches):
+                found.append(place)
+    return found
+
+
 def generated(seed: int, count: int) -> list[str]:
     rng, texts = random.Random(seed), []
     while len(texts) < count:
@@ -102,65 +122,144 @@ def generated(seed: int, count: int) -> list[str]:
     return texts
 
 
-def masked(text: str, stretches, title: str) -> str:
-    asked = quoted(title)
-    kind = relating._kinds(text + title + relations.fill_for(asked))
-    return relations.blanked(text, stretches, asked, kind)
+def runs(text: str, stretches, asked: str) -> list[tuple[int, str]]:
+    kind = relating._kinds(text + asked + relations.fill_for(asked))
+    return relations.prose_runs(text, stretches, asked, kind)
 
 
-def test_blanking_moves_no_word_and_every_word_it_touches_is_another():
-    """For the stretches the product blanks (the facts' and the page's code) and for
-    stretches drawn anywhere: every word of the text stands where it stood; one with no
-    character in a stretch is the same word, one with a character in a stretch is another,
-    of the blanking character; and the only other word is one blanking character in a
-    stretch that held no word, so that no phrase is read across it."""
+def test_every_word_of_a_run_is_the_word_it_was_and_no_run_holds_both_sides_of_a_stretch():
+    """For the stretches the product reads (the facts' and the page's code) and for
+    stretches drawn anywhere: each run is the text between two stretches, in order, and
+    none is empty; every word of it is the word of the text that stands at the same place,
+    the fill aside (asked here so that no text holds it, beside the characters of private
+    use the texts do hold); a word that holds the fill holds it at the run's edge, once
+    for each edge it stands at, where the text's word there goes on into a stretch; and
+    every word of the text that lies apart from every stretch is a word of a run, where it
+    stood."""
+    asked = quoted(TITLES[1]) + "\ue000\ue001"
+    fill = relations.fill_for(asked)
     rng, cases = random.Random(7), []
     for text in generated(20261121, 500):
-        own = [*relations.covered(passage(text)), *code_read(text)]
+        assert fill not in text
         drawn = []
         for _ in range(rng.randint(1, 3)):
             start = rng.randrange(len(text))
             drawn.append((start, rng.randint(start + 1, len(text))))
-        for stretches in (own, drawn):
-            cases.append((text, stretches, masked(text, stretches, TITLES[0])))
+        for stretches in (stretches_of(text), drawn):
+            cases.append((text, stretches, runs(text, stretches, asked)))
     before = words([text for text, _, _ in cases])
-    after = words([blanked for _, _, blanked in cases])
-    fill = relations.fill_for(quoted(TITLES[0]))
-    added = 0
-    for (text, stretches, blanked), was, now in zip(cases, before, after, strict=True):
-        assert len(blanked) == len(text)
-        now_at = {(start, end): word for start, end, word in now}
-        for start, end, word in was:
-            assert (start, end) in now_at, (text, stretches, blanked)
-            if apart(start, end, stretches):
-                assert now_at.pop((start, end)) == word, (text, stretches)
-            else:
-                assert fill in now_at.pop((start, end)), (text, stretches)
-        for (start, end), word in now_at.items():  # a word given to a stretch that held none
-            assert (word, end - start) == (fill, 1), (text, stretches, blanked)
-            (held,) = [(s, e) for s, e in joined(stretches) if s <= start < e]
-            assert all(apart(s, e, [held]) for s, e, _ in was), (text, stretches)
-            added += 1
-    assert len(cases) == 1000 and added > 0
+    after = iter(words([run for _, _, found in cases for _, run in found]))
+    filled = 0
+    for (text, stretches, found), was in zip(cases, before, strict=True):
+        was_at = {(start, end): word for start, end, word in was}
+        kept = {(s, e) for s, e, _ in was if apart(s, e, stretches)}
+        edges = [0, *(edge for stretch in joined(stretches) for edge in stretch), len(text)]
+        gaps = [(a, b) for a, b in zip(edges[::2], edges[1::2], strict=True) if a < b]
+        own = []
+        for at, run in found:
+            left, right = run[0] == fill, run[-1] == fill
+            start, end = at + left, at + len(run) - right
+            assert run[left : len(run) - right] == text[start:end], (text, stretches, run)
+            own.append((start, end))
+            for start, end, word in next(after):
+                place = (at + start, at + end)
+                if fill in word:
+                    filled += 1
+                    edges = (start == 0 and left) + (end == len(run) and right)
+                    assert word.count(fill) == edges, (text, run)
+                    assert any(
+                        s < place[1] and place[0] < e and not apart(s, e, stretches)
+                        for s, e in was_at
+                    ), (text, stretches, run)
+                else:
+                    assert was_at.get(place) == word, (text, stretches, run, word)
+                    kept.discard(place)
+        assert own == gaps, (text, stretches, found)
+        assert not kept, (text, stretches, found, kept)
+    assert len(cases) == 1000 and filled > 50, filled
 
 
-def test_a_title_is_found_in_what_is_blanked_where_it_stands_whole_outside_every_stretch():
-    """Where the index finds a title in the text blanked is where it finds it in the text,
-    less every place that holds a character of a stretch or has one inside it: exactly the
-    places that stand whole outside them."""
+def test_a_title_is_found_in_the_runs_where_it_stands_whole_outside_every_stretch():
+    """Where the index finds a title in a text's runs, each place in a run moved by where
+    the run starts, is where the title stands whole in prose: its words side by side as the
+    index reads the text, no character of a stretch from the first to the last."""
     texts = generated(20261122, 600)
+    said = words(texts)
     for title in TITLES:
-        cases = []
-        for text in texts:
-            stretches = [*relations.covered(passage(text)), *code_read(text)]
-            cases.append((text, stretches, masked(text, stretches, title)))
-        found = named([text for text, _, _ in cases], title)
-        kept = named([blanked for _, _, blanked in cases], title)
+        cases = [(text, stretches_of(text)) for text in texts]
+        given = [
+            (n, at, run)
+            for n, (text, s) in enumerate(cases)
+            for at, run in runs(text, s, quoted(title))
+        ]
+        found = named([run for _, _, run in given], title)
+        here: dict[int, list[tuple[int, int]]] = {}
+        for (n, at, _), there in zip(given, found, strict=True):
+            here.setdefault(n, []).extend((at + s, at + e) for s, e in there)
         hits = 0
-        for (text, stretches, _), there, here in zip(cases, found, kept, strict=True):
-            assert here == [p for p in there if apart(*p, stretches)], (title, text, stretches)
-            hits += bool(here)
+        for n, (text, stretches) in enumerate(cases):
+            expected = standing(said[n], title, stretches)
+            assert sorted(here.get(n, [])) == expected, (title, text, stretches)
+            hits += bool(expected)
         assert hits >= 50, (title, hits)
+
+
+# The class the reviewer's case is one of (`/_`, a path that holds no word): each kind of
+# stretch flush between two words of a title, and flush before and after a whole one, with
+# each kind of character on its sides. Where the facts read no stretch the text is prose.
+STRETCHES = ["https://e.x/a", "/srv/x", "/_", "--force", "v1.2.3", "`x`", "` `", "`-`"]
+BEFORE = {  # the word before the stretch, and what stands between them
+    "letter": ("Alpha", ""), "letter-mark": ("Cafe\u0301", ""), "mark": ("Alpha", "-\u0301"),
+    "digit": ("66", ""), "cjk": ("東京", ""), "underscore": ("Alpha", "_"),
+    "hyphen": ("Alpha", "-"),
+}  # fmt: skip
+AFTER = {  # what stands between the stretch and the word after it, and the word
+    "letter": ("", "Beta"), "letter-mark": ("", "e\u0301clair"), "mark": ("\u0301", "Beta"),
+    "digit": ("", "77"), "cjk": ("", "大阪"), "underscore": ("_", "Beta"),
+    "hyphen": ("-", "Beta"),
+}  # fmt: skip
+
+
+def flush_class() -> list[tuple[str, str]]:
+    """(title, text): every stretch between the two words of a title of two, and between
+    each pair of a title of three; and flush before and after a whole title."""
+    cases = []
+    for stretch in STRETCHES:
+        for word, between in BEFORE.values():
+            for then, after in AFTER.values():
+                flush = f"{word}{between}{stretch}{then}{after}"
+                cases.append((f"{word} {after}", f"Read {flush} today."))
+                cases.append((f"{word} {after} Gamma", f"Read {flush} Gamma today."))
+                cases.append((f"Delta {word} {after}", f"Read Delta {flush} today."))
+            cases.append((f"Delta {word}", f"Read Delta {word}{between}{stretch} today."))
+        for then, after in AFTER.values():
+            cases.append((f"{after} Gamma", f"Read {stretch}{then}{after} Gamma today."))
+    return cases
+
+
+def test_a_title_flush_against_every_kind_of_stretch_is_found_where_it_stands_whole():
+    """The product's own path (relating._first_places: the runs, the index in memory, the
+    first place and its end) against the reading here, for every case of the class, in NFC
+    and NFD: the first place where the title stands whole in prose, or none."""
+    cases = flush_class() + [
+        (unicodedata.normalize("NFD", t), unicodedata.normalize("NFD", x)) for t, x in flush_class()
+    ]
+    by_title: dict[str, list[str]] = {}
+    for title, text in cases:
+        by_title.setdefault(title, []).append(text)
+    said = dict(zip([text for _, text in cases], words([text for _, text in cases]), strict=False))
+    verdicts = {True: 0, False: 0}
+    for title, texts in by_title.items():
+        given = {n: (text, stretches_of(text)) for n, text in enumerate(texts, 1)}
+        found = relating._first_places(quoted(title), title, given)
+        for n, (text, stretches) in given.items():
+            expected = standing(said[text], title, stretches)[:1]
+            assert ([found[n]] if n in found else []) == expected, (title, text, stretches)
+            verdicts[bool(expected)] += 1
+    assert len(cases) == 2 * (8 * 49 * 3 + 8 * 7 * 2), len(cases)
+    assert verdicts[True] >= 300 and verdicts[False] >= 2000, verdicts
+    reviewers = ("Cafe\u0301 Beta", "Read Cafe\u0301/_\u0301Beta today.")  # the reviewer's shape
+    assert reviewers in cases and stretches_of(reviewers[1]) == [(10, 12)]
 
 
 def test_the_kinds_of_characters_are_the_index_own(monkeypatch):
@@ -205,11 +304,11 @@ def test_a_read_asks_the_tokenizer_three_statements_once_and_none_after(tmp_path
     store.close()
 
 
-def test_blanking_reads_each_character_a_bounded_number_of_times():
+def test_the_runs_read_each_character_once():
     """However many combining marks a stretch holds, or the text between stretches, each
-    character is read a bounded number of times: a stretch of marks alone between two
+    character is read once, and the fill once: a stretch of marks alone between two
     backticks, which holds no word, and a stretch of one mark at every other character of
-    marks after a letter."""
+    marks after a letter, a run of one character between each two."""
     asked = quoted(TITLES[0])
     for n in (1_000, 4_000):
         for text, stretches in (
@@ -223,8 +322,8 @@ def test_blanking_reads_each_character_a_bounded_number_of_times():
                 read.append(char)
                 return kind(char)
 
-            relations.blanked(text, stretches, asked, counted)
-            assert len(read) <= 4 * len(text), (n, len(read))
+            relations.prose_runs(text, stretches, asked, counted)
+            assert len(read) == len(text) + 1, (n, len(read))
 
 
 def test_any_characters_are_read_however_many_a_text_holds_of_those_kept_for_a_program(

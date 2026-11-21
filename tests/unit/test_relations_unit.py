@@ -2,8 +2,6 @@
 are terms that relate pages, the order a page's terms are looked up in, what a reason weighs,
 and which related pages are the best. Made-up names; nothing is stored or searched here."""
 
-import sqlite3
-from contextlib import closing
 from fractions import Fraction
 
 import pytest
@@ -11,7 +9,6 @@ import pytest
 from cairn import relations
 from cairn.relations import MENTIONED_BY, SHARES, TITLE, Reason, Term, best, specific, terms_of
 from cairn.spans import Span
-from cairn.store import relating
 
 
 def passage(text: str) -> Span:
@@ -375,37 +372,3 @@ def test_the_stretches_that_are_no_prose_to_the_facts_are_their_urls_paths_flags
     unpaired = '[d](u "`") /srv/deploy/x `x'
     assert relations.covered(passage(unpaired)) == []
     assert relations.covered(passage("/srv/deploy/x")) == [(0, 13)]
-
-
-def test_what_is_not_prose_is_blanked_word_by_word_and_its_separators_kept():
-    """Each character of a stretch that the index reads as part of a word is made one of
-    private use that the phrase asked does not hold, which the index reads as part of a
-    word too; each it reads as a separator stays as it is. The text keeps its length and
-    every word its place: a word in a stretch is a word that is no word of the title, and a
-    separator at a stretch's edge still ends the word beside it. FTS5's own reading of the
-    text says so: its tokens, from an index of it alone."""
-    text = "Run `quill` ledger; open quill `--x` ledger; Cafe\u0301/notes."
-    asked = 'text : "Quill ledger"'
-    kind = relating._kinds(text + asked + relations.fill_for(asked))
-    blanked = relations.blanked(text, [(5, 10), (32, 35), (50, 56)], asked, kind)
-    assert len(blanked) == len(text)
-    assert (blanked[5:10], blanked[32:35], blanked[50:56]) == (
-        "\ue000" * 5,
-        "--\ue000",
-        "/" + "\ue000" * 5,
-    )
-    with closing(sqlite3.connect(":memory:")) as con:
-        con.execute("CREATE VIRTUAL TABLE t USING fts5 (text)")
-        con.execute("CREATE VIRTUAL TABLE tokens USING fts5vocab (t, instance)")
-        con.execute("INSERT INTO t (rowid, text) VALUES (1, ?)", (blanked,))
-        words = [term for (term,) in con.execute("SELECT term FROM tokens ORDER BY offset")]
-    assert words == [
-        "run", "\ue000" * 5, "ledger", "open", "quill", "\ue000", "ledger", "cafe", "\ue000" * 5
-    ]  # fmt: skip
-    # a word partly in a stretch is another word; a stretch that holds no word is given one,
-    # so that no phrase is read across it; and a phrase that holds the first character of
-    # private use is given the next one it does not hold
-    kind = relating._kinds("quill1.2.3Alpha` `Beta ab\ue000\ue001\ue002")
-    assert relations.blanked("quill1.2.3", [(5, 10)], "quill", kind) == "quill\ue000.\ue000.\ue000"
-    assert relations.blanked("Alpha` `Beta", [(6, 7)], "x", kind) == "Alpha`\ue000`Beta"
-    assert set(relations.blanked("ab", [(0, 2)], "\ue000 \ue001", kind)) == {"\ue002"}

@@ -36,15 +36,16 @@ read:
   `deploy/compose.yaml` as deploy, compose and yaml. So each claim listed is read as a
   term's candidate is, with the first passage it cites; one statement says which of them
   are their passage's text (`_judged`), and each place the title stands in such a claim is
-  judged by itself. The passage's text, with every stretch that is no prose blanked out
-  (relations.blanked: what the passage's facts read as an address, a path, a flag or a
-  version, relations.covered, and what the Markdown parser reads as code in it as the page
-  does, cairn.spans.code_read), is given to an index of the same declaration in a database
-  of the read's own, in memory, and the title is asked of it again (`_in_prose`): the claim
-  names the title where that index still finds it, whatever other place overlaps that one.
-  Blanked out, each character of a stretch that the index's tokenizer reads as part of a
-  word is made one the title does not hold and that it reads as part of a word too, and
-  each it reads as a separator is kept, so that no word begins or ends elsewhere; how the
+  judged by itself. The passage's prose alone, each run of it between two stretches that
+  are no prose a row of its own (relations.prose_runs; the stretches: what the passage's
+  facts read as an address, a path, a flag or a version, relations.covered, and what the
+  Markdown parser reads as code in it as the page does, cairn.spans.code_read), is given to
+  an index of the same declaration in a database of the read's own, in memory, and the
+  title is asked of it again (`_first_places`, `_in_prose`): the claim names the title
+  where that index still finds it, whatever other place overlaps that one. So no phrase is
+  read across a stretch, and every word of a run is the word it was; a word that goes on
+  across a run's edge into a stretch is given, at that edge, a character the title does
+  not hold and that the tokenizer reads as part of a word, and so is another word; how the
   tokenizer reads each character is asked of it (`_kinds`). A title more than
   relations.COMMON other pages name so is common and relates none; CLAIMS_COMMON counts the
   claims that hold the title's words, in prose or not. The title is given to the index as a
@@ -94,23 +95,29 @@ with the Markdown parser each passage that a claim listed for the title is the t
 once however many claims are, when it holds a backtick, a tilde, a tab or four spaces in a
 row and is no longer than cairn.spans.MAX_RENDERED characters: the bytes it parses are
 bounded as the passages read are, and it parses them as the page that shows them does.
-Measured on the same laptop on 2026-11-21 under a load of 4 to 5, the best of three runs,
+Measured on the same laptop on 2026-11-21 under a load of 6 to 7, the best of three runs,
 64 such passages of 11,718 bytes each (749,952 bytes), judging in all (the parse, the
-tokenizer's reading of each character, the blanking, the database in memory and the end
-of the first place) beside the page's own render of the same passages
-(cairn.web.markdown.render): "![a `b` " over and over, the worst shape found, 2.26 s beside
-2.19 s (3.66 s, in a run beside it, for the parse alone before the reading was the
-page's); tables of 300 columns of code spans 1.54 s beside 1.20 s; code spans with
-emphasis marks and links 0.37 s beside 0.67 s; code spans alone 0.20 s beside 0.09 s;
-indented lines 0.20 s beside 0.04 s; a fenced block 0.13 s beside 0.03 s; code spans that
-hold no word 0.28 s beside 0.16 s. Judging a title costs about what rendering the passages
-it judges costs; a passage of unclosed brackets and no backtick, which the page takes 5 s
-to render, it does not parse. The tokenizer is asked how it reads a character once a
-process (`_kinds`): 0.001 s for 100 characters not asked before, 0.033 s for 10,000, and
-0.67 s for 203,623, the most that 749,952 bytes hold, every one distinct (judging those
-passages then takes 0.97 s, and 0.05 s once their characters are asked, beside 0.002 s for
-their render, a code span each). Every character there is, 1,112,063, takes 3.89 s in all,
-in a run beside it, once a process, and the answers a table of 1,114,112 bytes.
+tokenizer's reading of each character, the runs of prose, the database in memory and the
+end of the first place) beside the page's own render of the same passages
+(cairn.web.markdown.render): "![a `b` " over and over, the worst shape found, 2.02 s beside
+1.81 s, 1,465 runs a passage and 93,760 rows in all (3.66 s, in an earlier run, for the
+parse alone before the reading was the page's); tables of 300 columns of code spans
+1.61 s beside 1.29 s, 155,392 rows; code spans with emphasis marks and links 0.43 s
+beside 0.64 s; code spans alone 0.20 s beside 0.07 s; indented lines 0.10 s beside
+0.03 s; a fenced block 0.08 s beside 0.02 s; code spans that hold no word 0.30 s beside
+0.12 s; a run of one letter between each two code spans ("`a`b") 0.94 s beside 0.52 s,
+2,930 runs a passage and 187,520 rows in all, of which the database in memory takes
+0.17 s, in a run beside it; a path that holds no word between each two blanks ("/_ "),
+the most runs a byte found, 0.32 s beside 0.81 s, 3,906 runs a passage and 249,984 rows
+in all, of which the database in memory takes 0.20 s. Judging a title costs about what
+rendering the passages it judges costs; a passage of unclosed brackets and no backtick,
+which the page takes 5 s to render, it does not parse. The tokenizer is asked how it
+reads a character once a process (`_kinds`): 0.001 s for 100 characters not asked before,
+0.033 s for 10,000, and 0.67 s for 203,623, the most that 749,952 bytes hold, every one
+distinct (judging those passages then takes 0.74 s, and 0.02 s once their characters are
+asked, beside 0.002 s for their render, a code span each). Every character there is,
+1,112,063, takes 3.89 s in all, in a run beside it, once a process, and the answers a table
+of 1,114,112 bytes.
 
 What is given is bounded too, and a claim says when it is not whole (`Stated`). A claim's
 text is read to relations.TEXT_MAX characters and no further, by a handle on the value the
@@ -120,8 +127,9 @@ of its first passage that holds the term (relations.line_of), from the passage a
 read already holds it and from where the term's fact stands in it: nothing is read for it,
 and the text is not searched a second time. Beside a claim cut that names the title goes
 the line that names it: the line of its passage at the first place the index in memory
-finds the title in prose (`_in_prose`: from where its marks begin to the end of as many
-words as the title holds, relations.words_end), from the passage this read holds. A
+finds the title in prose (`_first_places`: from where its marks begin in a run of prose,
+moved by where the run starts in the passage, to the end of as many words as the title
+holds, relations.words_end), from the passage this read holds. A
 claim cut that mentions the page as the index has it (its text is not its passage's,
 character for character: saved by hand, or differing from it only by the blanks that end
 its lines) has no place that is known to be prose: it has no line, and an answer gives its
@@ -138,7 +146,8 @@ claims, the pages' titles and versions; each claim's text is then read by a hand
 is no statement). A statement with nothing to ask is not run, nor one that lists claims past
 ROWS_MAX rows. At most 2 + 4 + 1 + 3 + 1 + 2 = 13, and 17 with the caller's. Not on the
 store: 3 in the database of the read's own in memory (`_in_prose`: its index made, given
-each passage to judge once, asked the title once), whatever the claims, and none when no
+every run of prose of each passage to judge, each passage once, in one statement, asked
+the title once), whatever the claims and however many runs, and none when no
 claim listed for the title is its passage's text; and 3 in another of its own in memory
 (`_kinds`: its index made, given the characters, asked), whatever the claims, when those
 passages or the title hold a character the process has not asked the tokenizer about, and
@@ -524,11 +533,11 @@ def _mentioning(
     address, a path, a flag or a version (relations.covered, on the facts this read holds of
     the passage, read whole) and outside what the Markdown parser reads as code in the claim
     alone, as the page does (cairn.spans.code_read). Each place is judged by itself,
-    whatever other place overlaps it: the index is given the claim's text with those
-    stretches blanked out in place, no word of it begun or ended elsewhere
-    (relations.blanked, with the tokenizer's own reading of each character, `_kinds`), and
-    asked the title again (`_in_prose`); the place ends after as many words as the title
-    holds (relations.words_end). Those are
+    whatever other place overlaps it: the index is given the prose of the claim's text
+    alone, each run of it between two of those stretches a row of its own, every word of it
+    the word it was (relations.prose_runs, with the tokenizer's own reading of each
+    character, `_kinds`), and asked the title again (`_first_places`); the place ends after
+    as many words as the title holds (relations.words_end). Those are
     places of the passage because the claim's text is the passage's text; the statement
     says whether it is (`_judged`), character for character. Where it is not (a page saved
     by hand; a claim that differs from its passage only by the blanks that end its lines,
@@ -541,7 +550,7 @@ def _mentioning(
     As for a term: a title one of whose claims was not read gives no mention at all; nor
     does a title more than relations.COMMON other pages name by this rule. One statement,
     none for no claim read; and `_in_prose`'s, once for every claim that is its passage's
-    text, each passage given once however many such claims are its text; and `_kinds`'s,
+    text, each passage's runs given once however many such claims are its text; and `_kinds`'s,
     once for the characters of those passages and of the title, none when the process has
     read them all."""
     asked = [
@@ -555,23 +564,12 @@ def _mentioning(
     # each claim that is its passage's text: that passage, numbered once however many cite it
     passage = {row: candidates[row][0] for row, its_passage in judged.items() if its_passage}
     numbered = {span_id: n for n, span_id in enumerate(dict.fromkeys(passage.values()), 1)}
-    texts = {}  # each of those passages, by its number, with what is not prose blanked out
-    asked, said = named or "", title.replace("\x00", " ")  # as ranking.quoted asks it
-    if numbered:  # how the index's tokenizer reads each character they and the title hold
-        kind = _kinds(
-            [relations.fill_for(asked), *said, *(c for s in numbered for c in spans[s].text)]
-        )
-    for span_id, n in numbered.items():
-        span = spans[span_id]
-        stretches = [*relations.covered(span, facts[span_id]), *code_read(span.text)]
-        texts[n] = relations.blanked(span.text, stretches, asked, kind)
-    places = _in_prose(named, texts) if named and texts else {}
-    if places:  # the first place: as many words from where the index's marks begin as the title
-        words, passages = relations.words_in(said, kind), dict(map(reversed, numbered.items()))
-        places = {
-            n: (start, relations.words_end(spans[passages[n]].text, start, words, kind))
-            for n, (start, _) in places.items()
-        }
+    texts = {  # each of those passages, by its number, with its stretches that are no prose
+        n: (spans[s].text, [*relations.covered(spans[s], facts[s]), *code_read(spans[s].text)])
+        for s, n in numbered.items()
+    }
+    said = title.replace("\x00", " ")  # the title as ranking.quoted asks it
+    places = _first_places(named, said, texts) if named and texts else {}
     names: dict[str, tuple[int, tuple[int, int] | None]] = {}
     for row, at in naming:
         if at in names:
@@ -668,17 +666,45 @@ def _classifying() -> sqlite3.Connection:
     return sqlite3.connect(":memory:", isolation_level=None)
 
 
+def _first_places(
+    named: str, said: str, texts: Mapping[int, tuple[str, Sequence[tuple[int, int]]]]
+) -> dict[int, tuple[int, int]]:
+    """For each passage of `texts` (by its number: its text, and its stretches that are no
+    prose) in whose prose the index's own tokenizer finds the title (`named`, asked as
+    ranking.quoted asks `said`), the first place it does, in the passage's characters. Each
+    run of prose of each passage is a row of its own (relations.prose_runs, with the
+    tokenizer's own reading of each character, `_kinds`), all of them given to the index in
+    memory at once and the title asked once (`_in_prose`); a place in a row is the row's
+    start in its passage plus the place in the row, and a passage's first place is the
+    smallest of its rows'. It ends after as many words as the title holds
+    (relations.words_end, on the passage's own text). `_kinds`'s statements, none when the
+    process has read every character; and `_in_prose`'s three, however many rows."""
+    kind = _kinds([relations.fill_for(named), *said, *(c for t, _ in texts.values() for c in t)])
+    rows: dict[int, str] = {}
+    owner: dict[int, tuple[int, int]] = {}  # each row's passage, and where the row starts in it
+    for n, (text, stretches) in texts.items():
+        for start, run in relations.prose_runs(text, stretches, named, kind):
+            rows[len(rows) + 1] = run
+            owner[len(rows)] = (n, start)
+    first: dict[int, int] = {}
+    for row, (start, _) in _in_prose(named, rows).items():
+        n, at = owner[row]
+        first[n] = min(first.get(n, at + start), at + start)
+    words = relations.words_in(said, kind)
+    return {n: (at, relations.words_end(texts[n][0], at, words, kind)) for n, at in first.items()}
+
+
 def _in_prose(named: str, texts: Mapping[int, str]) -> dict[int, tuple[int, int]]:
-    """For each claim of `texts` (its row: its text with what is not prose blanked out,
-    relations.blanked) in which the index's own tokenizer finds the title asked (`named`),
-    the first place it does, in the claim's characters: an index of the same declaration as
-    the account's, in a database of the read's own in memory, is given every text and asked
-    the title as the account's index is. Three statements in that database, whatever the
-    texts: it is made, given the texts, asked. Its marks around overlapping matches make
-    one stretch, which starts where the first match does (the caller ends that match after
-    as many words as the title holds, relations.words_end); each match of it stands whole
-    in prose. Nothing of it is kept: the database is closed when this returns. A claim's text
-    holds no mark of the index (`_judged`)."""
+    """For each row of `texts` (a run of prose of a passage, relations.prose_runs) in which
+    the index's own tokenizer finds the title asked (`named`), the first place it does, in
+    the row's characters: an index of the same declaration as the account's, in a database
+    of the read's own in memory, is given every row and asked the title as the account's
+    index is. Three statements in that database, however many rows: it is made, given the
+    rows (one statement), asked. Its marks around overlapping matches make one stretch,
+    which starts where the first match does (`_first_places` ends that match after as many
+    words as the title holds, relations.words_end); each match of it stands whole in prose.
+    Nothing of it is kept: the database is closed when this returns. A row holds no mark of
+    the index (`_judged`)."""
     with contextlib.closing(_scratch()) as scratch:
         scratch.execute(schema._CLAIM_INDEX.format(index="prose"))
         scratch.execute(

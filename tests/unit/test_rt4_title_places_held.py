@@ -20,7 +20,6 @@ oracle does not check them. Two tests check the oracle: its tokens against the i
 The cases found one step past each fix, now fixed and kept as regression tests, are in
 test_rt4_title_places_found.py and test_rt4_title_places_found2.py. Made-up names."""
 
-import itertools
 import json
 import random
 import sqlite3
@@ -849,79 +848,27 @@ MASK_PIECES = ["Alpha", "Beta", "Alpha Beta", NFD_CAFE, "Café", "東京", "Ab�
 MASK_PIECES += ["O'Brien", "snake_case", " ", " ", "\n", "`", "``", "/notes", "/srv/x", "--force"]
 MASK_PIECES += ["v1.2.3", "https://e.x/a", "-", "/", ".", "'", "_", "́", "    ", "```\n", "~~~"]
 MASK_PIECES += ["- ", "> ", "x", "é", ""]
-MASK_TITLES = ["Alpha Beta", NFD_CAFE, "Café", "東京", "Ab", "Route 66", "O'Brien", "snake_case"]
 
 
-@pytest.mark.parametrize(
-    "arbitrary", [False, True], ids=["cairns-stretches", "arbitrary-stretches"]
-)
-def test_masking_moves_no_word_outside_a_stretch_and_finds_the_title_where_it_stands_whole(
-    arbitrary,
-):
-    """1,500 seeded passages each: the masked text (relations.blanked, with the index's own
-    reading of each character) holds every word of the passage that lies outside every
-    stretch, where it stood; every other word holds the fill; and the title stands in it
-    exactly where it stands whole outside every stretch of the passage. Arbitrary stretches
-    leave out the one shape the masking states it does not cover (one or two separators
-    with word characters right against both sides), which no fact and no code can make
-    (test_no_fact_and_no_code_is_separators_alone_between_two_words)."""
-    rng = random.Random(1122 + arbitrary)
+# The masking the test here checked (relations.blanked: one text, what is not prose blanked out
+# in place) is gone: a path that holds no word, `/_`, was given no fill, and the index read a
+# title across it (the reviewer's ninth report, must-fix 1). The index is given each run of
+# prose as a text of its own (relations.prose_runs); the same property, asked of the runs.
+def test_every_word_of_a_run_of_prose_is_a_word_of_the_passage_and_no_run_spans_a_stretch():
+    rng, fill = random.Random(1122), "\ue000"  # relations.fill_for(""); no piece holds it
     for _ in range(1500):
         text = "".join(rng.choice(MASK_PIECES) for _ in range(rng.randint(2, 18)))
-        title = rng.choice(MASK_TITLES)
         span = Span(
             id="sp", source_id="n", kind="paragraph", heading_path=(), start_line=1,
             end_line=1 + text.count("\n"), text=text,
         )  # fmt: skip
-        stretches = [*relations.covered(span), *code_read(text)]
-        kind = relating._kinds(text + title + relations.fill_for(title))
-        for _ in range(rng.randint(0, 3) if arbitrary else 0):
-            start = rng.randrange(len(text) + 1)
-            end = rng.randrange(start, len(text) + 1)
-            alone = not any(kind(c) != relations.SEPARATOR for c in text[start:end])
-            flush = start > 0 and end < len(text) and kind(text[start - 1]) != relations.SEPARATOR
-            if not (alone and flush and kind(text[end]) == relations.TOKEN and end - start <= 2):
-                stretches.append((start, end))
-        masked = relations.blanked(text, stretches, title, kind)
-        assert len(masked) == len(text)
-        assert index_tokens([text, masked]) == [
-            [t for t, _, _ in tokens(text)],
-            [t for t, _, _ in tokens(masked)],
-        ]
-        covered = [(a, b) for a, b in stretches if a < b]
-
-        def outside(s: int, e: int) -> bool:
-            return not any(a < e and s < b for a, b in covered)  # noqa: B023
-
-        kept = {(t, s, e) for t, s, e in tokens(text) if outside(s, e)}
-        after = set(tokens(masked))
-        assert kept <= after, (text, stretches, masked)
-        fill = relations.fill_for(title)
-        assert all(fill in masked[s:e] for _, s, e in after - kept), (text, stretches, masked)
-        where = [place for place in occurrences(text, title) if outside(*place)]
-        assert occurrences(masked, title) == where, (text, title, stretches, masked)
-
-
-def test_no_fact_and_no_code_is_separators_alone_between_two_words():
-    """The masking's stated gap (a stretch of one or two separators with word characters
-    right against both sides gets no fill) is reached by no stretch a note can make: every
-    run of one to three separators between two words, read by the facts (a URL, a path, a
-    flag, a version) and by the page's parser."""
-    kind = relating._kinds("AlphaBeta")
-    marks = "/.-:~@#\\_+=,;!?*&%$^'\"()[]{}<>|` \t"
-    for size in (1, 2, 3):
-        for run in itertools.product(marks, repeat=size):
-            text = "Alpha" + "".join(run) + "Beta"
-            span = Span(
-                id="sp", source_id="n", kind="paragraph", heading_path=(), start_line=1,
-                end_line=1, text=text,
-            )  # fmt: skip
-            for start, end in [*relations.covered(span), *code_read(text)]:
-                alone = all(not char.isalnum() for char in text[start:end])
-                flush = start > 0 and end < len(text)
-                assert not (
-                    alone and flush and kind(text[start - 1]) == kind(text[end]) == relations.TOKEN
-                ), text
+        stretches = [(a, b) for a, b in [*relations.covered(span), *code_read(text)] if a < b]
+        had = {(s, e): t for t, s, e in tokens(text)}
+        for at, run in relations.prose_runs(text, stretches, "", relating._kinds(text + fill)):
+            inner = (at + (run[0] == fill), at + len(run) - (run[-1] == fill))
+            assert not any(a < inner[1] and inner[0] < b for a, b in stretches), (text, run)
+            for term, s, e in tokens(run):
+                assert fill in term or had.get((at + s, at + e)) == term, (text, stretches, run)
 
 
 @pytest.mark.parametrize("claim", ["Alpha`-`Beta today.", "Alpha`/`Beta today.", "Alpha` `Beta."])

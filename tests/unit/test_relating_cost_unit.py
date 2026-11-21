@@ -1035,8 +1035,8 @@ def test_what_it_costs_to_know_that_a_claim_names_the_title(tmp_path, monkeypatc
     end. The claim is read as a term's candidate is, and the statement that says it is its
     passage's text hands back no text: 13 statements, however long the claim. Its passage
     is handed back once, and BYTES_MAX counts it once, its facts being read once. The
-    index's own tokenizer is then given the passage with what is not prose blanked out, in
-    a database of the read's own in memory: 3 statements there. With less room than the
+    index's own tokenizer is then given the passage's runs of prose, in a database of the
+    read's own in memory: 3 statements there. With less room than the
     passage the claim is not read, nothing of it is handed back, nothing is asked in memory,
     the page is not said to be mentioned, and the claim is counted."""
     for size, said in (
@@ -1107,6 +1107,27 @@ def test_every_claim_that_holds_the_title_is_judged_in_the_same_three_statements
         with watched(store) as seen, apart(monkeypatch) as judged:
             found = store.related_pages(project.id, "quill-ledger", RELATED_MAX)
         assert found.pages == () and judged.statements == judged.parsed == []
+    finally:
+        store.close()
+
+
+def test_a_passage_of_many_runs_of_prose_is_judged_in_the_same_three_statements(
+    tmp_path, monkeypatch
+):
+    """A claim of 1,000 code spans, a run of prose between each two, that names the title
+    after the last: each run is a row of the index in memory (relations.prose_runs), all
+    given in one statement, so it is made, given the rows and asked, three statements."""
+    said = "Brook runs " + "`x` and " * 1_000 + "then opens the Quill ledger."
+    store, project_id = mentioned(tmp_path, said)
+    rows, given = [], relating._in_prose
+    monkeypatch.setattr(relating, "_in_prose", lambda n, t: rows.append(len(t)) or given(n, t))
+    try:
+        with apart(monkeypatch) as judged:
+            found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
+        (reason,) = found.pages[0].why
+        assert reason.kind == "mentioned_by" and found.left.complete
+        assert rows == [1_001]
+        assert [s.split()[0] for s in judged.statements] == ["CREATE", "INSERT", "SELECT"]
     finally:
         store.close()
 

@@ -6,12 +6,14 @@ a real store in a temporary file; made-up names."""
 
 import json
 import logging
+import random
 import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
+from test_title_masking_unit import flush_class, standing, stretches_of, words
 
 from cairn import relations, spans
 from cairn.gate import lint_gate
@@ -744,6 +746,73 @@ def test_a_title_flush_against_a_fact_names_the_page_as_the_index_reads_its_word
     assert mentioned(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
 
 
+@pytest.mark.parametrize(
+    ("path", "others"), [(True, 0), (True, 5), (False, 5)], ids=["alone", "beside-five", "five"]
+)
+def test_a_title_read_across_a_wordless_path_names_nothing(env, path, others):
+    """The reviewer's: the facts read `/_` as a path between `Café` and a combining accent
+    before `Noir`; neither character of it is part of a word, and the title stands whole in
+    no prose. Alone it names nothing; beside five pages that name it in prose, those five
+    are the mentions, as they are without it, the answer complete, on every surface."""
+    focus = note(env, "Café Noir", "The field guide is on the shelf.")["page"]
+    pages = [
+        note(env, f"Group {n}", f"Group {n} reads Café Noir today.")["page"] for n in range(others)
+    ]
+    if path:
+        said = "Read Cafe\u0301/_\u0301Noir today."
+        reader = note(env, "Reader", said)["page"]
+        (claim,) = answer(env.client, env.key, "page", project="ops", slug=reader)["claims"]
+        assert claim["text"] == said
+    expected = sorted(pages)
+    assert mentioned(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
+FLUSH = [
+    *random.Random(12).sample(flush_class(), 40),
+    ("Cafe\u0301 Beta", "Read Cafe\u0301/_\u0301Beta today."),
+]
+
+
+@pytest.mark.parametrize("others", [0, 5], ids=["alone", "beside-five"])
+def test_a_title_flush_against_a_stretch_names_the_page_where_it_stands_whole(env, others):
+    """Cases of the class (test_title_masking_unit.flush_class: each kind of stretch flush
+    between a title's words, before and after a whole title), each in a project of its own:
+    the reader names the page where the reading there says the title stands whole in prose;
+    beside five other pages that name it, six then do, and none relates, else the five."""
+    verdicts = set()
+    for n, (title, said) in enumerate(FLUSH):
+        project = f"f{n}"
+        env.store.create_project(project)
+        whole = bool(standing(words([said])[0], title, stretches_of(said)))
+        verdicts.add(whole)
+        focus = note(env, title, "The field guide is on the shelf.", project)["page"]
+        pages = [
+            note(env, f"Group {g}", f"Group {g} reads {title} today.", project)["page"]
+            for g in range(others)
+        ]
+        reader = note(env, "Reader", said, project)["page"]
+        named = sorted([*pages, reader] if whole else pages)
+        expected = named if len(named) <= relations.COMMON else []
+        response = rest(env, focus, "?limit=20", project)
+        assert response.status_code == 200
+        answers = [
+            Memory(env.store, lint_gate).related(project, focus, 20),
+            response.json(),
+            answer(env.client, env.key, "related", project=project, slug=focus, limit=20),
+        ]
+        for found in answers:
+            assert found["searched"]["complete"], (title, said)
+            assert (
+                sorted(
+                    page["page"]
+                    for page in found["related"]
+                    if any(why["kind"] == "mentioned_by" for why in page["why"])
+                )
+                == expected
+            ), (title, said)
+    assert verdicts == {True, False}
+
+
 def test_a_claim_cut_gives_the_line_of_the_first_place_however_many_matches_overlap(env):
     """The reviewer's shape: the first `Go Go` stands whole on one line, and the next two
     lines hold more matches that overlap it. The line given is the first place's alone."""
@@ -882,11 +951,10 @@ def test_the_contract_says_which_terms_and_which_places_of_a_title_relate_pages(
         " as does a title in a link's address written in angle brackets, in a link's title,"
         " between escaped backticks, or in a URL, a path, a flag or a version between two"
         " backticks of one line that Markdown does not pair, which the facts read as inline"
-        " code and so as none of those (the index, given the passage's text with every"
-        " stretch that is no prose blanked out, each character of it that the index's"
-        " tokenizer reads as part of a word made another such character and each it reads as"
-        " a separator kept, so that no word begins or ends elsewhere, says where the title"
-        " stands in prose; a claim"
+        " code and so as none of those (the index, given the passage's prose alone, each run"
+        " of it between two stretches that are no prose a text of its own, so that no phrase"
+        " is read across a stretch and every word of it is the word it was, a word that goes"
+        " on into a stretch made another word, says where the title stands in prose; a claim"
         " that is not its passage's text character for character, as one saved by hand or one"
         " that differs from its passage only by the blanks that end its lines, which the gate"
         " accepts, mentions as the index has it; a claim that holds a mark of the index or a"
@@ -899,8 +967,8 @@ def test_the_contract_says_which_terms_and_which_places_of_a_title_relate_pages(
         " another when the passages it judges or the title hold a character the process has"
         " not asked the index's tokenizer about, and the Markdown parser reads each passage it"
         " judges at most once. Judging a title can cost what rendering the passages it judges"
-        " costs: 2.26 s for the worst shape measured, 750,000 bytes of passages dense with"
-        " unclosed pictures and code spans, beside 2.19 s for the page's own render of them;"
+        " costs: 2.02 s for the worst shape measured, 750,000 bytes of passages dense with"
+        " unclosed pictures and code spans, beside 1.81 s for the page's own render of them;"
         " and the first time a process meets them, 0.67 s more to ask the tokenizer how it"
         " reads the most characters 750,000 bytes hold, 203,623, all distinct.",
     ):

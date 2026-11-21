@@ -25,13 +25,13 @@ Two kinds of relation:
   passage read alone (cairn.spans.code_read: code spans, fenced blocks with their opening
   line, indented blocks; text indented under a list item is the item's prose). The page
   alone says what is code: the facts' own inline code and code blocks are not asked. The
-  search index's own tokenizer says where the places are, on the text with those stretches
-  blanked out where they stand (`blanked`: each character of a stretch that the tokenizer
-  reads as part of a word made another such character, each it reads as a separator kept,
-  so that no word begins or ends elsewhere), and it says how it reads each character
-  (cairn.store.relating): nothing here decides what a word is. So a page titled Deploy is
-  not named by a claim whose only "deploy" stands in `deploy/compose.yaml`, or after the
-  marks that open a fence, nor one titled Audit by
+  search index's own tokenizer says where the places are, given the prose alone: each run
+  of it between two of those stretches a text of its own (`prose_runs`), so that no phrase
+  is read across a stretch and every word of a run is the word it was, where it was, a
+  word that goes on across a run's edge into a stretch made another word; and it says how
+  it reads each character (cairn.store.relating): nothing here decides what a word is. So
+  a page titled Deploy is not named by a claim whose only "deploy" stands in
+  `deploy/compose.yaml`, or after the marks that open a fence, nor one titled Audit by
   `--audit-keep`; what the facts and the parser do not read as one of those is prose, so a
   bare `deploy/notes.md` or `ada@deploy.dev` names Deploy, and so does a title in a link's
   address written in angle brackets, in a link's title, between escaped backticks, or in a
@@ -199,62 +199,43 @@ def covered(span: Span, facts: Sequence[Fact] | None = None) -> list[tuple[int, 
 
 
 def fill_for(asked: str) -> str:
-    """The character `blanked` makes a word of what is not prose of: the first of private
-    use that `asked`, the phrase a title is asked as, does not hold."""
+    """The character that makes another word of a word that stands only in part in prose
+    (`prose_runs`): the first of private use that `asked`, the phrase a title is asked as,
+    does not hold."""
     return next(chr(code) for code in range(0xE000, 0xF900) if chr(code) not in asked)
 
 
-def in_word(
-    text: str, at: int, kind: Callable[[str], int], known: tuple[int, bool] = (-1, False)
-) -> bool:
-    """Whether text[at] is part of a word as the index's tokenizer reads it (`kind`): a
-    character of a TOKEN is, wherever it stands; a MARK is when what it follows is; nothing
-    before the text's start is. `known` is a place at or before `at` whose answer is known
-    already, and its answer: the walk back over marks stops there."""
-    stop, answer = known
-    while at > stop and kind(text[at]) == MARK:
-        at -= 1
-    return answer if at == stop else kind(text[at]) == TOKEN
-
-
-def blanked(
+def prose_runs(
     text: str, stretches: Iterable[tuple[int, int]], asked: str, kind: Callable[[str], int]
-) -> str:
-    """`text` with what is not prose blanked out: of every stretch (`covered`, and what the
-    Markdown parser reads as code: cairn.spans.code_read), each character that the index's
-    tokenizer reads as part of a word where it stands (`kind`, the tokenizer's own reading
-    of each character: `in_word`) made `fill_for(asked)`, which it reads as part of a word
-    too and which no title asked holds; each character it reads as a separator stays as it
-    is. So every word of the text begins and ends where it did, and a place in the one text
-    is a place in the other: a word in a stretch is a word that is no word of the title, a
-    word that stands in one only in part is another word, and a separator at a stretch's
-    edge still ends the word beside it. A stretch that holds no word (one of blanks between
-    two backticks) is given one, one character made `fill` where it joins no word beside
-    it, so that no phrase is read across a stretch. Where the index then finds the title,
-    it stands whole in prose, no stretch inside it."""
+) -> list[tuple[int, str]]:
+    """The prose of `text`, each run of it between two stretches that are no prose
+    (`covered`, and what the Markdown parser reads as code: cairn.spans.code_read; those
+    that overlap or touch are one) a text of its own, in order: (where it starts in `text`,
+    the run). The index is given each run as a row of its own, so no phrase is read across a
+    stretch, and every word of a run is the word of `text` it was, where it was. A word that
+    goes on across a run's edge into a stretch (the index's tokenizer reads the character
+    on each side of the edge as part of a word: `kind`, its own reading of each character)
+    stands only in part in prose and is another word: the run is given `fill_for(asked)`,
+    which the tokenizer reads as part of a word and which no title asked holds, at that
+    edge, joined to the word, and the place given is then one before the run's first
+    character. Where the edge's character in the stretch is a separator nothing is added,
+    so a word before a path is the word it is. An empty run is none."""
     fill = fill_for(asked)
     if kind(fill) != TOKEN:
-        raise ValueError("the index's tokenizer does not read the blanking character as a word")
-    chars, known = list(text), (-1, False)  # the last character of the stretch before
-    for start, end in _joined(stretches):
-        held = before = in_word(text, start - 1, kind, known)
-        worded = False
-        for at in range(start, end):
-            read = kind(text[at])
-            held = read == TOKEN or (read == MARK and held)
-            if held:
-                chars[at], worded = fill, True
-        if not worded:  # no character of it is in a word: only the one before can be
-            alone = (
-                at
-                for at in range(start, end)
-                if (at > start or not before)
-                and (at + 1 == len(text) or kind(text[at + 1]) == SEPARATOR)
-            )
-            if (at := next(alone, None)) is not None:
-                chars[at] = fill
-        known = (end - 1, held)
-    return "".join(chars)
+        raise ValueError("the index's tokenizer does not read the fill character as a word")
+    held, now = [], False  # whether each character is part of a word where it stands
+    for char in text:
+        read = kind(char)
+        now = read == TOKEN or (read == MARK and now)
+        held.append(now)
+    runs, start = [], 0
+    for begin, end in [*_joined(stretches), (len(text), len(text))]:
+        if start < begin:
+            left = start > 0 and held[start - 1] and held[start]
+            right = begin < len(text) and held[begin - 1] and held[begin]
+            runs.append((start - left, fill * left + text[start:begin] + fill * right))
+        start = end
+    return runs
 
 
 def _joined(stretches: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -269,7 +250,7 @@ def _joined(stretches: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def words_in(text: str, kind: Callable[[str], int]) -> int:
-    """How many words the index's tokenizer reads in `text` (`kind`, as `blanked`)."""
+    """How many words the index's tokenizer reads in `text` (`kind`, as `prose_runs`)."""
     count, held = 0, False
     for char in text:
         read = kind(char)
@@ -279,7 +260,7 @@ def words_in(text: str, kind: Callable[[str], int]) -> int:
 
 
 def words_end(text: str, start: int, words: int, kind: Callable[[str], int]) -> int:
-    """Where the `words` words of `text` that begin at `start` end (`kind`, as `blanked`):
+    """Where the `words` words of `text` that begin at `start` end (`kind`, as `prose_runs`):
     the end of the first place of a phrase of that many words that the index matched from
     `start`, however far its marks around the matches that overlap that one reach."""
     count, held = 0, False

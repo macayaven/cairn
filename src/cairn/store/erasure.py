@@ -195,9 +195,10 @@ class ErasureMethods(StoreBase):
         loses it (one that named it alone then reaches nothing). A page of another project of
         the workspace that cites a span of its notes, in any version, changes as forget_note
         changes a page that cites the note (_plan, _rewrite), in the same transaction: only a
-        database an earlier build wrote holds one (save_page refuses a new one), and an upgrade does
-        not rewrite it. The workspace's stored bytes go down by its notes' size; the month's
-        count of notes written does not. Recorded as project.deleted (its id and name, how many
+        program that wrote into the database directly leaves one (save_page refuses a new one,
+        and the upgrade to schema 32 rewrote every one an earlier build left). The workspace's
+        stored bytes go down by its notes' size; the month's count of notes written does not.
+        Recorded as project.deleted (its id and name, how many
         notes and pages, and how many pages of other projects changed as `elsewhere` when it is
         not zero: counted, never named, as the log's line for each). False for a project
         unknown or out of reach; PermissionError for anyone else who may not (see the

@@ -15,8 +15,10 @@ backticks bound, side by side, are one span (the guide says so too): not generat
 
 Left out of the generated run, and pinned in test_rt3_slack_spans_found: a message in which
 the backticks and code of a span the rich text names stand earlier in the text than the span
-does (literal backticks, or the closing backtick of a span the rich text leaves out). Which
-messages those are is told from the segments, not from cairn. Every message is made up."""
+does (the closing backtick of a span the rich text leaves out, in this grammar). Which
+messages those are is told from the segments, not from cairn. Not checked here: the reply as
+blocks.filed sends it (its title is Draft.shown, which is checked). Every message is made
+up."""
 
 import random
 import time
@@ -381,9 +383,11 @@ def best_of_three(sent: dict) -> float:
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_filing_takes_time_linear_in_the_message(shape):
-    """Eight times the spans may take at most 24 times as long (the bound of
-    test_slack_linear_unit); three rounds, the first within it kept."""
-    small, large = build(SHAPES[shape](32)), build(SHAPES[shape](256))
+    """Eight times the spans (four times where each span's run grows with the message) may
+    take at most three times as much longer as the message is (24 times for eight times the
+    characters, the bound of test_slack_linear_unit); three rounds, the first within it kept."""
+    spans = (64, 256) if shape == "a different run in each span" else (256, 2048)
+    small, large = build(SHAPES[shape](spans[0])), build(SHAPES[shape](spans[1]))
     scale = size_of(large) / size_of(small)
     for _ in range(3):
         fast, slow = best_of_three(small), best_of_three(large)

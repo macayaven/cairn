@@ -650,7 +650,10 @@ COMPOSE_SAYS = (
     " every start the boot compares the settings in the secret with what cairn's container was"
     " given. It reads the lines written `NAME=value`, the value between single quotes or to"
     " the end of the line, and names each of those that differs, the name and nothing of its"
-    " value, on a line that starts with `cairn-quick: settings check:`. Compose reads more"
+    " value, on a line that starts with `cairn-quick: settings check:`. A value in double"
+    " quotes that runs over more than one line is not read as one value: its first line is"
+    " named as differing, and a later line of it that looks like a setting can be named too."
+    " Compose reads more"
     " forms than that (a colon for the equals sign, `export` before the name, spaces before"
     " it), so every other line that is not blank or a comment is counted on one line,"
     " `cairn-quick: settings check: N line(s) of the settings not compared`, with the names"
@@ -874,6 +877,37 @@ def test_compose_itself_gives_what_the_check_counts_as_not_compared(vm):
     assert done.returncode == 0, done.stderr
     assert done.stderr.splitlines() == JUDGED
     searched_for_values(done.stderr)
+
+
+def test_a_value_in_double_quotes_over_lines_names_a_line_too_many_and_the_script_says_so(vm):
+    """The check does not read double quotes. A value in them that runs over lines is read
+    line by line: its first line differs from what cairn was given, and its second, which
+    here begins like the setting REAL, is taken for that setting and named, though REAL
+    arrived as written. A line too many, never one too few; the comment over the check and
+    the guide (`COMPOSE_SAYS`) say so."""
+    settings = b"REAL=nvh8\nMULTI=\"rj3\nREAL=ydc\"\nLAST='hj8 $x'\n"
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    service, said = compose_service(vm, said=True)
+    assert said.strip() == ""
+    given = {name: value.replace("$$", "$") for name, value in service["environment"].items()}
+    assert given == {"REAL": "nvh8", "MULTI": "rj3\nREAL=ydc", "LAST": "hj8 $x"}
+    (vm / "container-env.json").write_text(json.dumps([f"{n}={v}" for n, v in given.items()]))
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    assert done.stderr.splitlines() == [DIFFERS.format("REAL"), DIFFERS.format("MULTI")]
+    for form in digests(*given.values()) | {"nvh8", "rj3", "ydc", "hj8"}:
+        assert form not in done.stderr, form
+    script = BOOTSTRAP.read_text()
+    comment = script[: script.index("check_settings() {")].rsplit("\n\n", 1)[1]
+    said_there = " ".join(line.lstrip("# ") for line in comment.splitlines())
+    assert "double quotes over lines is not read" in said_there
+    assert "first line is named as differing" in said_there
+    assert "a later line of it that looks like a setting can be named too" in said_there
 
 
 def test_a_setting_cairn_was_given_that_no_line_read_holds_is_counted_too(vm):

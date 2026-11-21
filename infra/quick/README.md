@@ -110,7 +110,9 @@ The other changes come without a word from Compose, so after every start the boo
 settings in the secret with what cairn's container was given. It reads the lines written
 `NAME=value`, the value between single quotes or to the end of the line, and names each of those
 that differs, the name and nothing of its value, on a line that starts with
-`cairn-quick: settings check:`. Compose reads more forms than that (a colon for the equals sign,
+`cairn-quick: settings check:`. A value in double quotes that runs over more than one line is not
+read as one value: its first line is named as differing, and a later line of it that looks like a
+setting can be named too. Compose reads more forms than that (a colon for the equals sign,
 `export` before the name, spaces before it), so every other line that is not blank or a comment
 is counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`,
 with the names cairn was given: write those as `NAME=value`. A start with neither kind of line
@@ -305,7 +307,9 @@ The other changes come without a word from Compose, so after every start the boo
 settings in the secret with what cairn's container was given. It reads the lines written
 `NAME=value`, the value between single quotes or to the end of the line, and names each of those
 that differs, the name and nothing of its value, on a line that starts with
-`cairn-quick: settings check:`. Compose reads more forms than that (a colon for the equals sign,
+`cairn-quick: settings check:`. A value in double quotes that runs over more than one line is not
+read as one value: its first line is named as differing, and a later line of it that looks like a
+setting can be named too. Compose reads more forms than that (a colon for the equals sign,
 `export` before the name, spaces before it), so every other line that is not blank or a comment
 is counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`,
 with the names cairn was given: write those as `NAME=value`. A start with neither kind of line

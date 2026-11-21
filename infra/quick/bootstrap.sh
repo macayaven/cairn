@@ -156,11 +156,10 @@ for line in open(errors, encoding="utf-8", errors="replace").read().splitlines()
 PY
 }
 
-# Compares the settings the secret holds with what cairn's container was given, and prints
-# names, never anything of a value (values stay in a pipe and in memory). It reads a line
-# NAME=value, the value between single quotes (a quote as \', over one line or more) or to
-# the end of the line. Compose reads more forms: every other line is counted as not
-# compared, and so is a setting the container has beyond its image's that no line read holds.
+# Compares the secret's settings with cairn's container's and prints names, never a value.
+# Reads NAME=value, in single quotes (a quote as \', over lines too) or to line end, and
+# counts the rest. A value in double quotes over lines is not read: its first line is named
+# as differing, and a later line of it that looks like a setting can be named too.
 check_settings() {
   local id image check
   [ -s cairn.env ] || return 0

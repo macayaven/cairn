@@ -156,29 +156,47 @@ for line in open(errors, encoding="utf-8", errors="replace").read().splitlines()
 PY
 }
 
-# Names each setting cairn's container was given otherwise than the secret holds it: the
-# name, nothing of a value (values stay in a pipe and in memory). Between single quotes a
-# value is what stands there (a quote as \'), over one line or more; else the rest of its
-# line. A setting the container was not given is no difference.
+# Compares the settings the secret holds with what cairn's container was given, and prints
+# names, never anything of a value (values stay in a pipe and in memory). It reads a line
+# NAME=value, the value between single quotes (a quote as \', over one line or more) or to
+# the end of the line. Compose reads more forms: every other line is counted as not
+# compared, and so is a setting the container has beyond its image's that no line read holds.
 check_settings() {
-  local id check
+  local id image check
   [ -s cairn.env ] || return 0
-  id=$(docker compose ps -q cairn 2>/dev/null) && [ -n "$id" ] || return 1
+  id=$(docker compose ps -q cairn 2>/dev/null) && [ -n "$id" ] &&
+    image=$(docker inspect -f '{{.Image}}' "$id" 2>/dev/null) || return 1
   check=$(cat <<'PY'
 import json, re, sys
-given = dict(pair.split("=", 1) for pair in json.load(sys.stdin) if "=" in pair)
-form = r"^[ \t]*(?:export[ \t]+)?(\w+)[ \t]*=[ \t]*(?:'((?:[^'\\]|\\[\s\S])*)'|(.*))"
-holds = {}
-for name, quoted, plain in re.findall(form, open("cairn.env", encoding="utf-8").read(), re.M):
-    holds[name] = quoted.replace("\\'", "'") if quoted else plain.strip()
-for name, value in holds.items():
-    if name in given and given[name] != value:
-        print(f"cairn-quick: settings check: {name} differs in cairn from what the secret holds."
+given, own = ({p.partition("=")[0]: p.partition("=")[2] for p in json.loads(line)} for line in sys.stdin)
+text = open("cairn.env", encoding="utf-8").read()
+skip = re.compile(r"[ \t\r]*(#.*)?(\n|\Z)")
+read = re.compile(r"([A-Za-z_]\w*)[ \t]*=[ \t]*(?:'((?:[^'\\]|\\[^\\])*)'[ \t\r]*(?:#.*)?|([^'\n].*)?)(?:\n|\Z)")
+name = re.compile(r"([A-Za-z_]\w*)[ \t]*[=:]")
+holds, unread, at = {}, [], 0
+while at < len(text):
+    line = skip.match(text, at)
+    if not line:
+        line = read.match(text, at)
+        if line:
+            holds[line[1]] = (line[3] or "").strip() if line[2] is None else line[2].replace("\\'", "'")
+        else:
+            line = re.compile(r".*(\n|\Z)").match(text, at)
+            unread.append(name.search(line[0]))
+    at = line.end()
+for setting, value in holds.items():
+    if setting in given and given[setting] != value:
+        print(f"cairn-quick: settings check: {setting} differs in cairn from what the secret holds."
               ' How to write a value: "AWS settings" or "Google Cloud settings" in'
               " infra/quick/README.md")
+unjudged = given.keys() - own.keys() - holds.keys()
+count = len(unread) + len(unjudged - {found[1] for found in unread if found})
+if count:
+    print(f"cairn-quick: settings check: {count} line(s) of the settings not compared"
+          + (": " + ", ".join(sorted(unjudged)) if unjudged else ""))
 PY
   )
-  docker inspect -f '{{json .Config.Env}}' "$id" 2>/dev/null | python3 -c "$check" >&2 2>/dev/null
+  docker inspect -f '{{json .Config.Env}}' "$id" "$image" 2>/dev/null | python3 -c "$check" >&2 2>/dev/null
 }
 
 publish_env() {

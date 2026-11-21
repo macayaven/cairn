@@ -105,11 +105,16 @@ variable's value in place of a `$` and the name after it, or nothing when no var
 name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
 value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
 on what Compose says, as a line in the unit's journal that starts with `cairn-quick: compose:`.
-The other changes come without a word from Compose, so after every start the boot compares each
-setting in the secret with what cairn's container was given and names each one that differs, the
-name and nothing of its value, on a line that starts with `cairn-quick: settings check:`. A start
-without such a line shows that every setting the container received arrived as written;
-`cairn-quick: settings check: did not run` means that it could not compare.
+The other changes come without a word from Compose, so after every start the boot compares the
+settings in the secret with what cairn's container was given. It reads the lines written
+`NAME=value`, the value between single quotes or to the end of the line, and names each of those
+that differs, the name and nothing of its value, on a line that starts with
+`cairn-quick: settings check:`. Compose reads more forms than that (a colon for the equals sign,
+`export` before the name, spaces before it), so every other line that is not blank or a comment
+is counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`,
+with the names cairn was given: write those as `NAME=value`. A start with neither kind of line
+shows that every setting cairn was given arrived as written; with a `not compared` line, every
+setting but those; `cairn-quick: settings check: did not run` means that nothing was compared.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -295,11 +300,16 @@ variable's value in place of a `$` and the name after it, or nothing when no var
 name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
 value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
 on what Compose says, as a line in the unit's journal that starts with `cairn-quick: compose:`.
-The other changes come without a word from Compose, so after every start the boot compares each
-setting in the secret with what cairn's container was given and names each one that differs, the
-name and nothing of its value, on a line that starts with `cairn-quick: settings check:`. A start
-without such a line shows that every setting the container received arrived as written;
-`cairn-quick: settings check: did not run` means that it could not compare.
+The other changes come without a word from Compose, so after every start the boot compares the
+settings in the secret with what cairn's container was given. It reads the lines written
+`NAME=value`, the value between single quotes or to the end of the line, and names each of those
+that differs, the name and nothing of its value, on a line that starts with
+`cairn-quick: settings check:`. Compose reads more forms than that (a colon for the equals sign,
+`export` before the name, spaces before it), so every other line that is not blank or a comment
+is counted on one line, `cairn-quick: settings check: N line(s) of the settings not compared`,
+with the names cairn was given: write those as `NAME=value`. A start with neither kind of line
+shows that every setting cairn was given arrived as written; with a `not compared` line, every
+setting but those; `cairn-quick: settings check: did not run` means that nothing was compared.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -440,4 +450,5 @@ update but needs the pre-upgrade backup after an incompatible one.
   None of that touched AWS: S3, the VM's role, the metadata firewall, cloud-init and systemd
   were not part of it.
   The boot script has changed since that apply on Google Cloud (it now passes on its tools'
-  errors, runs Compose without progress lines, and compares the settings after a start): the changed script has run only on the laptop.
+  errors, runs Compose without progress lines, and compares the settings after a start, counting the
+  lines it does not read): the changed script has run only on the laptop.

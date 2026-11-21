@@ -32,10 +32,15 @@ LEFT_OUT = "(a line that repeats part of a setting was left out)"
 CONTAINER = "0123456789ab"
 # What the boot asks Docker after a start, to compare the settings: which container, and
 # the environment it was made with.
+IMAGE = "sha256:0f1e2d3c4b5a"
+# The container, its image, and the environment each was made with: the image's own is what
+# tells a setting Compose gave from a variable the image brings.
 SETTINGS_CHECK = [
     ["docker", "compose", "ps", "-q", "cairn"],
-    ["docker", "inspect", "-f", "{{json .Config.Env}}", CONTAINER],
+    ["docker", "inspect", "-f", "{{.Image}}", CONTAINER],
+    ["docker", "inspect", "-f", "{{json .Config.Env}}", CONTAINER, IMAGE],
 ]
+NOT_COMPARED = "cairn-quick: settings check: {} line(s) of the settings not compared"
 DIFFERS = (
     "cairn-quick: settings check: {} differs in cairn from what the secret holds. How to write"
     ' a value: "AWS settings" or "Google Cloud settings" in infra/quick/README.md'
@@ -97,12 +102,17 @@ if cmd == "docker":
         if mode == "no-container":
             sys.exit()
         print("0123456789ab")
+    elif args == ["inspect", "-f", "{{.Image}}", "0123456789ab"]:
+        print("sha256:0f1e2d3c4b5a")
     elif args[:3] == ["inspect", "-f", "{{json .Config.Env}}"]:
         given = state / "container-env.json"
-        if args[3:] != ["0123456789ab"] or mode == "inspect-fails":
+        if args[3:] != ["0123456789ab", "sha256:0f1e2d3c4b5a"] or mode == "inspect-fails":
             print(os.environ["STANDIN_SECRET"], file=sys.stderr)
             sys.exit(1)
-        print(given.read_text() if given.exists() else '["PATH=/app/bin:/usr/bin"]')
+        image = ["PATH=/app/bin:/usr/bin", "PYTHONUNBUFFERED=1"]
+        settings = json.loads(given.read_text()) if given.exists() else []
+        print(json.dumps(image + settings))
+        print(json.dumps(image))
     elif args[:3] == ["compose", "ps", "--all"]:
         print(os.environ["STANDIN_SECRET"], file=sys.stderr)
         if mode == "compose-failure-no-status":
@@ -464,7 +474,7 @@ def test_start_writes_only_the_expected_env_files_and_starts_compose(vm, cloud):
         "litestream.env": 0o600,
         "cairn.env": 0o600,
     }
-    assert calls(vm)[-3:] == [COMPOSE_UP, *SETTINGS_CHECK]
+    assert calls(vm)[-4:] == [COMPOSE_UP, *SETTINGS_CHECK]
     assert ["docker", "compose", "pull"] not in calls(vm)
     assert "$value" not in done.stdout + done.stderr
     assert TOKEN not in done.stdout + done.stderr
@@ -543,7 +553,7 @@ def test_first_boot_pulls_missing_images(vm):
     assert done.returncode == 0, done.stderr
     assert (vm / "images-cached").exists()
     assert (vm / "stack-started").exists()
-    assert calls(vm)[-3:] == [COMPOSE_UP, *SETTINGS_CHECK]
+    assert calls(vm)[-4:] == [COMPOSE_UP, *SETTINGS_CHECK]
 
 
 def test_cached_restart_does_not_contact_the_registry(vm):
@@ -637,11 +647,17 @@ COMPOSE_SAYS = (
     "Compose reports one of these, the `$` before a name no variable has, and the boot passes"
     " on what Compose says, as a line in the unit's journal that starts with"
     " `cairn-quick: compose:`. The other changes come without a word from Compose, so after"
-    " every start the boot compares each setting in the secret with what cairn's container was"
-    " given and names each one that differs, the name and nothing of its value, on a line that"
-    " starts with `cairn-quick: settings check:`. A start without such a line shows that every"
-    " setting the container received arrived as written; `cairn-quick: settings check: did not"
-    " run` means that it could not compare."
+    " every start the boot compares the settings in the secret with what cairn's container was"
+    " given. It reads the lines written `NAME=value`, the value between single quotes or to"
+    " the end of the line, and names each of those that differs, the name and nothing of its"
+    " value, on a line that starts with `cairn-quick: settings check:`. Compose reads more"
+    " forms than that (a colon for the equals sign, `export` before the name, spaces before"
+    " it), so every other line that is not blank or a comment is counted on one line,"
+    " `cairn-quick: settings check: N line(s) of the settings not compared`, with the names"
+    " cairn was given: write those as `NAME=value`. A start with neither kind of line shows"
+    " that every setting cairn was given arrived as written; with a `not compared` line, every"
+    " setting but those; `cairn-quick: settings check: did not run` means that nothing was"
+    " compared."
 )
 
 
@@ -736,7 +752,7 @@ def test_a_setting_that_reached_cairn_changed_is_named_and_nothing_else(vm):
         "COMMENT": "tblp4",
         "DOUBLE": "rj3ydc",
     }
-    env = ["PATH=/app/bin:/usr/bin", *(f"{name}={value}" for name, value in given.items())]
+    env = [f"{name}={value}" for name, value in given.items()]
     (vm / "container-env.json").write_text(json.dumps(env))
     done = run(vm, settings=settings)
     assert done.returncode == 0, done.stderr
@@ -745,7 +761,7 @@ def test_a_setting_that_reached_cairn_changed_is_named_and_nothing_else(vm):
     assert done.stderr.splitlines() == [
         DIFFERS.format(name) for name in ("SET", "COMMENT", "DOUBLE")
     ]
-    assert calls(vm)[-3:] == [COMPOSE_UP, *SETTINGS_CHECK]
+    assert calls(vm)[-4:] == [COMPOSE_UP, *SETTINGS_CHECK]
     parts = ["zq7", "wm2", "kx9", "tblp4", "nvh8", "rj3ydc", "hj8rd3", "second line", "word9"]
     for form in digests(*wrote.values(), *given.values()) | set(parts):
         assert form not in done.stderr, form
@@ -790,6 +806,85 @@ def test_composes_three_silent_changes_are_each_named_and_the_guides_way_is_not(
         DIFFERS.format(name) for name in ("SET", "COMMENT", "DOUBLE")
     ]
     for form in digests(*wrote.values(), *given.values()) | {"zq7", "kx9", "tblp4", "rj3ydc"}:
+        assert form not in done.stderr, form
+
+
+# The forms of a settings line that the check does not read, each with what Compose 5.5.0 was
+# seen to give cairn for it (None: not given). The reviewer's case is the first.
+UNREAD = (
+    ('COLON: "zq7 wm2"', "COLON", "zq7 wm2"),
+    ("export EXPORTED=kx9 #tblp4", "EXPORTED", "kx9"),
+    ("BARE", "BARE", None),
+    ("  INDENTED=nvh8 #rj3", "INDENTED", "nvh8"),
+    ("BACKSLASHES='ydc\\\\'", "BACKSLASHES", "ydc\\\\"),
+    ("colon2:hj8$CAIRN_DOMAIN", "colon2", "hj8cairn.example.net"),
+)
+# Lines it does read, among them: an equals sign with spaces round it, and a value in double
+# quotes that goes on over a line, whose second line is no setting.
+READ = (
+    ('EQUALS="pm4 wq"', "EQUALS", "pm4 wq"),
+    ('SPACED = "xz5"', "SPACED", "xz5"),
+    ('MULTI="lp4', "MULTI", "lp4\nINNER=rd3"),
+    ('INNER=rd3"', "INNER", None),
+    ("AFTER=bt9", "AFTER", "bt9"),
+)
+SETTINGS_OF_EVERY_FORM = "".join(f"{line}\n" for line, _, _ in (*UNREAD[:3], *READ, *UNREAD[3:]))
+JUDGED = [
+    *(DIFFERS.format(name) for name in ("EQUALS", "SPACED", "MULTI")),
+    NOT_COMPARED.format(6) + ": BACKSLASHES, COLON, EXPORTED, INDENTED, colon2",
+]
+
+
+def searched_for_values(journal):
+    values = [line.partition("=")[2] or line.partition(":")[2] for line, _, _ in (*UNREAD, *READ)]
+    values += [given for _, _, given in (*UNREAD, *READ) if given]
+    parts = {"zq7", "wm2", "kx9", "tblp4", "nvh8", "rj3", "ydc", "hj8", "pm4", "xz5", "lp4", "rd3"}
+    for form in digests(*values) | parts | {"bt9", "example.net"}:
+        assert form not in journal, form
+
+
+def test_a_line_the_check_does_not_read_is_counted_and_named_never_passed_over(vm):
+    """The check reads a name, an equals sign and a value between single quotes or the rest
+    of the line. Compose reads more (a colon for the equals sign, `export`, a line that
+    begins with spaces), and a setting written so reaches cairn, changed or not, unjudged.
+    Each such line is counted, and named where the container has a variable of that name,
+    so that a journal without a "not compared" line means no line went unjudged."""
+    given = [f"{name}={value}" for _, name, value in (*UNREAD, *READ) if value is not None]
+    (vm / "container-env.json").write_text(json.dumps(given))
+    done = run(vm, settings=SETTINGS_OF_EVERY_FORM.encode())
+    assert done.returncode == 0, done.stderr
+    assert done.stderr.splitlines() == JUDGED
+    searched_for_values(done.stderr)
+
+
+def test_compose_itself_gives_what_the_check_counts_as_not_compared(vm):
+    """The same lines, with Compose deciding what cairn is given for each."""
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=SETTINGS_OF_EVERY_FORM.encode())
+    assert done.returncode == 0, done.stderr
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    service, said = compose_service(vm, said=True)
+    assert said.strip() == ""  # Compose reads every one of them, and says nothing
+    given = {name: value.replace("$$", "$") for name, value in service["environment"].items()}
+    assert given == {name: value for _, name, value in (*UNREAD, *READ) if value is not None}
+    (vm / "container-env.json").write_text(json.dumps([f"{n}={v}" for n, v in given.items()]))
+    done = run(vm, config=boot_environment(files), settings=SETTINGS_OF_EVERY_FORM.encode())
+    assert done.returncode == 0, done.stderr
+    assert done.stderr.splitlines() == JUDGED
+    searched_for_values(done.stderr)
+
+
+def test_a_setting_cairn_was_given_that_no_line_read_holds_is_counted_too(vm):
+    """The other way round: what the container was given beyond its image's own variables
+    came from the settings. One that no line the check read holds went unjudged, wherever
+    it came from, and is counted and named like a line not read."""
+    (vm / "container-env.json").write_text(json.dumps(["PLAIN=zq7 wm2", "GHOST=kx9 tblp4"]))
+    done = run(vm, settings=b"PLAIN=zq7 wm2\n")
+    assert done.returncode == 0, done.stderr
+    assert done.stderr.splitlines() == [NOT_COMPARED.format(1) + ": GHOST"]
+    for form in digests("zq7 wm2", "kx9 tblp4") | {"zq7", "kx9", "tblp4"}:
         assert form not in done.stderr, form
 
 

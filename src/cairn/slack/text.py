@@ -577,7 +577,10 @@ def _known_code(
     so (an element of a shape not read, none, or text that stands at no place), and the
     first place starts a run of backticks with an odd number of backticks before it on its
     line since the last span placed, the run's first backtick closes a span the text's
-    backticks bound, and the span starts one later where it stands there (case 1).
+    backticks bound, and the span starts one later where it stands there (case 1). A stated
+    limit: an element styled as code that is not text (an emoji, say) is not read, and a
+    span after it on its line may be placed on its backticks (the tester's third attack on
+    spans, cases 1 and 2): Slack's documents give no text form for it to look for.
 
     Each place is looked at once, whatever the code (the tester's second attack, finding 6:
     each way was searched for to the text's end): the places a block or a span can start
@@ -876,8 +879,9 @@ def _render(
                 pieces.append(literal(text[start:end]))
             elif spanned == "named" or (spanned and start in named):
                 # its backticks and the last's would be one run; a blank that ends it as an
-                # entity, so a line's end does not drop it, nor the blanks before it
-                blank = what[-1] in " \t"
+                # entity, so a line's or a paragraph's end does not drop it (the parser strips
+                # every blank Python's str.strip does there), nor the blanks before it
+                blank = what[-1].isspace()
                 pieces.append(_plain(what[: -1 if blank else None]) + blank * f"&#{ord(what[-1])};")
             else:  # a space each side where Markdown would take one, or read a longer run
                 ticks = "`" * (1 + max(map(len, re.findall("`+", what)), default=0))

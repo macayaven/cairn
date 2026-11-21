@@ -2,9 +2,11 @@
 gives the element right before it, that element agrees with the place, one step past the
 cases of test_rt3_slack_spans_found. Every message is made up."""
 
+import pytest
 from test_rt3_slack_spans_found import READER, code, prose, shown
 
 from cairn.slack.text import note_from_message
+from cairn.spans import chunk
 
 
 def test_text_before_a_span_is_read_with_its_entities():
@@ -68,3 +70,35 @@ def test_the_text_of_the_section_before_tells_nothing_a_stated_limit():
         ("code_inline", "`"),
         ("text", "`"),
     ]
+
+
+BLANKS = ["\N{NO-BREAK SPACE}", "\N{EM SPACE}", "\N{NARROW NO-BREAK SPACE}", " ", "\t"]
+
+
+def first_line(markdown: str) -> str:
+    """What the parser displays of the first line of `markdown`'s first paragraph."""
+    inline = next(token for token in READER.parse(markdown) if token.type == "inline")
+    shown = []
+    for child in inline.children or []:
+        if child.type in ("softbreak", "hardbreak"):
+            break
+        shown.append(child.content)
+    return "".join(shown)
+
+
+@pytest.mark.parametrize("blank", BLANKS)
+@pytest.mark.parametrize("after", ["", "\nnext"], ids=["message-end", "line-end"])
+def test_a_span_written_as_characters_keeps_any_blank_that_ends_it(blank, after):
+    """Whatever blank ends a span written as its plain characters stays, at the end of a line
+    and of the message, in the note and in its passage shown alone."""
+    elements = [code("a"), code("x" + blank), *([prose(after)] if after else [])]
+    section = {"type": "rich_text_section", "elements": elements}
+    note = note_from_message(
+        {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100",
+         "text": f"`a``x{blank}`{after}", "blocks": [{"type": "rich_text", "elements": [section]}]},
+        team_id="T0FABLE01", team_domain="fable-works", conversation_id="C0LIBRARY1",
+        author="Cedar Quill", names={},
+    ).text  # fmt: skip
+    assert first_line(note.split("\n\n", 1)[1]) == "ax" + blank
+    passage = next(span.text for span in chunk("", note) if "`a`" in span.text)
+    assert first_line(passage[passage.index("`a`") :]) == "ax" + blank

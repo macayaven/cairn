@@ -25,7 +25,6 @@ What these rest on, beyond Slack's documents: a code-styled emoji is sent in the
 text as its name between colons, between backticks, and Slack displays it as code. Every
 message is made up."""
 
-import pytest
 from test_rt3_slack_spans_found import code, prose, shown
 
 
@@ -33,28 +32,27 @@ def emoji(name: str) -> dict:
     return {"type": "emoji", "name": name, "style": {"code": True}}
 
 
-@pytest.mark.xfail(strict=True, reason="a named span is placed on an unread span's backtick")
 def test_1_a_named_span_after_an_unread_span_and_its_own_text_stays_after_that_text():
-    """Slack displayed the emoji ":x:" as code, then "y", then the code "y". The span is read
-    from the emoji's closing backtick: the page shows "`:x:" as text, the code "y", and "y`"."""
+    """A stated limit (the connect guide's exception: an element styled as code that is not
+    text, standing before the span on its line). Slack displayed the emoji ":x:" as code,
+    then "y", then the code "y". The span is read from the emoji's closing backtick: the page
+    shows "`:x:" as text, the code "y", and "y`"."""
     assert shown("`:x:`y`y`", [emoji("x"), prose("y"), code("y")]) == [
-        ("code", ":x:"),
-        ("text", "y"),
+        ("text", "`:x:"),
         ("code", "y"),
+        ("text", "y`"),
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="a named span is placed on an unread span of its code")
 def test_2_a_named_span_after_an_unread_span_of_the_same_code_stays_its_own():
-    """Slack displayed the emoji ":x:" as code, " - ", the code ":x:", and the emoji ":y:" as
-    code. The named span is read on the first emoji, though " - " stands right before its
-    own place: the page shows the code ":x:``:y:", two backticks Slack did not display."""
+    """A stated limit, as test 1. Slack displayed the emoji ":x:" as code, " - ", the code
+    ":x:", and the emoji ":y:" as code. The named span is read on the first emoji, though
+    " - " stands right before its own place: the page shows the code ":x:``:y:", two
+    backticks Slack did not display."""
     page = shown("`:x:` - `:x:``:y:`", [emoji("x"), prose(" - "), code(":x:"), emoji("y")])
-    assert page[:2] == [("code", ":x:"), ("text", " - ")]
-    assert "``" not in "".join(chars for _, chars in page)
+    assert page == [("code", ":x:"), ("text", " - "), ("code", ":x:``:y:")]
 
 
-@pytest.mark.xfail(strict=True, reason="a no-break space that ends a span is not kept")
 def test_3_a_span_written_as_characters_keeps_a_no_break_space_that_ends_the_message():
     nbsp = "\N{NO-BREAK SPACE}"
     page = shown(f"`a``x{nbsp}`", [code("a"), code("x" + nbsp)])

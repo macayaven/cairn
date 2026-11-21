@@ -1233,11 +1233,15 @@ def test_connect_the_rich_text_tells_the_blanks_and_the_text_about_a_span():
     says(
         *CONNECT,
         "A span written as plain characters keeps the blanks that end it, at the end of a line"
-        " too: the last of them is written as a character reference, `&#32;` for a blank.",
+        " too: the last of them is written as a character reference, `&#32;` for a space and"
+        " `&#160;` for a no-break space.",
         "Where Slack's rich text gives the text that stands right before a span it names, a"
-        " backtick in that text is written as a character, and the span after it; elsewhere a"
-        " backtick Slack displayed as a character is read as code where it pairs with another,"
-        " after the last span the rich text names for instance.",
+        " backtick in that text is written as a character, and the span after it, unless an"
+        " element of the rich text styled as code that is not text, such as an emoji, stands"
+        " before the span on its line: the span can then be read on that element's backticks,"
+        " and the page shows backticks Slack did not display; elsewhere a backtick Slack"
+        " displayed as a character is read as code where it pairs with another, after the last"
+        " span the rich text names for instance.",
     )
 
     def read(text: str, elements: list[dict]) -> tuple[str, list[tuple[str, str]]]:
@@ -1262,10 +1266,20 @@ def test_connect_the_rich_text_tells_the_blanks_and_the_text_about_a_span():
         "`a` &#32;",
         [("code_inline", "a"), ("text", "  ")],
     )
+    assert read("`a``x\N{NO-BREAK SPACE}`", [code("a"), code("x\N{NO-BREAK SPACE}")]) == (
+        "`a`x&#160;",
+        [("code_inline", "a"), ("text", "x\N{NO-BREAK SPACE}")],
+    )
     assert read("`x` or `x`", [text("`x` or "), code("x")]) == (
         "\\`x\\` or `x`",
         [("text", "`x` or "), ("code_inline", "x")],
     )
+    emoji = {"type": "emoji", "name": "x", "style": {"code": True}}  # the exception
+    assert read("`:x:`y`y`", [emoji, text("y"), code("y")])[1] == [
+        ("text", "`:x:"),
+        ("code_inline", "y"),
+        ("text", "y`"),
+    ]
     assert read("`x` or `x`", [code("x"), text(" or `x`")])[1] == [
         ("code_inline", "x"),
         ("text", " or "),

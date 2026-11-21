@@ -396,7 +396,7 @@ def test_first_boot_recovers_after_a_docker_package_index_download_fails(vm, clo
     assert (vm / ".host-provisioned").is_file()
 
 
-def compose_service(vm, said=False, refused=False):
+def compose_service(vm, said=False, refused=False, environment=None):
     # A project render reads the .env and env_file itself and needs no Docker daemon.
     # With `said`, also what Compose wrote on standard error while it read them.
     standalone = shutil.which("docker-compose")
@@ -405,6 +405,7 @@ def compose_service(vm, said=False, refused=False):
         pytest.skip("Docker Compose is needed to render the service command")
     compose = [standalone] if standalone else [docker, "compose"]
     env = {"HOME": str(vm), "PATH": os.environ["PATH"], "DOCKER_HOST": f"unix://{vm}/no-daemon"}
+    env |= environment or {}  # what Compose itself runs with: a name alone takes its value there
     version = subprocess.run([*compose, "version"], env=env, capture_output=True, timeout=20)
     if version.returncode != 0:
         pytest.skip("Docker Compose is needed to render the service command")
@@ -672,8 +673,8 @@ COMPOSE_READS = (
 COMPOSE_SAYS = (
     "Compose reports one of these, the `$` before a name no variable has, and the boot"
     " passes on what Compose says, as a line in the unit's journal that starts with"
-    " `cairn-quick: compose:`. The other changes come without a word from Compose, so"
-    " after every start the boot compares the settings in the secret with what cairn's"
+    " `cairn-quick: compose:`. The other changes come without a word from Compose, so once"
+    " the stack is up the boot compares the settings in the secret with what cairn's"
     " container was given. It reads the lines written `NAME=value`, with nothing before"
     " the name and nothing between it and the equals sign, and takes the value as written:"
     " what stands between single quotes that open right after the equals sign, or else all"
@@ -683,17 +684,25 @@ COMPOSE_SAYS = (
     " quotes that runs over more than one line is not read as one value: its first line is"
     " named as differing, and a later line of it that looks like a setting can be named"
     " too. Compose reads more forms than that, among them a colon for the equals sign,"
-    " `export` or blanks before the name, a hyphen in the name, blanks before the equals"
-    " sign or between it and a single quote, text after a closing single quote, and two"
-    " backslashes together between single quotes, so every other line that is not blank or"
-    " a comment is counted on one line, `cairn-quick: settings check: N line(s) of the"
-    " settings not compared`, with the names cairn was given: write those as `NAME=value`."
-    " When two lines that the check reads set one name, Compose takes the later, and the"
-    " check compares that one. A start with no `settings check` line shows that every"
-    " setting cairn was given arrived as written, a carriage return that ends its line"
-    " aside, which Compose drops and the check does not count; with a `not compared` line"
-    " and no other, every setting but those; `cairn-quick: settings check: did not run`"
-    " means that nothing was compared."
+    " `export` or blanks before the name, a hyphen in the name, a name alone on its line"
+    " (its value then comes from the environment Compose runs in), blanks before the"
+    " equals sign or between it and a single quote, text after a closing single quote, and"
+    " two backslashes together between single quotes, so every other line that is not"
+    " blank or a comment is counted on one line, `cairn-quick: settings check: N line(s)"
+    " of the settings not compared`. That line goes on with names cairn was given: each"
+    " one that a counted line begins with, after `export` or blanks if it has them, a name"
+    " alone on its line included; and any other setting cairn was given, with another"
+    " value than the image's own, that no line the check read holds, which adds one to N."
+    " It ends `; M unnamed` when M of the counted lines begin with no name cairn was"
+    " given: a setting cairn did not get, or text of another line. Write the named ones as"
+    " `NAME=value`. When two lines that the check reads set one name, Compose takes the"
+    " later, and the check compares that one. A start with no `settings check` line shows"
+    " that every setting cairn was given arrived as written, with two things aside: a"
+    " carriage return that ends its line, which Compose drops and the check does not"
+    " count, and a value that a backslash carried past its closing quote, which arrives as"
+    " Compose and the check both read it. With a `not compared` line and no other, that"
+    " holds for every setting but those the line names and those on the lines it counts;"
+    " `cairn-quick: settings check: did not run` means that nothing was compared."
 )
 
 
@@ -748,10 +757,10 @@ def test_compose_changes_four_kinds_of_setting_and_reports_one(vm):
 @pytest.mark.parametrize("backslashes", [1, 3])
 def test_a_single_quoted_value_cannot_end_in_an_odd_number_of_backslashes(vm, backslashes):
     """The guide's clause (`COMPOSE_READS`), held to Compose: a backslash before the closing
-    quote takes the quote, and Compose refuses the file. The boot's start then fails, and
-    its line is Compose's without what Compose quotes of the file (the test of a failed
-    `up` above). With an even number the value closes and keeps every backslash (the case
-    of two is among the lines not compared)."""
+    quote takes the quote, and with no later single quote in the file Compose refuses it.
+    The boot's start then fails, and its line is Compose's without what Compose quotes of
+    the file (the test of a failed `up` above). With an even number the value closes and
+    keeps every backslash (the case of two is among the lines not compared)."""
     settings = f"PLAIN=bt9\nFOO='zq7wm2{chr(92) * backslashes}'\nLAST=kx9\n".encode()
     files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
     done = run(vm, config=boot_environment(files), settings=settings)
@@ -895,7 +904,7 @@ READ = (
 SETTINGS_OF_EVERY_FORM = "".join(f"{line}\n" for line, _, _ in (*UNREAD[:3], *READ, *UNREAD[3:]))
 JUDGED = [
     *(DIFFERS.format(name) for name in ("EQUALS", "MULTI")),
-    NOT_COMPARED.format(7) + ": BACKSLASHES, COLON, EXPORTED, INDENTED, SPACED, colon2",
+    NOT_COMPARED.format(7) + ": BACKSLASHES, COLON, EXPORTED, INDENTED, SPACED, colon2; 1 unnamed",
 ]
 
 
@@ -971,7 +980,7 @@ def test_a_value_in_double_quotes_over_lines_names_a_line_too_many_and_the_scrip
     assert "a later line of it that looks like a setting can be named too" in said_there
 
 
-def judged_with_compose_deciding(vm, settings):
+def judged_with_compose_deciding(vm, settings, environment=None):
     """What Compose resolves for cairn from the boot's own files with these settings, and
     the journal of a start whose container holds exactly that."""
     files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
@@ -980,7 +989,7 @@ def judged_with_compose_deciding(vm, settings):
     for path, file in files.items():
         if path.startswith("/opt/cairn/deploy/"):
             (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
-    service, said = compose_service(vm, said=True)
+    service, said = compose_service(vm, said=True, environment=environment)
     assert said.strip() == ""
     given = {name: value.replace("$$", "$") for name, value in service["environment"].items()}
     (vm / "container-env.json").write_text(json.dumps([f"{n}={v}" for n, v in given.items()]))
@@ -1085,6 +1094,7 @@ def test_an_unread_line_for_a_variable_the_image_sets_too_is_named(vm, line, nam
         ("V=1\nexport V=1", "1", [NOT_COMPARED.format(1) + ": V"]),
         ("export V=2\nV=1", "1", [NOT_COMPARED.format(1) + ": V"]),
         ("V=1\nexport V=2", "2", [DIFFERS.format("V"), NOT_COMPARED.format(1) + ": V"]),
+        ("export V=1\nexport V=2", "2", [NOT_COMPARED.format(2) + ": V"]),  # two lines, one name
     ],
 )
 def test_a_name_on_a_line_not_read_is_named_though_a_line_read_holds_it_too(
@@ -1096,6 +1106,32 @@ def test_a_name_on_a_line_not_read_is_named_though_a_line_read_holds_it_too(
     got, said = judged_with_compose_deciding(vm, f"{lines}\nLAST=x\n".encode())
     assert got == {"V": given, "LAST": "x"}
     assert said == journal
+
+
+@pytest.mark.parametrize(
+    ("line", "environment", "journal"),
+    [
+        # The reviewer's case: the environment gives the name the value the image has too.
+        ("PYTHONUNBUFFERED", {"PYTHONUNBUFFERED": "1"}, NOT_COMPARED.format(1) + ": {}"),
+        ("export PYTHONUNBUFFERED", {"PYTHONUNBUFFERED": "1"}, NOT_COMPARED.format(1) + ": {}"),
+        ("  PYTHONUNBUFFERED  ", {"PYTHONUNBUFFERED": "1"}, NOT_COMPARED.format(1) + ": {}"),
+        # Another value than the image's, or a name the image has not: one line, counted once.
+        ("PYTHONUNBUFFERED", {"PYTHONUNBUFFERED": "0"}, NOT_COMPARED.format(1) + ": {}"),
+        ("LABEL", {"LABEL": "abc"}, NOT_COMPARED.format(1) + ": {}"),
+        # No variable of that name where Compose runs: cairn is given nothing, and the name
+        # on the line, which could be anything, is not printed.
+        ("LABEL", {}, NOT_COMPARED.format(1) + "; 1 unnamed"),
+    ],
+)
+def test_a_name_alone_on_its_line_is_named_when_cairn_was_given_it(vm, line, environment, journal):
+    """Compose takes the value of a name alone on its line from the environment it runs in.
+    The check does not read that line. It counted it and did not name it when the value was
+    the image's own, and counted it twice when it was not. The line now names every name
+    cairn was given that begins a line not read, and says how many such lines have none."""
+    name = line.split()[-1]
+    got, said = judged_with_compose_deciding(vm, f"{line}\nLAST=x\n".encode(), environment)
+    assert got == {"LAST": "x"} | ({name: environment[name]} if environment else {})
+    assert said == [journal.format(name)]
 
 
 def test_a_setting_cairn_was_given_that_no_line_read_holds_is_counted_too(vm):

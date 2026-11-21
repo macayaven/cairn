@@ -150,9 +150,10 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   rows they remove or rewrite, through indexes, and never rewrite the database file; a
   forget reads every version of the workspace's pages, in one search, to find those that
   cite the note (only a database an earlier build wrote has a page citing another project's
-  note: save_page refuses one), so it grows with the workspace's page history, and deleting
-  a project grows with the project and makes that one search for all of its spans. Neither
-  needs room under a plan's caps, and a rebuilt page keeps within `versions_per_page`.
+  note: save_page refuses a new citation of one), so it grows with the workspace's page
+  history, and deleting a project grows with the project and makes that one search for all
+  of its spans. Neither needs room under a plan's caps, and a rebuilt page keeps within
+  `versions_per_page`.
   What the audit log keeps: every event stays, with its action, actor, time, the person's
   id, counts, kinds, codes and rule ids, and project.deleted keeps the project's id and name.
   Nothing made from a note stays: `page` (a slug, made from a title; erasure.NOTE_DERIVED,

@@ -182,7 +182,7 @@ class ErasureMethods(StoreBase):
         loses it (one that named it alone then reaches nothing). A page of another project of
         the workspace that cites a span of its notes, in any version, changes as forget_note
         changes a page that cites the note (_plan, _rewrite), in the same transaction: only a
-        database an earlier build wrote holds one (save_page refuses it), and an upgrade does
+        database an earlier build wrote holds one (save_page refuses a new one), and an upgrade does
         not rewrite it. The workspace's stored bytes go down by its notes' size; the month's
         count of notes written does not. Recorded as project.deleted (its id and name, how many
         notes and pages, and how many pages of other projects changed as `elsewhere` when it is
@@ -287,8 +287,8 @@ class ErasureMethods(StoreBase):
         each when it is not zero); nothing of its text, title or source_ref. The answer, the
         preview, the log and the event count the pages of other projects and name none of
         them or their projects: the one who forgets may not reach them. Only a database an
-        earlier build wrote holds such a page (save_page refuses a passage of another
-        project), and an upgrade does not rewrite it: it is found here, when the note is
+        earlier build wrote holds such a page (save_page refuses a new citation of another
+        project's passage), and an upgrade does not rewrite it: it is found here, when the note is
         forgotten. KeyError for a note unknown or out of reach; PermissionError for anyone
         else who may not (see the module). Needs no room under any cap of a plan."""
         index = self._index

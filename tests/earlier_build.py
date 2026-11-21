@@ -1,5 +1,6 @@
 """A page as a database an earlier build wrote can hold it: claims that cite passages of
-another project. Store.save_page refuses such a page now, and an upgrade does not rewrite
+another project. Store.save_page refuses a new such citation now (it keeps one the page has
+already), and an upgrade does not rewrite
 one (a forget finds it when the note it cites is forgotten: cairn.store.erasure), so the
 tests that show how cairn reads, relates, traces, draws or forgets one write it here,
 straight into the tables, as that build's save wrote it: the page's next version with its

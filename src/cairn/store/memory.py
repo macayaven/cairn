@@ -91,6 +91,8 @@ PAGE_DETAIL: dict[str, dict[str, str]] = {
     },
 }
 PAGE_EVENTS = tuple(PAGE_DETAIL)
+# Why save_page refused a claim that cites a passage of another project's note.
+NOT_OF_PROJECT = "A page can cite only passages from its own project."
 NAME_MAX = 80
 # Rows are scoped by resolving their project through the bound account and the view's reach,
 # bound as _scope gives them: the account id, then the reach twice (StoreBase._reach).
@@ -142,7 +144,7 @@ class StalePage(Exception):
 
 
 class CitesForgotten(StalePage):
-    """A page save into a project that has forgotten a note cited a span the store no longer
+    """A page save into a workspace that has forgotten a note cited a span the store no longer
     holds: it was built from a note forgotten while it was being compiled or arranged
     (store/erasure.py). Nothing was written; a writer that reads the page again finds the
     note gone. A StalePage, so every writer that retries a moved page retries this too."""
@@ -855,9 +857,14 @@ class MemoryMethods(StoreBase):
         page's latest version is that one, checked in the write transaction; otherwise it
         raises StalePage and writes nothing, search index and audit log included.
 
-        In a project that has forgotten a note, a save whose claims cite a span the store no
+        In a workspace that has forgotten a note, a save whose claims cite a span the store no
         longer holds raises CitesForgotten (a StalePage) and writes nothing: a page read or
-        drafted before the note was forgotten never brings its text back.
+        drafted before the note was forgotten never brings its text back, whatever its project.
+
+        A save whose claims cite a span the store holds of a note of another project raises
+        ValueError (NOT_OF_PROJECT) and writes nothing, as the import's check and the gates
+        refuse it; a page an earlier build saved so is left as it is, until the note it cites
+        is forgotten (cairn.store.erasure).
 
         Topics (N1): `topic` is the topic key the save is for (the compiler's). When the slug
         is another topic's, or the key has another page of the project, the save raises
@@ -883,6 +890,8 @@ class MemoryMethods(StoreBase):
         index = self._index
         with self._write() as con:
             self._require_project(con, project_id)
+            if _cites_another_project(con, project_id, claims):
+                raise ValueError(NOT_OF_PROJECT)
             if by_model:  # the latest version, and whether the project is at "never"
                 latest, kept = con.execute(
                     "SELECT COALESCE(MAX(version), 0), EXISTS (SELECT 1 FROM settings"
@@ -902,7 +911,7 @@ class MemoryMethods(StoreBase):
                 raise StalePage(expected_version, latest)
             if not _keyed(con, project_id, slug, title, topic):
                 raise StalePage(latest if expected_version is None else expected_version, latest)
-            if _cites_forgotten(con, project_id, claims):
+            if _cites_forgotten(con, self._account_id, claims):
                 raise CitesForgotten(
                     latest if expected_version is None else expected_version, latest
                 )
@@ -1363,13 +1372,34 @@ def _forgotten(con: sqlite3.Connection, project_id: str, text_sha256: str) -> bo
     return found.fetchone() is not None
 
 
-def _cites_forgotten(con: sqlite3.Connection, project_id: str, claims: Sequence[Claim]) -> bool:
-    """Whether, in a project that has forgotten a note, a claim cites a span the store does not
-    hold: one of a forgotten note. Only such a project is asked, so a project that never forgot
-    anything costs one lookup, and a save that cites spans of its own making (the tests' and
-    an operator's) is never refused there."""
+def _cites_another_project(
+    con: sqlite3.Connection, project_id: str, claims: Sequence[Claim]
+) -> bool:
+    """Whether a claim cites a span the store holds of a note of another project (save_page).
+    A span it does not hold is not asked here: a save may cite spans of its own making (the
+    tests' and an operator's), and one a forget removed is _cites_forgotten's. No statement
+    for claims that cite nothing; else one, by the spans' primary key."""
+    cited = list(dict.fromkeys(i for claim in claims for i in claim.span_ids))
+    return bool(cited) and bool(
+        con.execute(
+            "SELECT 1 FROM spans JOIN notes ON notes.id = spans.note_id"
+            " WHERE spans.id IN (SELECT value FROM json_each(?)) AND notes.project_id != ?"
+            " LIMIT 1",
+            (json.dumps(cited), project_id),
+        ).fetchone()
+    )
+
+
+def _cites_forgotten(con: sqlite3.Connection, account_id: str, claims: Sequence[Claim]) -> bool:
+    """Whether, in a workspace that has forgotten a note, a claim cites a span the store does
+    not hold: one of a forgotten note. The workspace is asked, not the page's project, since a
+    forget changes every page of it that cited the note (store/erasure.py). Only such a
+    workspace is asked further, so one that never forgot anything costs one lookup, and a save
+    that cites spans of its own making (the tests' and an operator's) is never refused there."""
     if not con.execute(
-        "SELECT 1 FROM forgotten WHERE project_id = ? LIMIT 1", (project_id,)
+        "SELECT 1 FROM forgotten WHERE project_id IN"
+        " (SELECT id FROM projects WHERE account_id = ?) LIMIT 1",
+        (account_id,),
     ).fetchone():
         return False
     cited = json.dumps(list(dict.fromkeys(i for claim in claims for i in claim.span_ids)))

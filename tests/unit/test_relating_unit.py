@@ -16,6 +16,7 @@ from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.relations import CLAIMS_COMMON, COMMON, LINE_MAX, MENTIONED_BY, SHARES, TEXT_MAX
 from cairn.store import Claim, Store, ranking, relating
+from earlier_build import earlier_page
 
 
 @pytest.fixture
@@ -434,8 +435,8 @@ def test_a_claim_reworded_from_its_passage_mentions_as_the_index_says(store, ops
     other = store.create_project("other")
     far, _ = store.add_note(other.id, "# Far\n\n" + said + "\n")
     (theirs,) = [s.id for s in store.note_spans(far.id) if s.kind == "paragraph"]
-    store.save_page(
-        ops.id, "outside", "Outside", "", [Claim(id="cl_o", text=said, span_ids=[theirs])]
+    earlier_page(
+        store, ops.id, "outside", "Outside", "", [Claim(id="cl_o", text=said, span_ids=[theirs])]
     )
     assert named_by(store, ops, deploy) == ["outside", "reworded", "uncited"]
     # and a long one of them is given by its head: no place of it is known to be prose, so
@@ -817,7 +818,7 @@ def test_a_claim_whose_passage_is_another_projects_states_no_term(store, ops):
     theirs, _ = mail.add_note(other.id, "# Mail\n\nUse `a.cfg` with Quill.\n", via="mail")
     span = next(s.id for s in store.note_spans(theirs.id) if s.kind == "paragraph")
     borrowed = Claim(id="cl_m", text="Use `a.cfg` with Quill.", span_ids=(span,))
-    store.save_page(ops.id, "mixed", "Mixed", "", [borrowed])
+    earlier_page(store, ops.id, "mixed", "Mixed", "", [borrowed])
     twin = file(store, "ops", "Twin", "Set `a.cfg` here.\n")
     quill = file(store, "ops", "Quill", "Ada wrote it.\n")
 

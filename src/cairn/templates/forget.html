@@ -24,10 +24,14 @@
   {% endfor %}
 </ul>
 {% endif %}
-{% if not rebuilt and not removed %}
+{% if elsewhere %}
+<h2>Pages of other projects</h2>
+<p>{{ elsewhere }} {{ "page" if elsewhere == 1 else "pages" }} of other projects of this workspace {{ "cites" if elsewhere == 1 else "cite" }} the note, from before a page could cite only its own project's notes. Each changes or goes in the same way. They are counted here and not named.</p>
+{% endif %}
+{% if not rebuilt and not removed and not elsewhere %}
 <p>No page cites this note.</p>
 {% else %}
-<p>Every earlier version of {{ "that page" if (rebuilt|length + removed|length) == 1 else "those pages" }} goes too, since {{ "it" if (rebuilt|length + removed|length) == 1 else "they" }} held the note's text.</p>
+<p>Every earlier version of {{ "that page" if (rebuilt|length + removed|length + elsewhere) == 1 else "those pages" }} goes too, since {{ "it" if (rebuilt|length + removed|length + elsewhere) == 1 else "they" }} held the note's text.</p>
 {% endif %}
 <p>The same text will not be stored in this project again, whoever sends it. What forgetting removes is overwritten in the database file. Where this install keeps a continuous backup, the old text can stay in the database's log file until the operator compacts it, and in backup copies until they expire.</p>
 <section class="sheet" aria-label="Forget the note">

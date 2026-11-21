@@ -3,6 +3,7 @@
 import importlib.util
 
 from cairn.store import Claim, Store
+from earlier_build import earlier_page
 
 
 def test_graph_contains_only_the_explicit_page_claim_and_note_evidence(tmp_path):
@@ -259,7 +260,9 @@ def test_foreign_passages_and_notes_are_never_returned_even_when_cited(tmp_path)
         beta = store.create_project("beta")
         foreign, _ = store.add_note(beta.id, "Foreign secret.\n", source_ref="foreign-ref")
         passage = store.note_spans(foreign.id)[0]
-        store.save_page(alpha.id, "a", "A", "", [Claim(id="one", text="A", span_ids=(passage.id,))])
+        earlier_page(
+            store, alpha.id, "a", "A", "", [Claim(id="one", text="A", span_ids=(passage.id,))]
+        )
         graph = project_graph(store, "alpha")
         assert "Foreign secret" not in str(graph)
         assert "foreign-ref" not in str(graph)

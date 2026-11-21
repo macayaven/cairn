@@ -8,8 +8,9 @@ PermissionError, and so does any connection limited to some projects or to readi
 the write, and is exactly unknown.
 
 Both run in one write transaction and cost what they remove, never the whole database: the
-rows are found by their project (and a forgotten note's pages by the project's page versions),
-the project's search rows by `search_claims`, by primary key. What they delete is zeroed
+rows are found by their project (and a forgotten note's pages by the workspace's page
+versions, whatever their project), the project's search rows by `search_claims`, by primary
+key. What they delete is zeroed
 (`PRAGMA secure_delete`, FTS5's own secure-delete), and each ends with a truncating
 checkpoint, as delete_account does, so the text leaves the files at once. Each marks a
 compaction due (cairn.store.portable.compaction_state): short index keys, such as a page's
@@ -17,7 +18,7 @@ slug or a project's name, can stay in index pages until `compact()`.
 
 Forgetting keeps a SHA-256 digest of the note's text in `forgotten`, so the same text is
 never stored in that project again (add_note raises ForgottenNote), and a page save that
-cites a span the store no longer holds, in such a project, is CitesForgotten (save_page):
+cites a span the store no longer holds, in such a workspace, is CitesForgotten (save_page):
 a compile or arrangement that read the page before the note was forgotten never brings it
 back. The digests go with their project and their workspace and are never exported.
 
@@ -50,6 +51,7 @@ from cairn.spans import (
     asked_line,
     claim_id,
     fences_reaching,
+    following,
 )
 from cairn.store import ranking
 from cairn.store.access import MODELS_PREFIX
@@ -249,45 +251,51 @@ class ErasureMethods(StoreBase):
         return True
 
     def forget_note(self, note_id: str) -> Forgotten:
-        """Remove one note with its spans (see the module). A page that cited it, in any of
-        its versions, loses every version and continues as one new version, numbered one
-        past its latest: the latest version's claims without the note (kept_claims), its
+        """Remove one note with its spans (see the module). A page of the workspace that cited
+        it, in any of its versions and whatever its project, loses every version and
+        continues as one new version, numbered one past its latest: the latest version's
+        claims without the note (kept_claims), held to its own project's notes (_plan), its
         body cairn.compiler.render_body of them, its metrics the provenance counts ("claims",
         "spans_cited"), indexed for search in place of the old; a page left with no claim
         is removed, with its search rows. That version is written here, past every gate, so
         it is held to the import's own check of a version (portable.version_faults): a claim
         an import would refuse leaves it as the note's own claims do, never the forget, and
         one line on the store's log counts those claims by page and version (for a page they
-        leave empty, the count alone: a removed page's slug is made from a note's title),
-        and the forget's audit event counts them over all its pages (`claims_left`, when
-        there are any). `claims_left` is that count and no other: the claims the import's
-        check took from the versions the forget wrote, those that left for a fence that ran
-        on among them (_plan). The claims kept_claims does not keep, which cited the note
-        alone or were not the whole of the passages they still cite, are the forget itself
-        and are not in it. The project keeps the note's digest, so the same text is not
-        stored there again. The workspace's stored bytes go down by the note's size; the
-        month's count of notes written does not. Recorded as note.forgotten (the note's id,
-        its project's id, how many pages changed, and `claims_left` when it is not zero);
-        nothing of its text, title or source_ref. KeyError for a note unknown or out of
-        reach; PermissionError for anyone else who may not (see the module). Needs no room
-        under any cap of a plan."""
+        leave empty, the count alone: a removed page's slug is made from a note's title; for
+        a page of another project, the count alone too), and the forget's audit event counts
+        them over all its pages (`claims_left`, when there are any). `claims_left` is that
+        count and no other: the claims the import's check took from the versions the forget
+        wrote, those that left for a fence that ran on among them (_plan). The claims
+        kept_claims does not keep, which cited the note alone or were not the whole of the
+        passages they still cite, are the forget itself and are not in it. The project keeps
+        the note's digest, so the same text is not stored there again. The workspace's
+        stored bytes go down by the note's size; the month's count of notes written does
+        not. Recorded as note.forgotten (the note's id, its project's id, how many pages
+        changed, how many of them were of other projects as `elsewhere` and `claims_left`,
+        each when it is not zero); nothing of its text, title or source_ref. The answer, the
+        preview, the log and the event count the pages of other projects and name none of
+        them or their projects: the one who forgets may not reach them. Only a database an
+        earlier build wrote holds such a page (save_page refuses a passage of another
+        project), and an upgrade does not rewrite it: it is found here, when the note is
+        forgotten. KeyError for a note unknown or out of reach; PermissionError for anyone
+        else who may not (see the module). Needs no room under any cap of a plan."""
         index = self._index
         with self._write() as con:
             project_id, text_sha256, size = self._note_in_reach(con, note_id)
             name, maker_id, _ = self._reached(con, project_id)
             self._refuse_erasure(con, maker_id)
-            plan = _plan(con, project_id, note_id)
+            plan = _plan(con, self._account_id, note_id)
             con.execute("DELETE FROM spans WHERE note_id = ?", (note_id,))
             con.execute("DELETE FROM notes WHERE id = ?", (note_id,))
             con.execute("DELETE FROM waiting WHERE note_id = ?", (note_id,))  # N1
             con.execute("DELETE FROM note_writers WHERE note_id = ?", (note_id,))  # A1
             con.execute("DELETE FROM slack_notes WHERE note_id = ?", (note_id,))  # K1
-            for slug, version, title, kept, _, _, body in plan:
+            for at, _, slug, version, title, kept, _, _, body in plan:  # at: the page's project
                 if kept:
                     cited = {i for claim in kept for i in claim.span_ids}
                     metrics = {"claims": len(kept), "spans_cited": len(cited)}
                     page = (
-                        project_id,
+                        at,
                         slug,
                         version + 1,
                         title,
@@ -300,36 +308,45 @@ class ErasureMethods(StoreBase):
                     con.execute(
                         "DELETE FROM page_versions"
                         " WHERE project_id = ? AND slug = ? AND version <= ?",
-                        (project_id, slug, version),
+                        (at, slug, version),
                     )
                 else:
                     for table in ("page_versions", "page_keys"):  # N1: and its topic
                         con.execute(
                             f"DELETE FROM {table} WHERE project_id = ? AND slug = ?",
-                            (project_id, slug),
+                            (at, slug),
                         )
                     if _has_table(con, index):  # its rows and its project's counts
-                        ranking.index_page(
-                            con, self._account_id, index, project_id, slug, title, ()
-                        )
+                        ranking.index_page(con, self._account_id, index, at, slug, title, ())
             con.execute(
                 "INSERT INTO forgotten (project_id, text_sha256) VALUES (?, ?)"
                 " ON CONFLICT DO NOTHING",
                 (project_id, text_sha256),
             )
             self._unstore(con, size)
-            removed = [slug for slug, _, _, kept, *_ in plan if not kept]
-            if removed:
-                _unname(con, self._account_id, name, name, removed)
+            removed: dict[str, list[str]] = {}  # by the name of each page's project
+            for _, named, slug, _, _, kept, *_ in plan:
+                if not kept:
+                    removed.setdefault(named, []).append(slug)
+            for named, slugs in removed.items():
+                _unname(con, self._account_id, named, named, slugs)
             detail = {"note": note_id, "project": project_id, "pages": len(plan)}
-            left = sum(refused for _, _, _, _, _, refused, _ in plan)
+            if elsewhere := sum(at != project_id for at, *_ in plan):
+                detail["elsewhere"] = elsewhere  # pages of other projects: counted, not named
+            left = sum(refused for *_, refused, _ in plan)
             if left:  # claims an import would refuse, which left their pages with the note
                 detail["claims_left"] = left
             self._audit(con, "note.forgotten", project=name, detail=detail)
             _compaction_due(con, self._stamp())
         self._truncate_log(f"note {note_id}")
-        for slug, version, _, kept, _, refused, _ in plan:  # once the forget is committed
-            if refused and kept:
+        for at, _, slug, version, _, kept, _, refused, _ in plan:  # once it is committed
+            if refused and at != project_id:  # a page the one who forgets may not reach
+                store_log.warning(
+                    "forget: %d claim(s) that an import would refuse left a page of another"
+                    " project",
+                    refused,
+                )
+            elif refused and kept:
                 store_log.warning(
                     "forget: %d claim(s) that an import would refuse left page %r at its"
                     " version %d",
@@ -343,16 +360,16 @@ class ErasureMethods(StoreBase):
                     " removed with them",
                     refused,
                 )
-        return _outcome(note_id, plan)
+        return _outcome(note_id, project_id, plan)
 
     def forget_preview(self, note_id: str) -> Forgotten:
         """What forget_note would do now, by the same rule, writing nothing: the pages it
-        would rebuild and those it would remove. For anyone who reaches the note (whether
-        they may forget it is may_erase's question); KeyError for a note unknown or out of
-        reach. A read."""
+        would rebuild and those it would remove, and how many of other projects. For anyone
+        who reaches the note (whether they may forget it is may_erase's question); KeyError
+        for a note unknown or out of reach. A read."""
         with self._read() as con:
             project_id, _, _ = self._note_in_reach(con, note_id)
-            return _outcome(note_id, _plan(con, project_id, note_id))
+            return _outcome(note_id, project_id, _plan(con, self._account_id, note_id))
 
     def _note_in_reach(self, con: sqlite3.Connection, note_id: str) -> tuple[str, str, int]:
         """(project id, text digest, UTF-8 size) of a note of a project in the view's reach;
@@ -417,19 +434,24 @@ class ErasureMethods(StoreBase):
             )
 
 
-# A page of a forgotten note's project that cites it in any version: (slug, its latest version,
-# its title, the claims it keeps (kept_claims, less those an import would refuse), the spans
-# of the project still held that its latest version cites, how many claims an import would
-# refuse, the body of the claims it keeps as compiler.render_body writes it).
-_Planned = tuple[str, int, str, tuple[Claim, ...], dict[str, Span], int, str]
+# A page of a forgotten note's workspace that cites it in any version, whatever its project:
+# (its project's id and name, its slug, its latest version, its title, the claims it keeps
+# (kept_claims, less those an import would refuse), the spans of its project's notes still
+# held that its latest version cites, how many claims an import would refuse, the body of the
+# claims it keeps as compiler.render_body writes it).
+_Planned = tuple[str, str, str, int, str, tuple[Claim, ...], dict[str, Span], int, str]
 
 
-def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Planned]:
-    """What forgetting the note does to its project's pages, read on `con`: each page that cites
-    one of its spans in any version, by slug, with what its latest version keeps: the claims
-    kept_claims keeps, less every claim the import's check of a version names
-    (portable.version_faults: the claims it does not name pass together, so it is run once,
-    on one render of the body, which is the body the forget writes).
+def _plan(con: sqlite3.Connection, account_id: str, note_id: str) -> list[_Planned]:
+    """What forgetting the note does to the pages of its workspace (`account_id`), read on
+    `con`: each page of any project of it that cites one of the note's spans in any version,
+    by project and slug, with what its latest version keeps: the claims kept_claims keeps,
+    less every claim the import's check of a version names (portable.version_faults: the
+    claims it does not name pass together, so it is run once, on one render of the body,
+    which is the body the forget writes). Each page is held to its own project's notes, as
+    an import of that project holds it: in a page of another project, a claim that also
+    cites a note of that project stays as that note's text, and one that cites a passage
+    of a project not its own leaves (Refusal.NOT_OF_PROJECT), as in the note's project.
 
     But for a code fence that only the claims before it open and the body does not close
     (more than spans.CLOSERS_MAX of them, Refusal.FENCE_RUNS_ON). The claim that opens it
@@ -535,25 +557,24 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
     rendered at most once more than the plain rule, and that only past CLOSERS_MAX, and
     handed the parser at most 25 characters for each character of its body in each render
     (tests/unit/test_forget_cost_unit.py): counts from those pages, not bounds.
-    It reads the project's page versions, never the rest of the database."""
+    It reads the workspace's page versions in one search, whatever the number of its
+    projects, never the rest of the database."""
     from cairn.compiler import left_to_run  # the compiler builds on the store
 
     gone = frozenset(
         span_id for (span_id,) in con.execute("SELECT id FROM spans WHERE note_id = ?", (note_id,))
     )
-    slugs = [
-        slug
-        for (slug,) in con.execute(
-            "SELECT DISTINCT slug FROM page_versions AS p WHERE project_id = ? AND EXISTS"
-            " (SELECT 1 FROM json_each(p.claims) AS claim,"
-            "  json_each(claim.value, '$.span_ids') AS cited"
-            "  WHERE cited.value IN (SELECT value FROM json_each(?)))"
-            " ORDER BY slug",
-            (project_id, json.dumps(sorted(gone))),
-        )
-    ]
+    pages = con.execute(
+        "SELECT DISTINCT p.project_id, projects.name, p.slug FROM page_versions AS p"
+        " JOIN projects ON projects.id = p.project_id WHERE projects.account_id = ? AND EXISTS"
+        " (SELECT 1 FROM json_each(p.claims) AS claim,"
+        "  json_each(claim.value, '$.span_ids') AS cited"
+        "  WHERE cited.value IN (SELECT value FROM json_each(?)))"
+        " ORDER BY p.project_id, p.slug",
+        (account_id, json.dumps(sorted(gone))),
+    ).fetchall()
     planned = []
-    for slug in slugs:
+    for project_id, name, slug in pages:
         version, title, claims_json = con.execute(
             "SELECT version, title, claims FROM page_versions"
             " WHERE project_id = ? AND slug = ? ORDER BY version DESC LIMIT 1",
@@ -594,7 +615,7 @@ def _plan(con: sqlite3.Connection, project_id: str, note_id: str) -> list[_Plann
                 }
                 kept = tuple(claim for place, claim in enumerate(kept, 1) if place not in more)
                 refused += len(more)
-        planned.append((slug, version, title, kept, spans, refused, body))
+        planned.append((project_id, name, slug, version, title, kept, spans, refused, body))
     return planned
 
 
@@ -792,7 +813,10 @@ def _before_it(
     than twice the body (sixth report, must-fix 4), and how long `line` is no longer narrows
     what is asked (RT1): every claim fits when what is written after each is no longer than
     the claim, which holds but where a claim's widest line is mostly tabs. Past that bound
-    only as many of the nearest are asked as fit, and none when not one does.
+    only as many of the nearest are asked as fit, and none when not one does. Its
+    indentation and first character are worked out once here (spans.following) and every
+    question is written from them, so building the questions costs what they write, never
+    the line's length once a claim (eighth round, finding 2).
 
     Only claims are asked that hold a backtick or a tilde and after which the body wrote
     nothing: a claim with a closer is closed. And only when the body wrote all its
@@ -804,16 +828,17 @@ def _before_it(
         return set()
     starts, run = found
     texts = [text for text, _ in blocks[: at + 1]]
+    said = following(line)  # its indentation and first character, once for every question
     room, left = 0, 2 * len(body) - starts[at]  # the claims a question may ask, the nearest
     while room < min(at - run, most):  # first, and what twice the body leaves for them
-        left -= len(asked_line(line, texts[at - room - 1])) + 2
+        left -= len(asked_line(said, texts[at - room - 1])) + 2
         if left < 0:
             break
         room += 1
     low, high = 0, room  # the last `low` leave; the last `high + 1` not all
     ask = first = high
     while low < high:
-        taken = fences_reaching(body[: starts[at - ask]], texts[at - ask : at], line)
+        taken = fences_reaching(body[: starts[at - ask]], texts[at - ask : at], said)
         if all(taken):
             low = ask
         else:
@@ -828,22 +853,28 @@ def _written(
 ) -> tuple[list[int], list[str]] | None:
     """Where each block up to the one at `at`, the one `body` leaves to run on, starts in
     `body`, and what the body wrote after each block before it (the lines that close its
-    fences). None when `body` is not these blocks in order, or when the body did not write
-    all its CLOSERS_MAX closers: with one to spare the next render would close a fence, not
-    name its claim (the claim named was then one that no line closes)."""
-    from cairn.compiler import _closed  # the compiler builds on the store
-
+    fences). None when `body` is not these blocks in order. No parse: whether the body
+    wrote all its closers is `_spent`'s question, asked once there is something to ask."""
     texts = [text for text, _ in blocks[: at + 1]]
     starts = _placed(body, texts)
     if starts is None:
         return None
-    wrote = [body[starts[n] + len(texts[n]) : starts[n + 1] - 2] for n in range(at)]
+    return starts, [body[starts[n] + len(texts[n]) : starts[n + 1] - 2] for n in range(at)]
+
+
+def _spent(blocks: Sequence[tuple[str, Claim | None]], wrote: Sequence[str]) -> bool:
+    """Whether the body wrote all its CLOSERS_MAX closers, `wrote` as `_written` gives it:
+    with one to spare the next render would close a fence, not name its claim (the claim
+    named was then one that no line closes). A parse for each block the body wrote lines
+    after, so it is asked last, when there is a claim to ask about."""
+    from cairn.compiler import _closed  # the compiler builds on the store
+
     closers = sum(  # each line the body wrote, less the one a claim alone is closed by
         lines.count("\n") - (_closed(text) != text)
-        for text, lines in zip(texts, wrote, strict=False)
+        for (text, _), lines in zip(blocks, wrote, strict=False)
         if lines
     )
-    return None if closers != CLOSERS_MAX else (starts, wrote)
+    return closers == CLOSERS_MAX
 
 
 def _open_run(
@@ -853,7 +884,8 @@ def _open_run(
     fence of theirs may have reached it: (where each block up to it starts in `body`, the
     first of those claims). They follow one another with no heading and no other claim
     between, each holds a backtick or a tilde, and the body wrote nothing after any of them
-    (a claim with a closer is closed). None when there is none, or as `_written`."""
+    (a claim with a closer is closed). None when there is none, as `_written`, or when the
+    body did not write all its closers (`_spent`, asked only when there is such a claim)."""
     found = _written(body, blocks, at)
     if found is None:
         return None
@@ -861,7 +893,7 @@ def _open_run(
     run = at  # the first of the claims
     while run and blocks[run - 1][1] and not wrote[run - 1] and _fenced(blocks[run - 1][0]):
         run -= 1
-    return None if run == at else (starts, run)
+    return None if run == at or not _spent(blocks, wrote) else (starts, run)
 
 
 def _left_open(body: str, blocks: Sequence[tuple[str, Claim | None]], at: int) -> set[int]:
@@ -874,10 +906,11 @@ def _left_open(body: str, blocks: Sequence[tuple[str, Claim | None]], at: int) -
     and the claim named does not keep it (the ninth round). Not a claim whose fence closes
     in its own text, nor one the body wrote a closer after, nor one with no fence. Not asked
     of what follows them: one parse of the body as it is, whatever the title does next;
-    none as `_written`. After the claim named the section is not asked: a claim there whose
-    fence has no closing line can open a fence, and leaves by `_may_open_a_fence`; one at
-    the margin that this parse reads open is so only because what the claim named leaves
-    open runs on into it, and its own fence closes in its text."""
+    none as `_written` and `_spent`. After the claim named the section is not asked: a
+    claim there whose fence has no closing line can open a fence, and leaves by
+    `_may_open_a_fence`; one at the margin that this parse reads open is so only because
+    what the claim named leaves open runs on into it, and its own fence closes in its
+    text."""
     found = _written(body, blocks, at)
     if found is None:
         return set()
@@ -886,7 +919,7 @@ def _left_open(body: str, blocks: Sequence[tuple[str, Claim | None]], at: int) -
     while section and blocks[section - 1][1] is not None:
         section -= 1
     asked = [n for n in range(section, at) if not wrote[n] and _fenced(blocks[n][0])]
-    if not asked:
+    if not asked or not _spent(blocks, wrote):
         return set()
     stops = {  # each fence of the body, by the line it starts on: the line after its last
         token.map[0]: token.map[1]
@@ -949,10 +982,14 @@ def _may_open_a_fence(text: str) -> bool:
     )
 
 
-def _outcome(note_id: str, plan: list[_Planned]) -> Forgotten:
-    rebuilt = tuple(slug for slug, _, _, kept, *_ in plan if kept)
-    removed = tuple(slug for slug, _, _, kept, *_ in plan if not kept)
-    return Forgotten(note_id=note_id, rebuilt=rebuilt, removed=removed)
+def _outcome(note_id: str, project_id: str, plan: list[_Planned]) -> Forgotten:
+    """What the one who forgets is told: the pages of the note's project by slug, and those
+    of other projects by their number alone (they may not reach them)."""
+    own = [(slug, kept) for at, _, slug, _, _, kept, *_ in plan if at == project_id]
+    rebuilt = tuple(slug for slug, kept in own if kept)
+    removed = tuple(slug for slug, kept in own if not kept)
+    elsewhere = len(plan) - len(own)
+    return Forgotten(note_id=note_id, rebuilt=rebuilt, removed=removed, elsewhere=elsewhere)
 
 
 def _held_spans(

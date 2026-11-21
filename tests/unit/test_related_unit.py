@@ -19,6 +19,7 @@ from cairn.memory import RELATED_RANGE, BadRequest, Memory, NotFound
 from cairn.server import create_app
 from cairn.store import Claim, Store, relating
 from cairn.web.mcp import INSTRUCTIONS, TREAT_AS_INFORMATION, build_mcp, instructions
+from earlier_build import earlier_page
 
 BASE = "http://127.0.0.1:8765"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
@@ -440,7 +441,7 @@ def test_a_claim_names_its_writers_as_page_names_them_whatever_project_its_passa
     theirs, _ = mail.add_note(other.id, "# Mail\n\nQuill ships on Friday.\n", via="mail")
     span = next(s.id for s in env.store.note_spans(theirs.id) if s.kind == "paragraph")
     borrowed = Claim(id="cl_m", text="Quill ships on Friday.", span_ids=(span,))
-    env.store.save_page(env.ops.id, "mixed", "Mixed", "", [borrowed])
+    earlier_page(env.store, env.ops.id, "mixed", "Mixed", "", [borrowed])
     note(env, "Quill", "Ada wrote it.\n")
     narrowed = env.store.create_key("narrow", projects=[env.ops.id])
     for key, outside in ((env.key, True), (narrowed, False)):

@@ -1779,8 +1779,9 @@ class Memory:
         return {"deleted": True}
 
     def forget(self, ref: str, note_id: str) -> dict[str, Any]:
-        """Forget the note `note_id` of the project `ref` (Store.forget_note): the pages
-        rebuilt without it and those removed, by slug. NotFound for a project or note unknown
+        """Forget the note `note_id` of the project `ref` (Store.forget_note): the pages of
+        that project rebuilt without it and those removed, by slug, and how many pages of
+        other projects (`elsewhere`), never which. NotFound for a project or note unknown
         or out of reach, or a note of another project; Forbidden for a caller who may not."""
         note = self.note_in(self.project(ref), note_id)
         try:
@@ -1793,6 +1794,7 @@ class Memory:
             "note_id": forgotten.note_id,
             "rebuilt": list(forgotten.rebuilt),
             "removed": list(forgotten.removed),
+            "elsewhere": forgotten.elsewhere,
         }
 
     def forget_preview(self, ref: str, note_id: str) -> tuple[Project, Note, Forgotten]:

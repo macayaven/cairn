@@ -548,14 +548,17 @@ class WaitingNote(BaseModel):
 
 
 class Forgotten(BaseModel):
-    """What forgetting one note did (H5b): its id, the slugs of the pages rebuilt without it
-    and of the pages removed because nothing else held them up, each sorted."""
+    """What forgetting one note did (H5b): its id, the slugs of the pages of its project
+    rebuilt without it and of those removed because nothing else held them up, each sorted,
+    and how many pages of other projects of the workspace it rebuilt or removed: counted,
+    never named, since the one who forgets may not reach them."""
 
     model_config = ConfigDict(frozen=True)
 
     note_id: str
     rebuilt: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
+    elsewhere: int = 0
 
 
 class CompactionState(BaseModel):

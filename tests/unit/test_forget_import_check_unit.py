@@ -9,8 +9,10 @@ line on the store's log counts the claims by page and version, never by text.
 
 Every version here is built at the store's level (Store.save_page gates nothing), since no
 compile, tidy or arrangement of cairn's saves one: a fold across two headings, a claim in
-other words than its passage, an id held twice, a passage of another project, and three
-copies of one passage (a composer can save those, beside a longer note). Made-up notes."""
+other words than its passage, an id held twice, a passage of another project (which
+save_page refuses now: written as a database an earlier build wrote holds it,
+tests/earlier_build.py), and three copies of one passage (a composer can save those, beside
+a longer note). Made-up notes."""
 
 import io
 import logging
@@ -22,6 +24,7 @@ from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.store import Claim, Store
 from cairn.store.portable import Refusal, version_faults
+from earlier_build import earlier_page
 
 SAME = "Ada keeps port 80 open."
 
@@ -37,7 +40,7 @@ class Built:
     """A project `alpha` with one page, `net`: each of `texts` a note of it, and `claims`
     (made by `shape` from the notes' own claims) saved over them at the store's level."""
 
-    def __init__(self, store: Store, texts, shape) -> None:
+    def __init__(self, store: Store, texts, shape, earlier: bool = False) -> None:
         self.store, self.memory = store, Memory(store, lint_gate)
         self.project = store.create_project("alpha")
         self.notes = [
@@ -47,7 +50,12 @@ class Built:
         claims = shape(list(page.claims))
         spans = store.get_spans([i for claim in claims for i in claim.span_ids])
         body = render_body("Net", claims, spans)
-        store.save_page(self.project.id, "net", "Net", body, claims, expected_version=page.version)
+        if earlier:  # a passage of another project: as a database an earlier build wrote
+            earlier_page(store, self.project.id, "net", "Net", body, claims)
+        else:
+            store.save_page(
+                self.project.id, "net", "Net", body, claims, expected_version=page.version
+            )
         self.version = page.version + 1
 
     def page(self):
@@ -149,7 +157,8 @@ def test_a_claim_citing_a_passage_of_another_project_leaves(store, tmp_path):
     def citing_beta(claims):
         return [claims[0].model_copy(update={"span_ids": (foreign.id,)}), *claims[1:]]
 
-    built = Built(store, [SAME, "Brook owns the rollback.", "Quill keeps the log."], citing_beta)
+    texts = [SAME, "Brook owns the rollback.", "Quill keeps the log."]
+    built = Built(store, texts, citing_beta, earlier=True)
     store.forget_note(built.notes[2])
     assert [claim.text for claim in built.page().claims] == ["Brook owns the rollback."]
     assert len(built.imported(tmp_path)) == 1

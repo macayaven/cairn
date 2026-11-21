@@ -94,3 +94,24 @@ def test_every_other_command_answers_it_as_an_older_cairn_database(
     line = cli_data.OLDER_SCHEMA.format(db=db, found=31, known=SCHEMA_VERSION, command=command)
     assert out == "" and err == line + "\n"
     assert sha(db) == before
+
+
+def test_a_table_the_upgrade_rebuilds_keeps_only_cairns_own_columns_and_indexes(tmp_path, listened):
+    """Step 30 rebuilds sessions naming cairn's columns: an operator's index or column on it
+    is allowed by the recognition and does not survive the upgrade, as the run guide says."""
+    from test_guide_facts_own_project_unit import guide
+
+    db = replicated(tmp_path, "28", ["CREATE INDEX operator_sessions ON sessions (created_at)"])
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("ALTER TABLE sessions ADD COLUMN spare TEXT")
+        con.commit()
+    assert cli.main(["serve", "--db", str(db)]) == 0
+    with closing(sqlite3.connect(db)) as con:
+        names = {name for (name,) in con.execute("SELECT name FROM sqlite_master")}
+        fields = {row[1] for row in con.execute("PRAGMA table_info(sessions)")}
+    assert "operator_sessions" not in names and "spare" not in fields
+    assert {"_litestream_seq", "_litestream_lock"} <= names
+    assert (
+        "A table the upgrade rebuilds (`sessions` at schema 30, `audit_events` at 31) keeps only"
+        " cairn's own columns and indexes."
+    ) in guide("run")

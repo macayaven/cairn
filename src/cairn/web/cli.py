@@ -2135,6 +2135,9 @@ def main(argv: list[str] | None = None) -> int:
     if (refused := cli_data.linked(db)) is not None:
         print(refused, file=sys.stderr)
         return 2
+    if db is not None and (refused := cli_data.journal_refusal(db)):
+        print(refused, file=sys.stderr)
+        return 1
     try:
         if args.command == "serve":  # serve puts the line on stderr with its access log
             return _run(args)

@@ -72,7 +72,8 @@ def _connect(db: Path) -> sqlite3.Connection:
     """The database read-only: immutable when no "-wal" file is beside it (the module's
     docstring). CannotOpen when SQLite refuses the file."""
     wal = db.with_name(db.name + "-wal")
-    query = "mode=ro" if wal.exists() else "mode=ro&immutable=1"
+    journal = db.with_name(db.name + "-journal")
+    query = "mode=ro" if wal.exists() or journal.exists() else "mode=ro&immutable=1"
     uri = f"{db.resolve().as_uri()}?{query}"
     try:
         return sqlite3.connect(uri, uri=True)

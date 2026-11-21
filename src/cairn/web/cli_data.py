@@ -276,6 +276,36 @@ def linked(db: Path | None) -> str | None:
     return LINKED_DB.format(db=db) if os.path.islink(db) else hard_linked(db)
 
 
+def _companions(db: Path) -> Iterator[Path]:
+    for suffix in ("-wal", "-shm", "-journal"):
+        yield db.with_name(db.name + suffix)
+
+
+def journal_refusal(db: Path) -> str | None:
+    """Let SQLite identify a hot rollback journal without giving it permission to recover."""
+    try:
+        empty = db.stat().st_size == 0
+    except FileNotFoundError:
+        empty = True
+    except (PermissionError, NotADirectoryError):
+        return None  # the command diagnoses the path
+    if empty:
+        for path in _companions(db):
+            if os.path.lexists(path):
+                return f"{path} already exists beside an empty or missing database at {db}"
+        return None
+    journal = db.with_name(db.name + "-journal")
+    if journal.is_file():
+        try:
+            with closing(sqlite3.connect(db.absolute().as_uri() + "?mode=ro", uri=True)) as probe:
+                probe.execute("PRAGMA schema_version").fetchone()
+        except sqlite3.Error as error:
+            if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_READONLY_ROLLBACK:
+                return f"{db} has a hot rollback journal: recover it with its owning program first"
+            return f"cannot check the rollback journal at {journal}: {type(error).__name__}"
+    return None
+
+
 def readable_by_others(db: Path) -> int | None:
     """The mode of the file at `db` when someone other than its owner can read it: the file
     gives a class of users (its group, or everyone else) read, and every folder above it
@@ -344,8 +374,7 @@ def new_store(db: Path) -> Iterator[Store]:
             with closing(Store(staged, upgrade=False)) as store:
                 store._state.audit_line = events.append
                 yield store
-            for suffix in ("-wal", "-shm", "-journal"):
-                companion = db.with_name(db.name + suffix)
+            for companion in _companions(db):
                 if os.path.lexists(companion):
                     raise ValueError(f"{companion} already exists beside the destination")
             try:

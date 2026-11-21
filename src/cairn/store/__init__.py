@@ -152,12 +152,12 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   removed text is gone from the main file, -wal and -shm at once. Cost: both touch only the
   rows they remove or rewrite, through indexes, and never rewrite the database file; a
   forget reads every version of the workspace's pages, in one search, to find those that
-  cite the note (only a program that wrote into the database directly leaves a page citing
-  another project's note: save_page refuses a new citation of one, and the upgrade to schema
-  32 rewrote every one an earlier build left), so it grows with the workspace's page
-  history, and deleting a project grows with the project and makes that one search for all
-  of its spans. Neither needs room under a plan's caps, and a rebuilt page keeps within
-  `versions_per_page`.
+  cite the note (only a program that wrote into the database directly, or an older build's
+  writer still open across the upgrade, leaves a page citing another project's note:
+  save_page refuses a new citation of one, and the upgrade to schema 32 rewrote every one an
+  earlier build left), so it grows with the workspace's page history, and deleting a project
+  grows with the project and makes that one search for all of its spans. Neither needs room
+  under a plan's caps, and a rebuilt page keeps within `versions_per_page`.
   What the audit log keeps: every event stays, with its action, actor, time, the person's
   id, counts, kinds, codes and rule ids, and project.deleted keeps the project's id and name.
   Nothing made from a note stays: `page` (a slug, made from a title; erasure.NOTE_DERIVED,

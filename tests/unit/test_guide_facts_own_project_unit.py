@@ -33,21 +33,23 @@ PRIVACY_NOTE = (
     " this version rewrote every page that an earlier version had"
     " saved citing another project's note, keeping its own project's claims and none of its"
     " earlier versions. Should a page of another project of the workspace still cite the"
-    " note, which only a program that wrote into the database directly could leave, the"
-    " forget changes it in the same way; the person who forgets is told how many such pages"
-    " it changes, before and after, and so is everyone who reads the project's audit log,"
-    " never which."
+    " note, which only a program that wrote into the database directly, or an older version's"
+    " writer still open across the upgrade, could leave, the forget changes it in the same way;"
+    " the person who forgets is told how many such pages it changes, before and after, and so"
+    " is everyone who reads the project's audit log, never which."
 )
 PRIVACY_PROJECT = (
     "A page of another project cannot cite its notes (One note, below); should one still"
-    " cite them, which only a program that wrote into the database directly could leave, it"
-    " changes as it does when a note is forgotten."
+    " cite them, which only a program that wrote into the database directly, or an older"
+    " version's writer still open across the upgrade, could leave, it changes as it does when a"
+    " note is forgotten."
 )
 RUN_IMPORT = (
     "An import refuses a file in which a page cites a note of another project, with one line"
     " that names the page. cairn writes no such citation, and the upgrade to schema 32"
     " rewrote every page an earlier version had saved with one, so only an export made"
-    " before that upgrade, or from a database a program wrote into directly, holds one."
+    " before that upgrade, or from a database written into directly by a program or by an"
+    " older version's writer still open across the upgrade, holds one."
     " Start this version of cairn once on the database the file came from, which runs that"
     " upgrade, and export again. In a database already at schema 32, `stats"
     " --other-projects` (above) counts such pages, and `repair` (above) rewrites them as the"
@@ -78,8 +80,8 @@ RUN_COMMANDS = (  # its list: test_every_command_that_opens_the_database_is_name
     " database."
 )
 RUN_ADDRESSES = (
-    "An upgrade keeps the address of every page that remains, so links to it and to the claims"
-    " that remain on it keep working."
+    "An upgrade keeps the address of every page that remains, so links to it keep working; a"
+    " link to one of its claims keeps working where the claim kept its id."
 )
 RUN_STATS = (
     "`--other-projects` adds one count, for each workspace that has any: the pages that cite,"
@@ -88,9 +90,9 @@ RUN_STATS = (
     " with `--json`)."
     " It reads every page version, so it runs only when asked. cairn writes no such page, and"
     " the upgrade that brought the database to this version rewrote every one an earlier"
-    " version left, so a number above zero means that a program other than cairn made the page:"
-    " by writing into the database's tables, or by calling cairn's own code with passages the"
-    " database does not hold."
+    " version left, so a number above zero means that a program other than cairn made the page"
+    " (by writing into the database's tables, or by calling cairn's own code with passages the"
+    " database does not hold) or an older version's writer still open across the upgrade did."
 )
 RUN_REPAIR = (  # its behaviour: test_repair_command_unit.py
     "To clear them, run `docker exec cairn python -m cairn.server repair --db /data/cairn.db`;"
@@ -121,6 +123,9 @@ def test_the_guides_say_it():
         "a later note on that page keeps one it has",
         "refuses any other citation on every write",
         "An upgrade keeps every page's address",
+        "and to the claims that remain on it keep working",
+        "which only a program that wrote into the database directly could leave",
+        "a database a program wrote into directly, holds one",
     ):
         assert gone not in guide("privacy") + guide("run")
 

@@ -273,8 +273,9 @@ def many(db: Path, workspaces: int) -> None:
     stamped_31(db)
 
 
-def step_32(db: Path) -> int:
-    """The step alone, as _upgrade runs it: what it says is said once it commits."""
+def step_32(db: Path) -> tuple[int, int]:
+    """The step alone, as _upgrade runs it: what it says is said once it commits. (the most
+    rows one cursor handed over, how many log lines were held until the commit.)"""
     con = sqlite3.connect(db, factory=Counting, isolation_level=None)
     stamped = schema._STAMP.set(lambda: "2099-01-01T00:00:00.000000+00:00")
     said: list = []
@@ -283,9 +284,10 @@ def step_32(db: Path) -> int:
         con.execute("BEGIN")
         schema._MIGRATIONS[32](con)
         con.execute("COMMIT")
+        held = len(said)
         for say in said:
             say()
-        return con.most[0]
+        return con.most[0], held
     finally:
         schema._AFTER.reset(after)
         schema._STAMP.reset(stamped)
@@ -299,10 +301,13 @@ def test_step_32_holds_one_page_at_a_time_whatever_the_number_of_pages_and_works
     db = tmp_path / "cairn.db"
     many(db, count)
     with caplog.at_level(logging.WARNING, logger="cairn.store"):
-        most = step_32(db)
+        most, held = step_32(db)
     assert [r.args[1:] for r in caplog.records] == [(1, 1, 0)] * count
     assert rows(db, "SELECT COUNT(*) FROM page_versions") == [(count,)]
     assert most == MOST, most
+    assert held == count  # one log line for each workspace that had any, held until the commit
+    said = " ".join(schema._MIGRATIONS[32].__doc__.split())
+    assert "it holds one log line for each workspace that had any until then" in said
 
 
 # The most rows any one cursor of the step hands over, at 3 workspaces as at 30: one page's.

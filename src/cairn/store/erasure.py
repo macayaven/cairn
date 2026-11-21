@@ -195,8 +195,9 @@ class ErasureMethods(StoreBase):
         loses it (one that named it alone then reaches nothing). A page of another project of
         the workspace that cites a span of its notes, in any version, changes as forget_note
         changes a page that cites the note (_plan, _rewrite), in the same transaction: only a
-        program that wrote into the database directly leaves one (save_page refuses a new one,
-        and the upgrade to schema 32 rewrote every one an earlier build left). The workspace's
+        program that wrote into the database directly, or an older build's writer still open
+        across the upgrade, leaves one (save_page refuses a new one, and the upgrade to schema
+        32 rewrote every one an earlier build left). The workspace's
         stored bytes go down by its notes' size; the month's count of notes written does not.
         Recorded as project.deleted (its id and name, how many
         notes and pages, and how many pages of other projects changed as `elsewhere` when it is
@@ -303,7 +304,8 @@ class ErasureMethods(StoreBase):
         them or their projects: the one who forgets may not reach them. save_page refuses a
         new citation of another project's passage, and the upgrade to schema 32 and the
         `repair` command (repair_own_projects) rewrite every such page they find; one a program
-        wrote into the tables since is found here too, when the note is forgotten. KeyError
+        wrote into the tables since, or an older build's writer still open across the upgrade,
+        is found here too, when the note is forgotten. KeyError
         for a note unknown or out of reach; PermissionError for anyone
         else who may not (see the module). Needs no room under any cap of a plan."""
         index = self._index
@@ -1132,18 +1134,20 @@ def hold_to_own_projects(
     whose note another workspace forgot after the page cited it (a forget searches its own
     workspace alone).
 
-    The pages are found one at a time, by workspace, project name and slug, in one pass over the
-    page versions however many pages it repairs: each search goes on from the last page found,
-    by the projects' unique index and the versions' primary key (_NEXT_PROJECT, _NEXT_PAGE), so
-    each version is read by the search once, and it holds one page and one workspace's counts
-    whatever the database holds; on a database that holds no such page it makes one search and
-    writes nothing. Each page it removes also has its name taken out of the audit events that
-    named it (_unname), one pass over the workspace's audit events for each page removed, so
-    that part grows with the events (64 pages removed: 5,579 units of 100 SQLite steps beside
-    512 other events, 20,324 beside 2,048, as the second reviewer measured). It writes no audit
-    event: inside the upgrade no audit writer of this build may run (a step is history). It says
-    nothing itself: `each`, when given, is called, in the transaction, with each workspace that
-    had any (its id and its counts rewritten and removed), and the caller says them once the
+    The pages are found one at a time, by workspace, project name and slug, in one pass over
+    the page versions however many pages it repairs: each search goes on from the last page
+    found, by the projects' unique index and the versions' primary key (_NEXT_PROJECT,
+    _NEXT_PAGE), so each version is read by the search once, and it holds one page and one
+    workspace's counts whatever the database holds (schema step 32, its caller, holds
+    besides one log line for each workspace that had any until its transaction commits); on
+    a database that holds no such page it makes one search and writes nothing. Each page it
+    removes also has its name taken out of the audit events that named it (_unname), one
+    pass over the workspace's audit events for each page removed, so that part grows with
+    the events (64 pages removed: 5,579 units of 100 SQLite steps beside 512 other events,
+    20,324 beside 2,048, as the second reviewer measured). It writes no audit event: inside
+    the upgrade no audit writer of this build may run (a step is history). It says nothing
+    itself: `each`, when given, is called, in the transaction, with each workspace that had
+    any (its id and its counts rewritten and removed), and the caller says them once the
     transaction has committed (schema step 32 through the upgrade's runner, one line of the
     store's log each, _log_repaired; the `repair` command on stdout). Returns how many
     `workspaces` had any, and how many pages were `rewritten` and `removed`."""

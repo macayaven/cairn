@@ -17,10 +17,10 @@ from starlette.testclient import TestClient
 from test_rt1_forget_workspace_held import borrowed, citing, passage
 
 from cairn.arrange import arrange_page, tidy_page
-from cairn.compiler import compile_note
+from cairn.compiler import compile_note, own_claims
 from cairn.gate import lint_gate
 from cairn.llm import Reply
-from cairn.memory import Memory
+from cairn.memory import FiledOnce, Memory
 from cairn.server import create_app
 from cairn.store import Claim, StalePage, Store
 from earlier_build import earlier_page
@@ -228,15 +228,19 @@ def test_the_refusal_costs_one_statement_by_the_spans_key_and_reads_no_page(stor
     assert not [s for s in made["refused"] if "SELECT claims FROM page_versions" in s]
 
 
-def test_a_fold_left_out_whole_comes_back_when_its_notes_text_is_written_again(store):
+def test_a_fold_left_out_whole_comes_back_when_its_note_is_filed_again(store):
     """Report 9, forget tester: a writer leaves out whole a claim that folds east's own
     passage with desk's. Filing an unrelated note, or the tidy, does not bring east's passage
-    back onto the page; writing its note's text into east again does: the store answers with
-    the stored note and compiles it again (compiler.own_claims says so)."""
+    back onto the page, and neither does its note's text alone when the note had a source
+    reference (report 10: that is another note); filing the same note again, with its
+    original source reference and topic, does: the store answers with the stored note and
+    compiles it again (compiler.own_claims says so)."""
     memory = Memory(store, lint_gate)
     desk, east = store.create_project("desk"), store.create_project("east")
     theirs = passage(store, filed(store, desk.id, "# Dispatch\n\nQuill sealed the crate.\n"))
-    local = filed(store, east.id, "# Minutes\n\nThe ledger opens at noon.\n")
+    text, ref = "# Minutes\n\nThe ledger opens at noon.\n", "minutes-0412"
+    local, created = store.add_note(east.id, text, source_ref=ref, topic="Minutes")
+    assert created and compile_note(store, local, gate=lint_gate).status == "saved"
     ours = passage(store, local)
     borrowed(store, east.id, "minutes", citing(1, ours.text, ours, theirs))
 
@@ -248,6 +252,16 @@ def test_a_fold_left_out_whole_comes_back_when_its_notes_text_is_written_again(s
     assert not on_page()
     tidy_page(store, east.id, "minutes")
     assert not on_page()
-    again = memory.note("east", "# Minutes\n\nThe ledger opens at noon.\n")
+    alone = memory.note("east", text, topic="Minutes")  # no source reference: another note
+    assert alone["note_id"] != local.id and alone["created"] and not on_page()
+    with pytest.raises(FiledOnce):  # the same note, for another topic: filed once
+        memory.note("east", text, source_ref=ref, topic="Ledger")
+    again = memory.note("east", text, source_ref=ref, topic="Minutes")
     assert (again["note_id"], again["created"], again["status"]) == (local.id, False, "saved")
     assert on_page()
+    said = " ".join(own_claims.__doc__.split())
+    assert (
+        "Filing another note, or a tidy, does not bring it back: filing the same note again,"
+        " with its original source reference and topic, does, since the store answers with the"
+        " stored note and compiles it again."
+    ) in said

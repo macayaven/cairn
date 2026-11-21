@@ -23,8 +23,9 @@ the install, then one line per workspace, by its id. Counts, sizes and times onl
 install's record of compaction is one line of its own (`compaction:`, Privacy 1), in words an
 operator can act on, with the command that finishes the job; it names no workspace.
 
-`--other-projects` also counts, by workspace, the pages any version of which cites a note of
-another project (cairn.store.erasure.count_pages_citing_other_projects: the search the
+`--other-projects` also counts, by workspace, the pages any version of which cites a passage
+that no note of the page's own project holds, another project's or one no longer held
+(cairn.store.erasure.count_pages_citing_other_projects: the search the
 store's repair, hold_to_own_projects, makes, writing nothing): `other_projects` in the
 object, one line without `--json`. It reads every page version, so it is asked for, never
 paid on every call. cairn writes no such page; one there was written behind the store's back.

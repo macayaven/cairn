@@ -1165,9 +1165,10 @@ Bounded reads, a bounded history (Q1, frozen by tests/acceptance/test_q1_bounded
   for the install and each workspace under `workspaces` (by id) `projects`, `notes`, `pages`,
   `page_versions`, `waiting`, `keys`, `agents`, `newest_note` and `sources` (by kind: how
   many are on, how many's last run failed). Counts, sizes and times only. With
-  `--other-projects`, `other_projects` too: by workspace id, how many pages cite a note of
-  another project in any version (cairn.store.erasure.count_pages_citing_other_projects,
-  which reads every page version). `serve` logs the
+  `--other-projects`, `other_projects` too: by workspace id, how many pages cite, in any
+  version, a passage that no note of their own project holds, another project's or one no
+  longer held (cairn.store.erasure.count_pages_citing_other_projects, which reads every
+  page version). `serve` logs the
   install's totals with `requests` (responses by class since the last line) as one line on
   a logger of its own, at start and every `--stats-every` minutes (create_app's
   `stats_every` and `stats_wait`); under low disk it is a WARNING with a sentence that says

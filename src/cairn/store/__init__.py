@@ -1075,9 +1075,10 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   in them; each audit event gains the value that chains it to the one before
   (cairn.store.audit), filled in order for every event that exists; and oldest_build
   records the floor, 31. From 31 (schema.py's _OWN_PASSAGES step, 32; report 8): every
-  page that cites, in any version, a passage of another project's note, of its workspace or
-  another, is rewritten as a forget rewrites a page, with its own project's notes' claims
-  alone (cairn.store.erasure.hold_to_own_projects), and the floor is raised to 32.
+  page that cites, in any version, a passage that no note of its own project holds (another
+  project's, of its workspace or another, or one whose note another workspace forgot) is
+  rewritten as a forget rewrites a page, with its own project's notes' claims alone
+  (cairn.store.erasure.hold_to_own_projects), and the floor is raised to 32.
   Each version step
   is one transaction, so a step that fails leaves the database as it was.
   From 31 on, a database records its floor (schema.py's oldest_build): the lowest schema

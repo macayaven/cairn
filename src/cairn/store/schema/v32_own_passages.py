@@ -8,8 +8,9 @@ from cairn.store.schema.shared import _STAMP
 
 def _hold_to_own_projects(con: sqlite3.Connection) -> None:
     """Schema _OLDEST_BUILD to _OWN_PASSAGES: every page that cites, in any version, a passage
-    the store holds of a note of another project, of its workspace or another, is held to its
-    own project's notes as a forget holds a page (cairn.store.erasure.hold_to_own_projects,
+    that no note of its own project holds (another project's, of its workspace or another, or
+    one whose note another workspace forgot after the page cited it) is held to its own
+    project's notes as a forget holds a page (cairn.store.erasure.hold_to_own_projects,
     over the whole database): one new version of the claims its own project's notes hold up,
     every earlier version deleted, its search rows rewritten; a page left with no claim is
     removed. Only an earlier build's save_page, or a program that wrote the tables directly,

@@ -19,12 +19,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from starlette.testclient import TestClient
+from test_earlier_page_writers_unit import BASE, SLUG, legacy
 from test_hold_to_own_projects_unit import WORDS, two_workspaces
 from test_hosted_accounts_unit import v27_database
 from test_rt1_forget_workspace_held import borrowed, citing, filed, passage, tables_holding
 from test_store_unit import connect, rows, user_version
 
 import cairn.store.schema as schema
+from cairn.gate import lint_gate
+from cairn.memory import Memory
+from cairn.server import create_app
 from cairn.store import Claim, Store, erasure
 from cairn.store.base import _index_name
 from cairn.store.memory import _write_page_version
@@ -133,6 +138,42 @@ def test_a_file_at_28_goes_through_the_same(tmp_path, caplog):
     two, kept, before = made(source)
     at_28(db, source)
     repaired(db, two, kept, before, caplog)
+
+
+def test_a_page_citing_a_note_its_workspace_never_saw_forgotten_is_held_too(tmp_path):
+    """An earlier build saved east's page citing a note of another workspace, and that
+    workspace then forgot the note, a forget that searches its own workspace alone: east's
+    page cites a passage the store no longer holds, which is not of its own project's notes
+    either. Opened by this build, the page is held to its own project's notes as any other:
+    its export imports, and a note posted by a key that may write east alone is saved."""
+    db = tmp_path / "cairn.db"
+    with closing(Store(db)) as store:
+        east, cited = legacy(store, "workspace")
+        (far,) = rows(
+            db,
+            "SELECT projects.account_id FROM notes JOIN projects ON projects.id = notes.project_id"
+            f" WHERE notes.id = '{cited.source_id}'",
+        )
+        there = store.for_account(far[0])
+        assert Memory(there, lint_gate).forget("desk", cited.source_id)["elsewhere"] == 0
+        assert any(cited.id in c.span_ids for c in store.get_page(east.id, SLUG).claims)
+    stamped_31(db)
+    with closing(Store(db)) as store:
+        page = store.get_page(east.id, SLUG)
+        assert store.page_versions(east.id, SLUG) == [page.version]
+        assert not [c for c in page.claims if cited.id in c.span_ids]
+        out = io.BytesIO()
+        store.export(out)
+        with closing(Store(":memory:")) as fresh:
+            assert fresh.import_export(io.BytesIO(out.getvalue())).pages == 1
+        key = store.create_key("t", projects=[east.id])
+        with TestClient(create_app(store, public_url=BASE), base_url=BASE) as client:
+            r = client.post(
+                "/api/projects/east/notes",
+                headers={"x-api-key": key},
+                json={"text": "# Drift sync\n\nDrift rings the bell at two.\n"},
+            )
+        assert (r.status_code, r.json()["status"]) == (201, "saved"), r.text
 
 
 def table_rows(db: Path) -> dict[str, list]:

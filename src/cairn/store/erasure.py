@@ -1045,15 +1045,19 @@ def _rewrite(
         _unname(con, account_id, named, named, slugs)
 
 
-# A page version that cites a passage the store holds of a note of another project, whatever
-# workspace that project is in (`p`: the page version): hold_to_own_projects and
+# A passage a page version cites (`cited.value`; `p`: the page version) that no note of the
+# page's own project holds, what an import refuses: another project's, whatever workspace that
+# project is in, or one the store no longer holds (a forget searches its own workspace alone,
+# so a page of another that cited the note keeps the id). hold_to_own_projects and
 # count_pages_citing_other_projects ask it, so the repair and the operator's count are one
 # search.
-_CITES_ANOTHER_PROJECT = (
+_NOT_OF_ITS_PROJECT = (
+    "NOT EXISTS (SELECT 1 FROM spans JOIN notes ON notes.id = spans.note_id"
+    " WHERE spans.id = cited.value AND notes.project_id = p.project_id)"
+)
+_CITES_OUTSIDE_ITS_PROJECT = (
     "EXISTS (SELECT 1 FROM json_each(p.claims) AS claim,"
-    " json_each(claim.value, '$.span_ids') AS cited"
-    " JOIN spans ON spans.id = cited.value JOIN notes ON notes.id = spans.note_id"
-    " WHERE notes.project_id != p.project_id)"
+    f" json_each(claim.value, '$.span_ids') AS cited WHERE {_NOT_OF_ITS_PROJECT})"
 )
 
 
@@ -1061,16 +1065,19 @@ def hold_to_own_projects(
     con: sqlite3.Connection, account_id: str | None, stamp: str
 ) -> dict[str, int]:
     """Hold every page to its own project's notes, on `con`, in the caller's transaction:
-    each page any version of which cites a passage the store holds of a note that is not of
-    the page's own project (another project of its workspace, or another workspace's) is
-    rewritten as a forget rewrites a page (_plan_page, _rewrite), with those passages going
-    from that page alone and nothing else: one new version, numbered one past its latest,
-    of the claims its own project's notes hold up, every earlier version deleted (they held
-    the other project's text), its search rows rewritten, its project given the row
-    PASSAGES_REMOVED; a page left with no claim is removed. The other project's notes are
-    not touched. Scope: the workspace `account_id`, or the whole database (None: schema step
-    32 runs it so, once). Only a program that wrote the store's tables behind its back, or
-    called save_page directly in an earlier build, could leave such a page.
+    each page any version of which cites a passage that no note of the page's own project
+    holds (one of a note of another project of its workspace, or of another workspace's, or
+    one the store no longer holds: what an import refuses) is rewritten as a forget rewrites
+    a page (_plan_page, _rewrite), with those passages going from that page alone and
+    nothing else: one new version, numbered one past its latest, of the claims its own
+    project's notes hold up, every earlier version deleted (they held the other project's
+    text), its search rows rewritten, its project given the row PASSAGES_REMOVED; a page
+    left with no claim is removed. The other project's notes are not touched. Scope: the
+    workspace `account_id`, or the whole database (None: schema step 32 runs it so, once).
+    Only a program that wrote the store's tables behind its back, or called save_page
+    directly in an earlier build, could leave such a page; a passage no longer held is one
+    whose note another workspace forgot after the page cited it (a forget searches its own
+    workspace alone).
 
     The pages are found one at a time, by workspace, project name and slug, each search
     starting after the last page found, so it holds one page and one workspace's counts
@@ -1087,7 +1094,7 @@ def hold_to_own_projects(
         " JOIN projects ON projects.id = p.project_id"
         " WHERE (?1 IS NULL OR projects.account_id = ?1)"
         " AND (projects.account_id, projects.name, p.slug) > (?2, ?3, ?4)"
-        f" AND {_CITES_ANOTHER_PROJECT}"
+        f" AND {_CITES_OUTSIDE_ITS_PROJECT}"
         " ORDER BY projects.account_id, projects.name, p.slug LIMIT 1",
         (account_id, *after),
     ).fetchone():
@@ -1097,13 +1104,12 @@ def hold_to_own_projects(
             _log_repaired(at, tally)
             done["workspaces"] += 1
             at, tally = account, Counter()
-        gone = frozenset(  # the other projects' passages its versions cite
+        gone = frozenset(  # the passages its versions cite that are not of its project's
             span_id
             for (span_id,) in con.execute(
                 "SELECT DISTINCT cited.value FROM page_versions AS p, json_each(p.claims) AS claim,"
                 " json_each(claim.value, '$.span_ids') AS cited"
-                " JOIN spans ON spans.id = cited.value JOIN notes ON notes.id = spans.note_id"
-                " WHERE p.project_id = ? AND p.slug = ? AND notes.project_id != p.project_id",
+                f" WHERE p.project_id = ? AND p.slug = ? AND {_NOT_OF_ITS_PROJECT}",
                 (project_id, slug),
             )
         )
@@ -1130,14 +1136,15 @@ def _log_repaired(account_id: str | None, tally: Counter) -> None:
 
 
 def count_pages_citing_other_projects(con: sqlite3.Connection) -> dict[str, int]:
-    """By workspace id, how many pages any version of which cites a passage the store holds of
-    a note of another project: hold_to_own_projects' search, counted, writing nothing (the
-    `stats --other-projects` command). One statement, over every page version."""
+    """By workspace id, how many pages any version of which cites a passage that no note of
+    the page's own project holds (another project's, or one no longer held):
+    hold_to_own_projects' search, counted, writing nothing (the `stats --other-projects`
+    command). One statement, over every page version."""
     return dict(
         con.execute(
             "SELECT account_id, COUNT(*) FROM (SELECT DISTINCT projects.account_id,"
             " p.project_id, p.slug FROM page_versions AS p"
-            f" JOIN projects ON projects.id = p.project_id WHERE {_CITES_ANOTHER_PROJECT})"
+            f" JOIN projects ON projects.id = p.project_id WHERE {_CITES_OUTSIDE_ITS_PROJECT})"
             " GROUP BY account_id ORDER BY account_id"
         ).fetchall()
     )

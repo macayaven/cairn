@@ -9,8 +9,9 @@ from contextlib import closing
 from importlib.resources import files
 
 import pytest
+from test_earlier_page_writers_unit import legacy
 from test_rt1_forget_workspace_held import GONE, borrowed, citing, filed, passage
-from test_store_unit import connect
+from test_store_unit import connect, rows
 
 import cairn.store.schema as schema
 from cairn.gate import lint_gate
@@ -51,14 +52,16 @@ RUN_IMPORT = (
 RUN_UPGRADE = (
     "The upgrade to schema 32 (release 0.1.0) holds every page to its own project's notes: a"
     " page that an earlier version saved citing a note of another project, in any of its"
-    " versions, keeps one new version with its own project's claims alone, and its earlier"
-    " versions go, as when that note is forgotten; a page left with no claim of its own goes."
+    " versions, even one that note's workspace has forgotten since, keeps one new version with"
+    " its own project's claims alone, and its earlier versions go, as when that note is"
+    " forgotten; a page left with no claim of its own goes."
     " The server's log says, for each workspace that had any, how many pages were rewritten"
     " and how many removed, and names none."
 )
 RUN_STATS = (
-    "`--other-projects` adds one count, for each workspace that has any: the pages that cite"
-    " a note of another project in any of their versions (`other_projects` with `--json`)."
+    "`--other-projects` adds one count, for each workspace that has any: the pages that cite,"
+    " in any of their versions, a note of another project, even one that note's workspace has"
+    " forgotten since (`other_projects` with `--json`)."
     " It reads every page version, so it runs only when asked. cairn writes no such page, and"
     " the upgrade that brought the database to this version rewrote every one an earlier"
     " version left, so a number above zero means that a program wrote into the database's"
@@ -131,6 +134,21 @@ def test_stats_counts_only_when_asked(tmp_path, capsys):
     db = tmp_path / "cairn.db"
     with closing(Store(db)) as store:
         old_page(store)
+        one = store._account_id
+    assert cli.main(["stats", "--db", str(db), "--json", "--other-projects"]) == 0
+    assert json.loads(capsys.readouterr().out)["other_projects"] == {one: 1}
+
+
+def test_stats_counts_a_page_citing_a_note_its_workspace_has_forgotten_since(tmp_path, capsys):
+    db = tmp_path / "cairn.db"
+    with closing(Store(db)) as store:
+        _, cited = legacy(store, "workspace")
+        (far,) = rows(
+            db,
+            "SELECT projects.account_id FROM notes JOIN projects ON projects.id = notes.project_id"
+            f" WHERE notes.id = '{cited.source_id}'",
+        )
+        Memory(store.for_account(far[0]), lint_gate).forget("desk", cited.source_id)
         one = store._account_id
     assert cli.main(["stats", "--db", str(db), "--json", "--other-projects"]) == 0
     assert json.loads(capsys.readouterr().out)["other_projects"] == {one: 1}

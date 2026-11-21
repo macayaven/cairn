@@ -13,6 +13,7 @@ from contextlib import closing
 import pytest
 from test_hold_to_own_projects_unit import spread
 from test_rt1_forget_workspace_held import GONE, borrowed, citing, filed, passage
+from test_store_unit import v4_database
 
 from cairn.arrange import tidy_page
 from cairn.compiler import compile_note
@@ -146,3 +147,35 @@ def test_the_rows_agree_after_the_repair_of_pages_spread_over_projects():
         with store._write() as con:
             erasure.hold_to_own_projects(con, None, store._stamp())
         rows_agree(store)
+
+
+def test_the_rows_agree_in_every_workspace_of_a_database_upgraded_from_before_step_5(tmp_path):
+    """Schema step 5 made search_claims and counted every row an older index held
+    (ranking.count_index): each workspace's index and its search_claims rows agree after the
+    upgrade, and after a page of the upgraded database is saved again."""
+    db = tmp_path / "v4.db"
+    v4_database(db)
+    with closing(Store(db)) as store:
+        with store._read() as con:
+            accounts = [a for (a,) in con.execute("SELECT id FROM accounts ORDER BY seq")]
+        held = 0
+        for account in accounts:
+            view = store.for_account(account)
+            with view._read() as con:
+                made = con.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (view._index,))
+                if made.fetchone() is None:  # no page yet: no index, and no row to count
+                    assert not con.execute(
+                        "SELECT 1 FROM search_claims WHERE account_id = ?", (account,)
+                    ).fetchone()
+                    continue
+                held += con.execute(f"SELECT count(*) FROM {view._index}").fetchone()[0]
+            rows_agree(view)
+        assert held, "the database holds no index row to count"
+        with store._read() as con:
+            account, project, slug = con.execute(
+                "SELECT account_id, project_id, slug FROM search_claims LIMIT 1"
+            ).fetchone()
+        view = store.for_account(account)
+        page = view.get_page(project, slug)
+        view.save_page(project, slug, page.title, page.body, page.claims)
+        rows_agree(view)

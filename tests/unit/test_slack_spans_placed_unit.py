@@ -2,7 +2,9 @@
 gives the element right before it, that element agrees with the place, one step past the
 cases of test_rt3_slack_spans_found. Every message is made up."""
 
-from test_rt3_slack_spans_found import code, prose, shown
+from test_rt3_slack_spans_found import READER, code, prose, shown
+
+from cairn.slack.text import note_from_message
 
 
 def test_text_before_a_span_is_read_with_its_entities():
@@ -35,3 +37,26 @@ def test_a_backtick_before_a_link_does_not_make_the_link_code():
     link = {"type": "link", "url": "https://fable.test/x", "text": "x"}
     page = shown("x`<https://fable.test/x|x>````", [prose("x`"), link, code("`"), prose("`")])
     assert page == [("text", "x`x"), ("code", "`"), ("text", "`")]
+
+
+def test_the_text_of_the_section_before_tells_nothing_a_stated_limit():
+    """A stated limit: what the rich text displayed before a span is read in the span's own
+    section only. Here "a`" ends the section before, on the same line, and the span of one
+    backtick is placed on the backtick Slack displayed as a character, as before this fix."""
+    sections = [[prose("a`")], [code("`")]]
+    blocks = [{"type": "rich_text", "elements": [
+        {"type": "rich_text_section", "elements": elements} for elements in sections
+    ]}]  # fmt: skip
+    note = note_from_message(
+        {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100", "text": "a````",
+         "blocks": blocks},
+        team_id="T0FABLE01", team_domain="fable-works", conversation_id="C0LIBRARY1",
+        author="Cedar Quill", names={},
+    ).text  # fmt: skip
+    body = note.split("\n\n", 1)[1].rsplit("\n\n", 1)[0]
+    children = [t for block in READER.parse(body) for t in block.children or []]
+    assert [(t.type, t.content) for t in children] == [
+        ("text", "a"),
+        ("code_inline", "`"),
+        ("text", "`"),
+    ]

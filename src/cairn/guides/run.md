@@ -363,6 +363,8 @@ docker exec cairn rm /data/export.zip
 
 The workspace must not already have a project with the same name. Imported projects are private: only the workspace's owners reach them until you share them again. Each arrives at **Models** where the file says, and a project of Personal notes at never whatever it says. A file exported before cairn carried that choice does not say it, and the import says so: each then starts at **Models** as a new project of its kind does, a project of Personal notes at never, the others not decided. A project whose people chose allowed arrives at allowed, and a file exported before cairn said so brings none there: each of its projects not at never arrives not decided.
 
+An import refuses a file in which a page cites a note of another project, with one line that names the page: cairn's own paths never add such a citation, though a later note on that page keeps one it has, and only a program that called the store's save directly, in an earlier version of cairn, could store one. Forgetting the note it cites, or deleting that note's project, rewrites the page, and the next export imports.
+
 **A copy of the database** holds every project with its notes and pages, the people, and a digest of each key. It does not hold the keys themselves, which are in the files you wrote them to, nor the environment file you start cairn with and the credentials of sources in it. Keep those somewhere else. Note the image cairn runs from (`docker inspect cairn --format '{{.Image}}'` prints it): a copy is restored with the image that made it. The commands below stop cairn so the copy is whole, copy into a new folder every time, and start cairn again whether or not the copy worked:
 
 ```bash

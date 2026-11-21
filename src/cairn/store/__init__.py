@@ -114,6 +114,8 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   False for an id unknown or out of reach (the same answer). The project's name leaves the
   config of every source that names it, and a source left with no project is switched off
   (store/sources.py's docstring): a project made later under that name gets nothing from it.
+  Each page of another project of the workspace that cites a span of its notes, in any
+  version, changes as a forget of those notes changes it (below), in the same transaction.
   `view.forget_note(note_id) -> Forgotten` (note_id, rebuilt, removed: page slugs of the
   note's project; elsewhere: how many pages of other projects, never which)
   removes one note and its spans; each page of the workspace, whatever its project, any
@@ -129,7 +131,9 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   it had may be the forgotten note's heading), its body rendered as the compiler renders
   it with that title, and every earlier
   version is deleted, since they held the note's text; a page left with no claim is deleted
-  with its index rows. It stores the note's text digest in `forgotten` (project, SHA-256 hex):
+  with its index rows. It stores the note's text digest in `forgotten` (project, SHA-256 hex;
+  a delete that changed a page of another project leaves that project a row that is no
+  digest, erasure.PASSAGES_REMOVED, so a save drafted before it is CitesForgotten too):
   add_note of the same text into that project then raises ForgottenNote (a ValueError)
   before the guard runs and writes nothing, and save_page raises CitesForgotten (a
   StalePage) for claims citing a span that a forget removed meanwhile, so a compile that
@@ -141,16 +145,17 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   says so (KeyError when unknown) and `view.forget_preview(note_id)` says what a forget
   would rebuild and remove; both are reads. Each is one transaction with its audit event,
   project.deleted {"id", "name", "notes", "pages"} or note.forgotten {"note", "project",
-  "pages", and "elsewhere" when pages of other projects changed}, subtracts what it removed
+  "pages"}, each with "elsewhere" when pages of other projects changed, subtracts what it removed
   from `stored_bytes`, marks a compaction due (see
   Compaction state) and ends with the truncating checkpoint delete_account ends with, so the
   removed text is gone from the main file, -wal and -shm at once. Cost: both touch only the
   rows they remove or rewrite, through indexes, and never rewrite the database file; a
   forget reads every version of the workspace's pages, in one search, to find those that
   cite the note (only a database an earlier build wrote has a page citing another project's
-  note: save_page refuses one), so it grows with the workspace's page history, and deleting
-  a project grows with the project. Neither needs room under
-  a plan's caps, and a rebuilt page keeps within `versions_per_page`.
+  note: save_page refuses a new citation of one), so it grows with the workspace's page
+  history, and deleting a project grows with the project and makes that one search for all
+  of its spans. Neither needs room under a plan's caps, and a rebuilt page keeps within
+  `versions_per_page`.
   What the audit log keeps: every event stays, with its action, actor, time, the person's
   id, counts, kinds, codes and rule ids, and project.deleted keeps the project's id and name.
   Nothing made from a note stays: `page` (a slug, made from a title; erasure.NOTE_DERIVED,
@@ -550,6 +555,12 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   refuse. A read, answered alike by every view (cairn.arrange asks it before a page's
   claims go to a model, since a policy tightened later does not reach notes taken before).
 - Every `save_page` writes a new version (1, 2, ...); earlier versions stay readable.
+  A claim citing a span the store holds of another project's note, one the page's latest
+  version does not cite already, raises ValueError (NOT_OF_PROJECT) and writes nothing. A
+  citation the latest version carries (only a database an earlier build wrote holds one)
+  passes, so a compile, the tidy and an arrangement write to that page as to any other,
+  until the note is forgotten or its project deleted, which both rewrite the page. The
+  latest version is read for it only where another project's span is cited.
   A page holds at most PAGE_CLAIMS_MAX (2,000) claims (H6c): `save_page` with more raises
   PageTooLong (a ValueError naming the page and the bound) and writes nothing, and
   `import_export` refuses (ValueError) an archive with a version past it. cairn.memory

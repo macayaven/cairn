@@ -269,7 +269,9 @@ def test_connector_sync_keeps_its_report_and_request_counts():
             report = asyncio.run(sync(store))
         finally:
             store._con.set_trace_callback(None)
-        assert len(statements) == 106
+        # 106, and one since the forget across projects: the note's save checks whose
+        # passages its claims cite (save_page's refusal of another project's passage).
+        assert len(statements) == 107
         assert (report.saved, report.skipped, report.unchanged) == (1, 0, 0)
         assert len(store.list_notes(store.get_project("ledger").id)) == 1
     finally:

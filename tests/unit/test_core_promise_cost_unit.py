@@ -6,7 +6,10 @@ and a callback on the writer alone no longer sees them (Store._observe watches t
 The counts are those of 653a4d2d: a page's read reads when each note was written
 (Store.note_origins) in the statement that already read who wrote it, and it reads no
 search index, so no reader pays FTS5's loading of an index's settings
-(tests/unit/test_search_cost_unit.py's SETTINGS). Made-up notes."""
+(tests/unit/test_search_cost_unit.py's SETTINGS). A note's write costs one statement more
+since the forget across projects: its page's save checks whose passages its claims cite
+(save_page's refusal of another project's passage), one statement by the spans' primary
+key. Made-up notes."""
 
 import pytest
 
@@ -53,4 +56,6 @@ def test_a_page_read_costs_the_statements_it_did(memory):
     assert cost == PAGE_READ
 
 
-FIRST_NOTE, SECOND_NOTE, PAGE_READ = 84, 102, 16  # measured at 653a4d2d, before the fixes
+# Measured at 653a4d2d, before the fixes, as 84, 102 and 16; each note's write then one more:
+# its save's check of whose passages it cites.
+FIRST_NOTE, SECOND_NOTE, PAGE_READ = 85, 103, 16

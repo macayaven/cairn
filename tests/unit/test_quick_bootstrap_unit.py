@@ -378,7 +378,7 @@ def test_first_boot_recovers_after_a_docker_package_index_download_fails(vm, clo
     assert (vm / ".host-provisioned").is_file()
 
 
-def compose_service(vm, said=False):
+def compose_service(vm, said=False, refused=False):
     # A project render reads the .env and env_file itself and needs no Docker daemon.
     # With `said`, also what Compose wrote on standard error while it read them.
     standalone = shutil.which("docker-compose")
@@ -397,6 +397,9 @@ def compose_service(vm, said=False):
         capture_output=True,
         timeout=20,
     )
+    if refused:  # what Compose said when it would not read the files
+        assert done.returncode != 0, "Compose rendered the quick project"
+        return done.stderr.decode()
     assert done.returncode == 0, "Compose could not render the quick project"
     service = json.loads(done.stdout)["services"]["cairn"]
     return (service, done.stderr.decode()) if said else service
@@ -638,7 +641,10 @@ def test_a_start_that_worked_passes_on_what_compose_warned_of(vm):
 
 COMPOSE_READS = (
     "Compose reads the file, and a value arrives as written only between single quotes (a"
-    " single quote inside is written `\\'`). Outside them Compose changes three kinds of value:"
+    " single quote inside is written `\\'`, so the value cannot end in an odd number of"
+    " backslashes: the last would take the closing quote, Compose stops with `unterminated"
+    " quoted value`, the unit fails and the boot passes that line on). Outside them Compose"
+    " changes three kinds of value:"
     " it puts a variable's value in place of a `$` and the name after it, or nothing when no"
     " variable has that name; it drops a `#` after a space, with the rest of the line; and it"
     " removes quotes around the value."
@@ -700,6 +706,24 @@ def test_compose_changes_three_kinds_of_setting_and_reports_one(vm):
     for sentence in (COMPOSE_READS, COMPOSE_SAYS):  # under each cloud's settings, the same words
         assert guide.count(sentence) == 2, sentence
     assert guide.count(f"{COMPOSE_READS} {COMPOSE_SAYS}") == 2
+
+
+@pytest.mark.parametrize("backslashes", [1, 3])
+def test_a_single_quoted_value_cannot_end_in_an_odd_number_of_backslashes(vm, backslashes):
+    """The guide's clause (`COMPOSE_READS`), held to Compose: a backslash before the closing
+    quote takes the quote, and Compose refuses the file. The boot's start then fails, and
+    its line is Compose's without what Compose quotes of the file (the test of a failed
+    `up` above). With an even number the value closes and keeps every backslash (the case
+    of two is among the lines not compared)."""
+    settings = f"PLAIN=bt9\nFOO='zq7wm2{chr(92) * backslashes}'\nLAST=kx9\n".encode()
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr  # the stand-in for Docker reads no file
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    said = compose_service(vm, refused=True)
+    assert "cairn.env" in said and "unterminated quoted value" in said
 
 
 def test_the_boot_script_says_what_its_passing_on_of_warnings_cannot_show():

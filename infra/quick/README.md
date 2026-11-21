@@ -101,7 +101,9 @@ The settings secret starts without a version, so you can sign in with API keys f
 Prepare a local `cairn.env` for the cairn container's environment. From the AWS stack directory,
 upload it without putting its value in your command line or OpenTofu state.
 Compose reads the file, and a value arrives as written only between single quotes (a single
-quote inside is written `\'`). Outside them Compose changes three kinds of value: it puts a
+quote inside is written `\'`, so the value cannot end in an odd number of backslashes: the last
+would take the closing quote, Compose stops with `unterminated quoted value`, the unit fails and
+the boot passes that line on). Outside them Compose changes three kinds of value: it puts a
 variable's value in place of a `$` and the name after it, or nothing when no variable has that
 name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
 value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
@@ -298,7 +300,9 @@ The settings secret starts without a version, so you can sign in with API keys f
 Prepare a local `cairn.env` for the cairn container's environment. From the Google Cloud stack
 directory, upload it without putting its value in your command line or OpenTofu state.
 Compose reads the file, and a value arrives as written only between single quotes (a single
-quote inside is written `\'`). Outside them Compose changes three kinds of value: it puts a
+quote inside is written `\'`, so the value cannot end in an odd number of backslashes: the last
+would take the closing quote, Compose stops with `unterminated quoted value`, the unit fails and
+the boot passes that line on). Outside them Compose changes three kinds of value: it puts a
 variable's value in place of a `$` and the name after it, or nothing when no variable has that
 name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
 value. Compose reports one of these, the `$` before a name no variable has, and the boot passes

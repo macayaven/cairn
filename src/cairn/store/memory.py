@@ -825,7 +825,8 @@ class MemoryMethods(StoreBase):
         leave such a claim out, asking for the version they read). Empty for a project out of
         this view's reach and for a page or version not stored (a version pruned since the
         writer read it: its save is then refused as stale, StalePage, before any citation is
-        asked). One statement: the version by its primary key, its passages by theirs."""
+        asked). One statement: the version by its primary key, its passages by theirs, and
+        its project's reach by the project's own id, never the workspace's other projects."""
         with self._read() as con:
             found = con.execute(
                 "SELECT DISTINCT spans.id FROM page_versions AS p, json_each(p.claims) AS claim,"
@@ -833,8 +834,9 @@ class MemoryMethods(StoreBase):
                 " JOIN spans ON spans.id = cited.value JOIN notes ON notes.id = spans.note_id"
                 " WHERE p.project_id = ?1 AND p.slug = ?2 AND p.version = ?3"
                 " AND notes.project_id != ?1"
-                " AND ?1 IN (SELECT projects.id FROM projects WHERE projects.account_id = ?4"
-                " AND (?5 IS NULL OR projects.id IN (SELECT value FROM json_each(?6))))",
+                " AND EXISTS (SELECT 1 FROM projects WHERE projects.id = ?1"
+                " AND projects.account_id = ?4"
+                " AND (?5 IS NULL OR ?1 IN (SELECT value FROM json_each(?6))))",
                 (project_id, slug, version, *self._scope(con)),  # _IN_REACH, numbered
             ).fetchall()
         return frozenset(span_id for (span_id,) in found)
@@ -912,17 +914,23 @@ class MemoryMethods(StoreBase):
         the statement that reads the page's latest version, so it costs no statement of its
         own; an answer that arrives after a change to "never" is never saved.
 
-        Cost: the page's, not the workspace's, under what `serve` runs with by default as on a
-        bare store (test_index_page_cost_unit counts SQLite's steps beside 0, 1,500 and 6,000
-        other pages): the version bound prunes the page's own versions by its slug
-        (_keep_versions), its search rows go by rowid (ranking.index_page), the audit event's
-        numbers are one seek each (StoreBase._audit), the topic key and the page's head are read
-        and written by their keys, and the caps are the view's own or one read of the plan in
-        force (that read, through a plan's resolver, and a page's first save, are flat by
-        reading, not counted). Not flat: under a storage cap the workspace's page versions pass,
-        _keep_history reads every older version of the workspace to find the oldest (within the
-        cap it reads one row); past `--audit-keep`, one save in AUDIT_PRUNE_BATCH deletes that
-        many events; and FTS5's own merging adds a few units as its segments come and go."""
+        Cost: the page's, whatever the workspace's other pages, under what `serve` runs with
+        by default as on a bare store (test_index_page_cost_unit counts SQLite's steps
+        beside 0, 1,500 and 6,000 other pages, and as many other projects): the version
+        bound prunes the page's own versions by its slug (_keep_versions), its search rows
+        go by rowid (ranking.index_page), the audit event's numbers are one seek each
+        (StoreBase._audit), the topic key and the page's head are read and written by their
+        keys, and the caps are the view's own or one read of the plan in force (that read,
+        through a plan's resolver, and a page's first save, are flat by reading, not
+        counted). Not flat: the check for a forgotten note (_cites_forgotten) asks each of
+        the workspace's projects whether it has forgotten one, so beside 0, 1,500 and 6,000
+        other projects that forgot nothing a save costs 7, 157 and 607 units of 100 steps (a
+        note's compile 9, 399 and 1,569: its reads of the page and of its topic key ask each
+        project too, _OWN_PROJECT); under a storage cap the workspace's page versions pass,
+        _keep_history reads every older version of the workspace to find the oldest (within
+        the cap it reads one row); past `--audit-keep`, one save in AUDIT_PRUNE_BATCH
+        deletes that many events; and FTS5's own merging adds a few units as its segments
+        come and go."""
         given = _page_detail(event, detail)
         claims = tuple(claims)
         if len(claims) > PAGE_CLAIMS_MAX:

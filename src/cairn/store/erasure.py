@@ -51,6 +51,7 @@ from cairn.spans import (
     asked_line,
     claim_id,
     fences_reaching,
+    following,
 )
 from cairn.store import ranking
 from cairn.store.access import MODELS_PREFIX
@@ -812,7 +813,10 @@ def _before_it(
     than twice the body (sixth report, must-fix 4), and how long `line` is no longer narrows
     what is asked (RT1): every claim fits when what is written after each is no longer than
     the claim, which holds but where a claim's widest line is mostly tabs. Past that bound
-    only as many of the nearest are asked as fit, and none when not one does.
+    only as many of the nearest are asked as fit, and none when not one does. Its
+    indentation and first character are worked out once here (spans.following) and every
+    question is written from them, so building the questions costs what they write, never
+    the line's length once a claim (eighth round, finding 2).
 
     Only claims are asked that hold a backtick or a tilde and after which the body wrote
     nothing: a claim with a closer is closed. And only when the body wrote all its
@@ -824,16 +828,17 @@ def _before_it(
         return set()
     starts, run = found
     texts = [text for text, _ in blocks[: at + 1]]
+    said = following(line)  # its indentation and first character, once for every question
     room, left = 0, 2 * len(body) - starts[at]  # the claims a question may ask, the nearest
     while room < min(at - run, most):  # first, and what twice the body leaves for them
-        left -= len(asked_line(line, texts[at - room - 1])) + 2
+        left -= len(asked_line(said, texts[at - room - 1])) + 2
         if left < 0:
             break
         room += 1
     low, high = 0, room  # the last `low` leave; the last `high + 1` not all
     ask = first = high
     while low < high:
-        taken = fences_reaching(body[: starts[at - ask]], texts[at - ask : at], line)
+        taken = fences_reaching(body[: starts[at - ask]], texts[at - ask : at], said)
         if all(taken):
             low = ask
         else:

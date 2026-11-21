@@ -426,6 +426,33 @@ def _leaving_fence(blocks: list[str]) -> tuple[int, str] | None:
     return None
 
 
+class Following(str):
+    """A line that follows the blocks a question asks of (fences_reaching), read once: the
+    line itself, a str, with its indentation (the parser's own blanks: no other character
+    indents), how deep that reaches (tabs read to the next stop of four, as the parser reads
+    them) and its first other character, "" for a line of blanks only."""
+
+    indentation: str
+    depth: int
+    first: str
+
+
+_BLANKS = re.compile(r"[ \t]*")
+
+
+def following(line: str) -> Following:
+    """`line` read once for every question that writes it (asked_line): its indentation and
+    first other character, found without copying what follows them, so a question costs
+    what it writes, never the line's length (eighth round, finding 2)."""
+    said = Following(line)
+    blanks = _BLANKS.match(line)  # "" at least
+    width = blanks.end() if blanks else 0
+    said.indentation = line[:width]
+    said.depth = len(said.indentation.expandtabs(4))
+    said.first = line[width : width + 1]
+    return said
+
+
 def fences_reaching(before: str, blocks: Sequence[str], line: str) -> list[bool]:
     """Of each of `blocks`, whether a code fence that starts in it takes `line` in, where
     `line` is written after it as the first line of the next block of a body is: after a
@@ -452,14 +479,16 @@ def fences_reaching(before: str, blocks: Sequence[str], line: str) -> list[bool]
     holds anything and is indented less, and takes any other line in, as code or as the
     fence's closing line (tests/unit/test_fences_reaching_unit.py, a table and generated
     blocks). So the line is written as asked_line cuts it, and the answers up to the first
-    False are the same as with it whole; the guesses after it can differ."""
+    False are the same as with it whole; the guesses after it can differ. `line` may come
+    read already (`following`), as a caller that asks again of the same line passes it."""
+    said = line if isinstance(line, Following) else following(line)  # read once, for all
     parts, first, asked, count = [before], [], [], len(_PARSER_LINES.findall(before))
     for block in blocks:
         first.append(count)
         count += len(_PARSER_LINES.findall(f"{block}\n\n"))
         asked.append(count)  # where `line` stands after this block
         count += 2
-        parts.append(f"{block}\n\n{asked_line(line, block)}\n\n")
+        parts.append(f"{block}\n\n{asked_line(said, block)}\n\n")
     taken = [False] * len(first)
     for token in _PARSER.parse("".join(parts)):
         if token.type == "fence" and token.map:
@@ -480,18 +509,20 @@ def asked_line(line: str, block: str) -> str:
     fence's list item starts its text on a line of the block, so no deeper indentation
     gets another answer. One character more than that indentation, whatever the line's
     length (a closing line of either character, a quotation or list marker, a run of fence
-    characters with a letter far along: tests/unit/test_fences_reaching_unit.py)."""
+    characters with a letter far along: tests/unit/test_fences_reaching_unit.py).
+    Given `line` read already (`following`), it costs what the block and what it writes
+    cost, never the line's length: what it writes of the line is at most one character
+    more than the block's widest line."""
+    said = line if isinstance(line, Following) else following(line)
     rows = _PARSER_LINES.split(block)
-    if len(line) <= max(map(len, rows)):
-        return line
-    rest = line.lstrip(" \t")  # the parser's own blanks: no other character indents
-    if not rest:
+    if len(said) <= max(map(len, rows)):
+        return said
+    if not said.first:
         return ""
-    indentation = line[: len(line) - len(rest)]
     deepest = max(len(row.expandtabs(4)) for row in rows)
-    if len(indentation.expandtabs(4)) > deepest:
-        indentation = "\t" * (deepest // 4) + " " * (deepest % 4)
-    return indentation + rest[0]
+    if said.depth > deepest:
+        return "\t" * (deepest // 4) + " " * (deepest % 4) + said.first
+    return said.indentation + said.first
 
 
 def _closer(opener: str, run: str) -> str:

@@ -322,13 +322,23 @@ def _missing_directories(directory: Path) -> list[Path]:
 
 
 @contextmanager
+def database_folder(db: Path) -> Iterator[None]:
+    made = make_folder(db)
+    try:
+        yield
+    finally:
+        for directory in reversed(made):
+            with suppress(OSError):
+                directory.rmdir()
+
+
+@contextmanager
 def new_store(db: Path) -> Iterator[Store]:
     """Publish a complete, closed database with one exclusive link on the same filesystem.
     SQLite only sees the private staging name. Its last close checkpoints its journal."""
-    made = make_folder(db)
     events: list[str] = []
     try:
-        with TemporaryDirectory(dir=db.parent, prefix=".cairn-") as folder:
+        with database_folder(db), TemporaryDirectory(dir=db.parent, prefix=".cairn-") as folder:
             staged = Path(folder) / "db"
             make_database(staged)
             with closing(Store(staged, upgrade=False)) as store:
@@ -346,10 +356,6 @@ def new_store(db: Path) -> Iterator[Store]:
                 raise ValueError(f"cannot publish {db}: {error.strerror}") from error
     except PermissionError as error:
         raise CannotOpen(db) from error
-    finally:
-        for directory in reversed(made):
-            with suppress(OSError):
-                directory.rmdir()  # only empty directories we actually created
     for line in events:
         audit_log.info(line)
 

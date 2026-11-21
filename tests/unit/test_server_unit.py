@@ -1010,11 +1010,10 @@ def test_key_create_reports_what_it_cannot_create_and_leaves_no_half_made_file(
     printed = capsys.readouterr()
     assert printed.out == "" and "cannot create" in printed.err
 
-    class FailingStore(Store):
-        def create_key(self, label: str) -> str:
-            raise RuntimeError("disk full")
+    def refuse_key(self, label: str) -> str:
+        raise RuntimeError("disk full")
 
-    monkeypatch.setattr(cairn.web.cli, "Store", FailingStore)
+    monkeypatch.setattr(Store, "create_key", refuse_key)
     out = tmp_path / "k.env"
     with pytest.raises(RuntimeError):
         key_create(tmp_path / "cairn.db", out)

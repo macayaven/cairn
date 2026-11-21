@@ -1366,15 +1366,6 @@ def take_serve_lock(db: Path) -> ServeLock | None:
         os.close(fd)  # the server that held it removed it between our open and our lock
 
 
-def _open_store(db: Path) -> Store:
-    """The store at `db`, creating its directory first (a fresh checkout has none), each
-    folder made 0700 and the file 0600 before SQLite opens it (H1)."""
-    cli_data.make_folder(db)
-    if cli_data.make_database(db):
-        return Store(db, upgrade=False)
-    return cli_data.open_existing(db)
-
-
 # H1: what a key made on the command line can do, said by the help of key-create and key-list.
 KEY_DEFAULT = (
     "A key made without --project or --read-only can read and write every project, export the"
@@ -1423,10 +1414,17 @@ def _key_create(
     `projects` (names, --project) and `read_only` narrow the key (H1); a name that is no project of
     the workspace is NO_SUCH_PROJECT, exit 1, with no key and no key file made (and no
     database, when there was none: it would hold no project)."""
-    cli_data.make_folder(db)
-    if projects and not db.is_file():
+    new = not os.path.lexists(db)
+    if projects and new:
         print(NO_SUCH_PROJECT.format(name=projects[0]), file=sys.stderr)
         return 1
+    with cli_data.database_folder(db):
+        return _key_file(db, label, out, projects, read_only, new)
+
+
+def _key_file(
+    db: Path, label: str, out: Path, projects: list[str] | None, read_only: bool, new: bool
+) -> int:
     try:
         fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -1438,16 +1436,17 @@ def _key_create(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
             os.fchmod(file.fileno(), 0o600)  # exactly 0600, whatever the umask
-            store = _open_store(db)
-            try:
+            target = (
+                cli_data.new_store(db) if new else contextlib.closing(cli_data.open_existing(db))
+            )
+            with target as store:
                 reach = _reach(store, projects)
                 if reach is None and not read_only:  # the key it has always made
                     key = store.create_key(label)
                 else:
                     key = store.create_key(label, reach, "read" if read_only else "write")
-            finally:
-                store.close()
-            file.write(f"CAIRN_API_KEY={key}\n")
+                file.write(f"CAIRN_API_KEY={key}\n")
+                file.flush()  # publish the staged database only after the key was written
     except _NoSuchProject as missing:
         out.unlink(missing_ok=True)
         print(NO_SUCH_PROJECT.format(name=missing.args[0]), file=sys.stderr)

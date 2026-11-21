@@ -83,7 +83,6 @@ def test_2_backticks_the_rich_text_shows_as_characters_are_not_code():
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="a span of backticks is placed on an empty span's")
 def test_3_a_named_span_of_backticks_after_an_empty_one_stays_after_it():
     """An empty span the rich text names, whose two backticks the text holds, then a span of
     one backtick. The empty span's backticks are shown as typed (the fix's own test: "the
@@ -92,7 +91,6 @@ def test_3_a_named_span_of_backticks_after_an_empty_one_stays_after_it():
     assert shown("`````", [code(""), code("`")]) == [("text", "``"), ("code", "`")]
 
 
-@pytest.mark.xfail(strict=True, reason="a span of backticks swaps places with a literal one")
 def test_4_a_literal_backtick_before_a_named_span_of_backticks_stays_before_it():
     """Slack displayed "x`" as characters, then the code span "`". The page shows the same
     characters, but "x", the code span, and then the literal backtick."""

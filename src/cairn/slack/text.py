@@ -502,35 +502,58 @@ def _lines(text: str) -> str:
     return "".join(character for character in text if character in "\n\t" or ord(character) >= 32)
 
 
-def _displayed_code(message: Mapping) -> list[tuple[bool, str]]:
+def _displayed_code(message: Mapping) -> list[tuple[bool, str, str | None]]:
     """What Slack's own account of the message, its rich text, displayed as code, in order:
-    whether as a block, and the characters. A message's text marks code with backticks and
-    so cannot say which backticks were displayed inside it; where the rich text names a
-    block or a span, that is what Slack displayed. Anything not of that shape is passed over
-    (the first _CODE_NODES elements are looked at), and the text then decides alone."""
-    found: list[tuple[bool, str]] = []
-    left: list[object] = [message.get("blocks")]
+    whether as a block, the characters, and for a span what the rich text displayed right
+    before it among its section's elements (_before). A message's text marks code with
+    backticks and so cannot say which backticks were displayed inside it; where the rich
+    text names a block or a span, that is what Slack displayed. Anything not of that shape
+    is passed over (the first _CODE_NODES elements are looked at), and the text then decides
+    alone."""
+    found: list[tuple[bool, str, str | None]] = []
+    left: list[tuple[object, str | None]] = [(message.get("blocks"), None)]
     for _ in range(_CODE_NODES):
         if not left:
             break
-        node = left.pop()
+        node, before = left.pop()
         if isinstance(node, list):
-            left.extend(reversed(node))
+            left.extend(reversed(list(zip(node, [None, *map(_before, node)], strict=False))))
         elif isinstance(node, Mapping):
             inside = node.get("elements")
             if node.get("type") == "rich_text_preformatted" and isinstance(inside, list):
                 parts = [part.get("text") for part in inside if isinstance(part, Mapping)]
                 if len(parts) == len(inside) and all(isinstance(part, str) for part in parts):
-                    found.append((True, _lines("".join(parts))))
+                    found.append((True, _lines("".join(parts)), None))
             elif isinstance(node.get("style"), Mapping) and node["style"].get("code") is True:
                 if isinstance(node.get("text"), str) and node.get("type") == "text":
-                    found.append((False, _lines(node["text"])))
+                    found.append((False, _lines(node["text"]), before))
             else:
-                left.append(inside)
+                left.append((inside, None))
     return found
 
 
-def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int, str, object]]:
+def _before(element: object) -> str | None:
+    """What the message's text holds for an element of rich text, as Slack displayed it, where
+    that is known: a text element's own characters where it has no style, and two backticks
+    for an empty span of code (_known_code). None for anything else."""
+    if not isinstance(element, Mapping) or element.get("type") != "text":
+        return None
+    text, style = element.get("text"), element.get("style")
+    if isinstance(text, str) and not style:
+        return _lines(text + ".")[:-1]  # a line feed that ends it is kept
+    if isinstance(style, Mapping) and style.get("code") is True and text == "":
+        return "``"
+    return None
+
+
+def _sent(shown: str) -> str:
+    """Characters as the message's text holds them: "&", "<" and ">" as entities."""
+    return shown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _known_code(
+    text: str, code: list[tuple[bool, str, str | None]]
+) -> list[tuple[int, int, str, object]]:
     """Where `text` holds the `code` Slack's rich text names (_displayed_code), each after
     the one before: its start and end with its backticks, "block" or "code", and what it
     displayed. In the text it stands between backticks with its "&", "<" and ">" as
@@ -539,17 +562,25 @@ def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int,
     From the first one that is not found so, the rest is left to the backticks of the text:
     the rich text no longer tells that text's code.
 
+    A span is placed later than that first place where the rich text says the first place
+    is not it: where what the rich text displayed right before the span (_before) stands
+    right before a later place and over the first one, as the backticks of an empty span or
+    a backtick Slack displayed as a character do (the Slack tester's second attack on spans,
+    cases 3 and 4). Only so: where the rich text is silent about what stands between, a later
+    place that the same text stands before may be the next span's.
+
     Each place is looked at once, whatever the code (the tester's second attack, finding 6:
     each way was searched for to the text's end): the places a block or a span can start
     are found from where the last one ended on (_Next), and whether a way stands at one is
-    told by the digests of _Hashes, in a step, however long the way."""
+    told by the digests of _Hashes, in a step, however long the way; a later place is looked
+    for no further than the length of what stands before it."""
     places: list[tuple[int, int, str, object]] = []
     if not code:
         return places
     digests, at = _Hashes(text), 0
     starts = {True: _Next(text, "```", len(text)), False: _Next(text, "`", len(text))}
-    for block, shown in code:
-        sent = shown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    for block, shown, before in code:
+        sent = _sent(shown)
         if block:
             ways = [f"```{above}{sent}{below}```" for above in ("\n", "") for below in ("\n", "")]
         else:
@@ -564,6 +595,19 @@ def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int,
             where = where if found else starts[block](where + 1)
         if found is None:
             break
+        if not block and before is not None:
+            head, first = _sent(before), where
+            value, mark = known[0][1], digests.of(head)
+            while where <= first + len(head) and where < len(text):
+                if (
+                    where - len(head) >= at
+                    and digests.holds(found, where, value)
+                    and digests.holds(head, where - len(head), mark)
+                ):
+                    break
+                where = starts[False](where + 1)
+            else:
+                where = first
         at = where + len(found)
         lines = _redact(shown).split("\n")
         places.append((where, at, "block", lines) if block else (where, at, "code", lines[0]))
@@ -709,7 +753,7 @@ def _render(
     names: Mapping[str, str],
     displayed: bool = False,
     bars: bool = True,
-    code: list[tuple[bool, str]] | None = None,
+    code: list[tuple[bool, str, str | None]] | None = None,
     plain: Collection[int] = (),
     wrote: list[tuple[int, str]] | None = None,
     title: bool = False,
@@ -884,7 +928,7 @@ def _within(atoms: list[str]) -> int:
     return end
 
 
-def _title(text: str, names: Mapping[str, str], code: list[tuple[bool, str]]) -> str:
+def _title(text: str, names: Mapping[str, str], code: list[tuple[bool, str, str | None]]) -> str:
     """The note's title: the first line the message displays, its first line of text or the
     first line of a code block it opens with, never a line the note writes for itself (a
     fence), nor one of a quotation's marks alone. Written as prose is (_render, `title`), so

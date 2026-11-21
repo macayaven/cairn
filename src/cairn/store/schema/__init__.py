@@ -211,6 +211,7 @@ from cairn.store.schema.v31_oldest_build import (
     _drop_retired,
     _v31_link,
 )
+from cairn.store.schema.v32_own_passages import _hold_to_own_projects
 
 # The one place the subscription-times step's number is written (H7 fix round): another
 # step may take this number first, and then this one takes the next.
@@ -249,9 +250,11 @@ _SLACK = 29
 # The one place the last-use step's number is written (sessions that are not used end).
 _LAST_USE = 30
 # The one place the oldest-build step's number is written (the retired tables go, the audit
-# trail is chained, and the database records the oldest build that runs on it), and so the
-# newest version.
+# trail is chained, and the database records the oldest build that runs on it).
 _OLDEST_BUILD = 31
+# The one place the own-passages step's number is written (each page is held to its own
+# project's notes; report 8, must-fix 2), and so the newest version.
+_OWN_PASSAGES = 32
 # The newest step. 1: v0's schema, which shipped unstamped; 2: accounts; 3: OAuth; 4: people;
 # 5: reach (project sets, and the projects and access of each key and grant), search statistics;
 # 6: settings and the audit log, and the key a session was opened with; 7: actor ids (each
@@ -279,8 +282,9 @@ _OLDEST_BUILD = 31
 # _SLACK: each workspace's Slack install, its links, one-time offers, events seen and the
 # notes that came through it (cairn.store.slack); _LAST_USE: a session records when it was
 # last used (`serve --idle-minutes`); _OLDEST_BUILD: the tables billing kept go, and the
-# database records the oldest build that runs on it (oldest_build)
-SCHEMA_VERSION = _OLDEST_BUILD
+# database records the oldest build that runs on it (oldest_build); _OWN_PASSAGES: every page
+# that cites a note of another project is rewritten with its own project's notes alone
+SCHEMA_VERSION = _OWN_PASSAGES
 # The steps that only add (tables, columns with defaults, indexes): a build older than such a
 # step still runs on a database the step brought forward, so the floor stays where it was.
 # Every other step changes what an older build relies on, and raises the database's floor to
@@ -494,4 +498,5 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     _SLACK: _add_slack,
     _LAST_USE: _add_last_use,
     _OLDEST_BUILD: _drop_retired,
+    _OWN_PASSAGES: _hold_to_own_projects,
 }

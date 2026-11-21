@@ -70,7 +70,7 @@ def test_step_31_drops_the_tables_billing_kept_with_any_rows_in_them(tmp_path):
     v30_database(db)
     billing_rows(db)
     Store(db).close()
-    assert user_version(db) == SCHEMA_VERSION == schema._OLDEST_BUILD == 31
+    assert schema._OLDEST_BUILD == 31 and user_version(db) == SCHEMA_VERSION == 32  # 32: 0.1.0
     assert not set(RETIRED) & tables(db)
     assert not [line for line in statements(db) if any(name in line for name in RETIRED)]
     doc = " ".join(schema._MIGRATIONS[31].__doc__.split())
@@ -111,19 +111,21 @@ def test_steps_29_and_30_only_add_and_31_does_not():
     assert schema._floor_of(schema._SLACK) == 28
     assert schema._floor_of(schema._LAST_USE) == 28
     assert schema._floor_of(schema._OLDEST_BUILD) == 31
+    assert schema._OWN_PASSAGES not in schema._ONLY_ADDS
+    assert schema._floor_of(schema._OWN_PASSAGES) == 32
 
 
 def test_a_fresh_database_records_its_floor(tmp_path):
     db = tmp_path / "cairn.db"
     Store(db).close()
-    assert floor(db) == [(schema._floor_of(SCHEMA_VERSION),)] == [(31,)]
+    assert floor(db) == [(schema._floor_of(SCHEMA_VERSION),)] == [(32,)]
 
 
-def test_a_database_brought_to_31_records_its_floor(tmp_path):
+def test_a_database_brought_to_31_and_32_records_its_floor(tmp_path):
     db = tmp_path / "cairn.db"
     v30_database(db)
     Store(db).close()
-    assert floor(db) == [(31,)]
+    assert floor(db) == [(32,)]  # step 31 records 31, step 32 raises it to 32
 
 
 def test_a_current_database_opens_without_a_write(tmp_path):
@@ -171,7 +173,7 @@ def test_a_database_one_additive_step_ahead_opens_and_reads_and_writes(tmp_path,
     finally:
         first.close()
     moved_ahead(db, monkeypatch, only_adds=True)
-    assert floor(db) == [(31,)]  # it only adds: the floor stays
+    assert floor(db) == [(32,)]  # it only adds: the floor stays
     store = Store(db)
     try:
         assert store.health() == "ok"
@@ -188,7 +190,7 @@ def test_a_database_one_additive_step_ahead_opens_and_reads_and_writes(tmp_path,
     finally:
         store.close()
     assert user_version(db) == LATER  # no step ran, nothing went back
-    assert floor(db) == [(31,)]
+    assert floor(db) == [(32,)]
     assert rows(db, "SELECT what FROM later_things") == [("kept",)]
     assert rows(db, "SELECT DISTINCT later_mark FROM projects") == [("x",)]
 

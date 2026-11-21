@@ -55,6 +55,7 @@ STEPS = (
     (29, "_add_slack"),
     (30, "_add_last_use"),
     (31, "_drop_retired"),
+    (32, "_hold_to_own_projects"),
 )
 
 # The SHA-256 of what each step executed (see recorded), at the head before the move.
@@ -89,12 +90,15 @@ DIGESTS: dict[int, str] = {
     29: "1f3d95b4f97b9ded1e6add0f92ca28ff49db3cc5a674fb4f8a3fa63e28192c41",
     30: "26dfa79f46e54c6e00f60480200897847cd58c7c38864c07299f92f5b85b739e",
     31: "310d03faf566751f7a5ad906da1517d171f8a95eb05f47c7594e6108b69e52bb",
+    # Step 32 on an empty history: the one search (cairn.store.erasure.hold_to_own_projects).
+    32: "04f10fb46aee27cf9dea5f1436201230816e69c7ebe77281633e2b01077cb520",
 }
 # Step 2 on an SQLite without FTS5's secure-delete.
 STEP_2_WITHOUT_SECURE_DELETE = "f021460c7a3a60b2e002d9c9d782e2382ce8e5eb25d04dcde68481ebfc4e3dc3"
 # What _create executes in an empty database: the current schema, the default account, the
-# moment recording began and the floor.
-CREATED = "36ead68fa515b0134daa40fb3429e8aa6e99b0868bbe91ba7d90fb60cab2186a"
+# moment recording began and the floor (32 since step 32; at 31 it was
+# 36ead68fa515b0134daa40fb3429e8aa6e99b0868bbe91ba7d90fb60cab2186a).
+CREATED = "6543475df475e337c295ceb21e07e6e31c70f2a04495e5234b2f90a8aa0bfd4c"
 
 
 class Recording(sqlite3.Connection):

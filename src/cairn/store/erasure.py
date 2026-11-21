@@ -1053,7 +1053,7 @@ _CITES_ANOTHER_PROJECT = (
 
 def hold_to_own_projects(
     con: sqlite3.Connection, account_id: str | None, stamp: str
-) -> dict[str, dict[str, int]]:
+) -> dict[str, int]:
     """Hold every page to its own project's notes, on `con`, in the caller's transaction:
     each page any version of which cites a passage the store holds of a note that is not of
     the page's own project (another project of its workspace, or another workspace's) is
@@ -1066,23 +1066,31 @@ def hold_to_own_projects(
     32 runs it so, once). Only a program that wrote the store's tables behind its back, or
     called save_page directly in an earlier build, could leave such a page.
 
-    The pages are found one at a time, in the order of project and slug, each search starting
-    after the last page found, so it holds one page whatever the database holds; on a
-    database that holds no such page it makes one search and writes nothing. It writes no
-    audit event: inside the upgrade no audit writer of this build may run (a step is history),
-    so the store's log is the record, one line a workspace that had any, counts only.
-    Returns, by workspace id, how many pages were `rewritten` and `removed`."""
-    found: dict[str, Counter] = {}
-    after = ("", "")
+    The pages are found one at a time, by workspace, project name and slug, each search
+    starting after the last page found, so it holds one page and one workspace's counts
+    whatever the database holds; on a database that holds no such page it makes one search
+    and writes nothing. It writes no audit event: inside the upgrade no audit writer of this
+    build may run (a step is history), so the store's log is the record, one line for each
+    workspace that had any, written once its pages are done, counts only. Returns how many
+    `workspaces` had any, and how many pages were `rewritten` and `removed`."""
+    done: Counter = Counter()
+    tally: Counter = Counter()  # the pages of the workspace `at`, the one being repaired
+    at, after = None, ("", "", "")
     while row := con.execute(
-        "SELECT p.project_id, projects.name, projects.account_id, p.slug FROM page_versions AS p"
+        "SELECT projects.account_id, projects.name, p.project_id, p.slug FROM page_versions AS p"
         " JOIN projects ON projects.id = p.project_id"
-        " WHERE (?1 IS NULL OR projects.account_id = ?1) AND (p.project_id, p.slug) > (?2, ?3)"
-        f" AND {_CITES_ANOTHER_PROJECT} ORDER BY p.project_id, p.slug LIMIT 1",
+        " WHERE (?1 IS NULL OR projects.account_id = ?1)"
+        " AND (projects.account_id, projects.name, p.slug) > (?2, ?3, ?4)"
+        f" AND {_CITES_ANOTHER_PROJECT}"
+        " ORDER BY projects.account_id, projects.name, p.slug LIMIT 1",
         (account_id, *after),
     ).fetchone():
-        project_id, name, account, slug = row
-        after = (project_id, slug)
+        account, name, project_id, slug = row
+        after = (account, name, slug)
+        if account != at:
+            _log_repaired(at, tally)
+            done["workspaces"] += 1
+            at, tally = account, Counter()
         gone = frozenset(  # the other projects' passages its versions cite
             span_id
             for (span_id,) in con.execute(
@@ -1095,21 +1103,24 @@ def hold_to_own_projects(
         )
         planned = _plan_page(con, project_id, name, slug, gone)
         _rewrite(con, account, _index_name(account), [planned], stamp, None)
-        tally = found.setdefault(account, Counter())
-        tally["rewritten" if planned[5] else "removed"] += 1
-    for account, tally in found.items():
+        what = "rewritten" if planned[5] else "removed"
+        tally[what] += 1
+        done[what] += 1
+    _log_repaired(at, tally)
+    return {what: done[what] for what in ("workspaces", "rewritten", "removed")}
+
+
+def _log_repaired(account_id: str | None, tally: Counter) -> None:
+    """hold_to_own_projects' line for the workspace `account_id` (None: none yet)."""
+    if account_id is not None:
         store_log.warning(
             "repair: workspace %s held %d page(s) citing notes of other projects: %d rewritten"
             " with its own notes' claims, %d removed",
-            account,
+            account_id,
             tally["rewritten"] + tally["removed"],
             tally["rewritten"],
             tally["removed"],
         )
-    return {
-        account: {"rewritten": tally["rewritten"], "removed": tally["removed"]}
-        for account, tally in found.items()
-    }
 
 
 def count_pages_citing_other_projects(con: sqlite3.Connection) -> dict[str, int]:

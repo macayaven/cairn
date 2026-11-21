@@ -28,6 +28,7 @@ from cairn.web import cli
 GONE = "Quill sealed the kqzvtxb crate."  # desk's, workspace one
 FAR = "Wren logs the zmvqpr gate."  # yard's, workspace two
 WORDS = ("kqzvtxb", "zmvqpr")
+NONE = ("workspaces", "rewritten", "removed")
 
 
 def two_workspaces(store: Store):
@@ -98,9 +99,9 @@ def test_each_page_is_held_to_its_own_projects_notes_one_workspace_at_a_time(cap
         assert counted(store) == {one: 5, two: 1}
 
         with caplog.at_level(logging.WARNING, logger="cairn.store"):
-            assert repair(store, two) == {two: {"rewritten": 1, "removed": 0}}
+            assert repair(store, two) == {"workspaces": 1, "rewritten": 1, "removed": 0}
             assert counted(store) == {one: 5}
-            assert repair(store, None) == {one: {"rewritten": 3, "removed": 2}}
+            assert repair(store, None) == {"workspaces": 1, "rewritten": 3, "removed": 2}
 
         assert counted(store) == {}
         assert pages(store, other) == {
@@ -138,7 +139,7 @@ def test_on_a_database_with_no_such_page_it_makes_one_search_and_writes_nothing(
                 found = erasure.hold_to_own_projects(con, None, store._stamp())
             finally:
                 con.set_trace_callback(None)
-            assert (found, con.total_changes) == ({}, changes)
+            assert (found, con.total_changes) == (dict.fromkeys(NONE, 0), changes)
         assert len(said) == 1 and said[0].startswith("SELECT")
 
 

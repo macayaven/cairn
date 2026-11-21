@@ -346,8 +346,9 @@ def test_first_boot_recovers_after_a_docker_package_index_download_fails(vm, clo
     assert (vm / ".host-provisioned").is_file()
 
 
-def compose_service(vm):
+def compose_service(vm, said=False):
     # A project render reads the .env and env_file itself and needs no Docker daemon.
+    # With `said`, also what Compose wrote on standard error while it read them.
     standalone = shutil.which("docker-compose")
     docker = shutil.which("docker")
     if standalone is None and docker is None:
@@ -365,7 +366,8 @@ def compose_service(vm):
         timeout=20,
     )
     assert done.returncode == 0, "Compose could not render the quick project"
-    return json.loads(done.stdout)["services"]["cairn"]
+    service = json.loads(done.stdout)["services"]["cairn"]
+    return (service, done.stderr.decode()) if said else service
 
 
 @pytest.mark.parametrize("cloud", ["aws", "gcp"])
@@ -588,11 +590,11 @@ def test_a_failed_secret_read_leaves_existing_settings_and_never_calls_compose(v
     assert not any(call[:2] == ["docker", "compose"] for call in calls(vm))
 
 
-def test_a_start_that_worked_still_says_that_compose_changed_a_setting(vm):
-    """Compose expands a $ in a settings value that is not between single quotes, to nothing
-    when no such variable is set, and says so in a warning only: the stack starts with
-    another value than the secret holds. The boot passes the warning on, in other words,
-    since Compose's own name what follows the $ in the value."""
+def test_a_start_that_worked_passes_on_what_compose_warned_of(vm):
+    """Compose warns when a settings value holds a $ before a name no variable has: it puts
+    nothing in its place, and the stack starts with another value than the secret holds. The
+    boot passes that warning on, in other words, since Compose's own name what follows the $.
+    It can pass on only what Compose says (the next test: most changes come without a word)."""
     done = run(vm, mode="compose-warns")
     assert done.returncode == 0, done.stderr
     assert (vm / "stack-started").exists()
@@ -602,14 +604,30 @@ def test_a_start_that_worked_still_says_that_compose_changed_a_setting(vm):
     assert '"value"' not in done.stderr and "$value" not in done.stderr
 
 
-def test_compose_takes_a_setting_as_written_only_between_single_quotes(vm):
-    """What the guide tells a person about writing `cairn.env`, held to Compose itself:
-    the settings arrive in cairn's environment as the secret wrote them only between
-    single quotes."""
+COMPOSE_READS = (
+    "Compose reads the file, and a value arrives as written only between single quotes (a"
+    " single quote inside is written `\\'`). Outside them Compose changes three kinds of value:"
+    " it puts a variable's value in place of a `$` and the name after it, or nothing when no"
+    " variable has that name; it drops a `#` after a space, with the rest of the line; and it"
+    " removes quotes around the value."
+)
+COMPOSE_SAYS = (
+    "Compose reports one of these, the `$` before a name no variable has, and the boot passes"
+    " on what Compose says, as a line in the unit's journal that starts with"
+    " `cairn-quick: compose:`. The other changes come without a word, so a journal with no"
+    " such line does not show that every value arrived as written."
+)
+
+
+def test_compose_changes_three_kinds_of_setting_and_reports_one(vm):
+    """What the guide tells a person about writing `cairn.env` (`COMPOSE_READS`,
+    `COMPOSE_SAYS`), held to Compose itself, reading the files the boot wrote: which values
+    arrive changed, and for which of them Compose says anything on standard error."""
     written = {
         "PLAIN": "two words, a=b and c#d",
-        "SINGLE": "'pa$word9 #x \"y\"'",
-        "DOLLAR": "pa$word9",
+        "SINGLE": "'pa$CAIRN_DOMAIN #x \"y\" it\\'s'",
+        "SET": "pa$CAIRN_DOMAIN",  # a name the boot's own .env sets
+        "UNSET": "pa$word9",
         "COMMENT": "abc #def",
         "DOUBLE": '"quoted"',
     }
@@ -620,22 +638,34 @@ def test_compose_takes_a_setting_as_written_only_between_single_quotes(vm):
     for path, file in files.items():
         if path.startswith("/opt/cairn/deploy/"):
             (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    service, said = compose_service(vm, said=True)
     # `config` writes a literal $ as $$, so that its output can be read again.
-    got = {
-        name: value.replace("$$", "$") for name, value in compose_service(vm)["environment"].items()
-    }
+    got = {name: value.replace("$$", "$") for name, value in service["environment"].items()}
     assert got["PLAIN"] == "two words, a=b and c#d"
-    assert got["SINGLE"] == 'pa$word9 #x "y"'
-    assert got["DOLLAR"] == "pa"  # expanded: no variable word9 is set
-    assert got["COMMENT"] == "abc"  # cut at the # after a space
-    assert got["DOUBLE"] == "quoted"  # unquoted
+    assert got["SINGLE"] == 'pa$CAIRN_DOMAIN #x "y" it\'s'
+    assert got["SET"] == "pacairn.example.net"  # the variable's value, in place
+    assert got["UNSET"] == "pa"  # nothing in place: no variable word9
+    assert got["COMMENT"] == "abc"  # dropped from the # after a space
+    assert got["DOUBLE"] == "quoted"  # without its quotes
+    # One line for four changed values: the unset name. Nothing of the other three.
+    (warning,) = [line for line in said.splitlines() if line.strip()]
+    assert 'The \\"word9\\" variable is not set' in warning
+    assert "CAIRN_DOMAIN" not in said and "abc" not in said and "quoted" not in said
     guide = " ".join((QUICK / "README.md").read_text().split())
-    sentence = (
-        "Compose reads the file: it takes a value as written only between single quotes."
-        " Outside them a `$` starts a variable, a `#` after a space starts a comment, and"
-        " quotes around a value are removed."
-    )
-    assert guide.count(sentence) == 2  # under the settings of each cloud, in the same words
+    for sentence in (COMPOSE_READS, COMPOSE_SAYS):  # under each cloud's settings, the same words
+        assert guide.count(sentence) == 2, sentence
+    assert guide.count(f"{COMPOSE_READS} {COMPOSE_SAYS}") == 2
+
+
+def test_the_boot_script_says_what_its_passing_on_of_warnings_cannot_show():
+    """The script's own comment at the line that passes Compose's warnings on."""
+    script = BOOTSTRAP.read_text().splitlines()
+    at = max(n for n, line in enumerate(script) if line.startswith("  say_errors compose"))
+    assert "die" not in script[at - 1]  # the call after a start that worked, not the failure's
+    comment = " ".join(line.strip().lstrip("# ") for line in script[at - 4 : at])
+    assert "It warns of a $ before a name no variable has" in comment
+    assert "without a word" in comment
+    assert "does not mean the settings arrived as written" in comment
 
 
 def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):

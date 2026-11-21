@@ -99,10 +99,14 @@ To move to the current Ubuntu AMI, follow the backup steps in [Upgrade](#upgrade
 The settings secret starts without a version, so you can sign in with API keys from the start.
 Prepare a local `cairn.env` for the cairn container's environment. From the AWS stack directory,
 upload it without putting its value in your command line or OpenTofu state.
-Compose reads the file: it takes a value as written only between single quotes. Outside them
-a `$` starts a variable, a `#` after a space starts a comment, and quotes around a value are
-removed. When Compose took a `$` for a variable, the unit's journal says so on a line that starts
-with `cairn-quick: compose:`.
+Compose reads the file, and a value arrives as written only between single quotes (a single
+quote inside is written `\'`). Outside them Compose changes three kinds of value: it puts a
+variable's value in place of a `$` and the name after it, or nothing when no variable has that
+name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
+value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
+on what Compose says, as a line in the unit's journal that starts with `cairn-quick: compose:`.
+The other changes come without a word, so a journal with no such line does not show that every
+value arrived as written.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -282,10 +286,14 @@ session, save the API key in your credential store, remove the temporary file on
 The settings secret starts without a version, so you can sign in with API keys from the start.
 Prepare a local `cairn.env` for the cairn container's environment. From the Google Cloud stack
 directory, upload it without putting its value in your command line or OpenTofu state.
-Compose reads the file: it takes a value as written only between single quotes. Outside them
-a `$` starts a variable, a `#` after a space starts a comment, and quotes around a value are
-removed. When Compose took a `$` for a variable, the unit's journal says so on a line that starts
-with `cairn-quick: compose:`.
+Compose reads the file, and a value arrives as written only between single quotes (a single
+quote inside is written `\'`). Outside them Compose changes three kinds of value: it puts a
+variable's value in place of a `$` and the name after it, or nothing when no variable has that
+name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
+value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
+on what Compose says, as a line in the unit's journal that starts with `cairn-quick: compose:`.
+The other changes come without a word, so a journal with no such line does not show that every
+value arrived as written.
 Follow the [provider sign-in steps](#provider-sign-in) to configure Google sign-in.
 
 ```sh
@@ -341,7 +349,8 @@ When the settings secret cannot be read or Compose cannot start the stack, `cair
 fails, and its journal has the tool's own error on lines that start with
 `cairn-quick: settings read:` or `cairn-quick: compose:`. They never hold a setting's value: a line
 that would repeat one is left out, a syntax error in the settings file is given by its
-line number, and a `$` that Compose took for a variable is said without naming what follows it.
+line number, and Compose's warning of a `$` before a name no variable has is passed on without
+that name.
 
 After fixing a package problem, trigger an immediate retry.
 

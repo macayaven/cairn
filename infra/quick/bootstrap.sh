@@ -212,7 +212,10 @@ EOF
     fi
     die 'Docker Compose up failed. Check registry access, the image, the settings file syntax and container status.'
   fi
-  say_errors compose "$staging/errors" cairn.env || true  # what a start that worked warned of
+  # What Compose said of a start that worked. It warns of a $ before a name no variable has.
+  # A $ before a set name, a # after a space and quotes around a value it changes without a
+  # word, so no line here does not mean the settings arrived as written.
+  say_errors compose "$staging/errors" cairn.env || true
 )
 
 first_key() (

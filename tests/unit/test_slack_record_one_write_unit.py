@@ -170,7 +170,10 @@ def test_a_filed_note_and_its_record_cost_the_statements_pinned(bench):
     assert cost == (WRITE_STATEMENTS, 2)
 
 
-WRITE_STATEMENTS = 113
+# One fewer since ranking.index_page takes a page's rows out of the index by rowid: FTS5's own
+# scan of its content table, which the delete by project and slug ran even on a page's first
+# save, is gone; cairn's own statements are the same.
+WRITE_STATEMENTS = 112
 
 
 # 9. The store's `within` is general: nothing of Slack

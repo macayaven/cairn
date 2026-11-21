@@ -640,11 +640,12 @@ class StoreBase:
             if self._user_id is not None:
                 detail["user"] = self._user_id
         account_id = account_id or self._account_id
-        last, oldest, previous, newest = con.execute(
-            "SELECT MAX(n), MIN(n),"
+        last, oldest, previous, newest = con.execute(  # each one seek of the index by
+            # number: MAX and MIN asked together would read every event of the workspace
+            "SELECT (SELECT MAX(n) FROM audit_events WHERE account_id = ?1),"
+            " (SELECT MIN(n) FROM audit_events WHERE account_id = ?1),"
             " (SELECT chain FROM audit_events WHERE account_id = ?1 ORDER BY n DESC LIMIT 1),"
-            " (SELECT MAX(seq) FROM audit_events)"
-            " FROM audit_events WHERE account_id = ?1",
+            " (SELECT MAX(seq) FROM audit_events)",
             (account_id,),
         ).fetchone()
         number, seq = (last or 0) + 1, (newest or 0) + 1

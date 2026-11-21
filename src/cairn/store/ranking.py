@@ -198,17 +198,33 @@ def index_page(
     claims: Sequence[Claim],
 ) -> None:
     """Replace a page's rows in the account's index, and its project's counts with them, in
-    the caller's transaction."""
+    the caller's transaction.
+
+    Its cost is bounded by the page, never the workspace: the page's rows are found by
+    search_claims_by_page (account_id, project_id, slug), named in each statement since the
+    planner, with no statistics, would take the primary key's account_id and read every row
+    of the workspace, and the old rows leave the full-text index by their rowids, taken from
+    search_claims before it lets go of them (FTS5 indexes none of its columns, so a delete by
+    project and slug would read every row of the index, every claim's text with it). That
+    rests on the index and search_claims holding the same rows: every write of the index
+    goes through here, delete_project and the workspace's delete take both, and schema step
+    5 counted every row an older index held (count_index); test_index_page_cost_unit
+    recounts them after each kind of write."""
     claims_before, tokens_before = con.execute(
         "SELECT count(*), coalesce(sum(tokens), 0) FROM search_claims"
-        " WHERE account_id = ? AND project_id = ? AND slug = ?",
+        " INDEXED BY search_claims_by_page WHERE account_id = ? AND project_id = ? AND slug = ?",
         (account_id, project_id, slug),
     ).fetchone()
     con.execute(
-        "DELETE FROM search_claims WHERE account_id = ? AND project_id = ? AND slug = ?",
+        f"DELETE FROM {index} WHERE rowid IN (SELECT row FROM search_claims"
+        " INDEXED BY search_claims_by_page WHERE account_id = ? AND project_id = ? AND slug = ?)",
         (account_id, project_id, slug),
     )
-    con.execute(f"DELETE FROM {index} WHERE project_id = ? AND slug = ?", (project_id, slug))
+    con.execute(
+        "DELETE FROM search_claims INDEXED BY search_claims_by_page"
+        " WHERE account_id = ? AND project_id = ? AND slug = ?",
+        (account_id, project_id, slug),
+    )
     rows = []
     for claim in claims:
         row = con.execute(

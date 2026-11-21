@@ -410,9 +410,10 @@ MCP (mcp>=2.3 `MCPServer`, streamable HTTP at /mcp, stateless_http=True, json_re
       claim longer than 100,000 characters, which it shows as preformatted text; text
       indented under a list item is the item's prose), and a URL, a path, a flag or a
       version what the page's facts read as one, so a bare `ledger/notes.md` still names a
-      page Ledger, as does a title in a link's address written in angle brackets or in a
-      link's title, while one between escaped backticks, which the facts read as code, names
-      nothing though the page shows it as prose (the index, given the passage's text with
+      page Ledger, as does a title in a link's address written in angle brackets, in a link's
+      title, between escaped backticks, or in a URL, a path, a flag or a version between two
+      backticks of one line that Markdown does not pair, which the facts read as inline code
+      and so as none of those (the index, given the passage's text with
       every stretch that is no prose blanked out, says where the title stands in prose; a
       claim that is not its passage's text character for character, as one saved by hand or
       one that differs from its passage only by the blanks that end its lines, which the

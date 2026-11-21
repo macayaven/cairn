@@ -436,9 +436,10 @@ def build_mcp(brand: Brand | None = None) -> MCPServer:
         block, and all of a claim longer than 100,000 characters, which it shows as preformatted
         text; text indented under a list item is the item's prose. A URL, a path, a flag or a
         version is what the page's facts read as one, so a bare `ledger/notes.md` still names a page
-        Ledger, and so does a title in a link's address written in angle brackets or in a link's
-        title; the facts read text between escaped backticks as code, so a title there names
-        nothing, though the page shows it as prose. A claim that holds a mark of the index or a null
+        Ledger, and so does a title in a link's address written in angle brackets, in a link's
+        title, between escaped backticks, or in a URL, a path, a flag or a version between two
+        backticks of one line that Markdown does not pair, which the facts read as inline code and
+        so as none of those. A claim that holds a mark of the index or a null
         character names none (the pages this page mentions are not listed). A claim that cites
         several passages is read by its first. A term more than 5 pages hold relates none, nor one
         whose words more than 64 claims of the project hold, nor one longer than 200 characters; a

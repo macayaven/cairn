@@ -117,10 +117,11 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
         f" a claim longer than {spans.MAX_RENDERED:,} characters, which it shows as preformatted"
         " text; text indented under a list item is the item's prose. A URL, a path, a flag or a"
         " version is what the page's facts read as one, so a bare `ledger/notes.md` still names"
-        " a page Ledger, and so does a title in a link's address written in angle brackets or in"
-        " a link's title; the facts read text between escaped backticks as code, so a title"
-        " there names nothing, though the page shows it as prose. A claim that holds a mark of"
-        " the index or a null character names none.",
+        " a page Ledger, and so does a title in a link's address written in angle brackets, in"
+        " a link's title, between escaped backticks, or in a URL, a path, a flag or a version"
+        " between two backticks of one line that Markdown does not pair, which the facts read"
+        " as inline code and so as none of those. A claim that holds a mark of the index or a"
+        " null character names none.",
         "A title that more than 5 other pages name so relates none either.",
     )
     assert "not a plain word" not in flat(guide_source("connect"))

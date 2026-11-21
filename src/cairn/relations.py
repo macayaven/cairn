@@ -17,31 +17,31 @@ Two kinds of relation:
   fact is never read a second time, alone, and never read from a claim's text cut from its
   passage.
 - MENTIONED_BY: a claim of the other page names this page's title in its prose. Each place
-  the claim's text holds the title's words side by side is judged by itself, whatever
-  other place overlaps it: it names the title when it lies whole outside every stretch of
-  the passage the claim cites that is a url, a path, a flag, a version or inline code, or
-  a fenced code block (`covered`: the facts of cairn.facts.extract_facts on the passage,
-  each by its own start and end, and a fenced block from its opening line, the word after
-  its marks included; nothing is read a second time alone), and outside what the Markdown
-  parser reads as code in the passage read alone (cairn.spans.code_read: code spans,
-  fenced blocks with their opening line, indented blocks; text indented under a list item
-  is the item's prose). The search index's own tokenizer says where the places are, on
-  the text with those stretches blanked out where they stand (`blanked`;
-  cairn.store.relating), and nothing here reads the words. So a page titled Deploy is not
-  named by a claim whose only "deploy" stands in `deploy/compose.yaml`, or after the marks
-  that open a fence, nor one titled Audit by `--audit-keep`; what the facts and the parser
-  do not read as one of those is prose, so a bare `deploy/notes.md` or `ada@deploy.dev`
-  names Deploy, and so does a title in a link's address written in angle brackets or in a
-  link's title; the facts read text between escaped backticks as code, so a title there
-  names nothing, though the page shows it as prose. The parser reads as the page that
-  shows the claim does (cairn.spans.claim_markdown), and a claim longer than
+  the claim's text holds the title's words side by side is judged by itself, whatever other
+  place overlaps it: it names the title when it lies whole outside every stretch of the
+  passage the claim cites that is a url, a path, a flag or a version (`covered`: those facts
+  of cairn.facts.extract_facts on the passage, each by its own start and end; nothing is
+  read a second time alone), and outside what the Markdown parser reads as code in the
+  passage read alone (cairn.spans.code_read: code spans, fenced blocks with their opening
+  line, indented blocks; text indented under a list item is the item's prose). The page
+  alone says what is code: the facts' own inline code and code blocks are not asked. The
+  search index's own tokenizer says where the places are, on the text with those stretches
+  blanked out where they stand (`blanked`; cairn.store.relating), and nothing here reads the
+  words. So a page titled Deploy is not named by a claim whose only "deploy" stands in
+  `deploy/compose.yaml`, or after the marks that open a fence, nor one titled Audit by
+  `--audit-keep`; what the facts and the parser do not read as one of those is prose, so a
+  bare `deploy/notes.md` or `ada@deploy.dev` names Deploy, and so does a title in a link's
+  address written in angle brackets, in a link's title, between escaped backticks, or in a
+  url, a path, a flag or a version between two backticks of one line that Markdown does not
+  pair, which the facts read as inline code and so as none of those. The parser reads as the
+  page that shows the claim does (cairn.spans.claim_markdown), and a claim longer than
   cairn.spans.MAX_RENDERED characters, which the page shows as preformatted text, is code
   whole. The places of a claim's text are places of its passage because the claim is the
   passage's text, character for character; where it is not (a page saved by hand; a claim
   that differs from its passage only by the blanks that end its lines, which the gate
   accepts; a claim that cites no passage of the project), the mention stands as the index
-  has it. A claim whose text holds a mark of the index or a null character names no
-  page: where the index matched in it cannot be checked (cairn.store.relating.MARKS).
+  has it. A claim whose text holds a mark of the index or a null character names no page:
+  where the index matched in it cannot be checked (cairn.store.relating.MARKS).
 
 Which terms relate pages (`specific`): every url, path, flag and version; an inline code
 only when it holds a character that is not a letter (a digit, a space, punctuation:

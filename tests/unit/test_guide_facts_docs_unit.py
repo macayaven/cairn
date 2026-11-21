@@ -164,10 +164,11 @@ def test_the_shipped_backup_settings_are_the_ones_the_privacy_guide_states():
 # privacy.md: what a bucket keeps of what is removed from it, in each shipped definition
 
 KEPT_IN_A_BUCKET = (
-    "The bucket of the shipped Google Cloud configuration, and of the quick deploy on AWS or"
-    " on Google Cloud, keeps what is removed from it restorable for 7 more days (on AWS until"
-    " the midnight, UTC, that follows them); a bucket the operator made keeps what the"
-    " operator set on it."
+    "The bucket of the shipped Google Cloud configuration, and of the quick deploy on Google"
+    " Cloud, keeps what is removed from it restorable for 7 more days. The bucket of the quick"
+    " deploy on AWS keeps it restorable for at least 7 more days: from the midnight, UTC, after"
+    " them it may be removed, and Amazon S3 removes it some time later, with no deadline that"
+    " it states. A bucket the operator made keeps what the operator set on it."
 )
 
 
@@ -199,11 +200,15 @@ def days_a_bucket_keeps(variables_tf: str, quick_gcp_tf: str, quick_aws_tf: str)
 def test_each_shipped_bucket_keeps_what_is_removed_from_it_as_long_as_the_privacy_guide_says():
     """privacy.md, the row "Backups, with the shipped configuration" and the bullet "Backups"
     under Deletion, in the same words: `KEPT_IN_A_BUCKET`. Google Cloud keeps a removed
-    object for the days of its soft delete policy. On AWS a removed object becomes an earlier
-    version, which the bucket's one lifecycle rule removes after as many days, counted up to
-    the next midnight UTC (Amazon S3, "Lifecycle configuration elements": "rounding up the
-    resulting time to the next day at midnight UTC"). A bucket the operator made is the
-    operator's: the plain Compose install has no definition of one."""
+    object for the days of its soft delete policy, which its own page gives as how long a
+    soft-deleted object is "retained before" it is "permanently deleted". On AWS a removed
+    object becomes an earlier version, and the days of the bucket's one lifecycle rule are a
+    floor, not a date: the version becomes eligible at the midnight UTC after them (Amazon
+    S3, "Lifecycle configuration elements": "rounding up the resulting time to the next day
+    at midnight UTC"), and S3 "doesn't guarantee a completion time" for the removal, which
+    can follow "days or even weeks later" ("Setting an S3 Lifecycle configuration on a
+    bucket"). A bucket the operator made is the operator's: the plain Compose install has no
+    definition of one."""
     variables_tf = (ROOT / "infra" / "gcp" / "variables.tf").read_text()
     quick_gcp_tf = (ROOT / "infra" / "quick" / "gcp" / "main.tf").read_text()
     quick_aws_tf = (ROOT / "infra" / "quick" / "aws" / "main.tf").read_text()

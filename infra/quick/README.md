@@ -29,12 +29,13 @@ reserved public IPv4 address, an instance profile, an S3 bucket with versioning 
 Manager secret.
 It puts the subnet in the first Availability Zone that offers `t3.small`, and later applies
 leave it there.
-What is deleted or overwritten in the bucket stays restorable for 7 days: it becomes an earlier
-version of the object, a lifecycle rule removes such a version 7 days later, and the VM's role
-can delete an object but not a version.
+What is deleted or overwritten in the bucket stays restorable for at least 7 days: it becomes an
+earlier version of the object. From the midnight UTC after those days a lifecycle rule makes that
+version eligible for removal, and S3 removes it some time after that, with no deadline it states.
+The VM's role can delete an object but not a version.
 While it runs, budget for [EC2 instance time](https://aws.amazon.com/ec2/pricing/on-demand/),
 [the disk](https://aws.amazon.com/ebs/pricing/), [the IPv4 address](https://aws.amazon.com/vpc/pricing/),
-[S3 storage (replica files Litestream deleted stay 7 days) and requests](https://aws.amazon.com/s3/pricing/),
+[S3 storage (replica files Litestream deleted stay at least 7 days) and requests](https://aws.amazon.com/s3/pricing/),
 [the secret and its API calls](https://aws.amazon.com/secrets-manager/pricing/),
 and billable transfer.
 
@@ -164,7 +165,7 @@ rm /root/cairn-cold-20261120T101500Z.tgz
 
 The archive holds the data volume as it was while nothing ran: the database with its
 write-ahead log, and any file you wrote beside it. A cold copy you delete from your machine
-(`aws s3 rm`) stays restorable for 7 days, like anything deleted in the bucket.
+(`aws s3 rm`) stays restorable for at least 7 days, like anything deleted in the bucket.
 
 ### AWS teardown
 

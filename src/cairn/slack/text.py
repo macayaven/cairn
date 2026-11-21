@@ -876,8 +876,9 @@ def _render(
                 pieces.append(literal(text[start:end]))
             elif spanned == "named" or (spanned and start in named):
                 # its backticks and the last's would be one run; a blank that ends it as an
-                # entity, so a line's end does not drop it, nor the blanks before it
-                blank = what[-1] in " \t"
+                # entity, so a line's or a paragraph's end does not drop it (the parser strips
+                # every blank Python's str.strip does there), nor the blanks before it
+                blank = what[-1].isspace()
                 pieces.append(_plain(what[: -1 if blank else None]) + blank * f"&#{ord(what[-1])};")
             else:  # a space each side where Markdown would take one, or read a longer run
                 ticks = "`" * (1 + max(map(len, re.findall("`+", what)), default=0))

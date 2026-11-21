@@ -1233,7 +1233,8 @@ def test_connect_the_rich_text_tells_the_blanks_and_the_text_about_a_span():
     says(
         *CONNECT,
         "A span written as plain characters keeps the blanks that end it, at the end of a line"
-        " too: the last of them is written as a character reference, `&#32;` for a blank.",
+        " too: the last of them is written as a character reference, `&#32;` for a space and"
+        " `&#160;` for a no-break space.",
         "Where Slack's rich text gives the text that stands right before a span it names, a"
         " backtick in that text is written as a character, and the span after it; elsewhere a"
         " backtick Slack displayed as a character is read as code where it pairs with another,"
@@ -1261,6 +1262,10 @@ def test_connect_the_rich_text_tells_the_blanks_and_the_text_about_a_span():
     assert read("`a``  `", [code("a"), code("  ")]) == (
         "`a` &#32;",
         [("code_inline", "a"), ("text", "  ")],
+    )
+    assert read("`a``x\N{NO-BREAK SPACE}`", [code("a"), code("x\N{NO-BREAK SPACE}")]) == (
+        "`a`x&#160;",
+        [("code_inline", "a"), ("text", "x\N{NO-BREAK SPACE}")],
     )
     assert read("`x` or `x`", [text("`x` or "), code("x")]) == (
         "\\`x\\` or `x`",

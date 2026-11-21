@@ -54,7 +54,6 @@ def test_2_a_named_span_after_an_unread_span_of_the_same_code_stays_its_own():
     assert "``" not in "".join(chars for _, chars in page)
 
 
-@pytest.mark.xfail(strict=True, reason="a no-break space that ends a span is not kept")
 def test_3_a_span_written_as_characters_keeps_a_no_break_space_that_ends_the_message():
     nbsp = "\N{NO-BREAK SPACE}"
     page = shown(f"`a``x{nbsp}`", [code("a"), code("x" + nbsp)])

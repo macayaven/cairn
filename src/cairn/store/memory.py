@@ -814,25 +814,28 @@ class MemoryMethods(StoreBase):
         return {span_id: found[span_id] for span_id in wanted if span_id in found}
 
     def passages_of_other_projects(
-        self, project_id: str, span_ids: Iterable[str]
+        self, project_id: str, slug: str, version: int
     ) -> frozenset[str]:
-        """Which of `span_ids`, the passages a page of the project `project_id` cites, the
-        store holds of a note that is not of that project, of its workspace or another: by id
-        alone, whatever this view reaches of that note, and never its text. An id the page
-        already shows is no new knowledge; whether it is another project's is all that is
-        said (compiler.own_claims: the writers leave such a claim out). Empty for a project out
-        of this view's reach. One statement, by the spans' primary key; none for no id."""
-        wanted = list(dict.fromkeys(span_ids))
-        if not wanted:
-            return frozenset()
+        """Which passages the stored version `version` of the page `slug` of the project
+        `project_id` cites that the store holds of a note that is not of that project, of its
+        workspace or another: by id alone, whatever this view reaches of that note, and never
+        its text. The ids are read from the stored page itself, never taken from the caller,
+        so an id the page shows is all it can be asked about, and that is no new knowledge;
+        whether it is another project's is all that is said (compiler.own_claims: the writers
+        leave such a claim out, asking for the version they read). Empty for a project out of
+        this view's reach and for a page or version not stored (a version pruned since the
+        writer read it: its save is then refused as stale, StalePage, before any citation is
+        asked). One statement: the version by its primary key, its passages by theirs."""
         with self._read() as con:
             found = con.execute(
-                "SELECT spans.id FROM spans JOIN notes ON notes.id = spans.note_id"
-                " WHERE spans.id IN (SELECT value FROM json_each(?)) AND notes.project_id != ?"
-                " AND ? IN (SELECT projects.id FROM projects WHERE projects.account_id = ? AND "
-                + _IN_REACH.format("projects.id")
-                + ")",
-                (json.dumps(wanted), project_id, project_id, *self._scope(con)),
+                "SELECT DISTINCT spans.id FROM page_versions AS p, json_each(p.claims) AS claim,"
+                " json_each(claim.value, '$.span_ids') AS cited"
+                " JOIN spans ON spans.id = cited.value JOIN notes ON notes.id = spans.note_id"
+                " WHERE p.project_id = ?1 AND p.slug = ?2 AND p.version = ?3"
+                " AND notes.project_id != ?1"
+                " AND ?1 IN (SELECT projects.id FROM projects WHERE projects.account_id = ?4"
+                " AND (?5 IS NULL OR projects.id IN (SELECT value FROM json_each(?6))))",
+                (project_id, slug, version, *self._scope(con)),  # _IN_REACH, numbered
             ).fetchall()
         return frozenset(span_id for (span_id,) in found)
 
@@ -907,7 +910,19 @@ class MemoryMethods(StoreBase):
         `by_model` (M4): the save holds what a model answered (cairn.arrange). Then, when the
         project is at "never", it raises KeptFromModels and writes nothing, the state read in
         the statement that reads the page's latest version, so it costs no statement of its
-        own; an answer that arrives after a change to "never" is never saved."""
+        own; an answer that arrives after a change to "never" is never saved.
+
+        Cost: the page's, not the workspace's, under what `serve` runs with by default as on a
+        bare store (test_index_page_cost_unit counts SQLite's steps beside 0, 1,500 and 6,000
+        other pages): the version bound prunes the page's own versions by its slug
+        (_keep_versions), its search rows go by rowid (ranking.index_page), the audit event's
+        numbers are one seek each (StoreBase._audit), the topic key and the page's head are read
+        and written by their keys, and the caps are the view's own or one read of the plan in
+        force (that read, through a plan's resolver, and a page's first save, are flat by
+        reading, not counted). Not flat: under a storage cap the workspace's page versions pass,
+        _keep_history reads every older version of the workspace to find the oldest (within the
+        cap it reads one row); past `--audit-keep`, one save in AUDIT_PRUNE_BATCH deletes that
+        many events; and FTS5's own merging adds a few units as its segments come and go."""
         given = _page_detail(event, detail)
         claims = tuple(claims)
         if len(claims) > PAGE_CLAIMS_MAX:

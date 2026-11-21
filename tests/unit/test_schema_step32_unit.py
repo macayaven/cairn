@@ -274,14 +274,20 @@ def many(db: Path, workspaces: int) -> None:
 
 
 def step_32(db: Path) -> int:
+    """The step alone, as _upgrade runs it: what it says is said once it commits."""
     con = sqlite3.connect(db, factory=Counting, isolation_level=None)
     stamped = schema._STAMP.set(lambda: "2099-01-01T00:00:00.000000+00:00")
+    said: list = []
+    after = schema._AFTER.set(said)
     try:
         con.execute("BEGIN")
         schema._MIGRATIONS[32](con)
         con.execute("COMMIT")
+        for say in said:
+            say()
         return con.most[0]
     finally:
+        schema._AFTER.reset(after)
         schema._STAMP.reset(stamped)
         con.close()
 

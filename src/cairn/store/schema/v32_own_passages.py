@@ -2,8 +2,9 @@
 A step is history: nothing here changes once a database outside the tests ran it."""
 
 import sqlite3
+from functools import partial
 
-from cairn.store.schema.shared import _STAMP
+from cairn.store.schema.shared import _AFTER, _STAMP
 
 
 def _hold_to_own_projects(con: sqlite3.Connection) -> None:
@@ -17,7 +18,19 @@ def _hold_to_own_projects(con: sqlite3.Connection) -> None:
     made such a page. It adds and changes no table, and it raises the floor (not in
     _ONLY_ADDS): a build before it may save such a citation again. On a database with no such
     page it makes one search and writes nothing. It writes no audit event; the store's log
-    says, for each workspace that had any, how many pages were rewritten and removed."""
-    from cairn.store.erasure import hold_to_own_projects  # the store builds on the schema
+    says, for each workspace that had any, how many pages were rewritten and removed, once
+    the step has committed (_AFTER), never before. When a page changed, a compaction is
+    marked due in the step's transaction, as a forget marks one: the versions it deleted held
+    another project's text."""
+    from cairn.store.erasure import (  # the store builds on the schema
+        _compaction_due,
+        _log_repaired,
+        hold_to_own_projects,
+    )
 
-    hold_to_own_projects(con, None, _STAMP.get()())
+    said = _AFTER.get([])  # run alone, outside _upgrade (a test of the step): said to no one
+    done = hold_to_own_projects(
+        con, None, _STAMP.get()(), lambda *counts: said.append(partial(_log_repaired, *counts))
+    )
+    if done["rewritten"] or done["removed"]:
+        _compaction_due(con, _STAMP.get()())

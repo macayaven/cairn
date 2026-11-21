@@ -25,8 +25,12 @@ def guide(name: str) -> str:
 
 
 PRIVACY_NOTE = (
-    "A page cites only its own project's notes: {{name}} refuses any other citation on every"
-    " write, and the upgrade to this version rewrote every page that an earlier version had"
+    "A page cites only its own project's notes: {{name}}'s own writers (a note's compile, the"
+    " tidy and a model's arrangement) never save a citation of another project's note, a"
+    " page's save refuses any passage the database holds of another project's note, and an"
+    " import refuses a file that holds one; a passage the database does not hold is no note's,"
+    " and only a program that calls the store's save itself can cite one. And the upgrade to"
+    " this version rewrote every page that an earlier version had"
     " saved citing another project's note, keeping its own project's claims and none of its"
     " earlier versions. Should a page of another project of the workspace still cite the"
     " note, which only a program that wrote into the database directly could leave, the"
@@ -55,8 +59,18 @@ RUN_UPGRADE = (
     " versions, even one that note's workspace has forgotten since, keeps one new version with"
     " its own project's claims alone, and its earlier versions go, as when that note is"
     " forgotten; a page left with no claim of its own goes."
-    " The server's log says, for each workspace that had any, how many pages were rewritten"
-    " and how many removed, and names no page."
+    " Once the upgrade has committed, the server's log says, for each workspace that had any,"
+    " how many pages were rewritten and how many removed, and names no page; when a page"
+    " changed, a compaction is marked due, as a forget marks one. A database whose pages all"
+    " cite only their own project's notes passes the upgrade with no page rewritten or removed,"
+    " and the log says nothing of it. To learn beforehand what it would change, start this"
+    " version once on a copy of the database and read that copy's log: `stats"
+    " --other-projects` counts such pages only on a database already at this version, and"
+    " refuses an older one."
+)
+RUN_ADDRESSES = (
+    "An upgrade keeps the address of every page that remains, so links to it and to the claims"
+    " that remain on it keep working."
 )
 RUN_STATS = (
     "`--other-projects` adds one count, for each workspace that has any: the pages that cite,"
@@ -81,6 +95,9 @@ RUN_REPAIR = (  # its behaviour: test_repair_command_unit.py
     " `cairn.db.compact.lock` as `compact` does, so while it runs a `compact` says that another"
     " compaction is running and exits 3, and the server's own compactor logs `compact skipped:"
     " another compaction is running on this database` and tries again at the next poll."
+    " On a database of an older schema it changes nothing and exits 1, as `stats` does: start"
+    " the server once on it, whose upgrade holds every page to its own project's notes and"
+    " logs how many pages it rewrote and removed."
 )
 GONE_SAYS = "A page can cite only passages from its own project."
 
@@ -88,9 +105,14 @@ GONE_SAYS = "A page can cite only passages from its own project."
 def test_the_guides_say_it():
     assert PRIVACY_NOTE in guide("privacy")
     assert PRIVACY_PROJECT in guide("privacy")
-    for said in (RUN_IMPORT, RUN_UPGRADE, RUN_STATS, RUN_REPAIR):
+    for said in (RUN_IMPORT, RUN_UPGRADE, RUN_STATS, RUN_REPAIR, RUN_ADDRESSES):
         assert said in guide("run")
-    for gone in ("keeps it until then", "a later note on that page keeps one it has"):
+    for gone in (
+        "keeps it until then",
+        "a later note on that page keeps one it has",
+        "refuses any other citation on every write",
+        "An upgrade keeps every page's address",
+    ):
         assert gone not in guide("privacy") + guide("run")
 
 

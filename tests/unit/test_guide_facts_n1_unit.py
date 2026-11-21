@@ -325,22 +325,22 @@ def test_the_waiting_command_lists_notes_without_their_text(db, capsys):
     assert [n["note_id"] for n in json.loads(capsys.readouterr().out)] == [two.id]
 
 
-# run.md: an upgrade keeps every page's address
+# run.md: an upgrade keeps the address of every page that remains
 
 
 def test_an_upgrade_keeps_every_pages_address_and_a_merged_page_stays_merged(db):
-    """run.md: "An upgrade keeps every page's address, so links to a page and the claims
-    cited from it keep working. Since pages are filed by topic, a page that held notes of two
-    topics before the upgrade keeps them both and takes the topic of its latest title: later
-    notes of that topic join it, and later notes of the other topic build a page of their
-    own.\""""
+    """run.md: "An upgrade keeps the address of every page that remains, so links to it and
+    to the claims that remain on it keep working. Since pages are filed by topic, a page that
+    held notes of two topics before the upgrade keeps them both and takes the topic of its
+    latest title: later notes of that topic join it, and later notes of the other topic build
+    a page of their own.\""""
     says(
         "run",
-        "An upgrade keeps every page's address, so links to a page and the claims cited from"
-        " it keep working. Since pages are filed by topic, a page that held notes of two topics"
-        " before the upgrade keeps them both and takes the topic of its latest title: later"
-        " notes of that topic join it, and later notes of the other topic build a page of"
-        " their own.",
+        "An upgrade keeps the address of every page that remains, so links to it and to the"
+        " claims that remain on it keep working. Since pages are filed by topic, a page that"
+        " held notes of two topics before the upgrade keeps them both and takes the topic of its"
+        " latest title: later notes of that topic join it, and later notes of the other topic"
+        " build a page of their own.",
     )
     v23_database(db)  # page `c` holds a C++ note and a C# note; its latest title is "C#"
     store = Store(db, clock=lambda: Y2099)  # the upgrade

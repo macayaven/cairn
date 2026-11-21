@@ -20,6 +20,9 @@ from cairn.compiler import compile_note
 from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.store import Store, erasure
+from cairn.store.base import AUDIT_KEEP
+from cairn.store.usage import Limits
+from cairn.web.cli import KEEP_VERSIONS
 
 SIZES = (0, 1500, 6000)
 
@@ -80,6 +83,27 @@ def compile_one(others: int) -> int:
 @pytest.mark.parametrize("act", [save_one, compile_one], ids=["save_page", "compile_note"])
 def test_a_save_costs_the_same_in_a_workspace_of_0_1500_and_6000_other_pages(act):
     work = [act(size) for size in SIZES]  # 7, 7, 8 and 9, 9, 10; 7, 547, 2,168 before the fix
+    assert max(work) - min(work) <= 3, dict(zip(SIZES, work, strict=True))
+
+
+def served(others: int, capped: bool) -> int:
+    """save_one under what `serve` runs with by default (report 9, must-fix 5): each page's
+    newest KEEP_VERSIONS versions kept and the audit log's newest AUDIT_KEEP events, and,
+    `capped`, a storage cap the workspace is well within (_keep_history reads its size)."""
+    store, desk = workspace(others)
+    with closing(store):
+        store.bound_history(KEEP_VERSIONS)
+        store.audit_keep = AUDIT_KEEP
+        view = store.limited(Limits(storage_bytes=10**9)) if capped else store
+        page = view.get_page(desk, "drift")
+        return counted(
+            store, lambda: view.save_page(desk, "drift", page.title, page.body, page.claims)
+        )
+
+
+@pytest.mark.parametrize("capped", [False, True], ids=["serve's defaults", "storage cap"])
+def test_a_save_costs_the_same_under_the_servers_defaults(capped):
+    work = [served(size, capped) for size in SIZES]  # 7, 82, 308 before the fix
     assert max(work) - min(work) <= 3, dict(zip(SIZES, work, strict=True))
 
 

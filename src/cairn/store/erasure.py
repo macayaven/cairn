@@ -1125,24 +1125,29 @@ def hold_to_own_projects(
     text), its search rows rewritten, its project given the row PASSAGES_REMOVED; a page
     left with no claim is removed. The other project's notes are not touched. Scope: the
     workspace `account_id`, or the whole database (None: schema step 32 runs it so, once).
-    Only a program that wrote the store's tables behind its back, or called save_page
-    directly in an earlier build, could leave such a page; a passage no longer held is one
+    An earlier build's own writers could leave such a page (its compile saved what it had
+    gated, and its save asked only whether the cited passages existed anywhere), as could a
+    program writing the tables; a database whose pages all cite their own project's notes
+    has none, and this makes one search and writes nothing. A passage no longer held is one
     whose note another workspace forgot after the page cited it (a forget searches its own
     workspace alone).
 
-    The pages are found one at a time, by workspace, project name and slug, in one pass over
-    the page versions however many pages it repairs: each search goes on from the last page
-    found, by the projects' unique index and the versions' primary key (_NEXT_PROJECT,
-    _NEXT_PAGE), so each version is read by the search once, and it holds one page and one
-    workspace's counts whatever the database holds; on a database that holds no such page it
-    makes one search and writes nothing. It writes no audit event: inside the upgrade no
-    audit writer of this build may run (a step is history), so the store's log is the record,
-    one line for each workspace that had any, written once its pages are done, counts only;
-    `each`, when
-    given, is called with the workspace's id and its counts rewritten and removed in place of
-    that line (the `repair` command prints them once the transaction commits). Returns how
-    many `workspaces` had any, and how many pages were `rewritten` and `removed`."""
-    said = _log_repaired if each is None else _each(each)
+    The pages are found one at a time, by workspace, project name and slug, in one pass over the
+    page versions however many pages it repairs: each search goes on from the last page found,
+    by the projects' unique index and the versions' primary key (_NEXT_PROJECT, _NEXT_PAGE), so
+    each version is read by the search once, and it holds one page and one workspace's counts
+    whatever the database holds; on a database that holds no such page it makes one search and
+    writes nothing. Each page it removes also has its name taken out of the audit events that
+    named it (_unname), one pass over the workspace's audit events for each page removed, so
+    that part grows with the events (64 pages removed: 5,579 units of 100 SQLite steps beside
+    512 other events, 20,324 beside 2,048, as the second reviewer measured). It writes no audit
+    event: inside the upgrade no audit writer of this build may run (a step is history). It says
+    nothing itself: `each`, when given, is called, in the transaction, with each workspace that
+    had any (its id and its counts rewritten and removed), and the caller says them once the
+    transaction has committed (schema step 32 through the upgrade's runner, one line of the
+    store's log each, _log_repaired; the `repair` command on stdout). Returns how many
+    `workspaces` had any, and how many pages were `rewritten` and `removed`."""
+    said = _each(each or (lambda *counts: None))
     done: Counter = Counter()
     tally: Counter = Counter()  # the pages of the workspace `at`, the one being repaired
     at, after = None, ("", "")
@@ -1174,7 +1179,7 @@ def hold_to_own_projects(
 
 
 def _each(each: Callable[[str, int, int], None]) -> Callable[[str | None, Counter], None]:
-    """hold_to_own_projects' `each`, called as _log_repaired is."""
+    """hold_to_own_projects' `each`, called with a workspace's tally (None: none yet)."""
 
     def said(account_id: str | None, tally: Counter) -> None:
         if account_id is not None:
@@ -1183,17 +1188,17 @@ def _each(each: Callable[[str, int, int], None]) -> Callable[[str | None, Counte
     return said
 
 
-def _log_repaired(account_id: str | None, tally: Counter) -> None:
-    """hold_to_own_projects' line for the workspace `account_id` (None: none yet)."""
-    if account_id is not None:
-        store_log.warning(
-            "repair: workspace %s held %d page(s) citing notes of other projects: %d rewritten"
-            " with its own notes' claims, %d removed",
-            account_id,
-            tally["rewritten"] + tally["removed"],
-            tally["rewritten"],
-            tally["removed"],
-        )
+def _log_repaired(account_id: str, rewritten: int, removed: int) -> None:
+    """The store's line for a workspace hold_to_own_projects repaired, said once the
+    transaction that repaired it has committed (schema step 32)."""
+    store_log.warning(
+        "repair: workspace %s held %d page(s) citing notes of other projects: %d rewritten"
+        " with its own notes' claims, %d removed",
+        account_id,
+        rewritten + removed,
+        rewritten,
+        removed,
+    )
 
 
 def count_pages_citing_other_projects(con: sqlite3.Connection) -> dict[str, int]:

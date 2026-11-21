@@ -620,11 +620,14 @@ def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResul
 def own_claims(store: Store, page: Page | None) -> tuple[Page | None, frozenset[str]]:
     """The page as a writer builds on it (compile_note, arrange.tidy_page,
     arrange.arrange_page), and the passages it left out: without each claim that cites a
-    passage the store holds of a note of another project, of its workspace or another, asked
-    of the store by id (Store.passages_of_other_projects), so a writer whose reach is the
-    page's project alone leaves it out as one that reaches everything does, and none is
-    refused for it. An id the page already shows is no new knowledge: the writer learns which
-    of them are another project's, never what those passages say. The writer passes them to
+    passage the store holds of a note of another project, of its workspace or another, asked of the
+    store for the stored version the writer read (Store.passages_of_other_projects, which reads
+    the ids from that version itself and takes none from the writer), so a writer whose reach is
+    the page's project alone leaves it out as one that reaches everything does, and none is
+    refused for it. An id the page already shows is no new knowledge: the writer learns which of
+    them are another project's, never what those passages say. A page saved since the writer
+    read it is answered for the version read (none, if that version was pruned), and the save
+    then refuses the writer as stale (StalePage), as it would anyway. The writer passes them to
     Store.save_page as `left_out`, so a page a delete or a forget removed while it drafted is
     stale for it. The version it saves is held to its own project's notes (save_page refuses
     any other); the earlier versions stay, as after any write, since a write is not an
@@ -634,11 +637,16 @@ def own_claims(store: Store, page: Page | None) -> tuple[Page | None, frozenset[
     and the note filed, or the note refused for a passage no one holds) tells whoever wrote
     that row whether another workspace still holds the passage; no path of the product lets a
     writer cite a passage of its choosing, so nothing learns it without writing the tables.
+    A claim that folds a passage of the page's own project with one of another project's is
+    left out whole, its own passage with it (schema step 32 and `repair` keep that passage).
+    Filing another note, or a tidy, does not bring it back: writing its note's text into the
+    project again does, since the store answers with the stored note and compiles it again.
     One read when the page cites a passage; the page itself when no claim leaves."""
     if page is None:
         return None, frozenset()
-    cited = [span_id for claim in page.claims for span_id in claim.span_ids]
-    foreign = store.passages_of_other_projects(page.project_id, cited)
+    if not any(claim.span_ids for claim in page.claims):
+        return page, frozenset()
+    foreign = store.passages_of_other_projects(page.project_id, page.slug, page.version)
     if not foreign:
         return page, foreign
     kept = tuple(claim for claim in page.claims if foreign.isdisjoint(claim.span_ids))

@@ -561,8 +561,10 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   another, raises ValueError (NOT_OF_PROJECT) and writes nothing, whatever the page cited
   before, asked after the version's check (one statement, by the spans' primary key). A
   compile, the tidy and an arrangement leave such a claim out of the page they read, asking
-  `passages_of_other_projects(project_id, span_ids)` (by id, never text, whatever the view
-  reaches of those notes; empty for a project out of reach), and pass what they left out as
+  `passages_of_other_projects(project_id, slug, version)` for the version they read (by id,
+  never text, whatever the view reaches of those notes; the ids are read from that stored
+  version, never taken from the caller; empty for a project out of reach or a version not
+  stored), and pass what they left out as
   `save_page(..., left_out=...)`, which CitesForgotten asks too (compiler.own_claims). Schema
   step 32 rewrote every page an earlier build saved with such a claim.
   A page holds at most PAGE_CLAIMS_MAX (2,000) claims (H6c): `save_page` with more raises

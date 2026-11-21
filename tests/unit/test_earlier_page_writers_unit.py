@@ -10,14 +10,17 @@ notes."""
 
 import json
 import re
+from contextlib import closing
 
 import pytest
 from starlette.testclient import TestClient
+from test_rt1_forget_workspace_held import borrowed, citing, passage
 
 from cairn.arrange import arrange_page, tidy_page
 from cairn.compiler import compile_note
 from cairn.gate import lint_gate
 from cairn.llm import Reply
+from cairn.memory import Memory
 from cairn.server import create_app
 from cairn.store import Claim, StalePage, Store
 from earlier_build import earlier_page
@@ -103,15 +106,38 @@ def test_a_note_posted_over_rest_is_saved_and_the_other_projects_claim_left_out(
 
 
 @pytest.mark.parametrize("source", ["project", "workspace"])
-def test_the_store_says_which_ids_are_another_projects_by_id_alone(store, source):
+def test_the_store_says_which_ids_of_a_stored_page_are_another_projects(store, source):
+    """Report 9, must-fix 3: the store answers for the ids the stored page version cites, and
+    for no id a caller names; the version the writer read, or nothing for one not stored."""
     east, cited = legacy(store, source)
-    own = store.get_page(east.id, SLUG).claims[1].span_ids[0]
+    page = store.get_page(east.id, SLUG)
     view = store.narrow([east.id])
-    asked = [cited.id, own, "sp_" + "0" * 16]
-    assert view.passages_of_other_projects(east.id, asked) == frozenset({cited.id})
+    assert view.passages_of_other_projects(east.id, SLUG, page.version) == frozenset({cited.id})
     assert view.get_spans([cited.id]) == {}  # still no text of it for this view
+    assert view.passages_of_other_projects(east.id, SLUG, page.version + 1) == frozenset()
+    assert view.passages_of_other_projects(east.id, "no-such-page", 1) == frozenset()
     out = store.create_project("out")
-    assert store.narrow([out.id]).passages_of_other_projects(east.id, asked) == frozenset()
+    assert store.narrow([out.id]).passages_of_other_projects(east.id, SLUG, 1) == frozenset()
+    store.save_page(east.id, SLUG, page.title, page.body, page.claims[1:])  # a later version
+    assert view.passages_of_other_projects(east.id, SLUG, page.version + 1) == frozenset()
+    assert view.passages_of_other_projects(east.id, SLUG, page.version) == frozenset({cited.id})
+
+
+def test_the_reviewers_probe_cannot_be_asked(tmp_path):
+    """A clean store, a read-only view of one project, an id of another workspace it knows
+    and an absent id: there is no argument to pass an id in, and its page's answer is
+    empty whatever any other workspace holds."""
+    with closing(Store(tmp_path / "probe.db")) as root:
+        desk = root.create_project("desk")
+        filed(root, desk.id, f"# Drift sync\n\n{SAID}\n")
+        other = root.for_account(root.create_account("Elsewhere").id)
+        far = other.create_project("far")
+        known = passages(other, filed(other, far.id, "# Far\n\nWren keeps the far log.\n"))[0]
+        reader = root.narrow([desk.id], access="read")
+        with pytest.raises(TypeError):
+            reader.passages_of_other_projects(desk.id, [known.id, "sp_" + "0" * 16])
+        page = reader.get_page(desk.id, SLUG)
+        assert reader.passages_of_other_projects(desk.id, SLUG, page.version) == frozenset()
 
 
 def test_the_tidy_leaves_the_claim_out_through_a_view_of_the_project_alone(store):
@@ -200,3 +226,28 @@ def test_the_refusal_costs_one_statement_by_the_spans_key_and_reads_no_page(stor
         asked = [s for s in statements if "JOIN notes ON notes.id = spans.note_id" in s]
         assert len(asked) == 1 and "page_versions" not in asked[0]
     assert not [s for s in made["refused"] if "SELECT claims FROM page_versions" in s]
+
+
+def test_a_fold_left_out_whole_comes_back_when_its_notes_text_is_written_again(store):
+    """Report 9, forget tester: a writer leaves out whole a claim that folds east's own
+    passage with desk's. Filing an unrelated note, or the tidy, does not bring east's passage
+    back onto the page; writing its note's text into east again does: the store answers with
+    the stored note and compiles it again (compiler.own_claims says so)."""
+    memory = Memory(store, lint_gate)
+    desk, east = store.create_project("desk"), store.create_project("east")
+    theirs = passage(store, filed(store, desk.id, "# Dispatch\n\nQuill sealed the crate.\n"))
+    local = filed(store, east.id, "# Minutes\n\nThe ledger opens at noon.\n")
+    ours = passage(store, local)
+    borrowed(store, east.id, "minutes", citing(1, ours.text, ours, theirs))
+
+    def on_page() -> bool:
+        page = store.get_page(east.id, "minutes")
+        return ours.id in {i for claim in page.claims for i in claim.span_ids}
+
+    assert memory.note("east", "# Minutes\n\nThe bell rings at two.\n")["status"] == "saved"
+    assert not on_page()
+    tidy_page(store, east.id, "minutes")
+    assert not on_page()
+    again = memory.note("east", "# Minutes\n\nThe ledger opens at noon.\n")
+    assert (again["note_id"], again["created"], again["status"]) == (local.id, False, "saved")
+    assert on_page()

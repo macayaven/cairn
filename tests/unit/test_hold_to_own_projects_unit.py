@@ -67,8 +67,15 @@ def two_workspaces(store: Store):
 
 
 def repair(store: Store, account_id: str | None):
+    """The repair, its counts said as schema step 32 says them: once its transaction commits."""
+    said: list[tuple] = []
     with store._write() as con:
-        return erasure.hold_to_own_projects(con, account_id, store._stamp())
+        done = erasure.hold_to_own_projects(
+            con, account_id, store._stamp(), lambda *counts: said.append(counts)
+        )
+    for counts in said:
+        erasure._log_repaired(*counts)
+    return done
 
 
 def counted(store: Store) -> dict[str, int]:

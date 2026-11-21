@@ -21,7 +21,7 @@ from cairn import compiler, spans
 from cairn.compiler import compile_note
 from cairn.gate import lint_gate
 from cairn.memory import Forbidden, Memory
-from cairn.store import CitesForgotten, Claim, Store, erasure
+from cairn.store import CitesForgotten, Claim, StalePage, Store, erasure
 from earlier_build import earlier_page
 
 ISSUER = "https://id.acme.example/pool-1"
@@ -181,8 +181,9 @@ def test_limit_a_is_gone_a_note_compiled_into_an_old_cross_project_page_is_saved
         before = store.get_page(east.id, "minutes")
         Memory(store, lint_gate).note("east", "# Minutes\n\nWren rings the bell at two.\n")
         assert len(store.list_notes(east.id)) == 2
-        assert store.get_page(east.id, "minutes").version == before.version + 1
-        assert store.waiting_notes() == []
+        after = store.get_page(east.id, "minutes")
+        assert after.version == before.version + 1 and store.waiting_notes() == []
+        assert (GONE, (passage(store, note).id,)) in [(c.text, c.span_ids) for c in after.claims]
 
 
 def test_a_member_who_may_not_forget_gets_no_preview_and_reads_only_counts_after():
@@ -286,3 +287,145 @@ def test_past_each_cap_only_claims_that_can_open_a_fence_leave_beyond_the_plain_
     beyond = [text for text in plain if text not in kept]
     assert beyond and all(t[:1] in (" ", "\t") and opens_a_fence_line(t) for t in beyond)
     assert set(kept) <= set(plain) and made == renders <= erasure.RENDERS_HARD + 3
+
+
+# The ninth round: one rule for every removal of notes (erasure._plan, _rewrite), a citation
+# carried over by save_page, and the row a delete leaves (erasure.PASSAGES_REMOVED).
+
+FERRY = "Ada logged the kqzvtxd ferry."
+
+
+def forgotten_rows(store: Store) -> list[tuple[str, str]]:
+    with store._read() as con:
+        return con.execute(
+            "SELECT projects.name, forgotten.text_sha256 FROM forgotten"
+            " JOIN projects ON projects.id = forgotten.project_id ORDER BY 1, 2"
+        ).fetchall()
+
+
+def test_a_delete_takes_its_notes_out_of_three_other_projects_and_leaves_each_a_row():
+    """Project a's two notes are cited by b (latest version, beside b's own), c (an older
+    version only) and d (alone: its page goes, with its topic key). After the delete no table
+    and no export holds their text or passage ids, the export imports with no row of
+    `forgotten`, each changed project holds one row that is no digest, which refuses no note
+    there, and goes when that project is deleted. The event counts the three pages."""
+    with closing(Store(":memory:")) as store:
+        a, b, c, d = (store.create_project(name) for name in "abcd")
+        one = passage(store, filed(store, a.id, f"# Dispatch\n\n{GONE}\n"))
+        two = passage(store, filed(store, a.id, f"# Ferry\n\n{FERRY}\n"))
+        own = passage(store, filed(store, b.id, "# Minutes\n\nThe ledger opens at noon.\n"))
+        far = passage(store, filed(store, c.id, "# Far\n\nWren keeps the far log.\n"))
+        borrowed(store, b.id, "minutes", citing(1, own.text, own), citing(2, GONE, one))
+        borrowed(store, c.id, "far", citing(3, FERRY, two), citing(4, far.text, far))
+        borrowed(store, c.id, "far", citing(4, far.text, far))
+        borrowed(store, d.id, "alone", citing(5, GONE, one), citing(6, FERRY, two))
+        assert Memory(store, lint_gate).delete_project("a", "a") == {"deleted": True}
+        changed = ((b, "minutes"), (c, "far"))
+        kept = [[c.text for c in store.get_page(p.id, s).claims] for p, s in changed]
+        assert kept == [[own.text], [far.text]]
+        assert store.get_page(d.id, "alone") is None and store.list_pages(d.id) == []
+        with store._read() as con:
+            keys = con.execute("SELECT 1 FROM page_keys WHERE project_id = ?", (d.id,))
+            assert keys.fetchall() == []
+        assert [tables_holding(store, n) for n in ("kqzvtx", one.id, two.id)] == [[], [], []]
+        (event,) = [e for e in store.list_audit() if e.action == "project.deleted"]
+        assert (event.detail["elsewhere"], event.detail["pages"]) == (3, 2)
+        assert forgotten_rows(store) == [("b", ""), ("c", ""), ("d", "")]
+        out = io.BytesIO()
+        store.export(out)
+        with ZipFile(io.BytesIO(out.getvalue())) as archive:
+            text = "".join(archive.read(n).decode(errors="replace") for n in archive.namelist())
+        assert not [n for n in ("kqzvtx", one.id, two.id) if n in text]
+        with closing(Store(":memory:")) as fresh:
+            assert fresh.import_export(io.BytesIO(out.getvalue())).pages == 2
+            assert forgotten_rows(fresh) == []
+        for text in ("# Any\n\nAnything at all.\n", f"# Dispatch\n\n{GONE}\n"):
+            assert store.add_note(b.id, text)[1]  # the row refuses no note
+        assert Memory(store, lint_gate).delete_project("b", "b") == {"deleted": True}
+        assert forgotten_rows(store) == [("c", ""), ("d", "")]
+
+
+def test_a_member_who_reaches_only_the_deleted_project_changes_a_closed_page_unnamed():
+    """Brook deletes his `desk`; Ada's closed `vault` page, which cited only his note, goes.
+    Brook's log shows nothing of it; the owner's shows the count and no name of the vault."""
+    with closing(Store(":memory:")) as store:
+        ada, brook = (
+            store.sign_in("sso", f"sub-{n}", f"{n}@acme.example", n, issuer=ISSUER, join="default")
+            for n in ("ada", "brook")
+        )
+        as_ada, as_brook = (store.for_account(s.account_id, s.user.id) for s in (ada, brook))
+        vault = as_ada.create_project("vault", everyone="none")
+        desk = as_brook.create_project("desk")
+        note = filed(as_brook, desk.id, f"# Dispatch\n\n{GONE}\n")
+        borrowed(store, vault.id, "embargo", citing(1, GONE, passage(store, note)))
+        assert Memory(as_brook, lint_gate).delete_project("desk", "desk") == {"deleted": True}
+        assert as_ada.get_page(vault.id, "embargo") is None
+        assert tables_holding(store, "kqzvtx") == []
+        assert [e for e in as_brook.list_audit() if e.action == "project.deleted"] == []
+        (event,) = [e for e in as_ada.list_audit() if e.action == "project.deleted"]
+        assert event.detail["elsewhere"] == 1
+        assert not [w for w in ("vault", vault.id, "embargo") if w in json.dumps(event.detail)]
+
+
+def test_a_carried_citation_is_kept_and_never_widened_or_brought_back():
+    """A page that carries a passage of another project's note: a second passage of that
+    note, or the carried one on another page, is refused; the carried one under another
+    claim id, or with expected_version None, passes; a stale writer is StalePage before
+    anything else; once a save drops it, no save brings it back, stale or not."""
+    refused = "A page can cite only passages from its own project."
+    with closing(Store(":memory:")) as store:
+        a, b = store.create_project("a"), store.create_project("b")
+        note = filed(store, a.id, f"# Dispatch\n\n{GONE}\n\n{FERRY}\n")
+        first, second = [s for s in store.note_spans(note.id) if s.kind == "paragraph"]
+        own = passage(store, filed(store, b.id, "# Minutes\n\nThe ledger opens at noon.\n"))
+        mine = citing(1, own.text, own)
+        v = borrowed(store, b.id, "minutes", mine, citing(2, GONE, first)).version
+        widened = [mine, citing(2, GONE, first), citing(3, FERRY, second)]
+        assert [
+            attempt_at(store, b.id, "minutes", widened, v),
+            attempt_at(store, b.id, "other", [citing(9, GONE, first)], None),
+            attempt_at(store, b.id, "minutes", [mine, citing(7, GONE, first)], v),
+            attempt_at(store, b.id, "minutes", [mine, citing(7, GONE, first)], None),
+            attempt_at(store, b.id, "minutes", [mine, citing(7, GONE, first)], 1),
+            attempt_at(store, b.id, "minutes", [mine], v + 2),
+            attempt_at(store, b.id, "minutes", [mine, citing(2, GONE, first)], v + 3),
+            attempt_at(store, b.id, "minutes", [mine, citing(2, GONE, first)], v + 2),
+        ] == [
+            refused,
+            refused,
+            f"v{v + 1}",
+            f"v{v + 2}",
+            "StalePage",
+            f"v{v + 3}",
+            refused,
+            "StalePage",
+        ]
+
+
+def attempt_at(view: Store, project_id: str, slug: str, claims, version) -> str:
+    try:
+        saved = view.save_page(project_id, slug, slug.title(), "", claims, expected_version=version)
+    except StalePage:
+        return "StalePage"
+    except ValueError as refused:
+        return str(refused)
+    return f"v{saved.version}"
+
+
+def test_delete_then_forget_in_the_other_project_keeps_a_stale_draft_out():
+    """Delete a (b's page loses a's claim, b gets its row), then forget b's own note (the page
+    goes, b gets its digest): b's page made again at version 1, a draft read before the
+    delete is CitesForgotten, and no table holds a's text."""
+    with closing(Store(":memory:")) as store:
+        a, b = store.create_project("a"), store.create_project("b")
+        gone = passage(store, filed(store, a.id, f"# Dispatch\n\n{GONE}\n"))
+        mine = filed(store, b.id, "# Minutes\n\nThe ledger opens at noon.\n")
+        own = passage(store, mine)
+        read = borrowed(store, b.id, "minutes", citing(1, own.text, own), citing(2, GONE, gone))
+        Memory(store, lint_gate).delete_project("a", "a")
+        assert store.forget_note(mine.id).removed == ("minutes",)
+        filed(store, b.id, "# Minutes\n\nWren rings the bell.\n")
+        assert store.get_page(b.id, "minutes").version == 1
+        with pytest.raises(CitesForgotten):
+            store.save_page(b.id, "minutes", read.title, read.body, read.claims, expected_version=1)
+        assert tables_holding(store, "kqzvtx") == []

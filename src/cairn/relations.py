@@ -259,6 +259,30 @@ def _joined(stretches: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
     return joined
 
 
+def words_in(text: str, kind: Callable[[str], int]) -> int:
+    """How many words the index's tokenizer reads in `text` (`kind`, as `blanked`)."""
+    count, held = 0, False
+    for char in text:
+        read = kind(char)
+        now = read == TOKEN or (read == MARK and held)
+        count, held = count + (now and not held), now
+    return count
+
+
+def words_end(text: str, start: int, words: int, kind: Callable[[str], int]) -> int:
+    """Where the `words` words of `text` that begin at `start` end (`kind`, as `blanked`):
+    the end of the first place of a phrase of that many words that the index matched from
+    `start`, however far its marks around the matches that overlap that one reach."""
+    count, held = 0, False
+    for at in range(start, len(text)):
+        read = kind(text[at])
+        now = read == TOKEN or (read == MARK and held)
+        if held and not now and count == words:
+            return at
+        count, held = count + (now and not held), now
+    return len(text)
+
+
 def looked_up_before(term: Term) -> tuple[int, str, str]:
     """The order a page's terms are looked up in: the shortest first, then by kind and text."""
     return len(term.text), term.kind, term.text

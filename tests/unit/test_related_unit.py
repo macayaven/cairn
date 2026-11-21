@@ -744,6 +744,25 @@ def test_a_title_flush_against_a_fact_names_the_page_as_the_index_reads_its_word
     assert mentioned(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
 
 
+def test_a_claim_cut_gives_the_line_of_the_first_place_however_many_matches_overlap(env):
+    """The reviewer's shape: the first `Go Go` stands whole on one line, and the next two
+    lines hold more matches that overlap it. The line given is the first place's alone."""
+    focus = note(env, "Go Go", "The field guide is on the shelf.")["page"]
+    filler = [f"Filler {n} keeps the claim long enough to be cut." for n in range(14)]
+    text = "\n".join([*filler, "Go Go", "Go Go", "Go alone."])
+    assert len(text) > relations.TEXT_MAX
+    reader = note(env, "Reader", text)["page"]
+    (claim,) = answer(env.client, env.key, "page", project="ops", slug=reader)["claims"]
+    assert claim["text"] == text
+    (page,) = answer(env.client, env.key, "related", project="ops", slug=focus)["related"]
+    (why,) = page["why"]
+    assert (why["kind"], why["there"]["text_cut"], why["there"]["line"]) == (
+        "mentioned_by",
+        True,
+        "Go Go",
+    )
+
+
 def test_a_title_in_a_path_between_backticks_markdown_does_not_pair_names_the_page(env):
     """Between two backticks of one line that Markdown does not pair, the facts read inline
     code and so no path; the page shows the text as prose, so a title inside a path there

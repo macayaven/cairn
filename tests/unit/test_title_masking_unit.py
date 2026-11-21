@@ -177,3 +177,26 @@ def test_the_kinds_of_characters_are_the_index_own(monkeypatch):
     monkeypatch.setattr(relating, "_classifying", lambda: opened.append(made()) or opened[-1])
     relating._kinds("aZ7/ ")
     assert opened == []
+
+
+def test_the_first_place_ends_after_as_many_words_as_the_title_holds():
+    """Where the index's marks around overlapping matches begin, the first place ends after
+    the title's number of words (relations.words_end): the end of that many of the words
+    fts5vocab and highlight report, whatever overlaps it, with marks, NFD and CJK about."""
+    rng, texts = random.Random(5), []
+    pieces = ["Go", "go", "Gó", " ", "\n", "-", "`", "日本", "́", "x", "Go Go"]
+    while len(texts) < 800:
+        texts.append("".join(rng.choice(pieces) for _ in range(rng.randint(2, 12))))
+    title = "Go Go"
+    found = named(texts, title)
+    checked = 0
+    for text, there, said in zip(texts, found, words(texts), strict=True):
+        if not there:
+            continue
+        kind = relating._kinds(text + title)
+        start = there[0][0]
+        (first,) = [n for n, (s, _, _) in enumerate(said) if s == start]
+        assert relations.words_in(title, kind) == 2
+        assert relations.words_end(text, start, 2, kind) == said[first + 1][1], text
+        checked += 1
+    assert checked >= 120, checked

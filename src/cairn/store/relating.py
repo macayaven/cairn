@@ -439,7 +439,7 @@ def related(
             reasons.setdefault(at, []).append(shared._replace(there=row))
 
     places: dict[int, tuple[int, int]] = {}  # where a claim names the title, when it is known
-    mentioning = _mentioning(con, index, named, naming, candidates, read, spans, facts)
+    mentioning = _mentioning(con, index, title, named, naming, candidates, read, spans, facts)
     for at, (row, place) in mentioning.items():
         reasons.setdefault(at, []).append(Reason(MENTIONED_BY, title, TITLE, 2, None, row))
         if place is not None:
@@ -492,6 +492,7 @@ def _title_claims(
 def _mentioning(
     con: sqlite3.Connection,
     index: str,
+    title: str,
     named: str | None,
     naming: Listed,
     candidates: Cited,
@@ -536,14 +537,22 @@ def _mentioning(
     passage = {row: candidates[row][0] for row, its_passage in judged.items() if its_passage}
     numbered = {span_id: n for n, span_id in enumerate(dict.fromkeys(passage.values()), 1)}
     texts = {}  # each of those passages, by its number, with what is not prose blanked out
-    asked = named or ""
-    if numbered:  # how the index's tokenizer reads each character they hold
-        kind = _kinds([relations.fill_for(asked), *(c for s in numbered for c in spans[s].text)])
+    asked, said = named or "", title.replace("\x00", " ")  # as ranking.quoted asks it
+    if numbered:  # how the index's tokenizer reads each character they and the title hold
+        kind = _kinds(
+            [relations.fill_for(asked), *said, *(c for s in numbered for c in spans[s].text)]
+        )
     for span_id, n in numbered.items():
         span = spans[span_id]
         stretches = [*relations.covered(span, facts[span_id]), *code_read(span.text)]
         texts[n] = relations.blanked(span.text, stretches, asked, kind)
     places = _in_prose(named, texts) if named and texts else {}
+    if places:  # the first place: as many words from where the index's marks begin as the title
+        words, passages = relations.words_in(said, kind), dict(map(reversed, numbered.items()))
+        places = {
+            n: (start, relations.words_end(spans[passages[n]].text, start, words, kind))
+            for n, (start, _) in places.items()
+        }
     names: dict[str, tuple[int, tuple[int, int] | None]] = {}
     for row, at in naming:
         if at in names:

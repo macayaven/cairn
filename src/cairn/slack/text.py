@@ -577,7 +577,10 @@ def _known_code(
     so (an element of a shape not read, none, or text that stands at no place), and the
     first place starts a run of backticks with an odd number of backticks before it on its
     line since the last span placed, the run's first backtick closes a span the text's
-    backticks bound, and the span starts one later where it stands there (case 1).
+    backticks bound, and the span starts one later where it stands there (case 1). A stated
+    limit: an element styled as code that is not text (an emoji, say) is not read, and a
+    span after it on its line may be placed on its backticks (the tester's third attack on
+    spans, cases 1 and 2): Slack's documents give no text form for it to look for.
 
     Each place is looked at once, whatever the code (the tester's second attack, finding 6:
     each way was searched for to the text's end): the places a block or a span can start

@@ -160,8 +160,8 @@ workspace in creation order (the default one first), each with exactly account, 
 created_at, members (how many people belong to it), plan (its plan in force by
 Store.plan_in_force's rule: the one plan-set recorded; null for the server's default), from
 one read (Store.list_account_summaries). No email address; it reads no plans file, so a plan
-name the server's file no longer lists is printed as recorded. It writes nothing beyond what
-opening the store does: an older schema is migrated, as by every command.
+name the server's file no longer lists is printed as recorded. It reads an existing database and
+refuses an older schema before listing any workspace.
 No database: exit 1, one line on stderr, none made.
 `source-sync --plans FILE` (--name or --all) holds each workspace to its plan in force now
 (the operator's, else the default), as `serve --plans` does: a draft

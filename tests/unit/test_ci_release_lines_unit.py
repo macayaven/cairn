@@ -7,8 +7,9 @@ already undone, and "there are 2 releases" when GitHub held one. Each look judge
 row and stopped on it.
 
 So a look still judges its row, to stop early, but a row that is not this run's is read by its
-id before the step stops on it, and the line is written from that read: a release read by its id
-as this run's goes on. A line that states what a release is (a draft or public, its title, its
+id before the step stops on it, and the line is written from that read; when the read shows this
+run's release as it wrote it, the step stops on the row, with a line that says what each showed,
+and writes nothing. A line that states what a release is (a draft or public, its title, its
 notes, its files) is written from a read by its id and says so ("read by its id"); a line that
 rests on what the listing shows says so ("GitHub's listing") and tells a person to look at the
 releases page first. A line on the tag rests on the read of the tag. And a draft that does not
@@ -26,6 +27,7 @@ from test_ci_release_retry_unit import (
     README,
     RUN_ID,
     attached,
+    cells,
     held,
     looks,
     made_earlier,
@@ -41,16 +43,45 @@ WHEEL = "cairn_memory-1.2.3-py3-none-any.whl"
 # --- a row the listing shows is read by its id before the job stops on it ----------------------
 
 
-def test_an_edit_a_person_undid_that_the_listing_still_shows_does_not_stop_the_job(tmp_path):
-    """The listing shows the draft with a title a person has put back since: read by its id, the
-    draft is this run's, and the job publishes it and succeeds."""
-    shown = [{**DRAFT, "name": "Spring"}]
-    done, calls = run(tmp_path, "v1.2.3", "", DRAFT, attached("v1.2.3"), stale=(shown, None))
-    assert done.returncode == 0, done.stdout + done.stderr
+BEHIND = (
+    "::error::GitHub's listing shows the release for v1.2.3 without this run's mark, pre-release"
+    " flag, title or notes, while read by its id it is {state} and has all four as this run"
+    " wrote them; the listing can be seconds behind a write, an edit a person has since undone"
+    " included, so look at the repository's releases page first, then re-run this job, which"
+    " starts from what is listed then"
+)
+
+
+@pytest.mark.parametrize(
+    ("ours", "state"),
+    [(DRAFT, "a draft"), (made_earlier("v1.2.3", False), "public")],
+    ids=["a draft", "public"],
+)
+@pytest.mark.parametrize(
+    "shown",
+    [
+        {"name": "Spring"},
+        {"body": "by hand\n"},
+        {"prerelease": True},
+    ],
+    ids=["title", "mark and notes", "flag"],
+)
+def test_a_row_its_read_by_id_does_not_bear_out_stops_the_job_on_the_listing(
+    tmp_path, ours, state, shown
+):
+    """The listing shows this run's release with a title, notes, a mark or a flag that, read by
+    its id, it does not have (an edit a person has since undone): the job reads it by its id at
+    once, and stops on the row with a line that says what each showed. Nothing is written and
+    nothing waited for."""
+    done, calls = run(
+        tmp_path, "v1.2.3", "", ours, attached("v1.2.3"), stale=([{**ours, **shown}], None)
+    )
+    assert done.returncode == 1 and writes(calls) == []
+    assert the_error(done) == BEHIND.format(state=state)
     cut = looks(calls)
     first = cut.index(next(line for line in cut if "--paginate" in line))
-    assert cut[first + 1] == READ.format(id=77)
-    assert [r["draft"] for r in held(tmp_path)] == [False]
+    assert cut[first + 1] == READ.format(id=ours["id"])
+    assert held(tmp_path) == [ours]
 
 
 DIFFERS = (
@@ -227,6 +258,7 @@ SORTED = [
     ("the repository's releases could not be listed", "listing"),
     ("GitHub's listing shows $count releases for", "listing"),
     ("GitHub's listing, at this job's last look, does not list", "listing"),
+    ("GitHub's listing shows the release for $GITHUB_REF_NAME without", "by id"),
     ("read by its id, a GitHub release for $GITHUB_REF_NAME exists", "by id"),
     ("read by its id, the GitHub release for $GITHUB_REF_NAME is this run's draft", "by id"),
     ("the files of the GitHub release for $GITHUB_REF_NAME, $state as read by its id", "by id"),
@@ -285,8 +317,9 @@ def test_the_readme_says_what_the_row_decides_and_what_a_read_by_id_decides():
     assert (
         "Each look judges the listing's row only to stop early: a row that does not show this"
         " run's release as the job wrote it is read by the release's id at once, and the job"
-        " stops on what that read shows, or goes on when the listing was behind. What is"
-        " published, and what the job succeeds on, is judged on reads by the release's id,"
+        " stops on what that read shows, or on the row, with a line that says what each showed,"
+        " when the read shows this run's release as the job wrote it. What is published, and"
+        " what the job succeeds on, is judged on reads by the release's id,"
     ) in readme
     assert (
         "A line the job stops with that says what a release is (a draft or public, its title,"
@@ -295,8 +328,8 @@ def test_the_readme_says_what_the_row_decides_and_what_a_read_by_id_decides():
     ) in readme
     assert (
         "Nothing else is waited for: a look whose row shows a mark, a flag, a title or notes"
-        " that are not this run's reads the release by its id at once, and the job stops on"
-        " what that read shows, and the first look of a run never waits."
+        " that are not this run's reads the release by its id at once, and the job stops, on"
+        " what that read shows or on the row, and the first look of a run never waits."
     ) in readme
 
 
@@ -332,10 +365,28 @@ def test_the_readme_says_what_a_tag_moved_in_the_race_does():
         " tag` |",
         "| `the GitHub release for …, which GitHub's listing showed, was not found when read by its"
         " id, so it has probably been deleted` |",
+        "| `GitHub's listing shows the release for … without this run's mark, pre-release flag,"
+        " title or notes, while read by its id it is … and has all four as this run wrote them` |",
     ],
 )
 def test_the_readme_s_table_has_each_line_as_the_step_writes_it(row):
     assert row in " ".join(README.split())
+
+
+def test_the_row_the_read_by_id_does_not_bear_out_has_its_row():
+    means, next_step = cells(
+        "GitHub's listing shows the release for … without this run's mark, pre-release flag,"
+        " title or notes, while read by its id it is … and has all four as this run wrote them"
+    )
+    assert means == (
+        "The listing showed the release with a mark, a flag, a title or notes that, read by its"
+        " id at once, it does not have: the listing was behind, an edit a person has undone for"
+        " one; the job wrote nothing after that look"
+    )
+    assert next_step == (
+        "Look at the release on the repository's releases page first; when it is this run's as"
+        " the job wrote it, re-run the job, which starts from what is listed then."
+    )
 
 
 def test_the_readme_s_table_no_longer_has_the_lines_that_were_not_true():
@@ -352,13 +403,13 @@ def test_the_step_s_comment_says_the_row_only_sends_the_job_to_a_read_by_id():
     for said in (
         "A look judges its row only to stop early: two rows for the tag stop the job on the"
         " listing, which its line says, and a row that does not show this run's release as it"
-        " wrote it is read by its id at once, and the job stops on what that read shows, or"
-        " goes on when the listing was behind.",
-        "so its row only sends the job to a read by id at once, nothing is published or said"
-        " finished on it,",
+        " wrote it is read by its id at once, and the job stops on what that read shows, or on"
+        " the row when that read shows this run's release as it wrote it, its line saying both.",
+        "so its row only stops the job or sends it to a read by id at once, nothing is published"
+        " or said finished on it,",
         "A look whose row shows a missing mark, another flag, another title or other notes reads"
         " the release by its id at once, in a wait too, and the job stops on what that read"
-        " shows.",
+        " shows, or on the row when that read shows this run's release as it wrote it.",
         "A tag a person moves in that moment is published on, and the read of the tag after the"
         " publication stops the job with its line.",
     ):

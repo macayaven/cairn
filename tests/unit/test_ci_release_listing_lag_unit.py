@@ -560,8 +560,8 @@ def test_the_readme_says_the_wait_with_the_step_s_two_values_and_the_row_says_wh
         " three seconds apart, and then the job goes on as it would have at once: it stops, or"
         " reads the draft by its id, and a re-run starts from what is listed then. Nothing else"
         " is waited for: a look whose row shows a mark, a flag, a title or notes that are not"
-        " this run's reads the release by its id at once, and the job stops on what that read"
-        " shows, and the first look of a run never waits."
+        " this run's reads the release by its id at once, and the job stops, on what that read"
+        " shows or on the row, and the first look of a run never waits."
     ) in readme
     means, next_step = cells(
         "GitHub's listing, at this job's last look, does not list the release for … as this job"

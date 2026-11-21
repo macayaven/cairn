@@ -507,9 +507,30 @@ def test_the_readme_and_the_changelog_say_what_related_pages_are():
         f"more than {relations.COMMON} pages",
         "No relation joins two projects",
         "says what it left out",
+        # the second reviewer's seventh report: "not a plain word" was not the rule, and a
+        # mention carries one claim, not two
+        "code in backticks that holds a character other than a letter or is"
+        f" {relations.CODE_MIN} or more characters long",
+        "each place the title stands is judged by itself",
+        "both sides for a shared term, the other page's claim for a mention",
     ):
         assert said in entry, said
+    assert "plain word" not in entry
     agents = next(
         line for line in read("CHANGELOG.md").splitlines() if line.startswith("- **Agents.**")
     )
     assert "a `related` tool" in agents
+
+
+def test_the_changelog_says_a_forget_reaches_every_page_of_the_workspace():
+    """The second reviewer's seventh report, must-fix 1: a page of another project that cited
+    a forgotten note kept its text. A forget now changes every page of the workspace that
+    cited the note, and a page can cite only its own project's notes (Store.save_page)."""
+    from cairn.store.memory import NOT_OF_PROJECT
+
+    entry = next(
+        line for line in read("CHANGELOG.md").splitlines() if line.startswith("- **Deleting.**")
+    )
+    assert "every page of the workspace that cited it, whatever its project" in entry
+    assert "a page can cite only its own project's notes" in entry
+    assert NOT_OF_PROJECT == "A page can cite only passages from its own project."

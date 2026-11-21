@@ -143,10 +143,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   named projects or read-only (`LIMITED_ERASER`), with no person the workspace itself; anyone
   else gets PermissionError (`NOT_AN_ERASER`) and nothing changes. `view.may_erase(project_id)`
   says so (KeyError when unknown) and `view.forget_preview(note_id)` says what a forget
-  would rebuild and remove; both are reads. Each is one transaction with its audit event,
-  project.deleted {"id", "name", "notes", "pages"} or note.forgotten {"note", "project",
-  "pages"}, each with "elsewhere" when pages of other projects changed, subtracts what it removed
-  from `stored_bytes`, marks a compaction due (see
+  would rebuild and remove, with how many pages of other projects it would change only to a
+  view that may forget the note (0 for any other); both are reads. Each is one transaction
+  with its audit event, project.deleted {"id", "name", "notes", "pages"} or note.forgotten
+  {"note", "project", "pages"}, each with "elsewhere" when pages of other projects changed,
+  subtracts what it removed from `stored_bytes`, marks a compaction due (see
   Compaction state) and ends with the truncating checkpoint delete_account ends with, so the
   removed text is gone from the main file, -wal and -shm at once. Cost: both touch only the
   rows they remove or rewrite, through indexes, and never rewrite the database file; a
@@ -555,12 +556,14 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   refuse. A read, answered alike by every view (cairn.arrange asks it before a page's
   claims go to a model, since a policy tightened later does not reach notes taken before).
 - Every `save_page` writes a new version (1, 2, ...); earlier versions stay readable.
-  A claim citing a span the store holds of another project's note, one the page's latest
-  version does not cite already, raises ValueError (NOT_OF_PROJECT) and writes nothing. A
-  citation the latest version carries (only a database an earlier build wrote holds one)
-  passes, so a compile, the tidy and an arrangement write to that page as to any other,
-  until the note is forgotten or its project deleted, which both rewrite the page. The
-  latest version is read for it only where another project's span is cited.
+  A claim citing a span the store holds of another project's note, of its workspace or
+  another, raises ValueError (NOT_OF_PROJECT) and writes nothing, whatever the page cited
+  before, asked after the version's check (one statement, by the spans' primary key). A
+  compile, the tidy and an arrangement leave such a claim out of the page they read, asking
+  `passages_of_other_projects(project_id, span_ids)` (by id, never text, whatever the view
+  reaches of those notes; empty for a project out of reach), and pass what they left out as
+  `save_page(..., left_out=...)`, which CitesForgotten asks too (compiler.own_claims). Schema
+  step 32 rewrote every page an earlier build saved with such a claim.
   A page holds at most PAGE_CLAIMS_MAX (2,000) claims (H6c): `save_page` with more raises
   PageTooLong (a ValueError naming the page and the bound) and writes nothing, and
   `import_export` refuses (ValueError) an archive with a version past it. cairn.memory
@@ -1071,7 +1074,11 @@ has run out by tests/acceptance/test_h5c_expiry.py):
   (schema.py's _OLDEST_BUILD step, 31): the tables billing wrote are dropped, with any rows
   in them; each audit event gains the value that chains it to the one before
   (cairn.store.audit), filled in order for every event that exists; and oldest_build
-  records the floor, 31.
+  records the floor, 31. From 31 (schema.py's _OWN_PASSAGES step, 32; report 8): every
+  page that cites, in any version, a passage that no note of its own project holds (another
+  project's, of its workspace or another, or one whose note another workspace forgot) is
+  rewritten as a forget rewrites a page, with its own project's notes' claims alone
+  (cairn.store.erasure.hold_to_own_projects), and the floor is raised to 32.
   Each version step
   is one transaction, so a step that fails leaves the database as it was.
   From 31 on, a database records its floor (schema.py's oldest_build): the lowest schema

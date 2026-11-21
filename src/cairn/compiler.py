@@ -617,6 +617,30 @@ def provenance_gate(page: CandidatePage, spans: Mapping[str, Span]) -> GateResul
     return importable(result, page, spans, reworded=True)
 
 
+def own_claims(store: Store, page: Page | None) -> tuple[Page | None, frozenset[str]]:
+    """The page as a writer builds on it (compile_note, arrange.tidy_page,
+    arrange.arrange_page), and the passages it left out: without each claim that cites a
+    passage the store holds of a note of another project, of its workspace or another, asked
+    of the store by id (Store.passages_of_other_projects), so a writer whose reach is the
+    page's project alone leaves it out as one that reaches everything does, and none is
+    refused for it. An id the page already shows is no new knowledge: the writer learns which
+    of them are another project's, never what those passages say. The writer passes them to
+    Store.save_page as `left_out`, so a page a delete or a forget removed while it drafted is
+    stale for it. The version it saves is held to its own project's notes (save_page refuses
+    any other); the earlier versions stay, as after any write, since a write is not an
+    erasure. Since schema step 32 only a program that wrote the tables directly leaves such a
+    claim (`stats --other-projects` counts its pages). One read when the page cites a
+    passage; the page itself when no claim leaves."""
+    if page is None:
+        return None, frozenset()
+    cited = [span_id for claim in page.claims for span_id in claim.span_ids]
+    foreign = store.passages_of_other_projects(page.project_id, cited)
+    if not foreign:
+        return page, foreign
+    kept = tuple(claim for claim in page.claims if foreign.isdisjoint(claim.span_ids))
+    return page.model_copy(update={"claims": kept}), foreign
+
+
 def compile_note(
     store: Store,
     note: Note,
@@ -651,7 +675,7 @@ def compile_note(
     candidate: CandidatePage | None = None
     for _ in range(SAVE_TRIES):
         slug = outcome["slug"] = page_for(store, note.project_id, key, title)  # chosen anew
-        existing = store.get_page(note.project_id, slug)
+        existing, left_out = own_claims(store, store.get_page(note.project_id, slug))
         version = existing.version if existing else None
         claims = existing.claims if existing else ()
         cited = [span_id for claim in claims for span_id in claim.span_ids]
@@ -704,6 +728,7 @@ def compile_note(
                 expected_version=version or 0,
                 topic=key,
                 filed=note.id,
+                left_out=left_out,
             )
         except StalePage:  # the page moved, or its slug or key is another topic's now
             continue

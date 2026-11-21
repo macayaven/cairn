@@ -254,6 +254,7 @@ LIMITED_READS = frozenset(
         "note_spans",
         "get_spans",
         "spans_within",  # get_spans without the long ones (Help)
+        "passages_of_other_projects",  # which of a page's ids are another project's: by id
         "note_writers",  # who wrote the notes (A1): none out of reach
         "note_origins",  # note_writers, with when and whether a filed Slack message (8.1, 8.5)
         "get_page",
@@ -287,7 +288,8 @@ LIMITED_READS = frozenset(
         "project_sharing",
         "projects_sharing",  # Q1: project_sharing for many projects in one read
         "may_erase",  # whether the view may delete the project or forget its notes (H5b)
-        "forget_preview",  # what forgetting a note would change: for whoever reaches it
+        "forget_preview",  # what forgetting a note would change: its project's pages for
+        # whoever reaches it, the count of other projects' only for one who may forget it
         "manages",  # whether the view manages the workspace: never a narrowed one
     }
 )

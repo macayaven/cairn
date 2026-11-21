@@ -1,8 +1,8 @@
-"""A page as a database an earlier build wrote can hold it: claims that cite passages of
-another project. Store.save_page refuses a new such citation now (it keeps one the page has
-already), and an upgrade does not rewrite
-one (a forget finds it when the note it cites is forgotten: cairn.store.erasure), so the
-tests that show how cairn reads, relates, traces, draws or forgets one write it here,
+"""A page as a database an earlier build wrote could hold it, or a program writing the tables
+directly can: claims that cite passages of another project. Store.save_page refuses every
+such citation, the writers leave one out (compiler.own_claims), and schema step 32 rewrote
+every such page an earlier build left (cairn.store.erasure.hold_to_own_projects), so the tests
+that show how cairn reads, relates, traces, draws, repairs or forgets one write it here,
 straight into the tables, as that build's save wrote it: the page's next version with its
 search rows (memory._write_page_version), its topic key when no other page of the project
 holds it, and its note.saved event."""

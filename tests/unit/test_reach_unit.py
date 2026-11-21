@@ -345,6 +345,7 @@ PROJECT_CALLS = {
     "note_spans": lambda d: (d["note"],),
     "get_spans": lambda d: ([d["span"]],),
     "spans_within": lambda d: ([d["span"]], 10_000),  # Help's narrow reads
+    "passages_of_other_projects": lambda d: (d["api"], [d["span"]]),  # report 8: by id
     "note_writers": lambda d: ([d["note"]],),  # A1: who wrote a note
     "note_origins": lambda d: ([d["note"]],),  # 8.1, 8.5: and when, and whether from Slack
     "get_page": lambda d: (d["api"], "retries"),

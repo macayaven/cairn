@@ -47,7 +47,7 @@ DEPLOY_KINDS = (
     " needs no restore. An update with a step that changes what an older image relies on raises"
     " the number to itself, the older image refuses the database with the line above, which"
     " names the version it needs, and going back means restoring a database from before the"
-    " change. The release's notes say which kind each update is. Schema 31 (release 0.1.0) is"
+    " change. The release's notes say which kind each update is. Schema 32 (release 0.1.0) is"
     " of the second kind."
 )
 INFRA_KINDS = (
@@ -58,7 +58,7 @@ INFRA_KINDS = (
     " works with nothing lost. A step that changes what an older image relies on raises the"
     " number to itself: the older image refuses the database and fails its health check, and"
     " the way back is the cold backup, below. The release's notes say which kind each update"
-    " is, and the refusal names the version it needs and its own. Schema 31 (release 0.1.0) is"
+    " is, and the refusal names the version it needs and its own. Schema 32 (release 0.1.0) is"
     " of the second kind: no image before it runs on a database it updated."
 )
 INFRA_UPDATER = (
@@ -76,10 +76,12 @@ def test_the_guides_say_which_upgrades_going_back_undoes():
     assert "is not healthy either: if journalctl -u cairn shows SchemaTooNew" in host
 
 
-def test_schema_31_is_of_the_second_kind_and_the_floor_is_31():
-    assert SCHEMA_VERSION == schema._OLDEST_BUILD == 31
-    assert schema._OLDEST_BUILD not in schema._ONLY_ADDS
-    assert schema._floor_of(SCHEMA_VERSION) == 31
+def test_schema_32_is_of_the_second_kind_and_the_floor_is_32():
+    """The floor began at step 31 (_OLDEST_BUILD); release 0.1.0's schema is 32
+    (_OWN_PASSAGES), which raises it to itself."""
+    assert SCHEMA_VERSION == schema._OWN_PASSAGES == 32 and schema._OLDEST_BUILD == 31
+    assert not {schema._OLDEST_BUILD, schema._OWN_PASSAGES} & schema._ONLY_ADDS
+    assert schema._floor_of(SCHEMA_VERSION) == 32
 
 
 @pytest.mark.parametrize("only_adds", [True, False])

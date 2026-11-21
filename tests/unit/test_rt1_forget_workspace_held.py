@@ -169,9 +169,10 @@ def test_the_two_refusals_of_save_page_by_what_a_claim_cites():
 
 def test_limit_a_is_gone_a_note_compiled_into_an_old_cross_project_page_is_saved():
     """Was the implementer's limit (a), through Memory.note: the writer got ValueError (over
-    REST a 500) and the note waited. Since the ninth round (item 2) save_page passes a
-    citation the page's latest version carries already: the note is saved, nothing waits,
-    and the page keeps the other project's claim until its note is forgotten."""
+    REST a 500) and the note waited. Since report 8 the compile leaves the other project's
+    claim out (compiler.own_claims): the note is saved, nothing waits, and the new version
+    cites its own project's notes alone; the version before keeps the claim (a write is not
+    an erasure)."""
     with closing(Store(":memory:")) as store:
         desk, east = store.create_project("desk"), store.create_project("east")
         note = filed(store, desk.id, f"# Dispatch\n\n{GONE}\n")
@@ -183,7 +184,9 @@ def test_limit_a_is_gone_a_note_compiled_into_an_old_cross_project_page_is_saved
         assert len(store.list_notes(east.id)) == 2
         after = store.get_page(east.id, "minutes")
         assert after.version == before.version + 1 and store.waiting_notes() == []
-        assert (GONE, (passage(store, note).id,)) in [(c.text, c.span_ids) for c in after.claims]
+        theirs = (GONE, (passage(store, note).id,))
+        assert theirs not in [(c.text, c.span_ids) for c in after.claims]
+        assert theirs in [(c.text, c.span_ids) for c in before.claims]
 
 
 def test_a_member_who_may_not_forget_gets_no_preview_and_reads_only_counts_after():
@@ -367,11 +370,11 @@ def test_a_member_who_reaches_only_the_deleted_project_changes_a_closed_page_unn
         assert not [w for w in ("vault", vault.id, "embargo") if w in json.dumps(event.detail)]
 
 
-def test_a_carried_citation_is_kept_and_never_widened_or_brought_back():
-    """A page that carries a passage of another project's note: a second passage of that
-    note, or the carried one on another page, is refused; the carried one under another
-    claim id, or with expected_version None, passes; a stale writer is StalePage before
-    anything else; once a save drops it, no save brings it back, stale or not."""
+def test_a_carried_citation_is_refused_as_any_other():
+    """A page that carries a passage of another project's note (as an earlier build saved
+    it): since report 8 save_page refuses that passage as any other, under its claim id or
+    another, at the page's version or with none; a stale writer is StalePage before anything
+    else; a save of the page's own claims alone is saved, and the refusal stays after it."""
     refused = "A page can cite only passages from its own project."
     with closing(Store(":memory:")) as store:
         a, b = store.create_project("a"), store.create_project("b")
@@ -387,19 +390,10 @@ def test_a_carried_citation_is_kept_and_never_widened_or_brought_back():
             attempt_at(store, b.id, "minutes", [mine, citing(7, GONE, first)], v),
             attempt_at(store, b.id, "minutes", [mine, citing(7, GONE, first)], None),
             attempt_at(store, b.id, "minutes", [mine, citing(7, GONE, first)], 1),
-            attempt_at(store, b.id, "minutes", [mine], v + 2),
-            attempt_at(store, b.id, "minutes", [mine, citing(2, GONE, first)], v + 3),
-            attempt_at(store, b.id, "minutes", [mine, citing(2, GONE, first)], v + 2),
-        ] == [
-            refused,
-            refused,
-            f"v{v + 1}",
-            f"v{v + 2}",
-            "StalePage",
-            f"v{v + 3}",
-            refused,
-            "StalePage",
-        ]
+            attempt_at(store, b.id, "minutes", [mine], v),
+            attempt_at(store, b.id, "minutes", [mine, citing(2, GONE, first)], v + 1),
+            attempt_at(store, b.id, "minutes", [mine, citing(2, GONE, first)], v),
+        ] == [refused, refused, refused, refused, "StalePage", f"v{v + 1}", refused, "StalePage"]
 
 
 def attempt_at(view: Store, project_id: str, slug: str, claims, version) -> str:

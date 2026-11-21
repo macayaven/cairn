@@ -15,7 +15,7 @@ from cairn.compiler import compile_note
 from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.server import create_app
-from cairn.store import Claim, Store
+from cairn.store import CitesForgotten, Claim, Store
 from cookie_names import session_cookie
 from earlier_build import earlier_page
 
@@ -180,5 +180,46 @@ def test_a_save_refuses_a_held_passage_of_another_project_and_never_one_it_does_
         assert store.get_page(east.id, "borrowed") is None
         made_up = Claim(id="cl_" + "0" * 16, text=SAID, span_ids=("sp_" + "0" * 16,))
         assert store.save_page(east.id, "made-up", "Made up", "", [made_up]).version == 1
+    finally:
+        store.close()
+
+
+def test_a_save_read_before_the_forget_never_brings_the_note_back_into_another_project(
+    tmp_path,
+):
+    """A writer that read a page of another project before the forget, and saves once the
+    page was removed and made again at the version it read, cites a passage the store no
+    longer holds: CitesForgotten, as in the note's own project, and nothing is written."""
+    store = Store(tmp_path / "cairn.db")
+    try:
+        desk, east = store.create_project("desk"), store.create_project("east")
+        note = filed(store, desk.id, f"# Dispatch\n\n{SAID}\n")
+        read = borrowed(store, east.id, "minutes", citing(1, SAID, passage(store, note)))
+        store.forget_note(note.id)
+        assert store.get_page(east.id, "minutes") is None
+        filed(store, east.id, "# Minutes\n\nThe ledger opens at noon.\n")  # made again
+        again = store.get_page(east.id, "minutes")
+        assert again.version == read.version == 1
+        with pytest.raises(CitesForgotten):
+            store.save_page(
+                east.id, "minutes", read.title, read.body, read.claims, expected_version=1
+            )
+        assert store.get_page(east.id, "minutes") == again
+        assert store.search("saffron") == []
+    finally:
+        store.close()
+
+
+def test_a_forget_in_one_workspace_never_refuses_a_save_in_another(tmp_path):
+    """The workspace that forgot is asked, never the store: a save of another workspace that
+    cites a span of its own making still passes."""
+    store = Store(tmp_path / "cairn.db")
+    try:
+        desk = store.create_project("desk")
+        store.forget_note(filed(store, desk.id, f"# Dispatch\n\n{SAID}\n").id)
+        other = store.for_account(store.create_account("Fieldwork").id)
+        west = other.create_project("west")
+        made_up = Claim(id="cl_" + "0" * 16, text=SAID, span_ids=("sp_" + "0" * 16,))
+        assert other.save_page(west.id, "made-up", "Made up", "", [made_up]).version == 1
     finally:
         store.close()

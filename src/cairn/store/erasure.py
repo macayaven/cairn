@@ -18,7 +18,7 @@ slug or a project's name, can stay in index pages until `compact()`.
 
 Forgetting keeps a SHA-256 digest of the note's text in `forgotten`, so the same text is
 never stored in that project again (add_note raises ForgottenNote), and a page save that
-cites a span the store no longer holds, in such a project, is CitesForgotten (save_page):
+cites a span the store no longer holds, in such a workspace, is CitesForgotten (save_page):
 a compile or arrangement that read the page before the note was forgotten never brings it
 back. The digests go with their project and their workspace and are never exported.
 

@@ -744,6 +744,27 @@ def test_a_title_flush_against_a_fact_names_the_page_as_the_index_reads_its_word
     assert mentioned(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
 
 
+@pytest.mark.parametrize(
+    ("path", "others"), [(True, 0), (True, 5), (False, 5)], ids=["alone", "beside-five", "five"]
+)
+def test_a_title_read_across_a_wordless_path_names_nothing(env, path, others):
+    """The reviewer's: the facts read `/_` as a path between `Café` and a combining accent
+    before `Noir`; neither character of it is part of a word, and the title stands whole in
+    no prose. Alone it names nothing; beside five pages that name it in prose, those five
+    are the mentions, as they are without it, the answer complete, on every surface."""
+    focus = note(env, "Café Noir", "The field guide is on the shelf.")["page"]
+    pages = [
+        note(env, f"Group {n}", f"Group {n} reads Café Noir today.")["page"] for n in range(others)
+    ]
+    if path:
+        said = "Read Cafe\u0301/_\u0301Noir today."
+        reader = note(env, "Reader", said)["page"]
+        (claim,) = answer(env.client, env.key, "page", project="ops", slug=reader)["claims"]
+        assert claim["text"] == said
+    expected = sorted(pages)
+    assert mentioned(env, focus) == dict.fromkeys(("Memory", "REST", "MCP"), (True, expected))
+
+
 def test_a_claim_cut_gives_the_line_of_the_first_place_however_many_matches_overlap(env):
     """The reviewer's shape: the first `Go Go` stands whole on one line, and the next two
     lines hold more matches that overlap it. The line given is the first place's alone."""

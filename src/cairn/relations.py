@@ -199,9 +199,43 @@ def covered(span: Span, facts: Sequence[Fact] | None = None) -> list[tuple[int, 
 
 
 def fill_for(asked: str) -> str:
-    """The character `blanked` makes a word of what is not prose of: the first of private
-    use that `asked`, the phrase a title is asked as, does not hold."""
+    """The character that makes another word of a word that stands only in part in prose
+    (`prose_runs`, `blanked`): the first of private use that `asked`, the phrase a title is
+    asked as, does not hold."""
     return next(chr(code) for code in range(0xE000, 0xF900) if chr(code) not in asked)
+
+
+def prose_runs(
+    text: str, stretches: Iterable[tuple[int, int]], asked: str, kind: Callable[[str], int]
+) -> list[tuple[int, str]]:
+    """The prose of `text`, each run of it between two stretches that are no prose
+    (`covered`, and what the Markdown parser reads as code: cairn.spans.code_read; those
+    that overlap or touch are one) a text of its own, in order: (where it starts in `text`,
+    the run). The index is given each run as a row of its own, so no phrase is read across a
+    stretch, and every word of a run is the word of `text` it was, where it was. A word that
+    goes on across a run's edge into a stretch (the index's tokenizer reads the character
+    on each side of the edge as part of a word: `kind`, its own reading of each character)
+    stands only in part in prose and is another word: the run is given `fill_for(asked)`,
+    which the tokenizer reads as part of a word and which no title asked holds, at that
+    edge, joined to the word, and the place given is then one before the run's first
+    character. Where the edge's character in the stretch is a separator nothing is added,
+    so a word before a path is the word it is. An empty run is none."""
+    fill = fill_for(asked)
+    if kind(fill) != TOKEN:
+        raise ValueError("the index's tokenizer does not read the fill character as a word")
+    held, now = [], False  # whether each character is part of a word where it stands
+    for char in text:
+        read = kind(char)
+        now = read == TOKEN or (read == MARK and now)
+        held.append(now)
+    runs, start = [], 0
+    for begin, end in [*_joined(stretches), (len(text), len(text))]:
+        if start < begin:
+            left = start > 0 and held[start - 1] and held[start]
+            right = begin < len(text) and held[begin - 1] and held[begin]
+            runs.append((start - left, fill * left + text[start:begin] + fill * right))
+        start = end
+    return runs
 
 
 def in_word(

@@ -555,23 +555,12 @@ def _mentioning(
     # each claim that is its passage's text: that passage, numbered once however many cite it
     passage = {row: candidates[row][0] for row, its_passage in judged.items() if its_passage}
     numbered = {span_id: n for n, span_id in enumerate(dict.fromkeys(passage.values()), 1)}
-    texts = {}  # each of those passages, by its number, with what is not prose blanked out
-    asked, said = named or "", title.replace("\x00", " ")  # as ranking.quoted asks it
-    if numbered:  # how the index's tokenizer reads each character they and the title hold
-        kind = _kinds(
-            [relations.fill_for(asked), *said, *(c for s in numbered for c in spans[s].text)]
-        )
-    for span_id, n in numbered.items():
-        span = spans[span_id]
-        stretches = [*relations.covered(span, facts[span_id]), *code_read(span.text)]
-        texts[n] = relations.blanked(span.text, stretches, asked, kind)
-    places = _in_prose(named, texts) if named and texts else {}
-    if places:  # the first place: as many words from where the index's marks begin as the title
-        words, passages = relations.words_in(said, kind), dict(map(reversed, numbered.items()))
-        places = {
-            n: (start, relations.words_end(spans[passages[n]].text, start, words, kind))
-            for n, (start, _) in places.items()
-        }
+    texts = {  # each of those passages, by its number, with its stretches that are no prose
+        n: (spans[s].text, [*relations.covered(spans[s], facts[s]), *code_read(spans[s].text)])
+        for s, n in numbered.items()
+    }
+    said = title.replace("\x00", " ")  # the title as ranking.quoted asks it
+    places = _first_places(named, said, texts) if named and texts else {}
     names: dict[str, tuple[int, tuple[int, int] | None]] = {}
     for row, at in naming:
         if at in names:
@@ -668,17 +657,45 @@ def _classifying() -> sqlite3.Connection:
     return sqlite3.connect(":memory:", isolation_level=None)
 
 
+def _first_places(
+    named: str, said: str, texts: Mapping[int, tuple[str, Sequence[tuple[int, int]]]]
+) -> dict[int, tuple[int, int]]:
+    """For each passage of `texts` (by its number: its text, and its stretches that are no
+    prose) in whose prose the index's own tokenizer finds the title (`named`, asked as
+    ranking.quoted asks `said`), the first place it does, in the passage's characters. Each
+    run of prose of each passage is a row of its own (relations.prose_runs, with the
+    tokenizer's own reading of each character, `_kinds`), all of them given to the index in
+    memory at once and the title asked once (`_in_prose`); a place in a row is the row's
+    start in its passage plus the place in the row, and a passage's first place is the
+    smallest of its rows'. It ends after as many words as the title holds
+    (relations.words_end, on the passage's own text). `_kinds`'s statements, none when the
+    process has read every character; and `_in_prose`'s three, however many rows."""
+    kind = _kinds([relations.fill_for(named), *said, *(c for t, _ in texts.values() for c in t)])
+    rows: dict[int, str] = {}
+    owner: dict[int, tuple[int, int]] = {}  # each row's passage, and where the row starts in it
+    for n, (text, stretches) in texts.items():
+        for start, run in relations.prose_runs(text, stretches, named, kind):
+            rows[len(rows) + 1] = run
+            owner[len(rows)] = (n, start)
+    first: dict[int, int] = {}
+    for row, (start, _) in _in_prose(named, rows).items():
+        n, at = owner[row]
+        first[n] = min(first.get(n, at + start), at + start)
+    words = relations.words_in(said, kind)
+    return {n: (at, relations.words_end(texts[n][0], at, words, kind)) for n, at in first.items()}
+
+
 def _in_prose(named: str, texts: Mapping[int, str]) -> dict[int, tuple[int, int]]:
-    """For each claim of `texts` (its row: its text with what is not prose blanked out,
-    relations.blanked) in which the index's own tokenizer finds the title asked (`named`),
-    the first place it does, in the claim's characters: an index of the same declaration as
-    the account's, in a database of the read's own in memory, is given every text and asked
-    the title as the account's index is. Three statements in that database, whatever the
-    texts: it is made, given the texts, asked. Its marks around overlapping matches make
-    one stretch, which starts where the first match does (the caller ends that match after
-    as many words as the title holds, relations.words_end); each match of it stands whole
-    in prose. Nothing of it is kept: the database is closed when this returns. A claim's text
-    holds no mark of the index (`_judged`)."""
+    """For each row of `texts` (a run of prose of a passage, relations.prose_runs) in which
+    the index's own tokenizer finds the title asked (`named`), the first place it does, in
+    the row's characters: an index of the same declaration as the account's, in a database
+    of the read's own in memory, is given every row and asked the title as the account's
+    index is. Three statements in that database, however many rows: it is made, given the
+    rows (one statement), asked. Its marks around overlapping matches make one stretch,
+    which starts where the first match does (`_first_places` ends that match after as many
+    words as the title holds, relations.words_end); each match of it stands whole in prose.
+    Nothing of it is kept: the database is closed when this returns. A row holds no mark of
+    the index (`_judged`)."""
     with contextlib.closing(_scratch()) as scratch:
         scratch.execute(schema._CLAIM_INDEX.format(index="prose"))
         scratch.execute(

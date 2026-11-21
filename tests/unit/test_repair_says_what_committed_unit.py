@@ -96,7 +96,7 @@ def test_the_upgrade_logs_its_counts_only_after_its_step_commits(tmp_path, caplo
         pytest.raises(RuntimeError, match="floor"),
     ):
         Store(db)
-    assert repairs(caplog) == []
+    assert [r.getMessage() for r in caplog.records if r.name.startswith("cairn.store")] == []
     assert user_version(db) == 31 and floor(db) == [(31,)] and table_rows(db) == held
     monkeypatch.undo()
     with caplog.at_level(logging.WARNING, logger="cairn.store"), closing(Store(db)):

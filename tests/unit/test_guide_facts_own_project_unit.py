@@ -69,9 +69,8 @@ RUN_UPGRADE = (
     " refuses an older one."
 )
 RUN_ADDRESSES = (
-    "An upgrade keeps the address of every page it keeps, so links to such a page and to the"
-    " claims still on it keep working; a link to a page or a claim the upgrade to schema 32"
-    " removed finds nothing."
+    "An upgrade keeps the address of every page that remains, so links to it and to the claims"
+    " that remain on it keep working."
 )
 RUN_STATS = (
     "`--other-projects` adds one count, for each workspace that has any: the pages that cite,"

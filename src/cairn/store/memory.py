@@ -912,17 +912,17 @@ class MemoryMethods(StoreBase):
         the statement that reads the page's latest version, so it costs no statement of its
         own; an answer that arrives after a change to "never" is never saved.
 
-        Cost: the page's, not the workspace's, under what `serve` runs with by default as on
-        a bare store (test_index_page_cost_unit counts SQLite's steps beside 0, 1,500 and
-        6,000 other pages): the version bound prunes the page's own versions by its slug
+        Cost: the page's, not the workspace's, under what `serve` runs with by default as on a
+        bare store (test_index_page_cost_unit counts SQLite's steps beside 0, 1,500 and 6,000
+        other pages): the version bound prunes the page's own versions by its slug
         (_keep_versions), its search rows go by rowid (ranking.index_page), the audit event's
-        numbers are one seek each (StoreBase._audit), the topic key and the page's head are
-        read and written by their keys, and the caps are the view's own or one read of the
-        plan in force. Not flat: under a storage cap the workspace's page versions pass,
-        _keep_history reads every older version of the workspace to find the oldest (within
-        the cap it reads one row); past `--audit-keep`, one save in AUDIT_PRUNE_BATCH deletes
-        that many events; and FTS5's own merging adds a few units as its segments come and
-        go."""
+        numbers are one seek each (StoreBase._audit), the topic key and the page's head are read
+        and written by their keys, and the caps are the view's own or one read of the plan in
+        force (that read, through a plan's resolver, and a page's first save, are flat by
+        reading, not counted). Not flat: under a storage cap the workspace's page versions pass,
+        _keep_history reads every older version of the workspace to find the oldest (within the
+        cap it reads one row); past `--audit-keep`, one save in AUDIT_PRUNE_BATCH deletes that
+        many events; and FTS5's own merging adds a few units as its segments come and go."""
         given = _page_detail(event, detail)
         claims = tuple(claims)
         if len(claims) > PAGE_CLAIMS_MAX:

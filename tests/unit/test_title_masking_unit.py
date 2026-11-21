@@ -179,12 +179,39 @@ def test_the_kinds_of_characters_are_the_index_own(monkeypatch):
     assert opened == []
 
 
+def test_any_characters_are_read_however_many_a_text_holds_of_those_kept_for_a_program(
+    monkeypatch,
+):
+    """The characters Unicode keeps for a program's own use, all at once (a title can hold
+    some, a passage the rest), beside the probe words' own letters: each is read as an
+    index of the claims' declaration counts its words (fts5vocab), alone (a word, or none)
+    and between two letters (one word, or two)."""
+    monkeypatch.setattr(relating, "_KINDS", {})
+    kept = [chr(code) for code in range(0xFDD0, 0xFDF0)] + ["\ufffe", "\uffff", "\U0010ffff"]
+    kept += [*"qzxy", "\u0301", "/"]
+    kind = relating._kinds(kept)
+    with closing(sqlite3.connect(":memory:")) as con:
+        con.execute(_CLAIM_INDEX.format(index="t"))
+        given = [*kept, *("a" + char + "b" for char in kept)]
+        con.executemany("INSERT INTO t (rowid, text) VALUES (?, ?)", list(enumerate(given, 1)))
+        con.execute("CREATE VIRTUAL TABLE v USING fts5vocab (t, instance)")
+        words = dict(con.execute("SELECT doc, count(*) FROM v GROUP BY doc").fetchall())
+    reading = {(1, 1): relations.TOKEN, (0, 1): relations.MARK, (0, 2): relations.SEPARATOR}
+    for n, char in enumerate(kept, 1):
+        said = (words.get(n, 0), words.get(len(kept) + n, 0))
+        assert kind(char) == reading[said], (hex(ord(char)), said)
+    assert [kind(char) for char in kept[-6:]] == [relations.TOKEN] * 4 + [
+        relations.MARK,
+        relations.SEPARATOR,
+    ]
+
+
 def test_the_first_place_ends_after_as_many_words_as_the_title_holds():
     """Where the index's marks around overlapping matches begin, the first place ends after
     the title's number of words (relations.words_end): the end of that many of the words
     fts5vocab and highlight report, whatever overlaps it, with marks, NFD and CJK about."""
     rng, texts = random.Random(5), []
-    pieces = ["Go", "go", "Gó", " ", "\n", "-", "`", "日本", "́", "x", "Go Go"]
+    pieces = ["Go", "go", "Go\u0301", " ", "\n", "-", "`", "日本", "\u0301", "x", "Go Go"]
     while len(texts) < 800:
         texts.append("".join(rng.choice(pieces) for _ in range(rng.randint(2, 12))))
     title = "Go Go"

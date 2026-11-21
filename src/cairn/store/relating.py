@@ -608,14 +608,16 @@ def _kinds(chars: Iterable[str]) -> Callable[[str], int]:
     twice, at a text's start before a word (it starts a word there, or separates) and
     inside one (it goes on with the word, or ends it), and asked where it finds the two
     probe words: a TOKEN starts a word, a MARK goes on with one and starts none (a combining
-    mark), a SEPARATOR does neither. Three statements there (made, given the characters,
-    asked), for the characters this process has not asked about, and none when it has
-    asked about them all; the answers are kept for the process (`_KINDS`)."""
+    mark), a SEPARATOR does neither. Its marks are MARKS, both, in one order and the other:
+    no character asked, alone, can be read for one of them. Three statements there (made,
+    given the characters, asked), for the characters this process has not asked about, and
+    none when it has asked about them all; the answers are kept for the process
+    (`_KINDS`)."""
     known = _KINDS.setdefault((sqlite3.sqlite_version, schema._CLAIM_INDEX), bytearray(0x110000))
     new = sorted({char for char in chars if not known[ord(char)]})
     if not new:
         return lambda char: known[ord(char)]
-    opened, closed = [m for m in map(chr, range(0xFDD0, 0xFDF0)) if m not in new][:2]
+    opened, closed = MARKS[0] + MARKS[1], MARKS[1] + MARKS[0]
     first, then = _PROBES
     given = [[2 * n + 1, char + then] for n, char in enumerate(new)]
     given += [[2 * n + 2, first + char + then] for n, char in enumerate(new)]

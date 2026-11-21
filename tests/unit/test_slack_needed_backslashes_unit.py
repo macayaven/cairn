@@ -1157,7 +1157,9 @@ def test_the_rich_text_says_which_backticks_code_within_a_line_displayed():
     shown = "row`id [qzx](https://fable.test/qzx) *qzx*"
     text = f"Use `{shown}` and `Row 4` today."
     blocks = rich(words("Use ", code(shown), " and ", code("Row 4"), " today."))
-    assert note_of(text, blocks) == f"Use ``{shown}`` and ``Row 4`` today."
+    # Each span its own delimiter: `Row 4` took the first's two (the second reviewer's seventh
+    # report, must-fix 3: one run set every span's, and the note grew as the square).
+    assert note_of(text, blocks) == f"Use ``{shown}`` and `Row 4` today."
     assert note_of(text, None, False).startswith("Use `row`id \\[qzx\\]")  # the text's pairing
     # A backtick at its edge: a space each side, which Markdown takes back.
     assert note_of("Use ``Row 4`` now.", rich(words("Use ", code("`Row 4`"), " now."))) == (

@@ -553,7 +553,9 @@ def _known_code(text: str, code: list[tuple[bool, str]]) -> list[tuple[int, int,
         if block:
             ways = [f"```{above}{sent}{below}```" for above in ("\n", "") for below in ("\n", "")]
         else:
-            ways = [f"`{sent}`"] if sent and "\n" not in sent else []
+            if not sent:  # passed over: Slack's text need not hold it (_render)
+                continue
+            ways = [f"`{sent}`"] if "\n" not in sent else []
         ways = sorted(ways, key=len, reverse=True)  # the longest first, in their order
         known, found = [(way, digests.of(way)) for way in ways], None
         where = starts[block](at) if known else len(text)
@@ -714,9 +716,13 @@ def _render(
 ) -> str:
     """`text` as the note holds it: its prose by _prose and a name or a link's label by
     _literal; a code block of Slack's own as a fence (_fence); and code within a line between
-    backticks, more of them than any run it holds, the same number for every such code of
-    the message, and the only bare backticks of the note's prose, so they pair as Slack
-    paired them. What is code is what the rich text says (`code`: _known_code), else what the
+    backticks, one more than the longest run it holds, each span its own (one span's run
+    set every span's once, so the note grew as the square of the message: the second
+    reviewer's seventh report, must-fix 3), and the only bare backticks of the note's prose,
+    so they pair as Slack paired them. Where the rich text names a span right after another,
+    whose backticks would make one run with the other's, its code is written as plain
+    characters (_plain); two the text's backticks alone bound are written as they were. What
+    is code is what the rich text says (`code`: _known_code), else what the
     backticks of the text bound. Without `bars`, code within a line that holds a bar is
     written by _literal, backticks and all: a table's row is cut at its bars before its code
     is read. `displayed`: the whole of it as Slack displayed it (_shown, and code within a
@@ -738,7 +744,9 @@ def _render(
     # A block's line: where it starts, read once (`read`: up to where), and where the marks
     # of a quotation that start it end (`quotes`), read once a line.
     offset, line, read, quotes = 0, 0, 0, None
+    named = set()  # where the spans the rich text names start
     for known in [*_known_code(text, code or []), (len(text), len(text), "", None)]:
+        named |= {known[0]} if known[2] == "code" else set()
         for start, end in _tokens(text, offset, known[0]):
             token = text[start:end]
             if token.startswith("```"):
@@ -755,13 +763,14 @@ def _render(
             tokens.append((start, end, *found))
         tokens.append(known)
         offset = known[1]
-    held = [what for _, _, kind, what in tokens if kind == "code" and isinstance(what, str)]
-    ticks = "`" * (1 + max(map(len, re.findall("`+", "\n".join(held))), default=0))
     pieces: list[str] = []
     # fresh: nothing is written on the line; clear: only what may stand before a fence (_prose)
     # gap: the text before a reference that shows nothing, which is as if it were not there
     # lead: what of the marks that start the line is yet to be read (_lead)
+    # spanned: the last that is written is code within a line, between its backticks: of a
+    # span the rich text names ("named") or of one the text's backticks bound ("text")
     offset, below, fresh, clear, place, gap, lead = 0, False, True, True, -1, "", ""
+    spanned = ""
     for start, end, kind, what in tokens[:-1]:
         reference = None
         if not kind and text[start] != "`":
@@ -772,8 +781,10 @@ def _render(
         before = gap + text[offset:start]
         then = "\n" if isinstance(what, list) else reference[:1] if reference else "`"
         pieces.append(prose(_apart(before, below, kind == "block", True, fresh), then))
+        spanned = "" if pieces[-1] else spanned
         gap, fresh = "", pieces[-1].endswith("\n") if pieces[-1] else fresh
         clear, lead = _clear(clear, pieces[-1]), _lead(lead, pieces[-1])
+        now = ""  # whether what is written now is a span, and whose
         if isinstance(what, list):
             place += 1
             if title:
@@ -793,15 +804,20 @@ def _render(
                 pieces.append(_plain(f"`{what}`"))
             elif "|" in what and not bars:
                 pieces.append(literal(text[start:end]))
+            elif spanned == "named" or (spanned and start in named):
+                pieces.append(_plain(what))  # its backticks and the last's would be one run
             else:  # a space each side where Markdown would take one, or read a longer run
+                ticks = "`" * (1 + max(map(len, re.findall("`+", what)), default=0))
                 pad = " " if what.strip(" ") and (what[0] in "` " or what[-1] in "` ") else ""
                 pieces.append(f"{ticks}{pad}{what}{pad}{ticks}")
+                now = "named" if start in named else "text"
         elif reference is not None:
             pieces.append(reference)
         else:  # two backticks with no code between them
             pieces.append(prose(text[start:end]))
         offset, below, fresh = end, kind == "block", fresh and not pieces[-1]
         clear, lead = _clear(clear, pieces[-1]), _lead(lead, pieces[-1])
+        spanned = now or ("" if pieces[-1] else spanned)
     pieces.append(prose(_apart(gap + text[offset:], below, False, False, fresh)))
     return "".join(pieces)
 

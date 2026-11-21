@@ -1144,17 +1144,30 @@ def test_connect_struck_text_is_written_as_typed():
 
 
 def test_connect_code_within_a_line_stays_between_its_backticks():
-    """connect.md: "Code within a line stays between its backticks, and a backtick that Slack
-    paired with no other gets a backslash; in a message that could hold a table, code within a
-    line that holds a `|` is written as plain characters, backticks and all, since a table's
-    row is cut at its bars before its code is read.\""""
+    """connect.md: "Code within a line stays between its backticks, as many as its own code
+    needs, ...\" (The second reviewer's seventh report, must-fix 3: one span's run set every
+    span's; each case is test_slack_code_spans_unit's.)"""
     says(
         *CONNECT,
-        "Code within a line stays between its backticks, and a backtick that Slack paired with"
-        " no other gets a backslash; in a message that could hold a table, code within a line"
-        " that holds a `|` is written as plain characters, backticks and all, since a table's"
-        " row is cut at its bars before its code is read.",
+        "Code within a line stays between its backticks, as many as its own code needs, and a"
+        " backtick that Slack paired with no other gets a backslash; where Slack's rich text"
+        " names a span right after another, that span's code is written as plain characters,"
+        " since the backticks of the two would make one run; in a message that could hold a"
+        " table, code within a line that holds a `|` is written as plain characters, backticks"
+        " and all, since a table's row is cut at its bars before its code is read.",
     )
+    code = {"type": "text", "style": {"code": True}}
+    section = {"type": "rich_text_section", "elements": [
+        {**code, "text": "a``b"}, {"type": "text", "text": " and "}, {**code, "text": "c"},
+        {**code, "text": "d*"},
+    ]}  # fmt: skip
+    note = note_from_message(
+        {"type": "message", "user": "U0CEDAR01", "ts": "1900000000.000100",
+         "text": "`a``b` and `c``d*`", "blocks": [{"type": "rich_text", "elements": [section]}]},
+        team_id=TEAM, team_domain="fable-works", conversation_id="C0LIBRARY1",
+        author="Cedar Quill", names={},
+    ).text  # fmt: skip
+    assert as_read(note)[0] == "```a``b``` and `c`d\\*"
     code = "`[manual](https://fable.test/docs)|Row 4`"
     assert as_read(a_filed_note(f"Row 4 `\nRow 5 {code}")) == (
         f"Row 4 \\`\nRow 5 {code}",

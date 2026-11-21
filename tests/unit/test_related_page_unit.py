@@ -721,8 +721,9 @@ def test_with_no_related_page_found_an_answer_that_is_not_complete_does_not_say_
     (empty,) = body.all("p", "empty")
     assert flat(empty.text()) == (
         "No page related to Asked was found in what was looked at: two pages are related when a"
-        " claim of each states the same term (a URL, a path, a flag, a version, or code that is"
-        " not a plain word), or when a claim of the other names this page's title."
+        " claim of each states the same term (a URL, a path, a flag, a version, or code that"
+        f" holds a character other than a letter or is {relations.CODE_MIN} or more characters"
+        " long), or when a claim of the other names this page's title in its prose."
     )
     (said,) = body.all("p", "searched")
     assert flat(said.text()) == (
@@ -816,8 +817,9 @@ def test_with_no_related_page_one_sentence_says_so_and_what_relates_two_pages(w)
     (empty,) = body.all("p", "empty")
     assert flat(empty.text()) == (
         "No page of ops is related to Queue: two pages are related when a claim of each states"
-        " the same term (a URL, a path, a flag, a version, or code that is not a plain word), or"
-        " when a claim of the other names this page's title."
+        " the same term (a URL, a path, a flag, a version, or code that holds a character other"
+        f" than a letter or is {relations.CODE_MIN} or more characters long), or when a claim of"
+        " the other names this page's title in its prose."
     )
     assert body.all("ul") == [] and body.all("ol") == []  # no empty list
     assert body.all("p", "searched") == []

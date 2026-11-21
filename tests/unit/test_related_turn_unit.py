@@ -205,8 +205,10 @@ def test_the_contract_says_a_related_read_waits_its_turn_and_is_never_refused_fo
         " serves, over MCP, REST and the web view alike: another waits for it holding no"
         " thread and no connection and is answered in its turn, however long that takes; none"
         " is refused for waiting. A caller (a key, an agent, or a person whichever session they"
-        " use) has one read in that line at a time, its others waiting behind it, so a read"
-        " waits behind at most one read of each other caller." in said
+        " use) has one read in that line at a time, its others waiting behind it to enter: that"
+        " rule governs entry to the line. So a read in the line waits behind at most one read of"
+        " each other caller; one still waiting behind its own caller's can see two reads of"
+        " another caller go first, and more when more of its caller's are ahead of it." in said
     )
 
 
@@ -228,8 +230,8 @@ async def settled(reads: RelatedReads, waiting: int) -> None:
 def test_a_callers_further_reads_wait_behind_its_own_first():
     """Eight reads of one caller and then one of another, while a read is under way: the
     other caller's read goes second, after the first caller's first, and the first caller's
-    others after it, in the order they asked. A read waits behind at most one read of each
-    other caller."""
+    others after it, in the order they asked. A read in the process's line waits behind at
+    most one read of each other caller."""
     reads, order = RelatedReads(), []
 
     async def read(caller: str, n: int) -> None:
@@ -250,6 +252,35 @@ def test_a_callers_further_reads_wait_behind_its_own_first():
 
     run(main)
     assert order == [("hog", 0), ("calm", 0), *(("hog", n) for n in range(1, 8))]
+    assert (reads.held, reads.waiting, reads.callers) == (0, 0, 0)
+
+
+def test_a_read_waiting_behind_its_own_callers_can_see_two_reads_of_another_go_first():
+    """While a read is under way: Brook's first read waits in the process's line, then
+    Ada's first behind it; Ada's second and third wait behind Ada's first to enter the line,
+    and Brook's second and third behind Brook's first. Ada's second was asked before any of
+    Brook's began, and two of Brook's go first: Brook's second enters the line when Brook's
+    first ends, before Ada's first has ended and let Ada's second in. Ada's third, with two
+    of Ada's ahead of it, sees three of Brook's go first."""
+    reads, order = RelatedReads(), []
+
+    async def read(caller: str, n: int) -> None:
+        async with reads.turn(caller):
+            order.append((caller, n))
+            await asyncio.sleep(0)
+
+    async def main() -> None:
+        async with reads.turn("someone else"):  # a read under way
+            tasks = []
+            for waiting, (caller, n) in enumerate(
+                [("brook", 1), ("ada", 1), ("ada", 2), ("ada", 3), ("brook", 2), ("brook", 3)], 1
+            ):
+                tasks.append(asyncio.create_task(read(caller, n)))
+                await settled(reads, waiting)
+        await asyncio.gather(*tasks)
+
+    run(main)
+    assert order == [("brook", 1), ("ada", 1), ("brook", 2), ("ada", 2), ("brook", 3), ("ada", 3)]
     assert (reads.held, reads.waiting, reads.callers) == (0, 0, 0)
 
 

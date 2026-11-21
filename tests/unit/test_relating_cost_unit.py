@@ -42,7 +42,7 @@ from types import SimpleNamespace
 import pytest
 from test_search_steps_unit import PERIOD, merge
 
-from cairn import relations, server
+from cairn import relations, server, spans
 from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.relations import RELATED_MAX, SHARES, WHY_MAX
@@ -571,13 +571,13 @@ def test_the_index_is_asked_for_a_terms_claims_within_the_projects_rows(tmp_path
         searched = [step for step in plan if "VIRTUAL TABLE INDEX" in step]
         # FTS5 says what it was given: M a match, > and < the least and the greatest row
         assert searched and all(re.search(r"INDEX \d+:M\d*><", step) for step in searched), plan
-    # Where the index matched the title in the claims listed for it: by the match and each
-    # claim's own row (=), the project's rows alone.
-    (marked,) = [s for s in seen.statements if "highlight(" in s]
+    # Which claims listed for the title are their passage's text: each by its own row (=),
+    # the project's rows alone, and no match asked.
+    (judged,) = [s for s in seen.statements if "= spans.text" in s]
     with closing(Store(tmp_path / "cairn.db")) as again:
-        plan = [step[-1] for step in again._con.execute("EXPLAIN QUERY PLAN " + marked)]
+        plan = [step[-1] for step in again._con.execute("EXPLAIN QUERY PLAN " + judged)]
     (searched,) = [step for step in plan if step.startswith("SCAN claim_search_")]
-    assert re.search(r"VIRTUAL TABLE INDEX \d+:=M\d*$", searched), plan
+    assert re.search(r"VIRTUAL TABLE INDEX \d+:=$", searched), plan
 
 
 def test_the_bounds_met_are_counted_and_the_read_stays_inside_them(tmp_path, monkeypatch):
@@ -999,6 +999,32 @@ def mentioned(folder, said: str, by_hand: bool = False) -> tuple[Store, str]:
 LONG = "Brook keeps the ledger at dawn; " * 1_900  # 60,800 characters
 
 
+@contextlib.contextmanager
+def apart(monkeypatch):
+    """What a read does beside the store's statements to judge each place a title stands
+    (relating._in_prose): the statements it runs in its own database in memory, FTS5's own
+    apart, and the length of each text the Markdown parser reads for it (spans.code_read)."""
+    seen = SimpleNamespace(statements=[], parsed=[])
+    made, parse = relating._scratch, spans._CODE_READER.parse
+
+    def scratch() -> sqlite3.Connection:
+        con = made()
+        con.set_trace_callback(
+            lambda statement: (
+                None if statement.lstrip().startswith("--") else seen.statements.append(statement)
+            )
+        )
+        return con
+
+    def parsed(text: str, env=None):
+        seen.parsed.append(len(text))
+        return parse(text, env)
+
+    monkeypatch.setattr(relating, "_scratch", scratch)
+    monkeypatch.setattr(spans._CODE_READER, "parse", parsed)
+    yield seen
+
+
 @pytest.mark.parametrize(
     "named",
     ["the Quill ledger.", "the Quill" + " \u2014" * 900 + " ledger."],
@@ -1006,53 +1032,131 @@ LONG = "Brook keeps the ledger at dawn; " * 1_900  # 60,800 characters
 )
 def test_what_it_costs_to_know_that_a_claim_names_the_title(tmp_path, monkeypatch, named):
     """A page mentioned by one claim, short or of 60,000 characters, which names it at its
-    end. The claim is read as a term's candidate is, and the index is asked once where it
-    matched: 13 statements, however long the claim. Its passage is handed back, and once
-    more as the claim's text with the index's marks; BYTES_MAX counts the passage once,
-    its facts being read once. With less room than that the claim is not read, nothing of
-    it is handed back, the page is not said to be mentioned, and the claim is counted."""
+    end. The claim is read as a term's candidate is, and the statement that says it is its
+    passage's text hands back no text: 13 statements, however long the claim. Its passage
+    is handed back once, and BYTES_MAX counts it once, its facts being read once. The
+    index's own tokenizer is then given the passage with what is not prose blanked out, in
+    a database of the read's own in memory: 3 statements there. With less room than the
+    passage the claim is not read, nothing of it is handed back, nothing is asked in memory,
+    the page is not said to be mentioned, and the claim is counted."""
     for size, said in (
         ("short", "Then she opens " + named),
         ("long", LONG + "Then she opens " + named),
     ):
         (tmp_path / size).mkdir()
         store, project_id = mentioned(tmp_path / size, said)
-        with watched(store) as seen:
+        with watched(store) as seen, apart(monkeypatch) as judged:
             found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
         (reason,) = found.pages[0].why
         assert reason.kind == "mentioned_by" and found.left.claims_read == 1
         # the caller's 2; the page's claims and passages, 2; no term to list; the title, 1; its
-        # claim, the size of the claim's passage and the passage, 3; where the index matched, 1;
-        # what is given, 2; the notes of the passages given and who wrote them, 2
+        # claim, the size of the claim's passage and the passage, 3; whether the claim is its
+        # passage's text, 1; what is given, 2; the notes of the passages given and who wrote
+        # them, 2
         assert len(seen.statements) - settings_loaded(seen.statements) == 13
-        assert len([s for s in seen.statements if "highlight(" in s]) == 1
+        assert not [s for s in seen.statements if "highlight(" in s]
+        # made, given the text, asked where the title stands in it
+        assert [s.split()[0] for s in judged.statements] == ["CREATE", "INSERT", "SELECT"]
+        assert judged.parsed == []  # no backtick, tilde, tab or four spaces: nothing to parse
         stored = len(said.encode())
-        assert len(said) <= seen.longest <= len(said) + 2  # the text, and with two marks
+        assert seen.longest == len(said)  # the passage, once
         if size == "long":
             assert len(reason.there.line) == relations.LINE_MAX and reason.there.line_cut
             assert reason.there.line.startswith("Quill") or reason.there.line.endswith(named)
             monkeypatch.setattr(relating, "BYTES_MAX", stored - 1)
-            with watched(store) as seen:
+            with watched(store) as seen, apart(monkeypatch) as judged:
                 found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
             assert found.pages == () and found.left.claims_not_read == 1
-            assert seen.longest < 100 and not [s for s in seen.statements if "highlight(" in s]
+            assert seen.longest < 100 and judged.statements == judged.parsed == []
             monkeypatch.setattr(relating, "BYTES_MAX", stored)
             assert len(store.related_pages(project_id, "quill-ledger", RELATED_MAX).pages) == 1
             monkeypatch.undo()
         store.close()
 
 
-def test_a_reworded_claim_that_mentions_costs_no_statement_more_and_nothing_of_its_text(tmp_path):
+def test_every_claim_that_holds_the_title_is_judged_in_the_same_three_statements(
+    tmp_path, monkeypatch
+):
+    """CLAIMS_COMMON claims of other pages hold the title, each with code in backticks (so
+    each is read by the Markdown parser, once) and some naming it in prose: the store's
+    statements are those of one such claim, and the database in memory is made, given every
+    text and asked, once. One claim more makes the title common: nothing is judged."""
+    store = Store(tmp_path / "cairn.db")
+    memory = Memory(store, lint_gate)
+    project = store.create_project("ops")
+    memory.note("ops", "Ada balances it at dusk.\n", title="Quill ledger", topic="Quill ledger")
+    texts = [
+        f"Group {n} opens `quill` ledger {n}" + (", then the Quill ledger." if n % 2 else ".")
+        for n in range(relations.CLAIMS_COMMON)
+    ]
+    for n, text in enumerate(texts):
+        memory.note("ops", text + "\n", title=f"Group {n}", topic=f"Group {n}")
+    merge(store)
+    try:
+        with watched(store) as seen, apart(monkeypatch) as judged:
+            found = store.related_pages(project.id, "quill-ledger", RELATED_MAX)
+        # 32 pages name it: more than COMMON, so the title is common and relates none
+        assert found.pages == () and found.left.complete
+        # the caller's 2; the page's 2; the title's 1; its claims 3; which are their passage's
+        # text, 1; nothing given
+        assert run(seen) == 9
+        assert [s.split()[0] for s in judged.statements] == ["CREATE", "INSERT", "SELECT"]
+        assert sorted(judged.parsed) == sorted(len(text) for text in texts)
+        memory.note("ops", "Brook opens `quill` ledger 99.\n", title="One more", topic="One more")
+        merge(store)
+        with watched(store) as seen, apart(monkeypatch) as judged:
+            found = store.related_pages(project.id, "quill-ledger", RELATED_MAX)
+        assert found.pages == () and judged.statements == judged.parsed == []
+    finally:
+        store.close()
+
+
+def test_a_passage_that_claims_of_several_pages_are_is_parsed_and_given_in_memory_once(
+    tmp_path, monkeypatch
+):
+    """COMMON pages saved by hand, each with one claim that is the text of the same passage,
+    with code in backticks and the title in prose. BYTES_MAX counts the passage once, and so
+    is the cost of judging it: the Markdown parser reads it once, and the database in memory
+    is given it once. Each page is named, at the same place."""
+    store = Store(tmp_path / "cairn.db")
+    memory = Memory(store, lint_gate)
+    project = store.create_project("ops")
+    memory.note("ops", "Ada balances it at dusk.\n", title="Quill ledger", topic="Quill ledger")
+    said = "Brook runs `ledger --check` " * 70 + "and then opens the Quill ledger."
+    note, _ = store.add_note(project.id, f"# Shelf\n\n{said}\n")
+    (span,) = [s for s in store.note_spans(note.id) if s.kind == "paragraph"]
+    assert span.text == said
+    for n in range(relations.COMMON):
+        claims = [Claim(id=f"cl_{n}", text=said, span_ids=[span.id])]
+        store.save_page(project.id, f"shelf-{n}", f"Shelf {n}", "", claims)
+    merge(store)
+    try:
+        with apart(monkeypatch) as judged:
+            found = store.related_pages(project.id, "quill-ledger", RELATED_MAX)
+        assert sorted(page.slug for page in found.pages) == [
+            f"shelf-{n}" for n in range(relations.COMMON)
+        ]
+        assert judged.parsed == [len(said)]
+        given = [s for s in judged.statements if s.startswith("INSERT")]
+        assert len(given) == 1 and given[0].count("opens the Quill ledger") == 1
+    finally:
+        store.close()
+
+
+def test_a_reworded_claim_that_mentions_costs_no_statement_more_and_nothing_of_its_text(
+    tmp_path, monkeypatch
+):
     """A claim of 60,000 characters saved by hand, whose text is not its passage's: the
     mention stands as the index has it. Nothing of the claim is handed back to know that
-    (the statement that would give its marks finds another text and gives none), and no
-    line is asked for: the claim is given by its head, read by a handle to the bound. The
-    same 13 statements, and the longest text handed back is the short passage."""
+    (the statement that says whether it is its passage's text hands back no text), nothing
+    is asked in memory, and no line is asked for: the claim is given by its head, read by a
+    handle to the bound. The same 13 statements, and the longest text handed back is the
+    short passage."""
     store, project_id = mentioned(tmp_path, LONG + "Then she opens the Quill ledger.", by_hand=True)
-    with watched(store) as seen:
+    with watched(store) as seen, apart(monkeypatch) as judged:
         found = store.related_pages(project_id, "quill-ledger", RELATED_MAX)
     (reason,) = found.pages[0].why
     assert reason.kind == "mentioned_by" and reason.there.cut and reason.there.line is None
     assert len(seen.statements) - settings_loaded(seen.statements) == 13
-    assert len([s for s in seen.statements if "highlight(" in s]) == 1 and seen.longest < 100
+    assert seen.longest < 100 and judged.statements == judged.parsed == []
     store.close()

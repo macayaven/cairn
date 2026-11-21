@@ -624,10 +624,13 @@ def test_the_tools_description_says_each_field_of_what_was_left_out_in_a_line():
         " been handed 150,000 rows of the index for the terms and the title, the title then"
         " counting as one: where other projects hold the page's terms in very many claims, an"
         " answer can be incomplete, and says so here.",
+        "Not counted in those rows: the index's own walk, which passes over a claim that holds"
+        " a term's words apart without handing it over, and two seeks a page of the project,"
+        " once a read, to find the project's rows.",
         "`claims_read`: claims of other pages read for those terms and for the title.",
-        "`claims_not_read`: such claims not read, past 512 claims or 750,000 bytes of their"
-        " passages; a term with a claim not read gives no reason, nor does the title.",
-        "The page's own passages are read whole, as `page` reads them.",
+        "`claims_not_read`: such claims not read, past 512 claims or 750,000 bytes of the"
+        " passages they cite; a term with a claim not read gives no reason, nor does the title.",
+        "The page's own passages are read whole, as `page` reads them, and count in neither bound.",
         "`pages_left_out`: related pages past `limit`.",
         "`complete` is true when those three counts of what was left out are 0.",
     ):
@@ -663,10 +666,10 @@ def test_the_tools_description_says_a_term_is_given_as_it_is_written(env):
     said = " ".join(tools()["related"].description.split())
     assert (
         "both pages state `term` (a URL, a path, a flag, a version, or code in backticks that"
-        " is not a plain word; it is given as it is written, capitals included: `-L` is not"
-        " `-l`)"
+        f" holds a character other than a letter or is {relations.CODE_MIN} or more characters"
+        " long; it is given as it is written, capitals included: `-L` is not `-l`)"
     ) in said
-    assert "case folded" not in said
+    assert "case folded" not in said and "not a plain word" not in said
     note(env, "Tunnel", "Forward a local port with `-L`.\n")
     note(env, "Login", "Pass the remote login name with `-l`.\n")
     note(env, "Jump", "Forward through a host with `-L` too.\n")
@@ -692,17 +695,20 @@ def test_a_term_and_a_title_that_hold_a_null_or_a_quote_answer_over_every_surfac
 def test_the_tools_description_says_which_terms_and_titles_relate_none():
     said = " ".join(tools()["related"].description.split())
     assert (
-        "Or it is `mentioned_by`: `there` is a claim of the other page that names this page's"
-        " title in its prose: not by words inside code (in backticks, or in a fenced block,"
-        " its opening line included), nor inside a URL, a path, a flag or a version as the"
-        " page's facts read them, so a bare `ledger/notes.md` still names a page Ledger; a claim"
-        " that holds a mark of the index or a null character names none (the pages this page"
-        " mentions are not listed)."
+        "Or it is `mentioned_by`, with `there` alone (no `here`, no `pages`): a claim of the"
+        " other page that names this page's title in its prose. Each place the title stands in"
+        " the claim is judged by itself: one that stands whole outside code, and outside a URL,"
+        " a path, a flag or a version, names it, whatever other place overlaps it. Code is what"
+        " Markdown reads as code in the claim alone: in backticks, a fenced block (its opening"
+        " line included), an indented block; text indented under a list item is the item's"
+        " prose. A URL, a path, a flag or a version is what the page's facts read as one, so a"
+        " bare `ledger/notes.md` still names a page Ledger; a claim that holds a mark of the"
+        " index or a null character names none (the pages this page mentions are not listed)."
     ) in said
     for line in (
         "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"
         " the project hold, nor one longer than 200 characters; a title more than 5 other pages"
-        " name, or more than 64 of their claims hold, relates none either.",
+        " name so, or more than 64 of their claims hold, in prose or not, relates none either.",
         "A term fewer pages hold weighs more, and a page gives its 3 weightiest reasons and"
         " counts the others in `more`.",
     ):
@@ -743,16 +749,52 @@ def test_the_contract_states_the_bounds_of_a_read_as_the_store_has_them():
         "counts each: the page's terms past the first 256, and those not looked up once the read"
         " has been handed 150,000 rows of the index for the terms and the title (the title then"
         " counting as one), the claims of other pages, listed for a term or for the title, past"
-        " the 512 claims and the 750,000 bytes of passages read, the related pages past"
-        " `limit`. The rows of the index a read is handed are bounded whatever the workspace"
-        " holds: where other projects hold a page's terms in very many claims, the answer can"
-        " be incomplete, and says so; each reason it gives is true and counts the pages it would"
-        " count with nothing left out, though an incomplete answer can hold other true reasons"
-        " than a complete one would show first. The page's own passages are read whole, as"
-        " `page` reads them."
+        " the 512 claims and the 750,000 bytes of the passages they cite, the related pages"
+        " past `limit`. The rows of the index a read is handed are bounded whatever the"
+        " workspace holds: where other projects hold a page's terms in very many claims, the"
+        " answer can be incomplete, and says so; each reason it gives is true and counts the"
+        " pages it would count with nothing left out, though an incomplete answer can hold other"
+        " true reasons than a complete one would show first. Not counted in those rows: the"
+        " index's own walk, which passes over a claim that holds a term's words apart without"
+        " handing it over, and two seeks a page of the project, once a read, to find the"
+        " project's rows. The page's own passages are read whole, as `page` reads them, and"
+        " count in neither bound."
     ) in said
     assert (relating.TERMS_MAX, relating.CLAIMS_MAX, relating.BYTES_MAX) == (256, 512, 750_000)
     assert relating.ROWS_MAX == 150_000
+
+
+def test_the_contract_says_which_terms_and_which_places_of_a_title_relate_pages():
+    """The contract's rule for a term and for a mention is the tool's, and the statements it
+    says a read runs are the store's: those that work out what the caller may reach are not
+    among them, and judging a title runs its own in memory (test_relating_cost_unit.py)."""
+    import cairn.server
+
+    said = " ".join(cairn.server.__doc__.split())
+    for line in (
+        "one that states a term the page states (a url, a path, a flag, a version, or inline"
+        " code that holds a character other than a letter or is"
+        f" {relations.CODE_MIN} or more characters long, the same when written the same,",
+        "or whose claim names the page's title in its prose: each place the title stands in the"
+        " claim is judged by itself, and one that stands whole outside code, and outside a URL,"
+        " a path, a flag or a version, names it, whatever other place overlaps it; code is what"
+        " Markdown reads as code in the claim alone (in backticks, a fenced block, its opening"
+        " line included, an indented block; text indented under a list item is the item's"
+        " prose), and a URL, a path, a flag or a version what the page's facts read as one, so"
+        " a bare `ledger/notes.md` still names a page Ledger (the index, given the passage's"
+        " text with every stretch that is no prose blanked out, says where the title stands in"
+        " prose; a claim that is not its passage's text mentions as the index has it; a claim"
+        " that holds a mark of the index or a null character names none; none when more than"
+        " 5 other pages name it so, or more than 64 of their claims hold it, in prose or not).",
+        "The store's read runs at most 17 statements, whatever the page and the project hold,"
+        " beside those that work out what the caller may reach (cairn.store.relating says"
+        " which, and tests/unit/test_relating_cost_unit.py counts them); to judge where a title"
+        " stands in prose it runs 3 more, in a database of its own in memory, and the Markdown"
+        " parser reads each passage it judges at most once.",
+    ):
+        assert line in said, line
+    assert "not a plain word" not in said
+    assert (relations.COMMON, relations.CLAIMS_COMMON) == (5, 64)
 
 
 def test_the_contract_counts_and_names_the_tools_there_are():

@@ -138,12 +138,14 @@ class RelatedReads:
     caller in that line at a time.
 
     A read takes its caller's turn first, then the process's: a caller's further reads wait
-    behind its own first, not in the process's line, so a read waits behind at most one read
-    of each other caller. Both turns are a `Compiles(1)`: a read waits for them on the event
-    loop, holding no thread and no connection, in the order it asked, and its worker thread
-    then takes the store's own turn with nobody ahead of it. A read that waits long waits;
-    none is refused for it. Both turns are given back however the read ends (an error, a
-    cancelled request), and a caller with no read left is forgotten."""
+    behind its own first, not in the process's line, so a read in that line waits behind at
+    most one read of each other caller; one still waiting behind its own caller's can see two
+    reads of another caller go first, and more when more of its caller's are ahead of it.
+    Both turns are a `Compiles(1)`: a read waits for them
+    on the event loop, holding no thread and no connection, in the order it asked, and its
+    worker thread then takes the store's own turn with nobody ahead of it. A read that waits
+    long waits; none is refused for it. Both turns are given back however the read ends (an
+    error, a cancelled request), and a caller with no read left is forgotten."""
 
     def __init__(self) -> None:
         self.process = Compiles(1)

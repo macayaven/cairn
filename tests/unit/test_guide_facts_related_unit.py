@@ -107,13 +107,19 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
     says(
         "connect",
         "Each related page says why, with the claims the reason rests on: both pages state the"
-        " same term (a URL, a path, a flag, a version, or code in backticks that is not a plain"
-        " word), or a claim of the other page names this page's title in its prose: not by"
-        " words inside code (in backticks, or in a fenced block, its opening line included),"
-        " nor inside a URL, a path, a flag or a version as the page's facts read them, so a"
-        " bare `ledger/notes.md` still names a page Ledger; a claim that holds a mark of the"
-        " index or a null character names none.",
+        " same term (a URL, a path, a flag, a version, or code in backticks that holds a"
+        f" character other than a letter or is {relations.CODE_MIN} or more characters long),"
+        " or a claim of the other page names this page's title in its prose. Each place the"
+        " title stands in the claim is judged by itself: one that stands whole outside code,"
+        " and outside a URL, a path, a flag or a version, names it, whatever other place"
+        " overlaps it. Code is what Markdown reads as code in the claim alone: in backticks, a"
+        " fenced block (its opening line included), an indented block; text indented under a"
+        " list item is the item's prose. A URL, a path, a flag or a version is what the page's"
+        " facts read as one, so a bare `ledger/notes.md` still names a page Ledger; a claim that"
+        " holds a mark of the index or a null character names none.",
+        "A title that more than 5 other pages name so relates none either.",
     )
+    assert "not a plain word" not in flat(guide_source("connect"))
     file(
         memory,
         "Runbook",

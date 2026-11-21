@@ -12,7 +12,9 @@ or a fence; and as drawn, in capitals or without its commas. So pages share term
 differently on each. A page's title is one or two of the words the generator's prose is made
 of, so titles occur in other pages' prose, and several titles share a word ("Quill" and
 "Quill log"). Most pages hold one passage more that writes another page's title (`naming`):
-in a sentence, where it names that page, or inside a fence or a path, where it does not.
+in a sentence or indented under a list item, where it names that page, or inside a fence, a
+path, an indented block or code in backticks that runs across a line's end, where it does
+not.
 
 What is checked of every answer of `Memory.related`, for every page:
 - each claim it gives is a claim of the latest version of its page, word for word, with the
@@ -29,8 +31,9 @@ What is checked of every answer of `Memory.related`, for every page:
   side; two to COMMON pages that hold a term are related by it, each saying how many do,
   unless more than CLAIMS_COMMON claims of the project hold its words; a page is mentioned
   by the other pages a claim of which names its title in its prose (the title's words side
-  by side, as the index reads them, in the passage with its code, paths, flags, versions
-  and addresses taken out: `prose_of`, a fresh extraction, never the index's marks), unless
+  by side, as the index reads them, in the passage with its paths, flags, versions and
+  addresses taken out and what the Markdown parser reads as code left out: `parsed_prose`,
+  a fresh extraction and the parser's own tokens, never the index's marks), unless
   more than COMMON pages name it, or more than CLAIMS_COMMON of the other pages' claims
   hold its words;
 - symmetry: where both answers are complete, B related to A by a term means A related to B
@@ -48,8 +51,9 @@ What is checked of every answer of `Memory.related`, for every page:
   fact stands, by a fresh extract_facts and the passage split at its line ends here, whole
   or LINE_GIVEN characters of it that hold the fact as it is written there; and the line of
   a claim that mentions the page is a piece of the claim's text, the first of its lines
-  that holds the title's words side by side as the index reads them (its tokens of the
-  line alone, as for a mention above), whole or LINE_GIVEN characters of it.
+  whose prose holds the title's words side by side as the index reads them (the passage
+  read whole by the parser, every letter outside the line made another, as for a mention
+  above), whole or LINE_GIVEN characters of it.
 CLAIMS_COMMON is 7 for these projects, which hold at most 45 claims, so that the rule decides
 some relations; the first test counts how many.
 A failure names project and page numbers and term kinds, never a note's text.
@@ -63,6 +67,7 @@ from contextlib import closing
 
 import pytest
 import test_generated_copy_passes_fact_check_unit as shapes
+from markdown_it import MarkdownIt
 
 from cairn import relations
 from cairn.facts import extract_facts
@@ -114,19 +119,24 @@ def spelled(rng: random.Random, held: str) -> str:
 def naming(rng: random.Random, pages: dict[str, str]) -> dict[str, str]:
     """`pages`, most of them with one passage more that writes another page's title: in a
     sentence of the generator's words, where it names that page (on its one line, or on the
-    second of two), or inside a fence or a path (one no other page writes), where it does
+    second of two, or indented under a list item), or inside a fence, a path (one no other
+    page writes), an indented block or code in backticks across a line's end, where it does
     not."""
     titles = list(pages)
     made = {}
     for n, (title, text) in enumerate(pages.items()):
         other = rng.choice([t for t in titles if t != title])
-        where = rng.choice(["prose", "lines", "fence", "path", None])
+        where = rng.choice(["prose", "lines", "fence", "path", None, "item", "indented", "split"])
         added = {
             "prose": f"{shapes.words(rng)} {other} {shapes.words(rng)}.",
             "lines": f"{shapes.words(rng)}\n{shapes.words(rng)} {other} {shapes.words(rng)}.",
             "fence": f"```\n{shapes.words(rng)} {other}\n```",
             "path": f"{shapes.words(rng)} /srv/p{n}/{other.replace(' ', '/')}",
             None: None,
+            "item": f"- {shapes.words(rng)}.\n\n"
+            f"    {shapes.words(rng)} {other} {shapes.words(rng)}.",
+            "indented": f"    {shapes.words(rng)} {other} {shapes.words(rng)}",
+            "split": f"{shapes.words(rng)} `{shapes.words(rng)}\n{other}` {shapes.words(rng)}.",
         }[where]
         made[title] = text if added is None else f"{text}\n\n{added}"
     return made
@@ -196,21 +206,51 @@ def relates(kind: str, text: str) -> bool:
     return kind != "inline_code" or len(text) >= 12 or any(not c.isalpha() for c in text)
 
 
-def prose_of(span) -> str:
-    """The passage's text with every character of every stretch that is code, a path, a flag,
-    a version or an address made a "z" (a fresh extract_facts: the facts of those kinds and
-    the code blocks; line ends kept), so each character stays where it was and no word of a
-    title is left in such a stretch. A word that stands partly in one is no longer the word:
-    what the index then reads of the text is what stands in its prose."""
+PARSER = MarkdownIt("commonmark", {"html": False}).enable("table")  # as the web view reads
+
+
+def parsed_prose(span) -> str:
+    """The passage's prose as the Markdown parser reads the passage alone: by other means than
+    the read's, and with no place in the text computed here. Every character of every
+    stretch that is a url, a path, a flag, a version, inline code or a fenced block's lines
+    is made a "z" first (a fresh extract_facts; its blanks, which say where a line stands in
+    a list, and a fence's own lines, which the parser reads, are left as they are); then the
+    words of each block of text the parser reads, as its tokens give them: a code span a
+    "z" with a blank on each side, as a picture is, and the end of a link (where its address
+    stood); a line's end a line's end, and every other mark a blank. A block of code,
+    fenced or indented, gives nothing. So a word that stands partly in code is no longer the
+    word, and the words on the two sides of code are not side by side: what the index reads
+    of this is what stands in prose."""
     text = list(span.text)
     for fact in extract_facts(span):
         if fact.kind in KINDS or fact.kind == "code_block":
-            start = fact.start
-            if fact.kind == "code_block" and start:  # from the fence's opening line
-                start = span.text.rfind("\n", 0, start - 1) + 1
-            for at in range(start, fact.end):
-                text[at] = "z" if text[at] != "\n" else "\n"
-    return "".join(text)
+            for at in range(fact.start, fact.end):
+                text[at] = text[at] if text[at] in " \t\n" else "z"
+    blocks = []
+    for token in PARSER.parse("".join(text)):
+        if token.type != "inline":
+            continue
+        words = []
+        for child in token.children or ():
+            if child.type == "text":
+                words.append(child.content)
+            elif child.type in ("code_inline", "image", "link_close"):
+                words.append(" z ")
+            else:
+                words.append("\n" if child.type in ("softbreak", "hardbreak") else " ")
+        blocks.append("".join(words))
+    return "\n".join(blocks)
+
+
+def prose_between(span, start: int, end: int) -> str:
+    """`parsed_prose` of the passage with every letter outside text[start:end] made a "q": its
+    Markdown is read as before (a letter stands where a letter stood), and only a word that
+    stands within that stretch can still be a title's word."""
+    kept = "".join(
+        char if start <= at < end or not char.isalpha() else "q"
+        for at, char in enumerate(span.text)
+    )
+    return parsed_prose(span.model_copy(update={"text": kept}))
 
 
 def unchecked(text: str) -> bool:
@@ -222,7 +262,7 @@ def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
     """The whole project, read here, claim by claim: `holds`, for each page, the terms it
     holds; `claims`, for each of those terms, how many claims of the project hold its words;
     `named_by`, for each page, the other pages a claim of which holds its title in its
-    prose (`prose_of` of the passage the claim is the text of); `held_by`, those whose
+    prose (`parsed_prose` of the passage the claim is the text of); `held_by`, those whose
     claims hold its words anywhere; and `naming`, how many claims of theirs do."""
     pages = {
         head.slug: store.get_page(project_id, head.slug) for head in store.list_pages(project_id)
@@ -247,7 +287,7 @@ def searched_here(store: Store, project_id: str, reading: Reading) -> dict:
     for claim in every:  # every generated claim is the text of the one passage it cites
         (span,) = store.get_spans(claim.span_ids).values()
         assert span.text == claim.text
-        prose[claim.id] = prose_of(span)
+        prose[claim.id] = parsed_prose(span)
     named_by, held_by, naming = {}, {}, {}
     for slug, page in pages.items():
         title = page.title
@@ -433,11 +473,12 @@ def test_a_shared_term_is_a_fact_of_a_passage_each_claim_cites(world):
 
 
 def test_a_mention_is_a_claim_that_names_the_title_in_its_prose_as_the_index_reads_it(world):
-    """Every mention returned, again and by other means than the index's marks: the claim's
-    text holds the title's words side by side as the index reads them; and so does the
-    passage the claim is the text of once its code, paths, flags, versions and addresses are
-    taken out of it (`prose_of`, a fresh extraction): a match of the title stands outside
-    every one of those stretches."""
+    """Every mention returned, again and by other means than the read's: the claim's text
+    holds the title's words side by side as the index reads them; and so does the passage
+    the claim is the text of once its paths, flags, versions and addresses are taken out of
+    it and what the Markdown parser reads as code is left out (`parsed_prose`, a fresh
+    extraction and the parser's own tokens): a place of the title stands whole outside every
+    code token and every stretch of the facts."""
     wrong, checked = [], 0
     for project in world["projects"]:
         for slug, answer in project["answers"].items():
@@ -452,7 +493,7 @@ def test_a_mention_is_a_claim_that_names_the_title_in_its_prose_as_the_index_rea
                 assert span.text == claim["text"]  # so a place of the one is a place of the other
                 if not world["reading"].holds(claim["text"], title):
                     wrong.append((project["name"], slug, page["page"], "not held"))
-                elif not world["reading"].holds(prose_of(span), title):
+                elif not world["reading"].holds(parsed_prose(span), title):
                     wrong.append((project["name"], slug, page["page"], "held in code alone"))
     assert wrong == [] and checked >= 200, (wrong[:5], checked)
 
@@ -528,28 +569,25 @@ def first_line_of(span, kind: str, term: str) -> tuple[str, str] | None:
     return None
 
 
-def mention_fault(
-    reading: Reading, given: dict, text: str, prose: str, title: str, seen: Counter
-) -> str:
+def mention_fault(reading: Reading, given: dict, span, title: str, seen: Counter) -> str:
     """What is wrong with the line of a claim cut that mentions the page titled `title`, the
-    claim's whole text being `text` and `prose` that text with its code, paths, flags,
-    versions and addresses taken out (`prose_of`: character for character); nothing when it
-    is right. The line is a piece of the text; where it stands, the prose holds the title's
-    words side by side as the index reads them; no line of the prose before it does, so it
-    is the first place the title is named in prose; and it is whole lines of the text, or
-    LINE_GIVEN characters of longer ones. (No generated claim holds a title in code before
-    it names it in prose: tests/unit/test_relating_unit.py has that claim.)"""
-    words = title
+    claim's whole text being the text of the passage `span`; nothing when it is right. The
+    line is a piece of the text; where it stands, the prose holds the title's words side by
+    side as the index reads them, the passage read whole (`prose_between`); no line before
+    it does, so it is the first place the title is named in prose; and it is whole lines of
+    the text, or LINE_GIVEN characters of longer ones. (A generated claim can hold a title
+    in code in backticks that runs on to the next line, where it names the title in prose.)"""
+    words, text = title, span.text
     line = given.get("line")
     if line is None or line not in text:
         return "no line, or not a piece of the claim's text"
     stands = [at for at in range(len(text)) if text.startswith(line, at)]
-    named = [at for at in stands if reading.holds(prose[at : at + len(line)], words)]
+    named = [at for at in stands if reading.holds(prose_between(span, at, at + len(line)), words)]
     if not named:
         return "the line does not name the title in prose as the index reads it"
-    before = prose[: prose.rfind("\n", 0, named[0]) + 1]  # the whole lines before it
-    seen["a mention after a line that holds none"] += bool(before.strip())
-    if reading.holds(before, words):
+    first = text.rfind("\n", 0, named[0]) + 1  # the whole lines before it
+    seen["a mention after a line that holds none"] += bool(text[:first].strip())
+    if reading.holds(prose_between(span, 0, first), words):
         return "a line before it names the title in prose"
     if "line_cut" in given:
         seen["a mention's line cut"] += 1
@@ -616,10 +654,8 @@ def claims_checked(whole: dict, cut: dict, spans: dict, reading: Reading, seen: 
                     continue
                 if reason["kind"] != "shares":
                     seen["a line, of a mention"] += 1
-                    prose = prose_of(spans[claim["passage_ids"][0]])
-                    fault = mention_fault(
-                        reading, given, claim["text"], prose, whole["title"], seen
-                    )
+                    span = spans[claim["passage_ids"][0]]
+                    fault = mention_fault(reading, given, span, whole["title"], seen)
                     if fault:
                         wrong.append((*where, fault))
                     continue

@@ -370,6 +370,9 @@ def test_a_one_word_title_inside_a_flag_is_not_named(store, ops):
         "Then:\n\n```sh\nquill deploy --now\n```",  # a code block
         "Then:\n\n```deploy\nquill run\n```",  # the word after a fence's opening marks
         "> ~~~deploy\n> quill run\n> ~~~",  # and in a quote
+        "Brook runs it:\n\n    deploy --now\n\nThen rests.",  # an indented block
+        "- Brook runs it:\n\n          deploy --now",  # one in a list item
+        "Brook runs `quill\ndeploy` daily.",  # code in backticks across a line's end
     ],
 )
 def test_a_title_inside_an_address_a_path_a_flag_or_code_is_not_named(store, ops, inside):
@@ -380,6 +383,64 @@ def test_a_title_inside_an_address_a_path_a_flag_or_code_is_not_named(store, ops
     assert named_by(store, ops, deploy) == ["prose"]
 
 
+STEP = "Step by Step"
+
+
+@pytest.mark.parametrize(
+    ("title", "said"),
+    [
+        (STEP, "Read `Step` by Step by Step today."),  # the second, in prose, overlaps the first
+        (STEP, "Read `Step` by Step by Step by `Step` today."),  # the middle one of three
+        ("Echo Echo", "Say `Echo` Echo Echo aloud."),  # a title of one word, said twice
+        (STEP, "- Read the guide.\n\n    Step by Step"),  # indented under a list item: its prose
+        (STEP, "- Read the guide.\n\tStep `by` x, then Step by Step."),  # a tab read as spaces
+        (STEP, "Read ![`Step\nby Step`](step.png) and Step by Step."),  # code in a picture's words
+        (STEP, "| Guide | `x \\| y` Step by Step |\n| --- | --- |"),  # a cell, a bar in code
+    ],
+)
+def test_each_place_the_title_stands_is_judged_by_itself(store, ops, title, said):
+    """The index's marks give overlapping matches as one stretch; the title is named where
+    one of its places stands whole in prose, whatever other place overlaps it in code."""
+    step = file(store, "ops", title, "The field guide is on the shelf.\n")
+    other = file(store, "ops", "Reader", said + "\n")
+    assert named_by(store, ops, step) == [other]
+
+
+@pytest.mark.parametrize(
+    ("title", "said"),
+    [
+        (STEP, "Read `Step` by Step today."),  # the place starts in code
+        (STEP, "Read Step by `Step` today."),  # and ends in it
+        ("Quill ledger", "Run `quill` ledger; open quill `--x` ledger."),  # code between words
+        (STEP, "- Read the guide.\n\n        Step by Step"),  # code indented under a list item
+        (STEP, "Read ![`Step\nby Step`](step.png) today."),  # code in a picture's words alone
+    ],
+)
+def test_a_place_that_is_code_in_part_names_nothing_whatever_stands_beside_it(
+    store, ops, title, said
+):
+    """What is code is taken out of the claim's text in place, each character made one that
+    is no character of the title: the words on its two sides do not become side by side, and
+    a word partly in it is another word."""
+    step = file(store, "ops", title, "The field guide is on the shelf.\n")
+    file(store, "ops", "Reader", said + "\n")
+    assert named_by(store, ops, step) == []
+
+
+def test_the_five_page_rule_counts_the_pages_that_name_the_title_by_each_place(store, ops):
+    """The reviewer's case: five pages name the title, one of them by the place that
+    overlaps code; a sixth makes it common, and the answer, complete, gives none."""
+    step = file(store, "ops", STEP, "The field guide is on the shelf.\n")
+    naming = [file(store, "ops", "Reader", "Read `Step` by Step by Step today.\n")]
+    for n in range(4):
+        naming.append(file(store, "ops", f"Group {n}", f"Group {n} reads Step by Step today.\n"))
+    found = related(store, ops.id, step)
+    assert sorted(page.slug for page in found.pages) == sorted(naming) and found.left.complete
+    file(store, "ops", "Group 4", "Group 4 reads Step by Step today.\n")
+    found = related(store, ops.id, step)
+    assert found.pages == () and found.left.complete
+
+
 @pytest.mark.parametrize(
     "said",
     [
@@ -387,13 +448,13 @@ def test_a_title_inside_an_address_a_path_a_flag_or_code_is_not_named(store, ops
         "Write to ada@deploy.dev at dawn.",  # an email address
         "Brook edits C:\\Deploy\\notes.txt daily.",  # a Windows path
         "Brook opens deploy.example.com daily.",  # a host with no scheme
-        "Brook runs it:\n\n    deploy --now\n\nThen rests.",  # an indented block
+        "- Brook runs it:\n\n    deploy --now",  # text indented under a list item
     ],
 )
 def test_what_the_facts_do_not_own_is_prose_and_names_the_title(store, ops, said):
     """Pinned as it is: what the passage's facts do not read as a url, a path, a flag, a
-    version, inline code or a fenced block is prose (cairn.facts reads an indented block as
-    lines of prose too)."""
+    version, inline code or a fenced block, and the Markdown parser does not read as code in
+    the claim alone, is prose."""
     deploy = file(store, "ops", "Deploy", "Ada ships on Fridays.\n")
     other = file(store, "ops", "Other", said + "\n")
     assert named_by(store, ops, deploy) == [other]
@@ -1226,8 +1287,9 @@ def test_a_read_of_related_pages_that_fails_gives_its_turn_back(store, ops, monk
 
 
 def test_the_rules_and_the_read_ask_no_model_and_nothing_of_the_web_layer():
-    """Their imports, read: the fact extractor, the passages' model and the index's own match.
-    No model, no network and no web layer can be asked by code that does not import them."""
+    """Their imports, read: the fact extractor, the passages' model and the Markdown parser's
+    reading of them, the index's own match and its declaration. No model, no network and no
+    web layer can be asked by code that does not import them."""
     import ast
     from pathlib import Path
 
@@ -1247,4 +1309,4 @@ def test_the_rules_and_the_read_ask_no_model_and_nothing_of_the_web_layer():
     assert imported(relating) == {"cairn", "cairn.relations", "cairn.spans", "cairn.store"}
     source = Path(relating.__file__).read_text(encoding="utf-8")
     assert "from cairn import relations\n" in source
-    assert "from cairn.store import ranking\n" in source
+    assert "from cairn.store import ranking, schema\n" in source

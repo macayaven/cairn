@@ -101,7 +101,9 @@ The settings secret starts without a version, so you can sign in with API keys f
 Prepare a local `cairn.env` for the cairn container's environment. From the AWS stack directory,
 upload it without putting its value in your command line or OpenTofu state.
 Compose reads the file, and a value arrives as written only between single quotes (a single
-quote inside is written `\'`). Outside them Compose changes three kinds of value: it puts a
+quote inside is written `\'`, so the value cannot end in an odd number of backslashes: the last
+would take the closing quote, Compose stops with `unterminated quoted value`, the unit fails and
+the boot passes that line on). Outside them Compose changes three kinds of value: it puts a
 variable's value in place of a `$` and the name after it, or nothing when no variable has that
 name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
 value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
@@ -298,7 +300,9 @@ The settings secret starts without a version, so you can sign in with API keys f
 Prepare a local `cairn.env` for the cairn container's environment. From the Google Cloud stack
 directory, upload it without putting its value in your command line or OpenTofu state.
 Compose reads the file, and a value arrives as written only between single quotes (a single
-quote inside is written `\'`). Outside them Compose changes three kinds of value: it puts a
+quote inside is written `\'`, so the value cannot end in an odd number of backslashes: the last
+would take the closing quote, Compose stops with `unterminated quoted value`, the unit fails and
+the boot passes that line on). Outside them Compose changes three kinds of value: it puts a
 variable's value in place of a `$` and the name after it, or nothing when no variable has that
 name; it drops a `#` after a space, with the rest of the line; and it removes quotes around the
 value. Compose reports one of these, the `$` before a name no variable has, and the boot passes
@@ -372,6 +376,10 @@ fails, and its journal has the tool's own error on lines that start with
 that would repeat one is left out, a syntax error in the settings file is given by its
 line number, and Compose's warning of a `$` before a name no variable has is passed on without
 that name.
+A line is left out when it holds a value of 6 to 11 characters, or 12 characters in a row of a
+settings line, its name included: so an error that names a setting with a long name is not shown,
+and the boot's own closing line (`Docker Compose up failed` or `could not read the cairn settings
+secret`) always is.
 
 After fixing a package problem, trigger an immediate retry.
 

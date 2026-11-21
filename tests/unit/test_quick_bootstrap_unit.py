@@ -378,7 +378,7 @@ def test_first_boot_recovers_after_a_docker_package_index_download_fails(vm, clo
     assert (vm / ".host-provisioned").is_file()
 
 
-def compose_service(vm, said=False):
+def compose_service(vm, said=False, refused=False):
     # A project render reads the .env and env_file itself and needs no Docker daemon.
     # With `said`, also what Compose wrote on standard error while it read them.
     standalone = shutil.which("docker-compose")
@@ -397,6 +397,9 @@ def compose_service(vm, said=False):
         capture_output=True,
         timeout=20,
     )
+    if refused:  # what Compose said when it would not read the files
+        assert done.returncode != 0, "Compose rendered the quick project"
+        return done.stderr.decode()
     assert done.returncode == 0, "Compose could not render the quick project"
     service = json.loads(done.stdout)["services"]["cairn"]
     return (service, done.stderr.decode()) if said else service
@@ -638,7 +641,10 @@ def test_a_start_that_worked_passes_on_what_compose_warned_of(vm):
 
 COMPOSE_READS = (
     "Compose reads the file, and a value arrives as written only between single quotes (a"
-    " single quote inside is written `\\'`). Outside them Compose changes three kinds of value:"
+    " single quote inside is written `\\'`, so the value cannot end in an odd number of"
+    " backslashes: the last would take the closing quote, Compose stops with `unterminated"
+    " quoted value`, the unit fails and the boot passes that line on). Outside them Compose"
+    " changes three kinds of value:"
     " it puts a variable's value in place of a `$` and the name after it, or nothing when no"
     " variable has that name; it drops a `#` after a space, with the rest of the line; and it"
     " removes quotes around the value."
@@ -700,6 +706,24 @@ def test_compose_changes_three_kinds_of_setting_and_reports_one(vm):
     for sentence in (COMPOSE_READS, COMPOSE_SAYS):  # under each cloud's settings, the same words
         assert guide.count(sentence) == 2, sentence
     assert guide.count(f"{COMPOSE_READS} {COMPOSE_SAYS}") == 2
+
+
+@pytest.mark.parametrize("backslashes", [1, 3])
+def test_a_single_quoted_value_cannot_end_in_an_odd_number_of_backslashes(vm, backslashes):
+    """The guide's clause (`COMPOSE_READS`), held to Compose: a backslash before the closing
+    quote takes the quote, and Compose refuses the file. The boot's start then fails, and
+    its line is Compose's without what Compose quotes of the file (the test of a failed
+    `up` above). With an even number the value closes and keeps every backslash (the case
+    of two is among the lines not compared)."""
+    settings = f"PLAIN=bt9\nFOO='zq7wm2{chr(92) * backslashes}'\nLAST=kx9\n".encode()
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr  # the stand-in for Docker reads no file
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    said = compose_service(vm, refused=True)
+    assert "cairn.env" in said and "unterminated quoted value" in said
 
 
 def test_the_boot_script_says_what_its_passing_on_of_warnings_cannot_show():
@@ -910,6 +934,48 @@ def test_a_value_in_double_quotes_over_lines_names_a_line_too_many_and_the_scrip
     assert "a later line of it that looks like a setting can be named too" in said_there
 
 
+def judged_with_compose_deciding(vm, settings):
+    """What Compose resolves for cairn from the boot's own files with these settings, and
+    the journal of a start whose container holds exactly that."""
+    files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    for path, file in files.items():
+        if path.startswith("/opt/cairn/deploy/"):
+            (vm / path.removeprefix("/opt/cairn/")).write_bytes(base64.b64decode(file["content"]))
+    service, said = compose_service(vm, said=True)
+    assert said.strip() == ""
+    given = {name: value.replace("$$", "$") for name, value in service["environment"].items()}
+    (vm / "container-env.json").write_text(json.dumps([f"{n}={v}" for n, v in given.items()]))
+    done = run(vm, config=boot_environment(files), settings=settings)
+    assert done.returncode == 0, done.stderr
+    return given, done.stderr.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("line", "given"),
+    [
+        # Compose drops what stands after a closing single quote: cairn does not get the
+        # secret as written, and a reader that stopped at the quote would see no difference.
+        ("FOO='zq7wm2'kx9", {"FOO": "zq7wm2"}),
+        ("FOO='tblp4' nvh8rj3", {"FOO": "tblp4"}),
+        # Compose takes a name with a hyphen; the check's names are letters, digits and _.
+        ("FOO-BAR=ydc5hj8", {"FOO-BAR": "ydc5hj8"}),
+        # Two backslashes before the closing quote: Compose keeps both and closes the value.
+        ("FOO='pm4wq\\\\'", {"FOO": "pm4wq\\\\"}),
+    ],
+)
+def test_a_line_the_check_is_not_sure_of_is_one_line_not_compared(vm, line, given):
+    """Four more lines Compose reads and the check does not: each is one line not compared,
+    named by the variable cairn was given, and the count is the number of lines."""
+    got, journal = judged_with_compose_deciding(vm, f"PLAIN=bt9\n{line}\n".encode())
+    assert got == {"PLAIN": "bt9", **given}
+    (name,) = given
+    assert journal == [NOT_COMPARED.format(1) + f": {name}"]
+    for form in digests(line.partition("=")[2], *given.values()) | {"zq7", "kx9", "nvh8", "ydc5"}:
+        assert form not in "\n".join(journal), form
+
+
 def test_a_setting_cairn_was_given_that_no_line_read_holds_is_counted_too(vm):
     """The other way round: what the container was given beyond its image's own variables
     came from the settings. One that no line the check read holds went unjudged, wherever
@@ -939,6 +1005,72 @@ def test_a_secret_without_settings_asks_docker_nothing_after_the_start(vm):
     assert done.returncode == 0, done.stderr
     assert done.stderr == ""
     assert calls(vm)[-1] == COMPOSE_UP
+
+
+def test_no_piece_of_a_setting_gets_through_whatever_the_form_of_its_line(vm):
+    """The rule for the tools' error lines, "never a setting's value, nor 12 characters in a
+    row of one", holds for every line of the settings file. A value after a colon, the
+    second line of a value that runs over lines, and a line of no form at all are values
+    as much as what follows an equals sign: an error line that quotes twelve characters of
+    one is left out. An error line that shares no such piece with the file still gets
+    through, also beside many short settings: what can leave a line out is a whole line of
+    the file, a value or a line of 6 to 11 characters whole, or 12 in a row of a longer one."""
+    settings = (
+        b"COLONED: zq7wm2kx9tblp4nvh8rj3\n"
+        b'MULTI="first part of it\n'
+        b'ydc5hj8pm4wqxz5lp4rd3bt9 second"\n'
+        b"free text hq2mv7cz4nd8ft1 without form\n"
+        b"A=1\nB=no\nC=x y\nD=exit\n"
+    )
+    quoting = (
+        "error one: wm2kx9tblp4n is not valid",  # of the value after the colon
+        "error two: hj8pm4wqxz5l seen",  # of the value's second line
+        "error three: mv7cz4nd8ft1 seen",  # of the line of no form
+    )
+    config = {"STANDIN_COMPOSE_ERROR": "\n".join((*quoting, RESTORE_FAILED))}
+    done = run(vm, mode="compose-failure", settings=settings, config=config)
+    assert done.returncode != 0
+    said = done.stderr.splitlines()
+    assert f"cairn-quick: compose: {RESTORE_FAILED}" in said  # shares nothing: it gets through
+    for piece in ("wm2kx9tblp4n", "hj8pm4wqxz5l", "mv7cz4nd8ft1", "zq7wm2", "ydc5hj8", "hq2mv7"):
+        assert piece not in done.stderr, piece
+    # The file's own eight lines, which the stand-in repeats, and the three that quote it.
+    assert said.count(f"cairn-quick: compose: {LEFT_OUT}") == 8 + len(quoting)
+
+
+LEFT_OUT_WHEN = (
+    "A line is left out when it holds a value of 6 to 11 characters, or 12 characters in a row"
+    " of a settings line, its name included: so an error that names a setting with a long name"
+    " is not shown, and the boot's own closing line (`Docker Compose up failed` or `could not"
+    " read the cairn settings secret`) always is."
+)
+
+
+def test_an_error_that_names_a_long_named_setting_is_left_out_and_the_boots_line_stays(vm):
+    """A whole settings line counts as a value, so twelve characters in a row of a setting's
+    name leave an error line out as twelve of its value do: the safe side. The line the boot
+    writes itself is never one of the tools' and is always there. The guide's recovery
+    section and the comment over `say_errors` say so."""
+    settings = b"CAIRN_GOOGLE_CLIENT_SECRET=hq2mv7cz4nd8ft1ydc5\nSHORT=zq7wm2\n"
+    errors = (
+        "error: CAIRN_GOOGLE_CLIENT_SECRET is not known",  # the name, nothing of the value
+        "error: zq7wm2 refused",  # a value of six characters, whole
+        "error: SHORT is not known",  # a name under twelve characters: shown
+    )
+    config = {"STANDIN_COMPOSE_ERROR": "\n".join(errors)}
+    done = run(vm, mode="compose-failure", settings=settings, config=config)
+    assert done.returncode != 0
+    said = done.stderr.splitlines()
+    assert "CAIRN_GOOGLE_CLIENT_SECRET" not in done.stderr and "zq7wm2" not in done.stderr
+    assert "cairn-quick: compose: error: SHORT is not known" in said
+    assert said[-1].startswith("cairn-quick: Docker Compose up failed.")
+    recovery = (QUICK / "README.md").read_text().split("## First-boot recovery\n")[1]
+    assert LEFT_OUT_WHEN in " ".join(recovery.split("\n## ")[0].split())
+    script = BOOTSTRAP.read_text()
+    comment = script[: script.index("say_errors() {")].rsplit("\n\n", 1)[1]
+    said_there = " ".join(line.lstrip("# ") for line in comment.splitlines())
+    assert "12 in a row of a settings line (its name included" in said_there
+    assert "6 characters of a short value" in said_there
 
 
 def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):

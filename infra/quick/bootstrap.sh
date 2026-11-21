@@ -123,8 +123,9 @@ sys.stdout.buffer.write(data)
 '
 }
 
-# The tools' own error lines, for the journal, never a setting's value: a line repeating a
-# settings line or 6 characters of a value (12 in a row of a longer one) is left out.
+# The tools' own error lines for the journal, never a setting's value. Left out: a line
+# holding 6 characters of a short value or 12 in a row of a settings line (its name included)
+# or of what follows its first = or :.
 say_errors() {
   python3 - "$@" >&2 <<'PY'
 import re, sys
@@ -137,9 +138,10 @@ for name in settings:
         continue
     for line in lines:
         values.add(line.strip())
-        text = line.partition("=")[2].strip().strip("'\"")
-        if len(text) >= 6:
-            values.update(text[i:i + 12] for i in range(max(1, len(text) - 11)))
+        for text in [line, *re.split("[=:]", line, 1)[1:]]:
+            text = text.strip().strip("'\"")
+            if len(text) >= 6:
+                values.update(text[i:i + 12] for i in range(max(1, len(text) - 11)))
 values.discard("")
 for line in open(errors, encoding="utf-8", errors="replace").read().splitlines()[-20:]:
     if line.startswith(("Traceback", " ")):
@@ -171,7 +173,6 @@ given, own = ({p.partition("=")[0]: p.partition("=")[2] for p in json.loads(line
 text = open("cairn.env", encoding="utf-8").read()
 skip = re.compile(r"[ \t\r]*(#.*)?(\n|\Z)")
 read = re.compile(r"([A-Za-z_]\w*)[ \t]*=[ \t]*(?:'((?:[^'\\]|\\[^\\])*)'[ \t\r]*(?:#.*)?|([^'\n].*)?)(?:\n|\Z)")
-name = re.compile(r"([A-Za-z_]\w*)[ \t]*[=:]")
 holds, unread, at = {}, [], 0
 while at < len(text):
     line = skip.match(text, at)
@@ -181,7 +182,7 @@ while at < len(text):
             holds[line[1]] = (line[3] or "").strip() if line[2] is None else line[2].replace("\\'", "'")
         else:
             line = re.compile(r".*(\n|\Z)").match(text, at)
-            unread.append(name.search(line[0]))
+            unread.append(line[0])
     at = line.end()
 for setting, value in holds.items():
     if setting in given and given[setting] != value:
@@ -189,7 +190,8 @@ for setting, value in holds.items():
               ' How to write a value: "AWS settings" or "Google Cloud settings" in'
               " infra/quick/README.md")
 unjudged = given.keys() - own.keys() - holds.keys()
-count = len(unread) + len(unjudged - {found[1] for found in unread if found})
+named = lambda n: re.compile(r"(?<![\w.-])" + re.escape(n) + r"[ \t]*[=:]").search
+count = len(unread) + sum(not any(map(named(n), unread)) for n in unjudged)
 if count:
     print(f"cairn-quick: settings check: {count} line(s) of the settings not compared"
           + (": " + ", ".join(sorted(unjudged)) if unjudged else ""))

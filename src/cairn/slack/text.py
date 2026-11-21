@@ -553,12 +553,14 @@ def _sent(shown: str) -> str:
 
 def _known_code(
     text: str, code: list[tuple[bool, str, str | None]]
-) -> list[tuple[int, int, str, object]]:
+) -> list[tuple[int, int, int, str, object]]:
     """Where `text` holds the `code` Slack's rich text names (_displayed_code), each after
-    the one before: its start and end with its backticks, "block" or "code", and what it
-    displayed. In the text it stands between backticks with its "&", "<" and ">" as
-    entities, a block with or without a line feed after its opening and before its closing
-    fence: at the first place it can start (three backticks, or one), the longest way there.
+    the one before: where the text the rich text displayed right before it starts, where that
+    stands there (else its own start), its start and end with its backticks, "block" or
+    "code", and what it displayed. In the text it stands between backticks with its "&", "<"
+    and ">" as entities, a block with or without a line feed after its opening and before its
+    closing fence: at the first place it can start (three backticks, or one), the longest way
+    there.
     From the first one that is not found so, the rest is left to the backticks of the text:
     the rich text no longer tells that text's code.
 
@@ -578,7 +580,7 @@ def _known_code(
     are found from where the last one ended on (_Next), and whether a way stands at one is
     told by the digests of _Hashes, in a step, however long the way; a later place is looked
     for no further than the length of what stands before it."""
-    places: list[tuple[int, int, str, object]] = []
+    places: list[tuple[int, int, int, str, object]] = []
     if not code:
         return places
     digests, at, ticks = _Hashes(text), 0, None
@@ -616,9 +618,8 @@ def _known_code(
             ticks = ticks or _ticks(text)
             if min(ticks[1][first], ticks[0][first] - ticks[0][at]) % 2:  # the run closes one
                 where += digests.holds(found, first + 1, value)
-        at = where + len(found)
-        lines = _redact(shown).split("\n")
-        places.append((where, at, "block", lines) if block else (where, at, "code", lines[0]))
+        since, at, lines = where - len(head or ""), where + len(found), _redact(shown).split("\n")
+        places.append((since, where, at, *(("block", lines) if block else ("code", lines[0]))))
     return places
 
 
@@ -783,17 +784,20 @@ def _render(
     reviewer's seventh report, must-fix 3), and the only bare backticks of the note's prose,
     so they pair as Slack paired them. Where the rich text names a span right after another,
     whose backticks would make one run with the other's, its code is written as plain
-    characters (_plain); two the text's backticks alone bound are written as they were. What
-    is code is what the rich text says (`code`: _known_code), else what the
-    backticks of the text bound. Without `bars`, code within a line that holds a bar is
-    written by _literal, backticks and all: a table's row is cut at its bars before its code
-    is read. `displayed`: the whole of it as Slack displayed it (_shown, and code within a
-    line between the backticks it was sent with), with the same lines. The code blocks whose
-    place among the message's is in `plain` are written as plain characters, backticks and
-    all, on the same lines; the fences of the others are given in `wrote`. `title`: as the
-    note's title is taken from it (_title), where nothing is code and nothing a link: a code
-    block's lines as plain characters, on lines of their own and with no fence, code within a
-    line as plain characters, backticks and all, and a link as its words."""
+    characters (_plain), the blank that ends it as an entity so that a line's end keeps it;
+    two the text's backticks alone bound are written as they were. What is code is what the
+    rich text says (`code`: _known_code), else what the backticks of the text bound; what the
+    rich text gives as text right before a span it names is prose, its backticks characters
+    (the Slack tester's second attack on spans, case 2). Without `bars`, code within a line
+    that holds a bar is written by _literal, backticks and all: a table's row is cut at its
+    bars before its code is read. `displayed`: the whole of it as Slack displayed it (_shown,
+    and code within a line between the backticks it was sent with), with the same lines. The
+    code blocks whose place among the message's is in `plain` are written as plain
+    characters, backticks and all, on the same lines; the fences of the others are given in
+    `wrote`. `title`: as the note's title is taken from it (_title), where nothing is code
+    and nothing a link: a code block's lines as plain characters, on lines of their own and
+    with no fence, code within a line as plain characters, backticks and all, and a link as
+    its words."""
     literal = _shown if displayed else _literal
 
     def prose(text: str, then: str = " ") -> str:  # `then`: what the note writes after it
@@ -807,9 +811,9 @@ def _render(
     # of a quotation that start it end (`quotes`), read once a line.
     offset, line, read, quotes = 0, 0, 0, None
     named = set()  # where the spans the rich text names start
-    for known in [*_known_code(text, code or []), (len(text), len(text), "", None)]:
+    for since, *known in [*_known_code(text, code or []), (len(text),) * 3 + ("", None)]:
         named |= {known[0]} if known[2] == "code" else set()
-        for start, end in _tokens(text, offset, known[0]):
+        for start, end in _tokens(text, offset, since):  # up to the rich text's text: prose
             token = text[start:end]
             if token.startswith("```"):
                 began, read = text.rfind("\n", read, start) + 1, start
@@ -823,7 +827,7 @@ def _render(
             else:  # a reference, or two backticks with no code between them
                 found = ("", token)
             tokens.append((start, end, *found))
-        tokens.append(known)
+        tokens.append(tuple(known))
         offset = known[1]
     pieces: list[str] = []
     # fresh: nothing is written on the line; clear: only what may stand before a fence (_prose)

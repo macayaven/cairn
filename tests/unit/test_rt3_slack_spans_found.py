@@ -72,7 +72,6 @@ def test_1_a_named_span_of_backticks_after_a_span_the_rich_text_leaves_out():
     assert "".join(chars for _, chars in page) == "k`"
 
 
-@pytest.mark.xfail(strict=True, reason="backticks the rich text shows as characters are code")
 def test_2_backticks_the_rich_text_shows_as_characters_are_not_code():
     """Slack displayed "`x` or " as characters, then the code span "x". The page shows two
     code spans and no backtick."""

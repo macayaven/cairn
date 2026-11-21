@@ -10,7 +10,7 @@ import pytest
 from guide_source import guide_source
 from starlette.testclient import TestClient
 
-from cairn import relations
+from cairn import relations, spans
 from cairn.arrange import tidy_page
 from cairn.gate import lint_gate
 from cairn.memory import BadRequest, Memory
@@ -112,11 +112,15 @@ def test_each_related_page_says_why_with_the_claims_it_rests_on(memory):
         " or a claim of the other page names this page's title in its prose. Each place the"
         " title stands in the claim is judged by itself: one that stands whole outside code,"
         " and outside a URL, a path, a flag or a version, names it, whatever other place"
-        " overlaps it. Code is what Markdown reads as code in the claim alone: in backticks, a"
-        " fenced block (its opening line included), an indented block; text indented under a"
-        " list item is the item's prose. A URL, a path, a flag or a version is what the page's"
-        " facts read as one, so a bare `ledger/notes.md` still names a page Ledger; a claim that"
-        " holds a mark of the index or a null character names none.",
+        " overlaps it. Code is what the page that shows the claim renders as code: in"
+        " backticks, a fenced block (its opening line included), an indented block, and all of"
+        f" a claim longer than {spans.MAX_RENDERED:,} characters, which it shows as preformatted"
+        " text; text indented under a list item is the item's prose. A URL, a path, a flag or a"
+        " version is what the page's facts read as one, so a bare `ledger/notes.md` still names"
+        " a page Ledger, and so does a title in a link's address written in angle brackets or in"
+        " a link's title; the facts read text between escaped backticks as code, so a title"
+        " there names nothing, though the page shows it as prose. A claim that holds a mark of"
+        " the index or a null character names none.",
         "A title that more than 5 other pages name so relates none either.",
     )
     assert "not a plain word" not in flat(guide_source("connect"))

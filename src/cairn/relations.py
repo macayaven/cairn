@@ -31,10 +31,16 @@ Two kinds of relation:
   named by a claim whose only "deploy" stands in `deploy/compose.yaml`, or after the marks
   that open a fence, nor one titled Audit by `--audit-keep`; what the facts and the parser
   do not read as one of those is prose, so a bare `deploy/notes.md` or `ada@deploy.dev`
-  names Deploy. The places of a claim's text are
-  places of its passage because the claim is the passage's text; where it is not (a page
-  saved by hand; a claim that cites no passage of the project), the mention stands as the
-  index has it. A claim whose text holds a mark of the index or a null character names no
+  names Deploy, and so does a title in a link's address written in angle brackets or in a
+  link's title; the facts read text between escaped backticks as code, so a title there
+  names nothing, though the page shows it as prose. The parser reads as the page that
+  shows the claim does (cairn.spans.claim_markdown), and a claim longer than
+  cairn.spans.MAX_RENDERED characters, which the page shows as preformatted text, is code
+  whole. The places of a claim's text are places of its passage because the claim is the
+  passage's text, character for character; where it is not (a page saved by hand; a claim
+  that differs from its passage only by the blanks that end its lines, which the gate
+  accepts; a claim that cites no passage of the project), the mention stands as the index
+  has it. A claim whose text holds a mark of the index or a null character names no
   page: where the index matched in it cannot be checked (cairn.store.relating.MARKS).
 
 Which terms relate pages (`specific`): every url, path, flag and version; an inline code

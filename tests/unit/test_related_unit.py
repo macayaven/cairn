@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
-from cairn import relations
+from cairn import relations, spans
 from cairn.gate import lint_gate
 from cairn.memory import RELATED_RANGE, BadRequest, Memory, NotFound
 from cairn.server import create_app
@@ -699,11 +699,15 @@ def test_the_tools_description_says_which_terms_and_titles_relate_none():
         " other page that names this page's title in its prose. Each place the title stands in"
         " the claim is judged by itself: one that stands whole outside code, and outside a URL,"
         " a path, a flag or a version, names it, whatever other place overlaps it. Code is what"
-        " Markdown reads as code in the claim alone: in backticks, a fenced block (its opening"
-        " line included), an indented block; text indented under a list item is the item's"
-        " prose. A URL, a path, a flag or a version is what the page's facts read as one, so a"
-        " bare `ledger/notes.md` still names a page Ledger; a claim that holds a mark of the"
-        " index or a null character names none (the pages this page mentions are not listed)."
+        " the page that shows the claim renders as code: in backticks, a fenced block (its"
+        " opening line included), an indented block, and all of a claim longer than"
+        f" {spans.MAX_RENDERED:,} characters, which it shows as preformatted text; text indented"
+        " under a list item is the item's prose. A URL, a path, a flag or a version is what the"
+        " page's facts read as one, so a bare `ledger/notes.md` still names a page Ledger, and"
+        " so does a title in a link's address written in angle brackets or in a link's title;"
+        " the facts read text between escaped backticks as code, so a title there names"
+        " nothing, though the page shows it as prose. A claim that holds a mark of the index or"
+        " a null character names none (the pages this page mentions are not listed)."
     ) in said
     for line in (
         "A term more than 5 pages hold relates none, nor one whose words more than 64 claims of"
@@ -778,19 +782,28 @@ def test_the_contract_says_which_terms_and_which_places_of_a_title_relate_pages(
         "or whose claim names the page's title in its prose: each place the title stands in the"
         " claim is judged by itself, and one that stands whole outside code, and outside a URL,"
         " a path, a flag or a version, names it, whatever other place overlaps it; code is what"
-        " Markdown reads as code in the claim alone (in backticks, a fenced block, its opening"
-        " line included, an indented block; text indented under a list item is the item's"
-        " prose), and a URL, a path, a flag or a version what the page's facts read as one, so"
-        " a bare `ledger/notes.md` still names a page Ledger (the index, given the passage's"
-        " text with every stretch that is no prose blanked out, says where the title stands in"
-        " prose; a claim that is not its passage's text mentions as the index has it; a claim"
-        " that holds a mark of the index or a null character names none; none when more than"
-        " 5 other pages name it so, or more than 64 of their claims hold it, in prose or not).",
+        " the page that shows the claim renders as code (in backticks, a fenced block, its"
+        " opening line included, an indented block, and all of a claim longer than"
+        f" {spans.MAX_RENDERED:,} characters, which it shows as preformatted text; text indented"
+        " under a list item is the item's prose), and a URL, a path, a flag or a version what"
+        " the page's facts read as one, so a bare `ledger/notes.md` still names a page Ledger,"
+        " as does a title in a link's address written in angle brackets or in a link's title,"
+        " while one between escaped backticks, which the facts read as code, names nothing"
+        " though the page shows it as prose (the index, given the passage's text with every"
+        " stretch that is no prose blanked out, says where the title stands in prose; a claim"
+        " that is not its passage's text character for character, as one saved by hand or one"
+        " that differs from its passage only by the blanks that end its lines, which the gate"
+        " accepts, mentions as the index has it; a claim that holds a mark of the index or a"
+        " null character names none; none when more than 5 other pages name it so, or more"
+        " than 64 of their claims hold it, in prose or not).",
         "The store's read runs at most 17 statements, whatever the page and the project hold,"
         " beside those that work out what the caller may reach (cairn.store.relating says"
         " which, and tests/unit/test_relating_cost_unit.py counts them); to judge where a title"
         " stands in prose it runs 3 more, in a database of its own in memory, and the Markdown"
-        " parser reads each passage it judges at most once.",
+        " parser reads each passage it judges at most once. Judging a title can cost what"
+        " rendering the passages it judges costs: 2.55 s for the worst shape measured, 750,000"
+        " bytes of passages dense with unclosed pictures and code spans, beside 2.43 s for the"
+        " page's own render of them.",
     ):
         assert line in said, line
     assert "not a plain word" not in said

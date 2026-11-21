@@ -503,12 +503,14 @@ def _mentioning(
     judged = _judged(con, index, asked) if named and asked else {}
     if any(row not in read for row, _ in naming):  # a claim not read: no mention at all
         return {}
-    texts = {}  # each claim that is its passage's text, with what is not prose blanked out
-    for row, its_passage in judged.items():
-        if its_passage and named:
-            span = spans[candidates[row][0]]
-            stretches = [*relations.covered(span, facts[span.id]), *code_read(span.text)]
-            texts[row] = relations.blanked(span.text, stretches, named)
+    # each claim that is its passage's text: that passage, numbered once however many cite it
+    passage = {row: candidates[row][0] for row, its_passage in judged.items() if its_passage}
+    numbered = {span_id: n for n, span_id in enumerate(dict.fromkeys(passage.values()), 1)}
+    texts = {}  # each of those passages, by its number, with what is not prose blanked out
+    for span_id, n in numbered.items():
+        span = spans[span_id]
+        stretches = [*relations.covered(span, facts[span_id]), *code_read(span.text)]
+        texts[n] = relations.blanked(span.text, stretches, named or "")
     places = _in_prose(named, texts) if named and texts else {}
     names: dict[str, tuple[int, tuple[int, int] | None]] = {}
     for row, at in naming:
@@ -516,8 +518,8 @@ def _mentioning(
             continue
         if row not in judged:  # the index's word stands
             names[at] = (row, None)
-        elif row in places:
-            names[at] = (row, places[row])
+        elif row in passage and (place := places.get(numbered[passage[row]])):
+            names[at] = (row, place)
     return {} if len(names) > relations.COMMON else names
 
 

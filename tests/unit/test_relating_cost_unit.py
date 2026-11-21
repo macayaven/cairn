@@ -1111,6 +1111,38 @@ def test_every_claim_that_holds_the_title_is_judged_in_the_same_three_statements
         store.close()
 
 
+def test_a_passage_that_claims_of_several_pages_are_is_parsed_and_given_in_memory_once(
+    tmp_path, monkeypatch
+):
+    """COMMON pages saved by hand, each with one claim that is the text of the same passage,
+    with code in backticks and the title in prose. BYTES_MAX counts the passage once, and so
+    is the cost of judging it: the Markdown parser reads it once, and the database in memory
+    is given it once. Each page is named, at the same place."""
+    store = Store(tmp_path / "cairn.db")
+    memory = Memory(store, lint_gate)
+    project = store.create_project("ops")
+    memory.note("ops", "Ada balances it at dusk.\n", title="Quill ledger", topic="Quill ledger")
+    said = "Brook runs `ledger --check` " * 70 + "and then opens the Quill ledger."
+    note, _ = store.add_note(project.id, f"# Shelf\n\n{said}\n")
+    (span,) = [s for s in store.note_spans(note.id) if s.kind == "paragraph"]
+    assert span.text == said
+    for n in range(relations.COMMON):
+        claims = [Claim(id=f"cl_{n}", text=said, span_ids=[span.id])]
+        store.save_page(project.id, f"shelf-{n}", f"Shelf {n}", "", claims)
+    merge(store)
+    try:
+        with apart(monkeypatch) as judged:
+            found = store.related_pages(project.id, "quill-ledger", RELATED_MAX)
+        assert sorted(page.slug for page in found.pages) == [
+            f"shelf-{n}" for n in range(relations.COMMON)
+        ]
+        assert judged.parsed == [len(said)]
+        given = [s for s in judged.statements if s.startswith("INSERT")]
+        assert len(given) == 1 and given[0].count("opens the Quill ledger") == 1
+    finally:
+        store.close()
+
+
 def test_a_reworded_claim_that_mentions_costs_no_statement_more_and_nothing_of_its_text(
     tmp_path, monkeypatch
 ):

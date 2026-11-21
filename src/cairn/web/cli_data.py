@@ -183,8 +183,7 @@ def _import(
     the import's transaction (Plans.limits_of), as a request's is: over a cap, nothing is
     imported and the error names the limit. Without, NO_PLAN goes to stderr first, once the
     database is open (a newer one is refused in one line, cairn.web.cli.main) or when the
-    archive cannot be read. A database that was not there is created, and removed again,
-    with the directories made for it, when the import does not finish."""
+    archive cannot be read. A new database stays private until the entire import is ready."""
     try:
         file = source.open("rb")
     except OSError as error:
@@ -368,7 +367,7 @@ def database_folder(db: Path) -> Iterator[None]:
 @contextmanager
 def new_store(db: Path) -> Iterator[Store]:
     """Publish a complete, closed database with one exclusive link on the same filesystem.
-    SQLite only sees the private staging name. Its last close checkpoints its journal."""
+    Checkpoint the private journal explicitly since only the main file will be linked."""
     events: list[str] = []
     try:
         with database_folder(db), TemporaryDirectory(dir=db.parent, prefix=".cairn-") as folder:
@@ -377,6 +376,13 @@ def new_store(db: Path) -> Iterator[Store]:
             with closing(Store(staged, upgrade=False)) as store:
                 store._state.audit_line = events.append
                 yield store
+                with store._locked() as con:
+                    try:
+                        busy = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+                    except sqlite3.Error as error:
+                        raise ValueError(f"cannot checkpoint the new database for {db}") from error
+                    if busy:
+                        raise ValueError(f"cannot checkpoint the new database for {db}: busy")
             for companion in _companions(db):
                 if os.path.lexists(companion):
                     raise ValueError(f"{companion} already exists beside the destination")

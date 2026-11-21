@@ -105,9 +105,11 @@ parse alone before the reading was the page's); tables of 300 columns of code sp
 1.61 s beside 1.29 s, 155,392 rows; code spans with emphasis marks and links 0.43 s
 beside 0.64 s; code spans alone 0.20 s beside 0.07 s; indented lines 0.10 s beside
 0.03 s; a fenced block 0.08 s beside 0.02 s; code spans that hold no word 0.30 s beside
-0.12 s; a run of one letter between each two code spans ("`a`b"), the most runs a byte,
-0.94 s beside 0.52 s, 2,930 runs a passage and 187,520 rows in all, of which the database
-in memory takes 0.17 s and making the runs 0.12 s. Judging a title costs about what
+0.12 s; a run of one letter between each two code spans ("`a`b") 0.94 s beside 0.52 s,
+2,930 runs a passage and 187,520 rows in all, of which the database in memory takes
+0.17 s, in a run beside it; a path that holds no word between each two blanks ("/_ "),
+the most runs a byte found, 0.32 s beside 0.81 s, 3,906 runs a passage and 249,984 rows
+in all, of which the database in memory takes 0.20 s. Judging a title costs about what
 rendering the passages it judges costs; a passage of unclosed brackets and no backtick,
 which the page takes 5 s to render, it does not parse. The tokenizer is asked how it
 reads a character once a process (`_kinds`): 0.001 s for 100 characters not asked before,

@@ -1,10 +1,21 @@
-"""Run the VM's bootstrap with stand-ins. The tests never run a daemon or contact a cloud."""
+"""Run the VM's bootstrap with stand-ins. The tests never run a daemon or contact a cloud.
+
+The script's own `python3` is one of the stand-ins: the interpreter these tests run under
+(`SCRIPT_PYTHON`), with Python's warnings turned into errors (`SCRIPT_WARNINGS`). Without
+that the snippets in the script ran under whatever /usr/bin/python3 is, 3.9 on one machine
+and 3.13 on another, and a call a newer Python deprecates passed on the first and put a
+warning into the journal on the second. Now the interpreter is the same wherever the tests
+run, it is as new as the project's own, and a deprecated call fails the test at once. One
+class of warning stays as Python has it, never shown: a file a snippet reads and leaves
+for the interpreter to close at its end (closing each by hand costs bytes of the boot
+payload, which EC2 caps). The snippets use the standard library alone."""
 
 import asyncio
 import base64
 import json
 import os
 import random
+import re
 import shlex
 import shutil
 import stat
@@ -29,6 +40,9 @@ AWS_DENIED = (
 CURL_DENIED = "curl: (22) The requested URL returned error: 403"
 RESTORE_FAILED = 'service "litestream-restore" didn\'t complete successfully: exit 1'
 LEFT_OUT = "(a line that repeats part of a setting was left out)"
+SCRIPT_PYTHON = sys.executable  # what the script's `python3` is, on any machine
+SCRIPT_WARNINGS = "error,ignore::ResourceWarning"  # the later filter wins
+PYTHON_WARNING = re.compile(r"^\S*:\d+: \w*Warning: ", re.M)  # as Python prints its own
 CONTAINER = "0123456789ab"
 # What the boot asks Docker after a start, to compare the settings: which container, and
 # the environment it was made with.
@@ -272,6 +286,9 @@ def vm(tmp_path):
         stub = bin_dir / name
         stub.write_text(f"#!{sys.executable}\n{STANDIN}", encoding="utf-8")
         stub.chmod(0o755)
+    python3 = bin_dir / "python3"
+    python3.write_text(f'#!/bin/sh\nexec "{SCRIPT_PYTHON}" "$@"\n', encoding="utf-8")
+    python3.chmod(0o755)
     (tmp_path / "deploy").mkdir()
     return tmp_path
 
@@ -284,6 +301,7 @@ def vm_environment(vm, cloud, mode, settings=SETTINGS, config=None):
     }[cloud]
     return {
         "PATH": f"{vm / 'bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
+        "PYTHONWARNINGS": SCRIPT_WARNINGS,
         "HOME": str(vm),
         "STANDIN_STATE": str(vm),
         "STANDIN_MODE": mode,
@@ -1071,6 +1089,23 @@ def test_an_error_that_names_a_long_named_setting_is_left_out_and_the_boots_line
     said_there = " ".join(line.lstrip("# ") for line in comment.splitlines())
     assert "12 in a row of a settings line (its name included" in said_there
     assert "6 characters of a short value" in said_there
+
+
+@pytest.mark.parametrize("cloud", ["aws", "gcp"])
+@pytest.mark.parametrize("mode", ["with-version", "compose-failure", "fail-read"])
+def test_the_journal_holds_no_warning_of_pythons_own(vm, cloud, mode):
+    """With no filter set, as on the VM, where Python shows a warning and goes on: a start
+    that works, one whose `up` fails and one whose settings read fails each run the script's
+    snippets (the read, the error lines, the comparison), and none of their lines is a
+    warning Python prints of a call it deprecates, under the interpreter the assertion names."""
+    (vm / "container-env.json").write_text(json.dumps(["OTHER=line"]))
+    done = run(vm, cloud, mode, config={"PYTHONWARNINGS": ""})
+    version = subprocess.run(
+        [SCRIPT_PYTHON, "--version"], stdout=subprocess.PIPE, text=True, check=True
+    ).stdout.strip()
+    found = PYTHON_WARNING.findall(done.stderr)
+    assert not found, f"the script's python3 is {SCRIPT_PYTHON} ({version}): {done.stderr}"
+    assert sys.version_info >= (3, 13), "an interpreter that warns of what 3.13 deprecates"
 
 
 def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):

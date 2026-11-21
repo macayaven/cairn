@@ -1,6 +1,5 @@
 """Run the release job against a local gh with editable release notes and titles."""
 
-import argparse
 import hashlib
 import json
 import os
@@ -8,13 +7,14 @@ import re
 import shlex
 import shutil
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 if __name__ != "__main__":
     import pytest
     import test_reviewer5_release_publish_unit as model
     from ci_shell import SYSTEM, run_step
-    from test_ci_release_unit import artifact, shim
+    from test_ci_release_unit import artifact
     from test_ci_workflow_unit import JOBS, REPO
     from test_release_check_unit import CHANGELOG, release_check
 
@@ -37,27 +37,7 @@ def edit(release, field):
         raise ValueError(field)
 
 
-def release_view(gh, release, args):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("tag")
-    parser.add_argument("--json", required=True)
-    parser.add_argument("--jq", "-q")
-    opt = parser.parse_args(args)
-    if not release or opt.tag != release["tag_name"]:
-        return 1
-    fields = {
-        "tagName": release["tag_name"],
-        "name": release["name"],
-        "body": release["body"],
-        "databaseId": release["id"],
-        "isDraft": release["draft"],
-        "isPrerelease": release["prerelease"],
-        "assets": gh.public_fields(release)["assets"],
-    }
-    return gh.api_reply({key: fields[key] for key in opt.json.split(",")}, opt.jq)
-
-
-def serve_gh(gh, args, *, listing=None):
+def serve_gh(gh, args, *, listing=None, after_reply=None):
     path = Path(os.environ["RELEASE_STATE"])
     state = json.loads(path.read_text())
     state["calls"].append(args)
@@ -70,12 +50,12 @@ def serve_gh(gh, args, *, listing=None):
         elif args[0] == "api":
             # Only discovery can lag. A GET by id reads the current release object.
             rc = gh.api(state, args[1:], listing=listing)
-        elif args[:2] == ["release", "view"]:
-            rc = release_view(gh, state["release"], args[2:])
         elif args[0] == "release":
             rc = gh.release_command(state, args[1], args[2:])
         else:
             raise ValueError(args)
+        if rc == 0 and after_reply:
+            after_reply(state, args)
         # The publication reply describes what the job wrote. The next read sees the edit.
         if state["public"] and state["edit_when_public"] and state["writes_at_edit"] is None:
             edit(state["release"], state["edit_when_public"])
@@ -133,7 +113,7 @@ def retry(
         )
     )
     bin_dir = tmp_path / "bin"
-    shim(bin_dir)
+    model.release_tools(bin_dir)
     if gh_version is None:
         # Keep the shell tools for the artifact and listing steps, even on hosts with /usr/bin/gh.
         search_path = str(bin_dir)
@@ -152,6 +132,7 @@ def retry(
         "GITHUB_WORKSPACE": str(REPO),
         "GITHUB_RUN_ID": model.RUN_ID,
         "GITHUB_REF_NAME": tag,
+        "GITHUB_SHA": model.RUN_SHA,
         "GH_REPO": "wren/ledger",
         "CANDIDATE": "true" if tag == model.CANDIDATE else "",
     }
@@ -164,6 +145,8 @@ def retry(
                 break
     state = json.loads(state_path.read_text())
     state["failed_step"] = failed_step
+    waits = tmp_path / "waits"
+    state["waits"] = waits.read_text().splitlines() if waits.exists() else []
     assert not state["unsupported"], (state["unsupported"], done.stderr)
     if gh_version is not None:
         assert state["calls"], done.stdout + done.stderr
@@ -191,16 +174,23 @@ def test_release_runner_checks_supported_gh_then_publishes(tmp_path, version):
     assert state["release"] == original | {"draft": False}
 
 
-def check_diagnostic(done, field):
+def check_diagnostic(done, release, field):
     assert done.returncode != 0
-    what = r"\b(?:title|name)\b" if field == "title" else r"\b(?:notes?|body|text|changelog)\b"
-    why = r"differ|chang|match|expect|edit|wrong|instead|\bnot\b|should|must|mismatch"
-    lines = [
-        line
-        for line in (done.stdout + "\n" + done.stderr).casefold().splitlines()
-        if not line.lstrip().startswith(("{", "["))
-    ]
-    assert any(re.search(what, line) and re.search(why, line) for line in lines), lines
+    tag, draft = release["tag_name"], release["draft"]
+    if field == "file-name":
+        names = " ".join(sorted(a["name"] for a in release["assets"]))
+        message = model.file_error(tag, draft, f"its files are [{names}], not [")
+    elif field == "file-bytes":
+        wheel = next(a["name"] for a in release["assets"] if a["name"].endswith(".whl"))
+        message = model.file_error(tag, draft, f"{wheel} is not the file this run attested")
+    else:
+        state = "a draft" if draft else "public"
+        what = "notes" if field == "final-newline" else field
+        message = (
+            f"::error::read by its id, the GitHub release for {tag}, {state}, carries "
+            f"run {model.RUN_ID}'s mark and differs from what that run wrote in its {what}"
+        )
+    assert message in done.stdout, done.stdout + done.stderr
 
 
 @pytest.mark.parametrize("tag", [model.TAG, model.CANDIDATE], ids=["stable", "candidate"])
@@ -219,7 +209,7 @@ def test_identical_retry_finishes_the_same_release(tmp_path, tag, existing):
 def test_edited_release_stops_without_writing(tmp_path, existing, field, tag):
     done, state, original = retry(tmp_path, tag, existing, changed=field)
     assert model.MARK in original["body"]
-    check_diagnostic(done, field)
+    check_diagnostic(done, original, field)
     assert not state["writes"]
     assert state["release"] == original
 
@@ -228,7 +218,7 @@ def test_edited_release_stops_without_writing(tmp_path, existing, field, tag):
 @pytest.mark.parametrize("field", ["file-name", "file-bytes"])
 def test_matching_text_still_requires_identical_files(tmp_path, existing, field):
     done, state, original = retry(tmp_path, model.TAG, existing, changed=field)
-    assert done.returncode != 0
+    check_diagnostic(done, original, field)
     assert not state["writes"]
     assert state["release"] == original
 
@@ -239,10 +229,47 @@ def test_edit_after_publication_is_reported(tmp_path, field, tag):
     done, state, original = retry(tmp_path, tag, "draft", edit_when_public=field)
     assert state["public"] == [original | {"draft": False}]
     assert state["writes_at_edit"] and state["writes"] == state["writes_at_edit"]
-    expected = original | {"draft": False}
+    expected = deepcopy(original) | {"draft": False}
     edit(expected, field)
     assert state["release"] == expected
-    if field in ("notes", "title"):
-        check_diagnostic(done, field)
+    check_diagnostic(done, expected, field)
+
+
+@pytest.mark.parametrize("commit", [None, "b2" * 20], ids=["deleted", "moved"])
+@pytest.mark.parametrize(
+    ("read", "writes"),
+    [(1, []), (2, ["create"]), (3, ["create", "PATCH"])],
+    ids=["initial", "before-publication", "before-success"],
+)
+def test_changed_tag_stops_at_each_commit_read(tmp_path, read, writes, commit):
+    tag = model.TAG
+    done, state, _ = retry(
+        tmp_path,
+        tag,
+        None,
+        extra_state={"tag_commits": [model.RUN_SHA] * (read - 1) + [commit]},
+    )
+    assert done.returncode != 0 and state["writes"] == writes
+    calls = state["calls"][1:]  # the runner checked the CLI version first
+    endpoint = f"{model.REPO_API}/commits/tags/{tag}"
+    assert endpoint in calls[0] and endpoint in calls[-1]
+    assert sum(endpoint in args for args in calls) == read
+    assert state["tag_sha"] == commit and not state["tag_commits"]
+    if read == 1:
+        assert len(calls) == 1 and state["release"] is None
     else:
-        assert done.returncode != 0
+        release = state["release"]
+        assert f"{model.REPO_API}/releases/{release['id']}" in calls[-2]
+        assert release["target_commitish"] == model.RUN_SHA
+        assert model.files_of(release) == model.package_files(tmp_path / "release")
+        assert release["draft"] == (read == 2)
+        assert state["public"] == ([] if read == 2 else [release])
+    if commit is None:
+        assert f"gh: No commit found for SHA: tags/{tag} (HTTP 422)" in done.stderr
+        assert f"::error::the tag {tag} could not be read as a commit" in done.stdout
+    else:
+        assert (
+            f"::error::the tag {tag} names commit {commit}, not this run's commit {model.RUN_SHA}"
+            in done.stdout
+        )
+    assert f"The GitHub release {tag} is this run's and is published" not in done.stdout

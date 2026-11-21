@@ -1,4 +1,4 @@
-"""Run the release job's shell against one mutable release and the actual artifact bytes.
+"""Run the release job's shell against mutable releases and the actual artifact bytes.
 
 The stand-in assumes gh 2.102.0's create-with-assets behaviour. Implicit publication
 creates a draft, uploads, then publishes. An upload or publish error takes its cleanup
@@ -24,14 +24,33 @@ from pathlib import Path
 if __name__ != "__main__":
     import pytest
     from ci_shell import SYSTEM, run_step
-    from test_ci_release_unit import artifact, shim
+    from test_ci_release_unit import artifact
     from test_ci_workflow_unit import JOBS, REPO
-    from test_reviewer4_release_retry_unit import DELETE, RUN_ID, TAG, release_commands
+    from test_reviewer4_release_retry_unit import (
+        DELETE,
+        RUN_ID,
+        RUN_SHA,
+        TAG,
+        file_error,
+        refusal,
+        release_commands,
+        release_tools,
+    )
+
+REPO_API = "repos/wren/ledger"
+UPLOADED_AT = "2026-11-20T12:00:00Z"
 
 
 def assets(files, first_id):
     return [
-        {"id": first_id + i, "name": name, "size": len(data), "data": data.hex()}
+        {
+            "id": first_id + i,
+            "name": name,
+            "size": len(data),
+            "state": "uploaded",
+            "updated_at": UPLOADED_AT,
+            "data": data.hex(),
+        }
         for i, (name, data) in enumerate(sorted(files.items()))
     ]
 
@@ -44,12 +63,13 @@ def package_files(package):
     return {p.name: p.read_bytes() for p in package.iterdir() if p.name != "notes.md"}
 
 
-def create_draft(state, tag, prerelease, body, title):
+def create_draft(state, tag, prerelease, body, title, target):
     rid = state["next_id"]
     state["next_id"] += 1
     state["release"] = {
         "id": rid,
         "tag_name": tag,
+        "target_commitish": target,
         "name": title,
         "draft": True,
         "prerelease": prerelease,
@@ -72,7 +92,7 @@ def publish(state, *, by_job):
 def boundary(state):
     release = state["release"]
     if release is not None and release["draft"]:
-        at = state["calls"]
+        at = len(state["calls"])
         state["boundaries"].append(at)
         if at == state["after"]:
             state["acted"] = True
@@ -107,14 +127,55 @@ def api_reply(value, query):
     return 0
 
 
+def asset_fields(asset):
+    fields = {k: v for k, v in asset.items() if k != "data"}
+    fields["digest"] = "sha256:" + hashlib.sha256(bytes.fromhex(asset["data"])).hexdigest()
+    return fields
+
+
 def public_fields(release):
-    listed = []
-    for asset in release["assets"]:
-        fields = {k: v for k, v in asset.items() if k != "data"}
-        fields["digest"] = "sha256:" + hashlib.sha256(bytes.fromhex(asset["data"])).hexdigest()
-        fields["state"] = "uploaded"
-        listed.append(fields)
-    return release | {"assets": listed}
+    return release | {"assets": [asset_fields(a) for a in release["assets"]]}
+
+
+def releases(state):
+    # Other drafts can be found first by tag even when discovery only lists the run's draft.
+    others = state["other_releases"]
+    return [*others, state["release"]] if state["release"] is not None else others
+
+
+def release_for_tag(state, tag):
+    return next((r for r in releases(state) if r["tag_name"] == tag), None)
+
+
+def not_found():
+    print("gh: Not Found (HTTP 404)", file=sys.stderr)
+    return 1
+
+
+def tag_reply(state, opt):
+    if state["tag_commits"]:
+        state["tag_sha"] = state["tag_commits"].pop(0)
+    if state["tag_sha"] is None:
+        print(f"gh: No commit found for SHA: tags/{state['tag']} (HTTP 422)", file=sys.stderr)
+        return 1
+    if "Accept: application/vnd.github.sha" in opt.header:
+        print(state["tag_sha"])
+        return 0
+    return api_reply({"sha": state["tag_sha"]}, opt.jq)
+
+
+def asset_reply(state, asset_id, opt):
+    for entry in releases(state):
+        for asset in entry["assets"]:
+            if str(asset["id"]) == asset_id:
+                if "Accept: application/octet-stream" not in opt.header:
+                    return api_reply(asset_fields(asset), opt.jq)
+                data = bytes.fromhex(asset["data"])
+                if b"\x1b" in data and not opt.allow_escape_sequences:
+                    return 1
+                sys.stdout.buffer.write(data)
+                return 0
+    return not_found()
 
 
 def api(state, args, *, listing=None):
@@ -124,8 +185,10 @@ def api(state, args, *, listing=None):
     parser.add_argument("-f", "--raw-field", action="append", default=[])
     parser.add_argument("-F", "--field", action="append", default=[])
     parser.add_argument("--input", dest="input_file")
-    parser.add_argument("-H", "--header", action="append")
-    parser.add_argument("--paginate", "--silent", action="store_true")
+    parser.add_argument("-H", "--header", action="append", default=[])
+    parser.add_argument("--paginate", action="store_true")
+    parser.add_argument("--silent", action="store_true")
+    parser.add_argument("--allow-escape-sequences", action="store_true")
     parser.add_argument("--jq", "-q")
     opt = parser.parse_args(args)
     fields = dict(f.split("=", 1) for f in opt.raw_field)
@@ -142,15 +205,21 @@ def api(state, args, *, listing=None):
             else json.loads(Path(opt.input_file).read_text())
         )
     method = (opt.method or ("POST" if fields else "GET")).upper()
-    prefix = "repos/wren/ledger/releases"
+    prefix = f"{REPO_API}/releases"
     endpoint = opt.endpoint.removeprefix("https://api.github.com/")
     path = endpoint.lstrip("/").partition("?")[0].replace("{owner}/{repo}", "wren/ledger")
+    if method == "GET" and path == f"{REPO_API}/commits/tags/{state['tag']}":
+        return tag_reply(state, opt)
     if path != prefix and not path.startswith(prefix + "/"):
         raise ValueError(f"unmodelled endpoint {path}")
     suffix = path[len(prefix) :]
     release = state["release"]
     if method == "GET" and not suffix:
-        shown = listing(state) if listing else [release] if release else []
+        shown = (
+            listing(state)
+            if listing
+            else [r for r in releases(state) if r["id"] not in state["unlisted_ids"]]
+        )
         return api_reply([public_fields(entry) for entry in shown], opt.jq)
     if method not in ("GET", "HEAD"):
         state["writes"].append(method)
@@ -163,31 +232,32 @@ def api(state, args, *, listing=None):
             fields.get("prerelease", False),
             fields.get("body", ""),
             fields.get("name"),
+            fields.get("target_commitish"),
         )
         rc = 0 if fields.get("draft") is True else publish(state, by_job=True)
         return rc or api_reply(public_fields(state["release"]), opt.jq)
-    if not release:
-        return 1
-    if suffix == f"/{release['id']}/assets" and method == "GET":
-        return api_reply(public_fields(release)["assets"], opt.jq)
     if suffix.startswith("/assets/") and method == "GET":
-        for asset in release["assets"]:
-            if suffix == f"/assets/{asset['id']}":
-                sys.stdout.buffer.write(bytes.fromhex(asset["data"]))
-                return 0
-        return 1
-    if suffix not in (f"/{release['id']}", f"/tags/{release['tag_name']}"):
-        return 1
+        return asset_reply(state, suffix.removeprefix("/assets/"), opt)
     if method == "GET":
-        return api_reply(public_fields(release), opt.jq)
+        for entry in releases(state):
+            if suffix == f"/{entry['id']}/assets":
+                return api_reply(public_fields(entry)["assets"], opt.jq)
+            if suffix in (f"/{entry['id']}", f"/tags/{entry['tag_name']}"):
+                return api_reply(public_fields(entry), opt.jq)
+        return not_found()
+    if not release or suffix != f"/{release['id']}":
+        return not_found()
     if method == "DELETE":
         state["release"] = None
         return 0
     if method == "PATCH" and fields.get("draft") is False:
+        state["patches"].append(fields)
+        if fields.get("make_latest", "true") == "true":
+            state["latest_id"] = release["id"]
         if "prerelease" in fields:
             release["prerelease"] = fields["prerelease"]
         rc = publish(state, by_job=True)
-        return rc or api_reply(public_fields(release), opt.jq)
+        return rc if rc or opt.silent else api_reply(public_fields(release), opt.jq)
     raise ValueError(f"unmodelled {method} {suffix}")
 
 
@@ -198,8 +268,8 @@ def release_command(state, command, args):
         parser.add_argument("--json", required=True)
         parser.add_argument("--jq", "-q")
         opt = parser.parse_args(args)
-        release = state["release"]
-        if release is None or release["tag_name"] != opt.tag:
+        release = release_for_tag(state, opt.tag)
+        if release is None:
             return 1
         fields = {
             "tagName": opt.tag,
@@ -216,8 +286,8 @@ def release_command(state, command, args):
         parser.add_argument("--pattern", "-p", action="append")
         parser.add_argument("--clobber", action="store_true")
         opt = parser.parse_args(args)
-        release = state["release"]
-        if release is None or release["tag_name"] != opt.tag:
+        release = release_for_tag(state, opt.tag)
+        if release is None:
             return 1
         opt.dir.mkdir(parents=True, exist_ok=True)
         for name, data in files_of(release).items():
@@ -232,6 +302,7 @@ def release_command(state, command, args):
     parser.add_argument("--notes-file", "-F", type=Path)
     parser.add_argument("--notes", "-n", default="")
     parser.add_argument("--verify-tag", action="store_true")
+    parser.add_argument("--target")
     parser.add_argument("--draft", "-d")
     parser.add_argument("--prerelease", "-p")
     parser.add_argument("--latest")
@@ -243,10 +314,10 @@ def release_command(state, command, args):
     release = state["release"]
     state["writes"].append(command)
     if command == "create":
-        if release:
+        if release or (opt.verify_tag and state["tag_sha"] is None):
             return 1
         notes = opt.notes_file.read_text() if opt.notes_file else opt.notes
-        create_draft(state, opt.tag, opt.prerelease == "true", notes, opt.title)
+        create_draft(state, opt.tag, opt.prerelease == "true", notes, opt.title, opt.target)
         rc = upload(state, opt.files)
         if opt.draft != "true":
             rc = rc or publish(state, by_job=True)
@@ -274,7 +345,7 @@ def gh(args):
         return 0
     path = Path(os.environ["RELEASE_STATE"])
     state = json.loads(path.read_text())
-    state["calls"] += 1
+    state["calls"].append(args)
     try:
         if args[0] == "api":
             rc = api(state, args[1:])
@@ -310,7 +381,19 @@ def initial(tag, package, *, existing=None, fault=None):
             "prerelease": tag == CANDIDATE,
             "assets": assets(package_files(package), 700),
         }
-    return {"release": release, "tag": tag, "next_id": 88, "fault": fault, "public": []}
+    return {
+        "release": release,
+        "other_releases": [],
+        "unlisted_ids": [],
+        "tag": tag,
+        "tag_sha": RUN_SHA,
+        "tag_commits": [],
+        "next_id": 88,
+        "fault": fault,
+        "public": [],
+        "latest_id": None,
+        "patches": [],
+    }
 
 
 @pytest.fixture
@@ -322,13 +405,14 @@ def attempt(folder, package, remote, *, person=None, after=None):
     folder.mkdir()
     shutil.copytree(package, folder / "release")
     bin_dir = folder / "bin"
-    shim(bin_dir)
+    release_tools(bin_dir)
     tool = bin_dir / "gh"
     tool.write_text(f'#!/bin/sh\nexec {shlex.join([sys.executable, "-IBS", __file__])} "$@"\n')
     tool.chmod(0o755)
     state = deepcopy(remote) | {
-        "calls": 0,
+        "calls": [],
         "writes": [],
+        "patches": [],
         "unsupported": [],
         "boundaries": [],
         "person": person,
@@ -345,6 +429,7 @@ def attempt(folder, package, remote, *, person=None, after=None):
         "GITHUB_WORKSPACE": str(REPO),
         "GITHUB_RUN_ID": RUN_ID,
         "GITHUB_REF_NAME": state["tag"],
+        "GITHUB_SHA": RUN_SHA,
         "GH_REPO": "wren/ledger",
         "CANDIDATE": "true" if state["tag"] == CANDIDATE else "",
     }
@@ -367,13 +452,16 @@ def check_published(release, tag, package):
 @pytest.mark.parametrize("tag", [TAG, CANDIDATE])
 def test_lost_publication_acknowledgement_preserves_the_release_on_retry(tmp_path, package, tag):
     remote = initial(tag, package, fault="lost-ack")
-    _, first = attempt(tmp_path / "first", package, remote)
+    failed, first = attempt(tmp_path / "first", package, remote)
     done, retry = attempt(tmp_path / "retry", package, first)
-    assert first["fault"] is None and first["public"]
-    committed = first["public"][0]
+    assert failed.returncode != 0 and first["fault"] is None
+    assert first["writes"] == ["create", "PATCH"]
+    (committed,) = first["public"]
     check_published(committed, tag, package)
+    assert committed["target_commitish"] == RUN_SHA
     assert first["release"] == committed
     assert done.returncode == 0 and retry["release"] == committed
+    assert not retry["writes"] and not retry["patches"]
 
 
 @pytest.mark.parametrize("existing", ["draft", "published"])
@@ -384,17 +472,28 @@ def test_matching_retry_finishes_the_same_release(tmp_path, package, tag, existi
     assert done.returncode == 0, done.stdout
     assert state["release"] == remote["release"] | {"draft": False}
     if existing == "published":
-        assert not state["writes"]
+        assert not state["writes"] and not state["patches"]
+    else:
+        latest = "false" if tag == CANDIDATE else "true"
+        assert state["writes"] == ["PATCH"]
+        assert state["patches"] == [{"draft": False, "make_latest": latest}]
 
 
 @pytest.mark.parametrize("existing", ["draft", "published"])
-@pytest.mark.parametrize("difference", ["bytes", "missing", "extra", "mark", "prerelease"])
+@pytest.mark.parametrize(
+    "difference", ["bytes", "missing", "extra", "mark", "prerelease", "size", "unfinished-upload"]
+)
 def test_different_release_stops_without_writes(tmp_path, package, existing, difference):
     remote = initial(CANDIDATE, package, existing=existing)
     release = remote["release"]
+    wheel = next(a for a in release["assets"] if a["name"].endswith(".whl"))
     if difference == "bytes":
-        wheel = next(a for a in release["assets"] if a["name"].endswith(".whl"))
         wheel["data"] = "ff" + wheel["data"][2:]
+    elif difference == "size":
+        wheel["data"] = wheel["data"][2:]
+        wheel["size"] -= 1
+    elif difference == "unfinished-upload":
+        wheel["state"] = "starter"
     elif difference == "missing":
         release["assets"].pop()
     elif difference == "extra":
@@ -406,26 +505,85 @@ def test_different_release_stops_without_writes(tmp_path, package, existing, dif
     done, state = attempt(tmp_path / "retry", package, remote)
     assert done.returncode != 0 and not state["writes"]
     assert state["release"] == release
+    if difference == "mark":
+        assert refusal(CANDIDATE, f"its text does not carry run {RUN_ID}'s mark") in done.stdout
+    elif difference == "prerelease":
+        assert refusal(CANDIDATE, "its pre-release flag is false, not true") in done.stdout
+    elif difference in ("missing", "extra"):
+        names = " ".join(sorted(a["name"] for a in release["assets"]))
+        assert file_error(CANDIDATE, release["draft"], f"its files are [{names}], not [") in (
+            done.stdout
+        )
+    else:
+        reason = f"{wheel['name']} is not the file this run attested"
+        assert file_error(CANDIDATE, release["draft"], reason) in done.stdout
+        endpoint = f"{REPO_API}/releases/assets/{wheel['id']}"
+        fetched = any(endpoint in args for args in state["calls"])
+        assert fetched == (difference == "bytes")
 
 
 def test_fresh_upload_is_checked_before_publication(tmp_path, package):
     remote = initial(TAG, package, fault="different-bytes")
     done, state = attempt(tmp_path / "first", package, remote)
-    assert state["fault"] is None
-    for published in state["public"]:
-        assert files_of(published) == package_files(package)
-    if done.returncode == 0:
-        check_published(state["release"], TAG, package)
+    assert done.returncode != 0 and state["fault"] is None
+    assert state["writes"] == ["create"] and not state["public"] and state["release"]["draft"]
+    wheel = next(package.glob("*.whl"))
+    assert file_error(TAG, True, f"{wheel.name} is not the file this run attested") in done.stdout
 
 
 def test_upload_error_preserves_the_release_id(tmp_path, package):
     remote = initial(CANDIDATE, package, fault="upload-error")
     done, state = attempt(tmp_path / "first", package, remote)
-    assert state["fault"] is None
-    assert state["release"] is not None
-    assert state["release"]["id"] == remote["next_id"]
-    if done.returncode == 0:
-        check_published(state["release"], CANDIDATE, package)
+    assert done.returncode != 0 and state["fault"] is None
+    assert state["writes"] == ["create"] and not state["public"]
+    release = state["release"]
+    assert release["id"] == remote["next_id"] and release["draft"]
+    assert files_of(release).items() < package_files(package).items()
+    assert release["assets"]
+
+
+def test_another_drafts_matching_bytes_cannot_excuse_the_discovered_draft(tmp_path, package):
+    remote = initial(TAG, package, existing="draft")
+    judged = remote["release"]
+    other = judged | {"id": 91, "assets": assets(package_files(package), 9100)}
+    remote["other_releases"] = [other]
+    remote["unlisted_ids"] = [other["id"]]
+    wheel = next(a for a in judged["assets"] if a["name"].endswith(".whl"))
+    wheel["data"] = "1b" + wheel["data"][2:]  # same size, with an escape byte in the raw reply
+    assert files_of(release_for_tag(remote, TAG)) == package_files(package)
+
+    done, state = attempt(tmp_path / "retry", package, remote)
+    assert done.returncode != 0 and not state["writes"] and not state["public"]
+    assert state["release"] == judged and state["other_releases"] == [other]
+    assert file_error(TAG, True, f"{wheel['name']} is not the file this run attested") in (
+        done.stdout
+    )
+    assert f"{REPO_API}/releases/assets/{wheel['id']}" in state["calls"][-1]
+
+
+def published_version(tag, release_id):
+    return {
+        "id": release_id,
+        "tag_name": tag,
+        "name": tag,
+        "draft": False,
+        "prerelease": False,
+        "body": "",
+        "assets": [],
+    }
+
+
+@pytest.mark.parametrize("existing", [None, "draft"], ids=["new", "retry"])
+def test_backport_keeps_the_higher_stable_release_latest(tmp_path, package, existing):
+    higher = published_version("v1.10.0", 92)
+    remote = initial(TAG, package, existing=existing)
+    remote.update(other_releases=[higher], latest_id=higher["id"])
+    done, state = attempt(tmp_path / "backport", package, remote)
+    assert done.returncode == 0, done.stdout + done.stderr
+    check_published(state["release"], TAG, package)
+    assert state["writes"] == (["PATCH"] if existing else ["create", "PATCH"])
+    assert state["patches"] == [{"draft": False, "make_latest": "false"}]
+    assert state["latest_id"] == higher["id"] and state["other_releases"] == [higher]
 
 
 @pytest.mark.parametrize("existing", [None, "draft", "partial"], ids=["new", "complete", "partial"])

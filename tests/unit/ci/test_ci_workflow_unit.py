@@ -1714,7 +1714,12 @@ def test_the_lint_job_runs_each_of_its_checks():
         "uv run python scripts/render_guides.py --check",
     ):
         assert command in runs, command
-    assert any(run.startswith("actionlint ") for run in runs)
+    # GitHub's runners have shellcheck, which actionlint then runs over every `run:` script:
+    # its notes of level info or style are let through, a warning or an error is not.
+    assert (
+        'actionlint -ignore \'unexpected key "queue" for "concurrency" section\''
+        " -ignore 'shellcheck reported issue in this script: SC[0-9]+:(info|style):'"
+    ) in runs
 
 
 def test_the_image_scan_ends_on_the_policy_s_verdict():

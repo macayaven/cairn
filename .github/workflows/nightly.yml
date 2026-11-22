@@ -116,7 +116,7 @@ jobs:
           docker run --detach --name cairn-registry --platform "$NATIVE" \
             --publish 127.0.0.1:5000:5000 \
             registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
-          for attempt in $(seq 30); do
+          for _ in $(seq 30); do
             curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
             sleep 1
           done
@@ -157,6 +157,29 @@ jobs:
           CAIRN_FUZZ_PROFILE: full
           RT2_FULL: "1"
         run: uv run pytest -n auto --dist loadscope -m "not perf"
+
+  # Every test file in a process of its own: a file that passes only after another file has
+  # run in the same process fails here, and in a shard, and nowhere else.
+  alone:
+    name: every test file in a process of its own
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Install the locked environment
+        run: uv sync --locked --no-default-groups --group dev
+      - name: Run each test file alone
+        run: uv run python scripts/ci_alone.py
 
   test_py312:
     name: test suite on Python 3.12

@@ -509,6 +509,17 @@ HISTORICAL_MOVED_PATHS = frozenset(
 )
 
 
+def _has_the_history() -> bool:
+    """Whether git can say where a path once was: there is a repository and it is not a
+    checkout of one commit, as the `test` job's is."""
+    if not (REPO / ".git").exists():
+        return False
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"], cwd=REPO, capture_output=True, text=True
+    )
+    return shallow.returncode == 0 and shallow.stdout.strip() == "false"
+
+
 def test_every_allowlist_names_its_rules_and_its_exact_files():
     config = tomllib.loads((REPO / ".gitleaks.toml").read_text(encoding="utf-8"))
     assert config["extend"] == {"useDefault": True}
@@ -522,7 +533,7 @@ def test_every_allowlist_names_its_rules_and_its_exact_files():
             assert re.fullmatch(r"[\w/.-]+", path), pattern
             if not (REPO / path).is_file():
                 assert path in HISTORICAL_MOVED_PATHS, pattern
-                if (REPO / ".git").exists():
+                if _has_the_history():
                     sha = subprocess.check_output(
                         ["git", "log", "-1", "--format=%H", "--", path],
                         cwd=REPO,
@@ -708,7 +719,7 @@ def test_nightly_workflow_runs_scheduled_cve_fuzz_and_py312_safely():
     assert "schedule" in triggers and "workflow_dispatch" in triggers
     assert nightly["permissions"] == {"contents": "read"}
     jobs = nightly["jobs"]
-    assert set(jobs) == {"dependencies", "image_scan", "fuzz_full", "test_py312"}
+    assert set(jobs) == {"dependencies", "image_scan", "fuzz_full", "alone", "test_py312"}
     for name, job in jobs.items():
         assert job["permissions"] == {"contents": "read"}, name
         assert isinstance(job.get("timeout-minutes"), int), name
@@ -721,6 +732,7 @@ def test_nightly_workflow_runs_scheduled_cve_fuzz_and_py312_safely():
         "CAIRN_FUZZ_PROFILE": "full",
         "RT2_FULL": "1",
     }
+    assert jobs["alone"]["steps"][-1]["run"] == "uv run python scripts/ci_alone.py"
     assert "--python 3.12" in "\n".join(s.get("run", "") for s in jobs["test_py312"]["steps"])
     assert "trivy_policy.py" in "\n".join(s.get("run", "") for s in jobs["image_scan"]["steps"])
 

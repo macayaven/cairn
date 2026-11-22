@@ -192,13 +192,23 @@ jobs:
         with:
           tool: actionlint
       - name: Lint workflows
-        run: actionlint -ignore 'unexpected key "queue" for "concurrency" section'
+        # GitHub's runners have shellcheck, so actionlint runs it over every `run:` script.
+        # Its notes of level info or style are not errors here (the scripts of the jobs that
+        # hold a token are pinned whole and are not reworded for them); a warning or an
+        # error still fails the job.
+        run: >-
+          actionlint
+          -ignore 'unexpected key "queue" for "concurrency" section'
+          -ignore 'shellcheck reported issue in this script: SC[0-9]+:(info|style):'
 
   test:
     name: tests (shard ${{ matrix.shard }})
     needs: changes
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 15
+    # 30 minutes, for the `full` profile: on GitHub's runner the first run of these shards took
+    # 5 to 7 minutes each but one, which holds a generated suite whose chunks run one after
+    # another on one worker and was still at 99% after 15. The `pr` profile needs a fraction.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -789,7 +799,7 @@ jobs:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tofu-plugin-cache
         run: |
           bash -n infra/quick/bootstrap.sh
-          shellcheck infra/quick/bootstrap.sh
+          shellcheck --severity=warning infra/quick/bootstrap.sh
           uv run pytest -m opentofu
       - name: Nothing to check
         if: needs.changes.outputs.quick == 'false'

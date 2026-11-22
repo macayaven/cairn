@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
+import subprocess
+import sys
 
 from support.paths import TESTS_ROOT
 
@@ -53,3 +56,21 @@ def test_support_holds_no_pytest_collected_test_files():
         if p.name.startswith("test_") or p.name.endswith("_test.py")
     ]
     assert not bad, bad
+
+
+def test_a_slack_bench_hears_its_handlers_in_a_process_of_its_own():
+    """A Slack handler is registered when its module is imported. A bench imports them itself,
+    so a test file that uses one passes whether or not another file ran before it: with only a
+    file of another kind imported first, the dispatcher answered an empty 200 and filed nothing."""
+    code = (
+        "import json, sys; sys.path[:0] = [sys.argv[1], sys.argv[1] + '/support'];"
+        " import support.slack.slack_commands; from cairn.slack import dispatch;"
+        " print(json.dumps({kind: sorted(found) for kind, found in dispatch.REGISTRIES.items()}))"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code, str(TESTS_ROOT)], capture_output=True, text=True, check=True
+    )
+    heard = json.loads(done.stdout)
+    assert "file_in_cairn" in heard["action"]
+    assert {"", "help", "find", "note", "project", "link", "unlink"} <= set(heard["command"])
+    assert "message" in heard["event"]

@@ -1,7 +1,9 @@
 """Shared test helpers extracted from test_slack_commands_unit."""
 
 import asyncio
+import importlib
 import json
+import pkgutil
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
@@ -9,6 +11,7 @@ from urllib.parse import parse_qs, urlencode
 import httpx
 import pytest
 
+import cairn.slack
 from cairn.compiler import provenance_gate
 from cairn.memory import Memory
 from cairn.slack import dispatch, people
@@ -16,6 +19,13 @@ from cairn.slack.dispatch import Context
 from cairn.slack.verify import envelope
 from cairn.store import Store
 from cairn.store.hosted import Sealer
+
+# A handler is heard once its module has been imported. The product imports every module of
+# cairn.slack when it makes Slack's addresses (cairn.web.slack); a bench hands envelopes to the
+# dispatcher itself, so it imports them here, the same way. Without this a test file hears its
+# handlers only if another file that imports them ran first in the same process.
+for _module in pkgutil.iter_modules(cairn.slack.__path__):
+    importlib.import_module(f"{cairn.slack.__name__}.{_module.name}")
 
 BASE = "https://cairn.example.test"
 

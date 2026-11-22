@@ -66,7 +66,7 @@ def test_each_definition_is_formatted_initialised_read_only_validated_and_tested
     contract_lines = [line.strip() for line in contract["run"].splitlines() if line.strip()]
     assert contract_lines == [
         "bash -n infra/quick/bootstrap.sh",
-        "shellcheck infra/quick/bootstrap.sh",
+        "shellcheck --severity=warning infra/quick/bootstrap.sh",
         "uv run pytest -m opentofu",
     ]
     (sync_step,) = [s for s in QUICK["steps"] if "uv sync" in s.get("run", "")]

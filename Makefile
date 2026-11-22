@@ -1,4 +1,4 @@
-.PHONY: help lint typecheck guides-check test-fast test-ci-meta test-perf test-fuzz test-full test-cov security
+.PHONY: help lint typecheck guides-check test-fast test-ci-meta test-perf test-fuzz test-full test-cov test-alone security
 
 help:
 	@echo "Targets:"
@@ -11,6 +11,7 @@ help:
 	@echo "  test-fuzz     Run full fuzz sweep (CAIRN_FUZZ_PROFILE=full RT2_FULL=1)"
 	@echo "  test-full     Run full offline suite (full fuzz + acceptance + perf)"
 	@echo "  test-cov      Run non-perf suite with line and branch coverage report"
+	@echo "  test-alone    Run every test file in a process of its own (slow)"
 	@echo "  security      Run local gitleaks secret history scan"
 
 lint:
@@ -41,6 +42,9 @@ test-full:
 
 test-cov:
 	uv run pytest -n auto --dist loadscope -m "not perf" --cov=cairn --cov-branch --cov-report=term-missing:skip-covered
+
+test-alone:
+	uv run python scripts/ci_alone.py
 
 security:
 	gitleaks git --redact --ignore-gitleaks-allow --config .gitleaks.toml --exit-code 1

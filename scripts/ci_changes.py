@@ -101,7 +101,7 @@ QUICK_WORK = (
     "deploy/Caddyfile",
     "deploy/litestream.yml",
     "pyproject.toml",
-    "tests/unit/test_quick_",
+    "tests/unit/ops/test_quick_",
 )
 
 # Paths whose change runs job `browser` (Playwright Chromium UI tests).

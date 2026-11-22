@@ -45,7 +45,7 @@ packages = ["src/cairn"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests"]
+pythonpath = ["tests", "tests/support"]
 addopts = "-q --strict-markers"
 markers = [
     "slow: tests taking multiple seconds or running exhaustive cross-checks",

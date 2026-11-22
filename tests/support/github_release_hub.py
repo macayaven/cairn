@@ -18,7 +18,9 @@ from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from support.paths import REPO_ROOT
+
+REPO_ROOT = REPO_ROOT
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci-cd.yml"
 DEFAULT_COMMIT = "1a2b3c4d" * 5
 DEFAULT_MAIN_HEAD = "9f8e7d6c" * 5
@@ -718,7 +720,7 @@ def run_release_subprocess_e2e(
     notes: bytes = b"the notes\n",
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Execute the real `bash -e` + `python3 -I` step in a clean isolated subprocess."""
-    from ci_shell import SYSTEM, run_step
+    from support.ci_shell import SYSTEM, run_step
 
     release_dir = tmp_path / "release"
     populate_release_dir(release_dir, tag, notes=notes)

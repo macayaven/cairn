@@ -669,6 +669,10 @@ def test_a_batch_a_claims_passages_and_a_note_page_cost_the_same_in_a_larger_pro
     costs = []
     for size in (8, 48):
         w = build(tmp_path, explorer=True, pages=size, notes=size, name=f"{size}.db")
+        # The keeper's first pass starts with the client, on a worker thread of its own; on
+        # a busy machine its statements fall inside a measurement. Stopped first, it reads
+        # nothing, and each call is measured alone.
+        w.app.state.slack_keeper.stop()
         try:
             with w.client:
                 claims = get(w, "/b/ops/graph?focus=page%3Apage-000", w.ada).text

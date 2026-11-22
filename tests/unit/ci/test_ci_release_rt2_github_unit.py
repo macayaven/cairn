@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from support import rt2_github
@@ -143,6 +145,36 @@ def test_the_pinned_step_needs_no_history(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_DIR", str(tmp_path / "no-repository"))
     assert step_in_history("27aff19f") is None
     assert "gh release create" in pinned_run("27aff19f")
+
+
+_IS_THE_STREAM_AT_ITS_END = """
+import os, sys
+stream = os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK)
+try:
+    read = os.read(stream, 1)
+except BlockingIOError:
+    raise SystemExit(0)  # a writer holds it open and nothing waits in it: a read would wait
+raise SystemExit(3 if read == b"" else 4)  # 3: no writer is left, so a read meets the end
+"""
+
+
+@pytest.mark.parametrize("client", ["function", "path"])
+def test_the_stream_of_answers_does_not_end_between_two_answers(tmp_path, client):
+    """A call reads its exit status from the stream of answers. On `main`'s first run of the
+    sharded suite two jobs failed here: the stand-in opened that stream for each answer and
+    closed it after, a call opened it while the writer of the answer before was still closing,
+    and its read met the end. The status was empty, the shell said `return: : numeric argument
+    required`, and the step said the releases could not be listed. So between two answers the
+    stream has a writer, whoever looks: a read there waits and does not end."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(_IS_THE_STREAM_AT_ITS_END)
+    run = f'sleep 1; "{sys.executable}" -I "{probe}" "$RT2_DIR/resp"; sleep 1'
+    hub = Hub(Config(), Scheduler())
+    hub.attempt = 1
+    done = run_attempt(run, hub, run_files(), client=client)
+    assert done.code == 0, f"the probe ended at {done.code}: {done.stdout}{done.stderr}"
+    assert not hub.unmodelled
+    assert [event.what for event in hub.events] == ["sleep", "sleep"]
 
 
 @pytest.mark.parametrize("tag", TAGS.values())

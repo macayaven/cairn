@@ -1370,6 +1370,13 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "inpr
         reader = os.open(work / "req", os.O_RDONLY | os.O_NONBLOCK)
         writer = os.open(work / "req", os.O_WRONLY)
         os.set_blocking(reader, True)
+        # The answers go the same way: the harness keeps their stream open at both ends for the
+        # whole attempt, so a client's read of an answer waits for its line and never meets the
+        # end of a writer that is closing after the answer before. (Opened and closed for each
+        # answer, that read came back empty on a loaded machine, rarely: the call lost its exit
+        # status, and the shell said `return: : numeric argument required`.)
+        answers_kept = os.open(work / "resp", os.O_RDONLY | os.O_NONBLOCK)
+        answers = os.open(work / "resp", os.O_WRONLY)
         pending = bytearray()
 
         def field() -> str:
@@ -1397,10 +1404,9 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "inpr
                 (work / "out").write_text(out)
                 (work / "err").write_text(err)
                 try:
-                    with open(work / "resp", "w") as f:
-                        f.write(f"{code}\n")
-                except OSError as error:  # the client was killed
-                    problems.append(f"the answer was not read: {error!r}")
+                    os.write(answers, f"{code}\n".encode())
+                except OSError as error:
+                    problems.append(f"the answer was not written: {error!r}")
 
         server = threading.Thread(target=serve, daemon=True)
         server.start()
@@ -1433,10 +1439,9 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "inpr
                     os.killpg(proc.pid, signal.SIGKILL)
                 proc.communicate()
             os.write(writer, b"1\0__end__\0")
-            # a server waiting to hand an answer to a killed client gets a reader
-            poke = os.open(work / "resp", os.O_RDONLY | os.O_NONBLOCK)
             server.join(timeout=10)
-            os.close(poke)
+            os.close(answers)
+            os.close(answers_kept)
             os.close(writer)
             os.close(reader)
         if problems:

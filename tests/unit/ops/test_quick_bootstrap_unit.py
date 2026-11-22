@@ -1070,7 +1070,10 @@ def test_the_journal_holds_no_warning_of_pythons_own(vm, cloud, mode):
     """With no filter set, as on the VM, where Python shows a warning and goes on: a start
     that works, one whose `up` fails and one whose settings read fails each run the script's
     snippets (the read, the error lines, the comparison), and none of their lines is a
-    warning Python prints of a call it deprecates, under the interpreter the assertion names."""
+    warning Python prints of a call it deprecates. That is shown by an interpreter that warns
+    of what 3.13 deprecates: under an earlier one (the suite also runs on 3.12, the oldest the
+    package allows) the lines are still looked at, and then the test is skipped, with the
+    reason, so that it is never counted as shown there."""
     (vm / "container-env.json").write_text(json.dumps(["OTHER=line"]))
     done = run(vm, cloud, mode, config={"PYTHONWARNINGS": ""})
     version = subprocess.run(
@@ -1078,7 +1081,8 @@ def test_the_journal_holds_no_warning_of_pythons_own(vm, cloud, mode):
     ).stdout.strip()
     found = PYTHON_WARNING.findall(done.stderr)
     assert not found, f"the script's python3 is {SCRIPT_PYTHON} ({version}): {done.stderr}"
-    assert sys.version_info >= (3, 13), "an interpreter that warns of what 3.13 deprecates"
+    if sys.version_info < (3, 13):
+        pytest.skip(f"{version} does not warn of what 3.13 deprecates: shown on 3.13 or later")
 
 
 def test_a_tool_that_repeats_what_it_read_does_not_get_it_into_the_journal(vm):

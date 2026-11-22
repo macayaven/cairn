@@ -1104,6 +1104,17 @@ def test_serve_passes_the_public_url_and_allowed_hosts_to_the_app(tmp_path, monk
         server.main(["serve", "--db", str(db), "--public-url", "memory.example.net"])
 
 
+class _Written(logging.Handler):
+    """Tells when a logger it is added to has written a line."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.came = threading.Event()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.came.set()
+
+
 def test_serve_writes_the_access_log_one_plain_line_per_call(tmp_path, monkeypatch, capsys):
     db = tmp_path / "cairn.db"
     store = Store(db)
@@ -1119,10 +1130,18 @@ def test_serve_writes_the_access_log_one_plain_line_per_call(tmp_path, monkeypat
     def run(app, *, host, port, access_log, **proxy):
         # One line each, whatever else the root logger (configured by the MCP SDK) prints.
         seen["propagate"] = access.propagate
-        with TestClient(app, base_url=BASE) as client:
-            h = {"x-api-key": key}
-            assert client.get("/api/search?q=hunter2-in-a-query", headers=h).status_code == 200
-            assert client.get("/api/projects/nowhere/pages", headers=h).status_code == 404
+        stats = _Written()
+        numbers.addHandler(stats)
+        try:
+            with TestClient(app, base_url=BASE) as client:
+                h = {"x-api-key": key}
+                assert client.get("/api/search?q=hunter2-in-a-query", headers=h).status_code == 200
+                assert client.get("/api/projects/nowhere/pages", headers=h).status_code == 404
+                # The line at start is gathered on a worker thread and can come after both
+                # calls on a busy machine; leaving the client first would stop it unwritten.
+                assert stats.came.wait(60), "no stats line at start"  # a hang guard, not a bound
+        finally:
+            numbers.removeHandler(stats)
 
     monkeypatch.setattr(uvicorn, "run", run)
     assert server.main(["serve", "--db", str(db)]) == 0

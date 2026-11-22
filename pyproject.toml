@@ -26,7 +26,7 @@ dev = [
     "pytest>=8.3",
     "pytest-cov>=6.0",
     "pytest-xdist>=3.6",
-    "ruff>=0.8",
+    "ruff>=0.17.6",
 ]
 browser = [
     "axe-playwright-python==0.1.8",

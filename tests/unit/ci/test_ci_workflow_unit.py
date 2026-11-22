@@ -1446,7 +1446,9 @@ def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
 
 # The inputs of each action these jobs use that default to the workflow's token, read from the
 # action's own action.yml at the pinned commit: actions/checkout@3d3c42e5 `token`,
-# astral-sh/setup-uv@68559e99 `github-token` ("Used when downloading uv from GitHub releases").
+# astral-sh/setup-uv@1db35dd8 `github-token` ("Used when downloading uv from GitHub releases";
+# read again at that commit on 2026-11-22: v10.4.0 adds one input, `require-checksums`, off by
+# default, and changes no other).
 # actions/upload-artifact@cf430e03 has no token input; actions/download-artifact@9000827c has
 # `github-token` with no default (needed only for another repository or run): None.
 # actions/attest@1e69f48a `github-token`, whose default is the workflow's token.

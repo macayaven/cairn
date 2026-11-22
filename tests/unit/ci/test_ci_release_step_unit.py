@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import json
+import random
 import re
 from pathlib import Path
 
@@ -366,6 +367,11 @@ STOP_CASES = [
         "::error::the tag v1.2.3 could not be read as a commit of the repository",
     ),
     (
+        "tag_invalid_utf8_bytes",
+        {"tag_replies": [{"rc": 0, "stdout_hex": "fffe80", "stderr_hex": "ff80"}]},
+        "::error::the tag v1.2.3 could not be read as a commit of the repository",
+    ),
+    (
         "tag_moved",
         {"tag_replies": [{"rc": 0, "stdout": OTHER_COMMIT, "stderr": ""}]},
         f"::error::the tag v1.2.3 names commit {OTHER_COMMIT}, not this run's commit"
@@ -399,6 +405,12 @@ STOP_CASES = [
     (
         "unlisted_missing_fields",
         {"list_replies": [{"rc": 0, "stdout": '[{"tag_name": "v1.2.3"}]', "stderr": ""}]},
+        "::error::the repository's releases could not be listed, so whether v1.2.3 has one"
+        " is not known",
+    ),
+    (
+        "list_invalid_utf8_bytes",
+        {"list_replies": [{"rc": 0, "stdout_hex": "fffe80", "stderr": ""}]},
         "::error::the repository's releases could not be listed, so whether v1.2.3 has one"
         " is not known",
     ),
@@ -471,6 +483,60 @@ STOP_CASES = [
         },
         "::error::the GitHub release for v1.2.3 could not be read by its id, as the lines"
         " above say, so nothing was compared",
+    ),
+    (
+        "read_invalid_utf8_bytes",
+        {
+            "releases": [_draft()],
+            "read_replies": [{"rc": 0, "stdout_hex": "fffe80", "stderr": ""}],
+        },
+        "::error::the GitHub release for v1.2.3 could not be read by its id, as the lines"
+        " above say, so nothing was compared",
+    ),
+    (
+        "read_body_lone_surrogate",
+        {
+            "releases": [_draft()],
+            "read_replies": [
+                {
+                    "rc": 0,
+                    "stdout": json.dumps(strip_asset_bytes(_draft())).replace(
+                        "the notes", "the notes\\ud800"
+                    ),
+                    "stderr": "",
+                }
+            ],
+        },
+        f"::error::read by its id, the GitHub release for v1.2.3, a draft, carries run"
+        f" {DEFAULT_RUN_ID}'s mark and differs from what that run wrote in its notes",
+    ),
+    (
+        "read_asset_name_lone_surrogate",
+        {
+            "releases": [_draft()],
+            "read_replies": [
+                {
+                    "rc": 0,
+                    "stdout": json.dumps(
+                        {
+                            **strip_asset_bytes(_draft()),
+                            "assets": [
+                                {
+                                    "id": 770,
+                                    "name": "bad_PLACEHOLDER.whl",
+                                    "state": "uploaded",
+                                    "size": 7,
+                                    "updated_at": "2026-11-20T12:00:00Z",
+                                }
+                            ],
+                        }
+                    ).replace("bad_PLACEHOLDER.whl", "bad\\ud800.whl"),
+                    "stderr": "",
+                }
+            ],
+        },
+        "::error::read by its id, the GitHub release for v1.2.3 is this run's draft and"
+        " does not hold exactly the files this run attested",
     ),
     (
         "elsewhere",
@@ -595,6 +661,123 @@ def test_real_wrapper_stop_cases_cover_all_16_stops_of_create_the_release():
     for stop in create_stops:
         pattern = re.compile(r"^::error::" + re.escape(stop).replace("…", ".*"))
         assert any(pattern.match(prefix) for _, _, prefix in STOP_CASES), stop
+
+
+def _is_valid_stop_line(line: str) -> bool:
+    head = line.removeprefix("::error::").split("; ")[0]
+    return any(re.fullmatch(re.escape(key).replace("…", ".+"), head) for key in stops())
+
+
+def test_generated_hostile_replies_never_raise_and_always_emit_one_stop_line(tmp_path):
+    """Any corrupt bytes, truncated JSON, wrong types, or lone surrogates from any read stop
+    cleanly with exit 1, zero tracebacks, zero deletes, and one documented `::error::` line."""
+    rng = random.Random(20261122)
+    valid_draft = strip_asset_bytes(_draft())
+    valid_list_bytes = json.dumps([valid_draft]).encode("utf-8")
+    valid_read_bytes = json.dumps(valid_draft).encode("utf-8")
+
+    # Ensure even literal JSON strings inside bytes test surrogate escapes as GitHub REST sends.
+    surrogate_read_marked = (
+        f'{{"id":77,"tag_name":"v1.2.3","name":"v1.2.3","draft":true,"prerelease":false,'
+        f'"body":"the notes\\n\\n{DEFAULT_MARK}\\n\\ud800","assets":[]}}'
+    ).encode()
+    surrogate_read_unmarked = (
+        b'{"id":77,"tag_name":"v1.2.3","name":"\\ud800","draft":true,"prerelease":false,'
+        b'"body":"\\udfff","assets":[]}'
+    )
+    surrogate_asset_read = (
+        f'{{"id":77,"tag_name":"v1.2.3","name":"v1.2.3","draft":true,"prerelease":false,'
+        f'"body":"the notes\\n\\n{DEFAULT_MARK}\\n",'
+        f'"assets":[{{"id":770,"name":"bad\\ud800.whl","state":"uploaded","size":1}}]}}'
+    ).encode()
+
+    wrong_json_shapes = [
+        b"null",
+        b"true",
+        b"false",
+        b"42",
+        b'"string"',
+        b"{}",
+        b'{"id": true, "tag_name": "v1.2.3"}',
+        b'{"id": "77", "tag_name": "v1.2.3"}',
+        b'{"id": 77, "tag_name": null}',
+        b'{"id": 77, "tag_name": 123}',
+        b'{"id": 77, "tag_name": "v1.2.3", "draft": "true", "prerelease": false, "assets": []}',
+        b'{"id": 77, "tag_name": "v1.2.3", "draft": true, "prerelease": 0, "assets": []}',
+        b'{"id": 77, "tag_name": "v1.2.3", "draft": true, "prerelease": false, "assets": null}',
+        b'{"id": 77, "tag_name": "v1.2.3", "draft": true, "prerelease": false, "assets": ["x"]}',
+        b'{"id": 77, "tag_name": "v1.2.3", "draft": true, "prerelease": false,'
+        b' "assets": [{"id":1}]}',
+        b'{"id": ' + b"9" * 5000 + b', "tag_name": "v1.2.3"}',
+        b"[" * 2000 + b"]" * 2000,
+    ]
+    raw_bad_bytes = [
+        b"",
+        b"   \n",
+        b"\xff\xfe\x00\x80",
+        b"\x80\x81\xfe\xffnot-utf8",
+        *(bytes(rng.randrange(256) for _ in range(rng.randint(1, 64))) for _ in range(30)),
+    ]
+
+    tag_payloads = [
+        *raw_bad_bytes,
+        *wrong_json_shapes[:6],
+        DEFAULT_COMMIT[:39].encode("utf-8"),
+        b"0" * 40,
+        b"v1.2.3\x00" + b"a" * 33,
+    ]
+    list_payloads = [
+        *raw_bad_bytes,
+        *wrong_json_shapes,
+        b"[1, 2]",
+        b"[null]",
+        b'[{"tag_name": "v1.2.3"}]',
+        b'[{"id": 77, "tag_name": "v1.2.3", "assets": null}]',
+        b"[" + surrogate_read_marked + b"]",
+        b"[" + surrogate_read_unmarked + b"]",
+        *[valid_list_bytes[:cut] for cut in range(1, min(40, len(valid_list_bytes)), 3)],
+    ]
+    read_payloads = [
+        *raw_bad_bytes,
+        *wrong_json_shapes,
+        b"[]",
+        b'[{"id": 77, "tag_name": "v1.2.3"}]',
+        surrogate_read_marked,
+        surrogate_read_unmarked,
+        surrogate_asset_read,
+        *[valid_read_bytes[:cut] for cut in range(1, min(50, len(valid_read_bytes)), 3)],
+    ]
+    asset_payloads = [
+        *raw_bad_bytes,
+        b"truncated-wheel-bytes",
+        b"\xff" * len(b"a wheel"),
+    ]
+
+    def _run_hostile(case_dir: Path, *, rc: int, err: bytes, kind: str, payload: bytes) -> None:
+        hub = ReleaseHub(tag="v1.2.3", releases=[] if kind in ("tag", "list") else [_draft()])
+        setattr(hub, f"raw_{kind}_reply", (rc, payload, err))
+        res = run_release_in_process(hub, case_dir, tag="v1.2.3")
+        assert res.returncode == 1, (kind, rc, payload[:60], res.stdout, res.stderr)
+        assert "Traceback" not in res.stderr, (kind, res.stderr)
+        assert hub.deletes == []
+        err_line = res.single_error()
+        assert _is_valid_stop_line(err_line), (kind, err_line)
+
+    shared_dir = tmp_path / "hostile"
+    for idx, payload in enumerate(tag_payloads):
+        _run_hostile(shared_dir, rc=idx % 2, err=b"\xffbad-stderr\n", kind="tag", payload=payload)
+    for idx, payload in enumerate(list_payloads):
+        _run_hostile(
+            shared_dir, rc=1 if idx % 7 == 0 else 0, err=b"\xfe", kind="list", payload=payload
+        )
+    for idx, payload in enumerate(read_payloads):
+        _run_hostile(
+            shared_dir, rc=1 if idx % 9 == 0 else 0, err=b"\xff", kind="read", payload=payload
+        )
+    for idx, payload in enumerate(asset_payloads):
+        _run_hostile(
+            shared_dir, rc=1 if idx % 3 == 0 else 0, err=b"\xff", kind="asset", payload=payload
+        )
 
 
 # --- 3. Tag verification invariants ----------------------------------------------------------
@@ -949,6 +1132,33 @@ def test_read_by_id_404_502_tag_changed_and_drafted_diagnostics(tmp_path):
     assert res_tamper.single_error().startswith(
         "::error::read by its id, a GitHub release for v1.2.3 exists and is not one"
         f" this run can finish: {WHEEL} is not the file this run attested"
+    )
+
+
+def test_read_by_id_missing_or_null_tag_name_stops_unread_distinct_from_other_tag(tmp_path):
+    """Pin the intentional distinction vs base jq: a read-by-ID JSON object missing `tag_name`
+    or with `tag_name: null` stops with `could not be read by its id` (malformed response),
+    whereas a string `tag_name != tag` stops with `is, read by its id, a release of another tag`."""
+    d = make_release_record("v1.2.3", False, rid=77, draft=True)
+    for payload in (b'{"id": 77}', b'{"id": 77, "tag_name": null}'):
+        hub = ReleaseHub(tag="v1.2.3", releases=[d], raw_read_reply=(0, payload, b""))
+        res = run_release_in_process(hub, tmp_path / "missing_tag")
+        assert res.returncode == 1
+        assert res.single_error().startswith(
+            "::error::the GitHub release for v1.2.3 could not be read by its id, as the lines"
+            " above say"
+        )
+    other_tag = make_release_record("v9.9.9", False, rid=77, draft=True)
+    hub_other = ReleaseHub(
+        tag="v1.2.3",
+        releases=[d],
+        raw_read_reply=(0, json.dumps(strip_asset_bytes(other_tag)).encode("utf-8"), b""),
+    )
+    res_other = run_release_in_process(hub_other, tmp_path / "other_tag")
+    assert res_other.returncode == 1
+    assert res_other.single_error().startswith(
+        "::error::the release GitHub's listing showed for v1.2.3 is, read by its id, a"
+        " release of another tag"
     )
 
 

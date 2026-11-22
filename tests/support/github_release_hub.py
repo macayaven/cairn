@@ -174,6 +174,12 @@ class ReleaseHub:
     download_fails_draft: bool = False
     download_fails_published: bool = False
 
+    # Raw byte reply overrides for adversarial input testing (rc, stdout_bytes, stderr_bytes).
+    raw_tag_reply: tuple[int, bytes, bytes] | None = None
+    raw_list_reply: tuple[int, bytes, bytes] | None = None
+    raw_read_reply: tuple[int, bytes, bytes] | None = None
+    raw_asset_reply: tuple[int, bytes, bytes] | None = None
+
     create_fault: str | None = None  # "refused" | "lost-ack" | "cut-after-1"
     publish_fault: str | None = None  # "refused" | "lost-ack"
 
@@ -378,9 +384,11 @@ class ReleaseHub:
             return 1, "", "gh: Server Error (HTTP 502)\n"
         return 0, "", ""
 
-    def _handle_api(self, args: list[str]) -> tuple[int, bytes | str, str]:
+    def _handle_api(self, args: list[str]) -> tuple[int, bytes | str, bytes | str]:
         if args[:2] == ["-H", "Accept: application/vnd.github.sha"] and len(args) == 3:
             self._tag_reads += 1
+            if self.raw_tag_reply is not None:
+                return self.raw_tag_reply
             if self.tag_fails_at_read == self._tag_reads:
                 return 1, '{"message":"Server Error"}\n', "gh: Server Error (HTTP 502)\n"
             if self.tag_mutates_at_read and self.tag_mutates_at_read[0] == self._tag_reads:
@@ -395,6 +403,8 @@ class ReleaseHub:
             return 0, self.tag_sha, ""
 
         if args[0] == "--paginate":
+            if self.raw_list_reply is not None:
+                return self.raw_list_reply
             if self.list_fails or (self.list_fails_after_write and self._written):
                 return 1, "", "HTTP 502\n"
             self._looks += 1
@@ -462,6 +472,8 @@ class ReleaseHub:
             self._fetches += 1
             if hook := self.on_before_fetch.get(self._fetches):
                 hook(self)
+            if self.raw_asset_reply is not None:
+                return self.raw_asset_reply
             if self.fetch_fails_at == self._fetches:
                 return 1, b"", "gh: Bad Gateway (HTTP 502)\n"
             aid = int(args[3].rsplit("/", 1)[-1])
@@ -483,6 +495,8 @@ class ReleaseHub:
             self._reads += 1
             if hook := self.on_before_read.get(self._reads):
                 hook(self)
+            if self.raw_read_reply is not None:
+                return self.raw_read_reply
             if self.deleted_before_read == self._reads:
                 self.releases = []
             if fault := self.read_fails_at.get(self._reads):
@@ -656,21 +670,37 @@ elif args[0] == "api" and args[1:3] == ["-H", "Accept: application/vnd.github.sh
     if state.get("tag_replies"):
         reply = state["tag_replies"].pop(0)
         rc = reply.get("rc", 0)
-        out = reply.get("stdout", "").encode("utf-8")
-        err = reply.get("stderr", "")
+        out = (
+            bytes.fromhex(reply["stdout_hex"])
+            if "stdout_hex" in reply
+            else reply.get("stdout", "").encode("utf-8")
+        )
+        err = (
+            bytes.fromhex(reply["stderr_hex"])
+            if "stderr_hex" in reply
+            else reply.get("stderr", "").encode("utf-8")
+        )
     else:
         sha = state.get("tag_sha")
         if not sha:
             rc = 1
-            err = "gh: No commit found (HTTP 422)\n"
+            err = b"gh: No commit found (HTTP 422)\n"
         else:
             out = sha.encode("utf-8")
 elif args[0] == "api" and args[1] == "--paginate":
     if state.get("list_replies"):
         reply = state["list_replies"].pop(0)
         rc = reply.get("rc", 0)
-        out = reply.get("stdout", "").encode("utf-8")
-        err = reply.get("stderr", "")
+        out = (
+            bytes.fromhex(reply["stdout_hex"])
+            if "stdout_hex" in reply
+            else reply.get("stdout", "").encode("utf-8")
+        )
+        err = (
+            bytes.fromhex(reply["stderr_hex"])
+            if "stderr_hex" in reply
+            else reply.get("stderr", "").encode("utf-8")
+        )
     else:
         payload = []
         for r in state["releases"]:
@@ -721,7 +751,11 @@ elif args[:2] == ["api", "--allow-escape-sequences"] and args[2:4] == [
         reply = state["asset_replies"].pop(0)
         rc = reply.get("rc", 0)
         out = bytes.fromhex(reply.get("stdout_hex", ""))
-        err = reply.get("stderr", "")
+        err = (
+            bytes.fromhex(reply["stderr_hex"])
+            if "stderr_hex" in reply
+            else reply.get("stderr", "").encode("utf-8")
+        )
     else:
         aid = int(args[4].rsplit("/", 1)[-1])
         found = None
@@ -731,7 +765,7 @@ elif args[:2] == ["api", "--allow-escape-sequences"] and args[2:4] == [
                     found = bytes.fromhex(a["_hex"])
         if found is None:
             rc = 1
-            err = "gh: Not Found (HTTP 404)\n"
+            err = b"gh: Not Found (HTTP 404)\n"
         else:
             out = found
             if state.get("on_after_asset_download") == "bump_updated_at":
@@ -743,27 +777,35 @@ elif args[0] == "api" and len(args) == 2 and "/releases/" in args[1]:
     if state.get("read_replies"):
         reply = state["read_replies"].pop(0)
         rc = reply.get("rc", 0)
-        out = reply.get("stdout", "").encode("utf-8")
-        err = reply.get("stderr", "")
+        out = (
+            bytes.fromhex(reply["stdout_hex"])
+            if "stdout_hex" in reply
+            else reply.get("stdout", "").encode("utf-8")
+        )
+        err = (
+            bytes.fromhex(reply["stderr_hex"])
+            if "stderr_hex" in reply
+            else reply.get("stderr", "").encode("utf-8")
+        )
     else:
         rid = int(args[1].rsplit("/", 1)[-1])
         rel = next((r for r in state["releases"] if r["id"] == rid), None)
         if rel is None:
             rc = 1
-            err = "gh: Not Found (HTTP 404)\n"
+            err = b"gh: Not Found (HTTP 404)\n"
         else:
             stripped = [{k: v for k, v in a.items() if k != "_hex"} for a in rel["assets"]]
             clean = {**rel, "assets": stripped}
             out = json.dumps(clean).encode("utf-8")
 else:
     rc = 2
-    err = f"unexpected: {args!r}\n"
+    err = f"unexpected: {args!r}\n".encode("utf-8")
 
 state_file.write_text(json.dumps(state), encoding="utf-8")
 if out:
     sys.stdout.buffer.write(out)
 if err:
-    sys.stderr.write(err)
+    sys.stderr.buffer.write(err if isinstance(err, bytes) else err.encode("utf-8"))
 sys.exit(rc)
 """
 

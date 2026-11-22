@@ -1663,16 +1663,40 @@ jobs:
 
 
           def fail(message: str) -> int:
-              print(message, flush=True)
+              print(message.encode("utf-8", "replace").decode("utf-8"), flush=True)
               return 1
 
 
-          def gh(args: list[str], *, binary: bool = False) -> subprocess.CompletedProcess:
-              return subprocess.run(["gh", *args], capture_output=True, text=not binary, check=False)
+          def decode_utf8(raw: bytes) -> str | None:
+              try:
+                  return raw.decode("utf-8")
+              except UnicodeDecodeError:
+                  return None
+
+
+          def encode_utf8(text: str) -> bytes | None:
+              try:
+                  return text.encode("utf-8")
+              except UnicodeEncodeError:
+                  return None
+
+
+          def write_out(raw: bytes) -> None:
+              if raw:
+                  sys.stdout.write(raw.decode("utf-8", "replace"))
+
+
+          def write_err(raw: bytes) -> None:
+              if raw:
+                  sys.stderr.write(raw.decode("utf-8", "replace"))
+
+
+          def gh(args: list[str]) -> subprocess.CompletedProcess[bytes]:
+              return subprocess.run(["gh", *args], capture_output=True, check=False)
 
 
           def _is_int(value: object) -> bool:
-              return isinstance(value, int) and not isinstance(value, bool)
+              return isinstance(value, int) and not isinstance(value, bool) and -(2**63) <= value < 2**63
 
 
           def _valid_assets(raw: object) -> bool:
@@ -1694,9 +1718,10 @@ jobs:
               )
 
 
-          def parse_pages(raw: str) -> list[dict]:
-              if not raw.strip():
-                  raise ValueError("empty JSON response")
+          def parse_pages(raw_bytes: bytes) -> list[dict]:
+              raw = decode_utf8(raw_bytes)
+              if raw is None or not raw.strip():
+                  raise ValueError("invalid or empty JSON response")
               decoder = json.JSONDecoder()
               items: list[dict] = []
               idx, length = 0, len(raw)
@@ -1715,14 +1740,14 @@ jobs:
           def stable_versions(tags: list[str]) -> list[tuple[int, int, int]]:
               parsed: list[tuple[int, int, int]] = []
               for t in tags:
-                  if m := STABLE_RE.fullmatch(t):
+                  if len(t) <= 64 and (m := STABLE_RE.fullmatch(t)):
                       parsed.append((int(m[1]), int(m[2]), int(m[3])))
               return sorted(parsed)
 
 
           def release_snapshot(rel: dict) -> tuple:
               assets = sorted(
-                  json.dumps([a.get("id"), a.get("name"), a.get("state"), a.get("size"), a.get("updated_at")])
+                  json.dumps([a.get("id"), a.get("name"), a.get("state"), a.get("size"), a.get("updated_at")], sort_keys=True)
                   for a in (rel.get("assets") or [])
               )
               return (
@@ -1763,10 +1788,10 @@ jobs:
               # already exists. Default: the repository's default branch."). Zero removal calls anywhere.
               def check_tag() -> bool:
                   res = gh(["api", "-H", "Accept: application/vnd.github.sha", f"repos/{repo}/commits/tags/{tag}"])
-                  at = res.stdout.strip() if res.returncode == 0 else ""
+                  stdout_text = decode_utf8(res.stdout) if res.returncode == 0 else None
+                  at = stdout_text.strip() if stdout_text is not None else ""
                   if res.returncode != 0 or not SHA_RE.fullmatch(at):
-                      if res.stderr:
-                          sys.stderr.write(res.stderr)
+                      write_err(res.stderr)
                       fail(f"::error::the tag {tag} could not be read as a commit of the repository (it is gone, or GitHub did not answer: gh's own words, if any, are above), so this job writes nothing more for its release and does not call it finished; re-run this job if the repository's tags page shows {tag} at this run's commit {sha}, and otherwise publish nothing for it")
                       return False
                   if at != sha:
@@ -1790,7 +1815,7 @@ jobs:
                       return False
                   state = "a draft" if rel.get("draft") else "public"
                   title_ok = rel.get("name") in (None, "", tag)
-                  notes_ok = body.encode("utf-8") == expected_body
+                  notes_ok = encode_utf8(body) == expected_body
                   if not title_ok or not notes_ok:
                       what = "title and notes" if (not title_ok and not notes_ok) else ("title" if not title_ok else "notes")
                       fail(f"::error::read by its id, the GitHub release for {tag}, {state}, carries run {run_id}'s mark and differs from what that run wrote in its {what}; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job")
@@ -1803,7 +1828,7 @@ jobs:
                       mark in body
                       and bool(row.get("prerelease")) is want_pre
                       and row.get("name") in (None, "", tag)
-                      and body.encode("utf-8") == expected_body
+                      and encode_utf8(body) == expected_body
                   )
 
               def unread_by_id() -> None:
@@ -1812,16 +1837,19 @@ jobs:
               def fresh(rid: int) -> dict | None:
                   res = gh(["api", f"repos/{repo}/releases/{rid}"])
                   if res.returncode != 0:
-                      if res.stderr:
-                          sys.stderr.write(res.stderr)
-                      if "HTTP 404" in (res.stderr or ""):
+                      write_err(res.stderr)
+                      if "HTTP 404" in res.stderr.decode("utf-8", "replace"):
                           fail(f"::error::the GitHub release for {tag}, which GitHub's listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then")
                       else:
                           unread_by_id()
                       return None
+                  raw = decode_utf8(res.stdout)
+                  if raw is None:
+                      unread_by_id()
+                      return None
                   try:
-                      rel = json.loads(res.stdout)
-                  except ValueError:
+                      rel = json.loads(raw)
+                  except (ValueError, RecursionError):
                       unread_by_id()
                       return None
                   if not isinstance(rel, dict) or not isinstance(rel.get("tag_name"), str):
@@ -1852,12 +1880,11 @@ jobs:
 
                   res = gh(["api", "--paginate", f"repos/{repo}/releases?per_page=100"])
                   if res.returncode != 0:
-                      if res.stderr:
-                          sys.stderr.write(res.stderr)
+                      write_err(res.stderr)
                       return unlisted()
                   try:
                       items = parse_pages(res.stdout)
-                  except ValueError:
+                  except (ValueError, RecursionError):
                       return unlisted()
                   if any(r.get("tag_name") is not None and not isinstance(r.get("tag_name"), str) for r in items):
                       return unlisted()
@@ -1934,10 +1961,9 @@ jobs:
                           else:
                               fail(f"::error::read by its id, the GitHub release for {tag} is this run's draft and does not hold exactly the files this run attested: {reason}; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again")
                           return None
-                      res = gh(["api", "--allow-escape-sequences", "-H", "Accept: application/octet-stream", f"repos/{repo}/releases/assets/{aid}"], binary=True)
+                      res = gh(["api", "--allow-escape-sequences", "-H", "Accept: application/octet-stream", f"repos/{repo}/releases/assets/{aid}"])
                       if res.returncode != 0:
-                          if res.stderr:
-                              sys.stderr.write(res.stderr.decode("utf-8", "replace"))
+                          write_err(res.stderr)
                           fail(f"::error::the files of the GitHub release for {tag}, {state} as read by its id, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing unless the releases page shows a file of the draft missing or unfinished")
                           return None
                       if res.stdout != local_bytes:
@@ -1968,10 +1994,8 @@ jobs:
                       cmd.extend(["--prerelease", "--latest=false"])
                   cmd.extend(files)
                   res = gh(cmd)
-                  if res.stdout:
-                      sys.stdout.write(res.stdout)
-                  if res.stderr:
-                      sys.stderr.write(res.stderr)
+                  write_out(res.stdout)
+                  write_err(res.stderr)
                   if res.returncode != 0:
                       return res.returncode or 1
                   ok, found, released = look_after("made")
@@ -1998,10 +2022,8 @@ jobs:
                   if not check_tag():
                       return 1
                   res = gh(["api", "--method", "PATCH", f"repos/{repo}/releases/{rel['id']}", "--silent", "-F", "draft=false", "-f", f"make_latest={make_latest}"])
-                  if res.stdout:
-                      sys.stdout.write(res.stdout)
-                  if res.stderr:
-                      sys.stderr.write(res.stderr)
+                  write_out(res.stdout)
+                  write_err(res.stderr)
                   if res.returncode != 0:
                       return res.returncode or 1
                   compared = "after this job compared its draft's files with this run's and published it, so the published release's files were not compared"

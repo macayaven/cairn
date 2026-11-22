@@ -12,6 +12,7 @@ nothing more, each running a tool pinned to one version.
 
 Each ignore list says why and until when; a test here fails once that day has passed."""
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -312,6 +313,7 @@ def test_every_silenced_line_names_its_rule_and_says_why():
 # --- pinned CLI tools (.github/tool-pins.conf) & composite installer -------------------------
 
 PINS_FILE = REPO / ".github" / "tool-pins.conf"
+TOOL_PINS_SHA256 = "6a1da3b3cb20697fa4868d9f6d8122455743aafa1340508b5fdf077e621d0b07"
 INSTALL_ACTION = yaml.safe_load(
     (REPO / ".github" / "actions" / "install-pinned-binary" / "action.yml").read_text(
         encoding="utf-8"
@@ -350,6 +352,19 @@ def test_tool_pins_conf_defines_both_arches_and_sha256_digests(prefix):
         assert PINS.get(f"{prefix}_{suffix}"), f"{prefix}_{suffix}"
     for arch in ("X64", "ARM64"):
         assert re.fullmatch(r"[0-9a-f]{64}", PINS[f"{prefix}_{arch}_SHA256"])
+
+
+def test_tool_pins_conf_is_pinned_whole():
+    raw = PINS_FILE.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == TOOL_PINS_SHA256
+    # Changing any checksum in tool-pins.conf breaks the pin immediately.
+    mutated = re.sub(
+        rb"SHA256=([0-9a-f]{64})",
+        lambda m: b"SHA256=" + (b"0" if m.group(1)[:1] != b"0" else b"1") + m.group(1)[1:],
+        raw,
+        count=1,
+    )
+    assert hashlib.sha256(mutated).hexdigest() != TOOL_PINS_SHA256
 
 
 def _uses_composite(job_name: str, action: str) -> list[dict]:

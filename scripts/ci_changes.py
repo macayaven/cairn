@@ -134,6 +134,8 @@ FUZZ_FULL_WORK = (
     "tests/support/rt1_harness.py",
     "tests/support/rt3_slack_model.py",
     "tests/support/store/generated_related.py",
+    "pyproject.toml",
+    "uv.lock",
 )
 
 # The jobs of the gate that read no output of this script and so run for every change.

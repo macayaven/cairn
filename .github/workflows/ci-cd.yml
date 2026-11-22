@@ -218,7 +218,7 @@ jobs:
       - name: Test shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}
-          CAIRN_FUZZ_PROFILE: ${{ needs.changes.outputs.fuzz == 'pr' && 'pr' || 'full' }}
+          CAIRN_FUZZ_PROFILE: ${{ ((github.event_name == 'push' && needs.changes.outputs.image != 'false') || needs.changes.outputs.fuzz != 'pr') && 'full' || 'pr' }}
         run: |
           mapfile -t SHARD_FILES < <(python3 scripts/ci_shard.py --index "$SHARD_INDEX" --total 4)
           if [ "${#SHARD_FILES[@]}" -gt 0 ]; then

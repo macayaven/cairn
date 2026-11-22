@@ -641,10 +641,32 @@ def test_the_image_jobs_share_their_conditions_and_the_cheap_jobs_have_none():
         assert "if" not in JOBS[name], name
     assert needs(JOBS["test"]) == {"changes"}
     shard_step = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Test shard")
-    assert (
-        shard_step["env"]["CAIRN_FUZZ_PROFILE"]
-        == "${{ needs.changes.outputs.fuzz == 'pr' && 'pr' || 'full' }}"
+    fuzz_env = shard_step["env"]["CAIRN_FUZZ_PROFILE"]
+    assert fuzz_env == (
+        "${{ ((github.event_name == 'push' && needs.changes.outputs.image != 'false')"
+        " || needs.changes.outputs.fuzz != 'pr') && 'full' || 'pr' }}"
     )
+    match = re.fullmatch(r"\$\{\{ (.+) && 'full' \|\| 'pr' \}\}", fuzz_env)
+    assert match, fuzz_env
+    full_condition = match[1]
+    for event, outputs, expect_full in (
+        (pull_request(draft=False), {"image": "true", "fuzz": "pr"}, False),
+        (pull_request(draft=False), {"image": "false", "fuzz": "pr"}, False),
+        (pull_request(draft=False), {"image": "true", "fuzz": "full"}, True),
+        (pull_request(draft=False), {"image": "false", "fuzz": "full"}, True),
+        (MAIN_PUSH, {"image": "false", "fuzz": "pr"}, False),
+        (MAIN_PUSH, {"image": "true", "fuzz": "pr"}, True),
+        (MAIN_PUSH, {"image": "false", "fuzz": "full"}, True),
+        (MAIN_PUSH, {"image": "true", "fuzz": "full"}, True),
+        (TAG, {"image": "true", "fuzz": "full"}, True),
+        (TAG, {"image": "true", "fuzz": "pr"}, True),
+        (pull_request(draft=False), {}, True),
+        (MAIN_PUSH, {}, True),
+    ):
+        assert (
+            evaluate(full_condition, {**event, "needs": {"changes": {"outputs": outputs}}})
+            is expect_full
+        )
 
 
 def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_nothing_more():

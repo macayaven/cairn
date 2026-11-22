@@ -1607,6 +1607,8 @@ def test_every_path_the_web_checks_list_exists():
         (["src/cairn/relations.py"], True),
         (["src/cairn/slack/text.py"], True),
         (["tests/support/fuzz.py"], True),
+        (["pyproject.toml"], True),
+        (["uv.lock"], True),
         (["src/cairn/web/routes.py"], False),
         (["docs/spec-v1.md"], False),
         ([], True),

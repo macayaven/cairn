@@ -218,7 +218,38 @@ jobs:
         run: |
           mapfile -t SHARD_FILES < <(python3 scripts/ci_shard.py --index "$SHARD_INDEX" --total 4)
           if [ "${#SHARD_FILES[@]}" -gt 0 ]; then
-            uv run pytest -n auto --dist loadscope -m "not perf" "${SHARD_FILES[@]}"
+            uv run pytest -n auto --dist loadscope -m "not perf" \
+              --durations=20 --cov=cairn --cov-branch \
+              --cov-report=term:skip-covered \
+              --cov-report=json:"$RUNNER_TEMP/cov.json" \
+              "${SHARD_FILES[@]}"
+          fi
+      - name: Summarize shard coverage
+        if: always()
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          if [ -f "$RUNNER_TEMP/cov.json" ]; then
+            python3 - "$RUNNER_TEMP/cov.json" "$SHARD_INDEX" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              data = json.load(fh)
+          totals = data.get("totals", {})
+          shard = sys.argv[2]
+          lines_cov = totals.get("covered_lines", 0)
+          lines_num = totals.get("num_statements", 0)
+          lines_pct = totals.get("percent_covered_display", "?")
+          br_cov = totals.get("covered_branches", 0)
+          br_num = totals.get("num_branches", 0)
+          print(f"### Test shard {shard} coverage\n")
+          print("| Metric | Covered | Total | Overall |")
+          print("|---|---:|---:|---:|")
+          print(f"| Statements | {lines_cov} | {lines_num} | {lines_pct}% |")
+          if br_num:
+              print(f"| Branches | {br_cov} | {br_num} | {100.0 * br_cov / br_num:.1f}% |")
+          PY
           fi
       - name: Performance and complexity bounds (serial)
         if: matrix.shard == 0

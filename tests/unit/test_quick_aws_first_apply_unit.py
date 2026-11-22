@@ -4,14 +4,13 @@ import io
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tarfile
 
 import pytest
 import yaml
-from test_quick_infra_unit import QUICK, REPO
+from test_quick_infra_unit import QUICK, REPO, require_tofu
 
 from cairn.web.brand import make_brand
 from cairn.web.cli import _parser, _plans
@@ -57,6 +56,7 @@ def test_a_later_change_in_the_offerings_cannot_move_the_subnet():
     assert re.search(r"^\s+ignore_changes\s*=\s*\[availability_zone\]$", lifecycle, re.M)
 
 
+@pytest.mark.opentofu
 @pytest.mark.parametrize(
     ("offered", "chosen"),
     [
@@ -69,9 +69,7 @@ def test_a_later_change_in_the_offerings_cannot_move_the_subnet():
     ],
 )
 def test_only_the_regions_own_zones_are_candidates_in_a_stable_order(tmp_path, offered, chosen):
-    tofu = shutil.which("tofu")
-    if tofu is None:
-        pytest.skip("OpenTofu is needed to evaluate the zone expression")
+    tofu = require_tofu("OpenTofu is needed to evaluate the zone expression")
     main = (AWS / "main.tf").read_text()
     found = re.search(r"^  zones = (sort\(\[.*?^  \]\))$", main, re.M | re.S)
     assert found, "the candidate zones are not one sorted expression in the locals"
@@ -152,9 +150,7 @@ def readme_section(title, level="##"):
 
 
 def role_policy(tmp_path):
-    tofu = shutil.which("tofu")
-    if tofu is None:
-        pytest.skip("OpenTofu is needed to evaluate the policy expression")
+    tofu = require_tofu("OpenTofu is needed to evaluate the policy expression")
     main = (AWS / "main.tf").read_text()
     expression = re.search(r"^  policy = (jsonencode\(\{.*?^  \}\))$", main, re.M | re.S)[1]
     expression = expression.replace(
@@ -225,6 +221,7 @@ def test_both_clouds_keep_deletions_as_long_and_the_guide_says_so_in_the_same_wo
     assert "no deadline" in comment.rsplit("\n\n", 1)[1]
 
 
+@pytest.mark.opentofu
 def test_the_vm_can_delete_a_backup_file_but_not_its_kept_version(tmp_path):
     """What the seven days are worth against the VM itself: its role may delete an object
     (Litestream must), which with versions only hides it. Removing a version, or switching
@@ -291,6 +288,7 @@ def test_the_recovery_guide_says_where_a_failed_read_or_start_explains_itself():
     assert "never hold" not in recovery and "no piece" not in recovery
 
 
+@pytest.mark.opentofu
 def test_the_vm_may_add_a_cold_copy_and_nothing_else_under_its_prefix(tmp_path):
     """A cold copy leaves the VM through the bucket, under `cold/`. The role gets the one
     action that takes: it can add an object there, and cannot read, list by version or

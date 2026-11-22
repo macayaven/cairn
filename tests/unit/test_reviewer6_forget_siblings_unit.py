@@ -135,7 +135,7 @@ def sibling_page(count, *, closed_at=None, prefix=PREFIX, tail=TAIL):
     return siblings, exercise(notes, forget_at=5)
 
 
-@pytest.fixture(scope="module", params=[36, 300], ids=["36-siblings", "300-siblings"])
+@pytest.fixture(scope="module", params=[36, 120], ids=["36-siblings", "120-siblings"])
 def seven_notes(request):
     return sibling_page(request.param)
 

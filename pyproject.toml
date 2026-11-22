@@ -22,12 +22,19 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "axe-playwright-python==0.1.8",
     "mypy==2.4.1",
-    "playwright==1.64.1",
     "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "pytest-xdist>=3.6",
     "ruff>=0.8",
 ]
+browser = [
+    "axe-playwright-python==0.1.8",
+    "playwright==1.64.1",
+]
+
+[tool.uv]
+default-groups = ["dev", "browser"]
 
 [build-system]
 requires = ["hatchling==1.33.0"]
@@ -38,7 +45,18 @@ packages = ["src/cairn"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = "-q --strict-markers"
+markers = [
+    "slow: tests taking multiple seconds or running exhaustive cross-checks",
+    "perf: CPU/wall-clock bound checks that must run serially without -n auto",
+    "fuzz: generated property/fuzz test sweeps controlled by CAIRN_FUZZ_PROFILE",
+    "opentofu: tests that invoke OpenTofu (fail when CAIRN_REQUIRE_TOFU=1)",
+    "docker: tests that invoke Docker Compose or containers",
+    "browser: Playwright end-to-end tests in tests/browser",
+    "ci_meta: static workflow, policy, and repository invariant tests",
+    "system: end-to-end journey tests",
+]
 # A test that runs this long prints every thread's stack, so a stall names itself.
 faulthandler_timeout = 120
 
@@ -49,6 +67,73 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src"]
+ignore_missing_imports = true
+warn_redundant_casts = true
+
+# Ratchet: the 111 currently clean modules are type-checked in CI; the 54 legacy modules
+# below stay ignored until typed cleanly one module at a time (remove an entry once clean).
+[[tool.mypy.overrides]]
+module = [
+    "cairn.arrange",
+    "cairn.docs_publisher",
+    "cairn.identity",
+    "cairn.lint",
+    "cairn.memory",
+    "cairn.oauth",
+    "cairn.plans",
+    "cairn.spans",
+    "cairn.slack.client",
+    "cairn.slack.link",
+    "cairn.slack.messages",
+    "cairn.slack.people",
+    "cairn.slack.setup",
+    "cairn.slack.shortcuts",
+    "cairn.slack.text",
+    "cairn.sources.github",
+    "cairn.sources.google_drive",
+    "cairn.sources.google_meet",
+    "cairn.sources.granola",
+    "cairn.sources.langfuse",
+    "cairn.sources.linear",
+    "cairn.sources.runner",
+    "cairn.store",
+    "cairn.store.base",
+    "cairn.store.erasure",
+    "cairn.store.history",
+    "cairn.store.memory",
+    "cairn.store.numbers",
+    "cairn.store.portable",
+    "cairn.store.ranking",
+    "cairn.store.relating",
+    "cairn.store.reseal",
+    "cairn.store.slack",
+    "cairn.store.sources",
+    "cairn.store.schema",
+    "cairn.web.app",
+    "cairn.web.auth",
+    "cairn.web.brand",
+    "cairn.web.cli",
+    "cairn.web.cli_arrange",
+    "cairn.web.cli_google",
+    "cairn.web.compose",
+    "cairn.web.docs_helper",
+    "cairn.web.google_connect",
+    "cairn.web.graph_view",
+    "cairn.web.markdown",
+    "cairn.web.mcp",
+    "cairn.web.members",
+    "cairn.web.public",
+    "cairn.web.ratelimit",
+    "cairn.web.rest",
+    "cairn.web.ui.memory_pages",
+    "cairn.web.ui.source_pages",
+    "cairn.web.ui.workspace_pages",
+]
+ignore_errors = true
 
 [tool.bandit]
 # Job `static_analysis` of .github/workflows/ci-cd.yml runs Bandit over src/ with this file.

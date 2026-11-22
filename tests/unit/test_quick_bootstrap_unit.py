@@ -376,6 +376,7 @@ def run_queued_units(vm, env, files):
                     break
 
 
+@pytest.mark.opentofu
 @pytest.mark.parametrize("cloud", ["aws", "gcp"])
 def test_first_boot_recovers_after_a_docker_package_index_download_fails(vm, cloud):
     cloud_init = render_cloud_init(vm, cloud)
@@ -396,19 +397,31 @@ def test_first_boot_recovers_after_a_docker_package_index_download_fails(vm, clo
     assert (vm / ".host-provisioned").is_file()
 
 
-def compose_service(vm, said=False, refused=False, environment=None):
-    # A project render reads the .env and env_file itself and needs no Docker daemon.
-    # With `said`, also what Compose wrote on standard error while it read them.
+_COMPOSE_CMD: list[str] | None = None
+
+
+def _compose_command(env: dict[str, str]) -> list[str]:
+    global _COMPOSE_CMD
+    if _COMPOSE_CMD is not None:
+        return _COMPOSE_CMD
     standalone = shutil.which("docker-compose")
     docker = shutil.which("docker")
     if standalone is None and docker is None:
         pytest.skip("Docker Compose is needed to render the service command")
     compose = [standalone] if standalone else [docker, "compose"]
-    env = {"HOME": str(vm), "PATH": os.environ["PATH"], "DOCKER_HOST": f"unix://{vm}/no-daemon"}
-    env |= environment or {}  # what Compose itself runs with: a name alone takes its value there
     version = subprocess.run([*compose, "version"], env=env, capture_output=True, timeout=20)
     if version.returncode != 0:
         pytest.skip("Docker Compose is needed to render the service command")
+    _COMPOSE_CMD = compose
+    return compose
+
+
+def compose_service(vm, said=False, refused=False, environment=None):
+    # A project render reads the .env and env_file itself and needs no Docker daemon.
+    # With `said`, also what Compose wrote on standard error while it read them.
+    env = {"HOME": str(vm), "PATH": os.environ["PATH"], "DOCKER_HOST": f"unix://{vm}/no-daemon"}
+    env |= environment or {}  # what Compose itself runs with: a name alone takes its value there
+    compose = _compose_command(env)
     done = subprocess.run(
         [*compose, "config", "--format", "json"],
         cwd=vm / "deploy",
@@ -424,6 +437,8 @@ def compose_service(vm, said=False, refused=False, environment=None):
     return (service, done.stderr.decode()) if said else service
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize("cloud", ["aws", "gcp"])
 def test_google_settings_enable_provider_sign_in_in_the_compose_command(vm, cloud, monkeypatch):
     extra_args = [
@@ -715,6 +730,8 @@ COMPOSE_SAYS = (
 )
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 def test_compose_changes_four_kinds_of_setting_and_reports_one(vm):
     """What the guide tells a person about writing `cairn.env` (`COMPOSE_READS`,
     `COMPOSE_SAYS`), held to Compose itself, reading the files the boot wrote: which values
@@ -766,6 +783,8 @@ def test_compose_changes_four_kinds_of_setting_and_reports_one(vm):
 TAKEN = chr(92) + "'"  # a backslash before the quote that was meant to close a value
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize(
     ("settings", "given"),
     [
@@ -791,6 +810,8 @@ def test_a_backslash_before_the_closing_quote_carries_the_value_to_the_next_quot
     assert said == []
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize(
     ("backslashes", "given", "journal"),
     [
@@ -816,6 +837,8 @@ def test_the_check_is_quiet_about_a_carried_value_only_with_one_backslash(
     assert said == journal
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 def test_text_after_the_quote_a_carried_value_ran_to_is_counted_or_stops_compose(vm):
     """The two other ends of a value a backslash carried on (`COMPOSE_READS`). Text Compose
     can read after the quote: cairn starts, and the check counts the lines. Text it cannot:
@@ -841,6 +864,8 @@ def test_text_after_the_quote_a_carried_value_ran_to_is_counted_or_stops_compose
     assert "kx9" not in done.stderr and "zq7" not in done.stderr
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize("backslashes", [1, 3])
 def test_a_single_quoted_value_cannot_end_in_an_odd_number_of_backslashes(vm, backslashes):
     """The guide's clause (`COMPOSE_READS`), held to Compose: a backslash before the closing
@@ -929,6 +954,8 @@ def test_a_setting_that_reached_cairn_changed_is_named_and_nothing_else(vm):
     assert "\n### AWS settings\n" in guide and "\n### Google Cloud settings\n" in guide
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 def test_composes_three_silent_changes_are_each_named_and_the_guides_way_is_not(vm):
     """The same, with Compose itself deciding what cairn's container is given: the boot's
     own files are read by Compose, and what it resolves for cairn is what the stand-in's
@@ -1017,6 +1044,8 @@ def test_a_line_the_check_does_not_read_is_counted_and_named_never_passed_over(v
     searched_for_values(done.stderr)
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 def test_compose_itself_gives_what_the_check_counts_as_not_compared(vm):
     """The same lines, with Compose deciding what cairn is given for each."""
     files = {file["path"]: file for file in render_cloud_init(vm, "aws")["write_files"]}
@@ -1036,6 +1065,8 @@ def test_compose_itself_gives_what_the_check_counts_as_not_compared(vm):
     searched_for_values(done.stderr)
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 def test_a_value_in_double_quotes_over_lines_names_a_line_too_many_and_the_script_says_so(vm):
     """The check does not read double quotes. A value in them that runs over lines is read
     line by line: its first line differs from what cairn was given, and its second, which
@@ -1085,6 +1116,8 @@ def judged_with_compose_deciding(vm, settings, environment=None):
     return given, done.stderr.splitlines()
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize(
     ("line", "given"),
     [
@@ -1109,6 +1142,8 @@ def test_a_line_the_check_is_not_sure_of_is_one_line_not_compared(vm, line, give
         assert form not in "\n".join(journal), form
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize(
     ("line", "given", "journal"),
     [
@@ -1148,6 +1183,8 @@ def test_a_value_is_compared_as_written_blanks_and_all(vm, line, given, journal)
     assert said == journal
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 def test_a_carriage_return_inside_single_quotes_is_compared_as_the_file_has_it(vm):
     """The check reads the file with its line ends as they are. Compose 5.5.0 keeps a
     carriage return inside single quotes, and the start is then quiet; a Compose that
@@ -1158,6 +1195,8 @@ def test_a_carriage_return_inside_single_quotes_is_compared_as_the_file_has_it(v
     assert said == ([] if got["PLAIN"] == "a\r\nb" else [DIFFERS.format("PLAIN")])
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize(
     ("line", "name"),
     [
@@ -1175,6 +1214,8 @@ def test_an_unread_line_for_a_variable_the_image_sets_too_is_named(vm, line, nam
     assert said == [NOT_COMPARED.format(1) + f": {name}"]
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize(
     ("lines", "given", "journal"),
     [
@@ -1195,6 +1236,8 @@ def test_a_name_on_a_line_not_read_is_named_though_a_line_read_holds_it_too(
     assert said == journal
 
 
+@pytest.mark.opentofu
+@pytest.mark.docker
 @pytest.mark.parametrize(
     ("line", "environment", "given", "journal"),
     [

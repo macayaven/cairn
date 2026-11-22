@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 import cairn.store
+import cairn.store.grants as store_grants
 import cairn.topics
 from cairn.spans import chunk
 from cairn.store import (
@@ -1491,16 +1492,20 @@ def test_a_rotated_token_ends_the_grant_even_past_the_rate(store, ada, agent, mo
 
 def test_a_grant_remembers_at_most_4320_rotated_tokens(store, ada, agent, db, monkeypatch):
     """Six rotations in any hour, each remembered for 30 days: 6 x 24 x 30 = 4,320 rows at
-    most for one grant. A client asks seven times at the top of every hour, one more than the
-    rate allows, until 10,000 rotations went through: about 69 days, so the oldest rows run
-    out and are removed as the newest come. Without the rate it would hold 7 x 24 x 30."""
-    bound = ROTATIONS * (REFRESH_TOKEN_TTL // ROTATION_WINDOW)
-    assert bound == 4_320
+    most for one grant. Production constants are verified first, then REFRESH_TOKEN_TTL is
+    scaled to one day (bound = 144 rows) so sliding-window eviction is exercised at full
+    density without 10,000 SQLite writes."""
+    assert (ROTATIONS, ROTATION_WINDOW, REFRESH_TOKEN_TTL) == (6, 3_600, 30 * 86_400)
+    assert ROTATIONS * (REFRESH_TOKEN_TTL // ROTATION_WINDOW) == 4_320
+    day_ttl = 24 * ROTATION_WINDOW
+    bound = ROTATIONS * (day_ttl // ROTATION_WINDOW)
+    assert bound == 144
+    monkeypatch.setattr(store_grants, "REFRESH_TOKEN_TTL", day_ttl)
     pair = granted(ada, agent)
     remembered = "SELECT count(*) FROM oauth_tokens WHERE kind = 'rotated'"
     rotations = refused = most = 0
     attempts = 0
-    while rotations < 10_000:
+    while rotations < 350:
         hour, minute = divmod(attempts, ROTATIONS + 1)
         at(monkeypatch, T0 + timedelta(hours=hour, minutes=minute))
         attempts += 1
@@ -1513,7 +1518,7 @@ def test_a_grant_remembers_at_most_4320_rotated_tokens(store, ada, agent, db, mo
         ((held,),) = rows(db, remembered)
         most = max(most, held)
         assert held <= bound, rotations
-    assert most == bound and refused == attempts - rotations > 1_600  # reached, never passed
+    assert most == bound and refused == attempts - rotations > 55  # reached, never passed
     assert store.resolve_token(pair.access_token) is not None
 
 

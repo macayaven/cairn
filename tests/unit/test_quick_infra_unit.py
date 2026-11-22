@@ -1,11 +1,14 @@
 """Check the inputs in the quickstart and render its cloud-init away from any cloud provider."""
 
 import base64
+import copy
 import gzip
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -77,12 +80,26 @@ def test_quickstart_commands_match_stack_outputs_and_the_release_tag(cloud):
     assert ("put-secret-value" if cloud == "aws" else "secrets versions add") in section
 
 
-def render_cloud_init(tmp_path, cloud, *, serve_extra_args=()):
-    template = QUICK / "cloud-init.yaml.tftpl"
-    assert template.is_file(), "the shared cloud-init template has not been written"
+_CLOUD_INIT_CACHE: dict[tuple[str, tuple[str, ...]], dict] = {}
+
+
+def require_tofu(reason: str) -> str:
     tofu = shutil.which("tofu")
     if tofu is None:
-        pytest.skip("OpenTofu is needed to render the cloud-init template")
+        if os.environ.get("CAIRN_REQUIRE_TOFU") == "1":
+            pytest.fail(f"{reason} (CAIRN_REQUIRE_TOFU=1)")
+        pytest.skip(reason)
+    return tofu
+
+
+def render_cloud_init(tmp_path, cloud, *, serve_extra_args=()):
+    key = (cloud, tuple(serve_extra_args))
+    cached = _CLOUD_INIT_CACHE.get(key)
+    if cached is not None:
+        return copy.deepcopy(cached)
+    template = QUICK / "cloud-init.yaml.tftpl"
+    assert template.is_file(), "the shared cloud-init template has not been written"
+    tofu = require_tofu("OpenTofu is needed to render the cloud-init template")
     arguments = json.dumps(
         {
             "quick_dir": str(QUICK),
@@ -99,22 +116,26 @@ def render_cloud_init(tmp_path, cloud, *, serve_extra_args=()):
         }
     )
     codec = "base64gzip" if cloud == "aws" else "base64encode"
-    done = subprocess.run(
-        [tofu, "console", "-no-color"],
-        input=f"{codec}(templatefile({json.dumps(str(template))}, {arguments}))\n",
-        cwd=tmp_path,
-        text=True,
-        capture_output=True,
-        timeout=20,
-    )
+    with tempfile.TemporaryDirectory() as work_dir:
+        done = subprocess.run(
+            [tofu, "console", "-no-color"],
+            input=f"{codec}(templatefile({json.dumps(str(template))}, {arguments}))\n",
+            cwd=work_dir,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
     assert done.returncode == 0, done.stderr
     payload = base64.b64decode(json.loads(done.stdout))
     if cloud == "aws":
         assert len(payload) <= 16384, "EC2 allows at most 16 KiB of raw user data"
         payload = gzip.decompress(payload)
-    return yaml.safe_load(payload)
+    rendered = yaml.safe_load(payload)
+    _CLOUD_INIT_CACHE[key] = copy.deepcopy(rendered)
+    return rendered
 
 
+@pytest.mark.opentofu
 @pytest.mark.parametrize("cloud", INPUTS)
 def test_the_payload_copies_the_four_deploy_files_as_bytes(tmp_path, cloud):
     main = (QUICK / cloud / "main.tf").read_text()
@@ -140,6 +161,7 @@ def test_the_payload_copies_the_four_deploy_files_as_bytes(tmp_path, cloud):
     )
 
 
+@pytest.mark.opentofu
 @pytest.mark.parametrize("cloud", INPUTS)
 def test_neither_first_boot_unit_is_cut_short_by_a_start_timeout(tmp_path, cloud):
     """The unit that installs Docker and the unit that pulls the images and starts the stack
@@ -155,11 +177,10 @@ def test_neither_first_boot_unit_is_cut_short_by_a_start_timeout(tmp_path, cloud
         assert "TimeoutStartSec=infinity" in service, name
 
 
+@pytest.mark.opentofu
 @pytest.mark.parametrize("cloud", INPUTS)
 def test_serve_arguments_cannot_add_environment_assignments(tmp_path, cloud):
-    tofu = shutil.which("tofu")
-    if tofu is None:
-        pytest.skip("OpenTofu is needed to check the variable validation")
+    tofu = require_tofu("OpenTofu is needed to check the variable validation")
     # Plan only the variable declarations, without a provider or any resources.
     shutil.copyfile(QUICK / cloud / "variables.tf", tmp_path / "variables.tf")
     values = {

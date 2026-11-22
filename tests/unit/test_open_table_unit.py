@@ -425,7 +425,7 @@ def run_cell(row: str, kind: str, folder: Path, templates, monkeypatch, capsys):
         argv = [command, "--db", str(db), *(arg.format(dir=folder) for arg in extra)]
         released = impatient = None
         if kind == "busy clears":
-            released = threading.Timer(0.3, let_go, (holder,))
+            released = threading.Timer(0.05, let_go, (holder,))
             released.start()
         elif kind == "busy held":
             impatient = pytest.MonkeyPatch()

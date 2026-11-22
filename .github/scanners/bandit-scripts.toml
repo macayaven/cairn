@@ -1,0 +1,8 @@
+[tool.bandit]
+# Job `static_analysis` of .github/workflows/ci-cd.yml runs Bandit over scripts/ and
+# .github/scanners/ with `--severity-level medium --confidence-level medium`.
+# - B104: scripts/smoke_container.py rewrites "0.0.0.0" from `docker port` to loopback and
+#   passes `--host 0.0.0.0` inside isolated test containers.
+# - B608: scripts/restore_drill.py formats table identifiers wrapped with quote(table); row
+#   values use SQLite query parameters.
+skips = ["B104", "B608"]

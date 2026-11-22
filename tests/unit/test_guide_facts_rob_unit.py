@@ -174,11 +174,13 @@ def test_the_guides_quote_the_lines_of_a_rewrite_whose_log_was_held(tmp_path, ca
             reader = sqlite3.connect(db)
             reader.execute("BEGIN")
             reader.execute("SELECT COUNT(*) FROM settings").fetchone()
+            store._con.execute("PRAGMA busy_timeout = 50")
             try:
                 Compactor(store, hours=24, clock=lambda: T0).run_once()
                 Compactor(store, hours=24, clock=lambda: T0).run_once()  # as after a restart
             finally:
                 reader.close()
+                store._con.execute("PRAGMA busy_timeout = 5000")
             Compactor(store, hours=24, clock=lambda: T0).run_once()
     finally:
         store.close()

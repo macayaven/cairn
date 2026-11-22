@@ -3,14 +3,13 @@
 import json
 import re
 import shlex
-import shutil
 import subprocess
 from fnmatch import fnmatchcase
 
 import pytest
 import yaml
 from markdown_it import MarkdownIt
-from test_quick_infra_unit import QUICK, REPO
+from test_quick_infra_unit import QUICK, REPO, require_tofu
 
 AWS = QUICK / "aws"
 README = QUICK / "README.md"
@@ -41,10 +40,9 @@ def test_aws_lock_includes_the_published_archive_digests(archive_digest):
     assert f'"zh:{archive_digest}"' in text
 
 
+@pytest.mark.opentofu
 def test_abort_multipart_upload_is_limited_to_the_replica_prefix(tmp_path):
-    tofu = shutil.which("tofu")
-    if tofu is None:
-        pytest.skip("OpenTofu is needed to evaluate the policy expression")
+    tofu = require_tofu("OpenTofu is needed to evaluate the policy expression")
     main = (AWS / "main.tf").read_text()
     expression = re.search(r"^  policy = (jsonencode\(\{.*?^  \}\))$", main, re.M | re.S)[1]
     bucket = "arn:aws:s3:::example-replica"

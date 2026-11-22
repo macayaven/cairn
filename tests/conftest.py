@@ -42,8 +42,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         items[:] = [item for item in items if not item.path.is_relative_to(BROWSER_TESTS)]
 
 
-@pytest.fixture(autouse=True)
-def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(scope="session", autouse=True)
+def every_page_keeps_the_names_its_frame_reads():
     """Every page any test renders (cairn.web.templating._page, the one way a page is made)
     is checked as it is made: no view hands its template a name that a template global
     holds, but those a page sets for itself (templating.PER_PAGE): base.html's footer reads
@@ -55,6 +55,7 @@ def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) 
     from cairn.web import templating
 
     made = templating.templates.get_template
+    reserved = set(templating.templates.globals) - templating.PER_PAGE
 
     class Checked:
         def __init__(self, name: str, template) -> None:
@@ -65,7 +66,6 @@ def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) 
 
         def render(self, *given, **named):
             context = dict(*given, **named)
-            reserved = set(templating.templates.globals) - templating.PER_PAGE
             shadowed = sorted(set(context) & reserved)
             assert not shadowed, f"{self.name} is handed {shadowed}, a template global's names"
             html = self.template.render(context)
@@ -75,11 +75,13 @@ def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) 
                 assert said in html.split('<footer class="colophon">', 1)[1], self.name
             return html
 
-    monkeypatch.setattr(
-        templating.templates,
-        "get_template",
-        lambda name, *a, **k: Checked(name, made(name, *a, **k)),
-    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            templating.templates,
+            "get_template",
+            lambda name, *a, **k: Checked(name, made(name, *a, **k)),
+        )
+        yield
 
 
 @pytest.fixture(autouse=True)

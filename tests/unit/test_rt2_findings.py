@@ -23,6 +23,8 @@ from test_rt2_github import (
     current_run,
 )
 
+pytestmark = pytest.mark.ci_meta
+
 
 def replay(steps, tag=TAGS["release"], **config) -> Execution:
     return execute(current_run(), Config(tag=tag, **config), scheduler=Script(steps))

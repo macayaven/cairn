@@ -321,6 +321,7 @@ SHAPES = {
 }
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("shape", sorted(SHAPES))
 def test_four_times_the_input_takes_about_four_times_as_long(shape):
     make = SHAPES[shape]

@@ -13,6 +13,8 @@ import re
 import time
 from collections.abc import Callable
 
+import pytest
+
 from cairn.compiler import CandidatePage, compile_note, render_body
 from cairn.gate import lint_gate
 from cairn.lint import _occurs
@@ -55,14 +57,15 @@ def best_of_five_each(*works: Callable[[], None]) -> list[float]:
     try:
         for _ in range(5):
             for i, work in enumerate(works):
-                started = time.perf_counter()
+                started = time.process_time()
                 work()
-                best[i] = min(best[i], time.perf_counter() - started)
+                best[i] = min(best[i], time.process_time() - started)
     finally:
         gc.enable()
     return best
 
 
+@pytest.mark.perf
 def test_four_times_the_page_takes_about_four_times_as_long(tmp_path):
     store = Store(tmp_path / "cairn.db")
     try:

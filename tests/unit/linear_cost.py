@@ -22,9 +22,9 @@ def best_of_five(work: Callable[[], object]) -> float:
     try:
         times = []
         for _ in range(5):
-            started = time.perf_counter()
+            started = time.process_time()
             work()
-            times.append(time.perf_counter() - started)
+            times.append(time.process_time() - started)
         return min(times)
     finally:
         gc.enable()

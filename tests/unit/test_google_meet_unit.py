@@ -356,6 +356,7 @@ def test_a_name_holding_an_at_sign_of_any_width_is_no_name():
     assert m._participants(list(people.values())) == "2 without a name"
 
 
+@pytest.mark.perf
 def test_one_participants_long_run_of_entries_is_joined_in_linear_time():
     """Only time shows this. The old join copied the turn's text so far for every entry, so
     its time grew with the square of the text: 80,000 entries of 300 characters (24 MB) took

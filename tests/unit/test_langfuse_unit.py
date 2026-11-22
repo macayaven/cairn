@@ -818,6 +818,7 @@ def test_values_are_shown_word_for_word_and_cut_inside_a_closed_fence():
     assert shown({"parsed": True}, 100) == '```json\n{\n  "parsed": true\n}\n```'
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("ends", ["\n", "\r", "\r\n"])
 def test_a_value_of_many_blank_lines_is_shown_in_linear_time(ends):
     """Only time shows this. The blank lines around a value were dropped one at a time from

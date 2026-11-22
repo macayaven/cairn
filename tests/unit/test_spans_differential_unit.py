@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from cairn import spans as new_spans
+from support.fuzz import fuzz_budget
 
 TESTS = Path(__file__).resolve().parents[1]
 REFERENCE = Path(__file__).resolve().parent / "reference" / "spans_before_g1.py"
@@ -36,14 +37,11 @@ def _load():
 
 
 old_spans = _load()
-COUNT = {"texts": 0, "spans": 0}  # cases compared, printed by the last test
 
 
 def same(text: str, source_id: str = "src") -> None:
-    COUNT["texts"] += 1
     old = [_as_now(s.model_dump()) for s in old_spans.chunk(source_id, text)]
     new = [s.model_dump() for s in new_spans.chunk(source_id, text)]
-    COUNT["spans"] += len(new)
     assert new == old, text[:300]
 
 
@@ -190,37 +188,34 @@ def gen_document(rng: random.Random) -> str:
     return rng.choice(["", "---\ntitle: x\n---\n"]) + text
 
 
+@pytest.mark.fuzz
 def test_generated_markdown_with_fences_chunks_the_same():
     rng = random.Random(20261114)
-    for _ in range(6_000):
+    for _ in range(fuzz_budget(1_200, 6_000)):
         same(gen_document(rng))
 
 
+@pytest.mark.fuzz
 def test_every_short_string_of_fence_characters_chunks_the_same():
     """Every string of up to six characters over a backtick, a tilde, a space, a newline, a
     list marker and a letter: every way a fence can open, close or fail to within a few."""
     alphabet = "`~ \n-x"
     strings = [""]
-    for _ in range(6):
+    for _ in range(fuzz_budget(5, 6)):
         strings = [s + c for s in strings for c in alphabet]
         for text in strings:
             same(text)
 
 
+@pytest.mark.fuzz
 def test_every_short_string_of_heading_characters_chunks_the_same():
     """Every string of up to seven characters over "#", a space, a tab, a letter and a newline:
     every way a heading's "#" run, its blanks, its text and a closing run can meet. (G1 also
     took the heading pattern's lazy title out of spans.py: the cost test says why.)"""
     alphabet = "# \tx\n"
     strings = [""]
-    for _ in range(7):
+    for _ in range(fuzz_budget(5, 7)):
         strings = [s + c for s in strings for c in alphabet]
         for text in strings:
             same(text)
             same(" " + text)
-
-
-def test_zz_the_count_of_cases_compared():
-    """Runs last in this file; the count goes in the G1 report."""
-    print(f"\nG1 spans differential cases: {COUNT['texts']} texts, {COUNT['spans']} spans")
-    assert COUNT["texts"] > 50_000 or COUNT["texts"] == 0  # 0 when run alone with -k

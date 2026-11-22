@@ -389,6 +389,7 @@ def test_the_settled_table_is_capped_and_drops_the_nearest_deadline_first(clock,
     assert len([r for r in caplog.records if r.name == "cairn.oauth"]) == 2
 
 
+@pytest.mark.perf
 def test_settling_costs_the_same_however_full_the_table(clock):
     """A scan of the table per call makes filling it grow with the square of its size; by
     the heap, eight times the requests take about eight times as long (linear_cost)."""

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import io
 import json
 import os
 import re
@@ -55,9 +56,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import CodeType
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -1222,9 +1225,114 @@ class Attempt:
     errors: list[str]
 
 
-def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "function") -> Attempt:
-    """One attempt of the step on a new runner, its gh and sleep served by HUB, through
-    programs on the PATH (`client="path"`) or the same client as functions."""
+_PY_HEREDOC_RE = re.compile(r"\A\s*python3\s+-I\s+-\s+<<'PY'\n(.*)\nPY\s*\Z", re.DOTALL)
+_COMPILED_RELEASE_CACHE: dict[str, CodeType] = {}
+
+
+def _run_python_inprocess(py_source: str, hub: Hub, files: dict[str, bytes]) -> Attempt:
+    """Execute inline `python3 -I` release step in-process against HUB with no subprocess fork."""
+    import textwrap
+
+    code_obj = _COMPILED_RELEASE_CACHE.get(py_source)
+    if code_obj is None:
+        code_obj = compile(textwrap.dedent(py_source), "<release-step>", "exec")
+        _COMPILED_RELEASE_CACHE[py_source] = code_obj
+
+    work = Path(tempfile.mkdtemp(prefix="rt2-"))
+    try:
+        temp = work / "temp"
+        release = temp / "release"
+        release.mkdir(parents=True)
+        (release / "notes.md").write_text(notes_text(hub.tag))
+        for name, data in files.items():
+            (release / name).write_bytes(data)
+        env = {
+            "PATH": SYSTEM,
+            "RUNNER_TEMP": str(temp),
+            "GITHUB_REF_NAME": hub.tag,
+            "GITHUB_RUN_ID": RUN_ID,
+            "GITHUB_SHA": RUN_SHA,
+            "CANDIDATE": "true" if hub.config.candidate else "",
+            "GH_TOKEN": "a made-up token",
+            "GH_REPO": GH_REPO,
+            "LC_ALL": "C",
+        }
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+        saved_env = os.environ.copy()
+        saved_cwd = os.getcwd()
+        saved_stdout = sys.stdout
+        saved_stderr = sys.stderr
+        saved_subproc_run = subprocess.run
+        saved_sleep = time.sleep
+        exit_code = 0
+
+        def fake_run(cmd, *args, **kwargs):
+            if not isinstance(cmd, (list, tuple)) or not cmd or str(cmd[0]) != "gh":
+                raise RuntimeError(f"unmodelled subprocess in inprocess runner: {cmd!r}")
+            rc, out_str, err_str = hub.call(
+                "gh", str(Path.cwd()), [str(x) for x in cmd[1:]], str(temp)
+            )
+            is_text = bool(
+                kwargs.get("text")
+                or kwargs.get("universal_newlines")
+                or kwargs.get("encoding")
+                or kwargs.get("errors")
+            )
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=rc,
+                stdout=out_str if is_text else out_str.encode("utf-8"),
+                stderr=err_str if is_text else err_str.encode("utf-8"),
+            )
+
+        def fake_sleep(_secs: float) -> None:
+            # `python3 -I` calls stdlib time.sleep natively (never PATH/sleep), so sleep does
+            # not emit a hub event on the `path` runner either; skip wall-clock waiting here.
+            return None
+
+        try:
+            os.environ.clear()
+            os.environ.update(env)
+            os.chdir(release)
+            sys.stdout = out_buf
+            sys.stderr = err_buf
+            subprocess.run = fake_run
+            time.sleep = fake_sleep
+            try:
+                exec(code_obj, {"__name__": "__main__"})
+            except SystemExit as exc:
+                if exc.code is None:
+                    exit_code = 0
+                elif isinstance(exc.code, int):
+                    exit_code = exc.code
+                else:
+                    exit_code = 1
+        finally:
+            time.sleep = saved_sleep
+            subprocess.run = saved_subproc_run
+            sys.stdout = saved_stdout
+            sys.stderr = saved_stderr
+            os.chdir(saved_cwd)
+            os.environ.clear()
+            os.environ.update(saved_env)
+
+        out = out_buf.getvalue()
+        err = err_buf.getvalue()
+        errors = [line for line in out.splitlines() if line.startswith("::error::")]
+        return Attempt(hub.attempt, exit_code, out, err, errors)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "inprocess") -> Attempt:
+    """One attempt of the step on a new runner, its gh and sleep served by HUB.
+
+    Executes the inline `python3 -I` release step in-process when `client` is `"inprocess"` or
+    `"function"`, or falls back to `/bin/bash` + FIFOs for shell scripts / `client="path"`.
+    """
+    if client in ("inprocess", "function") and (m := _PY_HEREDOC_RE.fullmatch(run)):
+        return _run_python_inprocess(m.group(1), hub, files)
     work = Path(tempfile.mkdtemp(prefix="rt2-"))
     try:
         temp = work / "temp"
@@ -1296,7 +1404,12 @@ def run_attempt(run: str, hub: Hub, files: dict[str, bytes], client: str = "func
         server = threading.Thread(target=serve, daemon=True)
         server.start()
         proc = subprocess.Popen(
-            ["/bin/bash", "-e", "-c", (PRELUDE if client == "function" else "") + run],
+            [
+                "/bin/bash",
+                "-e",
+                "-c",
+                (PRELUDE if client in ("inprocess", "function") else "") + run,
+            ],
             cwd=release,
             env=env,
             stdout=subprocess.PIPE,
@@ -1421,10 +1534,10 @@ def test_an_attempt_that_does_not_end_is_stopped_whole_and_said(monkeypatch):
     ids=["nothing", "creation lost", "upload cut", "publication lost", "notes", "second"],
 )
 def test_the_two_clients_give_the_same_execution(steps):
-    """The explorer's client (functions before the step's text) against programs on the
-    PATH, on the same schedule, three attempts: the same requests, answers and exits."""
+    """The real subprocess (`path`) against the in-process runner (`inprocess`),
+    on the same schedule, three attempts: the same requests, answers and exits."""
     seen = []
-    for client in ("path", "function"):
+    for client in ("path", "inprocess"):
         hub = Hub(Config(lag={"create": 1, "upload": 1, "publish": 1, "person": 1}), Script(steps))
         codes = []
         for n in (1, 2, 3):

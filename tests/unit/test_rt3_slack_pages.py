@@ -764,12 +764,12 @@ def campaign(filer: Filer, count: int, seed: int, keep: int = 3) -> dict:
         author = an_author(rng) if rng.random() < 0.1 else "Cedar Quill"
         counted.clear()
         slack_text._PARSER.parse, slack_text.chunk = counting_parse, counting_chunk
-        start = time.perf_counter()
+        start = time.process_time()
         try:
             filed = filer(raw, author)
         finally:
             slack_text._PARSER.parse, slack_text.chunk = parse, split
-        spent = time.perf_counter() - start
+        spent = time.process_time() - start
         cost.append((counted["parse"] + counted["chunk"], len(raw), spent, raw))
         for signature in signatures(got := faults(filed)):
             seen[signature] += 1

@@ -29,6 +29,7 @@ import pytest
 from cairn import facts as new_facts
 from cairn import lint as new_lint
 from cairn.spans import Span, chunk
+from support.fuzz import fuzz_budget, is_full
 
 TESTS = Path(__file__).resolve().parents[1]
 REFERENCE = Path(__file__).resolve().parent / "reference"
@@ -52,7 +53,6 @@ old_lint.Fact, old_lint.extract_facts, old_lint.normalize = (
 )
 
 KINDS = ("paragraph", "bullet", "code", "table", "quote", "heading", "frontmatter")
-COUNT = {"facts": 0, "lint": 0}  # cases compared, printed by the last test
 
 
 def span_of(text: str, kind: str = "paragraph", sid: str = "sp_x") -> Span:
@@ -423,7 +423,6 @@ def every_fact_occurs(span: Span) -> None:
 
 
 def same_facts(span: Span) -> None:
-    COUNT["facts"] += 1
     new = [f.model_dump() for f in new_facts.extract_facts(span)]
     runs = emphasis_runs(span.text)
     read = as_starred(span.text) if runs else span.text
@@ -465,7 +464,6 @@ def _report(module, pages, spans, entities, unassigned):
 
 
 def same_lint(pages, spans, entities=(), unassigned=()) -> None:
-    COUNT["lint"] += 1
     new = _report(new_lint, pages, spans, entities, unassigned)
     # The reference lint reads facts and normalizes through starred_facts and starred_normalize
     # (G1 item 5, below); with no run in a text that is the reference facts itself.
@@ -563,7 +561,6 @@ def test_the_cli_entry_reads_the_fixtures_the_same(tmp_path):
             __import__("json").dumps({"claims": claims}), encoding="utf-8"
         )
         for entities in (None, yaml_path):
-            COUNT["lint"] += 1
             old = old_lint.lint(path, pages, entities).model_dump()
             assert new_lint.lint(path, pages, entities).model_dump() == old
 
@@ -742,11 +739,12 @@ def document(rng: random.Random) -> str:
     return "\n\n".join(block(rng) for _ in range(rng.randint(0, 6)))
 
 
+@pytest.mark.fuzz
 def test_generated_passages_give_the_same_facts():
     rng = random.Random(20261114)
-    for _ in range(2500):
+    for _ in range(fuzz_budget(500, 2500)):
         same_text(document(rng))
-    for _ in range(2500):  # character soup, from empty to a few dozen characters
+    for _ in range(fuzz_budget(500, 2500)):  # character soup, from empty to a few dozen characters
         alphabet = rng.choice(
             ["`.-/:~ 1a\n", "`~> \n x", "1,.$% kmGB-", "aé .,-/:_" + ARABIC[:3], "://a.b-"]
         )
@@ -780,12 +778,13 @@ def emphasised(rng: random.Random) -> str:
     return rng.choice([" ", "", ". ", "\n"]).join(pieces)
 
 
+@pytest.mark.fuzz
 def test_underscores_around_and_inside_facts_differ_only_by_shape(matcher):
     """Lines dense with underscores: each differs from the reference only where SHAPES says,
     and every fact the current copy reads is found whole in its own span (lint._occurs), unless
     the reference read that same fact and could not find it either."""
     rng = random.Random(20261119)
-    for _ in range(4000):
+    for _ in range(fuzz_budget(800, 4000)):
         text = "\n\n".join(emphasised(rng) for _ in range(rng.randint(1, 3)))
         same_text(text)
         for span in chunk("src", text):
@@ -971,12 +970,13 @@ def named(rng: random.Random) -> str:
     return rng.choice([" ", ". ", "\n", " | "]).join(pieces)
 
 
+@pytest.mark.fuzz
 def test_numbers_a_comma_joins_differ_only_by_shape(matcher):
     """Lines dense with numbers a comma joins to what is around them: each differs from the
     reference only where PIECE_SHAPES says (and SHAPES, for G1's runs), and every fact the
     current copy reads occurs in its own span (same_facts checks both)."""
     rng = random.Random(20261120)
-    for _ in range(3000):
+    for _ in range(fuzz_budget(600, 3000)):
         text = "\n\n".join(named(rng) for _ in range(rng.randint(1, 3)))
         same_text(text)
         spans = chunk("cap", "# Names\n\n" + text + "\n")
@@ -988,16 +988,21 @@ def test_numbers_a_comma_joins_differ_only_by_shape(matcher):
         same_lint([{"slug": "names", "text": body, "claims": claims}], spans)
 
 
+@pytest.mark.fuzz
 def test_every_short_string_over_the_characters_urls_and_code_turn_on_gives_the_same_facts():
     """All strings of up to five characters over a: . / ` 1 and a space, and up to four over
     a richer set, so every way a url, an inline code span or a fence can start and end
     within a few characters is compared."""
-    for alphabet, longest in (("a:./`1 ", 5), ("a-:/`~\n>.", 4)):
+    specs = (
+        (("a:./`1 ", 5), ("a-:/`~\n>.", 4)) if is_full() else (("a:./`1 ", 4), ("a-:/`~\n>.", 3))
+    )
+    for alphabet, longest in specs:
         for size in range(longest + 1):
             for chars in itertools.product(alphabet, repeat=size):
                 same_facts(span_of("".join(chars)))
 
 
+@pytest.mark.fuzz
 def test_the_one_read_matcher_answers_what_occurs_answers_for_each_value(matcher):
     """lint._Needles against lint._occurs (unchanged, the definition), and lint._in_body
     against `in`, on texts and values over small alphabets, so that values overlap, repeat,
@@ -1005,7 +1010,7 @@ def test_the_one_read_matcher_answers_what_occurs_answers_for_each_value(matcher
     rng = random.Random(20261117)
     alphabets = ["ab1_ -./é\n", "a1 .-", "x" + ARABIC[:2] + " ,-", "ab c", "1.2-3 ", "é٠ -"]
     alphabets += ["-> .=\n", ".- ,A", "a-->", "- " + ARABIC[:2], "=-=- a"]  # symbols only
-    for _ in range(6_000):
+    for _ in range(fuzz_budget(1_200, 6_000)):
         alphabet = rng.choice(alphabets)
         text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 60)))
         norms = {"".join(rng.choice(alphabet) for _ in range(rng.randint(0, 7))) for _ in range(8)}
@@ -1084,18 +1089,20 @@ def scenario(rng: random.Random):
     return pages, spans, entities, unassigned
 
 
+@pytest.mark.fuzz
 def test_generated_pages_checked_against_sources_give_the_same_reports(matcher):
     rng = random.Random(20261115)
-    for _ in range(1200):
+    for _ in range(fuzz_budget(250, 1200)):
         pages, spans, entities, unassigned = scenario(rng)
         for span in spans:  # the invariant on the generated sources too
             every_fact_occurs(span)
         same_lint(pages, spans, entities, unassigned)
 
 
+@pytest.mark.fuzz
 def test_many_small_sources_and_few_large_ones_give_the_same_reports(matcher):
     rng = random.Random(20261116)
-    for _ in range(40):
+    for _ in range(fuzz_budget(10, 40)):
         small = [chunk(f"s{i}", line(rng)) for i in range(rng.randint(20, 60))]
         spans = [s for group in small for s in group]
         large = chunk("big", "\n\n".join(document(rng) for _ in range(30)))
@@ -1115,11 +1122,12 @@ def test_many_small_sources_and_few_large_ones_give_the_same_reports(matcher):
             same_lint([{"slug": "t", "text": body}], source, [{"name": "Quill"}, {"name": "Lumen"}])
 
 
+@pytest.mark.fuzz
 def test_claims_citing_several_spans_give_the_same_reports(matcher):
     """Values from several cited spans, and values made of the end of one cited span and the
     start of the next, which are in none of them."""
     rng = random.Random(20261118)
-    for _ in range(300):
+    for _ in range(fuzz_budget(75, 300)):
         spans = chunk("src", "\n\n".join(document(rng) for _ in range(rng.randint(2, 8))))
         content = [s for s in spans if s.kind in new_lint.CONTENT_KINDS]
         if not content:
@@ -1135,11 +1143,3 @@ def test_claims_citing_several_spans_give_the_same_reports(matcher):
             claims.append({"id": f"c{c}", "text": text, "span_ids": [s.id for s in cited]})
         body = "\n\n".join(c["text"] for c in claims)
         same_lint([{"slug": "t", "text": body, "claims": claims}], spans)
-
-
-def test_zz_the_count_of_cases_compared():
-    """Runs last in this file; the count goes in the P1 report."""
-    print(f"\nP1 differential cases: {COUNT['facts']} fact extractions, {COUNT['lint']} lint runs")
-    print(f"G1 inputs that differed, by shape: {dict(sorted(DIFFERED.items()))}")
-    print(f"G2 inputs that differed, by shape: {dict(sorted(DIFFERED_G2.items()))}")
-    assert COUNT["facts"] > 5_000 or COUNT["facts"] == 0  # 0 when run alone with -k

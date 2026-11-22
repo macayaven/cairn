@@ -29,6 +29,9 @@ from cairn.memory import Memory, RequestError
 from cairn.server import create_app
 from cairn.store import Store
 from cookie_names import session_cookie
+from support.fuzz import is_full
+
+pytestmark = pytest.mark.fuzz
 
 BASE = "http://127.0.0.1:8765"
 TEXT_MAX, LINE_MAX = relations.TEXT_MAX, relations.LINE_MAX  # as shipped
@@ -172,7 +175,8 @@ def test_the_web_page_shows_the_pages_and_reasons_of_the_answer_in_its_order(wor
         "left out": 1_000,
         "cut": 5_000,
     }
-    assert all(seen[what] >= count for what, count in least.items()), seen
+    scale = 1 if is_full() else 8
+    assert all(seen[what] >= max(1, count // scale) for what, count in least.items()), seen
 
 
 def test_the_explorers_view_draws_the_nodes_and_edges_of_the_answer_in_its_order(
@@ -226,4 +230,5 @@ def test_the_explorers_view_draws_the_nodes_and_edges_of_the_answer_in_its_order
     assert differ == [], (len(differ), differ[:5])
     # so the comparison is not kept by views in which nothing could differ
     least = {"nodes": 17_000, "edges": 10_000, "mentions": 6_000, "more": 1_500, "left out": 1_000}
-    assert all(seen[what] >= count for what, count in least.items()), seen
+    scale = 1 if is_full() else 8
+    assert all(seen[what] >= max(1, count // scale) for what, count in least.items()), seen

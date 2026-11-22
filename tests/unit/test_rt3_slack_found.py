@@ -218,6 +218,7 @@ def test_7_the_reply_in_slack_shows_what_slack_displayed(tmp_path):
     assert decode(reply["text"]).startswith("Filed: Q&A [notes] for Monday @here\n"), reply
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("run", ["a", "<", "`", "*a* ", "~~~\n", "- ~~~\n", "a@"])
 def test_9_a_long_message_converts_in_time_linear_in_its_length(run):
     """Finding 9: 20,000 characters of any one shape within a second, here and in the
@@ -226,12 +227,12 @@ def test_9_a_long_message_converts_in_time_linear_in_its_length(run):
     for size in (5_000, 20_000):
         text = (run * size)[:size]
         message = {"text": text, "ts": "1900000000.000100", "user": "U1"}
-        start = time.perf_counter()
+        start = time.process_time()
         note_from_message(
             message, team_id="T", team_domain="fable-works", conversation_id="C0LIB",
             author="Cedar Quill", names={},
         )  # fmt: skip
-        spent[size] = time.perf_counter() - start
+        spent[size] = time.process_time() - start
     assert spent[20_000] < 1.0, spent
 
 
@@ -314,6 +315,7 @@ def test_a_special_mention_shows_as_slack_displayed_it(tmp_path, special):
     assert named(reply) == f"Standup @{special} at ten", reply
 
 
+@pytest.mark.perf
 def test_code_blocks_slack_names_in_rich_text_convert_in_linear_time():
     """Found on 9d1abc2f: each code block the rich text names was looked for to the text's
     end (text._known_code), so 40,000 characters of ```x``` took about 1.6 s against 0.14 s
@@ -328,12 +330,12 @@ def test_code_blocks_slack_names_in_rich_text_convert_in_linear_time():
         }  # fmt: skip
         times = []
         for _ in range(3):
-            start = time.perf_counter()
+            start = time.process_time()
             note_from_message(
                 message, team_id="T", team_domain="fable-works", conversation_id="C0LIB",
                 author="Cedar Quill", names={},
             )  # fmt: skip
-            times.append(time.perf_counter() - start)
+            times.append(time.process_time() - start)
         spent[size] = min(times)
     assert spent[40_000] < 6 * spent[10_000], spent
 

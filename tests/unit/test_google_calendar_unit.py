@@ -411,6 +411,7 @@ def test_a_title_is_cut_at_a_word_to_its_bounds():
     assert wide.startswith(cut) and cut
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize(
     "summary",
     [lambda n: "x" * n, lambda n: "ada@example.test " * (n // 5) + "x" * n],

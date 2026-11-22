@@ -306,9 +306,9 @@ def test_every_rule_has_its_near_misses_and_they_match_nothing():
 def cheapest(run, repeats: int = 3) -> float:
     best = float("inf")
     for _ in range(repeats):
-        started = time.perf_counter()
+        started = time.process_time()
         run()
-        best = min(best, time.perf_counter() - started)
+        best = min(best, time.process_time() - started)
     return best
 
 
@@ -318,6 +318,7 @@ REFERENCE = re.compile(r"(?<!\x00)\x01")  # a lookbehind first: no fast prefix s
 BUDGET = 40  # reference passes per rule; catastrophic backtracking costs thousands of them
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("name", sorted(NEAR_MISSES))
 def test_each_rule_reads_4_mib_of_its_worst_input_within_budget(name):
     """A budget in operations, not seconds: the rule's pass over 4 MiB of its own

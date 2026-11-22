@@ -808,6 +808,7 @@ def test_a_note_half_written_before_a_switch_off_lets_the_floor_rise_after_the_s
     assert cursor.parts == {} and cursor.floor >= again - timedelta(seconds=1)
 
 
+@pytest.mark.perf
 def test_one_speakers_long_run_of_items_is_joined_in_linear_time():
     """Only time shows this. The old join copied the turn's text so far for every item, so its
     time grew with the square of the text: 20,000 items of 300 characters (6 MB) took 1.0 s,

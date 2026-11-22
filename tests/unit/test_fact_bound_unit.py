@@ -92,6 +92,7 @@ def test_counting_builds_no_fact(store, monkeypatch):
         store.add_note(project.id, numbers(FACTS_MAX + 1))
 
 
+@pytest.mark.perf
 def test_counting_is_near_linear():
     """Eight times the facts take about eight times as long, not 64 (P1's cost tests)."""
 
@@ -101,9 +102,9 @@ def test_counting_is_near_linear():
         try:
             times = []
             for _ in range(5):
-                started = time.perf_counter()
+                started = time.process_time()
                 count_facts(spans)
-                times.append(time.perf_counter() - started)
+                times.append(time.process_time() - started)
             return min(times)
         finally:
             gc.enable()

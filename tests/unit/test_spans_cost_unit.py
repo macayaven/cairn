@@ -15,6 +15,8 @@ import gc
 import time
 from collections.abc import Callable
 
+import pytest
+
 from cairn.spans import chunk
 
 
@@ -24,9 +26,9 @@ def best_of_five(work: Callable[[], object]) -> float:
     try:
         times = []
         for _ in range(5):
-            started = time.perf_counter()
+            started = time.process_time()
             work()
-            times.append(time.perf_counter() - started)
+            times.append(time.process_time() - started)
         return min(times)
     finally:
         gc.enable()
@@ -45,15 +47,18 @@ def assert_near_linear(text_of: Callable[[int], str], n: int, bound: float = 24)
 LINES = 300  # lines of the shape in one text, so the small input takes a few milliseconds
 
 
+@pytest.mark.perf
 def test_lines_of_backticks_with_one_more_after_them_are_near_linear():
     assert_near_linear(lambda n: ("`" * n + " x`\n\n") * LINES, 2_000)
 
 
+@pytest.mark.perf
 def test_the_same_lines_inside_list_items_are_near_linear():
     """A list item asks the fence pattern about each of its lines, from its content column."""
     assert_near_linear(lambda n: ("- " + "`" * n + " x`\n  " + "`" * n + " y`\n\n") * LINES, 2_000)
 
 
+@pytest.mark.perf
 def test_a_heading_with_a_long_run_of_blanks_is_near_linear():
     """Found while measuring G1: the heading pattern's lazy title, followed by an optional
     closing run and blanks, tried each length of title and read the blanks after it again,

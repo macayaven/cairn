@@ -46,8 +46,11 @@ from cairn.gate import lint_gate, strict_lint_gate, unclaimed_line, verbatim_gat
 from cairn.llm import FakeModel, Reply
 from cairn.memory import Memory, RequestError
 from cairn.store import Claim, Store
+from support.fuzz import fuzz_budget
 
-SEED, CASES = 20261120, 300
+pytestmark = pytest.mark.fuzz
+
+SEED, CASES = 20261120, fuzz_budget(60, 300)
 GATES = (provenance_gate, lint_gate, strict_lint_gate, verbatim_gate)
 SPACES = [" ", "  ", "\t", "\u00a0", "\u2003", "\u3000", " \u00a0"]
 WORDS = ["Ada", "Brook", "Quill", "keeps", "the", "nightly", "log", "Fable", "Works", "port"]
@@ -377,23 +380,26 @@ def build(store: Store) -> dict[str, int]:
     return counts
 
 
-@pytest.fixture
-def store(tmp_path):
-    store = Store(tmp_path / "cairn.db")
-    yield store
-    store.close()
+@pytest.fixture(scope="module")
+def built_world(tmp_path_factory):
+    store = Store(tmp_path_factory.mktemp("invariants") / "cairn.db")
+    try:
+        counts = build(store)
+        yield store, counts
+    finally:
+        store.close()
 
 
-def test_every_saved_page_passes_every_gate_and_filing_again_changes_nothing(store):
-    counts = build(store)
+def test_every_saved_page_passes_every_gate_and_filing_again_changes_nothing(built_world):
+    _, counts = built_world
     assert counts["cases"] == CASES and counts["pages"] > CASES // 2, counts
     assert counts["tidied"] and counts["arranged"], counts  # both paths saved pages
     assert counts["composed"] and counts["folds saved"], counts
     assert counts["reuses saved"] and counts["reuses refused"], counts
 
 
-def test_every_saved_page_exports_and_imports_equal(store, tmp_path):
-    build(store)
+def test_every_saved_page_exports_and_imports_equal(built_world, tmp_path):
+    store, _ = built_world
     archive = io.BytesIO()
     store.export(archive)
     target = Store(tmp_path / "imported.db")

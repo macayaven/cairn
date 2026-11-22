@@ -74,8 +74,11 @@ from cairn.facts import extract_facts
 from cairn.gate import lint_gate
 from cairn.memory import Memory, RequestError
 from cairn.store import Claim, Store, relating
+from support.fuzz import fuzz_budget, is_full
 
-SEED, PROJECTS = 20261120, 300
+pytestmark = pytest.mark.fuzz
+
+SEED, PROJECTS = 20261120, fuzz_budget(60, 300)
 TITLES = [
     "Quill",
     "Quill log",
@@ -417,13 +420,19 @@ def test_the_generated_projects_relate_pages_in_every_way(world):
             complete += answer["searched"]["complete"]
             mentions += sum(1 for _ in reasons(answer, "mentioned_by"))
             shared.update(reason["term_kind"] for _, reason in reasons(answer, "shares"))
-    assert set(shared) == set(KINDS), shared  # each kind of term relates pages somewhere
-    assert min(shared.values()) >= 15 and mentions >= 200, (shared, mentions)
-    assert len(decided) == 6, decided
     few = "a title many pages hold and few name"  # relates now: the pages that count name it
-    assert decided[few] >= 3 and decided["a title a page holds in code alone"] >= 200, decided
-    assert min(count for rule, count in decided.items() if rule != few) >= 15, decided
-    assert answers >= 1_000 and complete == answers, (answers, complete)
+    assert complete == answers, (answers, complete)
+    if is_full():
+        assert set(shared) == set(KINDS), shared  # each kind of term relates pages somewhere
+        assert len(decided) == 6, decided
+        assert min(shared.values()) >= 15 and mentions >= 200, (shared, mentions)
+        assert decided[few] >= 3 and decided["a title a page holds in code alone"] >= 200, decided
+        assert min(count for rule, count in decided.items() if rule != few) >= 15, decided
+        assert answers >= 1_000, answers
+    else:
+        assert len(shared) >= 3 and mentions >= 30, (shared, mentions)
+        assert len(decided) >= 4 and decided["a title a page holds in code alone"] >= 20, decided
+        assert answers >= 150, answers
 
 
 def test_every_claim_given_is_a_claim_of_its_pages_latest_version(world):
@@ -472,7 +481,8 @@ def test_a_shared_term_is_a_fact_of_a_passage_each_claim_cites(world):
                     }
                     if term not in facts:
                         wrong.append((project["name"], slug, page["page"], reason["term_kind"]))
-    assert wrong == [] and checked >= 1_000, (len(wrong), wrong[:5], checked)
+    min_checked = 1_000 if is_full() else 150
+    assert wrong == [] and checked >= min_checked, (len(wrong), wrong[:5], checked)
 
 
 def test_a_mention_is_a_claim_that_names_the_title_in_its_prose_as_the_index_reads_it(world):
@@ -498,7 +508,8 @@ def test_a_mention_is_a_claim_that_names_the_title_in_its_prose_as_the_index_rea
                     wrong.append((project["name"], slug, page["page"], "not held"))
                 elif not world["reading"].holds(parsed_prose(span), title):
                     wrong.append((project["name"], slug, page["page"], "held in code alone"))
-    assert wrong == [] and checked >= 200, (wrong[:5], checked)
+    min_checked = 200 if is_full() else 30
+    assert wrong == [] and checked >= min_checked, (wrong[:5], checked)
 
 
 def test_a_complete_answer_gives_exactly_what_a_search_of_the_whole_project_finds(world):
@@ -558,8 +569,12 @@ def test_a_read_within_small_bounds_gives_only_what_the_whole_read_gives_and_cou
             if searched["claims_not_read"] == 0 and bounded != whole:
                 wrong.append((project["name"], slug, "every claim read, another answer"))
     assert wrong == [], (len(wrong), wrong[:5])
-    assert bounded_answers >= 200 and fewer >= 100, (bounded_answers, fewer)
-    assert lost["mentions"] >= 500 and lost["terms"] >= 300, lost
+    if is_full():
+        assert bounded_answers >= 200 and fewer >= 100, (bounded_answers, fewer)
+        assert lost["mentions"] >= 500 and lost["terms"] >= 300, lost
+    else:
+        assert bounded_answers >= 30 and fewer >= 15, (bounded_answers, fewer)
+        assert lost["mentions"] >= 50 and lost["terms"] >= 30, lost
 
 
 def first_line_of(span, kind: str, term: str) -> tuple[str, str] | None:
@@ -698,13 +713,21 @@ def test_a_claim_is_given_whole_or_by_its_line_or_by_its_head_and_never_by_both(
             wrong += [(project["name"], slug, *fault) for fault in found]
     assert wrong == [], (len(wrong), wrong[:5])
     each = ("whole", "a line", "a line, of a mention", "line whole", "line cut")
-    assert min(seen[k] for k in each) >= 100, seen
     assert seen["a head"] == seen["none"] == 0, seen  # no generated claim holds a mark
-    assert seen["a mention's line whole"] >= 200 and seen["a mention's line cut"] >= 500, seen
-    assert seen["a mention after a line that holds none"] >= 200, seen
-    assert seen["a mention's line of two lines"] >= 5, seen
-    assert seen["of a passage of several lines"] >= 300, seen
-    assert seen["line cut to the term's start"] >= 20, seen
+    if is_full():
+        assert min(seen[k] for k in each) >= 100, seen
+        assert seen["a mention's line whole"] >= 200 and seen["a mention's line cut"] >= 500, seen
+        assert seen["a mention after a line that holds none"] >= 200, seen
+        assert seen["a mention's line of two lines"] >= 5, seen
+        assert seen["of a passage of several lines"] >= 300, seen
+        assert seen["line cut to the term's start"] >= 20, seen
+    else:
+        assert min(seen[k] for k in each) >= 15, seen
+        assert seen["a mention's line whole"] >= 30 and seen["a mention's line cut"] >= 50, seen
+        assert seen["a mention after a line that holds none"] >= 30, seen
+        assert seen["a mention's line of two lines"] >= 1, seen
+        assert seen["of a passage of several lines"] >= 40, seen
+        assert seen["line cut to the term's start"] >= 2, seen
 
 
 def test_the_same_holds_of_claims_that_hold_a_mark_of_the_index_or_a_null(monkeypatch):
@@ -775,7 +798,8 @@ def test_a_relation_holds_from_both_sides(world):
                 pairs += 1
                 if shares[other].get((slug, kind, term)) != pages:
                     one_sided.append((project["name"], slug, other, kind))
-    assert one_sided == [] and pairs >= 500, (one_sided[:5], pairs)
+    min_pairs = 500 if is_full() else 80
+    assert one_sided == [] and pairs >= min_pairs, (one_sided[:5], pairs)
 
 
 def test_pages_stand_heaviest_first_and_equal_weights_by_slug(world):

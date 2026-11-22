@@ -340,6 +340,7 @@ def test_data_images_are_dropped_and_their_alt_text_kept_and_other_images_stay()
     ]
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize(
     "line",
     [

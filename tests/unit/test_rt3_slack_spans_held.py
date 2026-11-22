@@ -426,12 +426,13 @@ def test_the_note_is_at_most_a_constant_times_the_message(shape):
 def best_of_three(sent: dict) -> float:
     times = []
     for _ in range(3):
-        start = time.perf_counter()
+        start = time.process_time()
         filed(sent)
-        times.append(time.perf_counter() - start)
+        times.append(time.process_time() - start)
     return min(times)
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("shape", SHAPES)
 def test_filing_takes_time_linear_in_the_message(shape):
     """Eight times the spans (four times where each span's run grows with the message) may

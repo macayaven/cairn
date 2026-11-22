@@ -81,9 +81,12 @@ from cairn.llm import FakeModel
 from cairn.memory import Memory, RequestError
 from cairn.spans import CLOSERS_MAX, chunk, compared_text
 from cairn.store import Page, Store
+from support.fuzz import chunk_seeds, fuzz_budget, is_full
 
-SEED, CASES, STEPS = 20261121, 300, 14
-FENCE_CASES = 20
+SEED, STEPS = 20261121, 14
+CASES = fuzz_budget(60, 300)
+FENCE_CASES = fuzz_budget(8, 20)
+_WALK_CHUNKS = chunk_seeds(CASES, 4)
 TRIPLE = ("- step {n}", "    ~~~\n    sample {n}", "  After {n}.")  # the third report's notes
 TOPICS = (("Fable Works log", "fable works LOG"), ("Quill ports", "Quill  ports."))
 # The reviewer's input: the first spelling is seven bytes, the one that stays is three.
@@ -441,13 +444,17 @@ def test_the_reviewers_input_forgotten_leaves_the_survivors_bytes_and_round_trip
         target.close()
 
 
+@pytest.mark.fuzz
+@pytest.mark.parametrize(
+    "case_range", _WALK_CHUNKS, ids=[f"{r.start}:{r.stop}" for r in _WALK_CHUNKS]
+)
 def test_every_walk_exports_and_imports_every_version_and_keeps_only_bytes_it_cites(
-    tmp_path, caplog
+    tmp_path, caplog, case_range: range
 ):
     found: dict[str, list[tuple[str, str, list[str]]]] = {}
     totals: Counter = Counter()
     caplog.set_level(logging.WARNING, logger="cairn.store")
-    for n in range(CASES):
+    for n in case_range:
         name = f"w{n:03d}"
         store = Store(tmp_path / f"{name}.db")  # its own, so a refused import hides no other
         caplog.clear()
@@ -463,10 +470,11 @@ def test_every_walk_exports_and_imports_every_version_and_keeps_only_bytes_it_ci
             found.setdefault(kind, []).append((name, where, steps))
     # every operation ran, and the path of the finding with it
     assert all(totals[k] for k in ("file", "again", "tidy", "arrange", "forget")), totals
-    assert totals["a fold lost its first spelling"] >= CASES // 10, totals
+    assert totals["a fold lost its first spelling"] >= max(1, len(case_range) // 10), totals
     assert not found, report(found, totals)
 
 
+@pytest.mark.fuzz
 def test_every_fence_walk_leaves_no_fence_running_from_one_claim_into_the_next(tmp_path):
     found: dict[str, list[tuple[str, str, list[str]]]] = {}
     totals: Counter = Counter()
@@ -475,7 +483,7 @@ def test_every_fence_walk_leaves_no_fence_running_from_one_claim_into_the_next(t
         store = Store(tmp_path / f"{name}.db")
         try:
             store.create_project(name)
-            rng = random.Random(SEED * 1000 + CASES + n)
+            rng = random.Random(SEED * 1000 + 300 + n)
             steps, faults, done = walk(store, name, rng, tmp_path, fences=True)
         finally:
             store.close()
@@ -485,4 +493,5 @@ def test_every_fence_walk_leaves_no_fence_running_from_one_claim_into_the_next(t
     assert not found, report(found, totals)
     assert all(totals[k] for k in ("file", "again", "tidy steps", "forget")), totals
     # the path of the finding ran: a forget brought a seventeenth such fence together
-    assert totals["a forget took a claim that would leave a fence open"] >= 5, totals
+    min_open = 5 if is_full() else 1
+    assert totals["a forget took a claim that would leave a fence open"] >= min_open, totals

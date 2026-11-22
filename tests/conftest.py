@@ -32,8 +32,15 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     return None
 
 
+PERF_ACCEPTANCE_FILES = frozenset({"test_g1_gate_bounds.py", "test_t5c_structure.py"})
+TEST_HARNESS_ENV = frozenset({"CAIRN_FUZZ_PROFILE", "CAIRN_REQUIRE_TOFU"})
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """A run that names the folder or a file in it, without the flag, runs none of them."""
+    """Tag fixed-contract timing acceptance modules and deselect browser tests unless opted in."""
+    for item in items:
+        if item.path.name in PERF_ACCEPTANCE_FILES:
+            item.add_marker(pytest.mark.perf)
     if config.getoption("--run-browser"):
         return
     browser = [item for item in items if item.path.is_relative_to(BROWSER_TESTS)]
@@ -86,5 +93,8 @@ def every_page_keeps_the_names_its_frame_reads():
 
 @pytest.fixture(autouse=True)
 def no_cairn_settings_from_the_shell(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in [name for name in os.environ if name.startswith("CAIRN_")]:
+    to_clear = [
+        name for name in os.environ if name.startswith("CAIRN_") and name not in TEST_HARNESS_ENV
+    ]
+    for name in to_clear:
         monkeypatch.delenv(name)

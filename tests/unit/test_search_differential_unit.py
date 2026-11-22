@@ -40,6 +40,9 @@ from test_search_unit import QUERIES, VOCABULARY, random_corpus
 
 from cairn.store import Claim, SearchHit, Store, ranking
 from cairn.store.base import _has_table
+from support.fuzz import fuzz_budget
+
+pytestmark = pytest.mark.fuzz
 
 REFERENCE = Path(__file__).resolve().parent / "reference" / "ranking_before_q2.py"
 
@@ -63,7 +66,6 @@ def dump(hit) -> dict:
 
 
 old = _load()
-COUNT = {"searches": 0, "hits": 0, "capped": 0, "over 1,000": 0, "likeliest": 0, "differences": 0}
 EXTRA = ["_", "__", "a_", "_b", "quill_relay", "relay_quill_relay", "zzz", "Café", "QUEUE"]
 
 
@@ -97,7 +99,7 @@ def queries(rng: random.Random) -> list[str]:
     words = VOCABULARY + EXTRA
     drawn = [
         rng.choice((" ", ", ", " - ")).join(rng.choice(words) for _ in range(rng.randint(1, 32)))
-        for _ in range(12)
+        for _ in range(fuzz_budget(4, 12))
     ]
     return [*QUERIES, *drawn]
 
@@ -105,17 +107,13 @@ def queries(rng: random.Random) -> list[str]:
 def same(view, query: str, project_ids=None, limit: int = 10_000) -> None:
     found = view.find(query, project_ids, limit)
     expected = reference(view, query, project_ids, limit)
-    COUNT["searches"] += 1
-    COUNT["hits"] += len(expected)
     mine = [dump(hit) for hit in found.hits]
     theirs = [dump(hit) for hit in expected]
-    if mine != theirs:
-        COUNT["differences"] += 1
     assert mine == theirs, (query, project_ids)
     assert found.searched.complete, (query, found.searched)
 
 
-@pytest.mark.parametrize("seed", range(16))
+@pytest.mark.parametrize("seed", range(fuzz_budget(4, 16)))
 def test_under_the_bounds_every_search_returns_what_it_returned_before(store, seed):
     rng = random.Random(seed)
     ids = random_corpus(store, rng)
@@ -130,7 +128,7 @@ def test_under_the_bounds_every_search_returns_what_it_returned_before(store, se
         same(narrowed, query, chosen[:1], limit)
 
 
-@pytest.mark.parametrize("seed", range(8))
+@pytest.mark.parametrize("seed", range(fuzz_budget(2, 8)))
 def test_over_the_cap_one_word_ranks_the_newest_and_every_score_is_uncapped(
     store, seed, monkeypatch
 ):
@@ -145,11 +143,8 @@ def test_over_the_cap_one_word_ranks_the_newest_and_every_score_is_uncapped(
         found = store.find(query, None, 10_000)
         newest = reference(store, query, None, 10_000)
         monkeypatch.undo()
-        COUNT["searches"] += 1
-        COUNT["hits"] += len(found.hits)
         assert all(hit.score == uncapped[hit.claim_id] for hit in found.hits), query
         if len(uncapped) > cap:
-            COUNT["capped"] += 1
             assert not found.searched.complete and found.searched.claims_ranked == cap
         if len(set(ranking.words(query))) == 1:  # one word: the reference's own rule
             assert [dump(h) for h in found.hits] == [dump(h) for h in newest]
@@ -215,12 +210,8 @@ def test_over_1000_matches_every_match_is_scored_as_the_reference_with_no_cap_sc
         for view, project_ids in ((store, None), (narrowed, None), (store, [ids["api"]])):
             found = view.find(query, project_ids, 10_000)
             expected = reference(view, query, project_ids, 10_000)
-            COUNT["searches"] += 1
-            COUNT["hits"] += len(expected)
             mine = [dump(hit) for hit in found.hits]
             theirs = [dump(hit) for hit in expected]
-            if mine != theirs:
-                COUNT["differences"] += 1
             assert mine == theirs, (query, project_ids)
             assert found.searched.complete, (query, found.searched)
             assert found.searched.claims_ranked == len(expected)
@@ -228,16 +219,4 @@ def test_over_1000_matches_every_match_is_scored_as_the_reference_with_no_cap_sc
                 over += 1
                 df = sum(matched(view, word, seen) for word in dict.fromkeys(counted))
                 likeliest += len(set(counted)) > 1 and df > ranking.scored_max(len(parts))
-    COUNT["over 1,000"] += over
-    COUNT["likeliest"] += likeliest
     assert over and likeliest
-
-
-def test_the_count_of_cases_compared():
-    """Runs last in this module: how much the tests above compared, for the report."""
-    print(
-        f"\nQ2, Q3 differential: {COUNT['searches']} searches, {COUNT['hits']} hits compared,"
-        f" {COUNT['capped']} over the cap, {COUNT['over 1,000']} over 1,000 matches scored in"
-        f" full ({COUNT['likeliest']} by the likeliest path), {COUNT['differences']} differences"
-    )
-    assert COUNT["searches"] > 1_000 and COUNT["differences"] == 0

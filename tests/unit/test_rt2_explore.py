@@ -80,6 +80,8 @@ from test_rt2_github import (
     stable_key,
 )
 
+pytestmark = [pytest.mark.ci_meta, pytest.mark.fuzz]
+
 PRE_FIX = "27aff19f"  # the step the sixth review refused, read from history
 
 

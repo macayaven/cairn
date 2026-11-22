@@ -52,9 +52,9 @@ def best_of_five(work: Callable[[], object]) -> float:
     try:
         times = []
         for _ in range(5):
-            started = time.perf_counter()
+            started = time.process_time()
             work()
-            times.append(time.perf_counter() - started)
+            times.append(time.process_time() - started)
         return min(times)
     finally:
         gc.enable()
@@ -84,6 +84,7 @@ def numbers(n: int) -> str:
     return " ".join(str(1000 + i) for i in range(n))
 
 
+@pytest.mark.perf
 def test_extracting_one_passage_of_numbers_is_near_linear():
     """Each match was checked against every range claimed before it."""
     assert_near_linear(extraction(numbers), 400)
@@ -95,6 +96,7 @@ def joined_pieces(n: int) -> str:
     return " ".join(shapes[i % 5].format(i % 900 + 1, i % 1000) for i in range(n))
 
 
+@pytest.mark.perf
 def test_extracting_numbers_a_comma_joins_is_near_linear():
     """G2 finds the commas normalize() takes out and skips the facts that start or end at one:
     many short runs of each shape, one long run of groups after a letter, and one long head of
@@ -104,10 +106,12 @@ def test_extracting_numbers_a_comma_joins_is_near_linear():
     assert_near_linear(extraction(lambda n: "x1" + "2" * n + ",000"), 100_000)
 
 
+@pytest.mark.perf
 def test_extracting_one_passage_of_inline_code_is_near_linear():
     assert_near_linear(extraction(lambda n: "`a` " * n), 400)
 
 
+@pytest.mark.perf
 def test_inline_code_that_keeps_its_white_space_is_near_linear():
     """Each fact with white space inside its code reads where the code is (review blocker 3):
     found once a passage, and looked up, never copied, for each fact."""
@@ -115,6 +119,7 @@ def test_inline_code_that_keeps_its_white_space_is_near_linear():
     assert_near_linear(lambda n: lambda text="`a  b` " * n: normalize(text), 4_000)
 
 
+@pytest.mark.perf
 def test_a_long_run_of_scheme_characters_is_near_linear():
     """The url pattern was tried at every word start of "a.a.a...", and each try scanned to the
     run's end looking for "://": 1.3 s for 32,000 characters, four times as long as 8,000."""
@@ -122,6 +127,7 @@ def test_a_long_run_of_scheme_characters_is_near_linear():
     assert_near_linear(extraction(lambda n: "a-" * n + "://."), 2_000)  # "://", no url after it
 
 
+@pytest.mark.perf
 def test_backtick_runs_of_many_lengths_on_one_line_are_near_linear():
     """An inline-code opener with no closing run of its length on the line scanned to the end of
     the line; a line with runs of 1, 2, 3, ... backticks paid that once per length, its length
@@ -239,6 +245,7 @@ def test_placement_reads_each_source_span_a_bounded_number_of_times(monkeypatch)
     assert work <= bound, f"{work:,} units of work for {size:,} characters of input"
 
 
+@pytest.mark.perf
 def test_linting_a_dense_page_is_near_linear():
     def make(n: int) -> Callable[[], object]:
         pages, spans = gate_like(numbers(n))
@@ -247,6 +254,7 @@ def test_linting_a_dense_page_is_near_linear():
     assert_near_linear(make, 1_000)
 
 
+@pytest.mark.perf
 def test_linting_a_page_of_symbol_values_is_near_linear():
     """Values with no token character: before P1, and still in the run-anchored matcher of
     910e549, each was handed to `_occurs`, a read of the whole text per value."""
@@ -258,6 +266,7 @@ def test_linting_a_page_of_symbol_values_is_near_linear():
     assert_near_linear(make, 1_000)
 
 
+@pytest.mark.perf
 def test_many_values_around_one_word_met_at_many_places_are_near_linear():
     """Values "-a", "a--", "--a-", ... share their one run "a", at different offsets and
     lengths, and "a" occurs all over the text: each place was checked for each value, or each
@@ -273,6 +282,7 @@ def test_many_values_around_one_word_met_at_many_places_are_near_linear():
     assert_near_linear(make, 1_000, times=16, bound=40)
 
 
+@pytest.mark.perf
 def test_one_long_value_whose_word_recurs_through_the_text_is_near_linear():
     """A value "a-a-a-...-b" anchored on a word the text repeats was compared at each place
     for as long as the text followed it: places times the value's length. The run-anchored
@@ -286,6 +296,7 @@ def test_one_long_value_whose_word_recurs_through_the_text_is_near_linear():
     assert_near_linear(make, 2_000, times=16, bound=40)
 
 
+@pytest.mark.perf
 def test_finding_each_claim_in_the_body_is_near_linear():
     """Each claim was looked for with `in`, reading the body from its start: claims times body.
     The old `[text in body for text in texts]` took 48x the time for 8x the claims."""
@@ -298,6 +309,7 @@ def test_finding_each_claim_in_the_body_is_near_linear():
     assert_near_linear(make, 8_000)
 
 
+@pytest.mark.perf
 def test_one_claim_citing_many_spans_is_near_linear():
     """Grounding looked for each fact of a claim in each span it cites: one claim of n numbers
     citing n short spans was n * n reads (1.6 s for n = 4,000 before P1, 5.3 s at 2e1cc2c)."""
@@ -314,6 +326,7 @@ def test_one_claim_citing_many_spans_is_near_linear():
     assert_near_linear(make, 500)
 
 
+@pytest.mark.perf
 def test_many_entities_over_many_spans_is_near_linear():
     """Each span asked every entity whether each segment of its heading path names it, though
     the spans share their segments: entities times spans. Eight times the entities and the
@@ -335,6 +348,7 @@ def test_many_entities_over_many_spans_is_near_linear():
     assert_near_linear(make, 400)
 
 
+@pytest.mark.perf
 def test_a_line_of_backticks_with_one_more_after_it_is_near_linear():
     """The fence pattern tried every shorter backtick run, and each try read the rest of the
     line looking for a backtick. (cairn.spans has the same pattern; it is outside P1.)"""
@@ -369,6 +383,7 @@ def _small_pages() -> dict[str, str]:
     }
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("name", sorted(_small_pages()))
 def test_a_small_page_lints_about_as_fast_as_before_p1(name):
     old_facts, old_lint = _reference("facts_before_p1"), _reference("lint_before_p1")
@@ -394,10 +409,10 @@ def test_a_small_page_lints_about_as_fast_as_before_p1(name):
     try:
         for _ in range(11):
             for label, run in work.items():
-                started = time.perf_counter()
+                started = time.process_time()
                 for _ in range(5):
                     run()
-                times[label] = min(times[label], time.perf_counter() - started)
+                times[label] = min(times[label], time.process_time() - started)
     finally:
         gc.enable()
     ratio = times["now"] / times["before"]

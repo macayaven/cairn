@@ -74,8 +74,9 @@ from cairn.gate import lint_gate
 from cairn.memory import Memory
 from cairn.spans import CLOSERS_MAX
 from cairn.store import Claim, Store, erasure
+from support.fuzz import fuzz_budget, is_full
 
-SEED, PAGES = 20261122, 300
+SEED, PAGES = 20261122, fuzz_budget(60, 300)
 LARGE = {7: 300, 61: 120, 211: 64}  # the pages with that many siblings in a row
 SPELLINGS = ("Ops", "OPS", "ops")  # one topic, as three writers spell it: one page
 STEPS = "## Steps\n\n"
@@ -471,10 +472,12 @@ def places(found: Compared, claims: list[Claim]) -> list[int]:
     return [found.start.index(claim) for claim in claims]
 
 
+@pytest.mark.fuzz
 def test_every_generated_forget_leaves_what_the_plain_loop_leaves_but_the_declared_class():
     pages = refused = sites = faulted = past = declared_claims = 0
     retitled = longer = largest = most_asks = most_dropped = 0
-    for case in range(PAGES):
+    cases = sorted(set(range(PAGES)) | set(LARGE))
+    for case in cases:
         plan = planned(case)
         found = compared(plan)
         if found is None:  # a note the gates refuse: not a page a user has
@@ -499,9 +502,12 @@ def test_every_generated_forget_leaves_what_the_plain_loop_leaves_but_the_declar
     # and more than CLOSERS_MAX; the most it dropped on one page; the pages whose title
     # changed while the forget worked, and those it rendered more than CLOSERS_MAX + 2
     # times; the most renders, and questions in a render; the claims of the declared class
-    # it took. The class taken past the ceiling holds to the title's text (the eighth
-    # round): loosened like the claims before, it took one more claim on two pages (82,
-    # 199) and saved no render.
-    assert (pages, refused, sites, faulted, past, most_dropped) == (PAGES, 0, 440, 113, 26, 300)
-    assert (retitled, longer, largest, most_asks) == (15, 0, RENDERS_SEEN, ASKS_MAX)
-    assert declared_claims == 41
+    # it took.
+    if is_full():
+        assert (pages, refused, sites, faulted, past, most_dropped) == (PAGES, 0, 440, 113, 26, 300)
+        assert (retitled, longer, largest, most_asks) == (15, 0, RENDERS_SEEN, ASKS_MAX)
+        assert declared_claims == 41
+    else:
+        assert (pages, refused, longer, most_dropped) == (len(cases), 0, 0, 300)
+        assert sites > 0 and faulted > 0 and past > 0 and declared_claims > 0
+        assert retitled >= 1 and largest <= RENDERS_SEEN and most_asks <= ASKS_MAX

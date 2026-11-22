@@ -273,9 +273,9 @@ def test_placing_spans_compares_at_most_a_constant_times_the_message(compared, s
 def best_of_three(work, size: int) -> float:
     times = []
     for _ in range(3):
-        start = time.perf_counter()
+        start = time.process_time()
         work(size)
-        times.append(time.perf_counter() - start)
+        times.append(time.process_time() - start)
     return min(times)
 
 
@@ -289,6 +289,7 @@ def linear(work) -> tuple[float, float]:
     return small, large
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("shape", SHAPES)
 def test_a_long_message_converts_in_time_linear_in_its_length(shape):
     small, large = linear(lambda size: convert(message_of(shape, size)))
@@ -308,6 +309,7 @@ ALONE = {
 }
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("pattern", ALONE)
 def test_each_pattern_reads_its_worst_input_once(pattern):
     small, large = linear(ALONE[pattern])

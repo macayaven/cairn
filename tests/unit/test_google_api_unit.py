@@ -333,6 +333,7 @@ def test_what_looks_like_a_credential(value, looks):
     assert api.looks_like_a_credential(value) is looks
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize(
     "text",
     [

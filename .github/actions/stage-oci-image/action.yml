@@ -1,0 +1,177 @@
+name: Stage OCI archive in local registry
+description: Download the built OCI archive, verify its SHA-256, stage it into a local registry:2 container via oras, check manifest architecture(s), and optionally pull the target platform image.
+inputs:
+  digest:
+    description: Expected OCI index SHA-256 digest (sha256:...)
+    required: true
+  archive-sha256:
+    description: Expected SHA-256 of cairn.oci.tar
+    required: true
+  native-platform:
+    description: Native platform for registry:2 container (linux/amd64 or linux/arm64)
+    required: true
+  amd64-digest:
+    description: Expected linux/amd64 manifest digest for full copy/arch verification
+    required: false
+    default: ""
+  arm64-digest:
+    description: Expected linux/arm64 manifest digest for full copy/arch verification
+    required: false
+    default: ""
+  check-copy:
+    description: Run OCI layout copy round-trip check against index, amd64, arm64 digests
+    required: false
+    default: "false"
+  pull-image:
+    description: Optional registry image reference (with digest) to check and docker pull
+    required: false
+    default: ""
+  pull-platform:
+    description: Target platform for manifest check and docker pull (e.g. linux/amd64 or linux/arm64)
+    required: false
+    default: "linux/amd64"
+  pull-arch:
+    description: Expected docker image architecture (amd64 or arm64) when pulling
+    required: false
+    default: "amd64"
+  local-tag:
+    description: Local tag to apply after pulling
+    required: false
+    default: "cairn:ci"
+  stop-registry:
+    description: Whether to stop cairn-registry after staging/pulling ("true" or "false")
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Download the built image archive
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: image
+        path: ${{ runner.temp }}/image
+    - name: Install oras
+      uses: ./.github/actions/install-pinned-binary
+      with:
+        tool: oras
+    - name: Push the build to a registry on the runner
+      shell: bash
+      env:
+        DIGEST: ${{ inputs.digest }}
+        ARCHIVE: ${{ inputs.archive-sha256 }}
+        NATIVE: ${{ inputs.native-platform }}
+        AMD64: ${{ inputs.amd64-digest }}
+        ARM64: ${{ inputs.arm64-digest }}
+        CHECK_COPY: ${{ inputs.check-copy }}
+      run: |
+        set -euo pipefail
+        cd "$RUNNER_TEMP/image"
+        printf '%s  %s\n' "$ARCHIVE" cairn.oci.tar | sha256sum --check --strict
+        rm -rf layout
+        mkdir layout
+        tar -xf cairn.oci.tar -C layout
+        docker rm --force cairn-registry > /dev/null 2>&1 || true
+        docker run --detach --name cairn-registry --platform "$NATIVE" \
+          --publish 127.0.0.1:5000:5000 \
+          registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        for attempt in $(seq 30); do
+          curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
+          sleep 1
+        done
+        image=localhost:5000/cairn
+        oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"
+        oras repo tags --plain-http "$image" > "$RUNNER_TEMP/published"
+        grep -Fxq ci "$RUNNER_TEMP/published" || {
+          echo "::error::the registry's tags do not list ci after the push"
+          exit 1
+        }
+        oras tag --plain-http "$image@$DIGEST" rehearsed
+        for name in ci rehearsed; do
+          pushed="$(oras manifest fetch --plain-http "$image:$name" | sha256sum)"
+          if [ "sha256:${pushed%% *}" != "$DIGEST" ]; then
+            echo "::error::$image:$name is sha256:${pushed%% *}, not the build's $DIGEST"
+            exit 1
+          fi
+        done
+        if [ "$CHECK_COPY" = "true" ]; then
+          copied="$RUNNER_TEMP/copied"
+          rm -rf "$copied"
+          mkdir -p "$copied"
+          oras cp --to-oci-layout "$image@$DIGEST" "$copied/layout:main"
+          tar -cf "$copied/cairn.oci.tar" -C "$copied/layout" oci-layout index.json blobs
+          rm -f "$RUNNER_TEMP/copied.env"
+          python3 "${GITHUB_WORKSPACE:-.}/scripts/oci_archive.py" "$copied/cairn.oci.tar" --root "$DIGEST" --github-output "$RUNNER_TEMP/copied.env"
+          copy_digest=""
+          copy_amd64=""
+          copy_arm64=""
+          while IFS='=' read -r k v; do
+            case "$k" in
+              digest) copy_digest="$v" ;;
+              amd64) copy_amd64="$v" ;;
+              arm64) copy_arm64="$v" ;;
+            esac
+          done < "$RUNNER_TEMP/copied.env"
+          COPIED="$copy_digest $copy_amd64 $copy_arm64"
+          BUILT="$DIGEST $AMD64 $ARM64"
+          if [ "$COPIED" != "$BUILT" ]; then
+            echo "::error::the copy read back from the registry is $COPIED (index, amd64, arm64), not the build's $BUILT"
+            exit 1
+          fi
+          for pair in "linux/amd64:$AMD64" "linux/arm64:$ARM64"; do
+            platform="${pair%%:*}"
+            plat_digest="${pair#*:}"
+            ref="$image@$plat_digest"
+            oras manifest fetch --plain-http "$ref" > "$RUNNER_TEMP/manifest.json"
+            oras manifest fetch-config --plain-http "$ref" > "$RUNNER_TEMP/config.json"
+            IMAGE="$ref" PLATFORM="$platform" python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+        import json, os, sys
+        manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+        image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+        kind = manifest.get("mediaType")
+        if kind != "application/vnd.oci.image.manifest.v1+json":
+            sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+        built_for = f"{config.get('os')}/{config.get('architecture')}"
+        if built_for != platform:
+            sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+        print(f"{image} is one image, built for {platform}")
+        CHECK
+          done
+        fi
+    - name: Check that this platform's image is built for it
+      if: inputs.pull-image != ''
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.pull-image }}
+        PLATFORM: ${{ inputs.pull-platform }}
+      run: |
+        set -euo pipefail
+        oras manifest fetch --plain-http "$IMAGE" > "$RUNNER_TEMP/manifest.json"
+        oras manifest fetch-config --plain-http "$IMAGE" > "$RUNNER_TEMP/config.json"
+        python3 - "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/config.json" <<'CHECK'
+        import json, os, sys
+        manifest, config = (json.load(open(path)) for path in sys.argv[1:])
+        image, platform = os.environ["IMAGE"], os.environ["PLATFORM"]
+        kind = manifest.get("mediaType")
+        if kind != "application/vnd.oci.image.manifest.v1+json":
+            sys.exit(print(f"::error::{image} is a {kind}, not one image") or 1)
+        built_for = f"{config.get('os')}/{config.get('architecture')}"
+        if built_for != platform:
+            sys.exit(print(f"::error::{image} is built for {built_for}, not {platform}") or 1)
+        print(f"{image} is one image, built for {platform}")
+        CHECK
+    - name: Pull this platform of the build
+      if: inputs.pull-image != ''
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.pull-image }}
+        PLATFORM: ${{ inputs.pull-platform }}
+        ARCH: ${{ inputs.pull-arch }}
+        LOCAL: ${{ inputs.local-tag }}
+        STOP_REGISTRY: ${{ inputs.stop-registry }}
+      run: |
+        docker pull --platform "$PLATFORM" "$IMAGE"
+        docker tag "$IMAGE" "$LOCAL"
+        test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = "$ARCH"
+        if [ "$STOP_REGISTRY" = "true" ]; then
+          docker rm --force cairn-registry
+        fi

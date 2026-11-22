@@ -35,9 +35,13 @@ _spec = importlib.util.spec_from_file_location(
 release_check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(release_check)
 
-RECEIVE = "Push the build to a registry on the runner, as publish pushes it"
+RECEIVE = "Push the build to a registry on the runner"
 PUSH = "Push the scanned build"
 ALIAS = "Point latest and each X.Y at the highest release"
+STAGE_ACTION = yaml.safe_load(
+    (REPO / ".github" / "actions" / "stage-oci-image" / "action.yml").read_text(encoding="utf-8")
+)
+STAGE_STEPS = {s["name"]: s for s in STAGE_ACTION["runs"]["steps"]}
 
 
 def step(job: str, name: str) -> dict:
@@ -74,7 +78,16 @@ case "${args[0]} ${args[1]}" in
     [ -z "$TAGS_FAIL" ] || exit 1
     ls "$REG" ;;
   "manifest fetch-config")
-    printf '%s' "$IMAGE_CONFIG" ;;
+    if [ -n "$IMAGE_CONFIG" ]; then
+      printf '%s' "$IMAGE_CONFIG"
+    else
+      ref="${args[2]}"
+      mf="$(by_digest "${ref#*@}")" || exit 1
+      cfg="$(python3 -c 'import json, sys
+print(json.load(open(sys.argv[1]))["config"]["digest"])' "$mf")"
+      cf="$(by_digest "$cfg")" || exit 1
+      cat "$cf"
+    fi ;;
   "manifest fetch")
     ref="${args[2]}"
     if [ -n "$IMAGE_MANIFEST" ] && [ "$ref" = "$IMAGE" ]; then
@@ -186,7 +199,9 @@ def test_image_build_builds_once_reads_only_and_hands_on_one_archive():
     job = JOBS["image_build"]
     # attestations: read, for a tag to read main's attestation of the image it promotes.
     assert job["permissions"] == {"contents": "read", "attestations": "read"}
-    assert "if" not in job and "needs" not in job and "environment" not in job
+    assert job["needs"] == "changes"
+    assert job["if"] == "needs.changes.outputs.image != 'false'"
+    assert "environment" not in job
     configuration = yaml.safe_dump(job)
     assert "secrets." not in configuration and "login" not in configuration
     # The read token reaches the checkout, and the build action by its default (for a Git
@@ -227,40 +242,64 @@ def test_image_build_builds_once_reads_only_and_hands_on_one_archive():
     assert builders == {"image_build"}
 
 
-# --- the scan and the image check receive it as publish does -------------------------------------
+# --- the scan and the image check receive it via stage-oci-image --------------------------------
 
 
-def test_the_scan_and_the_image_check_receive_the_build_with_one_step():
-    receive = step("image_scan", RECEIVE)
-    assert receive == step("image", RECEIVE)
-    assert receive["env"] == {
-        "DIGEST": "${{ needs.image_build.outputs.digest }}",
-        "ARCHIVE": "${{ needs.image_build.outputs.archive }}",
-        "NATIVE": "${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}",
+def test_the_scan_and_the_image_check_receive_the_build_via_stage_oci_image():
+    download = STAGE_STEPS["Download the built image archive"]
+    assert download["uses"].startswith("actions/download-artifact@")
+    assert download["with"] == {"name": "image", "path": "${{ runner.temp }}/image"}
+    receive = STAGE_STEPS[RECEIVE]
+    assert receive["env"]["DIGEST"] == "${{ inputs.digest }}"
+    assert receive["env"]["ARCHIVE"] == "${{ inputs.archive-sha256 }}"
+    assert receive["env"]["NATIVE"] == "${{ inputs.native-platform }}"
+
+    scan_stage = next(
+        s
+        for s in JOBS["image_scan"]["steps"]
+        if s.get("uses") == "./.github/actions/stage-oci-image"
+    )
+    assert scan_stage["with"] == {
+        "digest": "${{ needs.image_build.outputs.digest }}",
+        "archive-sha256": "${{ needs.image_build.outputs.archive }}",
+        "native-platform": "${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}",
+        "amd64-digest": "${{ needs.image_build.outputs.amd64 }}",
+        "arm64-digest": "${{ needs.image_build.outputs.arm64 }}",
+        "check-copy": "true",
     }
-    assert step("image_scan", CHECK) == step("image", CHECK)
-    for job in ("image_scan", "image"):
-        names = [s.get("name") for s in JOBS[job]["steps"]]
-        assert names.index("Fetch the build") < names.index(RECEIVE) < names.index(CHECK)
-        assert "image_build" in needs(JOBS[job])
-        # This leg's platform is named by its own manifest digest, which holds one image.
-        assert JOBS[job]["env"]["IMAGE"] == (
-            "localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}"
-        )
-        assert JOBS[job]["env"]["PLATFORM"] == "${{ matrix.platform }}"
-        assert JOBS[job]["env"]["ARCH"] == "${{ matrix.arch }}"
-        arches = {entry["arch"] for entry in JOBS[job]["strategy"]["matrix"]["include"]}
-        assert arches == {"amd64", "arm64"} <= set(JOBS["image_build"]["outputs"])
-    # Only the image check runs the image, so only it pulls one into the engine.
+    assert "image_build" in needs(JOBS["image_scan"])
+    # Scan pulls nothing into the engine.
     assert not any("docker pull" in s.get("run", "") for s in JOBS["image_scan"]["steps"])
-    pull = step("image", "Pull this platform of the build")
+
+    image_job = JOBS["image"]
+    assert "image_build" in needs(image_job)
+    assert (
+        image_job["env"]["IMAGE"]
+        == "localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}"
+    )
+    assert image_job["env"]["PLATFORM"] == "${{ matrix.platform }}"
+    assert image_job["env"]["ARCH"] == "${{ matrix.arch }}"
+    arches = {entry["arch"] for entry in image_job["strategy"]["matrix"]["include"]}
+    assert arches == {"amd64", "arm64"} <= set(JOBS["image_build"]["outputs"])
+    image_stage = next(
+        s for s in image_job["steps"] if s.get("uses") == "./.github/actions/stage-oci-image"
+    )
+    assert (
+        image_stage["with"]["pull-image"]
+        == "localhost:5000/cairn@${{ needs.image_build.outputs[matrix.arch] }}"
+    )
+    assert image_stage["with"]["pull-platform"] == "${{ matrix.platform }}"
+    assert image_stage["with"]["pull-arch"] == "${{ matrix.arch }}"
+
+    pull = STAGE_STEPS["Pull this platform of the build"]
     assert lines(pull["run"]) == [
         'docker pull --platform "$PLATFORM" "$IMAGE"',
         'docker tag "$IMAGE" "$LOCAL"',
         'test "$(docker image inspect --format \'{{.Architecture}}\' "$LOCAL")" = "$ARCH"',
+        'if [ "$STOP_REGISTRY" = "true" ]; then',
+        "docker rm --force cairn-registry",
+        "fi",
     ]
-    names = [s.get("name") for s in JOBS["image"]["steps"]]
-    assert names.index(CHECK) < names.index("Pull this platform of the build")
 
 
 CHECK = "Check that this platform's image is built for it"
@@ -271,7 +310,7 @@ IMAGE_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 def check_platform(runner: Runner, media_type: str, os_arch: tuple[str, str]):
     image = "localhost:5000/cairn@sha256:" + "b" * 64
     return runner.run(
-        step("image_scan", CHECK)["run"],
+        STAGE_STEPS[CHECK]["run"],
         IMAGE=image,
         PLATFORM="linux/arm64",
         IMAGE_MANIFEST=f'{{"mediaType": "{media_type}"}}',
@@ -315,7 +354,7 @@ def test_no_step_takes_one_platform_by_the_index_digest_and_a_flag():
     acting = re.compile(
         r"\b(docker (pull|tag|run|image inspect|inspect)|trivy image|smoke_container)"
     )
-    for name, job in JOBS.items():
+    for name, job in [*JOBS.items(), ("stage-oci-image", {"steps": STAGE_ACTION["runs"]["steps"]})]:
         for s in job["steps"]:
             for line in lines(s.get("run", "")):
                 if not acting.search(line):
@@ -332,12 +371,12 @@ def lines(run: str) -> list[str]:
 def test_the_rehearsal_pushes_with_publish_s_own_lines():
     """The archive's check, its unpacking and the push by digest are publish's, word for word,
     except for the registry: a pull request runs every line of the push a tag runs."""
-    receive, push = lines(step("image_scan", RECEIVE)["run"]), lines(step("publish", PUSH)["run"])
+    receive, push = lines(STAGE_STEPS[RECEIVE]["run"]), lines(step("publish", PUSH)["run"])
     # publish copies from the archive only when the registry lacks the digest; those lines then
     # are the rehearsal's.
     unpack = push.index('cd "$RUNNER_TEMP/image"')
-    assert receive[0] == push[0] == "set -o pipefail"
-    assert receive[1:5] == push[unpack : unpack + 4]
+    assert receive[0] == "set -euo pipefail" and push[0] == "set -o pipefail"
+    assert [line for line in receive[1:6] if line != "rm -rf layout"] == push[unpack : unpack + 4]
     rehearsed = next(line for line in receive if line.startswith("oras cp "))
     published = next(line for line in push if line.startswith("oras cp "))
     assert rehearsed == 'oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "$image:ci"'
@@ -349,9 +388,13 @@ def test_the_rehearsal_pushes_with_publish_s_own_lines():
     assert '--platform "$NATIVE"' in " ".join(receive)
 
 
+def run_receive(runner: Runner, **env: str):
+    return runner.run(STAGE_STEPS[RECEIVE]["run"], CHECK_COPY="false", NATIVE="linux/amd64", **env)
+
+
 def test_the_rehearsal_pushes_the_build_and_reads_back_its_digest(tmp_path):
     runner = Runner(tmp_path)
-    done = runner.run(step("image_scan", RECEIVE)["run"])
+    done = run_receive(runner)
     assert done.returncode == 0, done.stdout + done.stderr
     built = digest(runner.built)
     assert runner.tags() == {"ci": built, "rehearsed": built}
@@ -366,13 +409,13 @@ def test_the_rehearsal_pushes_the_build_and_reads_back_its_digest(tmp_path):
 
 def test_an_archive_that_is_not_the_build_s_is_never_pushed(tmp_path):
     runner = Runner(tmp_path)
-    done = runner.run(step("image_scan", RECEIVE)["run"], ARCHIVE="0" * 64)
+    done = run_receive(runner, ARCHIVE="0" * 64)
     assert done.returncode != 0 and runner.oras_calls() == [] and runner.tags() == {}
 
 
 def test_a_push_that_reads_back_another_digest_stops_the_job(tmp_path):
     runner = Runner(tmp_path)
-    done = runner.run(step("image_scan", RECEIVE)["run"], DIGEST="sha256:" + "a" * 64)
+    done = run_receive(runner, DIGEST="sha256:" + "a" * 64)
     # oras cannot tag a digest the registry does not hold, and the job stops there.
     assert done.returncode != 0
     assert not any(call.startswith("manifest fetch") for call in runner.oras_calls())
@@ -380,7 +423,7 @@ def test_a_push_that_reads_back_another_digest_stops_the_job(tmp_path):
 
 def test_a_tag_that_reads_back_other_bytes_stops_the_rehearsal_in_one_line(tmp_path):
     runner = Runner(tmp_path)
-    done = runner.run(step("image_scan", RECEIVE)["run"], FETCH_OTHER="1")
+    done = run_receive(runner, FETCH_OTHER="1")
     assert done.returncode == 1
     other = digest(b"other bytes")
     built = digest(runner.built)
@@ -702,7 +745,8 @@ def test_the_aliases_job_asks_gh_for_releases_only_and_runs_one_at_a_time():
 def test_the_new_shell_steps_say_pipefail_first():
     """GitHub's default shell is `bash -e {0}`, without pipefail: a failed oras before a pipe
     would go unseen."""
-    for job, name in (("image_scan", RECEIVE), ("publish", PUSH), ("aliases", ALIAS)):
+    assert STAGE_STEPS[RECEIVE]["run"].startswith("set -euo pipefail\n")
+    for job, name in (("publish", PUSH), ("aliases", ALIAS)):
         assert step(job, name)["run"].startswith("set -o pipefail\n"), (job, name)
     assert "shell:" not in RAW_WORKFLOW
     assert re.search(r"oras manifest fetch .*\| sha256sum", step("aliases", ALIAS)["run"])

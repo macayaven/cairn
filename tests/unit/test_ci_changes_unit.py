@@ -671,7 +671,7 @@ def run_main(tmp_path, event_name, ref, sha, event, git, api=None) -> tuple[int,
 def test_main_writes_false_only_when_nothing_ships(tmp_path, capsys):
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), FakeGit(), api)
-    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\n"
+    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\nweb=false\n"
     said = capsys.readouterr().out
     assert "docs/x.md" in said and PUBLISHED in said and TOKEN not in said
     git = FakeGit(paths=("src/x.py",))
@@ -701,7 +701,7 @@ def test_main_writes_true_and_exits_zero_on_anything_unexpected(tmp_path):
     output = tmp_path / "out2"
     environ = {"GITHUB_EVENT_NAME": "push", "GITHUB_OUTPUT": str(output)}
     assert ci_changes.main(environ, FakeGit()) == 0
-    assert output.read_text() == "image=true\nquick=true\n"
+    assert output.read_text() == "image=true\nquick=true\nweb=true\n"
 
 
 def main_says(tmp_path, capsys, event_name, ref, event, git, api=None) -> str:
@@ -920,7 +920,7 @@ def test_each_path_is_printed_on_one_line_of_its_own(tmp_path, capsys, name):
 def test_a_path_with_only_names_on_the_list_keeps_its_verdict_whatever_it_prints(tmp_path):
     git = FakeGit(paths=("docs/a\nb.md", "docs/\udcff.md"))
     code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), git)
-    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\n"
+    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\nweb=false\n"
 
 
 def test_a_long_path_is_cut_and_says_so(tmp_path, capsys):
@@ -951,7 +951,7 @@ def test_a_line_stdout_cannot_encode_is_written_escaped(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdout", stdout)
     git = FakeGit(paths=("docs/a\N{LATIN SMALL LETTER N WITH TILDE}o.md", "docs/\U0001f600.md"))
     code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), git)
-    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\n"
+    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\nweb=false\n"
     assert stdout.getvalue().splitlines() == [
         "  docs/a\\xf1o.md",
         "  docs/\\U0001f600.md",
@@ -963,9 +963,9 @@ def test_a_stdout_that_takes_nothing_changes_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdout", Closed())
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), FakeGit(), api)
-    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\n"
+    assert code == 0 and out == "earlier=1\nimage=false\nquick=false\nweb=false\n"
     code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), FakeGit(("src/x",)))
-    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\n"
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\nweb=true\n"
 
 
 class Watching(io.StringIO):
@@ -1010,8 +1010,8 @@ def test_without_github_output_the_image_line_comes_first_on_stdout(tmp_path, ca
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     assert ci_changes.main(environ, FakeGit(), api) == 0
     said = capsys.readouterr().out.splitlines()
-    assert said[:2] == ["image=false", "quick=false"]
-    assert said[2].startswith("main: compared with ") and said[-1].startswith("image jobs")
+    assert said[:3] == ["image=false", "quick=false", "web=false"]
+    assert said[3].startswith("main: compared with ") and said[-1].startswith("image jobs")
 
 
 # --- on main: the head of the newest run that published an image ---------------------------
@@ -1492,7 +1492,7 @@ def test_a_release_tag_runs_every_job_without_asking_git_or_the_api(tmp_path):
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     git = FakeGit()  # its only changed path is docs/x.md, which alone would ship nothing
     code, out = run_main(tmp_path, "push", "refs/tags/v0.1.0", SHA, push_event(), git, api)
-    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\n"
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\nweb=true\n"
     assert git.calls == [] and api.calls == []
 
 
@@ -1542,37 +1542,64 @@ def test_every_path_the_quick_checks_list_exists():
             assert (REPO / entry).is_file(), entry
 
 
-def test_main_writes_quick_beside_image(tmp_path):
+def test_main_writes_quick_and_web_beside_image(tmp_path):
     api = FakeApi([run(9, head=PUBLISHED)], {9: published_job("success")})
     git = FakeGit(paths=("docs/x.md", "infra/quick/gcp/main.tf"))
     code, out = run_main(tmp_path, "push", MAIN, SHA, push_event(), git, api)
-    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\n"
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\nweb=false\n"
     git = FakeGit(paths=("src/x.py",))
     code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), git)
-    assert code == 0 and out == "earlier=1\nimage=true\nquick=false\n"
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=false\nweb=false\n"
+    git = FakeGit(paths=("src/cairn/web/app.py",))
+    code, out = run_main(tmp_path, "pull_request", "r", SHA, pr_event(), git)
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=false\nweb=true\n"
     # A tag: not known, so every check runs.
     code, out = run_main(tmp_path, "push", "refs/tags/v1.2.3-rc.1", SHA, push_event(), FakeGit())
-    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\n"
-    # Anything unexpected: both run.
+    assert code == 0 and out == "earlier=1\nimage=true\nquick=true\nweb=true\n"
+    # Anything unexpected: all outputs run.
     output = tmp_path / "out3"
     assert ci_changes.main({"GITHUB_EVENT_NAME": "push", "GITHUB_OUTPUT": str(output)}) == 0
-    assert output.read_text() == "image=true\nquick=true\n"
+    assert output.read_text() == "image=true\nquick=true\nweb=true\n"
 
 
-def test_the_scans_are_on_for_every_change():
-    """A secret can arrive in a document: the four scans read no output of this script, so a
-    change of documents only, or a draft, runs them all."""
-    assert ci_changes.ALWAYS == (
-        "dependencies",
-        "static_analysis",
-        "secrets",
-        "image_build",
-        "image_scan",
-    )
+@pytest.mark.parametrize(
+    ("paths", "expected"),
+    [
+        (["src/cairn/web/routes.py"], True),
+        (["src/cairn/templates/index.html"], True),
+        (["src/cairn/static/app.js"], True),
+        (["src/cairn/memory.py"], True),
+        (["tests/browser/test_home.py"], True),
+        (["tests/conftest.py"], True),
+        (["pyproject.toml"], True),
+        (["uv.lock"], True),
+        ([".github/workflows/ci-cd.yml"], True),
+        (["src/cairn/store/grants.py"], False),
+        (["docs/spec-v1.md"], False),
+        ([], True),
+        (None, True),
+    ],
+)
+def test_the_web_checks_run_only_for_web_work_or_unknown_paths(paths, expected):
+    assert ci_changes.web_verdict(paths) is expected
+
+
+def test_every_path_the_web_checks_list_exists():
+    for entry in ci_changes.WEB_WORK:
+        if entry.endswith("/"):
+            assert (REPO / entry).is_dir(), entry
+        else:
+            assert (REPO / entry).is_file(), entry
+
+
+def test_the_always_on_scans_and_daily_nightly_cve_scans_hold():
+    """A secret can arrive in a document: dependencies, static_analysis, and secrets read no
+    output of this script, while daily nightly.yml keeps continuous CVE scanning fresh."""
+    assert ci_changes.ALWAYS == ("dependencies", "static_analysis", "secrets")
     for name in ci_changes.ALWAYS:
         job = WORKFLOW["jobs"][name]
         assert "if" not in job, name
-        # The scan needs the build it scans, which is on the list too, and nothing else.
-        needed = job.get("needs", [])
-        assert set([needed] if isinstance(needed, str) else needed) <= {"image_build"}, name
+        assert not job.get("needs"), name
         assert "needs.changes" not in yaml.safe_dump(job), name
+    nightly = yaml.safe_load((REPO / ".github" / "workflows" / "nightly.yml").read_text("utf-8"))
+    assert {"dependencies", "image_scan"} <= set(nightly["jobs"])

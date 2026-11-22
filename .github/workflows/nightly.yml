@@ -1,0 +1,180 @@
+# Daily scheduled and manual deep checks on unchanged code:
+# - dependencies & multi-arch image CVE scans (catching newly disclosed CVEs between pushes)
+# - full-profile generated/differential fuzz sweeps (CAIRN_FUZZ_PROFILE=full, RT2_FULL=1)
+# - full Python 3.12 test run
+name: cairn-nightly
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependencies:
+    name: dependency vulnerabilities (pip-audit)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Install pip-audit
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/scan"
+          uv pip install --python "$RUNNER_TEMP/scan" --require-hashes -r .github/scanners/pip-audit.txt
+      - name: Export locked dependencies
+        run: >-
+          uv export --frozen --format requirements.txt --all-extras --all-groups
+          --no-emit-project --no-header -o "$RUNNER_TEMP/locked.txt"
+      - name: Audit dependencies
+        run: |
+          status=0
+          "$RUNNER_TEMP/scan/bin/pip-audit" --disable-pip --require-hashes --strict \
+            --progress-spinner off -r "$RUNNER_TEMP/locked.txt" -r build-constraints.txt \
+            --format json -o "$RUNNER_TEMP/audit.json" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::pip-audit could not audit the dependencies (exit $status)"
+            exit "$status"
+          fi
+          python3 .github/scanners/audit_policy.py "$RUNNER_TEMP/audit.json" \
+            .github/scanners/pip-audit-ignore.toml --summary "$GITHUB_STEP_SUMMARY"
+
+  image_scan:
+    name: multi-arch image CVE scan (Trivy)
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up QEMU
+        env:
+          DOCKER_DEFAULT_PLATFORM: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Make the directory the archive goes in
+        run: mkdir -p "$RUNNER_TEMP/image"
+      - name: Build linux/amd64 and linux/arm64
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=oci,dest=${{ runner.temp }}/image/cairn.oci.tar,name=cairn
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=image
+      - name: Check the archive and extract digests
+        id: archive
+        run: python3 scripts/oci_archive.py "$RUNNER_TEMP/image/cairn.oci.tar" --github-output "$GITHUB_OUTPUT"
+      - name: Install oras
+        uses: ./.github/actions/install-pinned-binary
+        with:
+          tool: oras
+      - name: Install trivy
+        uses: ./.github/actions/install-pinned-binary
+        with:
+          tool: trivy
+      - name: Cache Trivy vulnerability database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: trivy-db-
+      - name: Stage in local registry and scan amd64 and arm64
+        env:
+          DIGEST: ${{ steps.archive.outputs.digest }}
+          AMD64: ${{ steps.archive.outputs.amd64 }}
+          ARM64: ${{ steps.archive.outputs.arm64 }}
+          NATIVE: ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/image"
+          rm -rf layout
+          mkdir layout
+          tar -xf cairn.oci.tar -C layout
+          docker rm --force cairn-registry > /dev/null 2>&1 || true
+          trap 'docker rm --force cairn-registry > /dev/null 2>&1 || true' EXIT
+          docker run --detach --name cairn-registry --platform "$NATIVE" \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for attempt in $(seq 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break
+            sleep 1
+          done
+          oras cp --to-plain-http --from-oci-layout "layout@$DIGEST" "localhost:5000/cairn:nightly"
+          trivy image --image-src remote --insecure --scanners vuln --severity HIGH,CRITICAL \
+            --ignorefile "$GITHUB_WORKSPACE/.github/scanners/trivy-ignore.yaml" \
+            --format json --no-progress --output "$RUNNER_TEMP/trivy-amd64.json" \
+            "localhost:5000/cairn@$AMD64"
+          trivy image --image-src remote --insecure --scanners vuln --severity HIGH,CRITICAL \
+            --ignorefile "$GITHUB_WORKSPACE/.github/scanners/trivy-ignore.yaml" \
+            --format json --no-progress --output "$RUNNER_TEMP/trivy-arm64.json" \
+            "localhost:5000/cairn@$ARM64"
+          python3 "$GITHUB_WORKSPACE/.github/scanners/trivy_policy.py" \
+            "$RUNNER_TEMP/trivy-amd64.json" "$RUNNER_TEMP/trivy-arm64.json" \
+            --ignorefile "$GITHUB_WORKSPACE/.github/scanners/trivy-ignore.yaml" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+  fuzz_full:
+    name: full fuzz and differential sweep
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Install the locked environment
+        run: uv sync --locked --no-default-groups --group dev
+      - name: Run full fuzz and release exploration suite
+        env:
+          CAIRN_FUZZ_PROFILE: full
+          RT2_FULL: "1"
+        run: uv run pytest -n auto --dist loadscope -m "not perf"
+
+  test_py312:
+    name: test suite on Python 3.12
+    runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Install locked environment on Python 3.12
+        run: uv sync --python 3.12 --locked --no-default-groups --group dev
+      - name: Run tests on Python 3.12
+        run: uv run pytest -n auto --dist loadscope -m "not perf"

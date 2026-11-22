@@ -30,26 +30,37 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from test_ci_promote_unit import Runner, digest, manifest, run_aliases
 from test_ci_release_unit import CANDIDATE
 from test_ci_workflow_unit import JOBS, TAG, jobs_that_run, needs, release_check, rerun
 
-README = " ".join(
-    (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8").split()
-)
+REPO = Path(__file__).resolve().parents[2]
+STAGE_IMAGE_USES = {
+    s["with"]["name"]
+    for s in yaml.safe_load(
+        (REPO / ".github" / "actions" / "stage-oci-image" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+    )["runs"]["steps"]
+    if s.get("uses", "").startswith("actions/download-artifact")
+}
+README = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
 CI = README[README.index("## CI/CD") : README.index("## Planned")]
 RELEASED = {"release_check": {"candidate": ""}}
 
 
 def takes(name: str) -> set[str]:
-    """The jobs with a step that downloads the artifact NAME."""
-    return {
-        job
-        for job, definition in JOBS.items()
-        for step in definition["steps"]
-        if step.get("uses", "").startswith("actions/download-artifact")
-        and step["with"]["name"] == name
-    }
+    """The jobs with a step (or composite action step) that downloads the artifact NAME."""
+    found = set()
+    for job, definition in JOBS.items():
+        for step in definition["steps"]:
+            uses = step.get("uses", "")
+            if (uses.startswith("actions/download-artifact") and step["with"]["name"] == name) or (
+                uses == "./.github/actions/stage-oci-image" and name in STAGE_IMAGE_USES
+            ):
+                found.add(job)
+    return found
 
 
 def test_the_jobs_that_take_an_artifact_are_the_ones_the_readme_names():

@@ -113,6 +113,46 @@ def test_the_command_line_takes_an_image_and_one_of_the_two_platforms(argv, code
     )
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["s", "cairn:ci", "--quick"],
+        ["s", "cairn:ci", "--platform", "linux/amd64", "--quick"],
+        ["s", "--quick", "cairn:ci", "--platform", "linux/arm64"],
+        ["s", "cairn:ci", "--quick", "--platform", "linux/amd64"],
+    ],
+)
+def test_quick_flag_runs_only_the_seven_core_checks_regardless_of_position(monkeypatch, argv):
+    ran: list[str] = []
+
+    class RecordingSmoke:
+        def __init__(self, image: str, platform: str | None = None):
+            self.image = image
+            self.platform = platform
+
+        def cleanup(self) -> str:
+            return "cleaned"
+
+        def __getattr__(self, name: str):
+            def _check() -> str:
+                ran.append(name)
+                return name
+
+            return _check
+
+    monkeypatch.setattr(smoke, "Smoke", RecordingSmoke)
+    assert smoke.main(argv) == 0
+    assert ran == [
+        "starts_healthy",
+        "runs_on_its_platform",
+        "runs_as_non_root",
+        "refuses_without_credentials",
+        "mints_a_key_into_the_volume",
+        "notes_and_recalls_over_rest",
+        "answers_mcp",
+    ]
+
+
 def test_the_check_runs_right_after_the_first_container_is_healthy():
     source = (REPO / "scripts" / "smoke_container.py").read_text(encoding="utf-8")
     checks = source[source.index("checks: list[Callable[[], str]] = [") :]
@@ -129,3 +169,7 @@ def test_the_workflow_names_the_platform_wherever_it_smoke_tests():
     assert image == 'python3 scripts/smoke_container.py "$LOCAL" --platform "$PLATFORM"'
     (verify,) = run_lines("verify")
     assert 'python3 scripts/smoke_container.py "$image" --platform linux/amd64' in verify
+    smoke_step = next(
+        s for s in JOBS["verify"]["steps"] if "smoke_container.py" in s.get("run", "")
+    )
+    assert smoke_step["env"]["QUICK_SMOKE"] == "${{ github.ref_type == 'tag' && '--quick' || '' }}"

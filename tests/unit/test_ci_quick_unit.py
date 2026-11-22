@@ -19,6 +19,7 @@ ON = "needs.changes.outputs.quick != 'false'"
 
 
 def test_the_job_publish_needs_runs_on_hosted_amd64_reading_the_repository_only():
+    assert QUICK["timeout-minutes"] == 15
     assert "quick" in needs(JOBS["publish"])
     assert needs(QUICK) == {"changes"}
     # The hosted runner is where the stacks' `tofu test` has been seen to pass; the locks now
@@ -28,9 +29,14 @@ def test_the_job_publish_needs_runs_on_hosted_amd64_reading_the_repository_only(
     configuration = yaml.safe_dump(QUICK)
     assert "secrets." not in configuration and "github.token" not in configuration
     assert "environment" not in QUICK and "env" not in QUICK
-    assert all("env" not in step for step in QUICK["steps"])
     # No job-level condition: a skipped job would skip `publish` after it.
     assert "if" not in QUICK
+    # Step-level TF_PLUGIN_CACHE_DIR + CAIRN_REQUIRE_TOFU only on the two tofu execution steps.
+    for s in QUICK["steps"]:
+        if "TF_PLUGIN_CACHE_DIR" in s.get("env", {}):
+            assert s["env"]["TF_PLUGIN_CACHE_DIR"] == "${{ runner.temp }}/tofu-plugin-cache"
+        else:
+            assert "env" not in s
 
 
 def test_opentofu_is_the_pinned_action_and_version_the_infra_job_uses():
@@ -43,9 +49,10 @@ def test_opentofu_is_the_pinned_action_and_version_the_infra_job_uses():
 
 
 def test_each_definition_is_formatted_initialised_read_only_validated_and_tested():
-    (check,) = [s for s in QUICK["steps"] if "tofu" in s.get("run", "")]
+    (check,) = [s for s in QUICK["steps"] if 'tofu -chdir="$dir"' in s.get("run", "")]
     lines = [line.strip() for line in check["run"].splitlines() if line.strip()]
     assert lines == [
+        'mkdir -p "$TF_PLUGIN_CACHE_DIR"',
         "for dir in infra/quick/aws infra/quick/gcp; do",
         'tofu -chdir="$dir" fmt -check -diff',
         'tofu -chdir="$dir" init -backend=false -input=false -lockfile=readonly',
@@ -53,6 +60,16 @@ def test_each_definition_is_formatted_initialised_read_only_validated_and_tested
         'tofu -chdir="$dir" test -no-color',
         "done",
     ]
+    (contract,) = [s for s in QUICK["steps"] if "pytest -m opentofu" in s.get("run", "")]
+    assert contract["env"]["CAIRN_REQUIRE_TOFU"] == "1"
+    contract_lines = [line.strip() for line in contract["run"].splitlines() if line.strip()]
+    assert contract_lines == [
+        "bash -n infra/quick/bootstrap.sh",
+        "shellcheck infra/quick/bootstrap.sh",
+        "uv run pytest -m opentofu",
+    ]
+    (sync_step,) = [s for s in QUICK["steps"] if "uv sync" in s.get("run", "")]
+    assert sync_step["run"] == "uv sync --locked --no-default-groups --group dev"
 
 
 def test_the_checks_run_on_the_output_of_changes_and_say_so_when_they_do_not():

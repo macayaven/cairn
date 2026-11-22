@@ -26,22 +26,27 @@ release_check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(release_check)
 WORKFLOW = yaml.safe_load((REPO / ".github" / "workflows" / "ci-cd.yml").read_text())
 JOBS = WORKFLOW["jobs"]
+NIGHTLY_PATH = REPO / ".github" / "workflows" / "nightly.yml"
+NIGHTLY_RAW = NIGHTLY_PATH.read_text(encoding="utf-8")
+NIGHTLY_JOBS = yaml.safe_load(NIGHTLY_RAW)["jobs"]
+STAGE_ACTION = yaml.safe_load(
+    (REPO / ".github" / "actions" / "stage-oci-image" / "action.yml").read_text(encoding="utf-8")
+)
+ACTION_FILES = sorted((REPO / ".github" / "actions").glob("*/action.yml"))
 DEPLOY = JOBS["deploy"]
 TF_VARIABLES = (REPO / "infra" / "gcp" / "variables.tf").read_text(encoding="utf-8")
 
 
-# The four scans and the quick deploy's checks: jobs of the gate that `publish` needs.
-# The gate jobs that run on every change and that `publish` needs, beside the first ones;
-# `image_build` is the one build of the image that the scan, the image check and `publish` take.
+# Gate jobs that ALWAYS run without checking image/web outputs of `changes`.
 ALWAYS_ON = (
+    "lint",
     "dependencies",
     "static_analysis",
     "secrets",
-    "image_build",
-    "image_scan",
     "quick",
-    "browser",
 )
+IMAGE_GATED = ("image_build", "image_scan", "image", "stack", "host")
+WEB_GATED = ("browser",)
 
 
 def needs(job: dict) -> set[str]:
@@ -55,11 +60,38 @@ def default_of(variable: str) -> str:
     return match.group(1)
 
 
+PRIVILEGED_JOBS = {"publish", "aliases", "attest", "attest_main", "release", "deploy"}
+
+
 def test_every_action_is_pinned_to_a_full_commit_sha():
-    uses = [step["uses"] for job in JOBS.values() for step in job["steps"] if "uses" in step]
-    assert len(uses) > 10
-    for action in uses:
-        assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action), action
+    local_prefixes = ("./.github/actions/",)
+    for name, job in JOBS.items():
+        for step in job["steps"]:
+            action = step.get("uses")
+            if not action:
+                continue
+            if action.startswith(local_prefixes):
+                assert name not in PRIVILEGED_JOBS, f"privileged job {name} must not use {action}"
+                continue
+            assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action), action
+    for job in NIGHTLY_JOBS.values():
+        for step in job["steps"]:
+            action = step.get("uses")
+            if action and not action.startswith(local_prefixes):
+                assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action), action
+    for action_file in ACTION_FILES:
+        data = yaml.safe_load(action_file.read_text(encoding="utf-8"))
+        for step in data["runs"]["steps"]:
+            action = step.get("uses")
+            if action and not action.startswith(local_prefixes):
+                assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action), action
+
+
+def test_every_job_declares_timeout_minutes():
+    for source, jobs in (("ci-cd.yml", JOBS), ("nightly.yml", NIGHTLY_JOBS)):
+        for name, job in jobs.items():
+            minutes = job.get("timeout-minutes")
+            assert isinstance(minutes, int) and 1 <= minutes <= 90, (source, name, minutes)
 
 
 def test_only_the_deploy_and_the_two_attest_jobs_may_ask_for_an_id_token():
@@ -70,7 +102,7 @@ def test_only_the_deploy_and_the_two_attest_jobs_may_ask_for_an_id_token():
 
 
 def test_deploy_waits_for_tests_infra_both_image_smokes_publish_and_verify():
-    assert needs(DEPLOY) == {"test", "infra", "image", "publish", "verify"}
+    assert needs(DEPLOY) == {"lint", "test", "test_py312", "infra", "image", "publish", "verify"}
     platforms = [entry["platform"] for entry in JOBS["image"]["strategy"]["matrix"]["include"]]
     assert sorted(platforms) == ["linux/amd64", "linux/arm64"]
     assert needs(JOBS["verify"]) == {"publish"}
@@ -78,12 +110,18 @@ def test_deploy_waits_for_tests_infra_both_image_smokes_publish_and_verify():
 
 def test_publish_waits_for_the_infrastructure_check_and_the_image_stack_and_host_jobs():
     assert needs(JOBS["publish"]) == {
+        "changes",
+        "test",
+        "test_py312",
         "infra",
+        "image_build",
+        "image_scan",
         "image",
         "stack",
         "host",
         "release_check",
         "package_check",
+        "browser",
         *ALWAYS_ON,
     }
 
@@ -376,7 +414,9 @@ def test_image_emulation_and_health_budget_follow_the_runner(runner_arch, image_
         s for s in JOBS["image_build"]["steps"] if s.get("uses", "").startswith("docker/build-push")
     )
     assert build["with"]["cache-from"] == "type=gha,scope=image"
-    assert build["with"]["cache-to"] == "type=gha,mode=max,scope=image"
+    assert build["with"]["cache-to"] == (
+        "${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=image' || '' }}"
+    )
 
 
 @pytest.mark.parametrize("name", ["stack", "host"])
@@ -392,13 +432,17 @@ def test_rehearsals_select_amd64_and_only_emulate_on_arm(name):
     assert qemu.get("env", {}).get("DOCKER_DEFAULT_PLATFORM") == (
         "${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }}"
     )
-    # The rehearsals take the build's amd64 image, by its own digest, and build none.
-    pull_index = next(
+    # The rehearsals take the build's amd64 image via stage-oci-image and build none.
+    stage_index = next(
         i
         for i, step in enumerate(job["steps"])
-        if step.get("name") == "Pull this platform of the build"
+        if step.get("uses") == "./.github/actions/stage-oci-image"
     )
-    assert job["steps"].index(qemu) < pull_index
+    assert job["steps"].index(qemu) < stage_index
+    stage_inputs = job["steps"][stage_index]["with"]
+    assert stage_inputs["pull-platform"] == "linux/amd64"
+    assert stage_inputs["pull-arch"] == "amd64"
+    assert stage_inputs["stop-registry"] == "true"
     assert job["env"]["PLATFORM"] == "linux/amd64" and job["env"]["ARCH"] == "amd64"
     assert not any("docker build" in step.get("run", "") for step in job["steps"])
     if name == "host":
@@ -434,23 +478,31 @@ def test_rehearsals_refuse_a_local_image_for_the_wrong_platform(
     tmp_path, name, architecture, success
 ):
     steps = JOBS[name]["steps"]
+    stage = next(s for s in steps if s.get("uses") == "./.github/actions/stage-oci-image")
     preflight = next(
-        step for step in steps if step.get("name") == "Pull this platform of the build"
+        s
+        for s in STAGE_ACTION["runs"]["steps"]
+        if s.get("name") == "Pull this platform of the build"
     )
-    # Then the runner's registry is stopped, and the rehearsal runs.
-    assert steps.index(preflight) == len(steps) - 3
     docker = tmp_path / "docker"
     docker.write_text(
         "#!/bin/sh\n"
-        'case "$1" in pull|tag) exit 0 ;; esac\n'
+        'case "$1" in pull|tag|rm) exit 0 ;; esac\n'
         'test "$*" = "image inspect --format {{.Architecture}} cairn:ci" || exit 77\n'
         'printf "%s\\n" "$IMAGE_ARCH"\n'
     )
     docker.chmod(0o755)
-    env = {k: v for k, v in JOBS[name]["env"].items() if k in ("LOCAL", "PLATFORM", "ARCH")}
     result = run_step(
         preflight["run"],
-        env={"PATH": str(tmp_path), "IMAGE_ARCH": architecture, "IMAGE": "x@sha256:1", **env},
+        env={
+            "PATH": str(tmp_path),
+            "IMAGE_ARCH": architecture,
+            "IMAGE": "x@sha256:1",
+            "LOCAL": stage["with"]["local-tag"],
+            "PLATFORM": stage["with"]["pull-platform"],
+            "ARCH": stage["with"]["pull-arch"],
+            "STOP_REGISTRY": stage["with"]["stop-registry"],
+        },
     )
     assert (result.returncode == 0) is success
 
@@ -462,10 +514,13 @@ def ancestors(name: str, jobs: dict = JOBS) -> set[str]:
 
 
 def gate_jobs_missing_from_publish(jobs: dict) -> set[str]:
-    """The gate is read from the workflow, not listed here: the jobs that run for a pull
-    request that is ready for review whose change needs the image (the run a merge waits for,
-    as the comment at the top of the workflow says). Publish must stand behind every one."""
-    gate = jobs_that_run(pull_request(draft=False), {"changes": {"image": "true"}}, jobs)
+    """Every job that runs on a ready PR (when image/quick/web are all needed) must be an
+    ancestor of `publish`."""
+    gate = jobs_that_run(
+        pull_request(draft=False),
+        {"changes": {"image": "true", "quick": "true", "web": "true"}},
+        jobs,
+    )
     return gate - ancestors("publish", jobs)
 
 
@@ -476,8 +531,7 @@ def test_every_job_of_the_gate_is_an_ancestor_of_publish():
     assert gate_jobs_missing_from_publish(added) == {"docs_check"}
     # So are `infra` and `package_check` dropped from publish's needs.
     dropped = {**JOBS, "publish": {**JOBS["publish"], "needs": ["image", "stack", "host"]}}
-    # (image_build stays an ancestor: the image check needs it.)
-    missing = {"infra", "package_check", *ALWAYS_ON} - {"image_build"}
+    missing = {"infra", "package_check", "browser", "image_scan", *ALWAYS_ON}
     assert gate_jobs_missing_from_publish(dropped) == missing
 
 
@@ -560,7 +614,7 @@ NOT_A_DRAFT = "github.event_name != 'pull_request' || !github.event.pull_request
 # Anything but an explicit 'false' from job `changes` runs the image jobs: an output that was
 # never written is empty, and an empty output must not skip a check.
 SHIPS = "needs.changes.outputs.image != 'false'"
-IMAGE_CONDITION = f"({NOT_A_DRAFT}) && {SHIPS}"
+REHEARSAL_CONDITION = f"({NOT_A_DRAFT}) && {SHIPS} && github.ref_type != 'tag'"
 
 
 def test_the_pull_request_types_include_ready_for_review_and_the_three_it_had():
@@ -583,12 +637,13 @@ def test_the_other_triggers_the_permissions_and_the_concurrency_are_as_they_were
     }
 
 
-def test_the_three_image_jobs_share_one_condition_and_the_cheap_jobs_have_none():
-    assert [" ".join(JOBS[name]["if"].split()) for name in BUILD_JOBS] == [IMAGE_CONDITION] * 3
-    assert "if" not in JOBS["test"]
-    assert "if" not in JOBS["infra"]
-    assert "if" not in JOBS["changes"]
-    assert "if" not in JOBS["package_check"]
+def test_the_image_jobs_share_their_conditions_and_the_cheap_jobs_have_none():
+    assert JOBS["image_build"]["if"] == SHIPS
+    assert JOBS["image_scan"]["if"] == "needs.image_build.result == 'success'"
+    assert [" ".join(JOBS[name]["if"].split()) for name in BUILD_JOBS] == [REHEARSAL_CONDITION] * 3
+    assert JOBS["browser"]["if"] == "needs.changes.outputs.web != 'false'"
+    for name in ("lint", "test", "infra", "changes", "package_check"):
+        assert "if" not in JOBS[name], name
 
 
 def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_nothing_more():
@@ -603,6 +658,7 @@ def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_n
     assert changes["outputs"] == {
         "image": "${{ steps." + decide["id"] + ".outputs.image }}",
         "quick": "${{ steps." + decide["id"] + ".outputs.quick }}",
+        "web": "${{ steps." + decide["id"] + ".outputs.web }}",
     }
     # The job's token for the API; the rest the script reads from GitHub's own variables.
     assert decide["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
@@ -610,31 +666,50 @@ def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_n
 
 
 def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
-    # The three image jobs also need `changes`, the only way to read its output; the image
-    # check needs image_build, whose build it runs.
+    # `image_build` needs `changes` so docs/tests-only PRs skip the multi-arch build too.
+    assert needs(JOBS["image_build"]) == {"changes"}
+    assert needs(JOBS["image_scan"]) == {"image_build"}
     assert needs(JOBS["image"]) == {"test", "changes", "image_build"}
     # The rehearsals rehearse that build too, its amd64 image, and build none of their own.
     assert needs(JOBS["host"]) == {"test", "changes", "image_build"}
     assert needs(JOBS["stack"]) == {"changes", "image_build"}
     assert needs(JOBS["publish"]) == {
+        "changes",
+        "lint",
+        "test",
+        "test_py312",
         "infra",
+        "image_build",
+        "image_scan",
         "image",
         "stack",
         "host",
+        "browser",
         "release_check",
         "package_check",
         *ALWAYS_ON,
     }
-    assert JOBS["publish"]["if"] == "github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'"
-    assert needs(JOBS["verify"]) == {"publish"}
-    assert JOBS["verify"]["if"] == (
-        "github.event_name == 'push' &&"
-        " (github.ref == 'refs/heads/main' || github.ref_type == 'tag')"
+    publish_if = " ".join(JOBS["publish"]["if"].split())
+    assert (
+        "!failure() && !cancelled() && github.event_name == 'push'"
+        " && vars.CAIRN_PUBLISH != 'false'" in publish_if
     )
-    assert needs(DEPLOY) == {"test", "infra", "image", "publish", "verify"}
+    assert needs(JOBS["verify"]) == {"publish"}
+    assert " ".join(JOBS["verify"]["if"].split()) == (
+        "!failure() && !cancelled() && "
+        "github.event_name == 'push' && "
+        "(github.ref == 'refs/heads/main' || github.ref_type == 'tag') && "
+        "needs.publish.result == 'success'"
+    )
+    assert needs(DEPLOY) == {"lint", "test", "test_py312", "infra", "image", "publish", "verify"}
     assert " ".join(DEPLOY["if"].split()) == (
-        "github.event_name == 'push' && github.ref == 'refs/heads/main'"
-        " && vars.GCP_INSTANCE != '' && vars.GCP_ZONE != ''"
+        "!failure() && !cancelled() && "
+        "github.event_name == 'push' && github.ref == 'refs/heads/main' "
+        "&& vars.GCP_INSTANCE != '' && vars.GCP_ZONE != '' && "
+        "needs.lint.result == 'success' && needs.test.result == 'success' && "
+        "needs.test_py312.result == 'success' && needs.infra.result == 'success' && "
+        "needs.image.result == 'success' && needs.publish.result == 'success' && "
+        "needs.verify.result == 'success'"
     )
 
 
@@ -790,13 +865,21 @@ def not_a_pull_request(event_name: str, ref: str) -> dict:
 # Job `changes` runs on every event, like the two cheap jobs, and takes a few seconds.
 # So does `package_check`, the rehearsal of the build a tag runs.
 CHEAP = {"test", "infra", "changes", "package_check", *ALWAYS_ON}
-THE_GATE = CHEAP | {"image", "stack", "host"}
+DRAFT_DEFAULT = CHEAP | {"image_build", "image_scan", "browser"}
+THE_GATE = DRAFT_DEFAULT | {"image", "stack", "host"}
+TAG_GATE = (THE_GATE - {"image", "stack", "host"}) | {"test_py312"}
 # On main, `attest_main` signs the published image's digest for the commit after `verify`.
-EVERYTHING = THE_GATE | {"release_check", "publish", "verify", "attest_main", "deploy"}
-# A v* tag runs the gate, checks the tag against the version, publishes, smoke-tests what it
-# published, builds the wheel and the source archive and makes the GitHub release; it never
-# deploys.
-A_RELEASE = THE_GATE | {
+EVERYTHING_NO_WEB = (THE_GATE - {"browser"}) | {
+    "test_py312",
+    "release_check",
+    "publish",
+    "verify",
+    "attest_main",
+    "deploy",
+}
+EVERYTHING = EVERYTHING_NO_WEB | {"browser"}
+# A v* tag runs the non-rehearsal gate + py312 + release path; it trusts main's attested rehearsals.
+A_RELEASE = TAG_GATE | {
     "release_check",
     "publish",
     "verify",
@@ -808,13 +891,16 @@ A_RELEASE = THE_GATE | {
 
 
 def test_which_jobs_run_for_each_event_when_changes_says_nothing():
-    # No output from `changes` (it was never written) runs what ran before it existed.
+    # No output from `changes` (it was never written) runs what isn't gated off.
     table = {
-        "a push to a draft pull request": (pull_request(draft=True), CHEAP),
+        "a push to a draft pull request": (pull_request(draft=True), DRAFT_DEFAULT),
         "a pull request marked ready for review": (pull_request(draft=False), THE_GATE),
         "a push to a pull request that is ready": (pull_request(draft=False), THE_GATE),
         "a push to main": (not_a_pull_request("push", "refs/heads/main"), EVERYTHING),
-        "a manual run": (not_a_pull_request("workflow_dispatch", "refs/heads/work"), THE_GATE),
+        "a manual run": (
+            not_a_pull_request("workflow_dispatch", "refs/heads/work"),
+            THE_GATE | {"test_py312"},
+        ),
         "a v* tag": (not_a_pull_request("push", "refs/tags/v1.0.0"), A_RELEASE),
     }
     for event, (context, expected) in table.items():
@@ -825,14 +911,18 @@ def test_publishing_has_an_off_switch_and_is_on_when_nothing_is_set():
     """A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`:
     a push to main still runs the whole gate, and publishes, verifies and deploys nothing.
     With the variable unset, or set to anything else, a push publishes as before."""
-    assert JOBS["publish"]["if"] == "github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'"
+    assert "github.event_name == 'push' && vars.CAIRN_PUBLISH != 'false'" in JOBS["publish"]["if"]
     push = not_a_pull_request("push", "refs/heads/main")
     assert jobs_that_run(push) == EVERYTHING
-    for said, expected in (("false", THE_GATE), ("true", EVERYTHING), ("", EVERYTHING)):
+    for said, expected in (
+        ("false", THE_GATE | {"test_py312"}),
+        ("true", EVERYTHING),
+        ("", EVERYTHING),
+    ):
         variables = {**REPOSITORY_VARIABLES, "CAIRN_PUBLISH": said}
         assert jobs_that_run({**push, "vars": variables}) == expected, said
     tag = {**not_a_pull_request("push", "refs/tags/v1.0.0"), "vars": {"CAIRN_PUBLISH": "false"}}
-    assert jobs_that_run(tag) == THE_GATE
+    assert jobs_that_run(tag) == TAG_GATE
 
 
 EVENTS = {
@@ -864,7 +954,7 @@ def fake_git(paths: list[str]):
 
 
 def jobs_for(event: str, paths: list[str], base: str | None = PUBLISHED) -> set[str]:
-    """Job `changes` decides with scripts/ci_changes.py; the other jobs follow its output.
+    """Job `changes` decides with scripts/ci_changes.py; the other jobs follow its outputs.
     On main the paths are those between BASE, the head of the newest run that published an
     image (None: no such run found), and the commit pushed."""
     github = EVENTS[event]["github"]
@@ -876,7 +966,17 @@ def jobs_for(event: str, paths: list[str], base: str | None = PUBLISHED) -> set[
         fake_git(paths),
         lambda: base,
     )
-    return jobs_that_run(EVENTS[event], {"changes": {"image": "true" if run else "false"}})
+    known = None if event in ("a manual run", "a v* tag") else paths
+    return jobs_that_run(
+        EVENTS[event],
+        {
+            "changes": {
+                "image": "true" if run else "false",
+                "quick": "true" if ci_changes.quick_verdict(known) else "false",
+                "web": "true" if ci_changes.web_verdict(known) else "false",
+            }
+        },
+    )
 
 
 A_CHANGE_THAT_SHIPS = ["docs/spec-v1.md", "src/cairn/store.py"]
@@ -884,15 +984,17 @@ NOTHING_SHIPS = ["docs/spec-v1.md", "tests/unit/test_store_unit.py"]
 
 
 def test_which_jobs_run_for_each_event_with_a_change_that_ships_and_one_that_does_not():
+    pr_ships_no_web = THE_GATE - {"browser"}
+    draft_ships_no_web = DRAFT_DEFAULT - {"browser"}
     table = {
-        # event: (a change that ships, a change where nothing ships)
-        "a push to a draft pull request": (CHEAP, CHEAP),
-        "a pull request marked ready for review": (THE_GATE, CHEAP),
-        "a push to a pull request that is ready": (THE_GATE, CHEAP),
+        # event: (a change that ships store.py only, a change where nothing ships)
+        "a push to a draft pull request": (draft_ships_no_web, CHEAP),
+        "a pull request marked ready for review": (pr_ships_no_web, CHEAP),
+        "a push to a pull request that is ready": (pr_ships_no_web, CHEAP),
         # On main, "the change" is from the last published head to the commit pushed.
-        "a push to main": (EVERYTHING, CHEAP),
-        # The changed paths of these two are not known, so they run as before either way.
-        "a manual run": (THE_GATE, THE_GATE),
+        "a push to main": (EVERYTHING_NO_WEB, CHEAP | {"test_py312"}),
+        # The changed paths of these two are not known, so they run everything for their event.
+        "a manual run": (THE_GATE | {"test_py312"}, THE_GATE | {"test_py312"}),
         "a v* tag": (A_RELEASE, A_RELEASE),
     }
     assert set(table) == set(EVENTS)
@@ -904,15 +1006,15 @@ def test_which_jobs_run_for_each_event_with_a_change_that_ships_and_one_that_doe
 def test_on_main_what_runs_depends_on_the_last_published_head_not_on_the_push():
     push = "a push to main"
     # A docs-only push after a run that published: nothing ships, nothing is deployed.
-    assert jobs_for(push, NOTHING_SHIPS) == CHEAP
-    # The same push when the newest publishing run is older than a source change (that run
-    # failed, was cancelled, or its deploy was refused): the paths since then ship.
-    assert jobs_for(push, [*NOTHING_SHIPS, "src/cairn/server.py"]) == EVERYTHING
-    # No run that published (a first run, or none among the runs looked at), or a lookup
-    # that failed: not known, so the whole gate runs and deploys the head.
-    assert jobs_for(push, NOTHING_SHIPS, base=None) == EVERYTHING
-    assert jobs_for(push, A_CHANGE_THAT_SHIPS, base=None) == EVERYTHING
-    # The published head is the head itself (this run is a re-run): an empty diff runs it all.
+    assert jobs_for(push, NOTHING_SHIPS) == CHEAP | {"test_py312"}
+    # The same push when the newest publishing run is older than a source change: ships without web.
+    assert jobs_for(push, [*NOTHING_SHIPS, "src/cairn/server.py"]) == EVERYTHING_NO_WEB
+    # Web changes trigger `browser` on main too.
+    assert jobs_for(push, ["src/cairn/web/app.py"]) == EVERYTHING
+    # No run that published, or a lookup that failed: `image` runs; `web` follows paths or unknown.
+    assert jobs_for(push, NOTHING_SHIPS, base=None) == EVERYTHING_NO_WEB
+    assert jobs_for(push, A_CHANGE_THAT_SHIPS, base=None) == EVERYTHING_NO_WEB
+    # The published head is the head itself (this run is a re-run): empty diff runs everything.
     assert jobs_for(push, [], base=SHA) == EVERYTHING
     # Pull requests do not look up a base at all.
     assert jobs_for("a push to a pull request that is ready", NOTHING_SHIPS, base=None) == CHEAP
@@ -923,7 +1025,7 @@ def test_an_output_that_is_not_exactly_false_runs_the_gate():
         ran = jobs_that_run(EVENTS["a push to main"], {"changes": {"image": value}})
         assert ran == EVERYTHING, value
     ran = jobs_that_run(EVENTS["a push to main"], {"changes": {"image": "false"}})
-    assert ran == CHEAP
+    assert ran == CHEAP | {"browser", "test_py312"}
 
 
 def test_the_evaluator_skips_after_a_skipped_job_unless_the_condition_says_otherwise():
@@ -1075,7 +1177,7 @@ def test_host_rehearsal_units_receive_the_amd64_platform():
         == 'sudo systemctl set-environment "DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM"'
     )
     assert steps.index(step) < next(
-        i for i, s in enumerate(steps) if s.get("name") == "Pull this platform of the build"
+        i for i, s in enumerate(steps) if s.get("uses") == "./.github/actions/stage-oci-image"
     )
     assert JOBS["host"]["env"]["DOCKER_DEFAULT_PLATFORM"] == "linux/amd64"
 
@@ -1130,9 +1232,17 @@ def expression(value: str) -> str:
 
 
 def test_every_action_names_its_version_in_a_comment():
-    lines = [line.strip() for line in RAW_WORKFLOW.splitlines() if "uses: " in line]
+    sources = [RAW_WORKFLOW, NIGHTLY_RAW, *(p.read_text(encoding="utf-8") for p in ACTION_FILES)]
+    lines = [
+        line.strip()
+        for text in sources
+        for line in text.splitlines()
+        if line.strip().startswith(("uses: ", "- uses: "))
+    ]
     assert len(lines) > 10
     for line in lines:
+        if "./.github/actions/" in line:
+            continue
         assert re.fullmatch(r"(- )?uses: [\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*", line), line
 
 
@@ -1243,8 +1353,8 @@ def test_a_tag_pushed_to_a_private_copy_is_refused_and_publishes_and_releases_no
         " public reads it\n"
     )
     ran = jobs_that_run(TAG, failed=frozenset({"release_check"}))
-    assert ran == THE_GATE
-    assert not ran & {"publish", "verify", "package", "release", "deploy"}
+    assert ran == TAG_GATE
+    assert not ran & {"publish", "verify", "package", "attest", "release", "aliases", "deploy"}
 
 
 def test_a_tag_that_already_has_a_release_is_refused_by_the_check_step(tmp_path):
@@ -1405,7 +1515,11 @@ CONSTRAINTS = REPO / "build-constraints.txt"
 
 def test_package_builds_on_a_tag_after_the_check_publish_and_verify():
     assert needs(PACKAGE) == {"release_check", "publish", "verify"}
-    assert evaluate(PACKAGE["if"], TAG) and not evaluate(PACKAGE["if"], MAIN_PUSH)
+    ok_needs = {n: {"result": "success"} for n in needs(PACKAGE)}
+    ok_status = {"failure()": False, "cancelled()": False}
+    assert evaluate(PACKAGE["if"], {**TAG, "needs": ok_needs}, ok_status)
+    assert not evaluate(PACKAGE["if"], {**MAIN_PUSH, "needs": ok_needs}, ok_status)
+    assert "package" in jobs_that_run(TAG)
     assert "package" not in jobs_that_run(MAIN_PUSH)
     # The check refused the tag, or publish or verify failed: nothing is built or released.
     for failed in ("release_check", "publish", "verify"):
@@ -1480,7 +1594,11 @@ def test_every_build_requirement_is_pinned_with_its_hashes():
 
 def test_release_builds_nothing_installs_nothing_and_checks_out_nothing():
     assert needs(RELEASE) == {"release_check", "package", "publish", "verify", "attest"}
-    assert RELEASE["if"] == PACKAGE["if"]
+    release_if = " ".join(RELEASE["if"].split())
+    package_if = " ".join(PACKAGE["if"].split())
+    assert "github.event_name == 'push' && github.ref_type == 'tag'" in release_if
+    assert "needs.package.result == 'success' && needs.attest.result == 'success'" in release_if
+    assert "needs.publish.result == 'success' && needs.verify.result == 'success'" in package_if
     assert RELEASE["permissions"] == {"contents": "write"}
     steps = RELEASE["steps"]
     # (The first asks the runner's gh for its version: test_ci_release_gh_version_unit.)
@@ -1603,6 +1721,8 @@ TOKEN_DEFAULTS = {
     "docker/setup-qemu-action": None,
     "docker/setup-buildx-action": None,
     "docker/login-action": None,
+    "./.github/actions/install-pinned-binary": None,
+    "./.github/actions/stage-oci-image": None,
 }
 
 
@@ -1813,12 +1933,22 @@ ERROR = re.compile(r"::error::(.*?)(?:\"\s*(?:;|$|\n)|\"\)|'\))", re.M)
 
 
 def stops() -> set[str]:
-    """Each `::error::` line a step of the workflow can print, as the README's table names it:
-    expansions as `…`, cut before its first `; `, where its next step starts."""
+    """Each `::error::` line a step of the workflow or local composite actions can print, as
+    the README's table names it: expansions as `…`, cut before its first `; `, where its next
+    step starts."""
+    action_steps = [
+        step
+        for p in ACTION_FILES
+        for step in yaml.safe_load(p.read_text(encoding="utf-8"))["runs"]["steps"]
+    ]
+    all_steps = [
+        *(step for job in JOBS.values() for step in job.get("steps", [])),
+        *(step for job in NIGHTLY_JOBS.values() for step in job.get("steps", [])),
+        *action_steps,
+    ]
     return {
         EXPANSION.sub("…", found.group(1)).split("; ")[0]
-        for job in JOBS.values()
-        for step in job.get("steps", [])
+        for step in all_steps
         for found in ERROR.finditer(step.get("run", "") + "\n")
     }
 

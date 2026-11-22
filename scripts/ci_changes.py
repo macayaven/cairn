@@ -104,8 +104,21 @@ QUICK_WORK = (
     "tests/unit/test_quick_",
 )
 
+# Paths whose change runs job `browser` (Playwright Chromium UI tests).
+WEB_WORK = (
+    "src/cairn/web/",
+    "src/cairn/templates/",
+    "src/cairn/static/",
+    "src/cairn/memory.py",
+    "tests/browser/",
+    "tests/conftest.py",
+    "pyproject.toml",
+    "uv.lock",
+    ".github/workflows/",
+)
+
 # The jobs of the gate that read no output of this script and so run for every change.
-ALWAYS = ("dependencies", "static_analysis", "secrets", "image_build", "image_scan")
+ALWAYS = ("dependencies", "static_analysis", "secrets")
 
 # The display name of job `publish` in ci-cd.yml: the API names a job by it. A test pins the
 # two together. Were they to drift apart, no run would count as published and the whole gate
@@ -249,12 +262,11 @@ def needs_no_image_work(path: str) -> bool:
     return False
 
 
-def quick_work(path: str) -> bool:
-    """True when PATH is on QUICK_WORK, or is not plain (absolute, with an empty, `.` or `..`
-    segment): such a path could name anything, so it runs the checks."""
+def _matches_any(path: str, entries: tuple[str, ...]) -> bool:
+    """True when PATH matches ENTRIES, or is not plain (absolute, empty, `.` or `..`)."""
     if any(part in ("", ".", "..") for part in path.split("/")):
         return True
-    for entry in QUICK_WORK:
+    for entry in entries:
         if entry.endswith(("/", "_")):
             if path.startswith(entry) and len(path) > len(entry):
                 return True
@@ -263,10 +275,26 @@ def quick_work(path: str) -> bool:
     return False
 
 
+def quick_work(path: str) -> bool:
+    """True when PATH is on QUICK_WORK, or is not plain (absolute, with an empty, `.` or `..`
+    segment): such a path could name anything, so it runs the checks."""
+    return _matches_any(path, QUICK_WORK)
+
+
+def web_work(path: str) -> bool:
+    """True when PATH is on WEB_WORK, or is not plain."""
+    return _matches_any(path, WEB_WORK)
+
+
 def quick_verdict(paths: list[str] | None) -> bool:
     """Whether job `quick` runs its checks for these changed PATHS (None: not known). An empty
     list cannot be told apart from a lookup that printed nothing, so it runs them."""
     return paths is None or not paths or any(quick_work(path) for path in paths)
+
+
+def web_verdict(paths: list[str] | None) -> bool:
+    """Whether job `browser` runs its Playwright tests for these changed PATHS."""
+    return paths is None or not paths or any(web_work(path) for path in paths)
 
 
 def nothing_ships(paths: Iterable[str]) -> bool:
@@ -582,7 +610,15 @@ def main(
         quick = quick_verdict(paths)
     except Exception:
         quick = True
-    line = f"image={'true' if run else 'false'}\nquick={'true' if quick else 'false'}\n"
+    try:
+        web = web_verdict(paths)
+    except Exception:
+        web = True
+    line = (
+        f"image={'true' if run else 'false'}\n"
+        f"quick={'true' if quick else 'false'}\n"
+        f"web={'true' if web else 'false'}\n"
+    )
     output = environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:

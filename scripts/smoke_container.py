@@ -181,7 +181,7 @@ def expect(condition: bool, message: str) -> None:
 
 # What Python's platform.machine() says inside a container of each platform.
 MACHINES = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}
-USAGE = "smoke_container.py IMAGE [--platform linux/amd64|linux/arm64]"
+USAGE = "smoke_container.py IMAGE [--platform linux/amd64|linux/arm64] [--quick]"
 
 
 class Smoke:
@@ -566,7 +566,12 @@ class Smoke:
 
 
 def main(argv: list[str]) -> int:
-    args = argv[1:]
+    raw = argv[1:]
+    quick = False
+    if "--quick" in raw:
+        quick = True
+        raw = [item for item in raw if item != "--quick"]
+    args = raw
     platform = None
     if len(args) == 3 and args[1] == "--platform" and args[2] in MACHINES:
         platform = args[2]
@@ -595,6 +600,8 @@ def main(argv: list[str]) -> int:
         smoke.carries_the_licence,
         smoke.carries_no_installer,
     ]
+    if quick:
+        checks = checks[:7]
     passed = 0
     try:
         for check in checks:

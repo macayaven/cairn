@@ -16,7 +16,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from test_ci_promote_unit import RECEIVE, Runner, digest, step
+from test_ci_promote_unit import RECEIVE, STAGE_STEPS, Runner, digest, step
 from test_ci_workflow_unit import (
     JOBS,
     MAIN_PUSH,
@@ -27,7 +27,7 @@ from test_ci_workflow_unit import (
     jobs_that_run,
     needs,
 )
-from test_oci_archive_unit import as_oras_writes
+from test_oci_archive_unit import as_oras_writes, oci_archive
 from test_oci_archive_unit import build as oci_build
 
 FETCH = "Fetch the image main's run published for this commit"
@@ -67,7 +67,8 @@ def step_runs(s: dict, context: dict) -> bool:
 @pytest.mark.parametrize("context", [TAG, candidate(TAG)], ids=["release", "candidate"])
 def test_a_tag_run_builds_no_image(context):
     ran = jobs_that_run(context, {"release_check": {"candidate": "false"}})
-    assert {"image_build", "image_scan", "image", "stack", "host", "publish"} <= ran
+    assert {"image_build", "image_scan", "publish", "verify"} <= ran
+    assert not {"image", "stack", "host"} & ran
     building = [
         (name, s.get("name"))
         for name in ran
@@ -95,13 +96,18 @@ def test_the_rehearsals_rehearse_the_build_and_not_one_of_their_own():
         assert job["env"]["PLATFORM"] == "linux/amd64" and job["env"]["ARCH"] == "amd64"
         assert job["env"]["LOCAL"] == "cairn:ci"
         names = [s.get("name") for s in job["steps"]]
-        for shared in (
-            "Push the build to a registry on the runner, as publish pushes it",
-            "Check that this platform's image is built for it",
-            "Pull this platform of the build",
-        ):
-            assert step(name, shared) == step("image", shared), (name, shared)
-        assert names.index("Pull this platform of the build") < next(
+        stage = next(
+            s for s in job["steps"] if s.get("uses") == "./.github/actions/stage-oci-image"
+        )
+        assert (
+            stage["with"]["pull-image"]
+            == "localhost:5000/cairn@${{ needs.image_build.outputs.amd64 }}"
+        )
+        assert stage["with"]["pull-platform"] == "linux/amd64"
+        assert stage["with"]["pull-arch"] == "amd64"
+        assert stage["with"]["local-tag"] == "cairn:ci"
+        assert stage["with"]["stop-registry"] == "true"
+        assert names.index(stage["name"]) < next(
             i for i, s in enumerate(job["steps"]) if "scripts/rehearse_" in s.get("run", "")
         )
 
@@ -374,7 +380,11 @@ def test_main_s_run_attests_its_published_image_with_nothing_but_the_signing_rig
     job = JOBS["attest_main"]
     assert job["permissions"] == {"id-token": "write", "attestations": "write"}
     assert set(needs(job)) == {"publish", "verify"}
-    assert job["if"] == "github.event_name == 'push' && github.ref_type == 'branch'"
+    assert " ".join(job["if"].split()) == (
+        "!failure() && !cancelled() && github.event_name == 'push'"
+        " && github.ref_type == 'branch' && needs.publish.result == 'success'"
+        " && needs.verify.result == 'success'"
+    )
     assert job["runs-on"] == JOBS["attest"]["runs-on"]
     names = [s.get("name") for s in job["steps"]]
     assert names == ["The image's name", "Attest the image"]
@@ -407,64 +417,102 @@ def copy_runner(tmp_path: Path) -> Runner:
     return runner
 
 
-def test_the_copy_step_is_one_step_in_image_build_and_in_every_scan():
-    on_tag, in_scan = step("image_build", COPY), step("image_scan", COPY)
-    bare = [{k: v for k, v in s.items() if k not in ("env", "if")} for s in (on_tag, in_scan)]
-    assert bare[0] == bare[1]
+def test_the_copy_step_is_one_step_in_image_build_and_in_image_scan():
+    on_tag = step("image_build", COPY)
+    in_scan = STAGE_STEPS[RECEIVE]
+    stage_with = next(
+        s
+        for s in JOBS["image_scan"]["steps"]
+        if s.get("uses") == "./.github/actions/stage-oci-image"
+    )["with"]
+    assert stage_with["check-copy"] == "true"
+    assert stage_with["amd64-digest"] == "${{ needs.image_build.outputs.amd64 }}"
+    assert stage_with["arm64-digest"] == "${{ needs.image_build.outputs.arm64 }}"
     assert on_tag["env"] == {
         "SOURCE": "${{ steps.main.outputs.image }}",
         "DIGEST": "${{ steps.main.outputs.digest }}",
     }
-    assert in_scan["env"] == {
-        "SOURCE": "localhost:5000/cairn",
-        "DIGEST": "${{ needs.image_build.outputs.digest }}",
-    }
-    assert "if" not in in_scan  # every scan, on every pull request
+    assert 'oras cp --to-oci-layout "$SOURCE@$DIGEST" "$copied/layout:main"' in on_tag["run"]
+    assert 'oras cp --to-oci-layout "$image@$DIGEST" "$copied/layout:main"' in in_scan["run"]
     names = [s.get("name") for s in JOBS["image_scan"]["steps"]]
-    assert names.index(RECEIVE) < names.index(COPY) < names.index(SAME)
-    assert names.index(SAME) < names.index("Check that this platform's image is built for it")
+    stage_idx = next(
+        i
+        for i, s in enumerate(JOBS["image_scan"]["steps"])
+        if s.get("uses") == "./.github/actions/stage-oci-image"
+    )
+    assert stage_idx < names.index("Scan amd64 and arm64 digests and apply policy")
 
 
 def test_the_copy_of_a_layout_as_oras_writes_it_passes_the_real_script(tmp_path):
     layout, root = oras_layout(tmp_path)
+    (tmp_path / "m").mkdir()
+    built_tar, built_root = oci_build(tmp_path / "m", oras=as_oras_writes)
+    _, platforms = oci_archive.describe(built_tar, root=built_root)
     runner = copy_runner(tmp_path)
+    for blob in (layout / "blobs" / "sha256").iterdir():
+        runner.put(f"blob-{blob.name[:12]}", blob.read_bytes())
+    index_blob = (layout / "blobs" / "sha256" / root.split(":")[1]).read_text()
     done = runner.run(
-        step("image_scan", COPY)["run"], SOURCE="localhost:5000/cairn", DIGEST=root,
+        STAGE_STEPS[RECEIVE]["run"],
+        CHECK_COPY="true",
+        NATIVE="linux/amd64",
+        GITHUB_WORKSPACE=str(tmp_path),
+        BUILT=index_blob,
+        DIGEST=root,
+        AMD64=platforms["linux/amd64"],
+        ARM64=platforms["linux/arm64"],
         ORAS_LAYOUT=str(layout),
-    )  # fmt: skip
+    )
     assert done.returncode == 0, done.stdout + done.stderr
-    assert runner.oras_calls() == [
-        f"cp --to-oci-layout localhost:5000/cairn@{root} {tmp_path}/copied/layout:main"
-    ]
+    assert f"cp --to-oci-layout localhost:5000/cairn@{root} {tmp_path}/copied/layout:main" in (
+        runner.oras_calls()
+    )
     outputs = dict(
-        line.split("=", 1) for line in (tmp_path / "github_output").read_text().splitlines()
+        line.split("=", 1) for line in (tmp_path / "copied.env").read_text().splitlines()
     )
     assert outputs["digest"] == root and set(outputs) == {"digest", "archive", "amd64", "arm64"}
-    same = step("image_scan", SAME)
-    assert same["env"] == {
-        "BUILT": "${{ needs.image_build.outputs.digest }} ${{ needs.image_build.outputs.amd64 }}"
-        " ${{ needs.image_build.outputs.arm64 }}",
-        "COPIED": "${{ steps.copied.outputs.digest }} ${{ steps.copied.outputs.amd64 }}"
-        " ${{ steps.copied.outputs.arm64 }}",
-    }
-    copied = f"{outputs['digest']} {outputs['amd64']} {outputs['arm64']}"
-    assert runner.run(same["run"], BUILT=copied, COPIED=copied).returncode == 0
-    other = f"{outputs['digest']} {outputs['arm64']} {outputs['amd64']}"
-    refused = runner.run(same["run"], BUILT=other, COPIED=copied)
+    refused = runner.run(
+        STAGE_STEPS[RECEIVE]["run"],
+        CHECK_COPY="true",
+        NATIVE="linux/amd64",
+        GITHUB_WORKSPACE=str(tmp_path),
+        BUILT=index_blob,
+        DIGEST=root,
+        AMD64=platforms["linux/arm64"],
+        ARM64=platforms["linux/amd64"],
+        ORAS_LAYOUT=str(layout),
+    )
     assert refused.returncode == 1
-    assert refused.stdout.startswith(f"::error::the copy read back from the registry is {copied}")
+    expected_msg = (
+        "::error::the copy read back from the registry is"
+        f" {outputs['digest']} {outputs['amd64']} {outputs['arm64']}"
+    )
+    assert expected_msg in refused.stdout
 
 
 def test_a_copy_missing_a_manifest_s_blob_is_refused_before_anything_is_scanned(tmp_path):
     layout, root = oras_layout(tmp_path)
+    (tmp_path / "m").mkdir()
+    built_tar, built_root = oci_build(tmp_path / "m", oras=as_oras_writes)
+    _, platforms = oci_archive.describe(built_tar, root=built_root)
     index = json.loads((layout / "index.json").read_text())
     child = next(e for e in index["manifests"] if e["digest"] != root)
     (layout / "blobs" / "sha256" / child["digest"].split(":")[1]).unlink()
     runner = copy_runner(tmp_path)
+    for blob in (layout / "blobs" / "sha256").iterdir():
+        runner.put(f"blob-{blob.name[:12]}", blob.read_bytes())
+    index_blob = (layout / "blobs" / "sha256" / root.split(":")[1]).read_text()
     done = runner.run(
-        step("image_scan", COPY)["run"], SOURCE="localhost:5000/cairn", DIGEST=root,
+        STAGE_STEPS[RECEIVE]["run"],
+        CHECK_COPY="true",
+        NATIVE="linux/amd64",
+        GITHUB_WORKSPACE=str(tmp_path),
+        BUILT=index_blob,
+        DIGEST=root,
+        AMD64=platforms["linux/amd64"],
+        ARM64=platforms["linux/arm64"],
         ORAS_LAYOUT=str(layout),
-    )  # fmt: skip
+    )
     assert done.returncode == 1
     assert "::error::the build's archive is refused: the layout has no blob for" in done.stderr
 

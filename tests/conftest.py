@@ -32,8 +32,15 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     return None
 
 
+PERF_ACCEPTANCE_FILES = frozenset({"test_g1_gate_bounds.py", "test_t5c_structure.py"})
+TEST_HARNESS_ENV = frozenset({"CAIRN_FUZZ_PROFILE", "CAIRN_REQUIRE_TOFU"})
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """A run that names the folder or a file in it, without the flag, runs none of them."""
+    """Tag fixed-contract timing acceptance modules and deselect browser tests unless opted in."""
+    for item in items:
+        if item.path.name in PERF_ACCEPTANCE_FILES:
+            item.add_marker(pytest.mark.perf)
     if config.getoption("--run-browser"):
         return
     browser = [item for item in items if item.path.is_relative_to(BROWSER_TESTS)]
@@ -42,8 +49,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         items[:] = [item for item in items if not item.path.is_relative_to(BROWSER_TESTS)]
 
 
-@pytest.fixture(autouse=True)
-def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(scope="session", autouse=True)
+def every_page_keeps_the_names_its_frame_reads():
     """Every page any test renders (cairn.web.templating._page, the one way a page is made)
     is checked as it is made: no view hands its template a name that a template global
     holds, but those a page sets for itself (templating.PER_PAGE): base.html's footer reads
@@ -55,6 +62,7 @@ def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) 
     from cairn.web import templating
 
     made = templating.templates.get_template
+    reserved = set(templating.templates.globals) - templating.PER_PAGE
 
     class Checked:
         def __init__(self, name: str, template) -> None:
@@ -65,7 +73,6 @@ def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) 
 
         def render(self, *given, **named):
             context = dict(*given, **named)
-            reserved = set(templating.templates.globals) - templating.PER_PAGE
             shadowed = sorted(set(context) & reserved)
             assert not shadowed, f"{self.name} is handed {shadowed}, a template global's names"
             html = self.template.render(context)
@@ -75,14 +82,19 @@ def every_page_keeps_the_names_its_frame_reads(monkeypatch: pytest.MonkeyPatch) 
                 assert said in html.split('<footer class="colophon">', 1)[1], self.name
             return html
 
-    monkeypatch.setattr(
-        templating.templates,
-        "get_template",
-        lambda name, *a, **k: Checked(name, made(name, *a, **k)),
-    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            templating.templates,
+            "get_template",
+            lambda name, *a, **k: Checked(name, made(name, *a, **k)),
+        )
+        yield
 
 
 @pytest.fixture(autouse=True)
 def no_cairn_settings_from_the_shell(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in [name for name in os.environ if name.startswith("CAIRN_")]:
+    to_clear = [
+        name for name in os.environ if name.startswith("CAIRN_") and name not in TEST_HARNESS_ENV
+    ]
+    for name in to_clear:
         monkeypatch.delenv(name)

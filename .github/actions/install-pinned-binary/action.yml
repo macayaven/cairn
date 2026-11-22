@@ -1,0 +1,68 @@
+name: Install pinned binary
+description: Download a release binary pinned in .github/tool-pins.conf, check SHA-256, and add it to PATH.
+inputs:
+  tool:
+    description: Tool name prefix in .github/tool-pins.conf (oras, trivy, gitleaks, or actionlint)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Download, verify SHA-256, and unpack
+      shell: bash
+      env:
+        TOOL: ${{ inputs.tool }}
+        PINS_FILE: .github/tool-pins.conf
+      run: |
+        set -euo pipefail
+        if [ ! -f "$PINS_FILE" ]; then
+          echo "missing pin file $PINS_FILE" >&2
+          exit 1
+        fi
+        key_prefix="$(printf '%s' "$TOOL" | tr '[:lower:]-' '[:upper:]_')"
+        case "$key_prefix" in
+          GITLEAKS|ORAS|TRIVY|ACTIONLINT) ;;
+          *)
+            echo "unsupported pinned tool $TOOL" >&2
+            exit 1
+            ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64|ARM64) arch="$RUNNER_ARCH" ;;
+          *)
+            echo "::error::no $TOOL archive is pinned for a runner of $RUNNER_ARCH"
+            exit 1
+            ;;
+        esac
+        read_pin() {
+          local wanted="$1" line key val
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+              ""|"#"*) continue ;;
+            esac
+            key="${line%%=*}"
+            val="${line#*=}"
+            if [ "$key" = "$wanted" ]; then
+              printf '%s' "$val"
+              return 0
+            fi
+          done < "$PINS_FILE"
+          return 1
+        }
+        version="$(read_pin "${key_prefix}_VERSION")"
+        repo="$(read_pin "${key_prefix}_REPO")"
+        bin="$(read_pin "${key_prefix}_BIN")"
+        asset="$(read_pin "${key_prefix}_${arch}_ASSET")"
+        sum="$(read_pin "${key_prefix}_${arch}_SHA256")"
+        if [ -z "$version" ] || [ -z "$repo" ] || [ -z "$bin" ] || [ -z "$asset" ] || [ -z "$sum" ]; then
+          echo "incomplete pin definition for $TOOL ($arch) in $PINS_FILE" >&2
+          exit 1
+        fi
+        url="https://github.com/$repo/releases/download/v${version}/$asset"
+        curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$url"
+        printf '%s  %s\n' "$sum" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+        dest="$RUNNER_TEMP/$TOOL"
+        rm -rf "$dest"
+        mkdir -p "$dest"
+        tar -xzf "$RUNNER_TEMP/$asset" -C "$dest" "$bin"
+        rm -f "$RUNNER_TEMP/$asset"
+        echo "$dest" >> "$GITHUB_PATH"

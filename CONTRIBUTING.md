@@ -9,8 +9,12 @@ You need [uv](https://docs.astral.sh/uv/) and Docker if you touch the image or t
 ```bash
 uv sync
 uv run pytest tests/unit -o addopts="" -q -p no:cacheprovider
-uv run ruff check . && uv run ruff format --check .
+uv run ruff check . .github/scanners && uv run ruff format --check . .github/scanners
 ```
+
+For day-to-day checks, `Makefile` wraps the main suites (`make test-fast` runs unit tests in parallel without `perf`, `make test-ci-meta` runs workflow and policy checks, `make test-perf` runs timing bounds serially, `make test-fuzz` runs the full fuzz profile with `CAIRN_FUZZ_PROFILE=full`, and `make lint` runs `ruff`).
+
+Unit tests are grouped by domain under `tests/unit/` (`ci`, `compiler`, `guides`, `meta`, `ops`, `slack`, `sources`, `store`, `web`). Shared helpers live under `tests/support/` so test modules do not import one another. Set `CAIRN_FUZZ_PROFILE=pr` (default) for fast local sweeps or `CAIRN_FUZZ_PROFILE=full` for nightly-depth budgets.
 
 The unit tests take several minutes. `uv run pytest` runs every suite, acceptance and system tests included.
 

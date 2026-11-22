@@ -1,4 +1,6 @@
-# Weekly updates for the pinned action SHAs, the Dockerfile's base images and uv.lock.
+# Weekly updates for the pinned action SHAs, the Dockerfile's base images, and uv.lock.
+# Python dependencies in pyproject.toml/uv.lock are covered by `uv` below; standalone CLI
+# binaries (oras, trivy, gitleaks, actionlint, tofu) are centrally pinned in .github/tool-pins.conf.
 version: 2
 updates:
   - package-ecosystem: github-actions

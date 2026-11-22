@@ -101,11 +101,45 @@ QUICK_WORK = (
     "deploy/Caddyfile",
     "deploy/litestream.yml",
     "pyproject.toml",
-    "tests/unit/test_quick_",
+    "tests/unit/ops/test_quick_",
+    "tests/support/ops/quick_",
+)
+
+# Paths whose change runs job `browser`'s Playwright Chromium UI tests.
+WEB_WORK = (
+    "src/",
+    "tests/browser/",
+    "tests/conftest.py",
+    "pyproject.toml",
+    "uv.lock",
+    ".github/workflows/",
+)
+
+# Paths whose change escalates fuzz/differential tests from the `pr` profile to `full`.
+FUZZ_FULL_WORK = (
+    "src/cairn/spans.py",
+    "src/cairn/facts.py",
+    "src/cairn/lint.py",
+    "src/cairn/compiler.py",
+    "src/cairn/relations.py",
+    "src/cairn/store/erasure.py",
+    "src/cairn/store/ranking.py",
+    "src/cairn/store/relating.py",
+    "src/cairn/store/memory.py",
+    "src/cairn/store/access.py",
+    "src/cairn/store/reach.py",
+    "src/cairn/store/base.py",
+    "src/cairn/slack/text.py",
+    "tests/support/fuzz.py",
+    "tests/support/rt1_harness.py",
+    "tests/support/rt3_slack_model.py",
+    "tests/support/store/generated_related.py",
+    "pyproject.toml",
+    "uv.lock",
 )
 
 # The jobs of the gate that read no output of this script and so run for every change.
-ALWAYS = ("dependencies", "static_analysis", "secrets", "image_build", "image_scan")
+ALWAYS = ("dependencies", "static_analysis", "secrets")
 
 # The display name of job `publish` in ci-cd.yml: the API names a job by it. A test pins the
 # two together. Were they to drift apart, no run would count as published and the whole gate
@@ -249,12 +283,11 @@ def needs_no_image_work(path: str) -> bool:
     return False
 
 
-def quick_work(path: str) -> bool:
-    """True when PATH is on QUICK_WORK, or is not plain (absolute, with an empty, `.` or `..`
-    segment): such a path could name anything, so it runs the checks."""
+def _matches_any(path: str, entries: tuple[str, ...]) -> bool:
+    """True when PATH matches ENTRIES, or is not plain (absolute, empty, `.` or `..`)."""
     if any(part in ("", ".", "..") for part in path.split("/")):
         return True
-    for entry in QUICK_WORK:
+    for entry in entries:
         if entry.endswith(("/", "_")):
             if path.startswith(entry) and len(path) > len(entry):
                 return True
@@ -263,10 +296,36 @@ def quick_work(path: str) -> bool:
     return False
 
 
+def quick_work(path: str) -> bool:
+    """True when PATH is on QUICK_WORK, or is not plain (absolute, with an empty, `.` or `..`
+    segment): such a path could name anything, so it runs the checks."""
+    return _matches_any(path, QUICK_WORK)
+
+
+def web_work(path: str) -> bool:
+    """True when PATH is on WEB_WORK, or is not plain."""
+    return _matches_any(path, WEB_WORK)
+
+
+def fuzz_work(path: str) -> bool:
+    """True when PATH is on FUZZ_FULL_WORK, or is not plain."""
+    return _matches_any(path, FUZZ_FULL_WORK)
+
+
 def quick_verdict(paths: list[str] | None) -> bool:
     """Whether job `quick` runs its checks for these changed PATHS (None: not known). An empty
     list cannot be told apart from a lookup that printed nothing, so it runs them."""
     return paths is None or not paths or any(quick_work(path) for path in paths)
+
+
+def web_verdict(paths: list[str] | None) -> bool:
+    """Whether job `browser` runs its Playwright tests for these changed PATHS."""
+    return paths is None or not paths or any(web_work(path) for path in paths)
+
+
+def fuzz_verdict(paths: list[str] | None) -> bool:
+    """Whether fuzz/differential suites run the `full` profile for these changed PATHS."""
+    return paths is None or not paths or any(fuzz_work(path) for path in paths)
 
 
 def nothing_ships(paths: Iterable[str]) -> bool:
@@ -582,7 +641,20 @@ def main(
         quick = quick_verdict(paths)
     except Exception:
         quick = True
-    line = f"image={'true' if run else 'false'}\nquick={'true' if quick else 'false'}\n"
+    try:
+        web = web_verdict(paths)
+    except Exception:
+        web = True
+    try:
+        fuzz = fuzz_verdict(paths)
+    except Exception:
+        fuzz = True
+    line = (
+        f"image={'true' if run else 'false'}\n"
+        f"quick={'true' if quick else 'false'}\n"
+        f"web={'true' if web else 'false'}\n"
+        f"fuzz={'full' if fuzz else 'pr'}\n"
+    )
     output = environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:

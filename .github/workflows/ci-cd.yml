@@ -1588,394 +1588,354 @@ jobs:
           GH_REPO: ${{ github.repository }}
           CANDIDATE: ${{ needs.release_check.outputs.candidate }}
         run: |
-          cd "$RUNNER_TEMP/release"
-          # GitHub's listing of releases can be behind a write: measured against its API on
-          # 2026-11-20, a draft made without files was absent from a listing made about a
-          # second after its creation returned and present 2.6 s after it, in three of three
-          # trials, while a read of the release by its id showed each write at once. So the
-          # look that follows this job's own write is made again while it shows what was there
-          # before that write: at most $looks looks, $apart seconds apart (10 and 3, so 27
-          # seconds at the longest).
-          looks=10
-          apart=3
-          version="${GITHUB_REF_NAME#v}"
-          version="${version%-rc.*}"
-          files=("cairn_memory-$version-py3-none-any.whl" "cairn_memory-$version.tar.gz" SHA256SUMS)
-          want="$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | tr '\n' ' ')"
-          want="${want% }"
-          prerelease=false
-          candidate=()
-          latest=()
-          said=""
-          # What this attempt has compared, for the line of a read by id that fails.
-          compared="so nothing was compared"
-          if [ "$CANDIDATE" = "true" ]; then
-            prerelease=true
-            candidate=(--prerelease --latest=false)
-            latest=(-f make_latest=false)
-          fi
-          # The release's text is the version's notes and then a mark with this run's id, an
-          # HTML comment GitHub does not show and its API returns in the release's body. A re-run
-          # of the job keeps the run's id; notes.md itself is attested, so it is left as it is.
-          mark="<!-- cairn-ci-cd run $GITHUB_RUN_ID -->"
-          { cat notes.md; printf '\n%s\n' "$mark"; } > "$RUNNER_TEMP/body.md"
-          # The tag is part of what is judged: this run built and attested the files of
-          # $GITHUB_SHA, and a release is its tag's. A person can delete the tag or move it
-          # (a forced push) while the job runs, and a draft keeps its tag name, which is only
-          # a string, so no read of the release shows it. So the tag is read first, before
-          # anything is written; as the last request before the publication; and as the last
-          # request before this step says the release is finished; each time it must name
-          # $GITHUB_SHA, or the step stops and writes nothing more. It is read with GitHub's
-          # "Get a commit", `GET /repos/{owner}/{repo}/commits/{ref}` with the ref
-          # `tags/<tag>` and the header `Accept: application/vnd.github.sha`, which "Returns
-          # the commit's SHA-1 hash" (GitHub's REST reference): the commit, for an annotated
-          # tag as for a lightweight one ("Get a reference" gives an annotated tag's own
-          # object). And the draft is made with --target $GITHUB_SHA: the CLI sends it as the
-          # release's target (create.go, 459 to 461: `if opts.Target != "" {`,
-          # `params["target_commitish"] = opts.Target`), --verify-tag or not, and the API
-          # says of `target_commitish`: "Unused if the Git tag already exists. Default: the
-          # repository's default branch." A publication whose tag a person deleted after the
-          # last read makes GitHub create the tag (seen in round 6 for a draft whose tag did
-          # not exist); with this target it is meant to land on this run's commit, not on the
-          # default branch's head. That GitHub uses the creation's target then is not
-          # measured: that one moment is the race this step cannot close. A tag a person moves
-          # in that moment is published on, and the read of the tag after the publication
-          # stops the job with its line.
-          # The release is made by separate requests, and nothing here takes one back. A look
-          # lists every release of the repository, drafts included (GitHub lists drafts to a
-          # token that may write, as this job's may); a listing that fails stops the job instead
-          # of being taken for none. The release for this tag is this run's only if it is the
-          # only one and carries this run's mark and this tag's pre-release flag; any other a
-          # look lists stops the job. A look judges its row only to stop early: two rows for
-          # the tag stop the job on the listing, which its line says, and a row that does not
-          # show this run's release as it wrote it is read by its id at once, and the job stops
-          # on what that read shows, or on the row when that read shows this run's release as
-          # it wrote it, its line saying both. A release the
-          # listing does not show yet, one a person makes while the job runs or the draft of an
-          # earlier attempt just before a re-run, is not seen, and the job can make or publish
-          # its own beside it: that is a stated limit, and the release it publishes and
-          # succeeds on is still its own, judged by its id. (1) No release: the GitHub CLI makes one as a draft, with the files.
-          # Asked for a draft it publishes nothing, and its cleanup of the release it made is
-          # only for a draft it meant to publish itself. It sends a file again, three times at
-          # most, only after a failed connection or a 5xx, and removes a file only when given
-          # the address of one already there, which a creation never gives it. So an upload
-          # that fails leaves this draft, with the files that arrived, and leaves it public if
-          # a person published it meanwhile. (2) This run's draft, just made or left by an
-          # earlier attempt: its files are compared with the ones this run attested, names and
-          # bytes, each fetched by its asset id, and a draft that does not hold exactly those
-          # stops the job, which says what a person does. (3) The draft
-          # is published by a request of its own, to the id the look gave. That is the job's
-          # one write to a release that exists, and it is safe: it sets draft to false and
-          # says whether the release is GitHub's latest, and nothing else, so a draft a person
-          # published meanwhile is already what it would make it but for which release is the
-          # latest, one a person removed makes it fail, and the files were compared first. It
-          # always says it, since GitHub's `make_latest` "Defaults to `true` for newly
-          # published releases" (GitHub's REST reference, "Update a release"), which made a
-          # stable backport, v1.2.3 published while v1.3.0 is, the repository's latest
-          # release. A candidate never is, as the creation said too; a stable version is only
-          # when it is the highest stable version among the published releases the last look
-          # listed and itself, as `stable_versions` orders them, the function job `aliases`
-          # orders versions with, word for word. The look after the publication checks it:
-          # when it lists a higher stable version and the publication said latest, the job
-          # stops with a line of its own and edits no other release (a person published the
-          # higher one by hand meanwhile, or the look before was behind; another run of this
-          # workflow cannot, since one `release` runs at a time, the job's concurrency group).
-          # The line's remedy is to set the higher version as the latest release on the
-          # releases page: a re-run of this job after this stop sends no publication and
-          # succeeds without looking at GitHub's latest again, so re-running does not repair it.
-          # When GitHub publishes and the reply is lost, the job fails and nothing is undone:
-          # the re-run finds the release published. (4) After each write the job looks again.
-          # It ends well only on a published release that holds exactly the files this run
-          # attested, byte for byte, which it leaves as it is: that is all a re-run does after
-          # an attempt that finished, so that a release tag's `aliases` runs. A look that does
-          # not show the job's own write is made again, as the top of this step says; when the
-          # last one still does not, the job stops, so it never makes a second release of
-          # its own in one attempt.
-          # This step's text issues no removal of a release or of a release's file and
-          # replaces no file.
-          # The mark alone does not make a release this run's: a person can change the title,
-          # and the notes around the mark. So each read by id also reads both, and the step
-          # compares them with what it wrote (each look too, to read by id at once); a release
-          # that, read by its id, differs stops the job, which then writes nothing more. The creation sends the title only when one is given, and the
-          # notes as the file holds them (cli/cli at v2.102.0,
-          # pkg/cmd/release/create/create.go, 453 to 458: `if opts.Name != "" {`,
-          # `params["name"] = opts.Name`, `if opts.Body != "" {`, `params["body"] = opts.Body`;
-          # 193 to 198: `b, err := cmdutil.ReadFile(notesFile, opts.IO.In)`,
-          # `opts.Body = string(b)`), so this step names the tag as the title itself. The title
-          # must be the tag, exactly, or missing or empty: an empty title is not an edited
-          # one. It is compared in the jq expression itself and never printed. The notes
-          # are compared byte for byte, and nothing
-          # is normalised: they come as base64, which the step decodes into a file
-          # and compares with the file it wrote, so no reading here drops a line end or changes
-          # a byte (a command substitution would drop the line ends at the end).
-          # What the step reads, in order, and why. (a) The tag, as the commit it names, as
-          # said above. (b) The listing, which finds the release, shows whether the tag has
-          # more than one, and lists the other tags' published releases, from which the
-          # publication says whether this release is GitHub's latest, and the look after it
-          # whether a higher one is listed; it can be behind a write, a person's as much as
-          # this job's, so its row only stops the job or sends it to a read by id at once,
-          # nothing is published or said finished on it, and a higher version published
-          # seconds before the last look can be missing from it, a backport then being said to
-          # be the latest.
-          # (c) The release, read by its id, which
-          # was measured to show each write at once: it judges the tag, the mark, the two
-          # flags, the title, the notes and the file names, and gives each file's asset id,
-          # state and size. (d) Each file, fetched by that asset id with GitHub's "Get a
-          # release asset",
-          # `GET /repos/{owner}/{repo}/releases/assets/{asset_id}` with the header `Accept:
-          # application/octet-stream`, and only once (c) shows it `uploaded` and of the size
-          # of the file this run attested: the bytes of the release that was judged, and of no
-          # other release for the tag, where the CLI's `release download` finds one by its tag.
-          # The CLI follows GitHub's redirect to the bytes, and with --allow-escape-sequences
-          # writes them as they come (pkg/cmd/api/api.go, 534 to 546: "the opt-out flag and
-          # discarded output stream verbatim"; without it, text that holds an escape character
-          # is refused). Each is compared with this run's file, byte for byte. (e) The release
-          # by its id again, which must be as (c) showed it: the same assets (ids, names,
-          # sizes, update times), title, notes and flags, so no file was replaced and nothing
-          # edited while the files were fetched. (f) The tag again. Then the publication; then
-          # (b) until the listing shows it, and (c) to (f) once more before this step says the
-          # release is finished. A look whose row shows a missing mark, another flag, another
-          # title or other notes reads the release by its id at once, in a wait too, and the
-          # job stops on what that read shows, or on the row when that read shows this run's
-          # release as it wrote it. What a person changes after the last read of the release,
-          # before the publication or before this step ends, is not seen: that moment is the
-          # stated race.
-          fields="[.id, .draft, .prerelease, ((.body // \"\") | contains(\"$mark\")), (.name | . == null or . == \"\" or . == \"$GITHUB_REF_NAME\"), ((.body // \"\") | @base64), ([.assets[].name] | sort | join(\" \"))] | @tsv"
-          # A read by the release's id gives, after those fields, the release as one value to
-          # compare two reads by (its tag, title, notes, flags, and each asset's id, name,
-          # state, size and update time), and then a line for each asset: name, id, state, size.
-          details="([.tag_name, .name, .draft, .prerelease, .body, ([.assets[] | [.id, .name, .state, .size, .updated_at]] | sort)] | tojson | @base64), (.assets[] | [.name, .id, .state, .size] | @tsv)"
-          # The listing prints those fields for each release of this tag, and `published <tag>`
-          # for each other release that is neither a draft nor a pre-release.
-          listing() {
-            gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | if .tag_name == \"$GITHUB_REF_NAME\" then ($fields) elif .draft or .prerelease then empty else \"published \" + .tag_name end"
-          }
-          # The stable versions among the tags on stdin, without their `v`, lowest first: job
-          # `aliases` has this function too, word for word.
-          stable_versions() {
-            awk '/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { print substr($0, 2) }' | sort -t. -k1,1n -k2,2n -k3,3n
-          }
-          # Whether this tag is the highest stable version among the published releases the
-          # last look listed and itself: true or false, what the publication sends.
-          is_latest() {
-            local top
-            top="$( { printf '%s\n' "$released"; printf '%s\n' "$GITHUB_REF_NAME"; } | stable_versions | tail -n 1)"
-            if [ "v$top" = "$GITHUB_REF_NAME" ]; then echo true; else echo false; fi
-          }
-          unlisted() {
-            echo "::error::the repository's releases could not be listed, so whether $GITHUB_REF_NAME has one is not known; re-run this job"
-            exit 1
-          }
-          # The lines below that state what a release is (a draft or public, its title, its
-          # notes, its files) are written from a read of it by its id, and say so; a line that
-          # rests on what the listing shows says so, and sends a person to the releases page
-          # first, since the listing can be seconds behind a write.
-          crowded() {
-            echo "::error::GitHub's listing shows $count releases for $GITHUB_REF_NAME, and this job finishes a release only when it is its tag's only one; the listing can be seconds behind a write, so look at the repository's releases page first: when it shows more than one, delete those nobody should publish, keeping a public release of this run that holds its files, and re-run this job"
-            exit 1
-          }
-          unseen() {
-            echo "::error::GitHub's listing, at this job's last look, does not list the release for $GITHUB_REF_NAME as this job has just left it, and it can be seconds behind a write; look at the repository's releases page first, then re-run this job, which starts from what is listed then"
-            exit 1
-          }
-          refuse() {
-            echo "::error::read by its id, a GitHub release for $GITHUB_REF_NAME exists and is not one this run can finish: $1; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job"
-            exit 1
-          }
-          unfinished() {
-            echo "::error::read by its id, the GitHub release for $GITHUB_REF_NAME is this run's draft and does not hold exactly the files this run attested: $1; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again"
-            exit 1
-          }
-          unread() {
-            echo "::error::the files of the GitHub release for $GITHUB_REF_NAME, $state as read by its id, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing unless the releases page shows a file of the draft missing or unfinished"
-            exit 1
-          }
-          differs() {
-            echo "::error::read by its id, the GitHub release for $GITHUB_REF_NAME, $state, carries run $GITHUB_RUN_ID's mark and differs from what that run wrote in its $1; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job"
-            exit 1
-          }
-          changed() {
-            echo "::error::the GitHub release for $GITHUB_REF_NAME, $state, changed between this job's two reads of it by its id, around the download of its files, so the files it compared may not be the ones the release holds; re-run this job, which reads and compares it again"
-            exit 1
-          }
-          drafted() {
-            echo "::error::the GitHub release for $GITHUB_REF_NAME, read by its id after this job published it, is a draft again; look at it on the repository's releases page, and re-run this job, which compares it and publishes it again if it is still this run's"
-            exit 1
-          }
-          # The row is not this run's release as it wrote it and the read by its id is: the
-          # listing was behind, an edit a person has since undone for one. The job stops on the
-          # row, writing nothing on it, and its line says what each showed.
-          behind() {
-            echo "::error::GitHub's listing shows the release for $GITHUB_REF_NAME without this run's mark, pre-release flag, title or notes, while read by its id it is $state and has all four as this run wrote them; the listing can be seconds behind a write, an edit a person has since undone included, so look at the repository's releases page first, then re-run this job, which starts from what is listed then"
-            exit 1
-          }
-          elsewhere() {
-            echo "::error::the release GitHub's listing showed for $GITHUB_REF_NAME is, read by its id, a release of another tag; look at it on the repository's releases page, and re-run this job, which starts from what is listed then"
-            exit 1
-          }
-          # The publication said this release is GitHub's latest, from the look before it, and
-          # the look after it lists a higher stable version: published meanwhile by hand, or
-          # missing from that look, the listing being behind. The job edits no other release.
-          lost_latest() {
-            local higher
-            higher="v$(printf '%s\n' "$released" | stable_versions | tail -n 1)"
-            echo "::error::the GitHub release for $GITHUB_REF_NAME, read by its id, is this run's and public, with the title and the notes this run wrote and exactly the files this run attested, and this job's publication asked GitHub to make it the repository's latest release; GitHub's listing after the publication shows $higher published, a higher stable version, so GitHub's latest release may now be $GITHUB_REF_NAME, below it: on the repository's releases page set $higher as the latest release, then re-run this job, which finds $GITHUB_REF_NAME published and changes nothing, so that job aliases runs"
-            exit 1
-          }
-          # The tag, read where git keeps it: this run's only while it names this run's commit.
-          # A read that fails is a tag that may be gone; which status GitHub gives a tag that
-          # is gone was not measured, so the line says both.
-          tagged() {
-            local at
-            if ! at="$(gh api -H 'Accept: application/vnd.github.sha' "repos/$GH_REPO/commits/tags/$GITHUB_REF_NAME" 2> "$RUNNER_TEMP/tag.err")" || ! [[ "$at" =~ ^[0-9a-f]{40}$ ]]; then
-              cat "$RUNNER_TEMP/tag.err" >&2
-              echo "::error::the tag $GITHUB_REF_NAME could not be read as a commit of the repository (it is gone, or GitHub did not answer: gh's own words, if any, are above), so this job writes nothing more for its release and does not call it finished; re-run this job if the repository's tags page shows $GITHUB_REF_NAME at this run's commit $GITHUB_SHA, and otherwise publish nothing for it"
-              exit 1
-            fi
-            if [ "$at" != "$GITHUB_SHA" ]; then
-              echo "::error::the tag $GITHUB_REF_NAME names commit $at, not this run's commit $GITHUB_SHA, whose files this run built and attested, so this job writes nothing more for its release and does not call it finished; delete this run's release for it on the repository's releases page if there is one and nobody should publish it, and re-run this job only once the tag names $GITHUB_SHA again"
-              exit 1
-            fi
-          }
-          # One release, as a read by its id gave it: this run's by its mark and its flag,
-          # with the title and the notes this run wrote, or the job stops. The notes are the
-          # sixth field, empty only when the release has no text, and then it has no mark and
-          # the job has stopped before it reads further.
-          judge() {
-            local what=""
-            IFS=$'\t' read -r id draft pre ours titled notes names <<< "$1"
-            [ "$ours" = true ] || refuse "its text does not carry run $GITHUB_RUN_ID's mark"
-            [ "$pre" = "$prerelease" ] || refuse "its pre-release flag is $pre, not $prerelease"
-            state=public
-            [ "$draft" = false ] || state="a draft"
-            [ "$titled" = true ] || what=title
-            printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
-            cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md" || what="${what:+$what and }notes"
-            [ -z "$what" ] || differs "$what"
-          }
-          # Whether a look's row shows this run's release as it wrote it: the same four things,
-          # judged on the row without stopping; the row's fields are kept for the waits.
-          fits() {
-            IFS=$'\t' read -r id draft pre ours titled notes names <<< "$1"
-            [ "$ours" = true ] && [ "$pre" = "$prerelease" ] && [ "$titled" = true ] || return 1
-            printf '%s' "$notes" | base64 --decode > "$RUNNER_TEMP/listed.md"
-            cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/listed.md"
-          }
-          # What GitHub lists for the tag now: nothing (found is empty), or one release; and
-          # the other tags' published releases ($released). A row that does not show this
-          # run's release as it wrote it is read by its id at once, and the job stops on what
-          # that read shows, or on the row when that read shows this run's release as written.
-          look() {
-            local all
-            all="$(listing)" || unlisted
-            found="$(awk '!/^published /' <<< "$all")"
-            released="$(awk '/^published / { print $2 }' <<< "$all")"
-            [ -n "$found" ] || return 0
-            count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
-            [ "$count" = 1 ] || crowded
-            fits "$found" || { fresh; behind; }
-          }
-          # The release the look found, read by its id: what it is now, whatever the listing
-          # shows, with its file names; $read_as is the whole of it, and its assets' lines are
-          # kept for the fetches. A read that fails is not a release that differs: the
-          # CLI ends the line it prints for an HTTP error with `(HTTP <status>)`
-          # (pkg/cmd/api/api.go, 553 to 557 and 685), and a 404 is a release that is not there.
-          fresh() {
-            local now
-            if ! now="$(gh api "repos/$GH_REPO/releases/$id" --jq "select(.tag_name == \"$GITHUB_REF_NAME\") | ($fields), $details" 2> "$RUNNER_TEMP/read.err")"; then
-              cat "$RUNNER_TEMP/read.err" >&2
-              if grep -q 'HTTP 404' "$RUNNER_TEMP/read.err"; then
-                echo "::error::the GitHub release for $GITHUB_REF_NAME, which GitHub's listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then"
-              else
-                echo "::error::the GitHub release for $GITHUB_REF_NAME could not be read by its id, as the lines above say, $compared; re-run this job, and delete nothing"
-              fi
-              exit 1
-            fi
-            [ -n "$now" ] || elsewhere
-            judge "$(sed -n 1p <<< "$now")"
-            read_as="$(sed -n 2p <<< "$now")"
-            sed '1,2d' <<< "$now" > "$RUNNER_TEMP/assets.tsv"
-            [ "$names" = "$want" ] || { [ "$draft" = false ] || unfinished "its files are [$names], not [$want]"; refuse "its files are [$names], not [$want]"; }
-          }
-          # Whether the names listed are some of this run's three files, not all, and no other.
-          some_files() {
-            local name left=" $want " listed=()
-            [ "$names" != "$want" ] || return 1
-            IFS=' ' read -r -a listed <<< "$names"
-            for name in "${listed[@]}"; do
-              case "$left" in
-                *" $name "*) left="${left/ $name / }" ;;
-                *) return 1 ;;
-              esac
-            done
-          }
-          # The look after this job's own write, made again, $looks times at most, while the
-          # listing still shows what was there before it: no release after the creation ($1
-          # is made), this run's release still a draft after the publication (published).
-          # After the creation it also waits while the listing shows this run's draft with
-          # some, not all, of its three file names and no other, since the uploads take about
-          # as long as the listing is behind; the read by its id then says what it holds.
-          # Nothing else is waited for: any other state stops the job inside look, at once,
-          # and no release after the publication is none of the two.
-          look_after() {
-            local n=1
-            look
-            while [ "$n" -lt "$looks" ]; do
-              if [ "$1" = made ]; then
-                [ -z "$found" ] || { [ "$draft" = true ] && some_files; } || break
-              else
-                { [ -n "$found" ] && [ "$draft" = true ]; } || break
-              fi
-              sleep "$apart"
-              n=$((n + 1))
-              look
-            done
-          }
-          # Its files against the ones this run attested, $1 being what a difference does:
-          # each fetched into $2 by the asset id the last read by id gave it, once that read
-          # shows it uploaded and of the attested file's size; then the release is read by its
-          # id again, and must be as the read before showed it. A fetch that fails is not a
-          # difference: the job stops and says so, and a re-run compares again.
-          same_files() {
-            local name row asset upload size before="$read_as"
-            mkdir -p "$RUNNER_TEMP/$2"
-            for name in "${files[@]}"; do
-              row="$(awk -F '\t' -v name="$name" '$1 == name' "$RUNNER_TEMP/assets.tsv")"
-              IFS=$'\t' read -r _ asset upload size <<< "$row"
-              { [[ "$asset" =~ ^[0-9]+$ ]] && [ "$upload" = uploaded ] && [ "$size" = "$(wc -c < "$name" | tr -d ' ')" ]; } || "$1" "$name is not the file this run attested"
-              gh api --allow-escape-sequences -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" > "$RUNNER_TEMP/$2/$name" || unread
-              cmp -s "$name" "$RUNNER_TEMP/$2/$name" || "$1" "$name is not the file this run attested"
-            done
-            compared="after its three files were fetched and each was found to be the file this run attested, so whether the release changed around their download is not known"
-            fresh
-            [ "$read_as" = "$before" ] || changed
-          }
-          tagged
-          look
-          if [ -z "$found" ]; then
-            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --target "$GITHUB_SHA" \
-              --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/body.md" "${candidate[@]}" \
-              "${files[@]}"
-            look_after made
-            [ -n "$found" ] || unseen
-          fi
-          fresh
-          if [ "$draft" = true ]; then
-            same_files unfinished draft
-            [ "$prerelease" = true ] || latest=(-f "make_latest=$(is_latest)")
-            said="${latest[1]#make_latest=}"
-            tagged
-            gh api --method PATCH "repos/$GH_REPO/releases/$id" --silent -F draft=false "${latest[@]}"
-            compared="after this job compared its draft's files with this run's and published it, so the published release's files were not compared"
-            look_after published
-            { [ -n "$found" ] && [ "$draft" = false ]; } || unseen
-            fresh
-          fi
-          same_files refuse published
-          [ "$draft" = false ] || drafted
-          tagged
-          [ "$said" != true ] || [ "$(is_latest)" = true ] || lost_latest
-          echo "The GitHub release $GITHUB_REF_NAME is this run's and is published, with the title and the notes this run wrote and exactly the files this run attested."
+          python3 -I - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+
+          # Measured against GitHub's API on 2026-11-20: a draft made without files was absent from
+          # GET /repos/{repo}/releases about 1 s after creation and present after 2.6 s, while a read
+          # by id showed each write at once. Look up to LOOKS times, APART seconds apart (27 s max).
+          LOOKS = 10
+          APART = 3
+          STABLE_RE = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+          SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+          def fail(message: str) -> int:
+              print(message, flush=True)
+              return 1
+
+
+          def gh(args: list[str], *, binary: bool = False) -> subprocess.CompletedProcess:
+              return subprocess.run(["gh", *args], capture_output=True, text=not binary, check=False)
+
+
+          def parse_pages(raw: str) -> list[dict]:
+              decoder = json.JSONDecoder()
+              items: list[dict] = []
+              idx, length = 0, len(raw)
+              while idx < length:
+                  while idx < length and raw[idx].isspace():
+                      idx += 1
+                  if idx >= length:
+                      break
+                  page, idx = decoder.raw_decode(raw, idx)
+                  if not isinstance(page, list):
+                      raise ValueError("expected JSON list of releases")
+                  items.extend(page)
+              return items
+
+
+          def stable_versions(tags: list[str]) -> list[tuple[int, int, int]]:
+              parsed: list[tuple[int, int, int]] = []
+              for t in tags:
+                  if m := STABLE_RE.fullmatch(t):
+                      parsed.append((int(m[1]), int(m[2]), int(m[3])))
+              return sorted(parsed)
+
+
+          def release_snapshot(rel: dict) -> tuple:
+              assets = sorted(
+                  (a.get("id"), a.get("name"), a.get("state"), a.get("size"), a.get("updated_at"))
+                  for a in (rel.get("assets") or [])
+              )
+              return (
+                  rel.get("tag_name"),
+                  rel.get("name"),
+                  bool(rel.get("draft")),
+                  bool(rel.get("prerelease")),
+                  rel.get("body") or "",
+                  assets,
+              )
+
+
+          def main() -> int:
+              runner_temp = Path(os.environ["RUNNER_TEMP"])
+              release_dir = runner_temp / "release"
+              os.chdir(release_dir)
+
+              tag = os.environ["GITHUB_REF_NAME"]
+              sha = os.environ["GITHUB_SHA"]
+              repo = os.environ["GH_REPO"]
+              run_id = os.environ.get("GITHUB_RUN_ID", "")
+              want_pre = os.environ.get("CANDIDATE", "") == "true"
+
+              version = tag.removeprefix("v").split("-rc.", 1)[0]
+              files = [f"cairn_memory-{version}-py3-none-any.whl", f"cairn_memory-{version}.tar.gz", "SHA256SUMS"]
+              want = " ".join(sorted(files))
+              want_set = sorted(files)
+
+              mark = f"<!-- cairn-ci-cd run {run_id} -->"
+              expected_body = Path("notes.md").read_bytes() + f"\n{mark}\n".encode("utf-8")
+              body_file = runner_temp / "body.md"
+              body_file.write_bytes(expected_body)
+              compared = "so nothing was compared"
+
+              # Tag read uses `GET /repos/{owner}/{repo}/commits/{ref}` with SHA header (works for
+              # annotated tags too). Drafts set --target $sha (`if opts.Target != "" {`,
+              # `params["target_commitish"] = opts.Target`; cli/cli at v2.102.0; "Unused if the Git tag
+              # already exists. Default: the repository's default branch."). Zero removal calls anywhere.
+              def check_tag() -> bool:
+                  res = gh(["api", "-H", "Accept: application/vnd.github.sha", f"repos/{repo}/commits/tags/{tag}"])
+                  at = res.stdout.strip() if res.returncode == 0 else ""
+                  if res.returncode != 0 or not SHA_RE.fullmatch(at):
+                      if res.stderr:
+                          sys.stderr.write(res.stderr)
+                      fail(f"::error::the tag {tag} could not be read as a commit of the repository (it is gone, or GitHub did not answer: gh's own words, if any, are above), so this job writes nothing more for its release and does not call it finished; re-run this job if the repository's tags page shows {tag} at this run's commit {sha}, and otherwise publish nothing for it")
+                      return False
+                  if at != sha:
+                      fail(f"::error::the tag {tag} names commit {at}, not this run's commit {sha}, whose files this run built and attested, so this job writes nothing more for its release and does not call it finished; delete this run's release for it on the repository's releases page if there is one and nobody should publish it, and re-run this job only once the tag names {sha} again")
+                      return False
+                  return True
+
+              def refuse(reason: str) -> None:
+                  fail(f"::error::read by its id, a GitHub release for {tag} exists and is not one this run can finish: {reason}; look at it on the repository's releases page, delete it if nobody should publish it, and re-run this job")
+
+              def judge_row(rel: dict) -> bool:
+                  body = rel.get("body") or ""
+                  if mark not in body:
+                      refuse(f"its text does not carry run {run_id}'s mark")
+                      return False
+                  pre = bool(rel.get("prerelease"))
+                  if pre is not want_pre:
+                      pre_s = "true" if pre else "false"
+                      want_s = "true" if want_pre else "false"
+                      refuse(f"its pre-release flag is {pre_s}, not {want_s}")
+                      return False
+                  state = "a draft" if rel.get("draft") else "public"
+                  title_ok = rel.get("name") in (None, "", tag)
+                  notes_ok = body.encode("utf-8") == expected_body
+                  if not title_ok or not notes_ok:
+                      what = "title and notes" if (not title_ok and not notes_ok) else ("title" if not title_ok else "notes")
+                      fail(f"::error::read by its id, the GitHub release for {tag}, {state}, carries run {run_id}'s mark and differs from what that run wrote in its {what}; delete it on the repository's releases page if it is still a draft, or put back what the run wrote, and re-run this job")
+                      return False
+                  return True
+
+              def row_fits(row: dict) -> bool:
+                  body = row.get("body") or ""
+                  return (
+                      mark in body
+                      and bool(row.get("prerelease")) is want_pre
+                      and row.get("name") in (None, "", tag)
+                      and body.encode("utf-8") == expected_body
+                  )
+
+              def fresh(rid: int) -> dict | None:
+                  res = gh(["api", f"repos/{repo}/releases/{rid}"])
+                  if res.returncode != 0:
+                      if res.stderr:
+                          sys.stderr.write(res.stderr)
+                      if "HTTP 404" in (res.stderr or ""):
+                          fail(f"::error::the GitHub release for {tag}, which GitHub's listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then")
+                      else:
+                          fail(f"::error::the GitHub release for {tag} could not be read by its id, as the lines above say, {compared}; re-run this job, and delete nothing")
+                      return None
+                  rel = json.loads(res.stdout)
+                  if rel.get("tag_name") != tag:
+                      fail(f"::error::the release GitHub's listing showed for {tag} is, read by its id, a release of another tag; look at it on the repository's releases page, and re-run this job, which starts from what is listed then")
+                      return None
+                  if not judge_row(rel):
+                      return None
+                  names = " ".join(sorted(str(a.get("name", "")) for a in (rel.get("assets") or [])))
+                  if names != want:
+                      reason = f"its files are [{names}], not [{want}]"
+                      if rel.get("draft"):
+                          fail(f"::error::read by its id, the GitHub release for {tag} is this run's draft and does not hold exactly the files this run attested: {reason}; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again")
+                      else:
+                          refuse(reason)
+                      return None
+                  return rel
+
+              def look() -> tuple[bool, dict | None, list[str]]:
+                  res = gh(["api", "--paginate", f"repos/{repo}/releases?per_page=100"])
+                  if res.returncode != 0:
+                      if res.stderr:
+                          sys.stderr.write(res.stderr)
+                      fail(f"::error::the repository's releases could not be listed, so whether {tag} has one is not known; re-run this job")
+                      return False, None, []
+                  try:
+                      items = parse_pages(res.stdout)
+                  except ValueError:
+                      fail(f"::error::the repository's releases could not be listed, so whether {tag} has one is not known; re-run this job")
+                      return False, None, []
+                  for_tag = [r for r in items if r.get("tag_name") == tag]
+                  released = [
+                      r["tag_name"]
+                      for r in items
+                      if r.get("tag_name") != tag and not r.get("draft") and not r.get("prerelease") and isinstance(r.get("tag_name"), str)
+                  ]
+                  if len(for_tag) > 1:
+                      count = len(for_tag)
+                      fail(f"::error::GitHub's listing shows {count} releases for {tag}, and this job finishes a release only when it is its tag's only one; the listing can be seconds behind a write, so look at the repository's releases page first: when it shows more than one, delete those nobody should publish, keeping a public release of this run that holds its files, and re-run this job")
+                      return False, None, released
+                  if len(for_tag) == 1:
+                      row = for_tag[0]
+                      if not row_fits(row):
+                          rel = fresh(row["id"])
+                          if rel is None:
+                              return False, None, released
+                          state = "a draft" if rel.get("draft") else "public"
+                          fail(f"::error::GitHub's listing shows the release for {tag} without this run's mark, pre-release flag, title or notes, while read by its id it is {state} and has all four as this run wrote them; the listing can be seconds behind a write, an edit a person has since undone included, so look at the repository's releases page first, then re-run this job, which starts from what is listed then")
+                          return False, None, released
+                      return True, row, released
+                  return True, None, released
+
+              def some_files(row: dict) -> bool:
+                  names = [str(a.get("name", "")) for a in (row.get("assets") or [])]
+                  if sorted(names) == want_set or len(names) >= len(want_set):
+                      return False
+                  left = list(want_set)
+                  for name in names:
+                      if name in left:
+                          left.remove(name)
+                      else:
+                          return False
+                  return True
+
+              def look_after(mode: str) -> tuple[bool, dict | None, list[str]]:
+                  for n in range(1, LOOKS + 1):
+                      ok, row, released = look()
+                      if not ok:
+                          return False, None, released
+                      keep_waiting = (
+                          (row is None or (bool(row.get("draft")) and some_files(row)))
+                          if mode == "made"
+                          else (row is not None and bool(row.get("draft")))
+                      )
+                      if not keep_waiting or n >= LOOKS:
+                          return True, row, released
+                      time.sleep(APART)
+                  return True, None, []
+
+              def same_files(rel: dict) -> dict | None:
+                  nonlocal compared
+                  is_draft = bool(rel.get("draft"))
+                  state = "a draft" if is_draft else "public"
+                  by_name = {a.get("name"): a for a in (rel.get("assets") or [])}
+                  for name in files:
+                      asset = by_name.get(name) or {}
+                      aid = asset.get("id")
+                      local_bytes = Path(name).read_bytes()
+                      bad_meta = not (
+                          isinstance(aid, int)
+                          and not isinstance(aid, bool)
+                          and asset.get("state") == "uploaded"
+                          and asset.get("size") == len(local_bytes)
+                      )
+                      if bad_meta:
+                          reason = f"{name} is not the file this run attested"
+                          if is_draft:
+                              fail(f"::error::read by its id, the GitHub release for {tag} is this run's draft and does not hold exactly the files this run attested: {reason}; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again")
+                          else:
+                              refuse(reason)
+                          return None
+                      res = gh(["api", "--allow-escape-sequences", "-H", "Accept: application/octet-stream", f"repos/{repo}/releases/assets/{aid}"], binary=True)
+                      if res.returncode != 0:
+                          if res.stderr:
+                              sys.stderr.write(res.stderr.decode("utf-8", "replace"))
+                          fail(f"::error::the files of the GitHub release for {tag}, {state} as read by its id, could not be downloaded, so they were not compared and nothing shows that they differ; re-run this job, and delete nothing unless the releases page shows a file of the draft missing or unfinished")
+                          return None
+                      if res.stdout != local_bytes:
+                          reason = f"{name} is not the file this run attested"
+                          if is_draft:
+                              fail(f"::error::read by its id, the GitHub release for {tag} is this run's draft and does not hold exactly the files this run attested: {reason}; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again")
+                          else:
+                              refuse(reason)
+                          return None
+                  compared = "after its three files were fetched and each was found to be the file this run attested, so whether the release changed around their download is not known"
+                  rel2 = fresh(rel["id"])
+                  if rel2 is None:
+                      return None
+                  if release_snapshot(rel2) != release_snapshot(rel):
+                      changed_state = "a draft" if rel2.get("draft") else "public"
+                      fail(f"::error::the GitHub release for {tag}, {changed_state}, changed between this job's two reads of it by its id, around the download of its files, so the files it compared may not be the ones the release holds; re-run this job, which reads and compares it again")
+                      return None
+                  return rel2
+
+              if not check_tag():
+                  return 1
+              ok, found, released = look()
+              if not ok:
+                  return 1
+              if found is None:
+                  cmd = ["release", "create", tag, "--draft", "--verify-tag", "--target", sha, "--title", tag, "--notes-file", str(body_file)]
+                  if want_pre:
+                      cmd.extend(["--prerelease", "--latest=false"])
+                  cmd.extend(files)
+                  res = gh(cmd)
+                  if res.stdout:
+                      sys.stdout.write(res.stdout)
+                  if res.stderr:
+                      sys.stderr.write(res.stderr)
+                  if res.returncode != 0:
+                      return res.returncode or 1
+                  ok, found, released = look_after("made")
+                  if not ok:
+                      return 1
+                  if found is None:
+                      return fail(f"::error::GitHub's listing, at this job's last look, does not list the release for {tag} as this job has just left it, and it can be seconds behind a write; look at the repository's releases page first, then re-run this job, which starts from what is listed then")
+
+              rel = fresh(found["id"])
+              if rel is None:
+                  return 1
+
+              said = ""
+              if rel.get("draft"):
+                  rel = same_files(rel)
+                  if rel is None:
+                      return 1
+                  make_latest = "false"
+                  if not rel.get("prerelease"):
+                      parsed = stable_versions([*released, tag])
+                      if parsed and f"v{'.'.join(map(str, parsed[-1]))}" == tag:
+                          make_latest = "true"
+                  said = make_latest
+                  if not check_tag():
+                      return 1
+                  res = gh(["api", "--method", "PATCH", f"repos/{repo}/releases/{rel['id']}", "--silent", "-F", "draft=false", "-f", f"make_latest={make_latest}"])
+                  if res.stdout:
+                      sys.stdout.write(res.stdout)
+                  if res.stderr:
+                      sys.stderr.write(res.stderr)
+                  if res.returncode != 0:
+                      return res.returncode or 1
+                  compared = "after this job compared its draft's files with this run's and published it, so the published release's files were not compared"
+                  ok, found, released = look_after("published")
+                  if not ok:
+                      return 1
+                  if found is None or bool(found.get("draft")):
+                      return fail(f"::error::GitHub's listing, at this job's last look, does not list the release for {tag} as this job has just left it, and it can be seconds behind a write; look at the repository's releases page first, then re-run this job, which starts from what is listed then")
+                  rel = fresh(found["id"])
+                  if rel is None:
+                      return 1
+
+              rel = same_files(rel)
+              if rel is None:
+                  return 1
+              if rel.get("draft"):
+                  return fail(f"::error::the GitHub release for {tag}, read by its id after this job published it, is a draft again; look at it on the repository's releases page, and re-run this job, which compares it and publishes it again if it is still this run's")
+              if not check_tag():
+                  return 1
+              if said == "true":
+                  others = stable_versions(released)
+                  tag_v = stable_versions([tag])[0]
+                  if others and others[-1] > tag_v:
+                      higher = f"v{'.'.join(map(str, others[-1]))}"
+                      return fail(f"::error::the GitHub release for {tag}, read by its id, is this run's and public, with the title and the notes this run wrote and exactly the files this run attested, and this job's publication asked GitHub to make it the repository's latest release; GitHub's listing after the publication shows {higher} published, a higher stable version, so GitHub's latest release may now be {tag}, below it: on the repository's releases page set {higher} as the latest release, then re-run this job, which finds {tag} published and changes nothing, so that job aliases runs")
+              print(f"The GitHub release {tag} is this run's and is published, with the title and the notes this run wrote and exactly the files this run attested.")
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          PY
 
   # Points `latest` at the highest released version and each X.Y at the highest released
   # X.Y.z, after a release is made (a release candidate moves neither). It decides from what

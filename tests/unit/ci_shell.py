@@ -78,12 +78,28 @@ case "$1 $2" in
     set -- cairn_memory-*.whl cairn_memory-*.tar.gz SHA256SUMS
     shift "$place" && cat "$1" ;;
   "api --paginate")
-    [ -e "$RUNNER_TEMP/gh-create" ] || exit 0
-    while [ $# -gt 1 ]; do shift; done
-    release | jq -s . | jq -r "$1" ;;
+    if [ ! -e "$RUNNER_TEMP/gh-create" ]; then
+      printf '[]\n'
+      exit 0
+    fi
+    jq_expr=""
+    while [ $# -gt 1 ]; do
+      if [ "$1" = "--jq" ]; then jq_expr="$2"; fi
+      shift
+    done
+    if [ -n "$jq_expr" ]; then
+      release | jq -s . | jq -r "$1"
+    else
+      release | jq -s .
+    fi ;;
   "api repos/owner/repo/releases/7")
-    [ "$3" = --jq ] && [ $# = 4 ] || exit 2
-    release | jq -r "$4" ;;
+    if [ "${3:-}" = --jq ] && [ $# = 4 ]; then
+      release | jq -r "$4"
+    elif [ $# = 2 ]; then
+      release
+    else
+      exit 2
+    fi ;;
   *) exit 2 ;;
 esac
 """

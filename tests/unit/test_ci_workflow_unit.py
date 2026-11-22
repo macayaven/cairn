@@ -1922,7 +1922,7 @@ def test_release_asks_for_the_gh_whose_source_its_handling_of_a_draft_was_read_i
     # The version is the one the step's own sentences about gh quote its source at.
     create = next(s for s in RELEASE["steps"] if s.get("name") == "Create the release")
     assert "cli/cli at v2.102.0" in create["run"]
-    assert "v2.102.0" in (REPO / "tests/unit/test_ci_release_retry_unit.py").read_text()
+    assert "v2.102.0" in (REPO / "tests/unit/test_ci_release_step_unit.py").read_text()
 
 
 # A shell or python expansion in an error line, written `…` in the README's table.

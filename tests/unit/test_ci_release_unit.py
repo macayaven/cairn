@@ -41,6 +41,8 @@ from test_ci_workflow_unit import (
     rerun,
 )
 
+pytestmark = pytest.mark.ci_meta
+
 PACKAGE, ATTEST, RELEASE = JOBS["package"], JOBS["attest"], JOBS["release"]
 TAG_PATH = ("release_check", "publish", "verify", "package", "attest", "release")
 CANDIDATE = not_a_pull_request("push", "refs/tags/v1.2.3-rc.1")
@@ -69,7 +71,7 @@ def test_the_permissions_of_every_job_on_the_tag_path():
 
 
 BUILDS_OR_RUNS_THE_CHECKOUT = re.compile(
-    r"\buv\s+(build|sync|pip|run|tool)\b|\bpip3?\b|\bpython3?\b|\bscripts/|\./"
+    r"\buv\s+(build|sync|pip|run|tool)\b|\bpip3?\b|\bpython3?\b(?!\s+-I\s+-\s+<<'PY'\n)|\bscripts/|\./"
     r"|\bdocker\s+(build|buildx\s+build|buildx\s+bake|compose|run|create|start|exec)\b"
 )
 # The actions that build: an image from the checkout, or the checkout's Python environment.
@@ -262,6 +264,9 @@ def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_t
     # The model sees a build where one is: in a shell line, and in an action.
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("uv build --out-dir dist")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 scripts/release_check.py v1")
+    assert BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 - <<'PY'\nprint(1)\nPY\n")
+    assert BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 -I helper.py")
+    assert not BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 -I - <<'PY'\nprint(1)\nPY\n")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("pip install x")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("docker buildx build --push .")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("docker run --rm ghcr.io/o/r@sha256:x")
@@ -760,8 +765,10 @@ def test_the_readme_says_in_two_sentences_what_a_candidate_is_for_and_what_it_pu
     released = jobs_that_run(CANDIDATE, {"release_check": {"candidate": ""}})
     assert released - ran == {"aliases"} and ran <= released
     create = next(s for s in RELEASE["steps"] if s.get("name") == "Create the release")["run"]
-    assert 'gh release create "$GITHUB_REF_NAME"' in create
-    assert "candidate=(--prerelease --latest=false)" in create
+    assert create.startswith("python3 -I - <<'PY'\n")
+    assert '"release", "create", tag, "--draft"' in create
+    assert '["--prerelease", "--latest=false"]' in create
+    assert "release delete" not in create and "DELETE" not in create
 
 
 def test_the_readme_s_two_limits_are_the_numbers_the_workflow_and_the_script_use():

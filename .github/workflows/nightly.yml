@@ -199,5 +199,10 @@ jobs:
           enable-cache: true
       - name: Install locked environment on Python 3.12
         run: uv sync --python 3.12 --locked --no-default-groups --group dev
+      # `uv run` alone goes by .python-version (3.13) and replaces the 3.12 environment the
+      # step before it installed, so each command names the version, and the first one fails
+      # unless the interpreter that is about to run the tests is 3.12.
       - name: Run tests on Python 3.12
-        run: uv run pytest -n auto --dist loadscope -m "not perf"
+        run: |
+          uv run --python 3.12 python -c 'import sys; print(sys.version); assert sys.version_info[:2] == (3, 12)'
+          uv run --python 3.12 pytest -n auto --dist loadscope -m "not perf"

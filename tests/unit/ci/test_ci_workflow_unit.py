@@ -1730,3 +1730,20 @@ def test_the_image_scan_ends_on_the_policy_s_verdict():
     call = run[run.index("python3 .github/scanners/trivy_policy.py") :]
     assert call.rstrip().endswith('--summary "$GITHUB_STEP_SUMMARY"')
     assert "||" not in call and "set +e" not in run
+
+
+@pytest.mark.parametrize("workflow", ["ci-cd.yml", "nightly.yml"])
+def test_the_python_3_12_job_runs_python_3_12(workflow):
+    """`uv run` goes by `.python-version`, which says 3.13, whatever `uv sync --python 3.12`
+    installed before it: on `main`'s first run the log of this job said Python 3.13.13, and the
+    suite had never run on 3.12 anywhere. So every uv command of the job asks for 3.12, and the
+    step that runs the tests first fails unless the interpreter it is about to use is 3.12."""
+    text = (REPO / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    steps = yaml.safe_load(text)["jobs"]["test_py312"]["steps"]
+    lines = [line.strip() for step in steps for line in step.get("run", "").splitlines()]
+    assert [line for line in lines if line.startswith("uv ")] == [
+        "uv sync --python 3.12 --locked --no-default-groups --group dev",
+        "uv run --python 3.12 python -c"
+        " 'import sys; print(sys.version); assert sys.version_info[:2] == (3, 12)'",
+        'uv run --python 3.12 pytest -n auto --dist loadscope -m "not perf"',
+    ]

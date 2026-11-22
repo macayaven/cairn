@@ -1647,3 +1647,81 @@ def test_every_stop_of_the_workflow_has_its_row_in_the_readme_and_no_row_is_stal
         named[cells[0].strip("`")] = cells
     assert len(stops()) > 25
     assert set(named) == stops()
+
+
+# --- Guards for one-line edits that no other test noticed ------------------------------------
+# Each test names the edit it stops. They read both workflows and the local actions.
+
+
+def _every_step():
+    """(where, step) for each step of both workflows and of the local composite actions."""
+    for name, job in JOBS.items():
+        for step in job.get("steps", []):
+            yield f"ci-cd.yml {name}", step
+    for name, job in NIGHTLY_JOBS.items():
+        for step in job.get("steps", []):
+            yield f"nightly.yml {name}", step
+    for path in ACTION_FILES:
+        for step in yaml.safe_load(path.read_text(encoding="utf-8"))["runs"]["steps"]:
+            yield path.parent.name, step
+
+
+def test_the_test_shards_are_every_index_the_sharder_divides_by():
+    """A shard missing from the matrix would drop its files from every run, and nothing fails."""
+    job = JOBS["test"]
+    run = next(s["run"] for s in job["steps"] if "scripts/ci_shard.py" in s.get("run", ""))
+    total = int(re.search(r'ci_shard\.py --index "\$SHARD_INDEX" --total (\d+)', run).group(1))
+    assert job["strategy"]["matrix"]["shard"] == list(range(total))
+    assert job["strategy"]["fail-fast"] is False
+
+
+def test_no_job_and_no_step_goes_on_after_an_error():
+    """`continue-on-error` reports a failed job or step as a success, which is all that
+    `publish` reads of the gate."""
+    for name, job in {**JOBS, **NIGHTLY_JOBS}.items():
+        assert "continue-on-error" not in job, name
+    for where, step in _every_step():
+        assert "continue-on-error" not in step, (where, step.get("name"))
+
+
+def test_every_checkout_keeps_no_credentials():
+    checkouts = [
+        (w, s) for w, s in _every_step() if s.get("uses", "").startswith("actions/checkout@")
+    ]
+    assert checkouts
+    for where, step in checkouts:
+        assert step.get("with", {}).get("persist-credentials") is False, where
+
+
+def test_each_action_is_used_at_one_commit_everywhere():
+    """A job cannot run another commit of an action than every other job runs."""
+    commits: dict[str, set[str]] = {}
+    for _, step in _every_step():
+        uses = step.get("uses", "")
+        if "@" in uses and not uses.startswith("./"):
+            action, commit = uses.split("@", 1)
+            commits.setdefault(action, set()).add(commit)
+    assert commits
+    assert {a: sorted(c) for a, c in commits.items() if len(c) > 1} == {}
+
+
+def test_the_lint_job_runs_each_of_its_checks():
+    runs = [s.get("run", "") for s in JOBS["lint"]["steps"]]
+    for command in (
+        "uv run ruff check . .github/scanners",
+        "uv run ruff format --check . .github/scanners",
+        "uv run mypy src/",
+        "uv run python scripts/render_guides.py --check",
+    ):
+        assert command in runs, command
+    assert any(run.startswith("actionlint ") for run in runs)
+
+
+def test_the_image_scan_ends_on_the_policy_s_verdict():
+    """Nothing after the policy's call, and nothing before it, can turn its refusal into a pass."""
+    run = next(
+        s["run"] for s in JOBS["image_scan"]["steps"] if "trivy_policy.py" in s.get("run", "")
+    )
+    call = run[run.index("python3 .github/scanners/trivy_policy.py") :]
+    assert call.rstrip().endswith('--summary "$GITHUB_STEP_SUMMARY"')
+    assert "||" not in call and "set +e" not in run

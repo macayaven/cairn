@@ -16,12 +16,13 @@ Consolidates all deterministic scenarios previously spread across:
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 
 import pytest
 
-from support.ci.ci_workflow import JOBS, RAW_WORKFLOW, REPO, stops
+from support.ci.ci_workflow import ERROR, EXPANSION, JOBS, RAW_WORKFLOW, REPO, stops
 from support.ci_shell import SYSTEM, run_step
 from support.github_release_hub import (
     DEFAULT_COMMIT,
@@ -39,8 +40,9 @@ from support.github_release_hub import (
 pytestmark = pytest.mark.ci_meta
 
 RELEASE = JOBS["release"]
-GH_CHECK = RELEASE["steps"][0]
-CREATE = RELEASE["steps"][3]
+GH_CHECK = next(s for s in RELEASE["steps"] if s.get("name") == "Check the GitHub CLI")
+PY_CHECK = next(s for s in RELEASE["steps"] if s.get("name") == "Check Python 3")
+CREATE = next(s for s in RELEASE["steps"] if s.get("name") == "Create the release")
 ALIASES_STEP = next(s for s in JOBS["aliases"]["steps"] if "gh release list" in s.get("run", ""))
 README = (REPO / "README.md").read_text(encoding="utf-8")
 
@@ -183,6 +185,75 @@ def test_missing_gh_on_release_runner_is_refused(tmp_path):
     ]
 
 
+SHIM_PY_VERSION = """#!/bin/sh
+if [ -n "$PY_STDERR" ]; then
+  printf '%s\\n' "$PY_VERSION" >&2
+else
+  printf '%s\\n' "$PY_VERSION"
+fi
+"""
+
+
+def _run_py_version_check(tmp_path: Path, **env: str):
+    bin_ = tmp_path / "bin"
+    bin_.mkdir(exist_ok=True)
+    if "PY_VERSION" in env:
+        (bin_ / "python3").write_text(SHIM_PY_VERSION, encoding="utf-8")
+        (bin_ / "python3").chmod(0o755)
+    done = run_step(
+        PY_CHECK["run"],
+        cwd=tmp_path,
+        env={
+            "PATH": f"{bin_}:{SYSTEM}",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_REF_NAME": "v1.2.3",
+            "GITHUB_RUN_ID": DEFAULT_RUN_ID,
+            **env,
+        },
+    )
+    errors = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+    return done, errors
+
+
+@pytest.mark.parametrize("version", ["3.9.0", "3.10.12", "3.12.7", "3.13.2", "4.0.0"])
+@pytest.mark.parametrize("extra", ["", " (main, Nov 2026)"])
+def test_python3_at_or_after_3_9_passes(tmp_path, version, extra):
+    done, errors = _run_py_version_check(tmp_path, PY_VERSION=f"Python {version}{extra}")
+    assert (done.returncode, errors) == (0, []), done.stderr
+
+
+@pytest.mark.parametrize(
+    ("printed", "said", "on_stderr"),
+    [
+        ("Python 3.8.18", "3.8.18", False),
+        ("Python 2.7.18", "2.7.18", True),
+        ("Python 3.9.0rc1", "of a version it does not print as three plain numbers", False),
+        ("Python (devel)", "of a version it does not print as three plain numbers", False),
+        ("", "of a version it does not print as three plain numbers", False),
+    ],
+)
+def test_python3_before_3_9_or_prerelease_is_refused(tmp_path, printed, said, on_stderr):
+    done, errors = _run_py_version_check(
+        tmp_path, PY_VERSION=printed, **({"PY_STDERR": "1"} if on_stderr else {})
+    )
+    assert done.returncode == 1
+    assert errors == [
+        f"::error::Python 3 on this runner is {said}, before 3.9, so the GitHub release for"
+        " v1.2.3 cannot be made; update Python 3 on the runner CAIRN_RELEASE_RUNNER names, or"
+        " unset it to use GitHub's"
+    ]
+
+
+def test_missing_python3_on_release_runner_is_refused(tmp_path):
+    done, errors = _run_py_version_check(tmp_path, PATH=str(tmp_path / "bin"))
+    assert done.returncode == 1
+    assert errors == [
+        "::error::Python 3 is not on this runner, so the GitHub release for v1.2.3 cannot be"
+        " made; install Python 3.9 or later on the runner CAIRN_RELEASE_RUNNER names, or unset"
+        " it to use GitHub's"
+    ]
+
+
 # --- 2. Core create -> verify -> PATCH publish -> verify + idempotent re-run ------------------
 
 
@@ -259,6 +330,271 @@ def test_real_subprocess_bash_python3_isolated_e2e(tmp_path):
     )
     assert done_rc.returncode == 0, done_rc.stdout + done_rc.stderr
     assert state_rc["writes"] == []
+
+
+def _draft(**over):
+    rel = make_release_record("v1.2.3", False, rid=77, draft=True)
+    rel.update(over)
+    return rel
+
+
+def _tampered_draft_wheel():
+    rel = make_release_record("v1.2.3", False, rid=77, draft=True)
+    for asset in rel["assets"]:
+        if asset["name"] == WHEEL:
+            asset["_bytes"] = b"corrupt!"
+            asset["size"] = len(b"corrupt!")
+    return rel
+
+
+STOP_CASES = [
+    (
+        "tag_unreadable",
+        {"tag_replies": [{"rc": 1, "stdout": "", "stderr": "gh: HTTP 502\n"}]},
+        "::error::the tag v1.2.3 could not be read as a commit of the repository"
+        " (it is gone, or GitHub did not answer: gh's own words, if any, are above),"
+        " so this job writes nothing more for its release and does not call it finished",
+    ),
+    (
+        "tag_non_sha_exit_0",
+        {"tag_replies": [{"rc": 0, "stdout": "not-a-sha\n", "stderr": ""}]},
+        "::error::the tag v1.2.3 could not be read as a commit of the repository",
+    ),
+    (
+        "tag_empty_exit_0",
+        {"tag_replies": [{"rc": 0, "stdout": "", "stderr": ""}]},
+        "::error::the tag v1.2.3 could not be read as a commit of the repository",
+    ),
+    (
+        "tag_moved",
+        {"tag_replies": [{"rc": 0, "stdout": OTHER_COMMIT, "stderr": ""}]},
+        f"::error::the tag v1.2.3 names commit {OTHER_COMMIT}, not this run's commit"
+        f" {DEFAULT_COMMIT}, whose files this run built and attested, so this job writes"
+        " nothing more for its release and does not call it finished",
+    ),
+    (
+        "unlisted_http",
+        {"list_replies": [{"rc": 1, "stdout": "", "stderr": "gh: HTTP 502\n"}]},
+        "::error::the repository's releases could not be listed, so whether v1.2.3 has one"
+        " is not known",
+    ),
+    (
+        "unlisted_non_json",
+        {"list_replies": [{"rc": 0, "stdout": "<html>502</html>", "stderr": ""}]},
+        "::error::the repository's releases could not be listed, so whether v1.2.3 has one"
+        " is not known",
+    ),
+    (
+        "unlisted_empty",
+        {"list_replies": [{"rc": 0, "stdout": "", "stderr": ""}]},
+        "::error::the repository's releases could not be listed, so whether v1.2.3 has one"
+        " is not known",
+    ),
+    (
+        "unlisted_non_list",
+        {"list_replies": [{"rc": 0, "stdout": '{"message":"bad"}', "stderr": ""}]},
+        "::error::the repository's releases could not be listed, so whether v1.2.3 has one"
+        " is not known",
+    ),
+    (
+        "unlisted_missing_fields",
+        {"list_replies": [{"rc": 0, "stdout": '[{"tag_name": "v1.2.3"}]', "stderr": ""}]},
+        "::error::the repository's releases could not be listed, so whether v1.2.3 has one"
+        " is not known",
+    ),
+    (
+        "crowded",
+        {"releases": [_draft(id=77), _draft(id=78)]},
+        "::error::GitHub's listing shows 2 releases for v1.2.3, and this job finishes a"
+        " release only when it is its tag's only one",
+    ),
+    (
+        "behind",
+        {
+            "releases": [_draft()],
+            "list_replies": [
+                {
+                    "rc": 0,
+                    "stdout": json.dumps([strip_asset_bytes(_draft(name="Other"))]),
+                    "stderr": "",
+                }
+            ],
+        },
+        "::error::GitHub's listing shows the release for v1.2.3 without this run's mark,"
+        " pre-release flag, title or notes, while read by its id it is a draft and has"
+        " all four as this run wrote them",
+    ),
+    (
+        "read_404",
+        {
+            "releases": [_draft()],
+            "read_replies": [{"rc": 1, "stdout": "", "stderr": "gh: Not Found (HTTP 404)\n"}],
+        },
+        "::error::the GitHub release for v1.2.3, which GitHub's listing showed, was not"
+        " found when read by its id, so it has probably been deleted",
+    ),
+    (
+        "read_502",
+        {
+            "releases": [_draft()],
+            "read_replies": [{"rc": 1, "stdout": "", "stderr": "gh: Server Error (HTTP 502)\n"}],
+        },
+        "::error::the GitHub release for v1.2.3 could not be read by its id, as the lines"
+        " above say, so nothing was compared",
+    ),
+    (
+        "read_non_json",
+        {
+            "releases": [_draft()],
+            "read_replies": [{"rc": 0, "stdout": "<html>502</html>", "stderr": ""}],
+        },
+        "::error::the GitHub release for v1.2.3 could not be read by its id, as the lines"
+        " above say, so nothing was compared",
+    ),
+    (
+        "read_empty",
+        {"releases": [_draft()], "read_replies": [{"rc": 0, "stdout": "", "stderr": ""}]},
+        "::error::the GitHub release for v1.2.3 could not be read by its id, as the lines"
+        " above say, so nothing was compared",
+    ),
+    (
+        "read_missing_tag_name",
+        {"releases": [_draft()], "read_replies": [{"rc": 0, "stdout": '{"id": 77}', "stderr": ""}]},
+        "::error::the GitHub release for v1.2.3 could not be read by its id, as the lines"
+        " above say, so nothing was compared",
+    ),
+    (
+        "read_missing_fields",
+        {
+            "releases": [_draft()],
+            "read_replies": [{"rc": 0, "stdout": '{"id": 77, "tag_name": "v1.2.3"}', "stderr": ""}],
+        },
+        "::error::the GitHub release for v1.2.3 could not be read by its id, as the lines"
+        " above say, so nothing was compared",
+    ),
+    (
+        "elsewhere",
+        {
+            "releases": [_draft()],
+            "read_replies": [
+                {
+                    "rc": 0,
+                    "stdout": json.dumps(strip_asset_bytes(_draft(tag_name="v9.9.9"))),
+                    "stderr": "",
+                }
+            ],
+        },
+        "::error::the release GitHub's listing showed for v1.2.3 is, read by its id, a"
+        " release of another tag",
+    ),
+    (
+        "refuse_no_mark",
+        {"releases": [_draft(body="hand made\n")]},
+        "::error::read by its id, a GitHub release for v1.2.3 exists and is not one this"
+        f" run can finish: its text does not carry run {DEFAULT_RUN_ID}'s mark",
+    ),
+    (
+        "differs_title",
+        {"releases": [_draft(name="Edited Title")]},
+        f"::error::read by its id, the GitHub release for v1.2.3, a draft, carries run"
+        f" {DEFAULT_RUN_ID}'s mark and differs from what that run wrote in its title",
+    ),
+    (
+        "unfinished_draft_bytes",
+        {"releases": [_tampered_draft_wheel()]},
+        "::error::read by its id, the GitHub release for v1.2.3 is this run's draft and"
+        f" does not hold exactly the files this run attested: {WHEEL} is not the file this"
+        " run attested",
+    ),
+    (
+        "unread_asset",
+        {
+            "releases": [_draft()],
+            "asset_replies": [
+                {"rc": 1, "stdout_hex": "", "stderr": "gh: Bad Gateway (HTTP 502)\n"}
+            ],
+        },
+        "::error::the files of the GitHub release for v1.2.3, a draft as read by its id,"
+        " could not be downloaded, so they were not compared and nothing shows that they"
+        " differ",
+    ),
+    (
+        "asset_corrupt_bytes_exit_0",
+        {
+            "releases": [_draft()],
+            "asset_replies": [{"rc": 0, "stdout_hex": b"garbage".hex(), "stderr": ""}],
+        },
+        "::error::read by its id, the GitHub release for v1.2.3 is this run's draft and"
+        f" does not hold exactly the files this run attested: {WHEEL} is not the file this"
+        " run attested",
+    ),
+    (
+        "changed_around_download",
+        {"releases": [_draft()], "on_after_asset_download": "bump_updated_at"},
+        "::error::the GitHub release for v1.2.3, a draft, changed between this job's two"
+        " reads of it by its id, around the download of its files, so the files it compared"
+        " may not be the ones the release holds",
+    ),
+    (
+        "unseen_after_patch",
+        {"on_patch": "delete_all"},
+        "::error::GitHub's listing, at this job's last look, does not list the release for"
+        " v1.2.3 as this job has just left it, and it can be seconds behind a write",
+    ),
+    (
+        "drafted_after_publish",
+        {"releases": [_draft()], "on_patch": "redraft_keep"},
+        "::error::the GitHub release for v1.2.3, read by its id after this job published"
+        " it, is a draft again",
+    ),
+    (
+        "reverted_draft_tampered_final_check_refuses_not_unfinished",
+        {"releases": [_draft()], "on_patch": "redraft_tamper_wheel"},
+        "::error::read by its id, a GitHub release for v1.2.3 exists and is not one this"
+        f" run can finish: {WHEEL} is not the file this run attested",
+    ),
+    (
+        "lost_latest",
+        {"on_patch": "add_higher"},
+        "::error::the GitHub release for v1.2.3, read by its id, is this run's and"
+        " public, with the title and the notes this run wrote and exactly the files this"
+        " run attested, and this job's publication asked GitHub to make it the"
+        " repository's latest release",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "kwargs", "expected_prefix"), STOP_CASES, ids=[c[0] for c in STOP_CASES]
+)
+def test_real_wrapper_stops_exit_1_with_exact_error_line(tmp_path, name, kwargs, expected_prefix):
+    """Run all stops, reverted-draft tamper refusal, and bad replies via bash -> python3 -I."""
+    done, state = run_release_subprocess_e2e(tmp_path / name, **kwargs)
+    assert done.returncode == 1, (name, done.stdout, done.stderr)
+    assert "Traceback" not in done.stderr, (name, done.stderr)
+    errors = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+    assert len(errors) == 1, (name, errors)
+    line = errors[0]
+    assert line.startswith(expected_prefix), (name, line)
+    head = line.removeprefix("::error::").split("; ")[0]
+    assert any(re.fullmatch(re.escape(key).replace("…", ".+"), head) for key in stops()), (
+        name,
+        head,
+    )
+    assert not any((w[:2] == ["release", "delete"] or "DELETE" in w) for w in state["writes"]), (
+        state["writes"]
+    )
+
+
+def test_real_wrapper_stop_cases_cover_all_16_stops_of_create_the_release():
+    create_stops = {
+        EXPANSION.sub("…", found.group(1)).split("; ")[0]
+        for found in ERROR.finditer(CREATE["run"] + "\n")
+    }
+    assert len(create_stops) == 16, sorted(create_stops)
+    for stop in create_stops:
+        pattern = re.compile(r"^::error::" + re.escape(stop).replace("…", ".*"))
+        assert any(pattern.match(prefix) for _, _, prefix in STOP_CASES), stop
 
 
 # --- 3. Tag verification invariants ----------------------------------------------------------
@@ -577,7 +913,7 @@ def test_read_by_id_404_502_tag_changed_and_drafted_diagnostics(tmp_path):
         in run_release_in_process(hub_tag, tmp_path / "other").single_error()
     )
 
-    # Re-drafted after publish -> drafted
+    # Re-drafted after publish with matching files -> drafted.
     hub_redraft = ReleaseHub(
         tag="v1.2.3",
         person_listed_from_look=100,
@@ -586,6 +922,33 @@ def test_read_by_id_404_502_tag_changed_and_drafted_diagnostics(tmp_path):
     res_redraft = run_release_in_process(hub_redraft, tmp_path / "redraft")
     assert (
         "read by its id after this job published it, is a draft again" in res_redraft.single_error()
+    )
+
+    # Re-drafted after publish AND file tampered before final check -> refuse (not unfinished).
+    def redraft_tamper(h: ReleaseHub) -> None:
+        def mutate(rs):
+            out = []
+            for r in rs:
+                nr = {**r, "draft": True}
+                nr["assets"] = [
+                    {**a, "_bytes": b"tampered", "size": 8} if a["name"] == WHEEL else a
+                    for a in r["assets"]
+                ]
+                out.append(nr)
+            return out
+
+        h.by_hand_mutate(mutate)
+
+    hub_tamper = ReleaseHub(
+        tag="v1.2.3",
+        person_listed_from_look=100,
+        on_once_public=redraft_tamper,
+    )
+    res_tamper = run_release_in_process(hub_tamper, tmp_path / "redraft_tamper")
+    assert res_tamper.returncode == 1
+    assert res_tamper.single_error().startswith(
+        "::error::read by its id, a GitHub release for v1.2.3 exists and is not one"
+        f" this run can finish: {WHEEL} is not the file this run attested"
     )
 
 
@@ -643,6 +1006,8 @@ def test_python_stable_versions_matches_aliases_bash_ordering(tmp_path):
     )
     assert bash_done.returncode == 0
     assert py_sorted == bash_done.stdout.splitlines() == ["0.9.2", "0.9.12", "0.10.0"]
+    snap = ns["release_snapshot"]({"assets": [{"id": None, "name": "b"}, {"id": 1, "name": "a"}]})
+    assert len(snap[-1]) == 2
 
 
 # --- 8. README error table & header completeness ---------------------------------------------

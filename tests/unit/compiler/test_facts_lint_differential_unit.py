@@ -157,6 +157,7 @@ SHAPES = {
 # the span that hold them are normalized: normalize() cannot tell code from prose, and lint
 # finds the code because both sides are read alike.
 DIFFERED: collections.Counter[str] = collections.Counter()  # inputs that differed, by shape
+COUNT = {"facts": 0, "lint": 0}
 
 
 def emphasis_runs(text: str) -> dict[tuple[int, int], str]:
@@ -433,6 +434,7 @@ def every_fact_occurs(span: Span) -> None:
 
 
 def same_facts(span: Span) -> None:
+    COUNT["facts"] += 1
     new = [f.model_dump() for f in new_facts.extract_facts(span)]
     runs = emphasis_runs(span.text)
     read = as_starred(span.text) if runs else span.text
@@ -474,6 +476,7 @@ def _report(module, pages, spans, entities, unassigned):
 
 
 def same_lint(pages, spans, entities=(), unassigned=()) -> None:
+    COUNT["lint"] += 1
     new = _report(new_lint, pages, spans, entities, unassigned)
     # The reference lint reads facts and normalizes through starred_facts and starred_normalize
     # (G1 item 5, below); with no run in a text that is the reference facts itself.
@@ -544,6 +547,7 @@ def test_the_cli_entry_reads_the_fixtures_the_same(tmp_path):
             __import__("json").dumps({"claims": claims}), encoding="utf-8"
         )
         for entities in (None, yaml_path):
+            COUNT["lint"] += 1
             old = old_lint.lint(path, pages, entities).model_dump()
             assert new_lint.lint(path, pages, entities).model_dump() == old
 
@@ -948,3 +952,14 @@ def test_claims_citing_several_spans_give_the_same_reports(matcher):
             claims.append({"id": f"c{c}", "text": text, "span_ids": [s.id for s in cited]})
         body = "\n\n".join(c["text"] for c in claims)
         same_lint([{"slug": "t", "text": body, "claims": claims}], spans)
+
+
+def test_zz_the_count_of_cases_compared():
+    """Runs last in this file; the count goes in the P1 report."""
+    print(f"\nP1 differential cases: {COUNT['facts']} fact extractions, {COUNT['lint']} lint runs")
+    print(f"G1 inputs that differed, by shape: {dict(sorted(DIFFERED.items()))}")
+    print(f"G2 inputs that differed, by shape: {dict(sorted(DIFFERED_G2.items()))}")
+    if COUNT["facts"] == 0:
+        return  # invoked alone with -k
+    minimum = 5_000 if is_full() else 1_000
+    assert COUNT["facts"] > minimum

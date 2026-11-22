@@ -507,12 +507,13 @@ def test_every_allowlist_names_its_rules_and_its_exact_files():
             assert re.fullmatch(r"[\w/.-]+", path), pattern
             if not (REPO / path).is_file():
                 assert path in HISTORICAL_MOVED_PATHS, pattern
-                sha = subprocess.check_output(
-                    ["git", "log", "-1", "--format=%H", "--", path],
-                    cwd=REPO,
-                    text=True,
-                ).strip()
-                assert sha, pattern
+                if (REPO / ".git").exists():
+                    sha = subprocess.check_output(
+                        ["git", "log", "-1", "--format=%H", "--", path],
+                        cwd=REPO,
+                        text=True,
+                    ).strip()
+                    assert sha, pattern
 
 
 # --- image_scan: single job scanning both platforms via trivy_policy.py ----------------------
@@ -645,11 +646,44 @@ def test_trivy_policy_judges_fixed_unfixed_severity_expired_and_malformed(tmp_pa
     assert trivy_policy.main([str(amd), "--ignorefile", str(ignore)]) == 1
     assert "expired Trivy ignore entries: CVE-2020-1111" in capsys.readouterr().err
 
-    # Malformed JSON returns exit 2.
+    # Malformed JSON -> exit 2; clean Trivy v2 reports (omitted/null Results) -> exit 0.
+    clean_omitted = tmp_path / "clean_omitted.json"
+    clean_omitted.write_text(
+        json.dumps(
+            {
+                "SchemaVersion": 2,
+                "ArtifactName": "localhost:5000/cairn@sha256:0000",
+                "ArtifactType": "container_image",
+            }
+        ),
+        encoding="utf-8",
+    )
+    clean_summary = tmp_path / "clean_summary.md"
+    assert trivy_policy.main([str(clean_omitted), "--summary", str(clean_summary)]) == 0
+    assert "None found." in clean_summary.read_text(encoding="utf-8")
+
+    clean_null = tmp_path / "clean_null.json"
+    clean_null.write_text(json.dumps({"SchemaVersion": 2, "Results": None}), encoding="utf-8")
+    assert trivy_policy.main([str(clean_null)]) == 0
+
+    clean_os_only = tmp_path / "clean_os_only.json"
+    clean_os_only.write_text(
+        json.dumps(
+            {
+                "SchemaVersion": 2,
+                "Results": [{"Target": "cairn (debian 12)", "Class": "os-pkgs", "Type": "debian"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert trivy_policy.main([str(clean_os_only)]) == 0
+
     bad = tmp_path / "bad.json"
     bad.write_text("{not-json", encoding="utf-8")
     assert trivy_policy.main([str(bad)]) == 2
     bad.write_text("{}", encoding="utf-8")
+    assert trivy_policy.main([str(bad)]) == 2
+    bad.write_text(json.dumps({"SchemaVersion": 2, "Results": "not-a-list"}), encoding="utf-8")
     assert trivy_policy.main([str(bad)]) == 2
 
 

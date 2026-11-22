@@ -82,8 +82,9 @@
 # redacted).
 # The quick deploy's OpenTofu definitions (infra/quick/) are checked in job `quick` when a
 # change touches them, and on every tag; `publish` needs it too.
-# Job `browser` runs the browser tests (tests/browser) in headless Chromium on every pull
-# request and every push, with no path condition, and `publish` needs it.
+# Job `browser` runs headless Chromium tests (tests/browser) on every pull request and push
+# when `changes.web` is not `false` (all of src/, tests/browser/, dependencies, workflows),
+# stays green when nothing web-facing changed, and `publish` always needs it.
 # Nothing is published from a pull request or a manual run.
 # A repository whose registry is not ready sets the variable CAIRN_PUBLISH to `false`: the
 # gate runs as before, and nothing is published, verified, released or deployed; a v* tag's
@@ -146,6 +147,7 @@ jobs:
       image: ${{ steps.decide.outputs.image }}
       quick: ${{ steps.decide.outputs.quick }}
       web: ${{ steps.decide.outputs.web }}
+      fuzz: ${{ steps.decide.outputs.fuzz }}
     steps:
       # The whole history, so that the base of the diff is there; no token is kept.
       - name: Check out
@@ -194,6 +196,7 @@ jobs:
 
   test:
     name: tests (shard ${{ matrix.shard }})
+    needs: changes
     runs-on: ${{ fromJSON(vars.CAIRN_GATE_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 15
     strategy:
@@ -215,6 +218,7 @@ jobs:
       - name: Test shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}
+          CAIRN_FUZZ_PROFILE: ${{ needs.changes.outputs.fuzz == 'pr' && 'pr' || 'full' }}
         run: |
           mapfile -t SHARD_FILES < <(python3 scripts/ci_shard.py --index "$SHARD_INDEX" --total 4)
           if [ "${#SHARD_FILES[@]}" -gt 0 ]; then
@@ -791,13 +795,12 @@ jobs:
         if: needs.changes.outputs.quick == 'false'
         run: echo "The change touches nothing the quick deploy's definitions define or read."
 
-  # The browser tests: gated by WEB_WORK (src/cairn/web/, templates/, static/, memory.py,
-  # tests/browser/, dependencies) so unrelated PRs skip Chromium setup, while nightly.yml
+  # The browser tests: always runs so `publish` never accepts a skipped `browser` job; steps
+  # are gated by WEB_WORK (src/, tests/browser/, dependencies, workflows), while nightly.yml
   # also runs the full suite daily.
   browser:
     name: browser tests (Chromium)
     needs: changes
-    if: needs.changes.outputs.web != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -808,21 +811,29 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up uv
+        if: needs.changes.outputs.web != 'false'
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.11.19"
           enable-cache: true
       - name: Install the locked environment
+        if: needs.changes.outputs.web != 'false'
         run: uv sync --locked --no-default-groups --group dev --group browser
       - name: Cache Playwright browsers
+        if: needs.changes.outputs.web != 'false'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('uv.lock') }}
       - name: Install Chromium and its system packages
+        if: needs.changes.outputs.web != 'false'
         run: uv run python -m playwright install --with-deps --only-shell chromium
       - name: Browser tests
+        if: needs.changes.outputs.web != 'false'
         run: uv run pytest tests/browser --run-browser
+      - name: Nothing to check
+        if: needs.changes.outputs.web == 'false'
+        run: echo "The change touches nothing the browser tests read."
 
   # The smoke test of each platform of the build image_build made, pulled by that platform's own
   # manifest digest after the same check image_scan makes; the non-native platform runs under
@@ -1084,7 +1095,7 @@ jobs:
       needs.image_build.result == 'success' &&
       needs.image_scan.result == 'success' &&
       needs.quick.result == 'success' &&
-      (needs.browser.result == 'success' || (needs.changes.outputs.web == 'false' && needs.browser.result == 'skipped')) &&
+      needs.browser.result == 'success' &&
       ((github.ref_type == 'tag' && needs.image.result == 'skipped' && needs.stack.result == 'skipped' && needs.host.result == 'skipped') ||
        (needs.image.result == 'success' && needs.stack.result == 'success' && needs.host.result == 'success'))
     runs-on: ${{ fromJSON(vars.CAIRN_RELEASE_RUNNER || '"ubuntu-latest"') }}
@@ -1587,6 +1598,18 @@ jobs:
             echo "::error::gh on this runner is ${version:-of a version it does not print as three plain numbers}, before 2.102.0, the version in whose source this job's handling of a draft was read, so it is not trusted with the release; update GitHub CLI on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
             exit 1
           fi
+      - name: Check Python 3
+        run: |
+          if ! command -v python3 > /dev/null; then
+            echo "::error::Python 3 is not on this runner, so the GitHub release for $GITHUB_REF_NAME cannot be made; install Python 3.9 or later on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
+          version="$(python3 --version 2>&1 | sed -n 's/^Python \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p')"
+          IFS=. read -r major minor _ <<< "${version:-0.0.0}"
+          if [ "$major" -lt 3 ] || { [ "$major" = 3 ] && [ "$minor" -lt 9 ]; }; then
+            echo "::error::Python 3 on this runner is ${version:-of a version it does not print as three plain numbers}, before 3.9, so the GitHub release for $GITHUB_REF_NAME cannot be made; update Python 3 on the runner CAIRN_RELEASE_RUNNER names, or unset it to use GitHub's"
+            exit 1
+          fi
       - name: Fetch what package built
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -1648,7 +1671,32 @@ jobs:
               return subprocess.run(["gh", *args], capture_output=True, text=not binary, check=False)
 
 
+          def _is_int(value: object) -> bool:
+              return isinstance(value, int) and not isinstance(value, bool)
+
+
+          def _valid_assets(raw: object) -> bool:
+              return isinstance(raw, list) and all(
+                  isinstance(a, dict) and isinstance(a.get("name"), str) for a in raw
+              )
+
+
+          def _valid_release_obj(rel: object) -> bool:
+              return (
+                  isinstance(rel, dict)
+                  and _is_int(rel.get("id"))
+                  and isinstance(rel.get("draft"), bool)
+                  and isinstance(rel.get("prerelease"), bool)
+                  and (rel.get("body") is None or isinstance(rel.get("body"), str))
+                  and (rel.get("name") is None or isinstance(rel.get("name"), str))
+                  and (rel.get("tag_name") is None or isinstance(rel.get("tag_name"), str))
+                  and _valid_assets(rel.get("assets"))
+              )
+
+
           def parse_pages(raw: str) -> list[dict]:
+              if not raw.strip():
+                  raise ValueError("empty JSON response")
               decoder = json.JSONDecoder()
               items: list[dict] = []
               idx, length = 0, len(raw)
@@ -1658,7 +1706,7 @@ jobs:
                   if idx >= length:
                       break
                   page, idx = decoder.raw_decode(raw, idx)
-                  if not isinstance(page, list):
+                  if not isinstance(page, list) or not all(isinstance(r, dict) for r in page):
                       raise ValueError("expected JSON list of releases")
                   items.extend(page)
               return items
@@ -1674,7 +1722,7 @@ jobs:
 
           def release_snapshot(rel: dict) -> tuple:
               assets = sorted(
-                  (a.get("id"), a.get("name"), a.get("state"), a.get("size"), a.get("updated_at"))
+                  json.dumps([a.get("id"), a.get("name"), a.get("state"), a.get("size"), a.get("updated_at")])
                   for a in (rel.get("assets") or [])
               )
               return (
@@ -1758,6 +1806,9 @@ jobs:
                       and body.encode("utf-8") == expected_body
                   )
 
+              def unread_by_id() -> None:
+                  fail(f"::error::the GitHub release for {tag} could not be read by its id, as the lines above say, {compared}; re-run this job, and delete nothing")
+
               def fresh(rid: int) -> dict | None:
                   res = gh(["api", f"repos/{repo}/releases/{rid}"])
                   if res.returncode != 0:
@@ -1766,11 +1817,21 @@ jobs:
                       if "HTTP 404" in (res.stderr or ""):
                           fail(f"::error::the GitHub release for {tag}, which GitHub's listing showed, was not found when read by its id, so it has probably been deleted; re-run this job, which starts from what is listed then")
                       else:
-                          fail(f"::error::the GitHub release for {tag} could not be read by its id, as the lines above say, {compared}; re-run this job, and delete nothing")
+                          unread_by_id()
                       return None
-                  rel = json.loads(res.stdout)
-                  if rel.get("tag_name") != tag:
+                  try:
+                      rel = json.loads(res.stdout)
+                  except ValueError:
+                      unread_by_id()
+                      return None
+                  if not isinstance(rel, dict) or not isinstance(rel.get("tag_name"), str):
+                      unread_by_id()
+                      return None
+                  if rel["tag_name"] != tag:
                       fail(f"::error::the release GitHub's listing showed for {tag} is, read by its id, a release of another tag; look at it on the repository's releases page, and re-run this job, which starts from what is listed then")
+                      return None
+                  if not _valid_release_obj(rel):
+                      unread_by_id()
                       return None
                   if not judge_row(rel):
                       return None
@@ -1785,18 +1846,24 @@ jobs:
                   return rel
 
               def look() -> tuple[bool, dict | None, list[str]]:
+                  def unlisted() -> tuple[bool, dict | None, list[str]]:
+                      fail(f"::error::the repository's releases could not be listed, so whether {tag} has one is not known; re-run this job")
+                      return False, None, []
+
                   res = gh(["api", "--paginate", f"repos/{repo}/releases?per_page=100"])
                   if res.returncode != 0:
                       if res.stderr:
                           sys.stderr.write(res.stderr)
-                      fail(f"::error::the repository's releases could not be listed, so whether {tag} has one is not known; re-run this job")
-                      return False, None, []
+                      return unlisted()
                   try:
                       items = parse_pages(res.stdout)
                   except ValueError:
-                      fail(f"::error::the repository's releases could not be listed, so whether {tag} has one is not known; re-run this job")
-                      return False, None, []
+                      return unlisted()
+                  if any(r.get("tag_name") is not None and not isinstance(r.get("tag_name"), str) for r in items):
+                      return unlisted()
                   for_tag = [r for r in items if r.get("tag_name") == tag]
+                  if not all(_valid_release_obj(r) for r in for_tag):
+                      return unlisted()
                   released = [
                       r["tag_name"]
                       for r in items
@@ -1845,10 +1912,10 @@ jobs:
                       time.sleep(APART)
                   return True, None, []
 
-              def same_files(rel: dict) -> dict | None:
+              def same_files(rel: dict, *, refuse_only: bool = False) -> dict | None:
                   nonlocal compared
-                  is_draft = bool(rel.get("draft"))
-                  state = "a draft" if is_draft else "public"
+                  use_refuse = refuse_only or not bool(rel.get("draft"))
+                  state = "a draft" if bool(rel.get("draft")) else "public"
                   by_name = {a.get("name"): a for a in (rel.get("assets") or [])}
                   for name in files:
                       asset = by_name.get(name) or {}
@@ -1862,10 +1929,10 @@ jobs:
                       )
                       if bad_meta:
                           reason = f"{name} is not the file this run attested"
-                          if is_draft:
-                              fail(f"::error::read by its id, the GitHub release for {tag} is this run's draft and does not hold exactly the files this run attested: {reason}; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again")
-                          else:
+                          if use_refuse:
                               refuse(reason)
+                          else:
+                              fail(f"::error::read by its id, the GitHub release for {tag} is this run's draft and does not hold exactly the files this run attested: {reason}; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again")
                           return None
                       res = gh(["api", "--allow-escape-sequences", "-H", "Accept: application/octet-stream", f"repos/{repo}/releases/assets/{aid}"], binary=True)
                       if res.returncode != 0:
@@ -1875,10 +1942,10 @@ jobs:
                           return None
                       if res.stdout != local_bytes:
                           reason = f"{name} is not the file this run attested"
-                          if is_draft:
-                              fail(f"::error::read by its id, the GitHub release for {tag} is this run's draft and does not hold exactly the files this run attested: {reason}; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again")
-                          else:
+                          if use_refuse:
                               refuse(reason)
+                          else:
+                              fail(f"::error::read by its id, the GitHub release for {tag} is this run's draft and does not hold exactly the files this run attested: {reason}; this job neither deletes nor publishes it; delete it on the repository's releases page and re-run this job, which makes the release again")
                           return None
                   compared = "after its three files were fetched and each was found to be the file this run attested, so whether the release changed around their download is not known"
                   rel2 = fresh(rel["id"])
@@ -1919,7 +1986,7 @@ jobs:
 
               said = ""
               if rel.get("draft"):
-                  rel = same_files(rel)
+                  rel = same_files(rel, refuse_only=False)
                   if rel is None:
                       return 1
                   make_latest = "false"
@@ -1947,7 +2014,7 @@ jobs:
                   if rel is None:
                       return 1
 
-              rel = same_files(rel)
+              rel = same_files(rel, refuse_only=True)
               if rel is None:
                   return 1
               if rel.get("draft"):

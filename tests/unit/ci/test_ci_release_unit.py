@@ -72,7 +72,9 @@ def test_the_permissions_of_every_job_on_the_tag_path():
 
 
 BUILDS_OR_RUNS_THE_CHECKOUT = re.compile(
-    r"\buv\s+(build|sync|pip|run|tool)\b|\bpip3?\b|\bpython3?\b(?!\s+-I\s+-\s+<<'PY'\n)|\bscripts/|\./"
+    r"\buv\s+(build|sync|pip|run|tool)\b|\bpip3?\b"
+    r"|(?<!command -v )\bpython3?\b(?!\s+-I\s+-\s+<<'PY'\n|\s+--version\b)"
+    r"|\bscripts/|\./"
     r"|\bdocker\s+(build|buildx\s+build|buildx\s+bake|compose|run|create|start|exec)\b"
 )
 # The actions that build: an image from the checkout, or the checkout's Python environment.
@@ -142,6 +144,7 @@ PRIVILEGED_STEPS = {
     "attest_main": [("The image's name", "run"), ("Attest the image", ATTEST_ACTION_PINNED)],
     "release": [
         ("Check the GitHub CLI", "run"),
+        ("Check Python 3", "run"),
         ("Fetch what package built", DOWNLOAD),
         ("Check the files", "run"),
         ("Create the release", "run"),
@@ -218,9 +221,106 @@ def definition(value) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-# Structural security contract for every privileged job and workflow top-level keys (replacing
-# brittle full-YAML SHA hashes with explicit checks of every security invariant).
+# Structural security contract AND whole-definition SHA-256 pins for every privileged job
+# and workflow top-level keys: any edit to a privileged job or workflow default fails unless
+# explicitly updated here after review.
 NO_CHECKOUT_PRIVILEGED = ("publish", "aliases", "attest", "attest_main", "release")
+
+# Every privileged job's definition and each of its steps: the job's own keys, then each step,
+# `shell`, `working-directory` and `if` included. A change to any of them is a change here.
+PRIVILEGED_DEFINITIONS = {
+    "publish": [
+        "125deec7050515cd7166bcf2ec0e737355d1b7b5f8567e87064b0b79b479a912",
+        "1a6b7627d1ef6deb2d94425608ef7bae00108989018ac6ac819381746041cbe0",
+        "8306689dab0ead439f5f7fd02a80289fa3c8492078e2f988a4a993978ed26baa",
+        "d9ea58238b445cda0110bdacbaf8df6871101638f01b5ce1a827f14fff4e0535",
+        "ef6a84363a5151811074777e49202394f0aa77ca636013f73154e1cc5f89998b",
+        "ad9651396fe808494b0cdac909f262796fe4930a9055a9d868e6ddd8c5ba2adf",
+        "c83e7facece707c4f75350e1de0052f2ce46fcc8a71786a447f6637ef62ea26f",
+    ],
+    "aliases": [
+        "36f2677637cd5a20f1bd74ef3996839aec7f1cd69b0a4a476272c7ea6d357d7a",
+        "1a6b7627d1ef6deb2d94425608ef7bae00108989018ac6ac819381746041cbe0",
+        "8306689dab0ead439f5f7fd02a80289fa3c8492078e2f988a4a993978ed26baa",
+        "15967f2834f514881a03bd3e915a940bf0e8cada04ea0e9bab8c6490556b8d11",
+    ],
+    "attest": [
+        "ed4f45d878d80e9a476646ac5b991cf3e2e2d193efae72e65ed88ee0d711172f",
+        "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
+        "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
+        "cc86b92c64e9151bfa82f40dd1095dbfadd82a494a9bba96082398a87521a4d3",
+        "61c61f66fe29242510dcfdbc44aa543de571c3c4c84dfef2d539372ba941b8bc",
+        "17a3c14e979955db5dc020a60609de3a40456b894c3987fd0e6396fad1590ba9",
+    ],
+    "attest_main": [
+        "c167fe981a880ae4718ef3b113dca1f36fe7eb07e37f7b1d707698706568bd0d",
+        "cc86b92c64e9151bfa82f40dd1095dbfadd82a494a9bba96082398a87521a4d3",
+        "17a3c14e979955db5dc020a60609de3a40456b894c3987fd0e6396fad1590ba9",
+    ],
+    "release": [
+        "10b89182122ed02d87c864b615d925b42e10665f5ca0bdb89abd4f277ec6669c",
+        "6153b4d908585eb1ba57111b2d53e509fce748ccd5770de0447b66079fe1fd48",
+        "f3c72bfb2ae4609d30c01aa1db50021732bebcd66cfff1f5b022c12404eb34ac",
+        "61d8d41a68751f74093804f3395e79725021029e66dfb19aa87385d9b65e5574",
+        "6561e69038da052bec6e80752c4b0248043b4c2fe503b8c3969f302ba5af7248",
+        "bf6a43c194de5e181a3ebb332e584689311b9ffd2d7147cd9a3d7e7cf2a43ca3",
+    ],
+    "deploy": [
+        "f612d6f9422ceb83d6a85850393d48b84226d60e75a31906878e07215dc53b4a",
+        "b18abd84ee482615c40437c08518d017e4714ce2969a8de2177163237511424c",
+        "a2535f2ff0de1a3d0277c76a2785eeac643094fc780539743881dac6e7cd3770",
+        "8306689dab0ead439f5f7fd02a80289fa3c8492078e2f988a4a993978ed26baa",
+        "5adafd3ace605a543d6987d35c06f906bf2906d9568de6f3680c9dd2a958199f",
+        "98eea6ec9c1ffb5566953bb347a4eb98ba62f321f5a8a853e05a479fbce9ba19",
+        "bbca2994a9d061fd00037a35ce2ee8983531d90544a0994fb2b54199b4a18095",
+        "0a121d0a5e8a8d2842f01b512d79eac2b512addcedee827510b874abaa6f1eb7",
+        "017f3f0cd69d3c189c0764dadcdbf1d3e3cd3c1793072e5139d8148a58d7e927",
+        "33eb2834597be56ac27f28feeb21b8056c4cbaec3ad15858238a992f8be61fc4",
+        "d6cbac9b74b53c64fccc732bcca08b479063efedd08a1012e94c1b5f16720142",
+        "2017523234a93cd32e28ae852d764a8f1c537530e467fceec2a124648bc930c1",
+        "07c4d51c7b032306506491757887c9353c08b9a0dd0e9452832d09b1758acba6",
+    ],
+}
+# The workflow's own keys but its jobs (name, on, permissions, concurrency): a default shell,
+# working directory or env there would reach every privileged step.
+WORKFLOW_DEFINITION = "b1cee4920f1e889327531def9015032200cb85cf16e9c55d61b6396c655c14af"
+
+
+def job_definition(job: dict) -> list[str]:
+    own = {key: value for key, value in job.items() if key != "steps"}
+    return [definition(own), *(definition(step) for step in job["steps"])]
+
+
+def test_every_privileged_job_and_each_of_its_steps_is_pinned_whole():
+    workflow = yaml.safe_load(RAW_WORKFLOW)
+    assert definition({k: v for k, v in workflow.items() if k != "jobs"}) == WORKFLOW_DEFINITION
+    assert set(PRIVILEGED_DEFINITIONS) == {n for n, j in JOBS.items() if holds_a_token(j)}
+    for name, pinned in PRIVILEGED_DEFINITIONS.items():
+        assert job_definition(JOBS[name]) == pinned, name
+    # What the pin sees that the step list did not: deploy's checkout of another repository,
+    # ref or path, a step's shell, working directory, env or inputs, and the job's defaults.
+    deploy = JOBS["deploy"]
+    checkout = deploy["steps"][0]
+    for changed in (
+        {**checkout, "with": {**checkout.get("with", {}), "repository": "someone/else"}},
+        {**checkout, "with": {**checkout.get("with", {}), "ref": "other"}},
+        {**checkout, "with": {**checkout.get("with", {}), "path": "elsewhere"}},
+        {**deploy["steps"][1], "shell": "sh"},
+        {**deploy["steps"][1], "working-directory": "elsewhere"},
+        {**deploy["steps"][1], "env": {"BASH_ENV": "x"}},
+    ):
+        index = deploy["steps"].index(checkout if "uses" in changed else deploy["steps"][1])
+        steps = [*deploy["steps"][:index], changed, *deploy["steps"][index + 1 :]]
+        assert job_definition({**deploy, "steps": steps}) != PRIVILEGED_DEFINITIONS["deploy"]
+    publish = JOBS["publish"]
+    pub_steps = [
+        *publish["steps"][:1],
+        {**publish["steps"][1], "env": {"BASH_ENV": "x"}},
+        *publish["steps"][2:],
+    ]
+    assert job_definition({**publish, "steps": pub_steps}) != PRIVILEGED_DEFINITIONS["publish"]
+    with_defaults = {**deploy, "defaults": {"run": {"shell": "sh"}}}
+    assert job_definition(with_defaults) != PRIVILEGED_DEFINITIONS["deploy"]
 
 
 def test_every_privileged_job_is_structurally_locked_down():
@@ -268,6 +368,9 @@ def test_no_job_holding_a_write_permission_or_an_identity_token_builds_or_runs_t
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 - <<'PY'\nprint(1)\nPY\n")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 -I helper.py")
     assert not BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 -I - <<'PY'\nprint(1)\nPY\n")
+    assert not BUILDS_OR_RUNS_THE_CHECKOUT.search("command -v python3")
+    assert not BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 --version")
+    assert BUILDS_OR_RUNS_THE_CHECKOUT.search("python3 -c 'print(1)'")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("pip install x")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("docker buildx build --push .")
     assert BUILDS_OR_RUNS_THE_CHECKOUT.search("docker run --rm ghcr.io/o/r@sha256:x")

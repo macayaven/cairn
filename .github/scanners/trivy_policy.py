@@ -16,10 +16,21 @@ _EXPIRED_AT_RE = re.compile(r"^\s+expired_at:\s*(?P<date>\d{4}-\d{2}-\d{2})\b")
 def parse_trivy_report(path: Path) -> list[dict]:
     """Load one Trivy `--format json` report and validate its top-level structure."""
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or not isinstance(data.get("Results"), list):
-        raise ValueError(f"{path}: expected a Trivy JSON object with a Results list")
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a Trivy JSON object")
+    if "Results" not in data:
+        schema = data.get("SchemaVersion")
+        if not isinstance(schema, int) or isinstance(schema, bool):
+            raise ValueError(f"{path}: expected a Trivy JSON object with SchemaVersion or Results")
+        results: list[object] = []
+    elif data["Results"] is None:
+        results = []
+    elif isinstance(data["Results"], list):
+        results = data["Results"]
+    else:
+        raise ValueError(f"{path}: expected a Results list in Trivy JSON object")
     findings: list[dict] = []
-    for result in data["Results"]:
+    for result in results:
         if not isinstance(result, dict):
             raise ValueError(f"{path}: expected object items inside Results")
         target = str(result.get("Target", ""))

@@ -102,19 +102,38 @@ QUICK_WORK = (
     "deploy/litestream.yml",
     "pyproject.toml",
     "tests/unit/ops/test_quick_",
+    "tests/support/ops/quick_",
 )
 
-# Paths whose change runs job `browser` (Playwright Chromium UI tests).
+# Paths whose change runs job `browser`'s Playwright Chromium UI tests.
 WEB_WORK = (
-    "src/cairn/web/",
-    "src/cairn/templates/",
-    "src/cairn/static/",
-    "src/cairn/memory.py",
+    "src/",
     "tests/browser/",
     "tests/conftest.py",
     "pyproject.toml",
     "uv.lock",
     ".github/workflows/",
+)
+
+# Paths whose change escalates fuzz/differential tests from the `pr` profile to `full`.
+FUZZ_FULL_WORK = (
+    "src/cairn/spans.py",
+    "src/cairn/facts.py",
+    "src/cairn/lint.py",
+    "src/cairn/compiler.py",
+    "src/cairn/relations.py",
+    "src/cairn/store/erasure.py",
+    "src/cairn/store/ranking.py",
+    "src/cairn/store/relating.py",
+    "src/cairn/store/memory.py",
+    "src/cairn/store/access.py",
+    "src/cairn/store/reach.py",
+    "src/cairn/store/base.py",
+    "src/cairn/slack/text.py",
+    "tests/support/fuzz.py",
+    "tests/support/rt1_harness.py",
+    "tests/support/rt3_slack_model.py",
+    "tests/support/store/generated_related.py",
 )
 
 # The jobs of the gate that read no output of this script and so run for every change.
@@ -286,6 +305,11 @@ def web_work(path: str) -> bool:
     return _matches_any(path, WEB_WORK)
 
 
+def fuzz_work(path: str) -> bool:
+    """True when PATH is on FUZZ_FULL_WORK, or is not plain."""
+    return _matches_any(path, FUZZ_FULL_WORK)
+
+
 def quick_verdict(paths: list[str] | None) -> bool:
     """Whether job `quick` runs its checks for these changed PATHS (None: not known). An empty
     list cannot be told apart from a lookup that printed nothing, so it runs them."""
@@ -295,6 +319,11 @@ def quick_verdict(paths: list[str] | None) -> bool:
 def web_verdict(paths: list[str] | None) -> bool:
     """Whether job `browser` runs its Playwright tests for these changed PATHS."""
     return paths is None or not paths or any(web_work(path) for path in paths)
+
+
+def fuzz_verdict(paths: list[str] | None) -> bool:
+    """Whether fuzz/differential suites run the `full` profile for these changed PATHS."""
+    return paths is None or not paths or any(fuzz_work(path) for path in paths)
 
 
 def nothing_ships(paths: Iterable[str]) -> bool:
@@ -614,10 +643,15 @@ def main(
         web = web_verdict(paths)
     except Exception:
         web = True
+    try:
+        fuzz = fuzz_verdict(paths)
+    except Exception:
+        fuzz = True
     line = (
         f"image={'true' if run else 'false'}\n"
         f"quick={'true' if quick else 'false'}\n"
         f"web={'true' if web else 'false'}\n"
+        f"fuzz={'full' if fuzz else 'pr'}\n"
     )
     output = environ.get("GITHUB_OUTPUT")
     if output:

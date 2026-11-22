@@ -43,6 +43,7 @@ ALWAYS_ON = (
     "static_analysis",
     "secrets",
     "quick",
+    "browser",
 )
 
 
@@ -255,6 +256,7 @@ def jobs_for(event: str, paths: list[str], base: str | None = PUBLISHED) -> set[
                 "image": "true" if run else "false",
                 "quick": "true" if ci_changes.quick_verdict(known) else "false",
                 "web": "true" if ci_changes.web_verdict(known) else "false",
+                "fuzz": "full" if ci_changes.fuzz_verdict(known) else "pr",
             }
         },
     )

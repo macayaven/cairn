@@ -52,9 +52,8 @@ DEPLOY = JOBS["deploy"]
 TF_VARIABLES = (REPO / "infra" / "gcp" / "variables.tf").read_text(encoding="utf-8")
 
 
-# Gate jobs that ALWAYS run without checking image/web outputs of `changes`.
+# Gate jobs that ALWAYS run without checking `changes` outputs at job level.
 IMAGE_GATED = ("image_build", "image_scan", "image", "stack", "host")
-WEB_GATED = ("browser",)
 
 
 def default_of(variable: str) -> str:
@@ -528,7 +527,7 @@ def test_every_job_of_the_gate_is_an_ancestor_of_publish():
     assert gate_jobs_missing_from_publish(added) == {"docs_check"}
     # So are `infra` and `package_check` dropped from publish's needs.
     dropped = {**JOBS, "publish": {**JOBS["publish"], "needs": ["image", "stack", "host"]}}
-    missing = {"infra", "package_check", "browser", "image_scan", *ALWAYS_ON}
+    missing = {"infra", "package_check", "image_scan", *ALWAYS_ON}
     assert gate_jobs_missing_from_publish(dropped) == missing
 
 
@@ -638,9 +637,14 @@ def test_the_image_jobs_share_their_conditions_and_the_cheap_jobs_have_none():
     assert JOBS["image_build"]["if"] == SHIPS
     assert JOBS["image_scan"]["if"] == "needs.image_build.result == 'success'"
     assert [" ".join(JOBS[name]["if"].split()) for name in BUILD_JOBS] == [REHEARSAL_CONDITION] * 3
-    assert JOBS["browser"]["if"] == "needs.changes.outputs.web != 'false'"
-    for name in ("lint", "test", "infra", "changes", "package_check"):
+    for name in ("lint", "test", "infra", "changes", "package_check", "quick", "browser"):
         assert "if" not in JOBS[name], name
+    assert needs(JOBS["test"]) == {"changes"}
+    shard_step = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Test shard")
+    assert (
+        shard_step["env"]["CAIRN_FUZZ_PROFILE"]
+        == "${{ needs.changes.outputs.fuzz == 'pr' && 'pr' || 'full' }}"
+    )
 
 
 def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_nothing_more():
@@ -656,6 +660,7 @@ def test_the_changes_job_runs_the_script_on_the_whole_history_reading_runs_and_n
         "image": "${{ steps." + decide["id"] + ".outputs.image }}",
         "quick": "${{ steps." + decide["id"] + ".outputs.quick }}",
         "web": "${{ steps." + decide["id"] + ".outputs.web }}",
+        "fuzz": "${{ steps." + decide["id"] + ".outputs.fuzz }}",
     }
     # The job's token for the API; the rest the script reads from GitHub's own variables.
     assert decide["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
@@ -719,7 +724,7 @@ def test_the_jobs_that_come_after_keep_their_needs_and_conditions_exactly():
 # Job `changes` runs on every event, like the two cheap jobs, and takes a few seconds.
 # So does `package_check`, the rehearsal of the build a tag runs.
 # On main, `attest_main` signs the published image's digest for the commit after `verify`.
-EVERYTHING_NO_WEB = (THE_GATE - {"browser"}) | {
+EVERYTHING = THE_GATE | {
     "test_py312",
     "release_check",
     "publish",
@@ -727,7 +732,6 @@ EVERYTHING_NO_WEB = (THE_GATE - {"browser"}) | {
     "attest_main",
     "deploy",
 }
-EVERYTHING = EVERYTHING_NO_WEB | {"browser"}
 # A v* tag runs the non-rehearsal gate + py312 + release path; it trusts main's attested rehearsals.
 A_RELEASE = TAG_GATE | {
     "release_check",
@@ -780,15 +784,13 @@ NOTHING_SHIPS = ["docs/spec-v1.md", "tests/unit/store/test_store_unit.py"]
 
 
 def test_which_jobs_run_for_each_event_with_a_change_that_ships_and_one_that_does_not():
-    pr_ships_no_web = THE_GATE - {"browser"}
-    draft_ships_no_web = DRAFT_DEFAULT - {"browser"}
     table = {
         # event: (a change that ships store.py only, a change where nothing ships)
-        "a push to a draft pull request": (draft_ships_no_web, CHEAP),
-        "a pull request marked ready for review": (pr_ships_no_web, CHEAP),
-        "a push to a pull request that is ready": (pr_ships_no_web, CHEAP),
+        "a push to a draft pull request": (DRAFT_DEFAULT, CHEAP),
+        "a pull request marked ready for review": (THE_GATE, CHEAP),
+        "a push to a pull request that is ready": (THE_GATE, CHEAP),
         # On main, "the change" is from the last published head to the commit pushed.
-        "a push to main": (EVERYTHING_NO_WEB, CHEAP | {"test_py312"}),
+        "a push to main": (EVERYTHING, CHEAP | {"test_py312"}),
         # The changed paths of these two are not known, so they run everything for their event.
         "a manual run": (THE_GATE | {"test_py312"}, THE_GATE | {"test_py312"}),
         "a v* tag": (A_RELEASE, A_RELEASE),
@@ -803,13 +805,12 @@ def test_on_main_what_runs_depends_on_the_last_published_head_not_on_the_push():
     push = "a push to main"
     # A docs-only push after a run that published: nothing ships, nothing is deployed.
     assert jobs_for(push, NOTHING_SHIPS) == CHEAP | {"test_py312"}
-    # The same push when the newest publishing run is older than a source change: ships without web.
-    assert jobs_for(push, [*NOTHING_SHIPS, "src/cairn/server.py"]) == EVERYTHING_NO_WEB
-    # Web changes trigger `browser` on main too.
+    # The same push when the newest publishing run is older than a source change: ships everything.
+    assert jobs_for(push, [*NOTHING_SHIPS, "src/cairn/server.py"]) == EVERYTHING
     assert jobs_for(push, ["src/cairn/web/app.py"]) == EVERYTHING
-    # No run that published, or a lookup that failed: `image` runs; `web` follows paths or unknown.
-    assert jobs_for(push, NOTHING_SHIPS, base=None) == EVERYTHING_NO_WEB
-    assert jobs_for(push, A_CHANGE_THAT_SHIPS, base=None) == EVERYTHING_NO_WEB
+    # No run that published, or a lookup that failed: everything runs.
+    assert jobs_for(push, NOTHING_SHIPS, base=None) == EVERYTHING
+    assert jobs_for(push, A_CHANGE_THAT_SHIPS, base=None) == EVERYTHING
     # The published head is the head itself (this run is a re-run): empty diff runs everything.
     assert jobs_for(push, [], base=SHA) == EVERYTHING
     # Pull requests do not look up a base at all.
@@ -821,7 +822,7 @@ def test_an_output_that_is_not_exactly_false_runs_the_gate():
         ran = jobs_that_run(EVENTS["a push to main"], {"changes": {"image": value}})
         assert ran == EVERYTHING, value
     ran = jobs_that_run(EVENTS["a push to main"], {"changes": {"image": "false"}})
-    assert ran == CHEAP | {"browser", "test_py312"}
+    assert ran == CHEAP | {"test_py312"}
 
 
 def test_the_evaluator_skips_after_a_skipped_job_unless_the_condition_says_otherwise():
@@ -1322,8 +1323,9 @@ def test_release_builds_nothing_installs_nothing_and_checks_out_nothing():
     assert "needs.publish.result == 'success' && needs.verify.result == 'success'" in package_if
     assert RELEASE["permissions"] == {"contents": "write"}
     steps = RELEASE["steps"]
-    # (The first asks the runner's gh for its version: test_ci_release_gh_version_unit.)
+    # (The first two ask the runner's gh and python3 for their versions.)
     assert [s.get("uses", "run").split("@")[0] for s in steps] == [
+        "run",
         "run",
         "actions/download-artifact",
         "run",
@@ -1331,7 +1333,7 @@ def test_release_builds_nothing_installs_nothing_and_checks_out_nothing():
     ]
     configuration = yaml.safe_dump(RELEASE)
     assert not re.search(r"\buv\b|setup-uv|\bpip\b|actions/checkout", configuration)
-    download = steps[1]
+    download = steps[2]
     assert download["with"] == {"name": "release", "path": "${{ runner.temp }}/release"}
 
 
@@ -1369,8 +1371,7 @@ THE_FILES = ["cairn_memory-1.2.3-py3-none-any.whl", "cairn_memory-1.2.3.tar.gz",
 
 
 def test_the_check_passes_one_wheel_and_one_source_archive_of_the_version(tmp_path):
-    check = RELEASE["steps"][2]
-    assert check["name"] == "Check the files"
+    check = next(s for s in RELEASE["steps"] if s.get("name") == "Check the files")
     done = run_release_step(tmp_path, check, THE_FILES)
     assert (done.returncode, done.stderr) == (0, ""), done.stdout
 
@@ -1388,14 +1389,14 @@ def test_the_check_passes_one_wheel_and_one_source_archive_of_the_version(tmp_pa
     ],
 )
 def test_the_check_refuses_anything_else(tmp_path, files):
-    done = run_release_step(tmp_path, RELEASE["steps"][2], files)
+    check = next(s for s in RELEASE["steps"] if s.get("name") == "Check the files")
+    done = run_release_step(tmp_path, check, files)
     assert done.returncode == 1
     assert "::error::" in done.stdout
 
 
 def test_the_release_is_made_with_the_two_files_by_name_and_the_notes(tmp_path):
-    create = RELEASE["steps"][3]
-    assert create["name"] == "Create the release"
+    create = next(s for s in RELEASE["steps"] if s.get("name") == "Create the release")
     assert create["env"] == {
         "GH_TOKEN": "${{ github.token }}",
         "GH_REPO": "${{ github.repository }}",
@@ -1437,7 +1438,7 @@ def test_the_write_token_reaches_the_step_that_makes_the_release_and_nothing_els
     steps = RELEASE["steps"]
     assert [step["name"] for step in steps if reaches_the_token(step)] == ["Create the release"]
     # The model sees a token handed to the download explicitly, and setup-uv's implicit one.
-    download = steps[1]
+    download = next(s for s in steps if s.get("name") == "Fetch what package built")
     given = {**download, "with": {**download["with"], "github-token": "${{ github.token }}"}}
     assert reaches_the_token(given)
     uv = next(s for s in PACKAGE["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv"))

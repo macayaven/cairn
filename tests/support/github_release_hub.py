@@ -653,49 +653,108 @@ if args[:2] == ["release", "create"]:
             "assets": assets,
         })
 elif args[0] == "api" and args[1:3] == ["-H", "Accept: application/vnd.github.sha"]:
-    sha = state.get("tag_sha")
-    if not sha:
-        rc = 1
-        err = "gh: No commit found (HTTP 422)\n"
+    if state.get("tag_replies"):
+        reply = state["tag_replies"].pop(0)
+        rc = reply.get("rc", 0)
+        out = reply.get("stdout", "").encode("utf-8")
+        err = reply.get("stderr", "")
     else:
-        out = sha.encode("utf-8")
+        sha = state.get("tag_sha")
+        if not sha:
+            rc = 1
+            err = "gh: No commit found (HTTP 422)\n"
+        else:
+            out = sha.encode("utf-8")
 elif args[0] == "api" and args[1] == "--paginate":
-    payload = [
-        {**r, "assets": [{k: v for k, v in a.items() if k != "_hex"} for a in r["assets"]]}
-        for r in state["releases"]
-    ]
-    out = json.dumps(payload).encode("utf-8")
+    if state.get("list_replies"):
+        reply = state["list_replies"].pop(0)
+        rc = reply.get("rc", 0)
+        out = reply.get("stdout", "").encode("utf-8")
+        err = reply.get("stderr", "")
+    else:
+        payload = []
+        for r in state["releases"]:
+            clean_assets = [{k: v for k, v in a.items() if k != "_hex"} for a in r["assets"]]
+            row = {**r, "assets": clean_assets}
+            if state.pop("list_stale_public", False) and r.get("tag_name"):
+                row["draft"] = False
+            payload.append(row)
+        out = json.dumps(payload).encode("utf-8")
 elif args[0] == "api" and args[1:3] == ["--method", "PATCH"]:
     state["writes"].append(["api", *args[1:]])
     rid = int(next(a for a in args if a.startswith("repos/")).rsplit("/", 1)[-1])
     for r in state["releases"]:
         if r["id"] == rid:
             r["draft"] = False
+    action = state.get("on_patch")
+    if action == "delete_all":
+        state["releases"] = []
+    elif action == "add_higher":
+        state["releases"].append({
+            "id": 999,
+            "tag_name": "v9.9.9",
+            "target_commitish": state.get("tag_sha", ""),
+            "name": "v9.9.9",
+            "draft": False,
+            "prerelease": False,
+            "body": "higher release\n",
+            "assets": [],
+        })
+    elif action == "redraft_keep":
+        for r in state["releases"]:
+            if r["id"] == rid:
+                r["draft"] = True
+        state["list_stale_public"] = True
+    elif action == "redraft_tamper_wheel":
+        for r in state["releases"]:
+            if r["id"] == rid:
+                r["draft"] = True
+                for a in r["assets"]:
+                    if a["name"].endswith(".whl"):
+                        a["_hex"] = b"tampered".hex()
+        state["list_stale_public"] = True
 elif args[:2] == ["api", "--allow-escape-sequences"] and args[2:4] == [
     "-H",
     "Accept: application/octet-stream",
 ]:
-    aid = int(args[4].rsplit("/", 1)[-1])
-    found = None
-    for r in state["releases"]:
-        for a in r["assets"]:
-            if a["id"] == aid:
-                found = bytes.fromhex(a["_hex"])
-    if found is None:
-        rc = 1
-        err = "gh: Not Found (HTTP 404)\\n"
+    if state.get("asset_replies"):
+        reply = state["asset_replies"].pop(0)
+        rc = reply.get("rc", 0)
+        out = bytes.fromhex(reply.get("stdout_hex", ""))
+        err = reply.get("stderr", "")
     else:
-        out = found
+        aid = int(args[4].rsplit("/", 1)[-1])
+        found = None
+        for r in state["releases"]:
+            for a in r["assets"]:
+                if a["id"] == aid:
+                    found = bytes.fromhex(a["_hex"])
+        if found is None:
+            rc = 1
+            err = "gh: Not Found (HTTP 404)\n"
+        else:
+            out = found
+            if state.get("on_after_asset_download") == "bump_updated_at":
+                for r in state["releases"]:
+                    for a in r["assets"]:
+                        if a["id"] == aid:
+                            a["updated_at"] = "2026-11-21T00:00:00Z"
 elif args[0] == "api" and len(args) == 2 and "/releases/" in args[1]:
-    rid = int(args[1].rsplit("/", 1)[-1])
-    rel = next((r for r in state["releases"] if r["id"] == rid), None)
-    if rel is None:
-        rc = 1
-        err = "gh: Not Found (HTTP 404)\\n"
+    if state.get("read_replies"):
+        reply = state["read_replies"].pop(0)
+        rc = reply.get("rc", 0)
+        out = reply.get("stdout", "").encode("utf-8")
+        err = reply.get("stderr", "")
     else:
-        stripped = [{k: v for k, v in a.items() if k != "_hex"} for a in rel["assets"]]
-        clean = {**rel, "assets": stripped}
-        out = json.dumps(clean).encode("utf-8")
+        rid = int(args[1].rsplit("/", 1)[-1])
+        rel = next((r for r in state["releases"] if r["id"] == rid), None)
+        if rel is None:
+            rc = 1
+            err = "gh: Not Found (HTTP 404)\n"
+        else:
+            stripped = [{k: v for k, v in a.items() if k != "_hex"} for a in rel["assets"]]
+            clean = {**rel, "assets": stripped}
+            out = json.dumps(clean).encode("utf-8")
 else:
     rc = 2
     err = f"unexpected: {args!r}\n"
@@ -718,6 +777,12 @@ def run_release_subprocess_e2e(
     run_id: str = DEFAULT_RUN_ID,
     releases: list[dict[str, Any]] | None = None,
     notes: bytes = b"the notes\n",
+    tag_replies: list[dict[str, Any]] | None = None,
+    list_replies: list[dict[str, Any]] | None = None,
+    read_replies: list[dict[str, Any]] | None = None,
+    asset_replies: list[dict[str, Any]] | None = None,
+    on_patch: str | None = None,
+    on_after_asset_download: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Execute the real `bash -e` + `python3 -I` step in a clean isolated subprocess."""
     from support.ci_shell import SYSTEM, run_step
@@ -753,6 +818,12 @@ def run_release_subprocess_e2e(
                 "next_id": 88,
                 "calls": [],
                 "writes": [],
+                "tag_replies": list(tag_replies or []),
+                "list_replies": list(list_replies or []),
+                "read_replies": list(read_replies or []),
+                "asset_replies": list(asset_replies or []),
+                "on_patch": on_patch,
+                "on_after_asset_download": on_after_asset_download,
             }
         ),
         encoding="utf-8",

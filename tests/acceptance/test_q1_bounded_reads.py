@@ -148,6 +148,7 @@ from cairn.server import create_app, main
 from cairn.sources import KINDS as SOURCE_KINDS
 from cairn.store import SCHEMA_VERSION, Claim, Store
 from cookie_names import session_cookie
+from support.web.at_rest import at_rest
 
 BASE = "http://127.0.0.1:8765"
 ISSUER = "https://id.example.test/pool-q1"
@@ -310,6 +311,7 @@ def world_of(folder: Path, n: int, pad: str = "") -> SimpleNamespace:
     )  # fmt: skip
     client = TestClient(create_app(store, public_url=BASE), base_url=BASE)
     client.__enter__()
+    at_rest(client.app)
     opened = client.post("/login", data={"key": key}, follow_redirects=False)
     assert opened.status_code == 303
     keyed = {"cookie": f"{session_cookie()}={opened.cookies[session_cookie()]}"}

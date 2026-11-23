@@ -43,6 +43,7 @@ from cairn.spans import Span, code_read
 from cairn.store import Store, relating, schema
 from cairn.web.markdown import render
 from support.store.relating_cost import watched
+from support.web.at_rest import at_rest
 
 env = api.env
 TITLE = "Step by Step"
@@ -495,6 +496,7 @@ def closed(con: sqlite3.Connection) -> bool:
 def test_a_read_opens_one_database_in_memory_runs_three_statements_and_closes_it(
     env, scratch_watch
 ):
+    at_rest(env.client.app)  # no pass of the keeper lands in the count
     focus = api.note(env, TITLE, "The field guide is on the shelf.")["page"]
     for n in range(4):
         api.note(env, f"Group {n}", f"Group {n} reads `Step` by Step by Step {n}.\n\nAnd again.")

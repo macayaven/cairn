@@ -39,6 +39,7 @@ from support.store.related_page import (
     unisolated,
 )
 from support.store.related_page import w as w
+from support.web.at_rest import at_rest
 from support.web.design_system import tree
 
 WHEN = "2099-02-03T04:05:00.000000+00:00"
@@ -927,6 +928,7 @@ PAGE_VIEW_STATEMENTS = {"Ada": 19, "Dee": 27}
 
 
 def test_the_page_view_runs_the_statements_it_ran_and_the_related_page_a_fixed_number(w, world):
+    at_rest(w.client.app)  # no pass of the keeper lands in a count
     counts = {}
     for path in ("/b/ops/p/deploy", "/b/ops/p/deploy/related"):
         for who in (w.ada, w.dee):
@@ -952,6 +954,7 @@ def test_the_related_page_costs_the_same_in_a_larger_project(tmp_path):
         made = build(tmp_path / str(size))
         try:
             with made.client:
+                at_rest(made.client.app)
                 note(made, "Asked", "Use `a.cfg` and `b.cfg`; see https://example.invalid/q.\n")
                 note(made, "Twin", "Brook sets `a.cfg`; see Asked.\n")
                 for n in range(size):

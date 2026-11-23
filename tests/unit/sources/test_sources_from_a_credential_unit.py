@@ -29,6 +29,7 @@ from cairn.store.sources import (
     OWNER_DECIDES,
     SOURCE_CREDENTIAL_PREFIX,
 )
+from support.web.at_rest import at_rest
 
 ISSUER = "https://id.example.test/pool-r2"
 NOW = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
@@ -970,6 +971,7 @@ def test_the_two_lists_cost_the_same_with_1_and_50(world, api):
             world.store._observe(trace=None)
         return len(seen)
 
+    at_rest(api.client.app)  # no pass of the keeper lands in a count
     asked = [(who, path) for who in ("olive", "cy", "operator")
              for path in ("/api/credentials", "/api/integrations")]  # fmt: skip
     made(0, 1)

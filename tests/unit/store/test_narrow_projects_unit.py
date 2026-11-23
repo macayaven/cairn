@@ -20,6 +20,7 @@ from cairn.narrowing import FILTER_FROM
 from cairn.server import create_app
 from cairn.store import Store
 from support.cookie_names import session_cookie
+from support.web.at_rest import at_rest
 
 BASE = "http://127.0.0.1:8765"
 REDIRECT = "http://127.0.0.1:33418/callback"
@@ -289,6 +290,7 @@ def selects(env, path: str) -> int:
 
 
 def test_a_filter_reads_nothing_more_than_the_page(many):
+    at_rest(many.client.app)  # no pass of the keeper lands in a count
     group = many.store.create_set("work", [many.ids["ember-01"]])
     pending = consent(many)
     narrowed = {

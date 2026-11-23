@@ -33,6 +33,7 @@ from cairn.store import Claim, Store
 from support.store.related_page import build, get, main_of
 from support.store.relating_cost import watched
 from support.store.rt4_related_held import oracle
+from support.web.at_rest import at_rest
 
 MCP = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
 
@@ -41,6 +42,7 @@ MCP = {"accept": "application/json, text/event-stream", "content-type": "applica
 def w(tmp_path):
     made = build(tmp_path / "w", graph_explorer=True)
     with made.client:
+        at_rest(made.client.app)  # no pass of the keeper lands in a count
         yield made
     made.store.close()
 
@@ -113,6 +115,7 @@ def test_another_projects_title_and_terms_change_no_count_and_no_row(tmp_path):
     for held in (False, True):
         w = build(tmp_path / str(held))
         with w.client:
+            at_rest(w.client.app)  # an app of its own: no pass of its keeper lands in the count
             world(w, vault=held)
             key = w.store.create_key("laptop", projects=[w.ops.id], access="read")
             store = w.store

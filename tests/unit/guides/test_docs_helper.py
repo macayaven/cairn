@@ -9,6 +9,7 @@ from starlette.testclient import TestClient
 
 from cairn.server import create_app
 from cairn.store import Store
+from support.web.at_rest import at_rest
 
 
 def _footer(html):
@@ -129,6 +130,7 @@ def _released(folder, monkeypatch, *, artifact=None, env="DOCS_READER", **option
             assert result.status_code in (200, 201), result.text
         if "sign_in" not in options:  # else the test signs in through the provider
             client.post("/login", data={"key": caller}, headers={"sec-fetch-site": "same-origin"})
+        at_rest(app)  # no pass of the keeper lands in a count
         yield {
             "client": client,
             "store": store,

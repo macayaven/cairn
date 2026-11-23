@@ -36,6 +36,7 @@ from support.store.related_page import (
     shown,
     unisolated,
 )
+from support.web.at_rest import at_rest
 from support.web.design_system import tree
 from support.web.related_graph import RELATED, drawn
 
@@ -570,6 +571,7 @@ REACH_CHECK = {"Ada": 3, "Dee": 4}
 
 
 def counted(w, path: str, who) -> int:
+    at_rest(w.client.app)  # no pass of the keeper lands in the count
     assert get(w, path, who).status_code == 200  # once before: what a first call does once
     with Watch(w.store) as seen:
         assert get(w, path, who).status_code == 200

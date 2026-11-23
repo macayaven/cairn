@@ -101,6 +101,7 @@ from cairn.llm import Reply
 from cairn.server import create_app
 from cairn.store import SCHEMA_VERSION, Limits, Store
 from cookie_names import session_cookie
+from support.web.at_rest import at_rest
 
 BASE = "https://cairn.example.test"
 ISSUER = "https://id.example.test/pool-m4"
@@ -491,6 +492,7 @@ def test_the_check_costs_no_statement_of_its_own(world):
     world.add(world.cy.view, launch, "# Launch plan\n\n## Owners\n\n- Ada books the room.\n")
     assert tidy_page(world.store, launch.id, "launch-plan").status == "arranged"
     assert len(world.page(launch, "launch-plan").claims) == 6  # no repeat left, worth a call
+    at_rest(world.app)
     watch = Watch(world.store)
     model = Recorder(keep=True)  # the page's own order: "unchanged", so a call can be repeated
     world.ada.view.set_project_models(handbook.id, "never")

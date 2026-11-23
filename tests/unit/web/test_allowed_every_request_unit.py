@@ -15,6 +15,7 @@ from cairn.identity import GitHub
 from cairn.server import SignIn, create_app
 from cairn.store import Store
 from cairn.web.auth import HOST_ONLY, SESSION_COOKIE
+from support.web.at_rest import at_rest
 
 BASE = "https://kb.example.test"
 MCP = f"{BASE}/mcp"
@@ -211,6 +212,8 @@ def test_the_check_reads_nothing_more_than_admitting_did(store):
     for credential in (session, key, agent):
         plain, limited = apps()
         with TestClient(plain, base_url=BASE) as one, TestClient(limited, base_url=BASE) as other:
+            at_rest(plain)  # both serve the one store whose writer is traced
+            at_rest(limited)
             without, with_limits = credential(one), credential(other)
             without(), with_limits()  # each app's first request reads what it reads once
             assert traced(store, with_limits) == traced(store, without), credential.__name__

@@ -25,6 +25,7 @@ from cairn.server import create_app
 from cairn.store import Store
 from cairn.store.models import Searched
 from cairn.web.mcp import INSTRUCTIONS, TREAT_AS_INFORMATION, instructions
+from support.web.at_rest import at_rest
 
 BASE = "http://127.0.0.1:8765"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
@@ -183,6 +184,7 @@ def test_a_project_with_no_pages_says_there_are_none(env):
 
 
 def test_the_nearest_pages_cost_a_bounded_read(env, monkeypatch):
+    at_rest(env.client.app)  # no pass of the keeper lands in the count
     for i in range(30):
         call(env, "note", project="ops", text=f"# Leaf {i:02d}\n\nLeaf {i} faces north.\n")
     memory = Memory(env.store, None)
